@@ -1,0 +1,46 @@
+services:
+  ntp-gui:
+    build: .
+    image: ghcr.io/congp20/ntp-gui:latest
+    container_name: ntp-gui
+    restart: unless-stopped
+
+    ports:
+      - "123:123/udp"   # NTP für das LAN
+      - "8080:8080/tcp" # Web-Dashboard
+
+    # SYS_TIME erlaubt chronyd, die Uhr tatsächlich zu stellen. Achtung: der
+    # Container teilt sich die Uhr mit dem Host – deshalb gehört dieser Dienst
+    # in eine eigene VM oder auf einen dedizierten Host. Ohne SYS_TIME läuft
+    # chronyd automatisch mit -x und liefert nur die (ungeregelte) Hostzeit aus.
+    cap_add:
+      - SYS_TIME
+
+    environment:
+      TZ: "Europe/Berlin"
+      WEB_TITLE: "Zeitserver"
+
+      # Upstream-Quellen
+      NTP_POOLS: "de.pool.ntp.org"
+      # NTP_SERVERS: "ptbtime1.ptb.de,ptbtime2.ptb.de"
+
+      # Wer darf die Zeit abfragen? (Default: alle privaten Netze)
+      ALLOW_NETWORKS: "192.168.0.0/16,10.0.0.0/8,172.16.0.0/12"
+
+      # Dashboard absichern (leer lassen = ohne Login erreichbar)
+      # WEB_USER: "admin"
+      # WEB_PASSWORD: "bitte-aendern"
+
+    volumes:
+      - chrony-data:/var/lib/chrony   # Drift-Datei über Neustarts hinweg
+      # - ./config:/config:ro         # eigene chrony.conf / ptp4l.conf
+
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8080/healthz',timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  chrony-data:
