@@ -237,5 +237,36 @@ class TestRefclockSource(unittest.TestCase):
         self.assertAlmostEqual(row["original_offset"], -0.001499888)
 
 
+class TestEnvNumber(unittest.TestCase):
+    """A typo in a compose file must never crash the container."""
+
+    def setUp(self):
+        import server
+        self.env_number = server.env_number
+        os.environ.pop("NTPGUI_TESTVAR", None)
+
+    def tearDown(self):
+        os.environ.pop("NTPGUI_TESTVAR", None)
+
+    def test_unset_returns_default(self):
+        self.assertEqual(self.env_number("NTPGUI_TESTVAR", 720, int), 720)
+
+    def test_valid_value(self):
+        os.environ["NTPGUI_TESTVAR"] = " 42 "
+        self.assertEqual(self.env_number("NTPGUI_TESTVAR", 720, int), 42)
+
+    def test_garbage_falls_back(self):
+        os.environ["NTPGUI_TESTVAR"] = "zwölf"
+        self.assertEqual(self.env_number("NTPGUI_TESTVAR", 720, int), 720)
+
+    def test_empty_falls_back(self):
+        os.environ["NTPGUI_TESTVAR"] = "   "
+        self.assertEqual(self.env_number("NTPGUI_TESTVAR", 5.0, float), 5.0)
+
+    def test_minimum_is_enforced(self):
+        os.environ["NTPGUI_TESTVAR"] = "-3"
+        self.assertEqual(self.env_number("NTPGUI_TESTVAR", 10.0, float, minimum=1.0), 1.0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

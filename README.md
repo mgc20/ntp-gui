@@ -235,7 +235,7 @@ die im Dashboard unten einsehbar ist.
 | `NTP_PORT` | `123` | NTP-Port |
 | `BIND_ADDRESS` | – | Auf eine Adresse beschränken |
 | `NTP_HW_TIMESTAMP` | `false` | Hardware-Zeitstempel für NTP (`hwtimestamp`) |
-| `DISABLE_CLOCK_CONTROL` | `auto` | `true` = chronyd startet mit `-x`; `auto` erkennt fehlendes `CAP_SYS_TIME` |
+| `DISABLE_CLOCK_CONTROL` | `auto` | `true` erzwingt `-x` (Uhr wird nie gestellt). Bei `auto` und bei `false` prüft der Container `CAP_SYS_TIME` und ergänzt `-x` nur, wenn die Capability fehlt |
 | `MAKESTEP` | `1.0 3` | `makestep`-Parameter |
 | `EXTRA_CHRONY_CONF` | – | Beliebige zusätzliche Zeilen (`\n` als Trenner) |
 
@@ -314,6 +314,23 @@ environment:
 Das Dashboard hat **keine Verschlüsselung**. Für Zugriff über unsichere Netze einen
 Reverse Proxy mit TLS davorsetzen und `WEB_USER`/`WEB_PASSWORD` verwenden.
 
+### Was im Container unter welchem Benutzer läuft
+
+| Prozess | Benutzer | Warum |
+|---|---|---|
+| `chronyd` | `_chrony` | legt Privilegien nach dem Start selbst ab |
+| `gpsd` | `gpsd` | ebenso |
+| `ptp4l` / `phc2sys` | root | brauchen `CAP_NET_ADMIN` für Hardware-Zeitstempel |
+| Dashboard (`python3`) | root | ruft `chronyc` und `pmc` auf, deren Sockets root bzw. `_chrony` gehören |
+
+Das Dashboard schreibt nichts, führt keine Shell-Kommandos aus (alle Aufrufe nutzen feste
+Argumentlisten) und hat keinen Upload-Pfad. Trotzdem gilt: der Container ist für das eigene
+LAN gedacht, nicht für das offene Internet. Wer ihn exponiert, gehört hinter einen Reverse
+Proxy mit TLS und Authentifizierung.
+
+`/healthz` ist **bewusst ohne Login** erreichbar, damit der Docker-Healthcheck funktioniert.
+Der Endpunkt verrät nur, ob chronyd antwortet.
+
 ## Endpunkte
 
 | Pfad | Inhalt |
@@ -329,8 +346,15 @@ Reverse Proxy mit TLS davorsetzen und `WEB_USER`/`WEB_PASSWORD` verwenden.
 
 ```bash
 python3 -m unittest discover -s tests -v     # Parser-Tests (ohne laufenden chronyd)
-docker build -t ntp-gui .
+docker build -t ntp-gui:test .
+tests/container-test.sh ntp-gui:test         # Integrationstest gegen das gebaute Image
 ```
+
+Der Integrationstest startet echte Container und prüft das, was Unittests nicht abdecken:
+Erkennung von fehlendem `CAP_SYS_TIME`, Healthcheck, alle Endpunkte, Basic-Auth,
+gemountete Konfiguration, Verhalten ohne GPS-/PTP-Hardware, eine echte NTP-Abfrage über
+das Netz und die Exit-Codes beim Stoppen. Dieselbe Datei läuft in der CI gegen das
+gebaute Image.
 
 Lokal ohne Container starten (setzt installiertes `chrony` voraus):
 
@@ -351,3 +375,6 @@ CSV-Zeile, „nie gehört“ ist `4294967295` und `pmc` antwortet nur, wenn die 
 * Der Offset-Verlauf liegt im Speicher und geht bei einem Neustart verloren. Für
   Langzeitdaten `/metrics` mit Prometheus abgreifen.
 * `chronyc clients` zählt nur, solange das Client-Log Platz hat (`CLIENTLOGLIMIT`).
+* Das Dashboard bringt kein TLS mit – für Zugriffe außerhalb des vertrauenswürdigen Netzes
+  gehört ein Reverse Proxy davor.
+* PTP braucht das Host-Netzwerk; über eine Docker-Bridge funktioniert es nicht.

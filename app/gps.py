@@ -18,7 +18,10 @@ FIX_MODES = {0: "unbekannt", 1: "kein Fix", 2: "2D-Fix", 3: "3D-Fix"}
 
 _CACHE: dict[str, Any] = {}
 _CACHE_TIME = 0.0
-_CACHE_TTL = float(os.environ.get("GPS_CACHE_TTL", "5"))
+try:
+    _CACHE_TTL = max(0.0, float(os.environ.get("GPS_CACHE_TTL", "5")))
+except ValueError:
+    _CACHE_TTL = 5.0
 _LOCK = threading.Lock()
 
 
@@ -135,7 +138,7 @@ def status() -> dict[str, Any]:
 
     with _LOCK:
         if _CACHE and time.time() - _CACHE_TIME < _CACHE_TTL:
-            return _CACHE
+            return dict(_CACHE)
         state = parse_reports(poll_gpsd())
         state["enabled"] = True
         state.setdefault("device", os.environ.get("GPS_DEVICE", ""))
@@ -153,4 +156,4 @@ def status() -> dict[str, Any]:
             state["pps"] = ""
         _CACHE = state
         _CACHE_TIME = time.time()
-        return state
+        return dict(state)

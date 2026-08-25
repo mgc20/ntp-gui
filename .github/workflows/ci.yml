@@ -47,8 +47,10 @@ jobs:
           images: ghcr.io/${{ github.repository }}
           tags: |
             type=ref,event=branch
+            type=ref,event=pr
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
+            type=sha
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
 
       # Ohne Tag wird das Image nur gebaut (Smoke-Test), nicht veröffentlicht.
@@ -64,16 +66,11 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Smoke-Test des Images
+      - name: Integrationstest gegen das Image
         if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
         run: |
+          set -euo pipefail
+          # chrony auf dem Runner erlaubt eine echte NTP-Abfrage gegen den Container.
+          sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends chrony || true
           IMAGE=$(echo "${{ steps.meta.outputs.tags }}" | head -n1)
-          docker run -d --name ntp-gui-smoke -e NTP_PORT=10123 -e WEB_PORT=8080 -p 18080:8080 "$IMAGE"
-          for i in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:18080/healthz >/dev/null 2>&1; then echo "healthz OK"; break; fi
-            sleep 2
-          done
-          curl -fsS http://127.0.0.1:18080/api/status | head -c 400
-          curl -fsS http://127.0.0.1:18080/metrics | head -n 5
-          docker logs ntp-gui-smoke
-          docker rm -f ntp-gui-smoke
+          ./tests/container-test.sh "$IMAGE"

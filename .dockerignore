@@ -1,8 +1,10 @@
+# Nur app/ und docker/ landen im Image – der Rest hält den Build-Kontext klein.
 .git
 .github
-tests
-*.md
-!README.md
 docs
-.github
+tests
 docker-compose*.yml
+*.md
+__pycache__
+**/__pycache__
+*.pyc

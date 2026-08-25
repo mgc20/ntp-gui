@@ -122,11 +122,16 @@ function renderStats(data) {
     note: `Root Delay ${fmt(tracking.root_delay)}`,
   });
 
+  // chronyc activity zählt nur Netzwerkquellen – Refclocks wie GPS fehlen dort.
+  const sources = data.sources || [];
+  const activeSources = sources.filter((s) => s.state_label === "synced" || s.state_label === "combined").length;
   tiles.push({
     label: "NTP-Clients",
     value: String(data.client_count ?? 0),
     tone: "muted",
-    note: `${(data.activity && data.activity.online) ?? 0} ${((data.activity && data.activity.online) === 1) ? "Quelle" : "Quellen"} online`,
+    note: sources.length
+      ? `${activeSources} von ${sources.length} ${sources.length === 1 ? "Quelle" : "Quellen"} aktiv`
+      : "keine Zeitquelle konfiguriert",
   });
 
   const served = stats.ntp_packets_received;
@@ -394,7 +399,7 @@ function renderPtp(ptp) {
     return;
   }
 
-  badge.textContent = ptp.running ? (ptp.port_state || "aktiv") : "keine Antwort";
+  badge.textContent = ptp.running ? (ptp.portState || "aktiv") : "keine Antwort";
   const rows = [
     ["Interface", ptp.interface || "–"],
     ["Portstatus", ptp.port_state_label || "–"],

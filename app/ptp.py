@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import threading
+import time
 from typing import Any
 
 PMC = shutil.which("pmc") or "/usr/sbin/pmc"
@@ -102,10 +104,31 @@ def log_tail(lines: int = 40) -> list[str]:
         return []
 
 
+_CACHE: dict[str, Any] = {}
+_CACHE_TIME = 0.0
+try:
+    _CACHE_TTL = max(0.0, float(os.environ.get("PTP_CACHE_TTL", "4")))
+except ValueError:
+    _CACHE_TTL = 4.0
+_LOCK = threading.Lock()
+
+
 def status() -> dict[str, Any]:
     """Aggregated PTP state; ``running`` is False when ptp4l is not answering."""
     if not enabled():
         return {"enabled": False, "running": False}
+
+    with _LOCK:
+        if _CACHE and time.time() - _CACHE_TIME < _CACHE_TTL:
+            return dict(_CACHE)
+        state = _collect()
+        _CACHE.clear()
+        _CACHE.update(state)
+        globals()["_CACHE_TIME"] = time.time()
+        return dict(state)
+
+
+def _collect() -> dict[str, Any]:
 
     state: dict[str, Any] = {
         "enabled": True,
@@ -115,11 +138,15 @@ def status() -> dict[str, Any]:
         "domain": os.environ.get("PTP_DOMAIN", "0"),
     }
 
+    # Probe one dataset first: if ptp4l is gone, five more timeouts would only
+    # stall the dashboard.
     answered = False
-    for dataset, fields in _DATASETS.items():
+    for index, (dataset, fields) in enumerate(_DATASETS.items()):
         values = _query(dataset)
         if values:
             answered = True
+        elif index == 0 and not answered:
+            break
         for field in fields:
             if field in values:
                 state[field] = _coerce(field, values[field])

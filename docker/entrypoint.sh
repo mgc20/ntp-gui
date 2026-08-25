@@ -20,13 +20,20 @@ is_true() {
 has_sys_time() {
   local caps
   caps=$(awk '/^CapEff:/ {print $2}' /proc/self/status 2>/dev/null || echo 0)
-  python3 -c "import sys; sys.exit(0 if (int('${caps:-0}', 16) >> 25) & 1 else 1)"
+  python3 -c "
+import sys
+try:
+    caps = int('${caps:-0}', 16)
+except ValueError:
+    sys.exit(1)
+sys.exit(0 if (caps >> 25) & 1 else 1)" 2>/dev/null
 }
 
 # Beim Booten koennen USB-/PPS-Geraete spaeter auftauchen als der Container.
 wait_for_device() {
   local path="$1" seconds="${2:-10}"
   [[ -z "$path" ]] && return 1
+  [[ "$seconds" =~ ^[0-9]+$ ]] || seconds=10
   for _ in $(seq 1 "$seconds"); do
     [[ -e "$path" ]] && return 0
     sleep 1
@@ -66,7 +73,11 @@ write_chrony_conf() {
       [[ -n "$peer" ]] && echo "peer ${peer} ${options}"
     done < <(split_list "${NTP_PEERS:-}")
 
-    if is_true "${GPS_ENABLE:-false}"; then
+    if is_true "${GPS_ENABLE:-false}" && [[ ! -e "${GPS_DEVICE:-/dev/ttyACM0}" ]]; then
+      # Ohne Empfaenger startet gpsd nicht - dann waere der Refclock eine
+      # Quelle, die dauerhaft als unerreichbar im Dashboard steht.
+      log gps "WARNUNG: GPS-Refclock wird übersprungen, ${GPS_DEVICE:-/dev/ttyACM0} fehlt." >&2
+    elif is_true "${GPS_ENABLE:-false}"; then
       # gpsd hands the GPS time to chrony through a shared memory segment.
       echo "refclock SHM ${GPS_SHM_UNIT:-0} refid ${GPS_REFID:-GPS}" \
            "offset ${GPS_OFFSET:-0.0} delay ${GPS_DELAY:-0.2}" \
@@ -186,14 +197,17 @@ start() {
 }
 
 shutdown() {
+  # Exit-Code 0 nur beim geordneten Stoppen; ein weggestorbener Dienst muss
+  # auch mit restart=on-failure einen Neustart ausloesen.
+  local code="${1:-0}"
   log main "beende Dienste …"
   for pid in "${PIDS[@]:-}"; do
     [[ -n "$pid" ]] && kill "$pid" 2>/dev/null || true
   done
   wait 2>/dev/null || true
-  exit 0
+  exit "$code"
 }
-trap shutdown SIGTERM SIGINT
+trap 'shutdown 0' SIGTERM SIGINT
 
 mkdir -p /var/run/chrony /var/lib/chrony /var/log/chrony /etc/linuxptp
 
@@ -265,5 +279,5 @@ start web python3 "${APP_DIR}/server.py"
 
 # Exit as soon as any supervised process dies so the container restarts cleanly.
 wait -n
-log main "ein Dienst wurde beendet – Container wird gestoppt"
-shutdown
+log main "ein Dienst wurde unerwartet beendet – Container wird gestoppt"
+shutdown 1

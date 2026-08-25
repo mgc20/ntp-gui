@@ -28,8 +28,30 @@ STATIC_DIR = Path(__file__).with_name("static")
 CHRONY_CONF = os.environ.get("CHRONY_CONF", "/etc/chrony/chrony.conf")
 START_TIME = time.time()
 
-HISTORY_SIZE = int(os.environ.get("HISTORY_SIZE", "720"))
-HISTORY_INTERVAL = float(os.environ.get("HISTORY_INTERVAL", "10"))
+
+
+def env_number(name: str, default, kind=float, minimum=None):
+    """Numeric environment variable that never takes the container down.
+
+    A typo in a compose file must not turn into a crash loop, so an unusable
+    value falls back to the default instead of raising.
+    """
+    raw = os.environ.get(name)
+    if raw is None or not str(raw).strip():
+        return default
+    try:
+        value = kind(str(raw).strip())
+    except (TypeError, ValueError):
+        print(f"[web] {name}={raw!r} ist keine Zahl – verwende {default}", flush=True)
+        return default
+    if minimum is not None and value < minimum:
+        print(f"[web] {name}={value} ist zu klein – verwende {minimum}", flush=True)
+        return minimum
+    return value
+
+
+HISTORY_SIZE = env_number("HISTORY_SIZE", 720, int, minimum=2)
+HISTORY_INTERVAL = env_number("HISTORY_INTERVAL", 10.0, float, minimum=1.0)
 
 CONTENT_TYPES = {
     ".html": "text/html; charset=utf-8",
@@ -95,16 +117,15 @@ def system_info() -> dict:
         "timezone": time.strftime("%Z"),
         "uptime_seconds": int(time.time() - START_TIME),
         "title": os.environ.get("WEB_TITLE", "NTP / PTP Time Server"),
-        "refresh_seconds": float(os.environ.get("WEB_REFRESH_SECONDS", "5")),
-        "ntp_port": int(os.environ.get("NTP_PORT", "123")),
+        "refresh_seconds": env_number("WEB_REFRESH_SECONDS", 5.0, float, minimum=1.0),
+        "ntp_port": env_number("NTP_PORT", 123, int),
     }
     try:
         with open("/proc/uptime") as handle:
             info["host_uptime_seconds"] = int(float(handle.read().split()[0]))
     except OSError:
         pass
-    for name in ("addresses", "ipv4"):
-        info.setdefault(name, [])
+    info["addresses"] = []
     try:
         for family, _, _, _, sockaddr in socket.getaddrinfo(socket.gethostname(), None):
             address = sockaddr[0]
@@ -142,6 +163,11 @@ def _metric(lines: list[str], name: str, value, help_text: str, kind: str = "gau
     lines.append(f"{name}{labels} {value}")
 
 
+def _escape_label(value) -> str:
+    """Prometheus label values escape backslash, quote and newline."""
+    return str(value).replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+
 def build_metrics() -> str:
     tracking = chrony.tracking()
     lines: list[str] = []
@@ -157,7 +183,8 @@ def build_metrics() -> str:
     _metric(lines, "ntpgui_synchronised", 1 if tracking.get("synchronised") else 0, "1 when the clock is synchronised")
 
     for source in chrony.merged_sources():
-        labels = '{source="%s",mode="%s"}' % (source.get("name", ""), source.get("mode_label", ""))
+        labels = '{source="%s",mode="%s"}' % (
+            _escape_label(source.get("name", "")), _escape_label(source.get("mode_label", "")))
         _metric(lines, "ntpgui_source_offset_seconds", source.get("offset"), "Offset per source", labels=labels)
         _metric(lines, "ntpgui_source_stratum", source.get("stratum"), "Stratum per source", labels=labels)
         _metric(lines, "ntpgui_source_reach_percent", source.get("reach_percent"), "Reachability per source", labels=labels)
@@ -221,12 +248,14 @@ class Handler(BaseHTTPRequestHandler):
         if not header.startswith("Basic "):
             return False
         try:
-            decoded = base64.b64decode(header[6:]).decode()
+            decoded = base64.b64decode(header[6:], validate=True).decode("utf-8")
         except Exception:
             return False
         user, _, password = decoded.partition(":")
         expected_user, expected_password = self._credentials
-        return hmac.compare_digest(user, expected_user) and hmac.compare_digest(password, expected_password)
+        # compare_digest refuses str with non-ASCII characters, so compare bytes.
+        return (hmac.compare_digest(user.encode("utf-8"), expected_user.encode("utf-8"))
+                & hmac.compare_digest(password.encode("utf-8"), expected_password.encode("utf-8")))
 
     def _serve_static(self, name: str) -> None:
         path = (STATIC_DIR / name).resolve()
@@ -284,16 +313,23 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
-    port = int(os.environ.get("WEB_PORT", "8080"))
+    port = env_number("WEB_PORT", 8080, int, minimum=1)
     bind = os.environ.get("WEB_BIND", "0.0.0.0")
     user = os.environ.get("WEB_USER", "").strip()
     password = os.environ.get("WEB_PASSWORD", "")
     credentials = (user, password) if user and password else None
+    if bool(user) != bool(password):
+        print("[web] WARNUNG: WEB_USER und WEB_PASSWORD müssen beide gesetzt sein – "
+              "das Dashboard läuft ohne Authentifizierung.", flush=True)
 
     threading.Thread(target=collector, daemon=True, name="collector").start()
 
     handler = partial(Handler, credentials=credentials)
-    server = ThreadingHTTPServer((bind, port), handler)
+    try:
+        server = ThreadingHTTPServer((bind, port), handler)
+    except OSError as exc:
+        raise SystemExit(f"[web] Port {bind}:{port} nicht verfügbar ({exc}). "
+                         f"WEB_PORT anpassen oder den belegenden Dienst beenden.")
     server.daemon_threads = True
     auth_note = "mit Basic-Auth" if credentials else "ohne Authentifizierung"
     print(f"[web] dashboard on http://{bind}:{port} ({auth_note})", flush=True)
