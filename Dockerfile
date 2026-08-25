@@ -6,6 +6,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         chrony \
         linuxptp \
+        gpsd \
         python3 \
         tzdata \
         ca-certificates \
@@ -28,6 +29,12 @@ ENV NTP_POOLS="pool.ntp.org" \
     SERVE_UNSYNCED="true" \
     LOCAL_STRATUM="10" \
     DISABLE_CLOCK_CONTROL="auto"
+
+# --- GPS -------------------------------------------------------------------
+ENV GPS_ENABLE="false" \
+    GPS_DEVICE="/dev/ttyACM0" \
+    GPS_OFFSET="0.0" \
+    GPS_SHOW_POSITION="false"
 
 # --- PTP -------------------------------------------------------------------
 ENV PTP_ENABLE="false" \

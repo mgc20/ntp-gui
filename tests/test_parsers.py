@@ -1,5 +1,6 @@
 """Parser tests against real chronyc / pmc output."""
 
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -7,6 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
 
 import chrony  # noqa: E402
+import gps  # noqa: E402
 import ptp  # noqa: E402
 
 # chronyc -c tracking, chrony 4.5, synchronised to an upstream server.
@@ -160,6 +162,79 @@ class TestPmc(unittest.TestCase):
 
     def test_empty(self):
         self.assertEqual(ptp.parse_pmc_output(""), {})
+
+
+# gpsd 3.25 reports, captured from a running daemon.
+GPSD_VERSION = {"class": "VERSION", "release": "3.25", "rev": "3.25"}
+GPSD_DEVICES = {"class": "DEVICES", "devices": [
+    {"class": "DEVICE", "path": "/dev/ttyACM0", "driver": "NMEA0183", "bps": 38400}]}
+GPSD_TPV = {"class": "TPV", "device": "/dev/ttyACM0", "mode": 3,
+            "time": "2026-08-25T10:03:11.030Z", "ept": 0.005,
+            "lat": 48.137333333, "lon": 11.575, "alt": 519.0, "altHAE": 566.3}
+GPSD_SKY_DETAILED = {"class": "SKY", "device": "/dev/ttyACM0", "hdop": 0.89, "pdop": 1.72,
+                     "vdop": 1.47, "uSat": 8, "nSat": 11, "satellites": [
+                         {"PRN": 1, "ss": 42, "used": True},
+                         {"PRN": 2, "ss": 40, "used": True},
+                         {"PRN": 3, "ss": 22, "used": False}]}
+# Some gpsd cycles carry no satellite list at all.
+GPSD_SKY_BARE = {"class": "SKY", "device": "/dev/ttyACM0", "hdop": 0.89, "uSat": 8}
+
+
+class TestGps(unittest.TestCase):
+    def test_full_reports(self):
+        state = gps.parse_reports({"VERSION": GPSD_VERSION, "DEVICES": GPSD_DEVICES,
+                                   "TPV": GPSD_TPV, "SKY": GPSD_SKY_DETAILED})
+        self.assertTrue(state["running"])
+        self.assertTrue(state["has_fix"])
+        self.assertEqual(state["mode_label"], "3D-Fix")
+        self.assertEqual(state["device"], "/dev/ttyACM0")
+        self.assertEqual(state["driver"], "NMEA0183")
+        self.assertEqual(state["satellites_used"], 8)
+        self.assertEqual(state["satellites_seen"], 11)
+        self.assertEqual(state["hdop"], 0.89)
+        self.assertEqual(state["snr_max"], 42)
+        self.assertEqual(state["snr_avg"], 41.0)  # only the used satellites count
+
+    def test_sky_without_satellite_list(self):
+        # nSat missing must not report "0 of 8 satellites".
+        state = gps.parse_reports({"TPV": GPSD_TPV, "SKY": GPSD_SKY_BARE})
+        self.assertEqual(state["satellites_used"], 8)
+        self.assertEqual(state["satellites_seen"], 8)
+
+    def test_detailed_sky_wins(self):
+        self.assertTrue(gps._sky_is_detailed(GPSD_SKY_DETAILED))
+        self.assertFalse(gps._sky_is_detailed(GPSD_SKY_BARE))
+        self.assertFalse(gps._sky_is_detailed(None))
+
+    def test_no_fix(self):
+        state = gps.parse_reports({"TPV": {"class": "TPV", "mode": 1}, "SKY": {"class": "SKY", "uSat": 0}})
+        self.assertFalse(state["has_fix"])
+        self.assertEqual(state["mode_label"], "kein Fix")
+
+    def test_gpsd_unreachable(self):
+        state = gps.parse_reports({})
+        self.assertFalse(state["running"])
+        self.assertFalse(state["has_fix"])
+
+    def test_position_hidden_by_default(self):
+        os.environ.pop("GPS_SHOW_POSITION", None)
+        self.assertNotIn("lat", gps.parse_reports({"TPV": GPSD_TPV}))
+        os.environ["GPS_SHOW_POSITION"] = "true"
+        try:
+            self.assertIn("lat", gps.parse_reports({"TPV": GPSD_TPV}))
+        finally:
+            os.environ.pop("GPS_SHOW_POSITION", None)
+
+
+class TestRefclockSource(unittest.TestCase):
+    """A GPS refclock shows up as mode '#' in chronyc sources."""
+
+    def test_refclock_row(self):
+        row = chrony.parse_sources("#,*,GPS,0,3,377,3,0.000000000,-0.001499888,0.200000003\n")[0]
+        self.assertEqual(row["mode_label"], "refclock")
+        self.assertEqual(row["state_label"], "synced")
+        self.assertEqual(row["reach_percent"], 100)
+        self.assertAlmostEqual(row["original_offset"], -0.001499888)
 
 
 if __name__ == "__main__":

@@ -137,6 +137,16 @@ function renderStats(data) {
     note: `${(stats.ntp_packets_dropped ?? 0).toLocaleString("de-DE")} verworfen`,
   });
 
+  const gps = data.gps || {};
+  if (gps.enabled) {
+    tiles.push({
+      label: "GPS-Fix",
+      value: gps.running ? (gps.mode_label || "–") : "gpsd offline",
+      tone: gps.has_fix ? "good" : gps.running ? "warn" : "crit",
+      note: gps.running ? `${gps.satellites_used ?? 0} von ${gps.satellites_seen ?? 0} Satelliten` : "kein Kontakt zu gpsd",
+    });
+  }
+
   if (ptp.enabled) {
     const ptpOffset = typeof ptp.offset_ns === "number" ? formatSeconds(ptp.offset_ns / 1e9) : null;
     tiles.push({
@@ -323,6 +333,55 @@ function renderClients(clients) {
       el("td", { class: "num", text: client.ntp_last_rx !== null && client.ntp_last_rx !== undefined ? `vor ${formatDuration(client.ntp_last_rx)}` : "–" }))));
 }
 
+function renderGps(gps) {
+  const badge = document.getElementById("gps-badge");
+  const body = document.getElementById("gps-body");
+
+  if (!gps || !gps.enabled) {
+    badge.textContent = "aus";
+    body.replaceChildren(el("div", { class: "ptp-off" },
+      document.createTextNode("Kein GPS konfiguriert. Mit einem USB-Empfänger (z. B. VK-162) genügt:"),
+      el("code", { text: "--device /dev/ttyACM0\nGPS_ENABLE=true\nGPS_DEVICE=/dev/ttyACM0" })));
+    return;
+  }
+
+  if (!gps.running) {
+    badge.textContent = "keine Antwort";
+    body.replaceChildren(el("div", { class: "ptp-off" },
+      document.createTextNode(`gpsd antwortet nicht. Ist ${gps.device || "das Gerät"} in den Container durchgereicht?`),
+      el("code", { text: "docker run --device /dev/ttyACM0 …" })));
+    return;
+  }
+
+  badge.textContent = gps.mode_label || "aktiv";
+  const used = gps.satellites_used ?? 0;
+  const seen = gps.satellites_seen ?? 0;
+  const ratio = seen ? Math.round((used / seen) * 100) : 0;
+  const tone = used >= 4 ? "good" : used > 0 ? "warn" : "crit";
+  const satBar = el("div", { class: "reach" },
+    el("div", { class: "reach-track" }, el("div", { class: "reach-fill", "data-tone": tone, style: `width:${ratio}%` })),
+    el("span", { class: "reach-value", text: `${used}/${seen}` }));
+
+  const rows = [
+    ["Gerät", gps.device || "–"],
+    ["Fix", gps.mode_label || "–"],
+    ["HDOP", gps.hdop !== undefined ? gps.hdop.toFixed(2) : "–"],
+    ["Ø Signal", gps.snr_avg !== undefined ? `${gps.snr_avg} dB` : "–"],
+    ["PPS", gps.pps || (gps.pps_missing ? `${gps.pps_missing} fehlt` : "nicht konfiguriert")],
+    ["GPS-Zeit", gps.time || "–"],
+  ];
+  if (gps.lat !== undefined && gps.lon !== undefined) {
+    rows.push(["Position", `${gps.lat.toFixed(5)}, ${gps.lon.toFixed(5)}`]);
+  }
+  if (gps.gpsd_release) rows.push(["gpsd", gps.gpsd_release]);
+
+  const list = el("dl", {},
+    el("div", { class: "kv" }, el("dt", { text: "Satelliten" }), el("dd", {}, satBar)),
+    ...rows.map(([key, value]) =>
+      el("div", { class: "kv" }, el("dt", { text: key }), el("dd", { text: String(value) }))));
+  body.replaceChildren(list);
+}
+
 function renderPtp(ptp) {
   const badge = document.getElementById("ptp-badge");
   const body = document.getElementById("ptp-body");
@@ -400,6 +459,7 @@ async function refresh() {
     renderStats(status);
     renderSources(status.sources || []);
     renderClients(status.clients || []);
+    renderGps(status.gps);
     renderPtp(status.ptp);
     renderChart();
   } catch (error) {

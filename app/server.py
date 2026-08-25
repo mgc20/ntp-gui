@@ -21,6 +21,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import chrony
+import gps
 import ptp
 
 STATIC_DIR = Path(__file__).with_name("static")
@@ -80,6 +81,8 @@ def collector() -> None:
     while True:
         try:
             HISTORY.add(chrony.tracking(), ptp.status() if ptp.enabled() else {})
+            if gps.enabled():
+                gps.status()  # keep the gpsd cache warm for the dashboard
         except Exception:  # a sampling hiccup must never kill the thread
             pass
         time.sleep(HISTORY_INTERVAL)
@@ -125,6 +128,7 @@ def build_status() -> dict:
         "clients": clients,
         "client_count": len(clients),
         "ptp": ptp_state,
+        "gps": gps.status(),
         "chrony_running": bool(tracking),
     }
 
@@ -163,6 +167,14 @@ def build_metrics() -> str:
     _metric(lines, "ntpgui_ntp_packets_received_total", stats.get("ntp_packets_received"), "NTP packets served", kind="counter")
     _metric(lines, "ntpgui_ntp_packets_dropped_total", stats.get("ntp_packets_dropped"), "NTP packets dropped", kind="counter")
     _metric(lines, "ntpgui_clients", len(chrony.clients()), "Known NTP clients")
+
+    gps_state = gps.status()
+    if gps_state.get("enabled"):
+        _metric(lines, "ntpgui_gps_running", 1 if gps_state.get("running") else 0, "1 when gpsd answers")
+        _metric(lines, "ntpgui_gps_fix_mode", gps_state.get("mode"), "gpsd fix mode (0-3)")
+        _metric(lines, "ntpgui_gps_satellites_used", gps_state.get("satellites_used"), "Satellites used for the fix")
+        _metric(lines, "ntpgui_gps_satellites_seen", gps_state.get("satellites_seen"), "Satellites in view")
+        _metric(lines, "ntpgui_gps_hdop", gps_state.get("hdop"), "Horizontal dilution of precision")
 
     ptp_state = ptp.status()
     if ptp_state.get("enabled"):

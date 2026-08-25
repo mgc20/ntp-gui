@@ -72,7 +72,7 @@ _CLIENT_FIELDS = [
     ("cmd_last_rx", int),
 ]
 
-MODE_LABELS = {"^": "server", "=": "peer", "#": "local"}
+MODE_LABELS = {"^": "server", "=": "peer", "#": "refclock"}
 STATE_LABELS = {
     "*": "synced",
     "+": "combined",

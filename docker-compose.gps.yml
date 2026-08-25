@@ -1,0 +1,54 @@
+# Stratum-1-Variante mit USB-GPS (z. B. VK-162, u-blox 7, /dev/ttyACM0).
+#
+#   docker compose -f docker-compose.gps.yml up -d
+#
+# Vorher am Host prüfen, welches Gerät der Empfänger belegt:
+#   dmesg | grep -i -E "ttyACM|ttyUSB|u-blox"
+#   ls -l /dev/ttyACM0
+services:
+  ntp-gui:
+    build: .
+    image: ghcr.io/congp20/ntp-gui:latest
+    container_name: ntp-gui-gps
+    restart: unless-stopped
+
+    ports:
+      - "123:123/udp"
+      - "8080:8080/tcp"
+
+    cap_add:
+      - SYS_TIME
+
+    devices:
+      - /dev/ttyACM0:/dev/ttyACM0   # der GPS-Empfänger
+      # - /dev/pps0:/dev/pps0       # nur bei Empfängern mit echtem PPS-Signal
+
+    environment:
+      TZ: "Europe/Berlin"
+      WEB_TITLE: "Zeitserver (GPS)"
+
+      GPS_ENABLE: "true"
+      GPS_DEVICE: "/dev/ttyACM0"
+      # Laufzeitversatz des Empfängers ausgleichen (siehe README, Kalibrierung).
+      GPS_OFFSET: "0.0"
+      # Position im Dashboard anzeigen (Standard: aus)
+      GPS_SHOW_POSITION: "false"
+
+      # Mit echtem PPS-Signal zusätzlich aktivieren:
+      # GPS_PPS_DEVICE: "/dev/pps0"
+
+      # Zwei Internet-Quellen als Plausibilitätsprüfung und als Rückfallebene,
+      # falls der Empfänger den Fix verliert. chrony erkennt damit auch einen
+      # fehlerhaften GPS-Fix (Falseticker).
+      NTP_POOLS: ""
+      NTP_SERVERS: "ptbtime1.ptb.de,ptbtime2.ptb.de"
+      # Sollen sie ausschliesslich zur Kontrolle dienen, nie zur Synchronisation:
+      # NTP_SERVER_OPTIONS: "iburst noselect"
+
+      ALLOW_NETWORKS: "192.168.0.0/16,10.0.0.0/8,172.16.0.0/12"
+
+    volumes:
+      - chrony-data:/var/lib/chrony
+
+volumes:
+  chrony-data:
