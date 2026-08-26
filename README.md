@@ -387,3 +387,7 @@ CSV-Zeile, „nie gehört“ ist `4294967295` und `pmc` antwortet nur, wenn die 
 * Das Dashboard bringt kein TLS mit – für Zugriffe außerhalb des vertrauenswürdigen Netzes
   gehört ein Reverse Proxy davor.
 * PTP braucht das Host-Netzwerk; über eine Docker-Bridge funktioniert es nicht.
+
+## Lizenz
+
+[MIT](LICENSE)
