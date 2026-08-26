@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Parser-Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Unittests
+        run: python3 -m unittest discover -s tests -v
+      - name: Entrypoint-Syntax prüfen
+        run: bash -n docker/entrypoint.sh
+
+  build:
+    name: Image bauen
+    runs-on: ubuntu-latest
+    needs: test
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      # QEMU wird für den linux/arm64-Anteil der Release-Builds gebraucht.
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: In die GitHub Container Registry einloggen
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Metadaten
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+
+      # Ohne Tag wird das Image nur gebaut (Smoke-Test), nicht veröffentlicht.
+      - name: Bauen und ggf. veröffentlichen
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ startsWith(github.ref, 'refs/tags/v') && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
+          push: ${{ startsWith(github.ref, 'refs/tags/v') }}
+          load: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Integrationstest gegen das Image
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        run: |
+          set -euo pipefail
+          # chrony auf dem Runner erlaubt eine echte NTP-Abfrage gegen den Container.
+          sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends chrony || true
+          IMAGE=$(echo "${{ steps.meta.outputs.tags }}" | head -n1)
+          ./tests/container-test.sh "$IMAGE"

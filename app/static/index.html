@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="de" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NTP / PTP Time Server</title>
+<link rel="stylesheet" href="/static/app.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#128338;</text></svg>">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="12" cy="12" r="9.25" fill="none" stroke="currentColor" stroke-width="1.5"/>
+      <path d="M12 6.75V12l3.5 2.25" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+    <div>
+      <h1 id="title">NTP / PTP Time Server</h1>
+      <p class="subtitle"><span id="hostname">–</span> · <span id="clock">–</span></p>
+    </div>
+  </div>
+  <div class="topbar-right">
+    <span class="pill" id="sync-pill" data-state="unknown">
+      <span class="dot"></span><span id="sync-label">verbinde …</span>
+    </span>
+    <button type="button" id="theme-toggle" class="icon-button" title="Hell / Dunkel umschalten" aria-label="Hell / Dunkel umschalten">
+      <svg viewBox="0 0 24 24" aria-hidden="true" width="18" height="18">
+        <path d="M20 14.2A8.2 8.2 0 0 1 9.8 4a8.2 8.2 0 1 0 10.2 10.2Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+      </svg>
+    </button>
+  </div>
+</header>
+
+<main>
+  <section class="stat-row" id="stats"></section>
+
+  <section class="card chart-card">
+    <div class="card-head">
+      <div>
+        <h2>Zeitabweichung des Systems zur Referenz</h2>
+        <p class="card-sub" id="chart-sub">Negativ bedeutet: die Systemuhr geht der Referenz voraus</p>
+      </div>
+      <div class="range-group" role="group" aria-label="Zeitraum">
+        <button type="button" data-range="900" class="range">15 m</button>
+        <button type="button" data-range="3600" class="range is-active">1 h</button>
+        <button type="button" data-range="0" class="range">alles</button>
+      </div>
+    </div>
+    <figure class="chart" id="chart-wrap">
+      <svg id="chart" viewBox="0 0 900 260" role="img" aria-label="Verlauf der Zeitabweichung"></svg>
+      <div class="tooltip" id="chart-tooltip" hidden></div>
+    </figure>
+  </section>
+
+  <section class="grid-2">
+    <div class="card">
+      <div class="card-head"><h2>Zeitquellen</h2><span class="badge" id="source-count">0</span></div>
+      <div class="table-scroll">
+        <table id="sources">
+          <thead><tr>
+            <th>Quelle</th><th>Typ</th><th class="num">Stratum</th><th class="num">Poll-Intervall</th>
+            <th>Erreichbarkeit</th><th class="num">Offset</th><th class="num">Jitter</th><th>Status</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="column">
+      <div class="card" id="gps-card">
+        <div class="card-head"><h2>GPS / GNSS</h2><span class="badge" id="gps-badge">aus</span></div>
+        <div id="gps-body" class="ptp-body"></div>
+      </div>
+
+      <div class="card" id="ptp-card">
+        <div class="card-head"><h2>PTP (IEEE 1588)</h2><span class="badge" id="ptp-badge">aus</span></div>
+        <div id="ptp-body" class="ptp-body"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <div><h2>NTP-Clients</h2><p class="card-sub">Geräte, die diesen Server abfragen</p></div>
+      <div class="head-tools">
+        <input type="search" id="client-filter" placeholder="Filtern …" aria-label="Clients filtern">
+        <span class="badge" id="client-count">0</span>
+      </div>
+    </div>
+    <div class="table-scroll">
+      <table id="clients">
+        <thead><tr>
+          <th>Adresse</th><th class="num">Pakete</th><th class="num">Verworfen</th>
+          <th class="num">Intervall</th><th class="num">Letzte Anfrage</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <p class="empty-note" id="clients-empty" hidden>Noch keine Clients erfasst. Verteile die Server-Adresse per DHCP Option 42.</p>
+  </section>
+
+  <section class="card">
+    <details id="config-details">
+      <summary><h2>Aktive chrony.conf</h2></summary>
+      <pre id="config"></pre>
+    </details>
+  </section>
+</main>
+
+<footer class="footer">
+  <span id="footer-note">Aktualisierung alle 5 s</span>
+  <span class="footer-links">
+    <a href="/metrics">/metrics</a> · <a href="/api/status">/api/status</a> · <a href="/healthz">/healthz</a>
+  </span>
+</footer>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
