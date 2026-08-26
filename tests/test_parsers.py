@@ -237,6 +237,57 @@ class TestRefclockSource(unittest.TestCase):
         self.assertAlmostEqual(row["original_offset"], -0.001499888)
 
 
+class TestGpsdPortParsing(unittest.TestCase):
+    """A malformed GPSD_PORT must degrade to 'gpsd unreachable', never to HTTP 500."""
+
+    def tearDown(self):
+        os.environ.pop("GPSD_PORT", None)
+        os.environ.pop("GPSD_HOST", None)
+
+    def test_garbage_port_returns_empty(self):
+        os.environ["GPSD_PORT"] = "localhost:2947"
+        self.assertEqual(gps.poll_gpsd(timeout=0.2), {})
+
+    def test_empty_host_falls_back(self):
+        os.environ["GPS_ENABLE"] = "true"
+        os.environ["GPSD_HOST"] = "   "
+        os.environ["GPSD_PORT"] = "1"  # geschlossener Port -> leeres Ergebnis
+        try:
+            self.assertEqual(gps.poll_gpsd(timeout=0.2), {})
+        finally:
+            os.environ.pop("GPS_ENABLE", None)
+
+
+class TestLogTail(unittest.TestCase):
+    """log_tail must read only the end of an arbitrarily large log."""
+
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.NamedTemporaryFile("w", delete=False, suffix=".log")
+        self.addCleanup(os.unlink, self.tmp.name)
+        self._old = ptp.PTP4L_LOG
+        ptp.PTP4L_LOG = self.tmp.name
+        self.addCleanup(setattr, ptp, "PTP4L_LOG", self._old)
+
+    def test_small_file(self):
+        self.tmp.write("zeile1\nzeile2\nzeile3\n"); self.tmp.flush()
+        self.assertEqual(ptp.log_tail(lines=2), ["zeile2", "zeile3"])
+
+    def test_reads_only_tail_of_large_file(self):
+        for i in range(50000):
+            self.tmp.write(f"ptp4l[{i}]: master offset {i} s2 freq +1\n")
+        self.tmp.flush()
+        tail = ptp.log_tail(lines=5, max_bytes=4096)
+        self.assertEqual(len(tail), 5)
+        self.assertIn("49999", tail[-1])
+        # Die angebrochene erste Zeile des Fensters darf nicht auftauchen.
+        self.assertTrue(all(line.startswith("ptp4l[") for line in tail))
+
+    def test_missing_file(self):
+        ptp.PTP4L_LOG = self.tmp.name + ".gibtsnicht"
+        self.assertEqual(ptp.log_tail(), [])
+
+
 class TestEnvNumber(unittest.TestCase):
     """A typo in a compose file must never crash the container."""
 

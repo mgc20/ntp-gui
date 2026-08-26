@@ -57,7 +57,7 @@ ENV WEB_PORT="8080" \
 WORKDIR /app
 EXPOSE 123/udp 319/udp 320/udp 8080/tcp
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=5s --start-period=45s --retries=3 \
     CMD python3 -c "import os,urllib.request;urllib.request.urlopen('http://127.0.0.1:'+os.environ.get('WEB_PORT','8080')+'/healthz',timeout=4)" || exit 1
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

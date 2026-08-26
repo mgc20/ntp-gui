@@ -46,11 +46,13 @@ docker run -d --name ntp-gui \
   ghcr.io/congp20/ntp-gui:latest
 ```
 
-Prüfen, ob der Server antwortet:
+Prüfen, ob der Server antwortet (von einem Client aus – `chronyc -h` funktioniert
+hier nicht, weil der Kommando-Port des Containers bewusst deaktiviert ist):
 
 ```bash
-chronyc -h <host> tracking      # oder
-ntpdate -q <host>
+ntpdate -q <host>                                      # oder
+chronyd -Q -t 5 "server <host> iburst maxsamples 1"    # oder im Container:
+docker exec ntp-gui chronyc tracking
 ```
 
 ### Warum `--cap-add SYS_TIME`?
@@ -164,8 +166,8 @@ Ein USB-Empfänger liefert die Zeit systematisch zu spät. Diesen konstanten Ver
 lassen, dann den mittleren Offset des GPS-Refclocks ablesen –
 
 ```bash
-docker exec ntp-gui chronyc sourcestats
-docker exec ntp-gui chronyc sources     # Spalte "Last sample" der Zeile "#? GPS"
+docker exec ntp-gui-gps chronyc sourcestats
+docker exec ntp-gui-gps chronyc sources   # Spalte "Last sample" der Zeile "#? GPS"
 ```
 
 – und den abgelesenen Wert als `GPS_OFFSET` in Sekunden eintragen (positiver Wert
@@ -300,6 +302,11 @@ environment:
   PHC2SYS_ENABLE: "true"
 ```
 
+In dieser Kombination stellt **phc2sys** die Systemuhr, und chronyd läuft automatisch
+mit `-x` – zwei Regler auf derselben Uhr würden sich sonst gegenseitig die
+Frequenzkorrekturen überschreiben. chronyd bleibt dabei voller NTP-Server; der
+PHC-Refclock dient ihm als Referenz für Stratum und Statistik.
+
 ### Web
 
 | Variable | Default | Bedeutung |
@@ -356,10 +363,12 @@ gemountete Konfiguration, Verhalten ohne GPS-/PTP-Hardware, eine echte NTP-Abfra
 das Netz und die Exit-Codes beim Stoppen. Dieselbe Datei läuft in der CI gegen das
 gebaute Image.
 
-Lokal ohne Container starten (setzt installiertes `chrony` voraus):
+Lokal ohne Container starten (setzt installiertes `chrony` voraus; als root, und der
+System-chronyd sollte gestoppt sein). `CHRONY_CONF` auf einen Scratch-Pfad zeigen
+lassen – der Entrypoint überschreibt die Datei, die dort liegt:
 
 ```bash
-APP_DIR=$PWD/app CHRONY_CONF=/etc/chrony/chrony.conf WEB_PORT=8080 \
+APP_DIR=$PWD/app CHRONY_CONF=/tmp/ntp-gui-chrony.conf NTP_PORT=10123 WEB_PORT=8080 \
   DISABLE_CLOCK_CONTROL=true bash docker/entrypoint.sh
 ```
 

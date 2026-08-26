@@ -96,12 +96,25 @@ def _query(dataset: str, timeout: float = 3.0) -> dict[str, str]:
     return parse_pmc_output(proc.stdout)
 
 
-def log_tail(lines: int = 40) -> list[str]:
+def log_tail(lines: int = 40, max_bytes: int = 65536) -> list[str]:
+    """Last lines of the ptp4l log, reading only the file's tail.
+
+    The log grows for the container's whole lifetime (the supervisor caps it,
+    but between rotations it can be large), so never read it in full.
+    """
     try:
-        with open(PTP4L_LOG, "r", errors="replace") as handle:
-            return handle.read().splitlines()[-lines:]
+        with open(PTP4L_LOG, "rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            handle.seek(max(0, size - max_bytes))
+            chunk = handle.read().decode("utf-8", errors="replace")
     except OSError:
         return []
+    tail = chunk.splitlines()
+    # Der erste Eintrag kann mitten in einer Zeile beginnen - weglassen.
+    if size > max_bytes and tail:
+        tail = tail[1:]
+    return tail[-lines:]
 
 
 _CACHE: dict[str, Any] = {}

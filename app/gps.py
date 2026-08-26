@@ -39,8 +39,11 @@ def _sky_is_detailed(report: dict[str, Any] | None) -> bool:
 
 def poll_gpsd(timeout: float = 4.0) -> dict[str, Any]:
     """Collect one VERSION/TPV/SKY set from gpsd. Returns {} when unreachable."""
-    host = os.environ.get("GPSD_HOST", "127.0.0.1")
-    port = int(os.environ.get("GPSD_PORT", "2947"))
+    host = os.environ.get("GPSD_HOST", "127.0.0.1").strip() or "127.0.0.1"
+    try:
+        port = int(os.environ.get("GPSD_PORT", "2947"))
+    except ValueError:
+        port = 2947
     reports: dict[str, Any] = {}
     deadline = time.monotonic() + timeout
     try:

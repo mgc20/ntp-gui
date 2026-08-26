@@ -16,7 +16,7 @@ PASS=0
 FAIL=0
 
 cleanup() {
-  docker rm -f "${PREFIX}-a" "${PREFIX}-b" "${PREFIX}-c" >/dev/null 2>&1
+  docker rm -f "${PREFIX}-a" "${PREFIX}-b" "${PREFIX}-c" "${PREFIX}-d" >/dev/null 2>&1
   rm -rf "$CFG_DIR"
 }
 trap cleanup EXIT
@@ -114,7 +114,22 @@ REFCLOCKS=$(docker exec "${PREFIX}-c" sh -c 'grep -c refclock /etc/chrony/chrony
 check "Keine tote Refclock-Zeile" 0 "$REFCLOCKS"
 
 echo
-echo "5) Sauberes Stoppen"
+echo "5) Dienst stirbt beim Start (wait -n hätte das übersehen)"
+docker run -d --name "${PREFIX}-d" \
+  -e EXTRA_CHRONY_CONF="diese zeile versteht chronyd nicht" \
+  -e NTP_PORT=10126 -e NTP_POOLS="" "$IMAGE" >/dev/null
+DEAD=0
+for _ in $(seq 1 30); do
+  if [[ "$(docker inspect -f '{{.State.Status}}' "${PREFIX}-d")" == "exited" ]]; then DEAD=1; break; fi
+  sleep 1
+done
+if [[ "$DEAD" == 1 ]]; then ok "Container beendet sich, statt kaputt weiterzulaufen"; else bad "Container läuft trotz totem chronyd weiter"; fi
+check "Exit-Code signalisiert Fehler" 1 "$(docker inspect -f '{{.State.ExitCode}}' "${PREFIX}-d")"
+contains "Watchdog meldet den toten Dienst" "$(docker logs "${PREFIX}-d" 2>&1)" "unerwartet beendet"
+docker rm -f "${PREFIX}-d" >/dev/null 2>&1
+
+echo
+echo "6) Sauberes Stoppen"
 docker stop -t 15 "${PREFIX}-c" >/dev/null
 check "Exit-Code bei SIGTERM" 0 "$(docker inspect -f '{{.State.ExitCode}}' "${PREFIX}-c")"
 docker exec "${PREFIX}-a" pkill -x chronyd >/dev/null 2>&1

@@ -71,7 +71,9 @@ function svg(tag, attrs = {}) {
 /* ---------------- stat tiles ---------------- */
 
 function offsetTone(offset) {
-  const abs = Math.abs(offset ?? 0);
+  // Ohne Messwert (chronyd down) darf die Kachel nicht "gut" signalisieren.
+  if (offset === null || offset === undefined || Number.isNaN(offset)) return "muted";
+  const abs = Math.abs(offset);
   if (abs < 0.01) return "good";
   if (abs < 0.1) return "warn";
   return "crit";
@@ -185,6 +187,19 @@ function visibleSamples() {
   return samples.filter((s) => s.t >= cutoff);
 }
 
+function formatAxisValue(value, step) {
+  // Die Nachkommastellen folgen der Schrittweite, damit benachbarte
+  // Gitterlinien nie dieselbe Beschriftung tragen (fmt() rundet µs auf 0).
+  const abs = Math.max(Math.abs(value), step);
+  let unit = "s", scale = 1;
+  if (abs < 1e-6) { unit = "ns"; scale = 1e9; }
+  else if (abs < 1e-3) { unit = "µs"; scale = 1e6; }
+  else if (abs < 1) { unit = "ms"; scale = 1e3; }
+  const scaledStep = step * scale;
+  const decimals = scaledStep >= 1 ? 0 : Math.min(3, Math.ceil(-Math.log10(scaledStep)));
+  return `${(value * scale).toFixed(decimals)} ${unit}`;
+}
+
 function niceStep(span) {
   if (span <= 0) return 1;
   const raw = span / 4;
@@ -236,7 +251,7 @@ function renderChart() {
     const yy = y(v);
     node.append(svg("line", { class: "chart-grid", x1: PAD.left, x2: width - PAD.right, y1: yy, y2: yy }));
     const label = svg("text", { class: "chart-label", x: PAD.left - 10, y: yy + 3.5, "text-anchor": "end" });
-    label.textContent = fmt(value, 2);
+    label.textContent = formatAxisValue(value, step);
     node.append(label);
   }
 

@@ -189,11 +189,21 @@ ${EXTRA_PTP4L_CONF:-}
 EOF
 }
 
+# PIDS-Eintraege sind "pid=comm": der Watchdog prueft beides, damit ein
+# recycelter PID (der Zaehler wrappt bei langen Laufzeiten) nicht als
+# lebender Dienst durchgeht.
 start() {
-  local name="$1"; shift
+  local name="$1" comm; shift
+  comm=$(basename "$1")
   log "$name" "starte: $*"
   "$@" &
-  PIDS+=("$!")
+  PIDS+=("$!=${comm}")
+}
+
+service_alive() {
+  local pid="${1%%=*}" comm="${1#*=}" actual
+  actual=$(cat "/proc/${pid}/comm" 2>/dev/null) || return 1
+  [[ "$actual" == "$comm" ]]
 }
 
 shutdown() {
@@ -201,8 +211,8 @@ shutdown() {
   # auch mit restart=on-failure einen Neustart ausloesen.
   local code="${1:-0}"
   log main "beende Dienste …"
-  for pid in "${PIDS[@]:-}"; do
-    [[ -n "$pid" ]] && kill "$pid" 2>/dev/null || true
+  for entry in "${PIDS[@]:-}"; do
+    [[ -n "$entry" ]] && kill "${entry%%=*}" 2>/dev/null || true
   done
   wait 2>/dev/null || true
   exit "$code"
@@ -210,6 +220,11 @@ shutdown() {
 trap 'shutdown 0' SIGTERM SIGINT
 
 mkdir -p /var/run/chrony /var/lib/chrony /var/log/chrony /etc/linuxptp
+# Nach einem harten Stopp (docker kill, Stromausfall) bleibt das Pidfile im
+# Container-Dateisystem liegen; zeigt der alte PID auf einen neuen Prozess,
+# verweigert chronyd den Start. Beim Containerstart kann es keinen legitimen
+# fremden chronyd geben - weg damit.
+rm -f /run/chrony/chronyd.pid /var/run/chrony/chronyd.pid
 
 # chronyd drops privileges to its own user; if the runtime directories belong to
 # root it silently disables the command socket and the dashboard goes blind.
@@ -240,6 +255,12 @@ elif ! has_sys_time; then
   CHRONYD_ARGS+=(-x)
   log chrony "WARNUNG: CAP_SYS_TIME fehlt – chronyd läuft mit -x und stellt die Uhr nicht."
   log chrony "         Für einen echten Zeitserver den Container mit 'cap_add: [SYS_TIME]' starten."
+elif is_true "${PTP_ENABLE:-false}" && [[ -n "${PTP_INTERFACE:-}" ]] && is_true "${PHC2SYS_ENABLE:-false}"; then
+  # Zwei Regler auf derselben Uhr (phc2sys -r und chronyd) wuerden sich
+  # gegenseitig die Frequenzkorrekturen ueberschreiben. phc2sys uebernimmt
+  # die Uhr, chronyd liefert nur noch aus.
+  CHRONYD_ARGS+=(-x)
+  log chrony "phc2sys steuert die Systemuhr – chronyd läuft mit -x und liefert nur aus."
 fi
 start chrony /usr/sbin/chronyd "${CHRONYD_ARGS[@]}"
 
@@ -265,7 +286,7 @@ if is_true "${PTP_ENABLE:-false}"; then
     : >"$PTP_LOG_FILE"
     log ptp "ptp4l auf ${PTP_INTERFACE} (Domain ${PTP_DOMAIN:-0}, Modus ${PTP_MODE:-auto})"
     /usr/sbin/ptp4l -f "$PTP4L_CONF" -i "${PTP_INTERFACE}" -m >>"$PTP_LOG_FILE" 2>&1 &
-    PIDS+=("$!")
+    PIDS+=("$!=ptp4l")
 
     if is_true "${PHC2SYS_ENABLE:-false}"; then
       sleep 2
@@ -277,7 +298,24 @@ fi
 export PTP_LOG_FILE CHRONY_CONF
 start web python3 "${APP_DIR}/server.py"
 
-# Exit as soon as any supervised process dies so the container restarts cleanly.
-wait -n
-log main "ein Dienst wurde unerwartet beendet – Container wird gestoppt"
-shutdown 1
+# Watchdog statt 'wait -n': bash 5.2 uebersieht mit 'wait -n' Kinder, die vor
+# dem Aufruf gestorben sind, und set -e wuerde bei nichtnull-Status den
+# Aufraeumpfad ueberspringen. Der Watchdog erkennt jeden toten Dienst, auch
+# einen, der schon waehrend des Starts gestorben ist.
+while true; do
+  for entry in "${PIDS[@]}"; do
+    if ! service_alive "$entry"; then
+      log main "Dienst '${entry#*=}' (PID ${entry%%=*}) wurde unerwartet beendet – Container wird gestoppt"
+      shutdown 1
+    fi
+  done
+  # ptp4l schreibt sein Log unbegrenzt; ab 5 MB auf die letzten 256 KB kuerzen.
+  # In-place (cat >), damit der O_APPEND-Deskriptor von ptp4l gueltig bleibt.
+  if [[ -f "$PTP_LOG_FILE" ]] && (( $(stat -c %s "$PTP_LOG_FILE" 2>/dev/null || echo 0) > 5242880 )); then
+    tail -c 262144 "$PTP_LOG_FILE" > "${PTP_LOG_FILE}.tmp" 2>/dev/null \
+      && cat "${PTP_LOG_FILE}.tmp" > "$PTP_LOG_FILE" \
+      && rm -f "${PTP_LOG_FILE}.tmp" \
+      && log ptp "Log auf die letzten 256 KB gekuerzt" || true
+  fi
+  sleep 5
+done
