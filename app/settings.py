@@ -82,10 +82,12 @@ REFCLOCK_OPTIONS = {
     "stratum": 1, "width": 1, "filter": 1, "maxlockage": 1,
 }
 # phc2sys-Kommandozeile: Schalter -> Anzahl Argumente.
+# "-rr" ist die Kurzform von "-r -r" (Systemuhr darf auch QUELLE sein, siehe
+# phc2sys(8)); als eigenes Wort erlaubt, weil man es so üblicherweise schreibt.
 PHC2SYS_FLAGS = {
-    "-a": 0, "-r": 0, "-m": 0, "-q": 0, "-z": 1, "-s": 1, "-c": 1, "-d": 1,
+    "-a": 0, "-r": 0, "-rr": 0, "-m": 0, "-q": 0, "-z": 1, "-s": 1, "-c": 1, "-d": 1,
     "-O": 1, "-n": 1, "-N": 1, "-R": 1, "-L": 1, "-u": 1, "-w": 0, "-t": 1,
-    "-E": 1, "-P": 1, "-I": 1, "-S": 1, "-l": 1,
+    "-E": 1, "-P": 1, "-I": 1, "-S": 1, "-F": 1, "-M": 1, "-C": 1, "-l": 1,
 }
 
 
@@ -166,6 +168,44 @@ def _as_host(value: Any) -> str:
     return text
 
 
+# Erlaubte Orte für Zertifikat/Schlüssel des NTS-Servers. /config ist das
+# Konfigurations-Volume, /certs der empfohlene Mount für Zertifikate eines
+# Reverse Proxys (z. B. NPM: /data/letsencrypt bzw. /etc/letsencrypt, Zoraxy:
+# conf/certs), /etc/letsencrypt für den direkten Certbot-Mount. Die Dateien
+# werden für chronyd kopiert (siehe confgen.prepare_nts_files) – deshalb darf
+# hier nicht jeder Pfad stehen, sonst ließe sich über das Dashboard z. B.
+# /etc/shadow in ein für _chrony lesbares Verzeichnis kopieren.
+NTS_CERT_ROOTS = ("/config/", "/certs/", "/etc/letsencrypt/")
+_CERT_PATH_RE = re.compile(r"^/[A-Za-z0-9._@+,~/-]{1,250}$")
+
+
+def cert_path_allowed(path: str) -> bool:
+    """Absolut, unter NTS_CERT_ROOTS, ohne '..', ohne Leer-/Steuerzeichen."""
+    if not isinstance(path, str) or not _CERT_PATH_RE.match(path):
+        return False
+    parts = path.split("/")
+    if any(part in {"..", "."} for part in parts) or "//" in path or path.endswith("/"):
+        return False
+    return any(path.startswith(root) and len(path) > len(root) for root in NTS_CERT_ROOTS)
+
+
+def _as_cert_path(value: Any) -> str:
+    text = str(value if value is not None else "").strip()
+    if not cert_path_allowed(text):
+        raise ValidationError(
+            "Absoluter Pfad unter " + ", ".join(r.rstrip("/") for r in NTS_CERT_ROOTS)
+            + " erwartet, ohne Leerzeichen und ohne „..“, z. B. /certs/live/npm-1/fullchain.pem")
+    return text
+
+
+def _as_public_name(value: Any) -> str:
+    """Öffentlicher Name des NTP-Servers für ntsntpserver; leer = keiner."""
+    text = str(value if value is not None else "").strip().rstrip(".").lower()
+    if not text:
+        return ""
+    return _as_host(text)
+
+
 def _as_network_list(value: Any) -> list[str]:
     items = value if isinstance(value, list) else re.split(r"[,\s]+", str(value or ""))
     networks = []
@@ -209,6 +249,16 @@ def _as_source_options(value: Any) -> str:
 
 def _as_refclock_options(value: Any) -> str:
     return _check_options(value, REFCLOCK_OPTIONS, "Refclock")
+
+
+def _as_pps_options(value: Any) -> str:
+    """Wie refclock-Optionen, aber ohne die Werte, die ntp-gui selbst setzt."""
+    text = _as_refclock_options(value)
+    tokens = text.split()
+    for word in ("refid", "lock", "poll"):
+        if word in tokens:
+            raise ValidationError(f"„{word}“ setzt ntp-gui selbst – bitte weglassen")
+    return text
 
 
 def _as_phc2sys_options(value: Any) -> str:
@@ -363,6 +413,14 @@ SCHEMA: list[dict] = [
            _as_number(int, 1, 15), env="LOCAL_STRATUM", advanced=True,
            help="Wie „weit weg“ von einer echten Referenz sich der Server im Inselbetrieb "
                 "ausgibt. 10 ist üblich und sorgt dafür, dass echte Server Vorrang behalten."),
+    _field("local_orphan", "lan", "Orphan-Modus (zwei Server im Verbund)", "bool", False, _as_bool,
+           env="LOCAL_ORPHAN", advanced=True,
+           help="Für zwei (oder mehr) ntp-gui-Server, die sich gegenseitig als Quelle eingetragen "
+                "haben (Typ „peer“ oder „server“). Fällt das Internet aus, einigen sie sich so auf "
+                "EINE gemeinsame Inselzeit, statt dass jeder seine eigene ausliefert: Es übernimmt "
+                "der Server mit der kleinsten Referenz-ID, der andere folgt ihm. Hängt „orphan“ an "
+                "die Zeile „local stratum …“ an und wirkt deshalb nur zusammen mit „Auch ohne "
+                "Quelle Zeit ausliefern“. Beide Server brauchen dasselbe Stratum im Inselbetrieb."),
     _field("ntp_ratelimit", "lan", "Anfragen begrenzen", "bool", False, _as_bool,
            env="NTP_RATELIMIT", advanced=True,
            help="Begrenzt, wie oft ein einzelner Client fragen darf. Schützt vor fehlerhaften "
@@ -394,12 +452,34 @@ SCHEMA: list[dict] = [
            help="Bietet NTS auch den eigenen Clients an. Braucht ein TLS-Zertifikat, dem die "
                 "Clients vertrauen, und Clients, die NTS sprechen (chrony, NTPsec – Windows "
                 "und macOS können es nicht). Port 4460/tcp muss erreichbar sein."),
-    _field("nts_server_cert", "nts", "Zertifikat (PEM)", "text", "/config/nts.crt", _as_text,
+    _field("nts_server_cert", "nts", "Zertifikat (PEM)", "text", "/config/nts.crt", _as_cert_path,
            env="NTS_SERVER_CERT", advanced=True,
-           help="Pfad zum Zertifikat im Container, z. B. aus dem gemounteten /config."),
-    _field("nts_server_key", "nts", "Privater Schlüssel (PEM)", "text", "/config/nts.key", _as_text,
+           help="Pfad zum Zertifikat im Container – unter /config, /certs oder /etc/letsencrypt. "
+                "Am besten die volle Kette (fullchain), damit Clients auch das Zwischenzertifikat "
+                "bekommen. Zertifikate eines Reverse Proxys lassen sich direkt nutzen: den "
+                "Zertifikatsordner von Nginx Proxy Manager (z. B. …/letsencrypt/live/npm-1/"
+                "fullchain.pem) oder Zoraxy (conf/certs/<domain>.pem) schreibgeschützt nach "
+                "/certs mounten. Ändert sich die Datei (Erneuerung), startet chronyd automatisch "
+                "neu, weil chrony Zertifikate nur beim Start liest."),
+    _field("nts_server_key", "nts", "Privater Schlüssel (PEM)", "text", "/config/nts.key", _as_cert_path,
            env="NTS_SERVER_KEY", advanced=True,
-           help="Pfad zum zugehörigen privaten Schlüssel."),
+           help="Pfad zum zugehörigen privaten Schlüssel, z. B. …/live/npm-1/privkey.pem (NPM) "
+                "oder conf/certs/<domain>.key (Zoraxy). ntp-gui kopiert Zertifikat und Schlüssel "
+                "beim Start in ein Verzeichnis, das nur chronyd lesen darf – die Originale dürfen "
+                "also root gehören."),
+    _field("nts_server_name", "nts", "Öffentlicher Name des Servers", "text", "", _as_public_name,
+           env="NTS_SERVER_NAME", advanced=True, placeholder="kein eigener Name",
+           help="Der Name, unter dem Clients diesen Server erreichen, z. B. time.example.com – "
+                "er muss im Zertifikat stehen. Gesetzt teilt chrony ihn den Clients nach dem "
+                "Schlüsselaustausch mit (ntsntpserver), und sie schicken ihre NTP-Pakete an "
+                "diesen Namen. Wichtig hinter einem Reverse Proxy: Ohne Namen gehen die "
+                "NTP-Pakete an die Adresse, mit der der Schlüsselaustausch lief – also an den "
+                "Proxy, der UDP 123 meist gar nicht weiterreicht."),
+    _field("nts_server_port", "nts", "NTS-KE-Port (TCP)", "int", 4460, _as_number(int, 1, 65535),
+           env="NTS_SERVER_PORT", advanced=True,
+           help="Auf diesem TCP-Port nimmt chrony den TLS-Schlüsselaustausch (NTS-KE) an. "
+                "Standard ist 4460 – Clients erwarten ihn dort. Nur ändern, wenn ein Reverse "
+                "Proxy außen 4460 annimmt und intern an einen anderen Port weiterreicht."),
 
     # --- GPS ---------------------------------------------------------------
     _field("gps_enable", "gps", "GPS verwenden", "bool", False, _as_bool, env="GPS_ENABLE",
@@ -430,6 +510,15 @@ SCHEMA: list[dict] = [
            env="GPS_PPS_DEVICE", placeholder="kein PPS",
            help="Ein echter Sekundenimpuls (z. B. /dev/pps0 über GPIO am Raspberry Pi). "
                 "Macht die Zeit tausendfach genauer. Der VK-162 hat keinen PPS-Ausgang."),
+    _field("gps_pps_poll", "gps", "PPS-Abfrageintervall (2^n s)", "int", 3,
+           _as_number(int, -4, 6), env="GPS_PPS_POLL", advanced=True,
+           help="Wie oft chrony die gesammelten PPS-Pulse auswertet: 3 bedeutet alle 8 Sekunden "
+                "(aus 8 Pulsen). Kleiner reagiert schneller, größer glättet stärker."),
+    _field("gps_pps_options", "gps", "Weitere PPS-Optionen", "text", "", _as_pps_options,
+           env="GPS_PPS_OPTIONS", advanced=True,
+           help="Zusätzliche chrony-Optionen für die PPS-Zeile, z. B. „prefer“, „trust“ oder "
+                "„offset 0.0000025“ (Laufzeit des Antennenkabels/Pegelwandlers). Gilt für ein "
+                "/dev/pps-Gerät und für PPS über gpsd. Erlaubt sind nur bekannte refclock-Optionen."),
     _field("gps_pps_shm", "gps", "PPS über gpsd", "bool", False, _as_bool, env="GPS_PPS_SHM",
            advanced=True,
            help="Nutzt den PPS, den gpsd selbst erkennt (z. B. über die DCD-Leitung eines "
@@ -470,8 +559,23 @@ SCHEMA: list[dict] = [
            options=[("auto", "automatisch – der beste Takt im Netz wird Grandmaster"),
                     ("master", "Grandmaster – dieser Server gibt den Takt vor"),
                     ("slave", "Slave – übernimmt die Zeit eines anderen Grandmasters")],
-           help="Mit GPS ist „Grandmaster“ richtig: Dieser Server verteilt dann GPS-Zeit per "
-                "PTP. „Slave“ passt, wenn es im Netz schon einen besseren Grandmaster gibt."),
+           help="Mit GPS ist „Grandmaster“ richtig: chrony stellt die Systemuhr nach GPS, "
+                "phc2sys überträgt sie auf die PTP-Uhr der Netzwerkkarte und ptp4l verteilt sie. "
+                "„Slave“ passt, wenn es im Netz schon einen besseren Grandmaster gibt – dann "
+                "stellt phc2sys umgekehrt die Systemuhr nach PTP. „Automatisch“ verhält sich "
+                "beim Uhrenstellen wie „Slave“; wer GPS-Zeit per PTP verteilen will, wählt "
+                "deshalb ausdrücklich „Grandmaster“."),
+    _field("ptp_profile", "ptp", "Profil", "select", "default",
+           _as_choice("default", "aes67", "gptp"), env="PTP_PROFILE",
+           options=[("default", "Standard (IEEE 1588 Default-Profil)"),
+                    ("aes67", "AES67 / Ravenna (Audio über IP, Media-Profil)"),
+                    ("gptp", "gPTP / IEEE 802.1AS (AVB/TSN, Automotive)")],
+           help="Ein Profil legt passende Grundwerte fest, damit dieser Server mit bestimmten "
+                "Geräten zusammenspielt. Felder, die du selbst änderst, haben Vorrang. AES67: "
+                "UDPv4, End-to-End, 8 Sync/s, Announce alle 2 s und DSCP 46 (EF) für die "
+                "Pakete. gPTP: Ethernet direkt (L2), Peer-to-Peer, transportSpecific 1, "
+                "Priority 248 und die übrigen Werte aus linuxptp configs/gPTP.cfg – alle "
+                "Switches im Weg müssen 802.1AS beherrschen."),
     _field("ptp_domain", "ptp", "Domain", "int", 0, _as_number(int, 0, 255), env="PTP_DOMAIN",
            help="Getrennte PTP-Netze im selben LAN. Alle Teilnehmer brauchen dieselbe Domain; "
                 "0 ist der Standard."),
@@ -500,22 +604,46 @@ SCHEMA: list[dict] = [
            help="Gleichstandsentscheidung nach Priority 1."),
     _field("ptp_clock_class", "ptp", "Clock Class", "int", 248, _as_number(int, 0, 255),
            env="PTP_CLOCK_CLASS", advanced=True,
-           help="Wie gut der eigene Takt ist. 248 = „unbekannt/frei laufend“, 6 = „an GPS "
-                "gekoppelt“. Mit stabilem GPS darf man 6 setzen."),
+           help="Wie gut der eigene Takt ist (IEEE 1588): 6 = an eine primäre Referenz wie GPS "
+                "gekoppelt, 7 = gerade Holdover (Referenz verloren, läuft noch genau weiter), 248 = "
+                "Standard/unbekannt. Dieser Wert gilt beim Start von ptp4l. Als Grandmaster führt "
+                "ntp-gui die Angabe danach selbst nach dem Zustand von chrony nach: 6 erst, wenn "
+                "chrony stabil an GPS mit PPS hängt, 7 für eine Weile nach dem Verlust, sonst 248."),
     _field("ptp_log_sync_interval", "ptp", "Sync-Intervall (2^n s)", "int", -3,
            _as_number(int, -7, 4), env="PTP_LOG_SYNC_INTERVAL", advanced=True,
            help="-3 bedeutet 8 Sync-Nachrichten pro Sekunde."),
+    _field("ptp_log_announce_interval", "ptp", "Announce-Intervall (2^n s)", "int", 1,
+           _as_number(int, -3, 4), env="PTP_LOG_ANNOUNCE_INTERVAL", advanced=True,
+           help="Wie oft der Grandmaster sich ankündigt: 1 bedeutet alle 2 Sekunden. Alle "
+                "Teilnehmer sollten denselben Wert nutzen, sonst halten Slaves den Master "
+                "fälschlich für weg."),
+    _field("ptp_announce_receipt_timeout", "ptp", "Announce-Timeout (Anzahl)", "int", 3,
+           _as_number(int, 2, 10), env="PTP_ANNOUNCE_RECEIPT_TIMEOUT", advanced=True,
+           help="Nach so vielen verpassten Announce-Nachrichten gilt der Master als ausgefallen "
+                "und die Auswahl beginnt neu."),
+    _field("ptp_log_min_delay_req_interval", "ptp", "Delay-Request-Intervall (2^n s)", "int", -3,
+           _as_number(int, -7, 6), env="PTP_LOG_MIN_DELAY_REQ_INTERVAL", advanced=True,
+           help="Wie oft Slaves die Laufzeit zum Master messen dürfen (-3 = 8 pro Sekunde). "
+                "Als Master gibt dieser Server den Wert an die Slaves weiter."),
     _field("ptp_summary_interval", "ptp", "Log-Zusammenfassung (2^n s)", "int", 4,
            _as_number(int, 0, 10), env="PTP_SUMMARY_INTERVAL", advanced=True,
            help="Wie oft ptp4l eine Zusammenfassung ins Log schreibt (4 = alle 16 s)."),
-    _field("phc2sys_enable", "ptp", "Systemuhr an PTP koppeln (phc2sys)", "bool", False, _as_bool,
-           env="PHC2SYS_ENABLE",
-           help="Überträgt die PTP-Zeit der Netzwerkkarte auf die Systemuhr. Nur als PTP-Slave "
-                "sinnvoll. Dann stellt phc2sys die Uhr, und chrony liefert nur noch aus."),
-    _field("phc2sys_options", "ptp", "phc2sys-Optionen", "text", "-a -r -m", _as_phc2sys_options,
-           env="PHC2SYS_OPTIONS", advanced=True,
-           help="Standard „-a -r -m“: Quelle automatisch wählen, Systemuhr mitregeln, ins Log "
-                "schreiben."),
+    _field("phc2sys_enable", "ptp", "Systemuhr und PTP-Uhr koppeln (phc2sys)", "bool", False,
+           _as_bool, env="PHC2SYS_ENABLE",
+           help="Verbindet die Systemuhr mit der PTP-Uhr (PHC) der Netzwerkkarte – nötig bei "
+                "Hardware-Zeitstempeln, in beide Richtungen: Als Grandmaster überträgt phc2sys "
+                "die von chrony per GPS/NTP gestellte Systemuhr auf die Karte (sonst verteilt "
+                "ptp4l eine frei laufende Kartenuhr); chrony stellt weiter die Systemuhr. Als "
+                "Slave überträgt phc2sys die PTP-Zeit auf die Systemuhr; dann stellt phc2sys die "
+                "Uhr, und chrony liefert sie nur noch aus (läuft mit -x). Bei Software-"
+                "Zeitstempeln gibt es keine Kartenuhr – dann wird phc2sys nicht gestartet."),
+    _field("phc2sys_options", "ptp", "phc2sys-Optionen", "text", "", _as_phc2sys_options,
+           env="PHC2SYS_OPTIONS", advanced=True, placeholder="automatisch nach Rolle",
+           help="Leer lassen = automatisch passend zur Rolle: Grandmaster „-a -rr -m“ (Systemuhr "
+                "ist Quelle, die Karte folgt ihr; den UTC-Abstand von 37 s holt phc2sys aus "
+                "ptp4l), Slave und Automatisch „-a -r -m“ (Karte ist Quelle, die Systemuhr folgt). "
+                "Eigene Optionen ersetzen das. chrony läuft dann mit -x, sobald phc2sys die "
+                "Systemuhr stellen kann („-r“ ohne „-rr“, „-c CLOCK_REALTIME“ oder -s ohne -c)."),
     _field("phc_refclock", "ptp", "PTP-Hardwareuhr als chrony-Quelle", "device", "",
            _as_device(optional=True), env="PHC_REFCLOCK", placeholder="aus",
            help="PTP-zu-NTP-Brücke: chrony nutzt die PTP-Uhr der Netzwerkkarte (z. B. "
@@ -549,6 +677,79 @@ def _check_refid(value: Any) -> str:
 
 
 FIELDS = {field["key"]: field for field in SCHEMA}
+
+
+# PTP-Profile. Werte nur dort, wo das Feld im Dashboard noch auf seinem
+# Standard steht – was der Nutzer ausdrücklich ändert, gewinnt.
+#
+# gptp: IEEE 802.1AS, Werte aus linuxptp configs/gPTP.cfg (Upstream-Repository
+#   richardcochran/linuxptp, "802.1AS example configuration containing those
+#   attributes which differ from the defaults").
+# aes67: AES67-2018 Anhang A (Media-Profil): Domain 0, Delay-Request-Response
+#   (E2E) über UDP/IPv4-Multicast, logSyncInterval -3 (Standard), logAnnounceInterval
+#   1, announceReceiptTimeout 3; QoS-Klasse "Clock" = DSCP 46 (EF).
+PTP_PROFILES: dict[str, dict] = {
+    "default": {"fields": {}, "extra": {}},
+    "aes67": {
+        "fields": {"ptp_transport": "UDPv4", "ptp_delay_mechanism": "E2E",
+                   "ptp_log_sync_interval": -3, "ptp_log_announce_interval": 1,
+                   "ptp_announce_receipt_timeout": 3},
+        "extra": {"dscp_event": "46", "dscp_general": "46"},
+    },
+    "gptp": {
+        "fields": {"ptp_transport": "L2", "ptp_delay_mechanism": "P2P",
+                   "ptp_priority1": 248, "ptp_priority2": 248,
+                   "ptp_log_sync_interval": -3, "ptp_log_announce_interval": 0},
+        "extra": {"gmCapable": "1", "syncReceiptTimeout": "3",
+                  "neighborPropDelayThresh": "800", "min_neighbor_prop_delay": "-20000000",
+                  "assume_two_step": "1", "path_trace_enabled": "1", "follow_up_info": "1",
+                  "transportSpecific": "0x1", "ptp_dst_mac": "01:80:C2:00:00:0E"},
+    },
+}
+
+
+def ptp_profile_values(cfg: dict) -> tuple[dict, dict]:
+    """Effektive PTP-Werte nach Profil: (Felder, zusätzliche ptp4l-Zeilen)."""
+    profile = PTP_PROFILES.get(cfg.get("ptp_profile") or "default", PTP_PROFILES["default"])
+    out = dict(cfg)
+    for key, value in profile["fields"].items():
+        field = FIELDS.get(key)
+        if field is not None and cfg.get(key, field["default"]) == field["default"]:
+            out[key] = value
+    return out, dict(profile["extra"])
+
+
+PTP_UDS_DEFAULT = "/var/run/ptp4l"
+_UDS_RE = re.compile(r"^/[A-Za-z0-9._/-]{1,100}$")
+
+
+def ptp_uds_address(env: dict | None = None) -> str:
+    """PTP_UDS_ADDRESS: Management-Socket von ptp4l (ptp4l.conf uds_address,
+    phc2sys -z, pmc -s). Nur ein absoluter Pfad ohne Leer-/Sonderzeichen, sonst
+    der Standard – der Wert landet ungequotet in ptp4l.conf und der phc2sys-Zeile."""
+    env = os.environ if env is None else env
+    value = (env.get("PTP_UDS_ADDRESS") or "").strip()
+    if value and _UDS_RE.match(value) and ".." not in value.split("/"):
+        return value
+    return PTP_UDS_DEFAULT
+
+
+def env_number(name: str, default: float, low: float, high: float,
+               env: dict | None = None, integer: bool = False) -> float:
+    """Zahl aus einer Umgebungsvariable; leer, ungültig oder außerhalb
+    [low, high] ergibt den Standard."""
+    env = os.environ if env is None else env
+    raw = (env.get(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw) if integer else float(raw)
+    except ValueError:
+        return default
+    if value != value or not low <= value <= high:  # NaN oder außerhalb
+        return default
+    return value
+
 
 # Nur per Umgebungsvariable – im Dashboard sichtbar, aber nicht änderbar.
 ENV_ONLY = [

@@ -21,6 +21,117 @@ def _ms(seconds: float | None) -> str:
     return f"{seconds * 1e6:.0f} µs"
 
 
+NTS_CERT_WARN_DAYS = 14
+
+
+def nts_server_insights(nts: dict[str, Any]) -> list[dict[str, Any]]:
+    """Eigener NTS-Server: fehlende/unlesbare Dateien und ablaufendes Zertifikat."""
+    if not nts.get("enabled"):
+        return []
+    out: list[dict[str, Any]] = []
+
+    def add(level, title, text, key):
+        out.append({"level": level, "title": title, "text": text, "action": "settings", "key": key})
+
+    missing = [path for path, ok in ((nts.get("cert"), nts.get("cert_exists")),
+                                     (nts.get("key"), nts.get("key_exists"))) if not ok]
+    unreadable = [path for path, exists, ok in (
+        (nts.get("cert"), nts.get("cert_exists"), nts.get("cert_readable")),
+        (nts.get("key"), nts.get("key_exists"), nts.get("key_readable", True))) if exists and not ok]
+    if missing:
+        add("warn", "NTS-Server ohne Zertifikat",
+            f"Der NTS-Server ist eingeschaltet, aber {' und '.join(p or '(kein Pfad)' for p in missing)} "
+            f"{'fehlen' if len(missing) > 1 else 'fehlt'}. chrony startet den NTS-Server deshalb nicht – normales NTP läuft weiter. Zertifikat "
+            "und Schlüssel nach /config legen (Volume) oder die Pfade in den Einstellungen anpassen.",
+            "nts_server_files")
+    elif unreadable:
+        add("warn", "NTS-Zertifikat nicht lesbar",
+            f"{' und '.join(unreadable)} "
+            f"{'existieren, lassen sich' if len(unreadable) > 1 else 'existiert, lässt sich'} "
+            "aber nicht lesen. Meist stimmen die "
+            "Dateirechte nicht: Die Dateien müssen für den Container lesbar sein (z. B. chmod 640 "
+            "und passende Gruppe).", "nts_server_files")
+    name = nts.get("name") or ""
+    if name and nts.get("name_matches_cert") is False:
+        cert_names = ", ".join(nts.get("names") or []) or "keine"
+        add("warn", "Zertifikat passt nicht zum Namen",
+            f"Zertifikat passt nicht zum Namen {name}: Es gilt nur für {cert_names}. Clients, die "
+            f"„{name}“ ansprechen, brechen den TLS-Schlüsselaustausch (NTS-KE) ab, weil sie den "
+            "Namen gegen das Zertifikat prüfen. Ein Zertifikat für diesen Namen (oder ein "
+            "passendes Wildcard-Zertifikat) eintragen oder den öffentlichen Namen korrigieren.",
+            "nts_name_mismatch")
+    # Nur, wenn der Status das Feld überhaupt kennt (chrony.nts_server_status ab 1.2.0)
+    # und sonst alles stimmt – ein fehlendes Zertifikat ist dann wichtiger.
+    elif "name" in nts and not name and not missing and not unreadable:
+        add("info", "NTS-Server ohne öffentlichen Namen",
+            "Es ist kein öffentlicher Name eingetragen. Nach dem Schlüsselaustausch schicken "
+            "die Clients ihre NTP-Pakete dann an dieselbe Adresse wie den Schlüsselaustausch. "
+            "Im LAN ohne Umweg passt das. Läuft NTS-KE (TCP 4460) aber über einen Reverse "
+            "Proxy wie Nginx Proxy Manager oder Zoraxy, landen die NTP-Pakete (UDP 123) beim "
+            "Proxy, der sie meist nicht weiterreicht. Dann den öffentlichen Namen setzen – "
+            "chrony nennt ihn den Clients per „ntsntpserver“ – und UDP 123 direkt (Portfreigabe "
+            "im Router) an diesen Server leiten.", "nts_no_name")
+    days = nts.get("days_left")
+    if isinstance(days, (int, float)):
+        if days < 0:
+            add("crit", "NTS-Zertifikat abgelaufen",
+                f"Das Zertifikat des NTS-Servers ist seit {abs(days):.0f} Tagen abgelaufen. Clients "
+                "lehnen den Schlüsselaustausch ab und bekommen keine abgesicherte Zeit mehr. Ein neues "
+                "Zertifikat ablegen – ntp-gui bemerkt die geänderte Datei innerhalb von etwa einer "
+                "Minute und startet chronyd neu, damit er es lädt.",
+                "nts_cert_expired")
+        elif days < NTS_CERT_WARN_DAYS:
+            add("warn", "NTS-Zertifikat läuft bald ab",
+                f"Das Zertifikat des NTS-Servers ist nur noch {days:.0f} Tage gültig. Danach lehnen "
+                "die Clients den Schlüsselaustausch ab. Rechtzeitig erneuern – sobald sich die Datei "
+                "ändert, startet ntp-gui chronyd automatisch neu (chrony liest Zertifikate nur "
+                "beim Start).", "nts_cert_expiring")
+    return out
+
+
+def ptp_role_insights(cfg: dict[str, Any]) -> list[dict[str, Any]]:
+    """PTP-Rolle passt nicht zu phc2sys/Zeitstempeln: die Warnungen, die confgen
+    sonst nur ins Container-Log schreibt."""
+    if not (cfg.get("ptp_enable") and cfg.get("ptp_interface")):
+        return []
+    import confgen  # spät importieren: insights bleibt ohne confgen testbar
+    import settings
+    full = {key: field["default"] for key, field in settings.FIELDS.items()}
+    full.update(cfg)
+    mode = full.get("ptp_mode")
+    software = full.get("ptp_time_stamping") == "software"
+    plan = confgen.phc2sys_plan(full, {})
+    out: list[dict[str, Any]] = []
+
+    def add(title, text, key):
+        out.append({"level": "warn", "title": title, "text": text, "action": "settings", "key": key})
+
+    if mode == "master" and not software and not full.get("phc2sys_enable"):
+        add("PTP-Grandmaster verteilt eine frei laufende Uhr",
+            "Dieser Server ist PTP-Grandmaster mit Hardware-Zeitstempeln, aber phc2sys ist aus. "
+            "ptp4l verteilt dann die Uhr der Netzwerkkarte, und die läuft frei – NICHT die Zeit "
+            "von chrony/GPS. Schalte in den Einstellungen „Systemuhr und PTP-Uhr koppeln "
+            "(phc2sys)“ ein (PHC2SYS_ENABLE=true).", "ptp_gm_free_running")
+    elif mode == "master" and plan["start"] and plan["nocontrol"]:
+        add("PTP-Grandmaster folgt der Kartenuhr",
+            f"Mit den eigenen phc2sys-Optionen „{full.get('phc2sys_options')}“ stellt phc2sys die "
+            "Systemuhr nach der frei laufenden Uhr der Netzwerkkarte, chronyd läuft mit -x und "
+            "GPS/NTP werden nicht genutzt. Lass die phc2sys-Optionen leer (automatisch) oder "
+            f"trage „{confgen.PHC2SYS_AUTO['master']}“ ein.", "ptp_gm_phc2sys_options")
+    elif mode == "auto" and software:
+        add("PTP-Rolle „automatisch“ mit Software-Zeitstempeln",
+            "Wird dieser Server PTP-Slave, stellen ptp4l und chronyd dieselbe Systemuhr und "
+            "überschreiben sich gegenseitig. Stelle die Rolle fest auf „Grandmaster“ (verteilt "
+            "die Zeit von chrony) oder „Slave“ (chronyd liefert nur aus).", "ptp_auto_software")
+    elif mode == "auto" and plan["start"] and plan["nocontrol"]:
+        add("PTP-Rolle „automatisch“ mit phc2sys",
+            "phc2sys stellt die Systemuhr nach PTP und chronyd läuft deshalb mit -x. Gewinnt "
+            "dieser Server die PTP-Wahl und wird selbst Grandmaster, regelt niemand mehr die "
+            "Systemuhr – NTP und PTP verteilen dann eine driftende Zeit. Stelle die Rolle fest "
+            "auf „Grandmaster“ oder „Slave“.", "ptp_auto_phc2sys")
+    return out
+
+
 def build(status: dict[str, Any], cfg: dict[str, Any]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
 
@@ -89,6 +200,8 @@ def build(status: dict[str, Any], cfg: dict[str, Any]) -> list[dict[str, Any]]:
                     "falsch, dass das TLS-Zertifikat abgelehnt wird, Server ohne NTS.",
                     action="sources", key=f"nts:{source.get('name')}")
 
+    out.extend(nts_server_insights(status.get("nts_server") or {}))
+
     gps = status.get("gps") or {}
     if gps.get("enabled"):
         refclock = next((s for s in sources if s.get("mode") == "#"
@@ -132,6 +245,7 @@ def build(status: dict[str, Any], cfg: dict[str, Any]) -> list[dict[str, Any]]:
         add("crit", "ptp4l antwortet nicht",
             "PTP ist eingeschaltet, aber ptp4l läuft nicht oder antwortet nicht. Die PTP-Seite "
             "prüft die Voraussetzungen.", action="ptp", key="ptp_down")
+    out.extend(ptp_role_insights(cfg))
 
     ui = status.get("ui") or {}
     if not (ui.get("storage") or {}).get("persistent", True):

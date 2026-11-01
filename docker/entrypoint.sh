@@ -5,6 +5,12 @@
 # Umgebungsvariable > Standard). Ein SIGHUP – ausgelöst vom Dashboard nach dem
 # Speichern – erzeugt die Konfiguration neu und startet nur die Zeitdienste
 # neu; Container und Dashboard laufen weiter.
+#
+# chronyd und das Dashboard sind Pflicht: Stirbt einer davon, endet der
+# Container mit Exit 1, damit Docker ihn neu startet. gpsd, ptp4l und phc2sys
+# sind optional: Fallen sie aus, startet der Supervisor sie mit wachsender
+# Pause neu (5 s, 15 s, 60 s, dann alle 5 min) – NTP läuft derweil weiter.
+# Der Zustand jedes Dienstes steht in ${RUN_DIR}/services.json.
 set -euo pipefail
 
 CHRONY_CONF="${CHRONY_CONF:-/etc/chrony/chrony.conf}"
@@ -14,11 +20,29 @@ APP_DIR="${APP_DIR:-/app}"
 RUN_DIR="${NTPGUI_RUN_DIR:-/run/ntp-gui}"
 export CHRONY_CONF PTP4L_CONF PTP_LOG_FILE NTPGUI_RUN_DIR="$RUN_DIR"
 
-SERVICE_PIDS=()   # Zeitdienste, Einträge "pid=comm"
 WEB_PID=""        # Dashboard, "pid=comm"
 RELOAD_REQUESTED=0
 
+SERVICES=(chronyd gpsd ptp4l phc2sys web)
+OPTIONAL_SERVICES=" gpsd ptp4l phc2sys "
+BACKOFF=(5 15 60 300)   # Pause vor dem 1., 2., 3. und jedem weiteren Neustart
+STABLE_AFTER=600        # lief ein Dienst so lange, beginnt der Backoff wieder bei 5 s
+HOTPLUG_EVERY=30        # Sekunden zwischen zwei Prüfungen auf neue/ersetzte Geräte
+NTS_CERT_EVERY=60       # Sekunden zwischen zwei Prüfungen auf ein erneuertes NTS-Zertifikat
+NTS_CERT_SETTLE=10      # so lange muss eine Änderung stabil sein (Zertifikat + Schlüssel)
+declare -A SVC_ENTRY=() SVC_STATE=() SVC_RESTARTS=() SVC_EXIT=() SVC_SINCE=() \
+           SVC_NEXT=() SVC_STARTED=() SVC_FAILS=() SVC_NOTE=()
+HOTPLUG_PATHS=""        # konfigurierte, aber fehlende Geräte (von confgen)
+GPS_DEV_ID=""           # Identität des Geräteknotens, den gpsd liest
+GPS_DEV_GONE=0
+NEXT_HOTPLUG=0
+NTS_WATCH=""            # Zertifikat + Schlüssel des NTS-Servers (von confgen)
+NTS_CERT_SIG=""         # Stand beim letzten (Neu-)Laden von chronyd
+NTS_CERT_PENDING=""     # erkannte Änderung, die noch auf Stabilität wartet
+NEXT_NTS_CERT=0
+
 log() { printf '[%s] %s\n' "$1" "${*:2}"; }
+now() { printf '%(%s)T' -1; }
 
 is_true() {
   case "${1,,}" in 1|true|yes|on) return 0 ;; *) return 1 ;; esac
@@ -50,6 +74,7 @@ spawn() {  # spawn <name> <cmd...>  -> setzt SPAWNED
 
 service_alive() {
   local pid="${1%%=*}" comm="${1#*=}" actual
+  [[ -n "$pid" ]] || return 1
   actual=$(cat "/proc/${pid}/comm" 2>/dev/null) || return 1
   [[ "$actual" == "$comm" ]]
 }
@@ -57,11 +82,59 @@ service_alive() {
 write_status() {  # write_status <state> <message>
   mkdir -p "$RUN_DIR"
   printf '{"state": "%s", "message": "%s", "time": %s}\n' \
-    "$1" "${2//\"/\'}" "$(date +%s)" > "${RUN_DIR}/reload.json.tmp"
+    "$1" "${2//\"/\'}" "$(now)" > "${RUN_DIR}/reload.json.tmp"
   mv -f "${RUN_DIR}/reload.json.tmp" "${RUN_DIR}/reload.json"
 }
 
-# --- Konfiguration erzeugen und Zeitdienste starten -------------------------
+json_str() {  # json_str <text> -> JSON-String samt Anführungszeichen
+  local t="$1"
+  t=${t//\\/\\\\}
+  t=${t//\"/\\\"}
+  t=${t//$'\n'/ }
+  t=${t//$'\t'/ }
+  printf '"%s"' "$t"
+}
+
+# ${RUN_DIR}/services.json – je Dienst: state (running | restarting | failed |
+# stopped), restarts, last_exit, since (Unix-Zeit des letzten Zustandswechsels).
+write_services() {
+  local name sep="" out entry pid optional
+  out="{\"time\": $(now), \"services\": {"
+  for name in "${SERVICES[@]}"; do
+    entry="${SVC_ENTRY[$name]:-}"
+    pid="${entry%%=*}"
+    optional=false
+    [[ "$OPTIONAL_SERVICES" == *" $name "* ]] && optional=true
+    out+="${sep}$(json_str "$name"): {\"state\": $(json_str "${SVC_STATE[$name]:-stopped}")"
+    out+=", \"restarts\": ${SVC_RESTARTS[$name]:-0}"
+    out+=", \"last_exit\": ${SVC_EXIT[$name]:-null}"
+    out+=", \"since\": ${SVC_SINCE[$name]:-null}"
+    out+=", \"pid\": ${pid:-null}"
+    out+=", \"optional\": ${optional}"
+    out+=", \"next_retry\": $([[ "${SVC_STATE[$name]:-}" == restarting ]] && echo "${SVC_NEXT[$name]:-null}" || echo null)"
+    out+=", \"message\": $(json_str "${SVC_NOTE[$name]:-}")}"
+    sep=", "
+  done
+  out+="}}"
+  mkdir -p "$RUN_DIR"
+  if printf '%s\n' "$out" > "${RUN_DIR}/services.json.tmp"; then
+    mv -f "${RUN_DIR}/services.json.tmp" "${RUN_DIR}/services.json" || true
+  fi
+}
+
+set_state() {  # set_state <dienst> <zustand> [meldung]
+  SVC_STATE[$1]="$2"
+  SVC_SINCE[$1]="$(now)"
+  SVC_NOTE[$1]="${3:-}"
+  if [[ "$2" == running ]]; then SVC_STARTED[$1]="${SVC_SINCE[$1]}"; fi
+  write_services
+}
+
+device_id() {  # Inode + Major/Minor des Knotens (folgt by-id-Links), leer wenn weg
+  stat -L -c '%i:%t:%T' "$1" 2>/dev/null || true
+}
+
+# --- Konfiguration erzeugen ---------------------------------------------------
 apply_config() {
   local out
   if ! out=$(python3 "${APP_DIR}/confgen.py" apply); then
@@ -69,9 +142,53 @@ apply_config() {
     return 1
   fi
   eval "$out"
+  HOTPLUG_PATHS="${NTPGUI_HOTPLUG_PATHS:-}"
+  NTS_WATCH="${NTPGUI_NTS_WATCH:-}"
+  NTS_CERT_SIG="$(file_signature $NTS_WATCH)"
+  NTS_CERT_PENDING=""
 }
 
-start_services() {
+# mtime, Größe und Inode jeder Datei (stat -L folgt Symlinks wie live/ → archive/
+# bei Let's Encrypt). Fehlende Dateien zählen als "-", damit auch Verschwinden
+# und Wiederkehren auffallen.
+file_signature() {  # file_signature <pfad...> -> eine Zeile
+  local path sig=""
+  for path in "$@"; do
+    sig+="$(stat -L -c '%Y:%s:%i' "$path" 2>/dev/null || echo -);"
+  done
+  printf '%s' "$sig"
+}
+
+# chrony liest Zertifikat und Schlüssel nur beim Start (chrony.conf(5),
+# ntsservercert: "The files are loaded only once. chronyd needs to be restarted
+# in order to load a renewed certificate."). Erneuert der Reverse Proxy oder
+# Certbot das Zertifikat, startet der Watchdog nur chronyd neu (reload_chronyd) –
+# gpsd, ptp4l und phc2sys laufen weiter. Die Änderung
+# muss NTS_CERT_SETTLE Sekunden stabil sein, damit nicht zwischen dem Schreiben
+# von Zertifikat und Schlüssel neu geladen wird.
+check_nts_cert() {  # check_nts_cert <jetzt> -> 0 = neu laden
+  local t="$1" sig
+  [[ -n "$NTS_WATCH" ]] || return 1
+  sig="$(file_signature $NTS_WATCH)"
+  if [[ "$sig" == "$NTS_CERT_SIG" ]]; then
+    NTS_CERT_PENDING=""
+    NEXT_NTS_CERT=$(( t + NTS_CERT_EVERY ))
+    return 1
+  fi
+  if [[ "$sig" != "$NTS_CERT_PENDING" ]]; then
+    NTS_CERT_PENDING="$sig"
+    NEXT_NTS_CERT=$(( t + NTS_CERT_SETTLE ))
+    return 1
+  fi
+  # Schon hier übernehmen: Scheitert das Neuladen, nicht jede Minute erneut versuchen.
+  NTS_CERT_SIG="$sig"
+  NTS_CERT_PENDING=""
+  NEXT_NTS_CERT=$(( t + NTS_CERT_EVERY ))
+  return 0
+}
+
+# --- Einzelne Dienste starten ---------------------------------------------------
+start_chronyd() {
   local chronyd_args=(-d -r -f "$CHRONY_CONF")
   if is_true "${DISABLE_CLOCK_CONTROL:-auto}"; then
     chronyd_args+=(-x)
@@ -80,56 +197,109 @@ start_services() {
     chronyd_args+=(-x)
     log chrony "WARNUNG: CAP_SYS_TIME fehlt – chronyd läuft mit -x und stellt die Uhr nicht."
     log chrony "         Für einen echten Zeitserver den Container mit 'cap_add: [SYS_TIME]' starten."
-  elif [[ "${NTPGUI_PHC2SYS_START:-0}" == 1 ]]; then
-    # Zwei Regler auf derselben Uhr (phc2sys -r und chronyd) würden sich
-    # gegenseitig die Korrekturen überschreiben: phc2sys stellt die Uhr,
-    # chronyd liefert nur aus.
+  elif [[ "${NTPGUI_CHRONY_NOCONTROL:-0}" == 1 ]]; then
+    # confgen entscheidet: Stellt phc2sys (oder ptp4l mit Software-Zeitstempeln
+    # als Slave) die Systemuhr, würden sich zwei Regler die Korrekturen
+    # überschreiben. Als Grandmaster bleibt chronyd dagegen der Regler.
     chronyd_args+=(-x)
-    log chrony "phc2sys steuert die Systemuhr – chronyd läuft mit -x und liefert nur aus."
+    log chrony "PTP steuert die Systemuhr – chronyd läuft mit -x und liefert nur aus."
   fi
   rm -f /run/chrony/chronyd.pid /var/run/chrony/chronyd.pid
   spawn chrony /usr/sbin/chronyd "${chronyd_args[@]}"
-  SERVICE_PIDS=("$SPAWNED")
+  SVC_ENTRY[chronyd]="$SPAWNED"
+  set_state chronyd running
+}
+
+start_gpsd() {
+  local gpsd_args=(-N -n)
+  if [[ ! -e "$NTPGUI_GPS_DEVICE" ]]; then
+    log gps "WARNUNG: ${NTPGUI_GPS_DEVICE} fehlt – gpsd wartet, bis das Gerät wieder da ist."
+    SVC_ENTRY[gpsd]=""
+    set_state gpsd failed "Gerät ${NTPGUI_GPS_DEVICE} fehlt"
+    case " $HOTPLUG_PATHS " in *" $NTPGUI_GPS_DEVICE "*) ;; *) HOTPLUG_PATHS="${HOTPLUG_PATHS:+$HOTPLUG_PATHS }$NTPGUI_GPS_DEVICE" ;; esac
+    return 0
+  fi
+  if [[ -n "${NTPGUI_GPS_SPEED:-}" ]]; then gpsd_args+=(-s "$NTPGUI_GPS_SPEED"); fi
+  # shellcheck disable=SC2206  # GPS_OPTIONS ist bewusst eine Wortliste
+  if [[ -n "${GPS_OPTIONS:-}" ]]; then gpsd_args+=(${GPS_OPTIONS}); fi
+  # -n: gpsd liest den Empfänger auch ohne Client – sonst bekommt chrony nie Zeit.
+  spawn gps /usr/sbin/gpsd "${gpsd_args[@]}" "$NTPGUI_GPS_DEVICE"
+  SVC_ENTRY[gpsd]="$SPAWNED"
+  GPS_DEV_ID="$(device_id "$NTPGUI_GPS_DEVICE")"
+  GPS_DEV_GONE=0
+  set_state gpsd running
+}
+
+start_ptp4l() {
+  log ptp "ptp4l auf ${NTPGUI_PTP_INTERFACE} (Domain ${NTPGUI_PTP_DOMAIN}, Modus ${NTPGUI_PTP_MODE})"
+  /usr/sbin/ptp4l -f "$PTP4L_CONF" -i "$NTPGUI_PTP_INTERFACE" -m >>"$PTP_LOG_FILE" 2>&1 &
+  SVC_ENTRY[ptp4l]="$!=ptp4l"
+  set_state ptp4l running
+}
+
+start_phc2sys() {
+  # shellcheck disable=SC2086  # Optionen sind eine geprüfte Wortliste
+  spawn phc2sys /usr/sbin/phc2sys $NTPGUI_PHC2SYS_OPTIONS
+  SVC_ENTRY[phc2sys]="$SPAWNED"
+  set_state phc2sys running
+}
+
+start_services() {
+  local name
+  for name in gpsd ptp4l phc2sys; do
+    SVC_ENTRY[$name]=""
+    SVC_FAILS[$name]=0
+  done
+  start_chronyd
 
   if [[ "${NTPGUI_GPS_START:-0}" == 1 ]]; then
-    local gpsd_args=(-N -n)
-    [[ -n "${NTPGUI_GPS_SPEED:-}" ]] && gpsd_args+=(-s "$NTPGUI_GPS_SPEED")
-    # shellcheck disable=SC2206  # GPS_OPTIONS ist bewusst eine Wortliste
-    [[ -n "${GPS_OPTIONS:-}" ]] && gpsd_args+=(${GPS_OPTIONS})
-    # -n: gpsd liest den Empfänger auch ohne Client – sonst bekommt chrony nie Zeit.
-    spawn gps /usr/sbin/gpsd "${gpsd_args[@]}" "$NTPGUI_GPS_DEVICE"
-    SERVICE_PIDS+=("$SPAWNED")
+    start_gpsd
+  elif [[ "${NTPGUI_GPS_ENABLE:-0}" == 1 ]]; then
+    set_state gpsd stopped "Gerät ${NTPGUI_GPS_DEVICE:-?} fehlt – wird alle ${HOTPLUG_EVERY} s gesucht"
+  else
+    set_state gpsd stopped "GPS ist aus"
   fi
 
   if [[ "${NTPGUI_PTP_START:-0}" == 1 ]]; then
     : >"$PTP_LOG_FILE"
-    log ptp "ptp4l auf ${NTPGUI_PTP_INTERFACE} (Domain ${NTPGUI_PTP_DOMAIN}, Modus ${NTPGUI_PTP_MODE})"
-    /usr/sbin/ptp4l -f "$PTP4L_CONF" -i "$NTPGUI_PTP_INTERFACE" -m >>"$PTP_LOG_FILE" 2>&1 &
-    SERVICE_PIDS+=("$!=ptp4l")
+    start_ptp4l
     if [[ "${NTPGUI_PHC2SYS_START:-0}" == 1 ]]; then
       sleep 2
-      # shellcheck disable=SC2086  # Optionen sind eine geprüfte Wortliste
-      spawn phc2sys /usr/sbin/phc2sys $NTPGUI_PHC2SYS_OPTIONS
-      SERVICE_PIDS+=("$SPAWNED")
+      start_phc2sys
+    else
+      set_state phc2sys stopped "phc2sys ist aus"
     fi
+  else
+    set_state ptp4l stopped "PTP ist aus"
+    set_state phc2sys stopped "PTP ist aus"
   fi
+  if [[ -n "$HOTPLUG_PATHS" ]]; then
+    log main "Warte auf Geräte (Prüfung alle ${HOTPLUG_EVERY} s): ${HOTPLUG_PATHS}"
+  fi
+  NEXT_HOTPLUG=$(( $(now) + HOTPLUG_EVERY ))
 }
 
 stop_services() {
-  local entry
-  for entry in "${SERVICE_PIDS[@]:-}"; do
-    [[ -n "$entry" ]] && kill "${entry%%=*}" 2>/dev/null || true
+  local name entry
+  for name in phc2sys ptp4l gpsd chronyd; do
+    entry="${SVC_ENTRY[$name]:-}"
+    if [[ -n "$entry" ]] && service_alive "$entry"; then kill "${entry%%=*}" 2>/dev/null || true; fi
   done
-  for entry in "${SERVICE_PIDS[@]:-}"; do
-    [[ -n "$entry" ]] && wait "${entry%%=*}" 2>/dev/null || true
+  for name in phc2sys ptp4l gpsd chronyd; do
+    entry="${SVC_ENTRY[$name]:-}"
+    if [[ -n "$entry" ]]; then wait "${entry%%=*}" 2>/dev/null || true; fi
+    SVC_ENTRY[$name]=""
+    SVC_STATE[$name]=stopped
   done
-  SERVICE_PIDS=()
+  write_services
 }
 
 reload_services() {
   log main "Einstellungen geändert – Zeitdienste werden neu gestartet …"
   write_status running "Zeitdienste werden neu gestartet"
   stop_services
+  local name
+  for name in gpsd ptp4l phc2sys; do SVC_RESTARTS[$name]=0; SVC_EXIT[$name]=""; done
   if apply_config; then
     start_services
     write_status done "Neue Einstellungen aktiv"
@@ -140,6 +310,27 @@ reload_services() {
   fi
 }
 
+# Nur chronyd neu laden (erneuertes NTS-Zertifikat): confgen legt die Kopien von
+# Zertifikat und Schlüssel neu an und schreibt chrony.conf; gpsd, ptp4l und
+# phc2sys laufen weiter, damit GPS/PPS nicht neu einrasten und PTP nicht ausfällt.
+reload_chronyd() {
+  local entry
+  write_status running "chronyd wird neu gestartet"
+  if ! apply_config; then
+    write_status error "Konfiguration fehlerhaft – chronyd läuft mit dem bisherigen Zertifikat weiter"
+    return 0
+  fi
+  entry="${SVC_ENTRY[chronyd]:-}"
+  if [[ -n "$entry" ]] && service_alive "$entry"; then
+    kill "${entry%%=*}" 2>/dev/null || true
+    wait "${entry%%=*}" 2>/dev/null || true
+  fi
+  SVC_ENTRY[chronyd]=""
+  start_chronyd
+  write_status done "Zertifikat neu geladen"
+  log main "chronyd neu gestartet."
+}
+
 shutdown() {
   # Exit-Code 0 nur beim geordneten Stoppen; ein weggestorbener Dienst muss
   # auch mit restart=on-failure einen Neustart auslösen.
@@ -148,10 +339,75 @@ shutdown() {
   stop_services
   [[ -n "$WEB_PID" ]] && kill "${WEB_PID%%=*}" 2>/dev/null || true
   wait 2>/dev/null || true
+  SVC_STATE[web]=stopped
+  write_services
   exit "$code"
 }
 trap 'shutdown 0' SIGTERM SIGINT
 trap 'RELOAD_REQUESTED=1' SIGHUP
+
+# --- Watchdog-Bausteine -----------------------------------------------------------
+# Ein optionaler Dienst ist ausgefallen: Exit-Code merken, Neustart planen.
+schedule_restart() {  # schedule_restart <dienst>
+  local name="$1" entry="${SVC_ENTRY[$1]}" code=0 t ran delay fails pid stat st ppid
+  pid="${entry%%=*}"
+  # 'wait' blockiert, solange das Kind lebt. Passt nur comm nicht (z. B. direkt
+  # nach fork, vor exec), ist der Dienst nicht tot: nicht warten, nächste Runde
+  # erneut prüfen. Nur ein beendetes Kind (Zombie) oder ein fremder/verschwundener
+  # PID geht weiter – dann kehrt 'wait' sofort zurück.
+  if [[ -n "$pid" ]] && stat=$(cat "/proc/${pid}/stat" 2>/dev/null); then
+    read -r st ppid _ <<<"${stat##*) }"
+    if [[ "$st" != Z && "$ppid" == "$$" ]]; then
+      return 0
+    fi
+  fi
+  wait "$pid" 2>/dev/null || code=$?
+  t=$(now)
+  ran=$(( t - ${SVC_STARTED[$name]:-$t} ))
+  fails=${SVC_FAILS[$name]:-0}
+  if (( ran >= STABLE_AFTER )); then fails=0; fi
+  delay=${BACKOFF[$(( fails < ${#BACKOFF[@]} ? fails : ${#BACKOFF[@]} - 1 ))]}
+  SVC_FAILS[$name]=$(( fails + 1 ))
+  SVC_EXIT[$name]=$code
+  SVC_NEXT[$name]=$(( t + delay ))
+  SVC_ENTRY[$name]=""
+  log main "Dienst '${name}' (PID ${entry%%=*}) wurde unerwartet beendet (Exit ${code}) –" \
+           "Neustart in ${delay} s; NTP läuft weiter."
+  set_state "$name" restarting "beendet mit Exit ${code}, neuer Versuch in ${delay} s"
+}
+
+restart_service() {  # restart_service <dienst>
+  local name="$1"
+  SVC_RESTARTS[$name]=$(( ${SVC_RESTARTS[$name]:-0} + 1 ))
+  log main "Starte '${name}' neu (Versuch ${SVC_RESTARTS[$name]})"
+  "start_${name}"
+}
+
+# Geräte, die beim Start fehlten, aufgetaucht? GPS-Empfänger ab- und wieder
+# angesteckt (neuer Geräteknoten)? Dann Konfiguration neu erzeugen – wie SIGHUP.
+check_hotplug() {
+  local path id
+  for path in $HOTPLUG_PATHS; do
+    if [[ -e "$path" ]]; then
+      log main "Gerät ${path} ist jetzt vorhanden – Konfiguration wird neu geladen."
+      reload_services
+      return 0
+    fi
+  done
+  if [[ "${SVC_STATE[gpsd]:-}" == running && -n "${NTPGUI_GPS_DEVICE:-}" ]]; then
+    id="$(device_id "$NTPGUI_GPS_DEVICE")"
+    if [[ -z "$id" ]]; then
+      if (( ! GPS_DEV_GONE )); then
+        log gps "WARNUNG: ${NTPGUI_GPS_DEVICE} ist verschwunden (abgezogen?) – warte auf Rückkehr."
+        GPS_DEV_GONE=1
+      fi
+    elif [[ "$id" != "$GPS_DEV_ID" ]]; then
+      log gps "${NTPGUI_GPS_DEVICE} wurde neu angesteckt – Konfiguration wird neu geladen."
+      reload_services
+    fi
+  fi
+  return 0
+}
 
 # --- Vorbereitung ------------------------------------------------------------
 mkdir -p /var/run/chrony /var/lib/chrony /var/log/chrony /etc/linuxptp "$RUN_DIR"
@@ -178,6 +434,8 @@ start_services
 
 spawn web python3 "${APP_DIR}/server.py"
 WEB_PID="$SPAWNED"
+SVC_ENTRY[web]="$WEB_PID"
+set_state web running
 
 # --- Watchdog ------------------------------------------------------------------
 # Statt 'wait -n': bash 5.2 übersieht damit Kinder, die vor dem Aufruf gestorben
@@ -187,13 +445,33 @@ while true; do
     RELOAD_REQUESTED=0
     reload_services
   fi
-  for entry in "${SERVICE_PIDS[@]}" "$WEB_PID"; do
+  for name in chronyd web; do
+    entry="${SVC_ENTRY[$name]:-}"
     if ! service_alive "$entry"; then
-      log main "Dienst '${entry#*=}' (PID ${entry%%=*}) wurde unerwartet beendet – Container wird gestoppt"
-      write_status error "Dienst ${entry#*=} ausgefallen"
+      log main "Dienst '${name}' (PID ${entry%%=*}) wurde unerwartet beendet – Container wird gestoppt"
+      write_status error "Dienst ${name} ausgefallen"
+      SVC_ENTRY[$name]=""
+      set_state "$name" failed "unerwartet beendet"
       shutdown 1
     fi
   done
+  NOW=$(now)
+  for name in gpsd ptp4l phc2sys; do
+    case "${SVC_STATE[$name]:-stopped}" in
+      running)
+        if ! service_alive "${SVC_ENTRY[$name]:-}"; then schedule_restart "$name"; fi ;;
+      restarting)
+        if (( NOW >= ${SVC_NEXT[$name]:-0} )); then restart_service "$name"; fi ;;
+    esac
+  done
+  if (( NOW >= NEXT_HOTPLUG )); then
+    NEXT_HOTPLUG=$(( NOW + HOTPLUG_EVERY ))
+    check_hotplug
+  fi
+  if (( NOW >= NEXT_NTS_CERT )) && check_nts_cert "$NOW"; then
+    log nts "Zertifikat erneuert – chronyd lädt neu"
+    reload_chronyd
+  fi
   # ptp4l schreibt sein Log unbegrenzt; ab 5 MB auf die letzten 256 KB kürzen.
   # In-place (cat >), damit der O_APPEND-Deskriptor von ptp4l gültig bleibt.
   if [[ -f "$PTP_LOG_FILE" ]] && (( $(stat -c %s "$PTP_LOG_FILE" 2>/dev/null || echo 0) > 5242880 )); then

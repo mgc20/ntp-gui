@@ -7,19 +7,24 @@
 # Prüft das Laufzeitverhalten, das sich mit Unittests nicht abbilden lässt:
 # Capability-Erkennung, Healthcheck, Basic-Auth, gemountete Konfiguration,
 # Verhalten ohne GPS-/PTP-Hardware, Einstellungen über die API samt Neustart
-# der Dienste und sauberes Stoppen.
+# der Dienste, Neustart optionaler Dienste (gpsd/ptp4l/phc2sys) samt
+# services.json, Geräte-Hotplug, PTP-Grandmaster-Richtung, NTS-Server mit
+# eigenem Namen samt automatischem Neuladen nach Zertifikatswechsel und
+# sauberes Stoppen.
 set -uo pipefail
 
 IMAGE="${1:-ntp-gui:test}"
 PREFIX="ntpgui-it-$$"
 CFG_DIR="$(mktemp -d)"
+NTS_DIR="$(mktemp -d)"
 PASS=0
 FAIL=0
 
 cleanup() {
-  docker rm -f "${PREFIX}-a" "${PREFIX}-b" "${PREFIX}-c" "${PREFIX}-d" "${PREFIX}-e" "${PREFIX}-f" >/dev/null 2>&1
+  docker rm -f "${PREFIX}-a" "${PREFIX}-b" "${PREFIX}-c" "${PREFIX}-d" "${PREFIX}-e" "${PREFIX}-f" \
+    "${PREFIX}-g" "${PREFIX}-h" "${PREFIX}-i" "${PREFIX}-j" >/dev/null 2>&1
   docker volume rm "${PREFIX}-data" >/dev/null 2>&1
-  rm -rf "$CFG_DIR"
+  rm -rf "$CFG_DIR" "$NTS_DIR"
 }
 trap cleanup EXIT
 
@@ -32,6 +37,19 @@ contains() { # contains <Beschreibung> <Text> <Suchbegriff>
   if grep -qF -e "$3" <<<"$2"; then ok "$1"; else bad "$1 (»$3« fehlt)"; fi
 }
 http() { curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$@"; }
+
+# svc <container> <dienst> <feld> -> Wert aus /run/ntp-gui/services.json
+svc() {
+  docker exec "$1" python3 -c "import json,sys; print(json.load(open('/run/ntp-gui/services.json'))['services'][sys.argv[1]][sys.argv[2]])" "$2" "$3" 2>/dev/null
+}
+wait_svc() { # wait_svc <container> <dienst> <feld> <wert> <sekunden>
+  local i
+  for ((i = 0; i < $5; i++)); do
+    [[ "$(svc "$1" "$2" "$3")" == "$4" ]] && return 0
+    sleep 1
+  done
+  return 1
+}
 
 wait_for_health() { # wait_for_health <url> <sekunden>
   local url="$1" limit="${2:-60}" i
@@ -173,7 +191,148 @@ check "WEB_READONLY sperrt Änderungen" 403 "$(post -H 'Content-Type: applicatio
 docker rm -f "${PREFIX}-f" >/dev/null 2>&1
 
 echo
-echo "7) Sauberes Stoppen"
+echo "8) Optionaler Dienst stirbt – Container läuft weiter"
+# /dev/null besteht die Geräteprüfung und gpsd läuft darauf (liest nur nichts).
+docker run -d --name "${PREFIX}-g" -p 18085:8080 \
+  -e GPS_ENABLE=true -e GPS_DEVICE=/dev/null -e NTP_PORT=10129 -e NTP_POOLS="" "$IMAGE" >/dev/null
+wait_for_health http://127.0.0.1:18085/healthz 90 || true
+# Ältere gpsd-Versionen (Debian: 3.22) beenden sich auf /dev/null von selbst; der
+# Supervisor startet sie dann mit Backoff neu. Deshalb erst auf "running" warten
+# (deckt den 60-s-Backoff ab) und den Zähler vor dem Abschießen merken.
+if wait_svc "${PREFIX}-g" gpsd state running 75; then ok "gpsd läuft laut services.json"; else bad "gpsd läuft nicht (state: $(svc "${PREFIX}-g" gpsd state))"; fi
+BEFORE=$(svc "${PREFIX}-g" gpsd restarts); BEFORE=${BEFORE:-0}
+docker exec "${PREFIX}-g" pkill -x gpsd >/dev/null 2>&1
+RESTARTED=0
+for _ in $(seq 1 30); do
+  NOW_R=$(svc "${PREFIX}-g" gpsd restarts)
+  if [[ "$NOW_R" =~ ^[0-9]+$ ]] && (( NOW_R > BEFORE )); then RESTARTED=1; break; fi
+  sleep 1
+done
+if (( RESTARTED )); then ok "gpsd wird neu gestartet"; else bad "gpsd wurde nicht neu gestartet"; fi
+check "Container läuft nach gpsd-Ausfall weiter" running "$(docker inspect -f '{{.State.Status}}' "${PREFIX}-g")"
+if wait_svc "${PREFIX}-g" gpsd state running 75; then ok "gpsd läuft wieder"; else bad "gpsd läuft nicht wieder (state: $(svc "${PREFIX}-g" gpsd state))"; fi
+contains "Watchdog meldet Neustart statt Stopp" "$(docker logs "${PREFIX}-g" 2>&1)" "NTP läuft weiter"
+check "chronyd unberührt" 0 "$(svc "${PREFIX}-g" chronyd restarts)"
+docker rm -f "${PREFIX}-g" >/dev/null 2>&1
+
+echo
+echo "9) GPS-Gerät wird nachträglich eingesteckt (Hotplug)"
+# /dev/shm/... besteht die /dev/-Prüfung und lässt sich ohne mknod anlegen.
+docker run -d --name "${PREFIX}-h" -p 18086:8080 -e GPS_ENABLE=true -e GPS_DEVICE=/dev/shm/gps \
+  -e GPS_WAIT_SECONDS=1 -e NTP_PORT=10130 -e NTP_POOLS="" "$IMAGE" >/dev/null
+wait_for_health http://127.0.0.1:18086/healthz 90 || true
+check "gpsd wartet auf das Gerät" stopped "$(svc "${PREFIX}-h" gpsd state)"
+docker exec "${PREFIX}-h" touch /dev/shm/gps
+if wait_svc "${PREFIX}-h" gpsd state running 60; then ok "gpsd startet nach dem Einstecken"; else bad "Hotplug nicht erkannt"; fi
+check "GPS-Refclock nach Hotplug eingetragen" 1 "$(docker exec "${PREFIX}-h" sh -c 'grep -c "refclock SHM" /etc/chrony/chrony.conf')"
+docker rm -f "${PREFIX}-h" >/dev/null 2>&1
+
+echo
+echo "10) PTP-Grandmaster: Richtung von phc2sys, ptp4l-Ausfall"
+# Die veth-Karte im Container kann keine Hardware-Zeitstempel: ptp4l bricht ab
+# und wird mit Backoff neu gestartet, NTP und Dashboard laufen weiter.
+docker run -d --name "${PREFIX}-i" -p 18087:8080 -e PTP_ENABLE=true -e PTP_INTERFACE=eth0 \
+  -e PTP_MODE=master -e PHC2SYS_ENABLE=true -e NTP_PORT=10131 -e NTP_POOLS="" "$IMAGE" >/dev/null
+wait_for_health http://127.0.0.1:18087/healthz 90 || true
+CMDLINE=$(docker exec "${PREFIX}-i" sh -c 'ps -o args= -C phc2sys | head -1')
+contains "Grandmaster: phc2sys überträgt die Systemuhr (-a -rr)" "$CMDLINE" "-a -rr"
+contains "Grandmaster: chronyd regelt weiter" "$(docker logs "${PREFIX}-i" 2>&1)" "chronyd regelt weiter"
+if wait_svc "${PREFIX}-i" ptp4l last_exit 255 30 || [[ "$(svc "${PREFIX}-i" ptp4l state)" == restarting ]]; then
+  ok "ptp4l-Ausfall wird in services.json gemeldet"
+else
+  bad "ptp4l-Ausfall fehlt in services.json (state: $(svc "${PREFIX}-i" ptp4l state))"
+fi
+check "Container läuft trotz ptp4l-Ausfall" running "$(docker inspect -f '{{.State.Status}}' "${PREFIX}-i")"
+check "Dashboard antwortet trotz ptp4l-Ausfall" 200 "$(http http://127.0.0.1:18087/api/status)"
+docker rm -f "${PREFIX}-i" >/dev/null 2>&1
+
+echo
+echo "11) All-in-one-Start mit Host-Netzwerk, ohne Hardware"
+HOSTNET="${PREFIX}-host"
+if docker run -d --name "$HOSTNET" --network host -e WEB_PORT=18188 -e NTP_PORT=10132 -e NTP_POOLS="" \
+     -e GPS_ENABLE=true -e GPS_DEVICE=/dev/ttyACM-fehlt -e GPS_PPS_DEVICE=/dev/pps-fehlt \
+     -e GPS_WAIT_SECONDS=1 -e PTP_ENABLE=false -e NTS_NOCERTTIMECHECK=true "$IMAGE" >/dev/null 2>&1 \
+   && wait_for_health http://127.0.0.1:18188/healthz 60; then
+  ok "Start mit network_mode host ohne GPS/PPS/PTP-Hardware"
+  contains "Fehlende Geräte werden beobachtet" "$(docker logs "$HOSTNET" 2>&1)" "Warte auf Geräte"
+  check "Container läuft" running "$(docker inspect -f '{{.State.Status}}' "$HOSTNET")"
+else
+  echo "  – Host-Netzwerk hier nicht erreichbar, Prüfung übersprungen"
+fi
+docker rm -f "$HOSTNET" >/dev/null 2>&1
+
+echo
+echo "12) NTS-Server mit eigenem Namen, Zertifikat wird erneuert"
+# Selbst signiertes Zertifikat für den Namen, unter dem die Clients den Server
+# erreichen (z. B. hinter einem Reverse Proxy).
+NTS_NAME=zeit.example.test
+make_cert() { # make_cert <Seriennummer>
+  openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 30 \
+    -subj "/CN=${NTS_NAME}" -addext "subjectAltName=DNS:${NTS_NAME}" -set_serial "$1" \
+    -keyout "$NTS_DIR/new.key" -out "$NTS_DIR/new.crt" >/dev/null 2>&1
+  # Wie Certbot: neue Dateien schreiben und dann ersetzen.
+  mv -f "$NTS_DIR/new.key" "$NTS_DIR/nts.key" && mv -f "$NTS_DIR/new.crt" "$NTS_DIR/nts.crt"
+}
+# served_serial <container> -> Seriennummer des Zertifikats, das chronyd per NTS-KE ausliefert
+# chronyd nimmt NTS-KE nur aus den erlaubten Netzen an (allow), 127.0.0.1 gehört
+# nicht dazu – deshalb über die Container-Adresse im Docker-Netz verbinden.
+served_serial() {
+  local ip
+  ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$1")
+  docker exec "$1" sh -c "openssl s_client -connect ${ip}:4460 -servername ${NTS_NAME} -alpn ntske/1 \
+    </dev/null 2>/dev/null | openssl x509 -noout -serial 2>/dev/null" | sed 's/^serial=//'
+}
+if make_cert 0x1001; then
+  docker run -d --name "${PREFIX}-j" -p 18089:8080 -v "$NTS_DIR:/certs:ro" \
+    -e NTS_SERVER=true -e NTS_SERVER_CERT=/certs/nts.crt -e NTS_SERVER_KEY=/certs/nts.key \
+    -e NTS_SERVER_NAME="$NTS_NAME" -e NTP_PORT=10133 -e NTP_POOLS="" -e NTP_SERVERS="" "$IMAGE" >/dev/null
+  wait_for_health http://127.0.0.1:18089/healthz 90 || true
+  CONF=$(docker exec "${PREFIX}-j" cat /etc/chrony/chrony.conf)
+  contains "chrony.conf nennt den Servernamen" "$CONF" "ntsntpserver ${NTS_NAME}"
+  contains "chrony.conf nutzt die lesbare Kopie" "$CONF" "ntsservercert /var/lib/chrony/nts-certs/server.crt"
+  check "chronyd akzeptiert die Konfiguration" 0 "$(docker exec "${PREFIX}-j" sh -c 'chronyd -p -f /etc/chrony/chrony.conf >/dev/null 2>&1; echo $?')"
+  check "Kopie für _chrony nur lesbar (root:_chrony 640)" "root:_chrony 640" "$(docker exec "${PREFIX}-j" stat -c '%U:%G %a' /var/lib/chrony/nts-certs/server.key)"
+  if grep -qF "Having write access" <<<"$(docker logs "${PREFIX}-j" 2>&1)"; then bad "chronyd meldet Schreibzugriff auf Schlüssel"
+  else ok "chronyd meldet keinen Schreibzugriff auf Schlüssel"; fi
+  SERIAL=""
+  for ((i = 0; i < 30; i++)); do SERIAL=$(served_serial "${PREFIX}-j"); [[ -n "$SERIAL" ]] && break; sleep 1; done
+  check "NTS-KE liefert das Zertifikat aus" 1001 "$SERIAL"
+  MATCH=$(curl -s --max-time 10 http://127.0.0.1:18089/api/status \
+    | python3 -c 'import json,sys; n=json.load(sys.stdin)["nts_server"]; print(n.get("name"), n.get("name_matches_cert"), n.get("cert_self_signed"))' 2>/dev/null)
+  check "/api/status: Name passt zum Zertifikat" "${NTS_NAME} True True" "$MATCH"
+  # svc_pids <container> -> "dienst=pid" je laufendem Dienst laut services.json
+  svc_pids() {
+    docker exec "$1" cat /run/ntp-gui/services.json 2>/dev/null | python3 -c 'import json,sys
+s=json.load(sys.stdin)["services"]
+print(" ".join(f"{n}={v.get('"'"'pid'"'"')}" for n, v in sorted(s.items()) if v.get("state") == "running"))' 2>/dev/null
+  }
+  PIDS_BEFORE=$(svc_pids "${PREFIX}-j")
+  make_cert 0x1002
+  RELOADED=""
+  for ((i = 0; i < 120; i++)); do
+    if grep -qF "Zertifikat erneuert" <<<"$(docker logs "${PREFIX}-j" 2>&1)" \
+       && [[ "$(served_serial "${PREFIX}-j")" == 1002 ]]; then RELOADED=1; break; fi
+    sleep 1
+  done
+  if [[ -n "$RELOADED" ]]; then ok "Erneuertes Zertifikat wird ohne Neustart des Containers geladen ($i s)"
+  else bad "Erneuertes Zertifikat nicht geladen (ausgeliefert: $(served_serial "${PREFIX}-j"))"; fi
+  # Nur chronyd darf neu starten; alle anderen Dienste behalten ihre PID.
+  PIDS_AFTER=$(svc_pids "${PREFIX}-j")
+  OTHERS_BEFORE=$(tr ' ' '\n' <<<"$PIDS_BEFORE" | grep -v '^chronyd=' | sort | tr '\n' ' ')
+  OTHERS_AFTER=$(tr ' ' '\n' <<<"$PIDS_AFTER" | grep -v '^chronyd=' | sort | tr '\n' ' ')
+  if [[ "$PIDS_BEFORE" == *chronyd=* && "$PIDS_AFTER" == *chronyd=* \
+        && "$(grep -o 'chronyd=[0-9]*' <<<"$PIDS_BEFORE")" != "$(grep -o 'chronyd=[0-9]*' <<<"$PIDS_AFTER")" \
+        && "$OTHERS_BEFORE" == "$OTHERS_AFTER" ]]; then
+    ok "Erneuerung startet nur chronyd neu (übrige Dienste: ${OTHERS_AFTER:-keine})"
+  else bad "Erneuerung startet nicht nur chronyd neu (vorher: $PIDS_BEFORE, nachher: $PIDS_AFTER)"; fi
+  check "Container läuft nach dem Neuladen" running "$(docker inspect -f '{{.State.Status}}' "${PREFIX}-j")"
+else
+  echo "  – openssl fehlt auf dem Host, Prüfung übersprungen"
+fi
+docker rm -f "${PREFIX}-j" >/dev/null 2>&1
+
+echo
+echo "13) Sauberes Stoppen"
 docker stop -t 15 "${PREFIX}-c" >/dev/null
 check "Exit-Code bei SIGTERM" 0 "$(docker inspect -f '{{.State.ExitCode}}' "${PREFIX}-c")"
 docker exec "${PREFIX}-a" pkill -x chronyd >/dev/null 2>&1

@@ -1,0 +1,45 @@
+name: Hardware-Bericht
+description: Teile, wie ntp-gui auf deiner Hardware läuft – für die Kompatibilitätsliste.
+labels: ["hardware-report"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Die Angaben findest du im Dashboard auf der Seite **Hardware**.
+        Bitte **keine** Koordinaten, Seriennummern, MAC- oder öffentlichen IP-Adressen eintragen.
+  - type: input
+    id: board
+    attributes:
+      label: Gerät / Board
+      placeholder: "Raspberry Pi 5, Intel N100, Proxmox-VM …"
+    validations:
+      required: true
+  - type: input
+    id: receiver
+    attributes:
+      label: GPS-Empfänger
+      placeholder: "VK-162 (u-blox 7, USB), u-blox NEO-M8N am UART mit PPS …"
+  - type: dropdown
+    id: pps
+    attributes:
+      label: PPS
+      options:
+        - kein PPS
+        - PPS über GPIO
+        - PPS über serielle DCD-Leitung
+        - PPS über USB-Seriell (DCD)
+        - weiß nicht
+  - type: input
+    id: offset
+    attributes:
+      label: Kalibrierter GPS-Offset und Streuung
+      placeholder: "Offset 0.057 s, Streuung ± 0,9 ms"
+  - type: input
+    id: nic
+    attributes:
+      label: Netzwerkkarte / PTP
+      placeholder: "Intel i226 (igc), Hardware-PTP ok"
+  - type: textarea
+    id: notes
+    attributes:
+      label: Erfahrungen, Stolperfallen, Tipps

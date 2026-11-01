@@ -6,6 +6,11 @@
 # Vorher prüfen, ob die Netzwerkkarte Hardware-Zeitstempel kann:
 #   ethtool -T eth0     # -> "hardware-transmit"/"hardware-receive" + PTP Hardware Clock: 0
 # Falls nicht: PTP_TIME_STAMPING=software setzen (deutlich ungenauer, aber lauffähig).
+# Die Seite „Hardware“ im Dashboard prüft das ebenfalls und nennt passende Karten.
+#
+# Als Grandmaster ist PTP nur so gut wie seine Referenz – sinnvoll mit GPS+PPS.
+# Die Zeilen dafür (und alle weiteren Optionen) stehen mit Erklärung in
+# docker-compose.all-in-one.yml.
 services:
   ntp-gui:
     build: .
@@ -17,7 +22,7 @@ services:
     cap_add:
       - SYS_TIME                # Systemuhr stellen
       - NET_ADMIN               # Hardware-Zeitstempel aktivieren
-      - NET_RAW
+      - NET_RAW                 # PTP über Ethernet (L2, gPTP)
     devices:
       - /dev/ptp0:/dev/ptp0     # PTP Hardware Clock der NIC
 
@@ -29,17 +34,32 @@ services:
 
       PTP_ENABLE: "true"
       PTP_INTERFACE: "eth0"
+      # master = Grandmaster: chronyd regelt die Systemuhr (GPS/NTP), phc2sys
+      #          kopiert sie auf die Karte (phc2sys -a -rr).
+      # slave  = phc2sys stellt die Systemuhr nach PTP (phc2sys -a -r), chronyd
+      #          läuft dann mit -x und verteilt die Zeit nur per NTP weiter.
+      # auto   = BMCA entscheidet; phc2sys arbeitet dann wie bei slave.
       PTP_MODE: "auto"          # auto | master | slave
+      PTP_PROFILE: "default"    # default | aes67 (Audio über IP) | gptp (802.1AS)
       PTP_DOMAIN: "0"
       PTP_TRANSPORT: "UDPv4"    # UDPv4 | UDPv6 | L2
       PTP_TIME_STAMPING: "hardware"
 
-      # Als PTP-Slave die PTP-Zeit an die NTP-Clients weiterreichen:
-      # PHC_REFCLOCK: "/dev/ptp0"
+      # Systemuhr und PTP-Uhr der Karte koppeln (Richtung nach PTP_MODE, s. o.):
       # PHC2SYS_ENABLE: "true"
+      # Als PTP-Slave die PTP-Uhr zusätzlich als chrony-Referenz nutzen
+      # (PTP→NTP-Brücke):
+      # PHC_REFCLOCK: "/dev/ptp0"
 
     volumes:
       - chrony-data:/var/lib/chrony
+
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import os,urllib.request;urllib.request.urlopen('http://127.0.0.1:'+os.environ.get('WEB_PORT','8080')+'/healthz',timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 45s
 
 volumes:
   chrony-data:

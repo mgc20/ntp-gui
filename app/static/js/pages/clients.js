@@ -3,11 +3,25 @@ import { card, tile, info, rangeButtons, emptyNote, toast } from "../ui.js";
 import { lineChart, stepDecimals } from "../charts.js";
 import { requestRate } from "./overview.js";
 
+// Platzhalter, wenn die LAN-Adresse nicht bekannt ist – in den Beispielen gut sichtbar.
+const IP_PLACEHOLDER = "<IP-des-Servers>";
+
+// Loopback und das Standard-Docker-Bridge-Netz (172.17.0.0/16) sind von anderen
+// Geräten im LAN aus nicht erreichbar – solche Adressen nie als Serveradresse zeigen.
+function usableAddress(addr) {
+  if (!addr) return false;
+  const a = String(addr).toLowerCase().replace(/^\[|\]$/g, "");
+  if (a === "localhost" || a === "::1" || a === "0.0.0.0" || a.startsWith("127.")) return false;
+  if (a.startsWith("172.17.")) return false;
+  return true;
+}
+
+// Adresse, unter der Clients diesen Server erreichen – oder null, wenn keine bekannt ist.
 function serverAddress(status) {
   const host = window.location.hostname;
-  if (host && host !== "localhost" && !host.startsWith("127.")) return host;
+  if (usableAddress(host)) return host;
   const addresses = (status.system || {}).addresses || [];
-  return addresses.find((a) => /^\d+\.\d+\.\d+\.\d+$/.test(a) && !a.startsWith("127.")) || "192.168.1.10";
+  return addresses.find((a) => /^\d+\.\d+\.\d+\.\d+$/.test(a) && usableAddress(a)) || null;
 }
 
 function snippet(title, code) {
@@ -25,7 +39,8 @@ export function render(ctx) {
   const rate = requestRate(history);
   const lastRate = rate.length ? rate[rate.length - 1][1] : null;
   const filter = (ctx.uiState.clientFilter || "").toLowerCase();
-  const ip = serverAddress(status);
+  const knownIp = serverAddress(status);
+  const ip = knownIp || IP_PLACEHOLDER;
 
   const input = el("input", { type: "search", placeholder: "Filtern …", value: ctx.uiState.clientFilter || "",
     "aria-label": "Clients filtern" });
@@ -45,7 +60,7 @@ export function render(ctx) {
   });
   const table = el("div", { class: "table-scroll" }, el("table", {},
     el("thead", {}, el("tr", {},
-      el("th", { text: "Adresse" }),
+      el("th", {}, "Adresse ", info("client_address")),
       el("th", { class: "num" }, "Anfragen ", info("client_packets")),
       el("th", { class: "num" }, "Verworfen ", info("client_dropped")),
       el("th", { class: "num" }, "Intervall ", info("client_interval")),
@@ -60,7 +75,7 @@ export function render(ctx) {
   }));
 
   const setup = card("Clients einrichten", { help: "dhcp42",
-    sub: `Adresse dieses Servers: **${ip}**. Am bequemsten per DHCP Option 42 – dann übernehmen viele Geräte den Server automatisch.` },
+    sub: `Adresse dieses Servers: ${knownIp ? `**${knownIp}**` : "**unbekannt** – setze die IP des Hosts ein"}. Am bequemsten per DHCP Option 42 – dann übernehmen viele Geräte den Server automatisch.` },
     el("div", { class: "snippets" },
       snippet("dnsmasq / Pi-hole", `dhcp-option=42,${ip}`),
       snippet("ISC dhcpd", `option ntp-servers ${ip};`),

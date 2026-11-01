@@ -1,0 +1,253 @@
+# ntp-gui – Alles in einem
+# ===========================================================================
+# Eine Datei für jeden Aufbau: NTP-Server fürs LAN, NTS, GPS/PPS, PTP und
+# NTS-Server hinter einem Reverse Proxy.
+#
+# So benutzt du sie:
+# 1. Datei kopieren (z. B. als docker-compose.yml in einen eigenen Ordner).
+# 2. So wie sie ist, läuft sie sofort: NTP aus dem Internet (mit NTS
+# abgesichert) und Zeitserver für alle privaten Netze. Starten mit
+# „docker compose up -d“, Dashboard unter http://<host-ip>:8080.
+# 3. Im Dashboard die Seite „Hardware“ öffnen. Sie erkennt GPS-Empfänger,
+# PPS, PTP-Netzwerkkarten, VM und Container-Rechte und sagt dir, welche
+# der OPTIONALEN Blöcke unten du einkommentieren musst – mit fertigem
+# Ausschnitt zum Kopieren.
+# 4. Die nötigen Zeilen einkommentieren und mit „docker compose up -d“ neu
+# erzeugen. Geräte und Capabilities übernimmt Docker nur beim Erzeugen des
+# Containers, ein reiner Neustart reicht dafür nicht.
+#
+# Zum Lesen dieser Datei – die Regel ist rein mechanisch:
+# - Raute + EIN Leerzeichen („# Text“) = Erklärung, bleibt immer Kommentar.
+# - Eingerückte Raute + ZWEI Leerzeichen („    #  zeile“) = optionale
+# Einstellung. Zum Aktivieren genau diese drei Zeichen („#“ und zwei
+# Leerzeichen) löschen, alles davor und danach stehen lassen – dann stimmt
+# die Einrückung automatisch. Andere Zeilen haben dieses Muster nie; sogar
+# „sed -E 's/^( +)#  /\1/'“ über die ganze Datei ergibt gültiges YAML.
+# - Zusammengehörige Zeilen stehen in einem Block mit „[OPTION …]“ darüber.
+#
+# Umgebungsvariablen sind nur STARTWERTE: Was du im Dashboard unter
+# „Einstellungen“ speicherst, hat Vorrang (jedes Feld zeigt seine Herkunft).
+# Du musst diese Datei also nur für Dinge anfassen, die Docker selbst regelt:
+# Geräte, Capabilities, Mounts, Netzwerk.
+#
+# Vor dem ersten Start auf dem Host prüfen:
+# - Kein anderer Zeitdienst auf dem Host (systemd-timesyncd, chrony, ntpd):
+# er belegt Port 123 und würde gleichzeitig an derselben Uhr drehen.
+# Abschalten z. B. mit: sudo systemctl disable --now systemd-timesyncd
+# - Mit GPS: kein gpsd auf dem Host, er belegt Empfänger und Port 2947.
+# Abschalten mit: sudo systemctl disable --now gpsd.socket gpsd
+# - Der Container stellt die Uhr des HOSTS (Container teilen sich die Uhr).
+# Deshalb gehört er auf einen eigenen Host, eine eigene VM oder einen Pi.
+# ===========================================================================
+
+services:
+  ntp-gui:
+    image: ghcr.io/congp20/ntp-gui:latest   # amd64 und arm64 (Raspberry Pi)
+    container_name: ntp-gui
+    restart: unless-stopped
+
+    # Host-Netzwerk: kein NAT dazwischen. Darum sieht das Dashboard sicher die
+    # echten Client-IPs, und „Wer darf fragen?“ greift richtig. PTP geht
+    # ohnehin nur so (Multicast, Zeitstempel der echten Netzwerkkarte).
+    # Belegt werden auf dem Host: 123/udp (NTP), 8080/tcp (Dashboard, folgt
+    # WEB_PORT) und – nur mit NTS-Server – 4460/tcp (folgt NTS_SERVER_PORT).
+    network_mode: host
+
+    # [ALTERNATIVE Bridge-Netzwerk] Nur, wenn Host-Netzwerk nicht geht (z. B.
+    # Docker Desktop) und du KEIN PTP brauchst. Dann „network_mode: host“ oben
+    # löschen und diese Zeilen einkommentieren. Nachteil: je nach Docker-Setup
+    # (rootless, Docker Desktop, IPv6 ohne ip6tables) sehen Dashboard und
+    # „Wer darf fragen?“ statt der echten Clients nur die Bridge-Adresse.
+    # Mit WEB_PORT bzw. NTS_SERVER_PORT die Ports hier mitändern
+    # (z. B. NTS_SERVER_PORT 4461 → "4461:4461/tcp").
+    #  ports:
+    #    - "123:123/udp"      # NTP für das LAN
+    #    - "8080:8080/tcp"    # Dashboard
+    #    - "4460:4460/tcp"    # nur mit NTS-Server (NTS-KE), folgt NTS_SERVER_PORT
+
+    # SYS_TIME erlaubt chronyd, die Uhr zu stellen. Ohne startet chronyd
+    # automatisch mit -x und verteilt nur die ungeregelte Hostzeit.
+    cap_add:
+      - SYS_TIME
+      # [OPTION PTP] Hardware-Zeitstempel der Netzwerkkarte einschalten
+      # (NET_ADMIN) und PTP direkt über Ethernet senden (NET_RAW, für
+      # PTP_TRANSPORT=L2 und das gPTP-Profil).
+      #  - NET_ADMIN
+      #  - NET_RAW
+
+    # [OPTION Geräte einzeln durchreichen] Der einfache Weg für Hardware, die
+    # IMMER steckt. Achtung: Fehlt ein hier eingetragenes Gerät beim Start,
+    # bricht „docker compose up“ ab („error gathering device information“),
+    # und später eingesteckte Geräte sieht der Container nie. Für USB-GPS,
+    # das mal fehlt, ist der Block [OPTION Hotplug] weiter unten besser.
+    # Nur die Zeilen einkommentieren, deren Gerät es bei dir gibt (die
+    # Hardware-Seite zeigt sie dir).
+    #  devices:
+    # USB-GPS wie VK-162 / u-blox 7 (erscheint als /dev/ttyACM0):
+    #    - /dev/ttyACM0:/dev/ttyACM0
+    # Tipp: Stecken mehrere USB-Seriell-Geräte, kann die Nummer wechseln.
+    # Dann links den festen Namen aus „ls -l /dev/serial/by-id/“ eintragen
+    # (z. B. /dev/serial/by-id/usb-u-blox_AG_..._GPS_GNSS_Receiver-if00) und
+    # rechts /dev/ttyACM0 lassen – GPS_DEVICE bleibt dann unverändert.
+    # GPS-HAT am UART des Raspberry Pi. /dev/serial0 zeigt auf den
+    # Header-UART (Pi 3/4: ttyS0, mit dtoverlay=disable-bt ttyAMA0; Pi 5:
+    # ttyAMA0). Vorher serielle Konsole abschalten – siehe README „PPS
+    # zusätzlich nutzen“ und docker-compose.pi-gps.yml:
+    #    - /dev/serial0:/dev/serial0
+    # PPS-Signal (GPS-HAT/Modul mit PPS-Pin, Overlay pps-gpio aktiv):
+    #    - /dev/pps0:/dev/pps0
+    # PTP-Hardwareuhr der Netzwerkkarte (für PTP mit Hardware-Zeitstempeln):
+    #    - /dev/ptp0:/dev/ptp0
+
+    # [OPTION Hotplug – fortgeschritten] Statt einzelner Geräte das ganze /dev
+    # des Hosts einhängen. Dann startet der Container auch ohne Empfänger,
+    # und ein später eingesteckter USB-GPS wird automatisch übernommen (der
+    # Container sucht fehlende Geräte alle 30 s). Damit er die Geräte auch
+    # ÖFFNEN darf, erlauben die Regeln unten nur bestimmte Gerätetypen
+    # (Major-Nummern) – nie alles: „c *:* rwm“ würde z. B. /dev/watchdog
+    # freigeben, dessen Öffnen den Host neu starten kann.
+    # Dazu zusätzlich unter „volumes:“ die Zeile „/dev:/dev“ einkommentieren.
+    # PPS und PTP bekommen ihre Major-Nummer vom Kernel erst beim Booten. Die
+    # Hardware-Seite nennt sie dir; trage sie in eine Datei „.env“ neben
+    # dieser Datei ein, z. B. die zwei Zeilen „PPS_MAJOR=245“ und
+    # „PTP_MAJOR=246“ (am Host nachsehen: grep -E " (pps|ptp)$" /proc/devices).
+    # Ohne .env greifen Ersatzwerte, die nichts zusätzlich freigeben: 136
+    # (Pseudo-Terminals, erlaubt Docker ohnehin) und 0 (vergibt der Kernel nie
+    # an Geräte). Der Container startet dann trotzdem, nur PPS/PTP lassen sich
+    # nicht öffnen.
+    # (Zwei gleiche Ersatzwerte lehnt Compose ab – deshalb zwei verschiedene.)
+    #  device_cgroup_rules:
+    #    - "c 166:* rwm"                  # ttyACM*: USB-GPS (u-blox, VK-162)
+    #    - "c 188:* rwm"                  # ttyUSB*: GPS über USB-Seriell-Adapter (CP210x, FTDI, PL2303)
+    #    - "c 204:* rwm"                  # ttyAMA*: UART des Raspberry Pi (GPS-HAT, Pi 5 bzw. Pi 3/4 mit disable-bt)
+    #    - "c ${PPS_MAJOR:-136}:* rwm"    # /dev/ppsN: PPS-Signal
+    #    - "c ${PTP_MAJOR:-0}:* rwm"      # /dev/ptpN: PTP-Hardwareuhr der Netzwerkkarte
+    # Nur falls dein GPS als /dev/ttyS* erscheint (z. B. Mini-UART am Pi 3/4
+    # ohne disable-bt, auch wenn du /dev/serial0 nutzt – es zeigt dann auf
+    # ttyS0). Gibt auch die virtuellen Konsolen tty0–63 frei, deshalb nur bei
+    # Bedarf:
+    #    - "c 4:* rwm"
+
+    volumes:
+      # Drift, Messwerte, NTS-Schlüssel, Dashboard-Einstellungen und Verlauf.
+      # Ohne Volume wären die Dashboard-Einstellungen nach jedem Neuerstellen weg.
+      - chrony-data:/var/lib/chrony
+      # [OPTION Hotplug] das /dev des Hosts (siehe oben):
+      #  - /dev:/dev
+      # [OPTION NTS-Server] Zertifikat für den NTS-Server, schreibgeschützt.
+      # Erlaubt sind nur Pfade unter /config, /certs oder /etc/letsencrypt.
+      # Nginx Proxy Manager: dessen Ordner „letsencrypt“ einhängen (der ganze
+      # Ordner, weil live/npm-N/*.pem auf ../../archive/ verweisen). Für
+      # Zoraxy links stattdessen dessen Zertifikatsordner (…/conf/certs).
+      #  - /opt/npm/letsencrypt:/certs:ro
+      # [OPTION eigene Konfiguration] nts.crt/nts.key oder eigene ptp4l.conf.
+      # ACHTUNG: eine chrony.conf hier ersetzt ALLE Dashboard-Einstellungen.
+      #  - ./config:/config:ro
+
+    environment:
+      TZ: "Europe/Berlin"
+      WEB_TITLE: "Zeitserver"
+
+      # --- Zeitquellen ------------------------------------------------------
+      # Ein Pool für die Menge, dazu zwei PTB-Server mit NTS: deren Antworten
+      # sind kryptografisch signiert, eine gefälschte Zeit fällt auf. NTS
+      # braucht ausgehend TCP 4460 (Schlüsselaustausch per TLS) zusätzlich zu
+      # UDP 123 – sperrt deine Firewall das, zeigt die Seite „Zeitquellen“
+      # die PTB-Server als nicht erreichbar.
+      NTP_POOLS: "de.pool.ntp.org"
+      NTP_NTS_SERVERS: "ptbtime1.ptb.de,ptbtime2.ptb.de"
+
+      # --- Wer darf die Zeit abfragen? ---------------------------------------
+      # Alle privaten IPv4-Netze. Ein öffentlicher Zeitserver soll das nicht
+      # werden, deshalb keine Freigabe für das Internet.
+      ALLOW_NETWORKS: "192.168.0.0/16,10.0.0.0/8,172.16.0.0/12"
+
+      # [OPTION GPS] Empfänger als Referenzuhr (Stratum 1). Gerät muss per
+      # „devices:“ oder [OPTION Hotplug] im Container sein.
+      # USB-GPS ohne PPS ist auf 1–10 ms genau – nach ein paar Stunden im
+      # Dashboard unter GPS → „GPS kalibrieren“ den Offset übernehmen.
+      #  GPS_ENABLE: "true"
+      #  GPS_DEVICE: "/dev/ttyACM0"        # Pi-UART: /dev/serial0
+      #  GPS_OFFSET: "0.0"                 # setzt der Kalibrierassistent
+      #  GPS_SHOW_POSITION: "false"        # Koordinaten im Dashboard zeigen?
+      # Nur mit echtem PPS-Signal (USB-GPS wie der VK-162 haben keins):
+      #  GPS_PPS_DEVICE: "/dev/pps0"
+
+      # [OPTION PTP] braucht Host-Netzwerk, NET_ADMIN/NET_RAW und /dev/ptpN.
+      # Als Grandmaster nur sinnvoll mit GPS+PPS als Referenz.
+      #  PTP_ENABLE: "true"
+      #  PTP_INTERFACE: "eth0"             # Name aus „ip link“, die Hardware-Seite zeigt passende Karten
+      #  PTP_MODE: "master"                # master = Grandmaster, slave = Zeit von anderem Grandmaster, auto
+      #  PTP_PROFILE: "default"            # default | aes67 (Audio über IP) | gptp (802.1AS)
+      # Systemuhr und PTP-Uhr der Karte koppeln (phc2sys). Die Richtung wählt
+      # ntp-gui nach Rolle: Grandmaster kopiert die Systemuhr auf die Karte,
+      # Slave stellt die Systemuhr nach der Karte.
+      #  PHC2SYS_ENABLE: "true"
+      # NUR mit PTP_MODE "slave" (oder "auto"), NICHT zusammen mit "master":
+      # chrony nimmt die PTP-Uhr als Referenz und verteilt die Zeit per NTP
+      # weiter (PTP→NTP-Brücke). Als Grandmaster stellt phc2sys die PTP-Uhr
+      # nach der Systemuhr – chrony bekäme seine eigene Zeit zurück; ntp-gui
+      # lässt die Zeile dann mit einer WARNUNG im Log weg.
+      #  PHC_REFCLOCK: "/dev/ptp0"
+
+      # [OPTION NTS-Server hinter Reverse Proxy] Eigenen Clients NTS anbieten.
+      # Der Proxy muss TCP 4460 per TLS-Passthrough durchreichen (nicht
+      # entschlüsseln), UDP 123 geht direkt an diesen Host. Die Adresse des
+      # Proxys muss in ALLOW_NETWORKS liegen: chronyd sieht hinter dem Proxy
+      # nur dessen IP und beantwortet den Schlüsselaustausch nur aus erlaubten
+      # Netzen. Ausführlich im README unter „NTS hinter einem Reverse Proxy“.
+      #  NTS_SERVER: "true"
+      # Pfade für Nginx Proxy Manager. Welche Nummer npm-N dein Zertifikat
+      # hat, zeigt auf dem Host diese Schleife (Name je Ordner):
+      # for d in /opt/npm/letsencrypt/live/npm-*/; do echo "$d: $(openssl x509 -noout -ext subjectAltName -in "$d/cert.pem" | tail -1)"; done
+      # Für Zoraxy stattdessen „/certs/<domain>.pem“ und „/certs/<domain>.key“.
+      #  NTS_SERVER_CERT: "/certs/live/npm-1/fullchain.pem"
+      #  NTS_SERVER_KEY: "/certs/live/npm-1/privkey.pem"
+      # Name, unter dem chrony den Clients die NTP-Pakete (UDP 123) schicken
+      # lässt – muss auf DIESEN Host zeigen. Im Zertifikat muss der Name
+      # stehen, unter dem die Clients den Proxy ansprechen (NTS-KE). Laufen
+      # Proxy und ntp-gui auf demselben Host, ist es derselbe Name:
+      #  NTS_SERVER_NAME: "zeit.example.com"
+      # Nur ändern, wenn der Proxy außen 4460 annimmt und intern auf einen
+      # anderen Port weiterleitet (sonst belegen beide denselben Host-Port):
+      #  NTS_SERVER_PORT: "4461"
+
+      # [OPTION Zwei Server im Verbund] Zwei ntp-gui-Server, die sich
+      # gegenseitig als Quelle haben, einigen sich bei Internetausfall auf
+      # EINE Inselzeit statt auf zwei verschiedene. Auf beiden setzen und den
+      # jeweils anderen als Peer eintragen:
+      #  LOCAL_ORPHAN: "true"
+      #  NTP_PEERS: "192.168.1.11"
+
+      # [OPTION Dashboard absichern] Ohne Passwort kann jeder im LAN die
+      # Einstellungen ändern. Alternativ das Passwort im Dashboard setzen.
+      #  WEB_USER: "admin"
+      #  WEB_PASSWORD: "bitte-aendern"
+      # Nur anzeigen, nichts ändern (z. B. wenn die Datei hier maßgeblich ist):
+      #  WEB_READONLY: "true"
+      # Anderer Dashboard-Port, falls 8080 auf dem Host belegt ist (der
+      # healthcheck unten liest WEB_PORT selbst):
+      #  WEB_PORT: "8081"
+
+    # Docker prüft alle 30 s, ob das Dashboard und chronyd antworten
+    # (auf dem Port aus WEB_PORT, Standard 8080).
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import os,urllib.request;urllib.request.urlopen('http://127.0.0.1:'+os.environ.get('WEB_PORT','8080')+'/healthz',timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 45s
+
+    # Beim Stoppen sichert der Container Verlauf und chrony-Messwerte –
+    # dafür etwas mehr Zeit als die üblichen 10 s.
+    stop_grace_period: 30s
+
+    # Logs begrenzen, damit eine SD-Karte oder kleine Platte nicht vollläuft.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  chrony-data:

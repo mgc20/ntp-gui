@@ -1,3 +1,11 @@
+# Standard: NTP-Server für das LAN mit Internet-Quellen.
+#
+#   docker compose up -d     # Dashboard: http://<host>:8080
+#
+# Alle Optionen (GPS, PPS, PTP, NTS-Server hinter Reverse Proxy, Hotplug,
+# Dashboard-Passwort) mit Erklärung in einer Datei, zum Einkommentieren:
+# docker-compose.all-in-one.yml. Welche Blöcke du brauchst, sagt dir die
+# Seite „Hardware“ im Dashboard.
 services:
   ntp-gui:
     build: .
@@ -39,7 +47,7 @@ services:
       # - ./config:/config:ro         # eigene chrony.conf / ptp4l.conf
 
     healthcheck:
-      test: ["CMD", "python3", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8080/healthz',timeout=4)"]
+      test: ["CMD", "python3", "-c", "import os,urllib.request;urllib.request.urlopen('http://127.0.0.1:'+os.environ.get('WEB_PORT','8080')+'/healthz',timeout=4)"]
       interval: 30s
       timeout: 5s
       retries: 3

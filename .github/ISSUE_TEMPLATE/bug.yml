@@ -1,0 +1,44 @@
+name: Fehlerbericht
+description: Etwas funktioniert nicht wie erwartet.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Danke! Bitte **keine** Koordinaten, Seriennummern, öffentlichen IP-Adressen oder Passwörter einfügen.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Steht unten im Dashboard (z. B. 1.2.0).
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Plattform
+      options:
+        - Raspberry Pi
+        - Mini-PC / Server (x86)
+        - VM (Proxmox, VMware, Hyper-V …)
+        - NAS
+        - Andere
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: Was ist passiert, was hast du erwartet?
+    validations:
+      required: true
+  - type: textarea
+    id: compose
+    attributes:
+      label: Compose-Ausschnitt / Umgebungsvariablen
+      render: yaml
+  - type: textarea
+    id: logs
+    attributes:
+      label: Container-Log
+      description: "docker logs ntp-gui --tail 200"
+      render: text

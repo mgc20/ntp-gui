@@ -8,6 +8,8 @@ is stable across chrony releases, and fall back to parsing the human readable
 
 from __future__ import annotations
 
+import calendar
+import ipaddress
 import os
 import re
 import shutil
@@ -460,3 +462,174 @@ def detailed_sources() -> list[dict[str, Any]]:
             source["auth"] = auth.get(name)
             source["hostname"] = source_name(name)
     return merged
+
+
+OPENSSL = shutil.which("openssl")
+_CERT_CACHE: dict[tuple, tuple[float, dict[str, Any]]] = {}
+_CERT_TTL = 60.0
+
+
+def _readable(path: str) -> bool:
+    try:
+        with open(path, "rb") as handle:
+            handle.read(1)
+        return True
+    except OSError:
+        return False
+
+
+def parse_openssl_cert(text: str) -> dict[str, Any]:
+    """Ausgabe von `openssl x509 -noout -enddate -subject -ext subjectAltName`.
+
+    Liefert not_after (Unix-Zeit), den CN und die alternativen Namen (SAN).
+    """
+    info: dict[str, Any] = {"not_after": None, "common_name": None, "alt_names": [],
+                            "issuer": None, "issuer_cn": None}
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("notAfter="):
+            raw = " ".join(stripped.split("=", 1)[1].split())
+            for fmt in ("%b %d %H:%M:%S %Y %Z", "%b %d %H:%M:%S %Y"):
+                try:
+                    info["not_after"] = calendar.timegm(time.strptime(raw, fmt))
+                    break
+                except ValueError:
+                    continue
+        elif stripped.startswith("issuer="):
+            # "issuer=C = US, O = Let's Encrypt, CN = R11" (alt: "/C=US/O=.../CN=R11")
+            org = re.search(r"(?:^|[,/=]\s*)O\s*=\s*([^,/]+)", stripped.split("=", 1)[1])
+            cn = re.search(r"CN\s*=\s*([^,/]+)", stripped)
+            info["issuer_cn"] = cn.group(1).strip() if cn else None
+            parts = [m.group(1).strip() for m in (org, cn) if m]
+            info["issuer"] = " – ".join(dict.fromkeys(parts)) or None
+        elif stripped.startswith("subject="):
+            match = re.search(r"CN\s*=\s*([^,/]+)", stripped)
+            if match:
+                info["common_name"] = match.group(1).strip()
+        elif "Subject Alternative Name" in stripped and index + 1 < len(lines):
+            names = []
+            for part in lines[index + 1].split(","):
+                _, _, value = part.strip().partition(":")
+                if value:
+                    names.append(value.strip())
+            info["alt_names"] = names
+    return info
+
+
+def _cert_info(path: str) -> dict[str, Any]:
+    """openssl-Auswertung des Zertifikats, 60 s gecacht (Schlüssel: Pfad + mtime)."""
+    if not OPENSSL:
+        return {"openssl": False}
+    try:
+        mtime = os.stat(path).st_mtime
+    except OSError:
+        return {"openssl": True}
+    now = time.time()
+    key = (path, mtime)
+    cached = _CERT_CACHE.get(key)
+    if cached and now - cached[0] < _CERT_TTL:
+        return cached[1]
+    info: dict[str, Any] = {"openssl": True, "error": None}
+    # -ext gibt es erst ab OpenSSL 1.1.1; ohne SAN reicht notfalls auch der CN.
+    for args in (["-enddate", "-subject", "-issuer", "-ext", "subjectAltName"],
+                 ["-enddate", "-subject", "-issuer"]):
+        try:
+            proc = subprocess.run([OPENSSL, "x509", "-noout", *args, "-in", path],
+                                  capture_output=True, text=True, timeout=5, check=False)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            info["error"] = str(exc)
+            break
+        if proc.returncode == 0:
+            info.update(parse_openssl_cert(proc.stdout))
+            info["error"] = None
+            break
+        lines = (proc.stderr or "").strip().splitlines()
+        info["error"] = lines[-1] if lines else "openssl konnte das Zertifikat nicht lesen"
+    _CERT_CACHE.clear()  # immer nur ein Zertifikat – alte Einträge nicht ansammeln
+    _CERT_CACHE[key] = (now, info)
+    return info
+
+
+def cert_covers_name(name: str, cert_names: list[str]) -> bool:
+    """Deckt ein Zertifikatsname (CN/SAN, auch *.example.com) den Hostnamen ab?
+
+    Regeln wie RFC 6125 6.4.3: Groß/Kleinschreibung egal, ein Wildcard ersetzt
+    genau EIN Label ganz links (*.example.com passt auf time.example.com, nicht
+    auf example.com oder a.b.example.com). IP-Adressen nur exakt.
+    """
+    wanted = (name or "").strip().rstrip(".").lower()
+    if not wanted:
+        return False
+    try:
+        wanted_ip = ipaddress.ip_address(wanted)
+    except ValueError:
+        wanted_ip = None
+    for raw in cert_names:
+        candidate = str(raw or "").strip().rstrip(".").lower()
+        if not candidate:
+            continue
+        if wanted_ip is not None:
+            try:
+                if ipaddress.ip_address(candidate) == wanted_ip:
+                    return True
+            except ValueError:
+                pass
+            continue
+        if candidate == wanted:
+            return True
+        if candidate.startswith("*.") and "*" not in candidate[2:]:
+            suffix = candidate[1:]  # ".example.com"
+            head, dot, rest = wanted.partition(".")
+            if head and dot and "." + rest == suffix and suffix.count(".") >= 2:
+                return True
+    return False
+
+
+def nts_server_status(cfg: dict, stats: dict | None = None) -> dict:
+    """Zustand des eigenen NTS-Servers: Dateien, Ablaufdatum, Zähler aus serverstats."""
+    enabled = bool(cfg.get("nts_server_enable"))
+    cert = cfg.get("nts_server_cert") or ""
+    key = cfg.get("nts_server_key") or ""
+    name = cfg.get("nts_server_name") or ""
+    try:
+        port = int(cfg.get("nts_server_port") or 4460)
+    except (TypeError, ValueError):
+        port = 4460
+    result: dict[str, Any] = {"enabled": enabled, "cert": cert, "key": key,
+                              "name": name, "port": port}
+    if not enabled:
+        return result
+    result.update({
+        "cert_exists": bool(cert) and os.path.isfile(cert),
+        "key_exists": bool(key) and os.path.isfile(key),
+    })
+    result["cert_readable"] = result["cert_exists"] and _readable(cert)
+    result["key_readable"] = result["key_exists"] and _readable(key)
+    info = _cert_info(cert) if result["cert_readable"] else {}
+    not_after = info.get("not_after")
+    names = [n for n in [info.get("common_name"), *info.get("alt_names", [])] if n]
+    result.update({
+        "openssl": info.get("openssl", bool(OPENSSL)),
+        "cert_error": info.get("error"),
+        "not_after": not_after,
+        "days_left": None if not_after is None else round((not_after - time.time()) / 86400, 1),
+        "subject": info.get("common_name"),
+        "names": list(dict.fromkeys(names)),
+        "cert_issuer": info.get("issuer"),
+        # Selbst signiert: Clients brauchen das Zertifikat dann als vertrauenswürdige CA.
+        "cert_self_signed": (None if not info.get("issuer_cn") or not info.get("common_name")
+                             else info.get("issuer_cn") == info.get("common_name")),
+    })
+    # Clients prüfen den Namen gegen die SAN-Einträge; nur ohne SAN zählt der CN.
+    match_names = info.get("alt_names") or ([info["common_name"]] if info.get("common_name") else [])
+    result["name_matches_cert"] = (cert_covers_name(name, match_names)
+                                   if name and match_names else None)
+    if stats is None:
+        stats = serverstats()
+    result.update({
+        "ke_accepted": stats.get("nts_ke_connections_accepted"),
+        "ke_dropped": stats.get("nts_ke_connections_dropped"),
+        "authenticated_packets": stats.get("authenticated_ntp_packets"),
+    })
+    return result

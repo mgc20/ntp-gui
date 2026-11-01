@@ -1,3 +1,5 @@
+import { HELP_HARDWARE, HELP_GROUP_HARDWARE } from "./help-hardware.js";
+
 // Alle Erklärungen an einer Stelle. Die ⓘ-Knöpfe im Dashboard und die
 // Hilfeseite nutzen dieselben Texte. **fett** und `code` werden formatiert.
 
@@ -9,6 +11,35 @@ export const HELP = {
       + "Router, Drucker, Kameras, Smart-Home. Ein Client fragt einen Server nach der Zeit, misst "
       + "dabei die Laufzeit der Pakete und rechnet sie heraus. Im LAN erreicht NTP typisch "
       + "**0,1–1 ms** Genauigkeit, über das Internet **1–50 ms**, je nach Leitung.",
+  },
+  services: {
+    title: "Dienste im Container",
+    text: "Der Container startet mehrere Programme: **chronyd** (Zeitdienst), das Dashboard und je "
+      + "nach Einstellung **gpsd**, **ptp4l** und **phc2sys**. Fällt ein optionaler Dienst aus – "
+      + "etwa weil der GPS-Empfänger abgezogen wurde –, startet der Supervisor ihn mit wachsender "
+      + "Pause (5 s, 15 s, 1 min, 5 min) neu, statt den ganzen Container zu beenden. So läuft NTP "
+      + "weiter. „aus“ heißt: in den Einstellungen nicht eingeschaltet. Fällt chronyd oder das "
+      + "Dashboard aus, startet der ganze Container neu, weil ohne sie nichts mehr funktioniert.",
+  },
+  chronyd: {
+    title: "Zeitdienst (chronyd)",
+    text: "**chronyd** ist das Programm, das hier die Uhr stellt und die Zeit per NTP an das LAN "
+      + "verteilt. Das Dashboard fragt es alle paar Sekunden über `chronyc` ab. Antwortet es nicht, "
+      + "startet es gerade neu (z. B. nach dem Speichern von Einstellungen) oder ist abgestürzt – "
+      + "dann bekommen die Clients keine Zeit, und das Container-Log nennt den Grund.",
+  },
+  reference: {
+    title: "Referenz",
+    text: "Die Quelle, nach der sich die Systemuhr gerade richtet – ein Server aus der Liste der "
+      + "Zeitquellen oder das GPS. chrony nennt sie über ihre **Reference ID**: bei Servern die "
+      + "IP-Adresse, bei Refclocks einen Namen wie `GPS` oder `PPS`. Steht hier nichts oder "
+      + "`7F7F0101` (LOCAL), läuft der Server im Inselbetrieb.",
+  },
+  ref_time: {
+    title: "Referenzzeit",
+    text: "Zeitpunkt der letzten Messung, mit der chrony die Uhr korrigiert hat. Sie sollte nur "
+      + "wenige Sekunden bis Minuten zurückliegen (je nach Abfrageintervall). Liegt sie Stunden "
+      + "zurück, kommt keine Quelle mehr durch – die Uhr läuft dann frei weiter.",
   },
   stratum: {
     title: "Stratum",
@@ -61,12 +92,16 @@ export const HELP = {
   },
   leap: {
     title: "Schaltsekunden-Status",
-    text: "„Normal“ ist der Regelfall. „Insert/Delete second“ kündigt eine Schaltsekunde zum "
-      + "Monatsende an. „Not synchronised“ heißt: noch keine gültige Zeit.",
+    text: "„Normal“ ist der Regelfall. „Schaltsekunde wird eingefügt/entfernt“ kündigt eine "
+      + "Schaltsekunde zum Monatsende an – chrony und die Clients bekommen das mit. „Nicht "
+      + "synchron“ heißt: noch keine gültige Zeit. Diesen Status reicht der Server an seine Clients "
+      + "weiter.",
   },
   update_interval: {
     title: "Aktualisierungsintervall",
-    text: "Wie viele Sekunden zwischen den letzten beiden Korrekturen der Uhr lagen.",
+    text: "Wie viele Sekunden zwischen den letzten beiden Korrekturen der Uhr lagen. Es folgt dem "
+      + "Abfrageintervall der genutzten Quellen: kurz nach dem Start wenige Sekunden, später "
+      + "typisch 64–1024 s. Ein großer Wert ist kein Fehler – die Uhr läuft dann stabil.",
   },
   island: {
     title: "Inselbetrieb (local stratum)",
@@ -74,6 +109,16 @@ export const HELP = {
       + "mit absichtlich schlechtem Stratum (Standard 10). So bleiben alle Geräte im LAN "
       + "untereinander einig, auch wenn das Internet ausfällt. Sobald eine echte Quelle zurück "
       + "ist, übernimmt die wieder.",
+  },
+  local_orphan: {
+    title: "Orphan-Modus (zwei Server im Verbund)",
+    text: "Für zwei (oder mehr) ntp-gui-Server, die sich gegenseitig als Quelle eingetragen haben. "
+      + "Ohne Orphan-Modus liefert im Inselbetrieb jeder Server seine **eigene** Uhrzeit aus – die "
+      + "Geräte im LAN sehen dann zwei leicht verschiedene Zeiten. Mit Orphan-Modus einigen sich die "
+      + "Server auf **eine** gemeinsame Inselzeit: Der Server mit der kleinsten Referenz-ID gibt den "
+      + "Takt vor, der andere folgt ihm. Sobald eine echte Quelle zurück ist, gilt wieder sie. "
+      + "Wirkt nur zusammen mit „Auch ohne Quelle Zeit ausliefern“; beide Server brauchen dasselbe "
+      + "Stratum im Inselbetrieb.",
   },
   minsources: {
     title: "Mindestanzahl übereinstimmender Quellen",
@@ -109,8 +154,10 @@ export const HELP = {
       + "gar nicht – DNS, Firewall (Port 123/udp) oder der Server selbst.",
   },
   last_rx: {
-    title: "Letzte Antwort",
-    text: "Wie lange die letzte gültige Antwort dieser Quelle zurückliegt.",
+    title: "Letzter Empfang",
+    text: "Wie lange die letzte gültige Antwort dieser Quelle zurückliegt. Normal ist etwa ein "
+      + "Abfrageintervall. Deutlich mehr heißt: Die Antworten kommen nicht mehr an – chrony "
+      + "arbeitet dann mit älteren Messwerten, bis die Quelle als veraltet gilt.",
   },
   source_offset: {
     title: "Offset der Quelle",
@@ -180,6 +227,29 @@ export const HELP = {
     text: "Keine gültige Antwort in letzter Zeit. Prüfen: Name auflösbar? Port 123/udp nach "
       + "außen offen? Bei Refclocks: liefert das Gerät Daten?",
   },
+  select_reason: {
+    title: "Grund (Auswertung von chrony)",
+    text: "Warum chrony eine Quelle gerade nutzt oder nicht – direkt aus `chronyc selectdata`. "
+      + "**ausgewählt (*)** und **kombiniert (+)** fließen in die Zeit ein. Alles andere sagt, was "
+      + "fehlt: zu unsicher oder zu unruhig im Vergleich zu den besten Quellen, Widerspruch zur "
+      + "Mehrheit (**Falseticker**), zu wenige oder zu alte Messwerte, oder eine Option wie „nur "
+      + "beobachten“ bzw. „bevorzugen“ bei einer anderen Quelle. Das ⓘ in jeder Zeile erklärt den "
+      + "konkreten Grund.",
+  },
+  select_options: {
+    title: "Optionen der Quelle",
+    text: "Die Optionen, mit denen chrony diese Quelle tatsächlich bewertet. **prefer**: erste "
+      + "Wahl, solange sie plausibel ist. **noselect**: nur messen, nie nutzen (z. B. zum "
+      + "Kalibrieren). **trust**: gilt immer als richtig, auch gegen die Mehrheit. **require**: "
+      + "ohne diese Quelle wird die Uhr nicht gestellt. „keine“ ist der Normalfall.",
+  },
+  server_reference: {
+    title: "Referenz des Servers",
+    text: "Woher dieser Server selbst seine Zeit hat (seine Reference ID). Eine IP-Adresse heißt: "
+      + "Er fragt seinerseits einen anderen NTP-Server (dann Stratum 2 oder höher). Ein Name wie "
+      + "`GPS`, `PPS`, `PTB` oder `DCF` heißt: Er hängt direkt an einer Referenzuhr (Stratum 1). "
+      + "Praktisch, um zu sehen, ob zwei Quellen am Ende dieselbe Herkunft haben.",
+  },
   sel_noselect: {
     title: "Nur beobachten (N)",
     text: "Mit der Option „noselect“ konfiguriert: wird gemessen und angezeigt, aber nie zur "
@@ -209,7 +279,8 @@ export const HELP = {
   },
   sel_jittery: {
     title: "Zu unruhig (~)",
-    text: "Die Streuung der Messwerte ist zu groß im Vergleich zu den anderen Quellen.",
+    text: "Die Streuung der Messwerte ist zu groß im Vergleich zu den anderen Quellen. Typisch für "
+      + "Quellen hinter Mobilfunk oder WLAN; meist erholt sich das von allein.",
   },
   sel_waits_others: {
     title: "Wartet auf andere (w/W)",
@@ -239,11 +310,25 @@ export const HELP = {
   },
   sel_falseticker: {
     title: "Falseticker (x)",
-    text: "Widerspricht der Mehrheit der Quellen und wird ignoriert.",
+    text: "Widerspricht der Mehrheit der Quellen und wird ignoriert: Ihr Vertrauensbereich "
+      + "überschneidet sich nicht mit dem der anderen. Bei einem USB-GPS fast immer ein fehlender "
+      + "Offset – also ein Kalibrierfall.",
   },
-  sel_best: { title: "Ausgewählt (*)", text: "Die beste verfügbare Quelle." },
-  sel_combined: { title: "Kombiniert (+)", text: "Wird zusammen mit der besten Quelle genutzt." },
-  sel_not_combined: { title: "Nicht kombiniert (−)", text: "Plausibel, aber schlechter als die besten." },
+  sel_best: {
+    title: "Ausgewählt (*)",
+    text: "Die beste verfügbare Quelle: plausibel, mit der kleinsten Unsicherheit. Nach ihr richtet "
+      + "sich die Systemuhr; ihr Stratum + 1 ist das Stratum dieses Servers.",
+  },
+  sel_combined: {
+    title: "Kombiniert (+)",
+    text: "Fast so gut wie die ausgewählte Quelle und wird mit ihr gemittelt. Mehrere kombinierte "
+      + "Quellen machen die Zeit ruhiger und robuster gegen Ausreißer einer einzelnen.",
+  },
+  sel_not_combined: {
+    title: "Nicht kombiniert (−)",
+    text: "Plausibel, aber deutlich schlechter als die besten (größere Unsicherheit oder Streuung). "
+      + "Bleibt als Reserve bereit und springt ein, wenn eine bessere ausfällt.",
+  },
 
   // ---------------------------------------------------------- NTP-Details
   peer_delay: {
@@ -310,6 +395,65 @@ export const HELP = {
       + "braucht ein TLS-Zertifikat, dem die Clients vertrauen, und Clients, die NTS sprechen "
       + "(chrony, NTPsec, einige Router). **Windows und macOS können kein NTS.** Für die "
       + "meisten Geräte bleibt es beim normalen NTP, das parallel weiterläuft.",
+  },
+  nts_authenticated: {
+    title: "Authentifiziert",
+    text: "**ja** heißt: Die letzte Antwort dieser Quelle trug einen gültigen NTS-Echtheitsnachweis "
+      + "– niemand dazwischen kann die Zeit verfälscht haben. **nein** bei einer NTS-Quelle heißt: "
+      + "Der Schlüsselaustausch hat (noch) nicht geklappt. chrony nutzt die Quelle dann nicht, "
+      + "statt ungeschützt auf normales NTP zurückzufallen.",
+  },
+  nts_server_files: {
+    title: "Zertifikat und Schlüssel des NTS-Servers",
+    text: "Der NTS-Server braucht ein TLS-Zertifikat (PEM) und den passenden privaten Schlüssel, "
+      + "beide für den Container lesbar – am einfachsten in `/config` gemountet. Fehlt eine Datei, "
+      + "startet chrony ohne NTS-Server; normales NTP läuft weiter. Die Clients müssen dem "
+      + "Zertifikat vertrauen: entweder ein öffentliches (z. B. Let's Encrypt für einen echten "
+      + "Domainnamen) oder ein eigenes, dessen CA auf den Clients hinterlegt ist.",
+  },
+  nts_cert_expiry: {
+    title: "Gültigkeit des Zertifikats",
+    text: "TLS-Zertifikate laufen ab – Let's-Encrypt-Zertifikate nach 90 Tagen. Ist es abgelaufen, "
+      + "lehnen die Clients den Schlüsselaustausch ab und bekommen keine abgesicherte Zeit mehr. "
+      + "Das Dashboard warnt 14 Tage vorher. chrony liest das Zertifikat nur beim Start – deshalb "
+      + "prüft der Container jede Minute, ob Zertifikat oder Schlüssel ersetzt wurden, und lädt "
+      + "chronyd dann automatisch neu. Passen die beiden Dateien (noch) nicht zusammen, z. B. mitten "
+      + "in der Erneuerung, bleibt das zuletzt gültige Paar aktiv.",
+  },
+  nts_cert_subject: {
+    title: "Name im Zertifikat",
+    text: "Für welche Namen das Zertifikat gilt (CN und alternative Namen). Die Clients müssen den "
+      + "Server unter **genau diesem Namen** eintragen, z. B. `server ntp.example.lan nts` – mit "
+      + "der IP-Adresse oder einem anderen Namen schlägt die Prüfung fehl.",
+  },
+  nts_server_name: {
+    title: "Servername für Clients",
+    text: "Unter diesem Namen (und Port) sollen die Clients den NTS-Server erreichen – wichtig, wenn "
+      + "ein Reverse-Proxy oder eine Portweiterleitung davorsteht. chrony gibt den Namen per "
+      + "`ntsntpserver` im Schlüsselaustausch weiter, damit die Clients ihre NTP-Pakete (UDP 123) an "
+      + "den richtigen Rechner schicken. Der Name **muss im Zertifikat stehen** (CN oder alternativer "
+      + "Name, `*.example.com` deckt genau eine Ebene ab), sonst lehnen die Clients die TLS-Verbindung "
+      + "ab. Der Port wird nur angezeigt, wenn er vom Standard 4460 abweicht.",
+  },
+  nts_cert_issuer: {
+    title: "Aussteller des Zertifikats",
+    text: "Wer das Zertifikat unterschrieben hat, z. B. **Let's Encrypt**. Ein öffentlicher "
+      + "Aussteller wird von den Clients automatisch akzeptiert. Steht hier derselbe Name wie im "
+      + "Zertifikat selbst, ist es **selbst signiert** – dann müssen die Clients genau dieses "
+      + "Zertifikat (oder deine eigene CA) als vertrauenswürdig hinterlegt haben, sonst schlägt NTS fehl.",
+  },
+  nts_ke_server: {
+    title: "NTS-KE-Verbindungen",
+    text: "Wie oft Clients seit dem Start von chrony per TLS (TCP-Port 4460) einen Schlüssel "
+      + "geholt haben. **Abgelehnt** zählt Verbindungen, die chrony verworfen hat – meist wegen "
+      + "zu vieler gleichzeitiger Verbindungen. Jeder Client braucht nur selten einen neuen "
+      + "Schlüssel; die Zahl bleibt also klein.",
+  },
+  nts_auth_packets: {
+    title: "Authentifizierte Anfragen",
+    text: "Wie viele NTP-Anfragen mit gültigem NTS-Nachweis dieser Server beantwortet hat. Steht "
+      + "hier 0, obwohl Clients NTS nutzen sollen, scheitert bei ihnen der Schlüsselaustausch "
+      + "oder sie fragen ohne NTS.",
   },
   nts_cookies: {
     title: "NTS-Cookies",
@@ -433,9 +577,11 @@ export const HELP = {
     text: "Ein Protokoll für Zeit im LAN mit **Nanosekunden**-Genauigkeit. Der Trick: Die "
       + "Netzwerkkarte selbst stempelt jedes Paket beim Senden und Empfangen, statt dass "
       + "Software das tut. Dadurch fallen alle Verzögerungen in Betriebssystem und Treibern weg. "
-      + "Gebraucht wird PTP in der Industrie, im Rundfunk (AES67, Dante), im Mobilfunk und im "
-      + "Hochfrequenzhandel. **Im Homelab** ist es spannend für Audio-over-IP, Messaufbauten "
-      + "und zum Lernen. Für normale PCs reicht NTP völlig.",
+      + "Gebraucht wird PTP in der Industrie, im Mobilfunk, im Hochfrequenzhandel und im "
+      + "Rundfunk – dort für Audio über IP: AES67 (Dante nur im AES67-Modus), Ravenna. "
+      + "**Im Homelab** ist es spannend für Audio-over-IP, Messaufbauten "
+      + "und zum Lernen. Für normale PCs reicht NTP völlig. Hinweis: Natives Dante nutzt PTPv1 – "
+      + "dieser Server (linuxptp) spricht nur PTPv2, Dante-Geräte müssen also im AES67-Modus laufen.",
   },
   ptp_vs_ntp: {
     title: "PTP oder NTP?",
@@ -506,6 +652,18 @@ export const HELP = {
     text: "Wie PTP-Pakete reisen: als UDP über IPv4 (Standard), IPv6 oder direkt als "
       + "Ethernet-Rahmen (L2). Alle Teilnehmer müssen dasselbe nutzen.",
   },
+  ptp_profile: {
+    title: "PTP-Profil",
+    text: "Ein Profil ist ein Satz passender Grundwerte, damit dieser Server mit bestimmten Geräten "
+      + "zusammenspielt. Felder, die du selbst änderst, haben Vorrang. "
+      + "**Standard** (IEEE 1588 Default-Profil): passt für Linux-Clients mit linuxptp und die meisten "
+      + "Messaufbauten. "
+      + "**AES67** (Audio über IP, auch Ravenna und Dante im AES67-Modus): UDPv4, End-to-End, 8 Sync "
+      + "pro Sekunde, Announce alle 2 s und DSCP 46 (EF), damit Switches die Pakete bevorzugen. "
+      + "**gPTP** (IEEE 802.1AS für AVB/TSN, Automotive): Ethernet direkt (L2), Peer-to-Peer-"
+      + "Laufzeitmessung und die Werte aus linuxptp `gPTP.cfg` – jeder Switch im Weg muss 802.1AS "
+      + "beherrschen. Alle Teilnehmer im Netz müssen dasselbe Profil nutzen.",
+  },
   utc_offset: {
     title: "UTC-Offset",
     text: "PTP zählt in TAI (Atomzeit ohne Schaltsekunden). Derzeit liegt TAI 37 Sekunden vor "
@@ -514,13 +672,20 @@ export const HELP = {
   phc: {
     title: "PTP-Hardwareuhr (PHC)",
     text: "Eine eigene Uhr auf der Netzwerkkarte, z. B. `/dev/ptp0`. ptp4l stellt diese Uhr, "
-      + "phc2sys überträgt sie bei Bedarf auf die Systemuhr.",
+      + "phc2sys koppelt sie mit der Systemuhr – als Grandmaster Systemuhr → Karte, als Slave "
+      + "Karte → Systemuhr.",
   },
   phc2sys: {
     title: "phc2sys",
-    text: "Kopiert die Zeit von der PTP-Uhr der Netzwerkkarte auf die Systemuhr (oder umgekehrt). "
-      + "Als PTP-Slave sinnvoll. Dann stellt phc2sys die Systemuhr und chrony liefert nur noch "
-      + "aus – zwei Regler gleichzeitig würden sich gegenseitig stören.",
+    text: "Koppelt die Systemuhr mit der PTP-Uhr der Netzwerkkarte (nur bei Hardware-Zeitstempeln, "
+      + "eingeschaltet mit `PHC2SYS_ENABLE=true`); die Richtung wählt ntp-gui je nach Rolle selbst. "
+      + "**Als Grandmaster ist phc2sys Pflicht:** Es kopiert die von chrony nach GPS/NTP gestellte "
+      + "Systemuhr in die Uhr der Karte, chrony regelt dabei weiter die Systemuhr. Ohne phc2sys "
+      + "läuft die Kartenuhr frei und ptp4l verteilt eine falsche Zeit. "
+      + "**Als Slave** stellt phc2sys die Systemuhr nach der PTP-Zeit (alternativ liest chrony die "
+      + "Kartenuhr selbst über `PHC_REFCLOCK`). Mit phc2sys läuft chrony mit `-x` "
+      + "und liefert die Zeit nur noch aus – zwei Regler an derselben Uhr würden sich gegenseitig "
+      + "stören. Bei Software-Zeitstempeln gibt es keine Kartenuhr; phc2sys startet dann nicht.",
   },
   ptp_servo: {
     title: "Servo-Zustand",
@@ -539,6 +704,13 @@ export const HELP = {
   },
 
   // ---------------------------------------------------------------- Clients
+  client_address: {
+    title: "Adresse des Clients",
+    text: "Die IP-Adresse, von der die Anfragen kamen. Läuft der Container im Bridge-Netz (ohne "
+      + "`network_mode: host`), sieht chrony wegen NAT oft nur die Adresse des Docker-Gateways – "
+      + "dann erscheinen alle Geräte als eine Zeile. Für echte Client-Adressen den Host-Netzmodus "
+      + "nutzen.",
+  },
   client_packets: {
     title: "Anfragen",
     text: "Wie viele NTP-Anfragen dieses Gerät gestellt hat, seit chrony läuft.",
@@ -567,6 +739,13 @@ export const HELP = {
     text: "Damit chrony die Uhr stellen darf, braucht der Container `cap_add: [SYS_TIME]`. Ohne "
       + "läuft chrony mit `-x`: Es misst und verteilt, korrigiert aber nichts.",
   },
+  setup_accuracy: {
+    title: "Genauigkeit eines Aufbaus",
+    text: "Typische Abweichung der Uhr dieses Servers zu UTC im eingeschwungenen Zustand. Clients "
+      + "im LAN liegen per NTP noch etwa **0,1–1 ms** darüber, per PTP mit Hardware-Zeitstempeln im "
+      + "Bereich von Mikrosekunden. Die Werte sind Richtgrößen: Leitung, Last und Hardware "
+      + "verschieben sie.",
+  },
   settings_source: {
     title: "Herkunft einer Einstellung",
     text: "**Standard**: eingebauter Wert. **Umgebung**: gesetzt per Umgebungsvariable in der "
@@ -594,23 +773,30 @@ export const SELECT_STATE_SHORT = {
 };
 
 export const HELP_GROUPS = [
-  { title: "Grundlagen", keys: ["ntp", "stratum", "island", "minsources", "dhcp42", "clock_control"] },
-  { title: "Werte der Systemuhr", keys: ["system_offset", "uncertainty", "rms_offset", "frequency", "skew",
-    "root_delay", "root_dispersion", "leap", "update_interval"] },
+  { title: "Grundlagen", keys: ["ntp", "chronyd", "services", "stratum", "island", "minsources", "dhcp42", "clock_control", "local_orphan",
+    "setup_accuracy"] },
+  { title: "Werte der Systemuhr", keys: ["reference", "system_offset", "uncertainty", "rms_offset", "frequency",
+    "skew", "root_delay", "root_dispersion", "leap", "update_interval", "ref_time"] },
   { title: "Zeitquellen", keys: ["source_type", "hostname_vs_ip", "poll", "reach", "last_rx", "source_offset",
-    "jitter", "interval", "samples", "score"] },
-  { title: "Warum eine Quelle (nicht) genutzt wird", keys: ["state_best", "state_combined",
-    "state_not_combined", "state_falseticker", "state_jittery", "state_unreachable", "sel_large_distance",
+    "jitter", "interval", "samples", "score", "select_options", "server_reference"] },
+  { title: "Warum eine Quelle (nicht) genutzt wird", keys: ["select_reason", "state_best", "state_combined",
+    "state_not_combined", "state_falseticker", "state_jittery", "state_unreachable", "sel_best", "sel_combined",
+    "sel_not_combined", "sel_falseticker", "sel_jittery", "sel_large_distance",
     "sel_distance", "sel_not_preferred", "sel_noselect", "sel_missing_samples", "sel_waits_others",
     "sel_unsynchronised", "sel_stale", "sel_waits_update", "sel_not_trusted", "sel_orphan"] },
   { title: "NTP-Details je Server", keys: ["peer_delay", "peer_dispersion", "response_time", "precision",
     "jitter_asymmetry", "ntp_tests", "interleaved", "timestamping", "packets"] },
-  { title: "NTS", keys: ["nts", "nts_ke", "nts_cookies", "nocerttimecheck", "nts_server"] },
+  { title: "NTS", keys: ["nts", "nts_authenticated", "nts_ke", "nts_cookies", "nocerttimecheck", "nts_server",
+    "nts_server_files", "nts_server_name", "nts_cert_expiry", "nts_cert_subject", "nts_cert_issuer",
+    "nts_ke_server", "nts_auth_packets"] },
   { title: "GPS", keys: ["gps", "gps_value", "gps_offset", "gps_delay", "gps_role", "gps_recalibrate", "pps",
     "fix", "satellites", "dop", "snr", "skyplot", "gnss", "time_error", "cold_start"] },
   { title: "PTP", keys: ["ptp", "ptp_vs_ntp", "ptp_requirements", "grandmaster", "port_state",
     "offset_from_master", "mean_path_delay", "steps_removed", "clock_class", "clock_accuracy", "ptp_domain",
-    "ptp_transport", "utc_offset", "phc", "phc2sys", "ptp_servo", "ptp_rms", "ptp_freq"] },
-  { title: "Clients", keys: ["client_packets", "client_dropped", "client_interval", "client_last", "served_rate"] },
+    "ptp_transport", "ptp_profile", "utc_offset", "phc", "phc2sys", "ptp_servo", "ptp_rms", "ptp_freq"] },
+  { title: "Clients", keys: ["client_address", "client_packets", "client_dropped", "client_interval", "client_last", "served_rate"] },
   { title: "Einstellungen", keys: ["settings_source"] },
+  HELP_GROUP_HARDWARE,
 ];
+
+Object.assign(HELP, HELP_HARDWARE);

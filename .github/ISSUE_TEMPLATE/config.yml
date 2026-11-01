@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Roadmap
+    url: https://github.com/ConGp20/ntp-gui/blob/main/ROADMAP.md
+    about: Was geplant ist – bitte vor einer neuen Idee kurz reinschauen.

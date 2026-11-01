@@ -3,11 +3,63 @@ import { card, tile, kv, info, badge, emptyNote, toast } from "../ui.js";
 import { lineChart, skyPlot, snrBars } from "../charts.js";
 import { stateBadge, reasonCell } from "./sources.js";
 import { axisSeconds } from "./overview.js";
+import { hardwareData, pickReceiver, accuracyLadder, PPS_PATH } from "./hardware.js";
 
 const WINDOWS = [[0, "gesamter Verlauf"], [3600, "letzte Stunde"], [21600, "letzte 6 h"], [86400, "letzte 24 h"]];
 
+// Karte „Dein Empfänger“ aus dem Hardware-Check – auch bei ausgeschaltetem GPS.
+function receiverCard(ctx, report) {
+  const link = el("a", { href: "#/hardware", class: "insight-action", text: "Details → Hardware-Check" });
+  if (!report) return card("Dein Empfänger", { help: "gps_receiver_card" }, emptyNote("Hardware wird geprüft …"));
+  const receiver = pickReceiver(report);
+  if (!receiver) {
+    return card("Dein Empfänger", { help: "gps_receiver_card" },
+      el("div", { class: "verdict", "data-tone": "info" }, el("p", { text: "Kein GPS-Empfänger gefunden – weder am Host noch im Container." })),
+      emptyNote("USB-Sticks erscheinen als `/dev/ttyACM0` oder `/dev/ttyUSB0`, GPS-HATs am Raspberry Pi als `/dev/ttyAMA0` bzw. `/dev/serial0`."),
+      link);
+  }
+  const path = PPS_PATH[receiver.pps_path] || PPS_PATH.unknown;
+  return card("Dein Empfänger", { help: "gps_receiver_card", badge: receiver.configured ? null : badge("nicht eingetragen", "muted", "Erster gefundener Empfänger – in den Einstellungen ist ein anderes Gerät eingetragen") },
+    el("div", { class: "verdict", "data-tone": receiver.tone || "info" },
+      el("span", { class: "verdict-label" }, receiver.product || receiver.dev || "Empfänger", " ", info("hw_verdict", "Urteil")),
+      el("p", { text: receiver.verdict || "–" })),
+    el("div", { class: "hw-item-grid" },
+      kv([
+        ["Schnittstelle", `${receiver.interface || "–"}${receiver.dev ? ` · ${receiver.dev}` : ""}`, "hw_interface"],
+        ["PPS-Weg", path.label, "hw_pps_path"],
+        ["Genauigkeit", receiver.accuracy || "–", "hw_accuracy"],
+      ]),
+      accuracyLadder(receiver, report)),
+    link);
+}
+
+// PPS-Kachel: Einstellung + tatsächliche Impulse aus dem Hardware-Check.
+function ppsTile(gps, cfg, report) {
+  const sources = report?.pps || [];
+  const wanted = cfg.gps_pps_device || gps.pps_missing || gps.pps;
+  const source = sources.find((p) => p.configured) || sources.find((p) => wanted && p.dev === wanted) || null;
+  const receiver = pickReceiver(report);
+  if (source) {
+    if (source.state === "live") {
+      return tile({ label: "PPS", help: "hw_pps_state", value: "live", unit: isNum(source.rate_hz) ? `${fmtNumber(source.rate_hz, 1)} Hz` : "",
+        tone: source.configured ? "good" : "warn", note: source.configured ? source.dev : `${source.dev} – nicht eingetragen` });
+    }
+    return tile({ label: "PPS", help: "hw_pps_state", value: "keine Impulse", tone: source.configured ? "crit" : "warn",
+      note: `${source.dev} · ${source.state === "never" ? "noch nie ein Impuls" : "kein Fix? Kabel/Pin?"}` });
+  }
+  if (gps.pps_missing) return tile({ label: "PPS", help: "pps", value: "fehlt", tone: "crit", note: `${gps.pps_missing} fehlt im Container` });
+  if (gps.pps) {
+    const seen = report?.gps?.gpsd_pps?.seen;
+    return tile({ label: "PPS", help: "hw_gpsd_pps", value: seen === false ? "keine Impulse" : seen ? "live" : "aktiv",
+      tone: seen === false ? "warn" : "good", note: gps.pps });
+  }
+  return tile({ label: "PPS", help: "pps", value: "kein PPS", tone: "muted",
+    note: receiver ? (PPS_PATH[receiver.pps_path] || PPS_PATH.unknown).label : "USB-Empfänger: ms-Genauigkeit" });
+}
+
 function disabledView(ctx) {
   return [
+    receiverCard(ctx, hardwareData(ctx)),
     card("GPS ist nicht eingeschaltet", { help: "gps" },
       el("p", {}, rich("Ein GPS-Empfänger macht diesen Server zum **Stratum-1-Server** mit eigener Referenz – unabhängig vom Internet.")),
       el("div", { class: "compare" },
@@ -54,7 +106,7 @@ function calibrationCard(ctx, gpsSource) {
       kv([
         ["Gemessene Verspätung", fmtSeconds(cal.bias, 3, true), "gps_offset"],
         ["Streuung", `± ${fmtSeconds(cal.spread)}`, "jitter"],
-        ["Datenbasis", `${fmtNumber(cal.samples)} Messungen über ${fmtDuration(cal.duration_seconds)}`],
+        ["Datenbasis", `${fmtNumber(cal.samples)} Messungen über ${fmtDuration(cal.duration_seconds)}`, "gps_samples"],
       ]),
       el("table", { class: "cal-table" },
         el("thead", {}, el("tr", {}, el("th", { text: "" }), el("th", { text: "aktuell" }), el("th", { text: "Vorschlag" }))),
@@ -110,6 +162,7 @@ export function render(ctx) {
   if (!gps.enabled) return disabledView(ctx);
   const cfg = status.config || {};
   const gpsSource = (status.sources || []).find((s) => s.mode === "#" && s.name === cfg.gps_refid);
+  const report = hardwareData(ctx);
 
   const tiles = el("div", { class: "stat-row" },
     tile({ label: "Fix", help: "fix", value: gps.running ? (gps.mode_label || "–") : "gpsd offline",
@@ -122,16 +175,15 @@ export function render(ctx) {
     tile({ label: "Signal", help: "snr", value: isNum(gps.snr_avg) ? `${gps.snr_avg}` : "–", unit: "dB-Hz",
       tone: isNum(gps.snr_avg) ? (gps.snr_avg >= 35 ? "good" : gps.snr_avg >= 25 ? "warn" : "crit") : "muted",
       note: `Ø der genutzten · max. ${gps.snr_max ?? "–"}` }),
-    tile({ label: "PPS", help: "pps", value: gps.pps ? "aktiv" : "keiner", tone: gps.pps ? "good" : "muted",
-      note: gps.pps || (gps.pps_missing ? `${gps.pps_missing} fehlt` : "USB-Empfänger: ms-Genauigkeit") }),
+    ppsTile(gps, cfg, report),
     tile({ label: "In chrony", help: "gps_role", value: gpsSource ? ({ "*": "ausgewählt", "+": "kombiniert", "-": "beobachtet", x: "Falseticker", "?": "keine Daten" }[gpsSource.state] || gpsSource.state) : "–",
       tone: gpsSource ? ({ "*": "good", "+": "good", "-": "muted", x: "crit", "?": "crit" }[gpsSource.state] || "muted") : "muted",
       note: gpsSource ? `Offset ${fmtSeconds(gpsSource.offset, 3, true)}` : "Refclock nicht aktiv" }));
 
   const chronyCard = card("GPS in chrony", { help: "gps_value", sub: "Wie chrony das GPS gerade bewertet." },
     gpsSource ? kv([
-      ["Zustand", stateBadge(gpsSource)],
-      ["Grund", reasonCell(gpsSource)],
+      ["Zustand", stateBadge(gpsSource), "gps_source_state"],
+      ["Grund", reasonCell(gpsSource), "gps_select_reason"],
       ["Offset der letzten Messung", fmtSeconds(gpsSource.offset, 3, true), "source_offset"],
       ["Jitter", isNum(gpsSource.std_dev) ? fmtSeconds(gpsSource.std_dev) : "–", "jitter"],
       ["Eingestellter Offset", `${cfg.gps_offset} s`, "gps_offset"],
@@ -161,16 +213,17 @@ export function render(ctx) {
   }));
 
   const facts = card("Empfänger", { help: "gps" }, kv([
-    ["Gerät", `${gps.device || "–"}${gps.driver ? ` (${gps.driver})` : ""}`],
-    ["Baudrate", gps.baud ?? "automatisch"],
-    ["gpsd", gps.gpsd_release || "–"],
-    ["GPS-Zeit", gps.time || "–"],
+    ["Gerät", `${gps.device || "–"}${gps.driver ? ` (${gps.driver})` : ""}`, "gps_device"],
+    ["Baudrate", gps.baud ?? "automatisch", "gps_baud"],
+    ["gpsd", gps.gpsd_release || "–", "gpsd_version"],
+    ["GPS-Zeit", gps.time || "–", "gps_time"],
     ["Zeitfehler laut Empfänger", isNum(gps.time_error) ? fmtSeconds(gps.time_error) : "–", "time_error"],
-    ["Schaltsekunden (GPS−UTC)", gps.leapseconds ?? "–"],
-    isNum(gps.lat) ? ["Position", `${gps.lat.toFixed(5)}, ${gps.lon.toFixed(5)}${isNum(gps.alt) ? ` · ${gps.alt.toFixed(0)} m` : ""}`] : null,
+    ["Schaltsekunden (GPS−UTC)", gps.leapseconds ?? "–", "gps_leapseconds"],
+    isNum(gps.lat) ? ["Position", `${gps.lat.toFixed(5)}, ${gps.lon.toFixed(5)}${isNum(gps.alt) ? ` · ${gps.alt.toFixed(0)} m` : ""}`, "gps_position"] : null,
   ]));
 
   return [
+    receiverCard(ctx, report),
     tiles,
     el("div", { class: "grid-2" }, chronyCard, facts),
     calibrationCard(ctx, gpsSource),
