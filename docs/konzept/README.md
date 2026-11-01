@@ -33,6 +33,7 @@ der Maintainer treffen kann.
 | Dokument | Inhalt | Wann lesen |
 |---|---|---|
 | [entscheidungsrahmen.md](entscheidungsrahmen.md) | Bewertungsschema, Faustregeln, wann „nein“, Vorlage für Entscheidungen (ADR), Beispiele aus dem Projekt | vor jeder neuen Funktion oder Abhängigkeit |
+| [entscheidungen.md](entscheidungen.md) | Getroffene Entscheidungen zu den offenen Fragen (E1–E14 …) | wenn eine Frage schon entschieden sein könnte |
 | [bausteine.md](bausteine.md) | Geprüfte Open-Source-Bausteine mit Empfehlung (übernehmen / Sidecar / klein selbst / weglassen) und Quellen | wenn eine Funktion Fremdsoftware brauchen könnte |
 | [version-1.4.md](version-1.4.md) | Staffelung 1.4 / 1.5 / später, Bewertung je Thema, Abhängigkeiten zu 1.3, Abnahmekriterien, Sicherheit | beim Planen und Abnehmen der nächsten Versionen |
 | [community-dienste.md](community-dienste.md) | Architektur der Dienste im eigenen Repository, Missbrauchs- und Datenschutz, Datenverträge mit ntp-gui, Startempfehlung | bevor am Community-Repository gearbeitet wird |
