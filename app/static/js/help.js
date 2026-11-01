@@ -1,3 +1,5 @@
+import { HELP_HARDWARE, HELP_GROUP_HARDWARE } from "./help-hardware.js";
+
 // Alle Erklärungen an einer Stelle. Die ⓘ-Knöpfe im Dashboard und die
 // Hilfeseite nutzen dieselben Texte. **fett** und `code` werden formatiert.
 
@@ -613,4 +615,7 @@ export const HELP_GROUPS = [
     "ptp_transport", "utc_offset", "phc", "phc2sys", "ptp_servo", "ptp_rms", "ptp_freq"] },
   { title: "Clients", keys: ["client_packets", "client_dropped", "client_interval", "client_last", "served_rate"] },
   { title: "Einstellungen", keys: ["settings_source"] },
+  HELP_GROUP_HARDWARE,
 ];
+
+Object.assign(HELP, HELP_HARDWARE);

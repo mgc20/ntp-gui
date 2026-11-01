@@ -30,6 +30,7 @@ from urllib.parse import parse_qs, urlparse
 import chrony
 import devices
 import gps
+import hardware
 import history as historymod
 import insights
 import ptp
@@ -142,6 +143,11 @@ def collector() -> None:
         except Exception as exc:  # ein Messfehler darf den Thread nie beenden
             print(f"[web] Messung fehlgeschlagen: {exc}", flush=True)
         try:
+            # Als PTP-Grandmaster die angekündigte Uhrqualität an den Zustand von chrony anpassen.
+            ptp.update_grandmaster(settings.values(), chrony.tracking(), chrony.detailed_sources())
+        except Exception as exc:
+            print(f"[web] Grandmaster-Daten nicht gesetzt: {exc}", flush=True)
+        try:
             interval = float(settings.values()["history_interval"])
         except Exception:
             interval = 10.0
@@ -234,6 +240,7 @@ def build_status() -> dict:
         "client_count": len(clients),
         "ptp": ptp.status(),
         "gps": gps.status(),
+        "nts_server": chrony.nts_server_status(cfg),
         "chrony_running": bool(tracking),
         "config": {key: cfg[key] for key in (
             "gps_enable", "gps_device", "gps_offset", "gps_delay", "gps_select", "gps_refid",
@@ -247,7 +254,7 @@ def build_status() -> dict:
             "reload": reload_status(),
         },
     }
-    status["insights"] = insights.build(status, cfg)
+    status["insights"] = insights.build(status, cfg) + hardware.cached_insights(cfg)
     return status
 
 
@@ -484,9 +491,12 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(reload_status())
         elif path == "/api/devices":
             self._send_json(devices.summary(settings.values()))
+        elif path == "/api/hardware":
+            refresh = query.get("refresh") in {"1", "true"}
+            self._send_json(hardware.report(settings.values(), refresh=refresh))
         elif path == "/api/gps/calibration":
             cfg = settings.values()
-            window = env_like(query.get("window"), 0.0)
+            window = env_like(query.get("window", query.get("seconds")), 0.0)
             since = time.time() - window if window > 0 else None
             self._send_json(historymod.calibrate(HISTORY.snapshot(since), cfg["gps_refid"],
                                                  float(cfg["gps_offset"]), float(cfg["gps_delay"])))

@@ -460,3 +460,8 @@ def detailed_sources() -> list[dict[str, Any]]:
             source["auth"] = auth.get(name)
             source["hostname"] = source_name(name)
     return merged
+
+
+def nts_server_status(cfg: dict) -> dict:
+    """Platzhalter: Zustand des eigenen NTS-Servers."""
+    return {"enabled": bool(cfg.get("nts_server_enable"))}

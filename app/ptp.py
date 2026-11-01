@@ -228,3 +228,8 @@ def _collect() -> dict[str, Any]:
     state["log"] = log_tail()
     state["log_metrics"] = parse_log_metrics(log_tail(lines=400))
     return state
+
+
+def update_grandmaster(cfg: dict, tracking: dict, sources: list) -> None:
+    """Platzhalter: Grandmaster-Daten (clockClass, timeSource …) nachführen."""
+    return None
