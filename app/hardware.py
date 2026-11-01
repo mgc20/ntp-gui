@@ -976,10 +976,18 @@ def build_matrix(cfg: dict, rep: dict, ctx: dict) -> tuple[list[dict], list[str]
     if cfg.get("nts_server_enable") and not all(
             os.access(str(cfg.get(k) or ""), os.R_OK) for k in ("nts_server_cert", "nts_server_key")):
         cert, key = cfg.get("nts_server_cert") or "", cfg.get("nts_server_key") or ""
+        cert_dir = os.path.dirname(cert) or "/config"
+        if cert_dir == "/config":
+            where = "Lege nts.crt und nts.key in ./config und hänge den Ordner ein."
+            mount = "volumes:\n  - ./config:/config:ro"
+        else:
+            where = (f"Hänge den Ordner mit Zertifikat und Schlüssel lesbar als {cert_dir} in den "
+                     "Container ein (Pfad auf dem Host anpassen).")
+            mount = f"volumes:\n  - <Ordner auf dem Host>:{cert_dir}:ro"
         rows.append(_row("nts", "NTS", "change",
                          f"NTS-Server ist eingeschaltet, aber Zertifikat ({cert}) oder Schlüssel ({key}) "
-                         "sind im Container nicht lesbar. Lege nts.crt und nts.key in ./config und hänge "
-                         "den Ordner ein.", "volumes:\n  - ./config:/config:ro", active=nts_active))
+                         f"sind im Container nicht lesbar. {where}", mount, active=nts_active))
+        rows[-1]["cause"] = "nts_server_files"
     elif not rtc["present"] and not cfg.get("nts_nocerttimecheck"):
         rows.append(_row("nts", "NTS", "change",
                          "Ohne Echtzeituhr startet das Gerät mit falscher Zeit; NTS scheitert dann an der "
@@ -1405,6 +1413,9 @@ def build_report(cfg: dict, ctx: dict) -> dict[str, Any]:
     """Baut den Bericht. ctx: gps_status, tracking, chronyd, gpsd_probe (oder None)."""
     perms = permissions_info()
     plat = platform_info(perms["network"], perms["privileged"])
+    # Ohne Container gibt es kein "/dev vom Host eingehängt": /dev/serial/by-id und
+    # ein devtmpfs gibt es auf jedem Host – sonst folgen falsche cgroup-Ratschläge.
+    perms["dev_mounted"] = bool(perms["dev_mounted"] and plat["container"])
     pps = pps_info(cfg, ctx.get("tracking") or {})
     probe = ctx.get("gpsd_probe")
     gps_status = dict(ctx.get("gps_status") or {})
@@ -1508,6 +1519,8 @@ def cached_insights(cfg: dict) -> list[dict[str, Any]]:
         elif gm["status"] in {"change", "no"}:
             add("warn", "Grandmaster ohne GPS+PPS", gm["text"], "hardware", "hw_gps_to_ptp")
     nts = rows.get("nts")
-    if nts and nts["active"] and nts["status"] == "change":
+    # Fehlende/unlesbare Server-Zertifikate meldet schon insights.nts_server_insights.
+    if nts and nts["active"] and nts["status"] == "change" \
+            and not (cfg.get("nts_server_enable") and nts.get("cause") == "nts_server_files"):
         add("warn", "NTS: Einstellung prüfen", nts["text"], "hardware", "hw_nts")
     return out

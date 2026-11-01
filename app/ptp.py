@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -126,7 +127,8 @@ def _coerce(key: str, value: str) -> Any:
 
 
 def _pmc_base(cfg: dict) -> list[str]:
-    socket = os.environ.get("PTP_UDS_ADDRESS", "/var/run/ptp4l") or "/var/run/ptp4l"
+    import settings
+    socket = settings.ptp_uds_address()
     # The domain must match ptp4l's, otherwise the daemon silently ignores the
     # management message and pmc returns nothing but its "sending:" line. The
     # same holds for transportSpecific in the gPTP (802.1AS) profile.
@@ -197,13 +199,19 @@ def status() -> dict[str, Any]:
         return dict(state)
 
 
+def _effective_transport(cfg: dict) -> str:
+    """Transport, mit dem ptp4l wirklich läuft (Profil gptp setzt L2)."""
+    import settings
+    return settings.ptp_profile_values(cfg)[0]["ptp_transport"]
+
+
 def _collect() -> dict[str, Any]:
     cfg = _cfg()
     state: dict[str, Any] = {
         "enabled": True,
         "interface": cfg["ptp_interface"],
         "mode": cfg["ptp_mode"],
-        "transport": cfg["ptp_transport"],
+        "transport": _effective_transport(cfg),
         "time_stamping": cfg["ptp_time_stamping"],
         "domain": str(cfg["ptp_domain"]),
         "phc2sys": bool(cfg["phc2sys_enable"]),
@@ -367,11 +375,17 @@ _REASON_TEXT = {
 }
 
 
-def _env_number(name: str, default: float) -> float:
-    try:
-        return float(os.environ.get(name, "") or default)
-    except ValueError:
-        return default
+def utc_offset() -> int:
+    """PTP_UTC_OFFSET: angekündigter currentUtcOffset (TAI−UTC) in s, 0–100, Standard 37."""
+    import settings
+    return int(settings.env_number("PTP_UTC_OFFSET", 37, 0, 100, integer=True))
+
+
+def holdover_seconds() -> float:
+    """PTP_HOLDOVER_SECONDS: so lange nach dem letzten GPS+PPS-Lock gilt clockClass 7,
+    0–86400 s (0 = kein Holdover), Standard 900."""
+    import settings
+    return float(settings.env_number("PTP_HOLDOVER_SECONDS", 900, 0, 86400))
 
 
 def update_grandmaster(cfg: dict, tracking: dict, sources: list) -> None:
@@ -395,14 +409,17 @@ def _update_grandmaster(cfg: dict, tracking: dict, sources: list, now: float) ->
     last_locked = _GM_STATE["last_locked"]
     props = grandmaster_properties(
         tracking, sources, gps_refid=str(cfg.get("gps_refid") or "GPS"),
-        utc_offset=int(_env_number("PTP_UTC_OFFSET", 37)),
+        utc_offset=utc_offset(),
         holdover_age=None if last_locked is None else now - last_locked,
-        holdover_limit=_env_number("PTP_HOLDOVER_SECONDS", 900))
+        holdover_limit=holdover_seconds())
     if props is None:
         return
     if props["reason"] == "gps_pps":
         _GM_STATE["last_locked"] = now
-    key = tuple(props[k] for k in _GM_FIELDS if k != "clockAccuracy")
+    # Die Identität des ptp4l-Prozesses gehört zum Schlüssel: Ein neu gestarteter
+    # ptp4l (Speichern, Hotplug, Absturz) beginnt wieder mit den Werten aus
+    # ptp4l.conf (clockClass 248) und muss die Daten sofort neu bekommen.
+    key = (*(props[k] for k in _GM_FIELDS if k != "clockAccuracy"), _ptp4l_identity())
     since = now - _GM_STATE["sent"]
     if _GM_STATE["failed"] and now - _GM_STATE["failed"] < _GM_RETRY:
         return
@@ -423,6 +440,42 @@ def _update_grandmaster(cfg: dict, tracking: dict, sources: list, now: float) ->
                      logged_error=False)
     with _LOCK:  # Statusanzeige sofort neu lesen lassen
         _CACHE.clear()
+
+
+def _ptp4l_identity() -> str | None:
+    """Kennung des laufenden ptp4l: PID + Startzeit aus services.json des Supervisors,
+    sonst PID + Startzeit (Jiffies) aus /proc. None, wenn keiner gefunden wird."""
+    run_dir = os.environ.get("NTPGUI_RUN_DIR", "/run/ntp-gui")
+    try:
+        with open(os.path.join(run_dir, "services.json"), encoding="utf-8") as handle:
+            entry = (json.load(handle).get("services") or {}).get("ptp4l") or {}
+        if entry.get("state") == "running" and entry.get("pid"):
+            return f"svc:{entry['pid']}:{entry.get('since')}"
+    except (OSError, ValueError, AttributeError):
+        pass
+    return _proc_identity("ptp4l")
+
+
+def _proc_identity(comm: str) -> str | None:
+    found = []
+    try:
+        pids = [name for name in os.listdir("/proc") if name.isdigit()]
+    except OSError:
+        return None
+    for pid in pids:
+        try:
+            with open(f"/proc/{pid}/stat", encoding="utf-8", errors="replace") as handle:
+                stat = handle.read()
+        except OSError:
+            continue
+        name = stat[stat.find("(") + 1:stat.rfind(")")]
+        if name != comm:
+            continue
+        fields = stat[stat.rfind(")") + 2:].split()
+        # fields[0] = Zustand (Feld 3), fields[19] = starttime (Feld 22)
+        if len(fields) > 19 and fields[0] != "Z":
+            found.append(f"proc:{pid}:{fields[19]}")
+    return ",".join(sorted(found)) or None
 
 
 def _send_grandmaster(cfg: dict, props: dict) -> bool:

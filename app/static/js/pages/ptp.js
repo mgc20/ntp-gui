@@ -78,6 +78,8 @@ const COMPOSE = `services:
       PTP_MODE: master            # chrony stellt die Systemuhr nach GPS/PPS,
                                   # phc2sys kopiert sie in die PTP-Uhr der Karte,
                                   # ptp4l verteilt diese Uhr im Netz
+      PHC2SYS_ENABLE: "true"      # Pflicht: koppelt Systemuhr → PTP-Uhr der Karte
+                                  # (ohne phc2sys läuft die Kartenuhr frei)
       GPS_ENABLE: "true"
       GPS_DEVICE: /dev/ttyAMA0
       GPS_PPS_DEVICE: /dev/pps0
@@ -127,9 +129,9 @@ export function render(ctx) {
     el("details", keepOpen(ctx, "ptpGm"), el("summary", {}, "So wird dieser Server zum GPS-Grandmaster ", info("ptp_grandmaster_flow", "Grandmaster")),
       el("ol", { class: "steps gm-flow" },
         el("li", {}, rich("**chrony** stellt die Systemuhr nach GPS – mit **PPS** auf Mikrosekunden genau.")),
-        el("li", {}, rich("**phc2sys** kopiert die Systemuhr laufend in die PTP-Uhr der Netzwerkkarte (`/dev/ptp0`) und rechnet dabei die 37 s zwischen UTC und der PTP-Zeitskala TAI ein. Das passiert im Modus „Master“ automatisch; chrony stellt dabei weiter die Systemuhr.")),
+        el("li", {}, rich("**phc2sys** kopiert die Systemuhr laufend in die PTP-Uhr der Netzwerkkarte (`/dev/ptp0`) und rechnet dabei die 37 s zwischen UTC und der PTP-Zeitskala TAI ein. Dafür muss „Systemuhr und PTP-Uhr koppeln (phc2sys)“ an sein (`PHC2SYS_ENABLE=true`); die Richtung wählt ntp-gui im Modus „Master“ automatisch. chrony stellt dabei weiter die Systemuhr.")),
         el("li", {}, rich("**ptp4l** verteilt die Uhr der Karte als Grandmaster an alle PTP-Clients im LAN."))),
-      el("p", {}, rich("Im Modus **Slave** läuft es umgekehrt: ptp4l übernimmt die Zeit eines anderen Grandmasters in die Karte, chrony liest sie über `PHC_REFCLOCK` (oder phc2sys stellt die Systemuhr) und verteilt sie per NTP weiter.")))));
+      el("p", {}, rich("Im Modus **Slave** läuft es umgekehrt: ptp4l übernimmt die Zeit eines anderen Grandmasters in die Karte, chrony liest sie über `PHC_REFCLOCK` (oder phc2sys stellt die Systemuhr, dann läuft chrony mit `-x`) und verteilt sie per NTP weiter.")))));
 
   out.push(card("Voraussetzungen auf diesem System", { help: "ptp_requirements",
     sub: "Live geprüft. Graue Punkte lassen sich nicht automatisch prüfen." },

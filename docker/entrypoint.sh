@@ -162,7 +162,8 @@ file_signature() {  # file_signature <pfad...> -> eine Zeile
 # chrony liest Zertifikat und Schlüssel nur beim Start (chrony.conf(5),
 # ntsservercert: "The files are loaded only once. chronyd needs to be restarted
 # in order to load a renewed certificate."). Erneuert der Reverse Proxy oder
-# Certbot das Zertifikat, startet der Watchdog die Zeitdienste neu. Die Änderung
+# Certbot das Zertifikat, startet der Watchdog nur chronyd neu (reload_chronyd) –
+# gpsd, ptp4l und phc2sys laufen weiter. Die Änderung
 # muss NTS_CERT_SETTLE Sekunden stabil sein, damit nicht zwischen dem Schreiben
 # von Zertifikat und Schlüssel neu geladen wird.
 check_nts_cert() {  # check_nts_cert <jetzt> -> 0 = neu laden
@@ -309,6 +310,27 @@ reload_services() {
   fi
 }
 
+# Nur chronyd neu laden (erneuertes NTS-Zertifikat): confgen legt die Kopien von
+# Zertifikat und Schlüssel neu an und schreibt chrony.conf; gpsd, ptp4l und
+# phc2sys laufen weiter, damit GPS/PPS nicht neu einrasten und PTP nicht ausfällt.
+reload_chronyd() {
+  local entry
+  write_status running "chronyd wird neu gestartet"
+  if ! apply_config; then
+    write_status error "Konfiguration fehlerhaft – chronyd läuft mit dem bisherigen Zertifikat weiter"
+    return 0
+  fi
+  entry="${SVC_ENTRY[chronyd]:-}"
+  if [[ -n "$entry" ]] && service_alive "$entry"; then
+    kill "${entry%%=*}" 2>/dev/null || true
+    wait "${entry%%=*}" 2>/dev/null || true
+  fi
+  SVC_ENTRY[chronyd]=""
+  start_chronyd
+  write_status done "Zertifikat neu geladen"
+  log main "chronyd neu gestartet."
+}
+
 shutdown() {
   # Exit-Code 0 nur beim geordneten Stoppen; ein weggestorbener Dienst muss
   # auch mit restart=on-failure einen Neustart auslösen.
@@ -327,8 +349,19 @@ trap 'RELOAD_REQUESTED=1' SIGHUP
 # --- Watchdog-Bausteine -----------------------------------------------------------
 # Ein optionaler Dienst ist ausgefallen: Exit-Code merken, Neustart planen.
 schedule_restart() {  # schedule_restart <dienst>
-  local name="$1" entry="${SVC_ENTRY[$1]}" code=0 t ran delay fails
-  wait "${entry%%=*}" 2>/dev/null || code=$?
+  local name="$1" entry="${SVC_ENTRY[$1]}" code=0 t ran delay fails pid stat st ppid
+  pid="${entry%%=*}"
+  # 'wait' blockiert, solange das Kind lebt. Passt nur comm nicht (z. B. direkt
+  # nach fork, vor exec), ist der Dienst nicht tot: nicht warten, nächste Runde
+  # erneut prüfen. Nur ein beendetes Kind (Zombie) oder ein fremder/verschwundener
+  # PID geht weiter – dann kehrt 'wait' sofort zurück.
+  if [[ -n "$pid" ]] && stat=$(cat "/proc/${pid}/stat" 2>/dev/null); then
+    read -r st ppid _ <<<"${stat##*) }"
+    if [[ "$st" != Z && "$ppid" == "$$" ]]; then
+      return 0
+    fi
+  fi
+  wait "$pid" 2>/dev/null || code=$?
   t=$(now)
   ran=$(( t - ${SVC_STARTED[$name]:-$t} ))
   fails=${SVC_FAILS[$name]:-0}
@@ -437,7 +470,7 @@ while true; do
   fi
   if (( NOW >= NEXT_NTS_CERT )) && check_nts_cert "$NOW"; then
     log nts "Zertifikat erneuert – chronyd lädt neu"
-    reload_services
+    reload_chronyd
   fi
   # ptp4l schreibt sein Log unbegrenzt; ab 5 MB auf die letzten 256 KB kürzen.
   # In-place (cat >), damit der O_APPEND-Deskriptor von ptp4l gültig bleibt.

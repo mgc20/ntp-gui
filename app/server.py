@@ -264,6 +264,30 @@ def services_status() -> dict:
     return out
 
 
+# Hinweis-Schlüssel → Schlüssel, deren Anwesenheit ihn überflüssig macht (gleiche
+# Ursache, schon ausführlicher gemeldet). Explizit statt Textvergleich.
+INSIGHT_SUPPRESSED_BY = {
+    # Läuft gpsd nicht, meldet "gpsd antwortet nicht" das Problem bereits; der
+    # Hardware-Hinweis zum Empfänger wäre ein zweiter Eintrag für dieselbe Ursache.
+    "hw_gps_usb": {"gpsd_down"},
+}
+
+
+def combine_insights(*lists: list[dict]) -> list[dict]:
+    """Hinweislisten zusammenführen: doppelte Schlüssel und unterdrückte Hinweise
+    (INSIGHT_SUPPRESSED_BY) entfernen, Reihenfolge beibehalten."""
+    merged = [item for items in lists for item in items]
+    keys = {item.get("key") for item in merged}
+    out, seen = [], set()
+    for item in merged:
+        key = item.get("key")
+        if (key is not None and key in seen) or INSIGHT_SUPPRESSED_BY.get(key, set()) & keys:
+            continue
+        seen.add(key)
+        out.append(item)
+    return out
+
+
 def service_insights(services: dict, now: float | None = None) -> list[dict]:
     """Hinweise zu ausgefallenen Diensten (nur die optionalen startet der Supervisor neu)."""
     now = time.time() if now is None else now
@@ -347,8 +371,9 @@ def build_status() -> dict:
             "reload": reload_status(),
         },
     }
-    status["insights"] = (insights.build(status, cfg) + service_insights(status["services"])
-                          + hardware.cached_insights(cfg))
+    status["insights"] = combine_insights(insights.build(status, cfg),
+                                          service_insights(status["services"]),
+                                          hardware.cached_insights(cfg))
     return status
 
 

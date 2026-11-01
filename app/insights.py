@@ -41,12 +41,14 @@ def nts_server_insights(nts: dict[str, Any]) -> list[dict[str, Any]]:
     if missing:
         add("warn", "NTS-Server ohne Zertifikat",
             f"Der NTS-Server ist eingeschaltet, aber {' und '.join(p or '(kein Pfad)' for p in missing)} "
-            "fehlt. chrony startet den NTS-Server deshalb nicht – normales NTP läuft weiter. Zertifikat "
+            f"{'fehlen' if len(missing) > 1 else 'fehlt'}. chrony startet den NTS-Server deshalb nicht – normales NTP läuft weiter. Zertifikat "
             "und Schlüssel nach /config legen (Volume) oder die Pfade in den Einstellungen anpassen.",
             "nts_server_files")
     elif unreadable:
         add("warn", "NTS-Zertifikat nicht lesbar",
-            f"{' und '.join(unreadable)} existiert, lässt sich aber nicht lesen. Meist stimmen die "
+            f"{' und '.join(unreadable)} "
+            f"{'existieren, lassen sich' if len(unreadable) > 1 else 'existiert, lässt sich'} "
+            "aber nicht lesen. Meist stimmen die "
             "Dateirechte nicht: Die Dateien müssen für den Container lesbar sein (z. B. chmod 640 "
             "und passende Gruppe).", "nts_server_files")
     name = nts.get("name") or ""
@@ -84,6 +86,49 @@ def nts_server_insights(nts: dict[str, Any]) -> list[dict[str, Any]]:
                 "die Clients den Schlüsselaustausch ab. Rechtzeitig erneuern – sobald sich die Datei "
                 "ändert, startet ntp-gui chronyd automatisch neu (chrony liest Zertifikate nur "
                 "beim Start).", "nts_cert_expiring")
+    return out
+
+
+def ptp_role_insights(cfg: dict[str, Any]) -> list[dict[str, Any]]:
+    """PTP-Rolle passt nicht zu phc2sys/Zeitstempeln: die Warnungen, die confgen
+    sonst nur ins Container-Log schreibt."""
+    if not (cfg.get("ptp_enable") and cfg.get("ptp_interface")):
+        return []
+    import confgen  # spät importieren: insights bleibt ohne confgen testbar
+    import settings
+    full = {key: field["default"] for key, field in settings.FIELDS.items()}
+    full.update(cfg)
+    mode = full.get("ptp_mode")
+    software = full.get("ptp_time_stamping") == "software"
+    plan = confgen.phc2sys_plan(full, {})
+    out: list[dict[str, Any]] = []
+
+    def add(title, text, key):
+        out.append({"level": "warn", "title": title, "text": text, "action": "settings", "key": key})
+
+    if mode == "master" and not software and not full.get("phc2sys_enable"):
+        add("PTP-Grandmaster verteilt eine frei laufende Uhr",
+            "Dieser Server ist PTP-Grandmaster mit Hardware-Zeitstempeln, aber phc2sys ist aus. "
+            "ptp4l verteilt dann die Uhr der Netzwerkkarte, und die läuft frei – NICHT die Zeit "
+            "von chrony/GPS. Schalte in den Einstellungen „Systemuhr und PTP-Uhr koppeln "
+            "(phc2sys)“ ein (PHC2SYS_ENABLE=true).", "ptp_gm_free_running")
+    elif mode == "master" and plan["start"] and plan["nocontrol"]:
+        add("PTP-Grandmaster folgt der Kartenuhr",
+            f"Mit den eigenen phc2sys-Optionen „{full.get('phc2sys_options')}“ stellt phc2sys die "
+            "Systemuhr nach der frei laufenden Uhr der Netzwerkkarte, chronyd läuft mit -x und "
+            "GPS/NTP werden nicht genutzt. Lass die phc2sys-Optionen leer (automatisch) oder "
+            f"trage „{confgen.PHC2SYS_AUTO['master']}“ ein.", "ptp_gm_phc2sys_options")
+    elif mode == "auto" and software:
+        add("PTP-Rolle „automatisch“ mit Software-Zeitstempeln",
+            "Wird dieser Server PTP-Slave, stellen ptp4l und chronyd dieselbe Systemuhr und "
+            "überschreiben sich gegenseitig. Stelle die Rolle fest auf „Grandmaster“ (verteilt "
+            "die Zeit von chrony) oder „Slave“ (chronyd liefert nur aus).", "ptp_auto_software")
+    elif mode == "auto" and plan["start"] and plan["nocontrol"]:
+        add("PTP-Rolle „automatisch“ mit phc2sys",
+            "phc2sys stellt die Systemuhr nach PTP und chronyd läuft deshalb mit -x. Gewinnt "
+            "dieser Server die PTP-Wahl und wird selbst Grandmaster, regelt niemand mehr die "
+            "Systemuhr – NTP und PTP verteilen dann eine driftende Zeit. Stelle die Rolle fest "
+            "auf „Grandmaster“ oder „Slave“.", "ptp_auto_phc2sys")
     return out
 
 
@@ -200,6 +245,7 @@ def build(status: dict[str, Any], cfg: dict[str, Any]) -> list[dict[str, Any]]:
         add("crit", "ptp4l antwortet nicht",
             "PTP ist eingeschaltet, aber ptp4l läuft nicht oder antwortet nicht. Die PTP-Seite "
             "prüft die Voraussetzungen.", action="ptp", key="ptp_down")
+    out.extend(ptp_role_insights(cfg))
 
     ui = status.get("ui") or {}
     if not (ui.get("storage") or {}).get("persistent", True):

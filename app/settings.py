@@ -678,6 +678,79 @@ def _check_refid(value: Any) -> str:
 
 FIELDS = {field["key"]: field for field in SCHEMA}
 
+
+# PTP-Profile. Werte nur dort, wo das Feld im Dashboard noch auf seinem
+# Standard steht – was der Nutzer ausdrücklich ändert, gewinnt.
+#
+# gptp: IEEE 802.1AS, Werte aus linuxptp configs/gPTP.cfg (Upstream-Repository
+#   richardcochran/linuxptp, "802.1AS example configuration containing those
+#   attributes which differ from the defaults").
+# aes67: AES67-2018 Anhang A (Media-Profil): Domain 0, Delay-Request-Response
+#   (E2E) über UDP/IPv4-Multicast, logSyncInterval -3 (Standard), logAnnounceInterval
+#   1, announceReceiptTimeout 3; QoS-Klasse "Clock" = DSCP 46 (EF).
+PTP_PROFILES: dict[str, dict] = {
+    "default": {"fields": {}, "extra": {}},
+    "aes67": {
+        "fields": {"ptp_transport": "UDPv4", "ptp_delay_mechanism": "E2E",
+                   "ptp_log_sync_interval": -3, "ptp_log_announce_interval": 1,
+                   "ptp_announce_receipt_timeout": 3},
+        "extra": {"dscp_event": "46", "dscp_general": "46"},
+    },
+    "gptp": {
+        "fields": {"ptp_transport": "L2", "ptp_delay_mechanism": "P2P",
+                   "ptp_priority1": 248, "ptp_priority2": 248,
+                   "ptp_log_sync_interval": -3, "ptp_log_announce_interval": 0},
+        "extra": {"gmCapable": "1", "syncReceiptTimeout": "3",
+                  "neighborPropDelayThresh": "800", "min_neighbor_prop_delay": "-20000000",
+                  "assume_two_step": "1", "path_trace_enabled": "1", "follow_up_info": "1",
+                  "transportSpecific": "0x1", "ptp_dst_mac": "01:80:C2:00:00:0E"},
+    },
+}
+
+
+def ptp_profile_values(cfg: dict) -> tuple[dict, dict]:
+    """Effektive PTP-Werte nach Profil: (Felder, zusätzliche ptp4l-Zeilen)."""
+    profile = PTP_PROFILES.get(cfg.get("ptp_profile") or "default", PTP_PROFILES["default"])
+    out = dict(cfg)
+    for key, value in profile["fields"].items():
+        field = FIELDS.get(key)
+        if field is not None and cfg.get(key, field["default"]) == field["default"]:
+            out[key] = value
+    return out, dict(profile["extra"])
+
+
+PTP_UDS_DEFAULT = "/var/run/ptp4l"
+_UDS_RE = re.compile(r"^/[A-Za-z0-9._/-]{1,100}$")
+
+
+def ptp_uds_address(env: dict | None = None) -> str:
+    """PTP_UDS_ADDRESS: Management-Socket von ptp4l (ptp4l.conf uds_address,
+    phc2sys -z, pmc -s). Nur ein absoluter Pfad ohne Leer-/Sonderzeichen, sonst
+    der Standard – der Wert landet ungequotet in ptp4l.conf und der phc2sys-Zeile."""
+    env = os.environ if env is None else env
+    value = (env.get("PTP_UDS_ADDRESS") or "").strip()
+    if value and _UDS_RE.match(value) and ".." not in value.split("/"):
+        return value
+    return PTP_UDS_DEFAULT
+
+
+def env_number(name: str, default: float, low: float, high: float,
+               env: dict | None = None, integer: bool = False) -> float:
+    """Zahl aus einer Umgebungsvariable; leer, ungültig oder außerhalb
+    [low, high] ergibt den Standard."""
+    env = os.environ if env is None else env
+    raw = (env.get(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw) if integer else float(raw)
+    except ValueError:
+        return default
+    if value != value or not low <= value <= high:  # NaN oder außerhalb
+        return default
+    return value
+
+
 # Nur per Umgebungsvariable – im Dashboard sichtbar, aber nicht änderbar.
 ENV_ONLY = [
     ("WEB_PORT", "Port des Dashboards"),

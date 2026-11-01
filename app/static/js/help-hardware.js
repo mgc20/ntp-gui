@@ -113,7 +113,7 @@ export const HELP_HARDWARE = {
   hw_gps_to_ptp: {
     title: "GPS → PTP (Grandmaster)",
     text: "chrony stellt die Systemuhr nach GPS, **phc2sys kopiert die Systemuhr in die Uhr der "
-      + "Netzwerkkarte**, ptp4l verteilt diese Uhr als Grandmaster. Sinnvoll nur mit **PPS**: Mit einem "
+      + "Netzwerkkarte** (dafür `PHC2SYS_ENABLE=true` setzen), ptp4l verteilt diese Uhr als Grandmaster. Sinnvoll nur mit **PPS**: Mit einem "
       + "USB-GPS würde PTP eine auf Millisekunden ungenaue Zeit nanosekundengenau verteilen. Profi-Variante "
       + "(PPS direkt an einen Pin der Karte, ts2phc) unterstützt ntp-gui nicht.",
   },
@@ -445,7 +445,8 @@ export const HELP_HARDWARE = {
   ptp_grandmaster_flow: {
     title: "So arbeitet der Grandmaster",
     text: "Drei Schritte: **chrony** stellt die Systemuhr nach GPS/PPS, **phc2sys** kopiert die Systemuhr in "
-      + "die PTP-Uhr der Netzwerkkarte (inklusive der 37 s Abstand zwischen UTC und der PTP-Zeitskala TAI), "
+      + "die PTP-Uhr der Netzwerkkarte (inklusive der 37 s Abstand zwischen UTC und der PTP-Zeitskala TAI; "
+      + "dafür muss phc2sys eingeschaltet sein, `PHC2SYS_ENABLE=true`), "
       + "**ptp4l** verteilt diese Uhr ins Netz. Im Slave-Modus läuft es umgekehrt: ptp4l stellt die Karte, "
       + "und chrony oder phc2sys übernehmen die Zeit in die Systemuhr.",
   },

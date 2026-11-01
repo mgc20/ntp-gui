@@ -111,7 +111,14 @@ def render_chrony(cfg: dict, env: dict | None = None, warn=_log,
                          f"poll {pps_poll}" + (f" {pps_extra}" if pps_extra else ""))
 
     phc = cfg["phc_refclock"]
-    if phc:
+    if phc and cfg.get("ptp_mode") == "master" and phc2sys_plan(cfg, env)["start"]:
+        # Als Grandmaster kopiert phc2sys die Systemuhr in die PHC. Ein PHC-Refclock
+        # würde chronyd seine eigene Zeit zurückliefern (Zeitschleife) und könnte mit
+        # stratum 1 und winzigem Jitter sogar GPS/NTP verdrängen.
+        warn("ptp", f"WARNUNG: PHC-Refclock {phc} wird übersprungen – als PTP-Grandmaster "
+                    "stellt phc2sys die PTP-Uhr nach der Systemuhr, chrony bekäme seine eigene "
+                    "Zeit zurück. PHC_REFCLOCK nur als PTP-Slave verwenden.")
+    elif phc:
         if os.path.exists(phc):
             options = env.get("PHC_REFCLOCK_OPTIONS", "poll 0 dpoll -2 offset 0 stratum 1")
             lines.append(f"refclock PHC {phc} {options}".rstrip())
@@ -194,44 +201,15 @@ def render_chrony(cfg: dict, env: dict | None = None, warn=_log,
     return "\n".join(lines) + "\n"
 
 
-# PTP-Profile. Werte nur dort, wo das Feld im Dashboard noch auf seinem
-# Standard steht – was der Nutzer ausdrücklich ändert, gewinnt.
-#
-# gptp: IEEE 802.1AS, Werte aus linuxptp configs/gPTP.cfg (Upstream-Repository
-#   richardcochran/linuxptp, "802.1AS example configuration containing those
-#   attributes which differ from the defaults").
-# aes67: AES67-2018 Anhang A (Media-Profil): Domain 0, Delay-Request-Response
-#   (E2E) über UDP/IPv4-Multicast, logSyncInterval -3 (Standard), logAnnounceInterval
-#   1, announceReceiptTimeout 3; QoS-Klasse "Clock" = DSCP 46 (EF).
-PTP_PROFILES: dict[str, dict] = {
-    "default": {"fields": {}, "extra": {}},
-    "aes67": {
-        "fields": {"ptp_transport": "UDPv4", "ptp_delay_mechanism": "E2E",
-                   "ptp_log_sync_interval": -3, "ptp_log_announce_interval": 1,
-                   "ptp_announce_receipt_timeout": 3},
-        "extra": {"dscp_event": "46", "dscp_general": "46"},
-    },
-    "gptp": {
-        "fields": {"ptp_transport": "L2", "ptp_delay_mechanism": "P2P",
-                   "ptp_priority1": 248, "ptp_priority2": 248,
-                   "ptp_log_sync_interval": -3, "ptp_log_announce_interval": 0},
-        "extra": {"gmCapable": "1", "syncReceiptTimeout": "3",
-                  "neighborPropDelayThresh": "800", "min_neighbor_prop_delay": "-20000000",
-                  "assume_two_step": "1", "path_trace_enabled": "1", "follow_up_info": "1",
-                  "transportSpecific": "0x1", "ptp_dst_mac": "01:80:C2:00:00:0E"},
-    },
-}
+# PTP-Profile und ihre effektiven Werte stehen in settings, damit Dashboard
+# (Statusanzeige, Hardware-Check) und confgen dieselben Werte sehen.
+PTP_PROFILES = settings.PTP_PROFILES
+ptp_profile_values = settings.ptp_profile_values
 
 
-def ptp_profile_values(cfg: dict) -> tuple[dict, dict]:
-    """Effektive PTP-Werte nach Profil: (Felder, zusätzliche ptp4l-Zeilen)."""
-    profile = PTP_PROFILES.get(cfg.get("ptp_profile") or "default", PTP_PROFILES["default"])
-    out = dict(cfg)
-    for key, value in profile["fields"].items():
-        field = settings.FIELDS.get(key)
-        if field is not None and cfg.get(key, field["default"]) == field["default"]:
-            out[key] = value
-    return out, dict(profile["extra"])
+def ptp_tx_timestamp_timeout(env: dict) -> int:
+    """PTP_TX_TIMESTAMP_TIMEOUT in ms (ptp4l tx_timestamp_timeout), 1–10000, Standard 10."""
+    return int(settings.env_number("PTP_TX_TIMESTAMP_TIMEOUT", 10, 1, 10000, env, integer=True))
 
 
 def render_ptp4l(cfg: dict, env: dict | None = None) -> str:
@@ -252,14 +230,18 @@ clockClass              {cfg['ptp_clock_class']}
 delay_mechanism         {cfg['ptp_delay_mechanism']}
 network_transport       {cfg['ptp_transport']}
 time_stamping           {cfg['ptp_time_stamping']}
-tx_timestamp_timeout    {env.get('PTP_TX_TIMESTAMP_TIMEOUT', '10') or '10'}
+tx_timestamp_timeout    {ptp_tx_timestamp_timeout(env)}
 logSyncInterval         {cfg['ptp_log_sync_interval']}
 logMinDelayReqInterval  {cfg['ptp_log_min_delay_req_interval']}
 logAnnounceInterval     {cfg['ptp_log_announce_interval']}
 announceReceiptTimeout  {cfg['ptp_announce_receipt_timeout']}
 summary_interval        {cfg['ptp_summary_interval']}
-uds_address             {env.get('PTP_UDS_ADDRESS', '/var/run/ptp4l') or '/var/run/ptp4l'}
+uds_address             {settings.ptp_uds_address(env)}
 """
+    utc_offset = int(settings.env_number("PTP_UTC_OFFSET", 37, 0, 100, env, integer=True))
+    if utc_offset != 37:
+        # Startwert bis zur ersten Grandmaster-Meldung (ptp.utc_offset nutzt dieselbe Variable).
+        body += f"utc_offset              {utc_offset}\n"
     for key, value in profile_extra.items():
         body += f"{key:<23} {value}\n"
     if extra:
@@ -290,6 +272,8 @@ uds_address             {env.get('PTP_UDS_ADDRESS', '/var/run/ptp4l') or '/var/r
 # PHC; chronyd darf dann nicht mitregeln (-x), sonst kämpfen zwei Regler.
 
 PHC2SYS_AUTO = {"master": "-a -rr -m", "slave": "-a -r -m", "auto": "-a -r -m"}
+# Bis 1.1.0 dokumentierter Standard von PHC2SYS_OPTIONS (siehe phc2sys_plan).
+PHC2SYS_LEGACY_DEFAULT = "-a -r -m"
 
 
 def phc2sys_writes_realtime(options: str) -> bool:
@@ -342,7 +326,16 @@ def phc2sys_plan(cfg: dict, env: dict | None = None) -> dict:
                          "die PTP-Uhr der Karte läuft frei und ptp4l verteilt NICHT die Zeit von "
                          "chrony/GPS. „Systemuhr und PTP-Uhr koppeln (phc2sys)“ einschalten.")
         return plan
-    custom = (cfg.get("phc2sys_options") or "").strip()
+    custom = " ".join((cfg.get("phc2sys_options") or "").split())
+    if custom == PHC2SYS_LEGACY_DEFAULT and mode == "master":
+        # 1.1.0 hat "-a -r -m" als Standard dokumentiert; viele Compose-Dateien
+        # setzen es noch ausdrücklich. Als Grandmaster würde phc2sys damit die
+        # Systemuhr nach der frei laufenden Kartenuhr stellen (und chronyd -x) –
+        # deshalb gilt genau dieser Wert als „automatisch“.
+        notes.append(f"HINWEIS: PHC2SYS_OPTIONS=\"{PHC2SYS_LEGACY_DEFAULT}\" ist der alte Standard "
+                     f"und wird als Grandmaster durch „automatisch“ ({PHC2SYS_AUTO['master']}) "
+                     "ersetzt. Die Variable kann entfallen.")
+        custom = ""
     options = custom or PHC2SYS_AUTO.get(mode, PHC2SYS_AUTO["slave"])
     tokens = options.split()
     if "-a" in tokens:
@@ -350,8 +343,8 @@ def phc2sys_plan(cfg: dict, env: dict | None = None) -> dict:
         # UDS-Pfad und transportSpecific müssen zu ptp4l passen.
         if "-n" not in tokens and int(cfg["ptp_domain"]) != 0:
             tokens += ["-n", str(cfg["ptp_domain"])]
-        uds = env.get("PTP_UDS_ADDRESS", "") or "/var/run/ptp4l"
-        if "-z" not in tokens and uds != "/var/run/ptp4l":
+        uds = settings.ptp_uds_address(env)
+        if "-z" not in tokens and uds != settings.PTP_UDS_DEFAULT:
             tokens += ["-z", uds]
         if cfg.get("ptp_profile") == "gptp":
             tokens.append("--transportSpecific=1")
@@ -362,6 +355,11 @@ def phc2sys_plan(cfg: dict, env: dict | None = None) -> dict:
                      "und chronyd läuft mit -x. Soll dieser Server GPS-/NTP-Zeit per PTP "
                      "verteilen, die Rolle „Grandmaster“ wählen – erst dann überträgt phc2sys "
                      "die Systemuhr auf die Karte (-a -rr).")
+    if custom and mode == "master" and plan["nocontrol"]:
+        notes.append(f"WARNUNG: Eigene phc2sys-Optionen „{custom}“ als PTP-Grandmaster: Damit "
+                     "stellt phc2sys die Systemuhr nach der Kartenuhr, chronyd läuft mit -x und "
+                     "GPS/NTP werden nicht mehr genutzt. phc2sys-Optionen leer lassen "
+                     f"(automatisch) oder „{PHC2SYS_AUTO['master']}“ eintragen.")
     if custom and "-a" in tokens and ("-rr" in tokens or tokens.count("-r") >= 2):
         if mode != "master":
             notes.append("HINWEIS: Eigene phc2sys-Optionen mit -rr außerhalb der Grandmaster-Rolle: "
@@ -555,6 +553,29 @@ def nts_watch_paths(cfg: dict) -> list[str]:
     return [p for p in (cfg.get("nts_server_cert"), cfg.get("nts_server_key")) if p]
 
 
+# Experten-Variablen ohne Dashboard-Feld: (Name, Standard, Minimum, Maximum, ganzzahlig)
+EXPERT_NUMBERS = [
+    ("PTP_TX_TIMESTAMP_TIMEOUT", 10, 1, 10000, True),
+    ("PTP_UTC_OFFSET", 37, 0, 100, True),
+    ("PTP_HOLDOVER_SECONDS", 900, 0, 86400, False),
+]
+
+
+def expert_env_warnings(env: dict) -> list[str]:
+    """Warnungen für ungültige Experten-Variablen (die dann auf den Standard fallen)."""
+    notes = []
+    for name, default, low, high, integer in EXPERT_NUMBERS:
+        raw = (env.get(name) or "").strip()
+        if raw and settings.env_number(name, None, low, high, env, integer=integer) is None:
+            notes.append(f"WARNUNG {name}: {raw!r} ist ungültig (erlaubt {low}–{high}"
+                         f"{', ganze Zahl' if integer else ''}) – verwende {default}")
+    raw = (env.get("PTP_UDS_ADDRESS") or "").strip()
+    if raw and settings.ptp_uds_address(env) != raw:
+        notes.append(f"WARNUNG PTP_UDS_ADDRESS: {raw!r} ist kein gültiger absoluter Pfad – "
+                     f"verwende {settings.PTP_UDS_DEFAULT}")
+    return notes
+
+
 def _write(path: str, content: str) -> None:
     directory = os.path.dirname(path) or "."
     os.makedirs(directory, exist_ok=True)
@@ -580,6 +601,9 @@ def apply(env: dict | None = None) -> dict:
     for key, entry in settings.effective(env).items():
         if entry["error"]:
             _log("config", f"WARNUNG {key}: {entry['error']} – verwende {entry['value']!r}")
+
+    for note in expert_env_warnings(env):
+        _log("config", note)
 
     try:
         wait = int(env.get("GPS_WAIT_SECONDS", "10") or 10)

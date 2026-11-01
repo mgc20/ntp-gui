@@ -16,14 +16,16 @@ const PRESETS = [
 // Der kurze Hilfetext unter jedem Feld kommt vom Server (Schema).
 export const FIELD_HELP = {
   ntp_sources: "source_type", ntp_minsources: "minsources", leapsectz: "leap",
-  serve_unsynced: "island", local_stratum: "island",
+  serve_unsynced: "island", local_stratum: "island", local_orphan: "local_orphan",
   ntp_hw_timestamp: "timestamping",
   nts_nocerttimecheck: "nocerttimecheck", nts_server_enable: "nts_server",
   nts_server_cert: "nts_server_files", nts_server_key: "nts_server_files",
+  nts_server_name: "nts_server_name", nts_server_port: "nts_server_name",
   gps_enable: "gps", gps_offset: "gps_recalibrate", gps_delay: "gps_delay", gps_select: "gps_role",
   gps_pps_device: "pps",
   ptp_enable: "ptp_vs_ntp", ptp_interface: "ptp_requirements", ptp_mode: "grandmaster", ptp_domain: "ptp_domain",
-  ptp_transport: "ptp_transport", ptp_clock_class: "clock_class", phc2sys_enable: "phc2sys", phc_refclock: "phc",
+  ptp_transport: "ptp_transport", ptp_profile: "ptp_profile", ptp_time_stamping: "timestamping",
+  ptp_clock_class: "clock_class", phc2sys_enable: "phc2sys", phc_refclock: "phc",
 };
 
 function clone(value) { return JSON.parse(JSON.stringify(value)); }

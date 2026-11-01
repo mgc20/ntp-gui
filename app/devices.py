@@ -308,7 +308,9 @@ def ptp_readiness(cfg: dict) -> list[dict[str, Any]]:
                            "detail": "Mit Hardware-Zeitstempeln: " + ", ".join(candidates)})
     caps = cap_eff()
     net_admin, net_raw = has_cap(CAP_NET_ADMIN, caps), has_cap(CAP_NET_RAW, caps)
-    need_raw = cfg.get("ptp_transport") == "L2"
+    # Effektiver Transport nach Profil (gPTP läuft immer über L2/Raw-Socket).
+    import settings  # spät importieren: devices.py bleibt ohne settings testbar
+    need_raw = settings.ptp_profile_values(cfg)[0].get("ptp_transport") == "L2"
     if caps is None:
         cap_ok, cap_detail = None, ("Die Rechte des Containers sind nicht lesbar. ptp4l braucht "
                                     "„cap_add: [NET_ADMIN, NET_RAW]“.")

@@ -119,6 +119,10 @@ export function pickReceiver(report) {
 
 const yesNo = (value, yes = "ja", no = "nein") => (value === true ? yes : value === false ? no : "unbekannt");
 
+// Fehlt ein Abschnitt im Bericht ganz, wissen wir nichts – dann nicht „nein“/„keine“ behaupten.
+const NO_DATA = "Keine Daten – der Server hat für diesen Teil keine Ergebnisse geliefert. „Neu prüfen“ versuchen oder das Container-Log ansehen.";
+function missing(section) { return section === null || section === undefined; }
+
 function flag(value, good = true) {
   if (value === null || value === undefined) return badge("unbekannt", "muted");
   const ok = good ? value : !value;
@@ -173,8 +177,9 @@ function receiverBlock(r, report) {
 }
 
 function gpsCard(report) {
-  const receivers = report.gps?.receivers || [];
-  const gpsdPps = report.gps?.gpsd_pps || {};
+  if (missing(report.gps)) return card("GPS-Empfänger", { help: "hw_receiver" }, emptyNote(NO_DATA));
+  const receivers = report.gps.receivers || [];
+  const gpsdPps = report.gps.gpsd_pps || {};
   const body = receivers.length ? receivers.map((r) => receiverBlock(r, report))
     : [emptyNote("Kein serieller GPS-Empfänger gefunden – weder am Host noch im Container. USB-Sticks erscheinen als `/dev/ttyACM0` oder `/dev/ttyUSB0`, GPS-HATs am Pi als `/dev/ttyAMA0` bzw. `/dev/serial0`."),
       accuracyLadder(null, report)];
@@ -189,7 +194,8 @@ function gpsCard(report) {
 }
 
 function ppsCard(report) {
-  const pps = report.pps || [];
+  if (!Array.isArray(report.pps)) return card("PPS-Quellen", { help: "hw_pps_sources" }, emptyNote(NO_DATA));
+  const pps = report.pps;
   if (!pps.length) {
     return card("PPS-Quellen", { help: "hw_pps_sources" },
       emptyNote("Keine PPS-Quelle im Kernel. Für PPS über GPIO am Raspberry Pi: `dtoverlay=pps-gpio,gpiopin=18` in `/boot/firmware/config.txt`, neu starten – dann erscheint `/dev/pps0`."));
@@ -220,6 +226,7 @@ const NIC_CLASS = {
 };
 
 function ptpCard(report) {
+  if (missing(report.ptp)) return card("PTP-Uhren und Netzwerkkarten", { help: "hw_ptp_clocks" }, emptyNote(NO_DATA));
   const clocks = report.ptp?.clocks || [];
   const nics = report.ptp?.interfaces || [];
   const head = (text, help, cls) => el("th", { class: cls || null }, text, " ", info(help, text));
@@ -265,7 +272,7 @@ function permissionsCard(report) {
   const majors = report.majors || {};
   const modules = Object.entries(p.modules || {});
   const network = { host: "Host-Netz", bridge: "Bridge (Docker-Netz)", unknown: "unbekannt" }[p.network] || p.network || "–";
-  const container = plat.container ? `${plat.container === "podman" ? "Podman" : "Docker"}${plat.docker_desktop ? " Desktop" : ""}${plat.wsl ? " (WSL2)" : ""}` : "kein Container erkannt";
+  const container = missing(report.platform) ? "unbekannt" : plat.container ? `${plat.container === "podman" ? "Podman" : "Docker"}${plat.docker_desktop ? " Desktop" : ""}${plat.wsl ? " (WSL2)" : ""}` : "kein Container erkannt";
   const body = [kv([
     ["Container", container, "hw_container"],
     ["Privilegiert", flag(p.privileged, false), "hw_privileged"],
@@ -295,9 +302,12 @@ function permissionsCard(report) {
 
 function rtcCard(report, ctx) {
   const rtc = report.rtc || {};
+  const unknown = missing(report.rtc);
   const nocert = ctx.status?.config?.nts_nocerttimecheck;
   let note;
-  if (!rtc.present) {
+  if (unknown) {
+    note = NO_DATA;
+  } else if (!rtc.present) {
     note = "Keine Echtzeituhr: Nach einem Stromausfall startet das Gerät mit einer Zeit in der Vergangenheit. Für NTP egal, aber **NTS** scheitert dann an der Zertifikatsprüfung – „Zertifikatszeit beim Start nicht prüfen“ (`NTS_NOCERTTIMECHECK=true`) muss deshalb an bleiben.";
   } else if (isNum(rtc.drift_seconds) && Math.abs(rtc.drift_seconds) > 120) {
     note = "Die RTC weicht stark ab – wahrscheinlich fehlt die Batterie (Pi 5: Akku an **J5**). Bis dahin „Zertifikatszeit beim Start nicht prüfen“ für NTS eingeschaltet lassen.";
@@ -306,7 +316,7 @@ function rtcCard(report, ctx) {
   }
   return card("Echtzeituhr (RTC)", { help: "hw_rtc" },
     kv([
-      ["Vorhanden", rtc.present ? `ja${rtc.name ? ` (${rtc.name})` : ""}` : "nein", "hw_rtc"],
+      ["Vorhanden", unknown ? "unbekannt" : rtc.present ? `ja${rtc.name ? ` (${rtc.name})` : ""}` : "nein", "hw_rtc"],
       rtc.present ? ["Abweichung zur Systemuhr", isNum(rtc.drift_seconds) ? `${fmtNumber(rtc.drift_seconds, 1)} s` : "–", "hw_rtc_drift"] : null,
       rtc.present ? ["Beim Start übernommen", yesNo(rtc.hctosys), "hw_hctosys"] : null,
       nocert !== undefined ? ["Zertifikatszeit beim Start prüfen", nocert ? "nein (sicher ohne RTC)" : "ja", "nocerttimecheck"] : null,
@@ -324,11 +334,11 @@ function headCard(report, ctx) {
   return card("Dieses System", { help: "hw_check", actions: el("span", { class: "button-row" },
     el("span", { class: "muted hw-stamp", text: isNum(report.generated) ? `Stand ${fmtTime(report.generated)}` : "" }),
     button, info("hw_refresh", "Neu prüfen")) },
-    el("p", { class: "hw-summary", text: plat.summary || (model !== "–" ? model : "Plattform nicht erkannt") }),
+    el("p", { class: "hw-summary", text: plat.summary || (model !== "–" ? model : missing(report.platform) ? "Keine Daten zur Plattform" : "Plattform nicht erkannt") }),
     kv([
       ["Board / Modell", model, "hw_board"],
       ["Architektur", plat.arch || "–", "hw_arch"],
-      ["Virtualisierung", plat.hypervisor || (plat.docker_desktop ? "Docker Desktop (VM)" : plat.wsl ? "WSL2 (VM)" : "keine erkannt"), "hw_hypervisor"],
+      ["Virtualisierung", plat.hypervisor || (plat.docker_desktop ? "Docker Desktop (VM)" : plat.wsl ? "WSL2 (VM)" : missing(report.platform) ? "unbekannt" : "keine erkannt"), "hw_hypervisor"],
     ]),
     (report.warnings || []).length ? el("div", { class: "hw-warnings" },
       el("h3", { class: "mini-head" }, "Auffälligkeiten ", info("hw_warnings", "Auffälligkeiten")),

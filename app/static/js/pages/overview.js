@@ -147,7 +147,7 @@ export function render(ctx) {
   }
   const ptp = status.ptp || {};
   if (ptp.enabled) {
-    tiles.push(tile({ label: "PTP", help: "port_state", value: ptp.running ? (ptp.is_grandmaster ? "Grandmaster" : (ptp.portState || "–")) : "aus",
+    tiles.push(tile({ label: "PTP", help: "port_state", value: ptp.running ? (ptp.is_grandmaster ? "Grandmaster" : (ptp.portState || "–")) : "läuft nicht",
       tone: ptp.running ? (ptp.synchronised ? "good" : "warn") : "crit",
       note: ptp.running ? (ptp.port_state_label || "") : "ptp4l antwortet nicht" }));
   }

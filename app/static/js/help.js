@@ -110,6 +110,16 @@ export const HELP = {
       + "untereinander einig, auch wenn das Internet ausfällt. Sobald eine echte Quelle zurück "
       + "ist, übernimmt die wieder.",
   },
+  local_orphan: {
+    title: "Orphan-Modus (zwei Server im Verbund)",
+    text: "Für zwei (oder mehr) ntp-gui-Server, die sich gegenseitig als Quelle eingetragen haben. "
+      + "Ohne Orphan-Modus liefert im Inselbetrieb jeder Server seine **eigene** Uhrzeit aus – die "
+      + "Geräte im LAN sehen dann zwei leicht verschiedene Zeiten. Mit Orphan-Modus einigen sich die "
+      + "Server auf **eine** gemeinsame Inselzeit: Der Server mit der kleinsten Referenz-ID gibt den "
+      + "Takt vor, der andere folgt ihm. Sobald eine echte Quelle zurück ist, gilt wieder sie. "
+      + "Wirkt nur zusammen mit „Auch ohne Quelle Zeit ausliefern“; beide Server brauchen dasselbe "
+      + "Stratum im Inselbetrieb.",
+  },
   minsources: {
     title: "Mindestanzahl übereinstimmender Quellen",
     text: "chrony stellt die Uhr erst, wenn mindestens so viele Quellen dieselbe Zeit nennen. "
@@ -642,6 +652,18 @@ export const HELP = {
     text: "Wie PTP-Pakete reisen: als UDP über IPv4 (Standard), IPv6 oder direkt als "
       + "Ethernet-Rahmen (L2). Alle Teilnehmer müssen dasselbe nutzen.",
   },
+  ptp_profile: {
+    title: "PTP-Profil",
+    text: "Ein Profil ist ein Satz passender Grundwerte, damit dieser Server mit bestimmten Geräten "
+      + "zusammenspielt. Felder, die du selbst änderst, haben Vorrang. "
+      + "**Standard** (IEEE 1588 Default-Profil): passt für Linux-Clients mit linuxptp und die meisten "
+      + "Messaufbauten. "
+      + "**AES67** (Audio über IP, auch Ravenna und Dante im AES67-Modus): UDPv4, End-to-End, 8 Sync "
+      + "pro Sekunde, Announce alle 2 s und DSCP 46 (EF), damit Switches die Pakete bevorzugen. "
+      + "**gPTP** (IEEE 802.1AS für AVB/TSN, Automotive): Ethernet direkt (L2), Peer-to-Peer-"
+      + "Laufzeitmessung und die Werte aus linuxptp `gPTP.cfg` – jeder Switch im Weg muss 802.1AS "
+      + "beherrschen. Alle Teilnehmer im Netz müssen dasselbe Profil nutzen.",
+  },
   utc_offset: {
     title: "UTC-Offset",
     text: "PTP zählt in TAI (Atomzeit ohne Schaltsekunden). Derzeit liegt TAI 37 Sekunden vor "
@@ -650,13 +672,20 @@ export const HELP = {
   phc: {
     title: "PTP-Hardwareuhr (PHC)",
     text: "Eine eigene Uhr auf der Netzwerkkarte, z. B. `/dev/ptp0`. ptp4l stellt diese Uhr, "
-      + "phc2sys überträgt sie bei Bedarf auf die Systemuhr.",
+      + "phc2sys koppelt sie mit der Systemuhr – als Grandmaster Systemuhr → Karte, als Slave "
+      + "Karte → Systemuhr.",
   },
   phc2sys: {
     title: "phc2sys",
-    text: "Kopiert die Zeit von der PTP-Uhr der Netzwerkkarte auf die Systemuhr (oder umgekehrt). "
-      + "Als PTP-Slave sinnvoll. Dann stellt phc2sys die Systemuhr und chrony liefert nur noch "
-      + "aus – zwei Regler gleichzeitig würden sich gegenseitig stören.",
+    text: "Koppelt die Systemuhr mit der PTP-Uhr der Netzwerkkarte (nur bei Hardware-Zeitstempeln, "
+      + "eingeschaltet mit `PHC2SYS_ENABLE=true`); die Richtung wählt ntp-gui je nach Rolle selbst. "
+      + "**Als Grandmaster ist phc2sys Pflicht:** Es kopiert die von chrony nach GPS/NTP gestellte "
+      + "Systemuhr in die Uhr der Karte, chrony regelt dabei weiter die Systemuhr. Ohne phc2sys "
+      + "läuft die Kartenuhr frei und ptp4l verteilt eine falsche Zeit. "
+      + "**Als Slave** stellt phc2sys die Systemuhr nach der PTP-Zeit (alternativ liest chrony die "
+      + "Kartenuhr selbst über `PHC_REFCLOCK`). Mit phc2sys läuft chrony mit `-x` "
+      + "und liefert die Zeit nur noch aus – zwei Regler an derselben Uhr würden sich gegenseitig "
+      + "stören. Bei Software-Zeitstempeln gibt es keine Kartenuhr; phc2sys startet dann nicht.",
   },
   ptp_servo: {
     title: "Servo-Zustand",
@@ -744,7 +773,7 @@ export const SELECT_STATE_SHORT = {
 };
 
 export const HELP_GROUPS = [
-  { title: "Grundlagen", keys: ["ntp", "chronyd", "services", "stratum", "island", "minsources", "dhcp42", "clock_control",
+  { title: "Grundlagen", keys: ["ntp", "chronyd", "services", "stratum", "island", "minsources", "dhcp42", "clock_control", "local_orphan",
     "setup_accuracy"] },
   { title: "Werte der Systemuhr", keys: ["reference", "system_offset", "uncertainty", "rms_offset", "frequency",
     "skew", "root_delay", "root_dispersion", "leap", "update_interval", "ref_time"] },
@@ -764,7 +793,7 @@ export const HELP_GROUPS = [
     "fix", "satellites", "dop", "snr", "skyplot", "gnss", "time_error", "cold_start"] },
   { title: "PTP", keys: ["ptp", "ptp_vs_ntp", "ptp_requirements", "grandmaster", "port_state",
     "offset_from_master", "mean_path_delay", "steps_removed", "clock_class", "clock_accuracy", "ptp_domain",
-    "ptp_transport", "utc_offset", "phc", "phc2sys", "ptp_servo", "ptp_rms", "ptp_freq"] },
+    "ptp_transport", "ptp_profile", "utc_offset", "phc", "phc2sys", "ptp_servo", "ptp_rms", "ptp_freq"] },
   { title: "Clients", keys: ["client_address", "client_packets", "client_dropped", "client_interval", "client_last", "served_rate"] },
   { title: "Einstellungen", keys: ["settings_source"] },
   HELP_GROUP_HARDWARE,
