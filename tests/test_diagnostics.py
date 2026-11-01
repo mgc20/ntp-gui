@@ -338,6 +338,12 @@ class RecordingExportTest(unittest.TestCase):
         self.assertTrue(any(f["kind"] == "latenz_gerundet" for f in findings), findings)
         self.assertTrue(all("Zeile" in f["path"] for f in findings), findings)
 
+    def test_hashed_ipv6_refid_removed(self):
+        # chrony: Bei IPv6 ist die RefID ein Hash der Adresse (oft im Bereich 224–255.x.x.x).
+        text = egress.Sanitizer("diagnostics").text("Local address   : 2001:db8::1 (E41BC59B)")
+        self.assertNotIn("E41BC59B", text)
+        self.assertIn("(GPS)", egress.Sanitizer("diagnostics").text("Reference ID    : 47505300 (GPS)"))
+
     def test_timezone_filler_word_kept(self):
         line = "2026-11-01T21:05:35Z Using right/UTC timezone to obtain leap second data"
         self.assertEqual(egress.Sanitizer("diagnostics").text(line), line)

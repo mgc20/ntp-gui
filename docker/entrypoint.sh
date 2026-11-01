@@ -546,6 +546,8 @@ spawn web python3 "${APP_DIR}/server.py"
 WEB_PID="$SPAWNED"
 SVC_ENTRY[web]="$WEB_PID"
 set_state web running
+# Version steht an einer Stelle: als Standard in server.py (Release-Workflow kann sie per Env setzen).
+NTPGUI_VERSION="${NTPGUI_VERSION:-$(sed -n 's/^VERSION = os\.environ\.get("NTPGUI_VERSION", "\([^"]*\)").*/\1/p' "${APP_DIR}/server.py" 2>/dev/null)}"
 "$EMIT_EVENT" startup info "ntp-gui gestartet" version="${NTPGUI_VERSION:-}"
 
 # --- Watchdog ------------------------------------------------------------------

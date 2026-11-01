@@ -691,8 +691,10 @@ def _refid_harmless(hex8: str) -> bool:
     text = raw.rstrip(b"\0")
     if text and all(65 <= c <= 90 or 48 <= c <= 57 for c in text) and 65 <= text[0] <= 90:
         return True
-    kind = _ip_kind(str(ipaddress.IPv4Address(raw)))
-    return kind == "keep"
+    # Nur Loopback/0.0.0.0 sind unbedenklich. Bei IPv6-Quellen ist die RefID ein Hash der
+    # Adresse und landet oft im Multicast-/Reservebereich (z. B. E41BC59B) – kein „keep“.
+    addr = ipaddress.IPv4Address(raw)
+    return addr.is_loopback or addr.is_unspecified
 
 
 # ---------------------------------------------------------------------------
