@@ -207,6 +207,10 @@ _BYID_RE = re.compile(r"(?<![\w-])((?:usb|usbv2|pci|ata|nvme|scsi)-[A-Za-z0-9._+
 _SERIAL_KV_RE = re.compile(r"(?i)\b(serial(?:[ _-]?(?:number|no|nr))?|product_serial|board_serial|chassis_serial"
                            r"|product_uuid|iSerial|ID_SERIAL(?:_SHORT)?|Seriennummer)(\s*[:=]\s*\"?)"
                            r"(?!<seriennr>)([A-Za-z0-9][\w.:-]{2,})")
+# „serial 1234ABCD9876“, „Serial Number 0042A7F1“, lsusb: „iSerial  3 1234ABCD“ – ohne : oder =.
+# Nur Wörter mit Ziffer und ≥ 6 Zeichen, damit „serial port“ oder „serial ttyAMA0“ bleiben.
+_SERIAL_WS_RE = re.compile(r"(?i)\b(serial(?:[ _-]?(?:number|no|nr))?|iSerial\s+\d+|Seriennummer)(\s+)"
+                           r"(?!<seriennr>)(?!tty)(?=[A-Za-z0-9.-]*\d)([A-Za-z0-9][A-Za-z0-9.-]{5,})(?![\w:/])")
 _REFID_CTX_RE = re.compile(r"(Reference ID\s*:\s*|\()([0-9A-Fa-f]{8})(?=\)|\s|$)")
 
 
@@ -413,6 +417,7 @@ class Sanitizer:
         s = self._sub(_EMAIL_RE, "e_mail", "<e-mail>", s)
         s = self._sub(_BYID_RE, "seriennummer", self._byid, s)
         s = self._sub(_SERIAL_KV_RE, "seriennummer", lambda m: m.group(1) + m.group(2) + "<seriennr>", s)
+        s = self._sub(_SERIAL_WS_RE, "seriennummer", lambda m: m.group(1) + m.group(2) + "<seriennr>", s)
         s = self._sub(_CLOCK_ID_RE, "uhr_id", self._clock_id, s)
         s = self._sub(_MAC_RE, "mac", lambda m: "<mac>" if _mac_identifies(m.group(0)) else m.group(0), s)
         s = self._sub(_ZONE_RE, "zeitzone", "<zeitzone>", s)
@@ -682,6 +687,8 @@ def _text_findings(text: str, path: str) -> list[dict]:
         if sep and _is_serial_token(last):
             found.append(_finding("seriennummer", path, m.group(0)))
     for m in _SERIAL_KV_RE.finditer(text):
+        found.append(_finding("seriennummer", path, m.group(0)))
+    for m in _SERIAL_WS_RE.finditer(text):
         found.append(_finding("seriennummer", path, m.group(0)))
     for m in _REFID_CTX_RE.finditer(text):
         if not _refid_harmless(m.group(2)):

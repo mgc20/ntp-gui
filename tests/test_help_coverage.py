@@ -2,7 +2,7 @@
 
 1. Jeder Hilfe-Schlüssel, den eine Seite benutzt (info("…"), help: "…", dritte
    Spalte einer kv-Zeile, Tabellenköpfe mit `help`-Spalte), steht in HELP
-   (help.js + help-hardware.js). Ein fehlender Schlüssel fällt im Browser nicht
+   (help.js + help-*.js). Ein fehlender Schlüssel fällt im Browser nicht
    auf – info() liefert dann einfach keinen Knopf.
 2. Jeder HELP-Schlüssel erscheint auf der Hilfe-Seite (HELP_GROUPS bzw.
    HELP_GROUP_HARDWARE), sonst führt „In der Hilfe ansehen“ ins Leere.
@@ -18,7 +18,14 @@ from pathlib import Path
 
 JS = Path(__file__).resolve().parents[1] / "app" / "static" / "js"
 PAGES = sorted((JS / "pages").glob("*.js"))
-HELP_FILES = [JS / "help.js", JS / "help-hardware.js"]
+# help.js plus alle Hilfe-Module (help-<thema>.js mit HELP_<THEMA> und HELP_GROUP_<THEMA>),
+# die help.js in HELP bzw. HELP_GROUPS übernimmt.
+HELP_MODULES = sorted(JS.glob("help-*.js"))
+HELP_FILES = [JS / "help.js", *HELP_MODULES]
+
+
+def _module_suffix(path: Path) -> str:
+    return path.stem[len("help-"):].upper().replace("-", "_")
 
 # HELP-Schlüssel, die absichtlich nicht auf der Hilfe-Seite stehen (Schlüssel: Grund).
 NOT_IN_GROUPS: dict[str, str] = {}
@@ -169,7 +176,8 @@ def help_keys() -> set[str]:
     keys = set()
     for path in HELP_FILES:
         text = path.read_text(encoding="utf-8")
-        for name in ("HELP", "HELP_HARDWARE"):
+        names = ("HELP",) if path.name == "help.js" else (f"HELP_{_module_suffix(path)}",)
+        for name in names:
             body = _const(text, name, "{")
             if body is not None:
                 keys.update(_object_entries(body))
@@ -180,7 +188,9 @@ def group_keys() -> set[str]:
     keys = set()
     for path in HELP_FILES:
         text = path.read_text(encoding="utf-8")
-        for name, opener in (("HELP_GROUPS", "["), ("HELP_GROUP_HARDWARE", "{")):
+        names = ((("HELP_GROUPS", "["),) if path.name == "help.js"
+                 else ((f"HELP_GROUP_{_module_suffix(path)}", "{"),))
+        for name, opener in names:
             body = _const(text, name, opener)
             if body is None:
                 continue
@@ -311,6 +321,17 @@ class HelpCoverageTest(unittest.TestCase):
         uses = {k for _f, _l, k in used_keys()}
         for key in ("system_offset", "rms_offset", "select_reason", "client_address", "last_rx"):
             self.assertIn(key, uses)
+
+    def test_help_modules_merged(self):
+        """Jedes Hilfe-Modul wird in help.js importiert, in HELP übernommen und steht in HELP_GROUPS."""
+        text = (JS / "help.js").read_text(encoding="utf-8")
+        groups = _const(text, "HELP_GROUPS", "[") or ""
+        for path in HELP_MODULES:
+            suffix = _module_suffix(path)
+            with self.subTest(module=path.name):
+                self.assertRegex(text, r'from\s+"\./' + re.escape(path.name) + '"')
+                self.assertIn(f"Object.assign(HELP, HELP_{suffix})", text)
+                self.assertRegex(groups, r"\bHELP_GROUP_" + suffix + r"\b")
 
     def test_used_keys_exist(self):
         missing = sorted({f"{f}:{l} → {k}" for f, l, k in used_keys() if k not in self.help})

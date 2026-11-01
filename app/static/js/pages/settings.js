@@ -1,5 +1,5 @@
 import { el, rich, apiPost, apiGet } from "../util.js";
-import { card, info, badge, emptyNote, toast } from "../ui.js";
+import { card, info, badge, kv, emptyNote, toast } from "../ui.js";
 
 export const live = false; // nicht bei jedem Refresh neu aufbauen – Eingaben bleiben stehen
 
@@ -26,7 +26,110 @@ export const FIELD_HELP = {
   ptp_enable: "ptp_vs_ntp", ptp_interface: "ptp_requirements", ptp_mode: "grandmaster", ptp_domain: "ptp_domain",
   ptp_transport: "ptp_transport", ptp_profile: "ptp_profile", ptp_time_stamping: "timestamping",
   ptp_clock_class: "clock_class", phc2sys_enable: "phc2sys", phc_refclock: "phc",
+  gps_autocal: "autocal_mode", gps_autocal_max_step_ms: "autocal_step", gps_autocal_min_hours: "autocal_window",
+  clientmon_enable: "clientmon",
 };
+
+function fmtDate(unix) {
+  return typeof unix === "number" && Number.isFinite(unix)
+    ? new Date(unix * 1000).toLocaleString("de-DE", { dateStyle: "short", timeStyle: "short" }) : "nie";
+}
+
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); toast("Kopiert"); } catch (error) { toast("Kopieren nicht möglich – bitte markieren", "warn"); }
+}
+
+// Update-Hinweise: was die Migration der Einstellungen geändert hat und warum.
+function notesCard(ctx, notes, readonly) {
+  if (!notes || !notes.length) return null;
+  const ack = async () => {
+    try {
+      await apiPost("/api/settings/notes/ack", {});
+      ctx.invalidate("settings");
+      ctx.rerender();
+    } catch (error) { toast(error.message, "crit"); }
+  };
+  return card("Was sich beim Update geändert hat", { help: "settings_notes", class: "card-alert",
+    actions: readonly ? null : el("button", { type: "button", class: "button", text: "Gelesen", onclick: ack }) },
+  el("ul", { class: "update-notes" }, notes.map((note) => el("li", {},
+    el("strong", { text: note.title }), el("p", {}, rich(note.text))))));
+}
+
+// API-Schlüssel anlegen, auflisten, widerrufen + Instanz-Kennung.
+function apiCard(ctx, readonly, auth) {
+  const ui = ctx.uiState;
+  const keys = ctx.data("apikeys", "/api/apikeys", 0);
+  const inst = ctx.data("instance", "/api/v1/instance", 0);
+  const disabled = readonly ? true : null;
+  const body = [];
+  if (!auth.enabled) {
+    body.push(emptyNote("Noch ist **kein Passwort** gesetzt – das Dashboard und die API sind im LAN offen. "
+      + "Schlüssel wirken trotzdem schon mit ihrem Recht; wirklich nötig werden sie, sobald du oben ein Passwort setzt."));
+  }
+  if (ui.newKey) {
+    const token = ui.newKey.token;
+    body.push(el("div", { class: "apikey-new", role: "status" },
+      el("div", { class: "apikey-new-head" }, el("strong", { text: `Neuer Schlüssel „${ui.newKey.name}“` }), info("api_key_token", "Neuer Schlüssel")),
+      el("p", { class: "muted", text: "Jetzt kopieren – er wird nur dieses eine Mal angezeigt." }),
+      el("div", { class: "apikey-token" },
+        el("code", { class: "mono", text: token }),
+        el("button", { type: "button", class: "copy", text: "Kopieren", onclick: () => copyText(token) })),
+      el("button", { type: "button", class: "button", text: "Ich habe ihn gespeichert",
+        onclick: () => { ui.newKey = null; ctx.rerender(); } })));
+  }
+  const name = el("input", { type: "text", maxlength: 64, placeholder: "z. B. Home Assistant", "aria-label": "Name des Schlüssels", disabled });
+  const scope = el("select", { "aria-label": "Recht", disabled },
+    el("option", { value: "read", text: "nur lesen" }), el("option", { value: "admin", text: "lesen und verwalten" }));
+  const create = async () => {
+    try {
+      const result = await apiPost("/api/apikeys", { name: name.value, scope: scope.value });
+      ui.newKey = { token: result.token, name: result.name };
+      ctx.invalidate("apikeys");
+      ctx.rerender();
+    } catch (error) { toast(error.message, "crit"); }
+  };
+  body.push(el("div", { class: "auth-form" },
+    el("label", {}, el("span", { text: "Name" }), name),
+    el("label", {}, el("span", {}, "Recht ", info("api_key_scope", "Recht")), scope),
+    el("button", { type: "button", class: "button primary", text: "Schlüssel anlegen", disabled, onclick: create })));
+  if (keys === undefined) body.push(emptyNote("Schlüssel werden geladen …"));
+  else if (!keys.keys || !keys.keys.length) body.push(emptyNote("Noch keine Schlüssel angelegt."));
+  else {
+    body.push(el("ul", { class: "apikey-list" }, keys.keys.map((key) => el("li", { class: "apikey" },
+      el("div", { class: "apikey-main" },
+        el("strong", { text: key.name }), " ", badge(key.scope_label || key.scope, key.scope === "admin" ? "warn" : "info"),
+        el("span", { class: "mono muted", text: ` ntpg_${key.id}…` })),
+      kv([["Angelegt", fmtDate(key.created), "api_keys"], ["Zuletzt benutzt", fmtDate(key.last_used), "api_key_used"]]),
+      el("button", { type: "button", class: "button", text: "Widerrufen", disabled, onclick: async () => {
+        if (!window.confirm(`Schlüssel „${key.name}“ widerrufen? Programme, die ihn nutzen, bekommen danach keinen Zugriff mehr.`)) return;
+        try {
+          await apiPost("/api/apikeys/revoke", { id: key.id });
+          toast("Widerrufen");
+          ctx.invalidate("apikeys");
+          ctx.rerender();
+        } catch (error) { toast(error.message, "crit"); }
+      } })))));
+  }
+  body.push(el("p", { class: "field-help" }, rich("Beschreibung aller Endpunkte samt nötigem Recht: `GET /api/v1`. "
+    + "Beispiel: `curl -H \"Authorization: Bearer ntpg_…\" http://<server>:8080/api/v1/status`"), " ", info("api_v1", "Versionierte API")));
+
+  const rotate = async () => {
+    if (!window.confirm("Neue Instanz-Kennung erzeugen? Die alte wird verworfen.")) return;
+    try {
+      await apiPost("/api/instance/rotate", {});
+      toast("Neue Kennung erzeugt");
+      ctx.invalidate("instance");
+      ctx.rerender();
+    } catch (error) { toast(error.message, "crit"); }
+  };
+  const instanceRow = el("div", { class: "instance-row" },
+    kv([["Instanz-Kennung", inst ? el("code", { class: "mono", text: inst.instance_id }) : "–", "instance_id"],
+      ["Seit", inst ? fmtDate(inst.since) : "–", "instance_id"]]),
+    el("button", { type: "button", class: "button", text: "Neu erzeugen", disabled, onclick: rotate }));
+  return card("API-Schlüssel und Instanz", { id: "s-api", help: "api_keys",
+    sub: "Für Skripte und Programme: eigene Schlüssel statt des Passworts, einzeln widerrufbar." },
+  body, el("h3", { class: "subhead", text: "Instanz" }), instanceRow);
+}
 
 function clone(value) { return JSON.parse(JSON.stringify(value)); }
 function same(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
@@ -106,6 +209,12 @@ export function render(ctx) {
           el("option", { value: o.value, selected: o.value === value ? true : null, text: o.label })));
         select.addEventListener("change", () => setDraft(field.key, select.value));
         return select;
+      }
+      case "hostlist": {
+        const area = el("textarea", { id, rows: Math.max(3, (value || []).length + 1), disabled,
+          placeholder: field.placeholder || "ein Name pro Zeile", value: (value || []).join("\n") });
+        area.addEventListener("input", () => setDraft(field.key, area.value.split(/[\n,\s]+/).map((s) => s.trim()).filter(Boolean)));
+        return area;
       }
       case "networks": {
         const area = el("textarea", { id, rows: Math.max(3, (value || []).length + 1), disabled,
@@ -198,6 +307,7 @@ export function render(ctx) {
   }
 
   const out = [];
+  out.push(notesCard(ctx, schema.notes, readonly));
   if (readonly) out.push(card("Einstellungen gesperrt", { class: "card-alert" }, emptyNote("`WEB_READONLY=true` ist gesetzt – hier lässt sich nur ansehen, nicht ändern.")));
   if (!schema.storage.persistent) {
     out.push(card("Achtung: Einstellungen sind nicht dauerhaft", { class: "card-alert" }, el("p", {}, rich(
@@ -251,6 +361,7 @@ export function render(ctx) {
     authBody.push(emptyNote("Gilt für das Dashboard und die API. `/healthz` bleibt für den Docker-Healthcheck offen. Kein TLS – für Zugriff von außen einen Reverse Proxy davorsetzen."));
   }
   out.push(card("Zugang zum Dashboard", { id: "s-auth" }, authBody));
+  if (auth.enabled || !readonly) out.push(apiCard(ctx, readonly, auth));
 
   // Sichern & Wiederherstellen
   const fileInput = el("input", { type: "file", accept: "application/json,.json", hidden: true });
@@ -259,8 +370,9 @@ export function render(ctx) {
     if (!file) return;
     try {
       const data = JSON.parse(await file.text());
-      const result = await apiPost("/api/settings/import", { values: data.values || data });
+      const result = await apiPost("/api/settings/import", data.values ? { values: data.values, schema: data.schema ?? 1 } : { values: data });
       toast(result.reload_triggered ? "Importiert – Zeitdienste starten neu" : "Importiert");
+      for (const note of result.notes || []) toast(note, "warn");
       if (result.reload_triggered) ctx.watchReload();
       ctx.invalidate("settings"); ctx.rerender();
     } catch (error) { toast(`Import fehlgeschlagen: ${error.message}`, "crit"); }

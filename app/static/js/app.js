@@ -7,6 +7,7 @@ import * as gps from "./pages/gps.js";
 import * as ptp from "./pages/ptp.js";
 import * as hardware from "./pages/hardware.js";
 import * as clients from "./pages/clients.js";
+import * as diagnose from "./pages/diagnose.js";
 import * as settings from "./pages/settings.js";
 import * as help from "./pages/help.js";
 
@@ -17,6 +18,7 @@ const PAGES = [
   { id: "ptp", title: "PTP", module: ptp, history: true },
   { id: "hardware", title: "Hardware", module: hardware, history: false },
   { id: "clients", title: "Clients", module: clients, history: true },
+  { id: "diagnose", title: "Diagnose", module: diagnose, history: false },
   { id: "einstellungen", title: "Einstellungen", module: settings },
   { id: "hilfe", title: "Hilfe", module: help },
 ];

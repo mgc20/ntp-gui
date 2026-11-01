@@ -17,7 +17,9 @@ import time
 import subprocess
 from typing import Any
 
-CHRONYC = shutil.which("chronyc") or "/usr/bin/chronyc"
+import providers
+
+CHRONYC = providers.binary("chronyc")
 
 # chronyc -c tracking, in field order.
 _TRACKING_FIELDS = [
@@ -93,25 +95,15 @@ class ChronyError(RuntimeError):
 
 
 def run(*args: str, timeout: float = 5.0) -> str:
-    """Run chronyc with the given arguments and return stdout."""
+    """Run chronyc with the given arguments and return stdout.
+
+    Läuft über providers.run, damit Aufzeichnung/Wiedergabe alles mitbekommt.
+    CHRONYC_HOST (nur Entwicklung/Tests) wird dort als „-h“ ergänzt.
+    """
     try:
-        host = os.environ.get("CHRONYC_HOST")  # nur für Entwicklung/Tests
-        prefix = ["-h", host] if host else []
-        proc = subprocess.run(
-            [CHRONYC, *prefix, *args],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
-        )
-    except FileNotFoundError as exc:  # chronyc missing entirely
+        return providers.run("chronyc", list(args), timeout)
+    except providers.ProviderError as exc:
         raise ChronyError(str(exc)) from exc
-    except subprocess.TimeoutExpired as exc:
-        raise ChronyError(f"chronyc {' '.join(args)} timed out") from exc
-    if proc.returncode != 0:
-        message = (proc.stderr or proc.stdout or "").strip()
-        raise ChronyError(message or f"chronyc {' '.join(args)} failed")
-    return proc.stdout
 
 
 def _coerce(value: str, kind) -> Any:

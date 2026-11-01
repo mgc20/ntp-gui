@@ -247,6 +247,18 @@ class IdentifierTest(unittest.TestCase):
         self.assertNotIn("A50285BI", clean)
         self.assertEqual(egress.check_no_leaks(clean), [])
 
+    def test_serial_without_separator(self):
+        text = "Gerät an serial 1234ABCD9876\niSerial                 3 0042A7F1C3"
+        self.assertTrue(egress.check_no_leaks(text))
+        clean, report = egress.sanitize_text(text, "diagnostics")
+        self.assertNotIn("1234ABCD9876", clean)
+        self.assertNotIn("0042A7F1C3", clean)
+        self.assertEqual(report["removed"].get("seriennummer"), 2)
+        self.assertEqual(egress.check_no_leaks(clean), [])
+        # Schnittstellennamen sind keine Seriennummern.
+        for harmless in ("GPS on serial ttyAMA0", "serial port /dev/ttyS0", "serial 0"):
+            self.assertEqual(egress.sanitize_text(harmless, "diagnostics")[0], harmless)
+
     def test_mac_formats(self):
         for mac in ("00:1b:21:aa:bb:cc", "00-1B-21-AA-BB-CC", "001b.21aa.bbcc"):
             with self.subTest(mac=mac):

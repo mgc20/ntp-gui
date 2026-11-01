@@ -1,4 +1,8 @@
 import { HELP_HARDWARE, HELP_GROUP_HARDWARE } from "./help-hardware.js";
+import { HELP_CLIENTS, HELP_GROUP_CLIENTS } from "./help-clients.js";
+import { HELP_AUTOCAL, HELP_GROUP_AUTOCAL } from "./help-autocal.js";
+import { HELP_DIAGNOSE, HELP_GROUP_DIAGNOSE } from "./help-diagnose.js";
+import { HELP_API, HELP_GROUP_API } from "./help-api.js";
 
 // Alle Erklärungen an einer Stelle. Die ⓘ-Knöpfe im Dashboard und die
 // Hilfeseite nutzen dieselben Texte. **fett** und `code` werden formatiert.
@@ -791,12 +795,20 @@ export const HELP_GROUPS = [
     "nts_ke_server", "nts_auth_packets"] },
   { title: "GPS", keys: ["gps", "gps_value", "gps_offset", "gps_delay", "gps_role", "gps_recalibrate", "pps",
     "fix", "satellites", "dop", "snr", "skyplot", "gnss", "time_error", "cold_start"] },
+  HELP_GROUP_AUTOCAL,
   { title: "PTP", keys: ["ptp", "ptp_vs_ntp", "ptp_requirements", "grandmaster", "port_state",
     "offset_from_master", "mean_path_delay", "steps_removed", "clock_class", "clock_accuracy", "ptp_domain",
     "ptp_transport", "ptp_profile", "utc_offset", "phc", "phc2sys", "ptp_servo", "ptp_rms", "ptp_freq"] },
   { title: "Clients", keys: ["client_address", "client_packets", "client_dropped", "client_interval", "client_last", "served_rate"] },
+  HELP_GROUP_CLIENTS,
   { title: "Einstellungen", keys: ["settings_source"] },
+  HELP_GROUP_API,
+  HELP_GROUP_DIAGNOSE,
   HELP_GROUP_HARDWARE,
 ];
 
 Object.assign(HELP, HELP_HARDWARE);
+Object.assign(HELP, HELP_CLIENTS);
+Object.assign(HELP, HELP_AUTOCAL);
+Object.assign(HELP, HELP_DIAGNOSE);
+Object.assign(HELP, HELP_API);
