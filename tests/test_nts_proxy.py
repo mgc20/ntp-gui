@@ -365,5 +365,76 @@ r 400
                                "290:no:300", "300:reload:360", "400:no:360"])
 
 
+@unittest.skipUnless(shutil.which("bash"), "bash fehlt")
+class EntrypointSupervisorTest(unittest.TestCase):
+    STUBS = """
+set -euo pipefail
+log() { printf '[%s] %s\\n' "$1" "${*:2}" >&2; }
+now() { echo 1000; }
+write_status() { :; }
+write_services() { :; }
+declare -A SVC_ENTRY=() SVC_STATE=() SVC_RESTARTS=() SVC_EXIT=() SVC_SINCE=() \\
+           SVC_NEXT=() SVC_STARTED=() SVC_FAILS=() SVC_NOTE=()
+BACKOFF=(5 15 60 300); STABLE_AFTER=600
+"""
+
+    def run_bash(self, body, timeout=20):
+        script = self.STUBS + _entrypoint_functions(*self.FUNCS) + "\n" + body
+        return subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                              timeout=timeout, check=True).stdout.split()
+
+    def test_schedule_restart_never_blocks_on_live_child(self):
+        self.FUNCS = ("service_alive", "set_state", "schedule_restart")
+        out = self.run_bash("""
+sleep 60 >/dev/null 2>&1 & pid=$!
+SVC_ENTRY[ptp4l]="$pid=falscher-comm"; SVC_STATE[ptp4l]=running
+service_alive "${SVC_ENTRY[ptp4l]}" || schedule_restart ptp4l   # darf nicht warten
+echo "lebt:${SVC_STATE[ptp4l]}:${SVC_ENTRY[ptp4l]%%=*}"
+kill "$pid"
+# bash räumt das Kind evtl. selbst ab (dann fehlt /proc/$pid) – beides ist "tot".
+until [[ ! -e "/proc/$pid" || "$(cut -d' ' -f3 "/proc/$pid/stat" 2>/dev/null)" == Z ]]; do :; done
+schedule_restart ptp4l
+echo "tot:${SVC_STATE[ptp4l]}:${SVC_EXIT[ptp4l]}:${SVC_NEXT[ptp4l]}"
+""")
+        self.assertEqual(out[0].split(":")[:2], ["lebt", "running"])
+        self.assertNotEqual(out[0].split(":")[2], "")
+        self.assertEqual(out[1], "tot:restarting:143:1005")
+
+    def test_cert_renewal_restarts_only_chronyd(self):
+        self.FUNCS = ("service_alive", "reload_chronyd")
+        out = self.run_bash("""
+apply_config() { echo apply; }
+start_chronyd() { sleep 60 >/dev/null 2>&1 & SVC_ENTRY[chronyd]="$!=sleep"; echo start_chronyd; }
+stop_services() { echo FALSCH_stop_services; }
+start_services() { echo FALSCH_start_services; }
+sleep 60 >/dev/null 2>&1 & old=$!; SVC_ENTRY[chronyd]="$old=sleep"
+sleep 60 >/dev/null 2>&1 & gps=$!; SVC_ENTRY[gpsd]="$gps=sleep"
+reload_chronyd
+[[ -d /proc/$old ]] && echo alt_lebt || echo alt_beendet
+kill -0 "$gps" && echo gpsd_lebt
+[[ "${SVC_ENTRY[chronyd]%%=*}" != "$old" ]] && echo neuer_pid
+kill "$gps" "${SVC_ENTRY[chronyd]%%=*}"
+""")
+        self.assertEqual(out, ["apply", "start_chronyd", "alt_beendet", "gpsd_lebt", "neuer_pid"])
+
+    def test_cert_renewal_keeps_chronyd_when_config_fails(self):
+        self.FUNCS = ("service_alive", "reload_chronyd")
+        out = self.run_bash("""
+apply_config() { return 1; }
+start_chronyd() { echo FALSCH_start; }
+sleep 60 >/dev/null 2>&1 & old=$!; SVC_ENTRY[chronyd]="$old=sleep"
+reload_chronyd
+kill -0 "$old" && echo alt_lebt
+kill "$old"
+""")
+        self.assertEqual(out, ["alt_lebt"])
+
+    def test_watchdog_uses_reload_chronyd_for_certs(self):
+        text = (ROOT / "docker" / "entrypoint.sh").read_text(encoding="utf-8")
+        block = text[text.index('check_nts_cert "$NOW"'):]
+        block = block[:block.index("\n  fi")]
+        self.assertIn("reload_chronyd", block)
+        self.assertNotIn("reload_services", block)
+
 if __name__ == "__main__":
     unittest.main()

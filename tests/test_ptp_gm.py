@@ -110,6 +110,45 @@ class GrandmasterDecisionTests(unittest.TestCase):
                               "frequencyTraceable 1 timeSource 0x20")
 
 
+class ExpertEnvTests(unittest.TestCase):
+    """PTP_TX_TIMESTAMP_TIMEOUT, PTP_UDS_ADDRESS, PTP_UTC_OFFSET, PTP_HOLDOVER_SECONDS."""
+
+    def test_ptp4l_conf_values(self):
+        cfg = _cfg()
+        text = confgen.render_ptp4l(cfg, {})
+        self.assertRegex(text, r"tx_timestamp_timeout\s+10\n")
+        self.assertRegex(text, r"uds_address\s+/var/run/ptp4l\n")
+        self.assertNotIn("utc_offset", text)
+        text = confgen.render_ptp4l(cfg, {"PTP_TX_TIMESTAMP_TIMEOUT": "50",
+                                          "PTP_UDS_ADDRESS": "/run/ptp/gm", "PTP_UTC_OFFSET": "38"})
+        self.assertRegex(text, r"tx_timestamp_timeout\s+50\n")
+        self.assertRegex(text, r"uds_address\s+/run/ptp/gm\n")
+        self.assertRegex(text, r"utc_offset\s+38\n")
+
+    def test_invalid_values_fall_back_with_warning(self):
+        env = {"PTP_TX_TIMESTAMP_TIMEOUT": "10\nslaveOnly 1", "PTP_UDS_ADDRESS": "/run/a b",
+               "PTP_UTC_OFFSET": "-5", "PTP_HOLDOVER_SECONDS": "inf"}
+        text = confgen.render_ptp4l(_cfg(), env)
+        self.assertRegex(text, r"tx_timestamp_timeout\s+10\n")
+        self.assertNotIn("slaveOnly 1\n", text.replace("slaveOnly               0", ""))
+        self.assertRegex(text, r"uds_address\s+/var/run/ptp4l\n")
+        self.assertNotIn("utc_offset", text)
+        warnings = confgen.expert_env_warnings(env)
+        self.assertEqual(len(warnings), 4)
+        self.assertTrue(all(w.startswith("WARNUNG") for w in warnings))
+        self.assertEqual(confgen.expert_env_warnings({"PTP_UTC_OFFSET": "37"}), [])
+        for bad in ("relativ/pfad", "/a/../etc/x", "/run/x;rm"):
+            self.assertEqual(settings.ptp_uds_address({"PTP_UDS_ADDRESS": bad}), "/var/run/ptp4l")
+
+    def test_grandmaster_numbers(self):
+        with mock.patch.dict(os.environ, {"PTP_UTC_OFFSET": "38", "PTP_HOLDOVER_SECONDS": "0"}):
+            self.assertEqual((ptp.utc_offset(), ptp.holdover_seconds()), (38, 0.0))
+        with mock.patch.dict(os.environ, {"PTP_UTC_OFFSET": "abc", "PTP_HOLDOVER_SECONDS": "-1"}):
+            self.assertEqual((ptp.utc_offset(), ptp.holdover_seconds()), (37, 900.0))
+        with mock.patch.dict(os.environ, {"PTP_UDS_ADDRESS": "/run/ptp/gm"}):
+            self.assertIn("/run/ptp/gm", ptp._pmc_base(GrandmasterUpdateTests.CFG))
+
+
 class GrandmasterUpdateTests(unittest.TestCase):
     CFG = {"ptp_enable": True, "ptp_interface": "eth0", "ptp_mode": "master", "ptp_domain": 0,
            "ptp_profile": "default", "gps_refid": "GPS"}
@@ -143,6 +182,42 @@ class GrandmasterUpdateTests(unittest.TestCase):
         with mock.patch.object(ptp, "_send_grandmaster", side_effect=RuntimeError("kaputt")), \
                 mock.patch("builtins.print"):
             ptp.update_grandmaster(self.CFG, TRACK_PPS, PPS_LOCKED)  # wirft nicht
+
+    def test_resends_after_ptp4l_restart(self):
+        sent = []
+        ident = ["svc:100:1000"]
+        with mock.patch.object(ptp, "_send_grandmaster", side_effect=lambda c, p: sent.append(p) or True), \
+                mock.patch.object(ptp, "_ptp4l_identity", side_effect=lambda: ident[0]):
+            ptp._update_grandmaster(self.CFG, TRACK_PPS, PPS_LOCKED, 1000.0)
+            ptp._update_grandmaster(self.CFG, TRACK_PPS, PPS_LOCKED, 1010.0)   # unverändert
+            ident[0] = "svc:200:1015"                                         # ptp4l neu gestartet
+            ptp._update_grandmaster(self.CFG, TRACK_PPS, PPS_LOCKED, 1020.0)
+            ptp._update_grandmaster(self.CFG, TRACK_PPS, PPS_LOCKED, 1030.0)   # wieder unverändert
+        self.assertEqual(len(sent), 2)
+
+    def test_ptp4l_identity_sources(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp)
+        path = os.path.join(tmp, "services.json")
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write('{"services": {"ptp4l": {"state": "running", "pid": 4711, "since": 99}}}')
+        with mock.patch.dict(os.environ, {"NTPGUI_RUN_DIR": tmp}):
+            self.assertEqual(ptp._ptp4l_identity(), "svc:4711:99")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write('{"services": {"ptp4l": {"state": "stopped", "pid": null}}}')
+            with mock.patch.object(ptp, "_proc_identity", return_value="proc:1:2") as proc:
+                self.assertEqual(ptp._ptp4l_identity(), "proc:1:2")
+                proc.assert_called_with("ptp4l")
+        # /proc-Suche: der eigene Prozess über seinen comm-Namen.
+        with open("/proc/self/comm", encoding="utf-8") as handle:
+            comm = handle.read().strip()
+        self.assertIn(f"proc:{os.getpid()}:", ptp._proc_identity(comm) or "")
+        self.assertIsNone(ptp._proc_identity("kein-solcher-prozess"))
+
+    def test_status_shows_effective_transport(self):
+        self.assertEqual(ptp._effective_transport({"ptp_profile": "gptp", "ptp_transport": "UDPv4"}), "L2")
+        self.assertEqual(ptp._effective_transport({"ptp_profile": "gptp", "ptp_transport": "UDPv6"}), "UDPv6")
+        self.assertEqual(ptp._effective_transport({"ptp_profile": "default", "ptp_transport": "UDPv4"}), "UDPv4")
 
     def test_not_master_does_nothing(self):
         with mock.patch.object(ptp, "_send_grandmaster") as send:
@@ -215,7 +290,10 @@ class Phc2sysPlanTests(unittest.TestCase):
 
     def test_custom_options(self):
         cases = {
-            "-a -r": True, "-a -r -m": True, "-a -rr -m": False, "-a -r -r": False,
+            # "-a -r -m" genau ist der alte Standard und gilt als Grandmaster als
+            # "automatisch" (test_legacy_default_in_master_is_automatic); gleiche
+            # Optionen in anderer Reihenfolge bleiben eigene Optionen.
+            "-a -r": True, "-a -m -r": True, "-a -rr -m": False, "-a -r -r": False,
             "-s eth0 -c CLOCK_REALTIME -w": True, "-s eth0 -w": True,
             "-s CLOCK_REALTIME -c eth0 -O 37": False, "-a -rr -c CLOCK_REALTIME": True,
         }
@@ -224,6 +302,37 @@ class Phc2sysPlanTests(unittest.TestCase):
                 plan = confgen.phc2sys_plan(_cfg(ptp_mode="master", phc2sys_options=options))
                 self.assertEqual(plan["options"], options)
                 self.assertEqual(plan["nocontrol"], expected)
+                # Stellt phc2sys als Grandmaster die Systemuhr, muss das laut im Log stehen.
+                self.assertEqual(any(n.startswith("WARNUNG") for n in plan["notes"]), expected)
+
+    def test_legacy_default_in_master_is_automatic(self):
+        for legacy in ("-a -r -m", "  -a  -r   -m "):
+            with self.subTest(legacy=legacy):
+                plan = confgen.phc2sys_plan(_cfg(ptp_mode="master", phc2sys_options=legacy))
+                self.assertEqual(plan["options"], "-a -rr -m")
+                self.assertFalse(plan["nocontrol"])  # chronyd regelt weiter nach GPS/NTP
+                self.assertTrue(any("alte Standard" in n for n in plan["notes"]))
+                self.assertFalse(any(n.startswith("WARNUNG") for n in plan["notes"]))
+        # Als Slave ist "-a -r -m" weiter genau richtig und bleibt unverändert.
+        plan = confgen.phc2sys_plan(_cfg(ptp_mode="slave", phc2sys_options="-a -r -m"))
+        self.assertEqual((plan["options"], plan["nocontrol"]), ("-a -r -m", True))
+        self.assertEqual(plan["notes"], [])
+
+    def test_phc_refclock_skipped_as_master_with_phc2sys(self):
+        def render(**over):
+            warnings = []
+            text = confgen.render_chrony(_cfg(phc_refclock="/dev/null", **over), {},
+                                         warn=lambda *a: warnings.append(a))
+            return text, warnings
+        text, warnings = render(ptp_mode="master")
+        self.assertNotIn("refclock PHC", text)
+        self.assertTrue(any("WARNUNG" in w[1] and "/dev/null" in w[1] for w in warnings))
+        text, warnings = render(ptp_mode="slave")
+        self.assertIn("refclock PHC /dev/null", text)
+        self.assertEqual(warnings, [])
+        # Ohne phc2sys gibt es keine Rückkopplung in die PHC.
+        text, _ = render(ptp_mode="master", phc2sys_enable=False)
+        self.assertIn("refclock PHC /dev/null", text)
 
     def test_rr_accepted_by_validation(self):
         self.assertEqual(settings.validate({"phc2sys_options": "-a -rr -m"})["phc2sys_options"],

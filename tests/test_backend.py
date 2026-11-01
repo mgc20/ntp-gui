@@ -372,6 +372,57 @@ class ParserTests(unittest.TestCase):
 class InsightTests(unittest.TestCase):
     CFG = {"ntp_minsources": 1, "gps_refid": "GPS", "gps_delay": 0.2}
 
+    STATUS = {"chrony_running": True, "tracking": {}, "sources": [], "system": {},
+              "ui": {"storage": {"persistent": True}, "auth": {"enabled": True}}}
+
+    def ptp_keys(self, **cfg):
+        base = {"ptp_enable": True, "ptp_interface": "eth0", "ptp_time_stamping": "hardware",
+                "phc2sys_enable": True, "phc2sys_options": ""}
+        base.update(cfg)
+        return {i["key"]: i for i in insights.build(self.STATUS, dict(self.CFG, **base))
+                if i["key"].startswith("ptp_")}
+
+    def test_ptp_grandmaster_without_phc2sys(self):
+        items = self.ptp_keys(ptp_mode="master", phc2sys_enable=False)
+        self.assertEqual(list(items), ["ptp_gm_free_running"])
+        item = items["ptp_gm_free_running"]
+        self.assertEqual((item["level"], item["action"], item["title"]),
+                         ("warn", "settings", "PTP-Grandmaster verteilt eine frei laufende Uhr"))
+        self.assertEqual(self.ptp_keys(ptp_mode="master"), {})
+        # Software-Zeitstempel: keine Kartenuhr, also nichts frei Laufendes.
+        self.assertEqual(self.ptp_keys(ptp_mode="master", phc2sys_enable=False,
+                                       ptp_time_stamping="software"), {})
+        self.assertEqual(self.ptp_keys(ptp_mode="master", phc2sys_enable=False, ptp_enable=False), {})
+        self.assertEqual(self.ptp_keys(ptp_mode="master", phc2sys_enable=False, ptp_interface=""), {})
+
+    def test_ptp_grandmaster_custom_options_steer_system_clock(self):
+        self.assertEqual(list(self.ptp_keys(ptp_mode="master", phc2sys_options="-a -r")),
+                         ["ptp_gm_phc2sys_options"])
+        # Alter Standard "-a -r -m" gilt als automatisch → kein Hinweis.
+        self.assertEqual(self.ptp_keys(ptp_mode="master", phc2sys_options="-a -r -m"), {})
+
+    def test_ptp_auto_mode_warnings(self):
+        self.assertEqual(list(self.ptp_keys(ptp_mode="auto")), ["ptp_auto_phc2sys"])
+        self.assertEqual(list(self.ptp_keys(ptp_mode="auto", ptp_time_stamping="software")),
+                         ["ptp_auto_software"])
+        self.assertEqual(self.ptp_keys(ptp_mode="auto", phc2sys_enable=False), {})
+        self.assertEqual(self.ptp_keys(ptp_mode="slave"), {})
+        self.assertTrue(all(i["level"] == "warn" for i in
+                            self.ptp_keys(ptp_mode="auto", ptp_time_stamping="software").values()))
+
+    def test_nts_grammar(self):
+        nts = {"enabled": True, "cert": "/certs/a.pem", "key": "/certs/b.pem"}
+        text = insights.nts_server_insights(nts)[0]["text"]
+        self.assertIn("/certs/a.pem und /certs/b.pem fehlen.", text)
+        text = insights.nts_server_insights(dict(nts, key_exists=True))[0]["text"]
+        self.assertIn("/certs/a.pem fehlt.", text)
+        both = dict(nts, cert_exists=True, key_exists=True, cert_readable=False, key_readable=False)
+        text = insights.nts_server_insights(both)[0]["text"]
+        self.assertIn("existieren, lassen sich aber nicht lesen", text)
+        one = dict(both, key_readable=True)
+        self.assertIn("/certs/a.pem existiert, lässt sich aber nicht lesen",
+                      insights.nts_server_insights(one)[0]["text"])
+
     def keys(self, status, cfg=None):
         return {i["key"] for i in insights.build(status, cfg or self.CFG)}
 

@@ -136,6 +136,27 @@ class StatusTest(RunDirMixin, unittest.TestCase):
         self.assertIn("service_gpsd", keys)
         self.assertIn("service_ptp4l", keys)
 
+    def test_gps_hardware_insight_suppressed_when_gpsd_down(self):
+        hw = [{"level": "crit", "title": "GPS-Empfänger nicht nutzbar", "text": "x",
+               "action": "hardware", "key": "hw_gps_usb"}]
+        with FakeBackends(), mock.patch.object(server, "system_info", return_value={}), \
+                mock.patch.object(server.hardware, "cached_insights", return_value=hw), \
+                mock.patch.object(server.gps, "status", return_value={"enabled": True, "running": False}):
+            keys = [i["key"] for i in server.build_status()["insights"]]
+        self.assertIn("gpsd_down", keys)
+        self.assertNotIn("hw_gps_usb", keys)
+        with FakeBackends(), mock.patch.object(server, "system_info", return_value={}), \
+                mock.patch.object(server.hardware, "cached_insights", return_value=hw):
+            keys = [i["key"] for i in server.build_status()["insights"]]
+        self.assertIn("hw_gps_usb", keys)
+
+    def test_combine_insights(self):
+        a = [{"key": "gpsd_down"}, {"key": "x"}]
+        b = [{"key": "x"}, {"key": "hw_gps_usb"}, {"key": None}, {"key": None}]
+        self.assertEqual([i["key"] for i in server.combine_insights(a, b)],
+                         ["gpsd_down", "x", None, None])
+        self.assertEqual([i["key"] for i in server.combine_insights([], b)], ["x", "hw_gps_usb", None, None])
+
     def test_status_without_file(self):
         with FakeBackends(), mock.patch.object(server, "system_info", return_value={}):
             status = server.build_status()

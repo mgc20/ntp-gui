@@ -786,6 +786,49 @@ class TestRtcAndNts(HardwareTestCase):
         self.assertEqual(self.row(rep, "nts")["status"], "limited")
 
 
+class TestReviewFixes(HardwareTestCase):
+    def test_dev_mounted_only_in_container(self):
+        self.vk162()
+        self.host.write("proc/self/mountinfo", MOUNTINFO_HOSTDEV)
+        self.assertTrue(self.run_report(base_cfg())["permissions"]["dev_mounted"])
+        os.unlink(os.path.join(self.host.root, ".dockerenv"))
+        rep = self.run_report(base_cfg())
+        self.assertIsNone(rep["platform"]["container"])
+        self.assertFalse(rep["permissions"]["dev_mounted"])
+
+    def test_nts_row_names_configured_directory(self):
+        cfg = base_cfg(nts_server_enable=True, nts_server_cert="/certs/npm-3/fullchain.pem",
+                       nts_server_key="/certs/npm-3/privkey.pem")
+        row = self.row(self.run_report(cfg), "nts")
+        self.assertEqual(row["status"], "change")
+        self.assertIn("/certs/npm-3", row["text"])
+        self.assertNotIn("./config", row["text"])
+        self.assertEqual(row["fix"], "volumes:\n  - <Ordner auf dem Host>:/certs/npm-3:ro")
+        row = self.row(self.run_report(base_cfg(nts_server_enable=True)), "nts")
+        self.assertEqual(row["fix"], "volumes:\n  - ./config:/config:ro")
+
+    def test_no_duplicate_nts_server_insight(self):
+        cfg = base_cfg(nts_server_enable=True, nts_server_cert="/certs/none/c.pem",
+                       nts_server_key="/certs/none/k.pem")
+        self.run_report(cfg)
+        self.assertNotIn("hw_nts", [i["key"] for i in hardware.cached_insights(cfg)])
+        # Andere NTS-Gründe (fehlende RTC für NTS-Quellen) bleiben ein Hinweis.
+        cfg = base_cfg(nts_nocerttimecheck=False,
+                       ntp_sources=[{"type": "server", "host": "nts.example", "nts": True}])
+        self.run_report(cfg)
+        self.assertIn("hw_nts", [i["key"] for i in hardware.cached_insights(cfg)])
+
+    def test_capability_uses_profile_transport(self):
+        self.host.caps(f"{int(CAP_TIME_ADMIN, 16) & ~(1 << 13):016x}")  # NET_ADMIN, ohne NET_RAW
+        check = next(c for c in devices.ptp_readiness(base_cfg(ptp_profile="gptp"))
+                     if c["key"] == "capability")
+        self.assertIs(check["ok"], False)
+        self.assertIn("NET_RAW", check["detail"])
+        check = next(c for c in devices.ptp_readiness(base_cfg(ptp_profile="aes67"))
+                     if c["key"] == "capability")
+        self.assertIs(check["ok"], True)
+
+
 class TestGpsModule(unittest.TestCase):
     def test_devices_in_reports(self):
         state = gps.parse_reports({"DEVICES": {"class": "DEVICES", "devices": [GPSD_F9T]}})

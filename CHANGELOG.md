@@ -6,6 +6,18 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 
 ## [1.2.0] – 2026-11-01
 
+### Achtung beim Update (Breaking Change)
+- **NTS-Zertifikatspfade sind eingeschränkt:** `NTS_SERVER_CERT` und `NTS_SERVER_KEY`
+  dürfen nur noch unter `/config`, `/certs` oder `/etc/letsencrypt` liegen (auch das Ziel
+  eines Symlinks). Ein Pfad woanders (z. B. `/etc/ssl/…`) wird abgelehnt, es gilt der
+  Standard `/config/nts.crt`/`/config/nts.key` – fehlen die Dateien dort, bleibt der
+  NTS-Server nach dem Update aus (normales NTP läuft weiter). Grund: Die Dateien werden in
+  ein für chronyd lesbares Verzeichnis kopiert; ein freier Pfad würde z. B. erlauben,
+  `/etc/shadow` dorthin zu kopieren. Abhilfe: den Zertifikatsordner nach `/certs` (oder
+  `/etc/letsencrypt`) mounten und die Pfade anpassen.
+- `PHC2SYS_OPTIONS="-a -r -m"` (der alte Standard aus 1.1.0) wird als Grandmaster durch
+  die automatische Wahl `-a -rr -m` ersetzt (Hinweis im Log) – die Variable kann entfallen.
+
 ### Hinzugefügt
 - **Hardware-Check** (Seite „Hardware“, `GET /api/hardware`, `?refresh=1` prüft neu):
   erkennt GPS-Empfänger über USB-ID, gpsd und Anschlussart (USB-Modem, USB-Seriell,
@@ -41,17 +53,15 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 - Erklärung (ⓘ) zu jedem neuen Wert; ein Test stellt sicher, dass kein angezeigter Wert
   ohne Erklärung bleibt.
 - Integrationstest: NTS-Server mit selbst signiertem Zertifikat inkl. Zertifikatswechsel,
-  Neustart eines abgestürzten gpsd (jetzt 68 Prüfungen; 221 Unittests).
+  Neustart eines abgestürzten gpsd (jetzt 68 Prüfungen; 245 Unittests).
 
 ### Geändert
 - **Supervisor**: Fällt gpsd, ptp4l oder phc2sys aus, startet nur dieser Dienst neu
   (Pause 5 s, 15 s, 60 s, danach alle 5 min) – NTP läuft weiter. Nur ein Ausfall von
   chronyd oder dem Dashboard beendet den Container. Fehlende Geräte werden alle 30 s
   gesucht und automatisch übernommen. Zustand in `services.json`.
-- **Achtung, kann bestehende Setups betreffen:** `NTS_SERVER_CERT`/`NTS_SERVER_KEY`
-  müssen jetzt unter `/config`, `/certs` oder `/etc/letsencrypt` liegen (sonst gilt der
-  Standard `/config/nts.crt`), weil die Dateien in ein für chronyd lesbares Verzeichnis
-  kopiert werden. Zertifikate an anderen Orten bitte dorthin mounten.
+- NTS-Zertifikatspfade nur noch unter `/config`, `/certs` oder `/etc/letsencrypt` –
+  siehe „Achtung beim Update“.
 - Die Kopien von Zertifikat und Schlüssel gehören `root:_chrony` mit `0640` – chronyd
   kann sie lesen, aber nicht verändern.
 - `PHC2SYS_OPTIONS` ist standardmäßig leer und wird passend zur Rolle gewählt.
@@ -77,6 +87,42 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 - `docker-compose.pi-gps.yml` verwies zur Kalibrierung noch auf `chronyc sourcestats`
   statt auf den Assistenten im Dashboard.
 - Dashboard zeigte als Version weiterhin 1.1.0.
+
+#### Behoben nach dem Review vor dem Release
+- **PTP-Grandmaster:** Nach jedem Neustart von ptp4l (Speichern, Hotplug, Absturz)
+  kündigte er bis zu 5 Minuten `clockClass 248` an – die Daten werden jetzt sofort neu
+  gesendet. Ein `PHC_REFCLOCK` zusammen mit `PTP_MODE=master` hätte chrony seine eigene
+  Zeit zurückgeliefert (Zeitschleife); die Refclock-Zeile entfällt dann mit WARNUNG.
+  Das Dashboard warnt, wenn ein Grandmaster mit Hardware-Zeitstempeln ohne phc2sys
+  läuft; das Beispiel auf der PTP-Seite setzt `PHC2SYS_ENABLE` jetzt mit.
+- **NTS-Zertifikatserneuerung** startet nur noch chronyd neu, nicht mehr gpsd, ptp4l
+  und phc2sys.
+- Das PTP-Profil (z. B. `gptp` → Layer 2) wird jetzt auch beim Rechte-Check (`NET_RAW`)
+  und in der PTP-Statusanzeige berücksichtigt.
+- Ungültige Expertenwerte (`PTP_UTC_OFFSET`, `PTP_HOLDOVER_SECONDS`,
+  `PTP_TX_TIMESTAMP_TIMEOUT`, `PTP_UDS_ADDRESS`) fallen mit WARNUNG im Log auf den
+  Standard zurück.
+- Dashboard: keine doppelten NTS-Hinweise mehr, Grammatik „fehlen/fehlt“, PTP-Kachel
+  „läuft nicht“ statt „aus“, fehlende (i)-Erklärungen in den Einstellungen, die
+  Clients-Seite erfindet keine Server-IP mehr, „/dev vom Host eingehängt“ nur noch im
+  Container.
+- **Compose-Dateien:** Der Healthcheck liest `WEB_PORT` (wie im Dockerfile) – ein anderer
+  Dashboard-Port macht den Container nicht mehr „unhealthy“. In
+  `docker-compose.pi-gps.yml` erzeugte die PPS-Variante beim Einkommentieren einen
+  doppelten `GPS_DEVICE`-Schlüssel. Die All-in-one-Datei lässt sich mechanisch
+  einkommentieren (eingerückte `#` + zwei Leerzeichen); Kopfzeilen erfüllen das Muster
+  nicht mehr.
+- **Raspberry Pi:** Anleitung für den GPS-HAT korrigiert – beim Pi 3/4 liegt am Header
+  sonst der Mini-UART `/dev/ttyS0` (dafür `dtoverlay=disable-bt` und
+  `systemctl disable hciuart`), serielle Konsole abschalten, `/dev/serial0` empfohlen;
+  beim Pi 5 ist es `/dev/ttyAMA0`.
+- **README:** NPM-Zertifikatsordner per `openssl`-Schleife finden (die alte
+  `grep`-Suche fand mit DNS-Challenge nichts), die zwei Namen bei NTS hinter einem Proxy
+  (Zertifikat = Proxy-Name, `NTS_SERVER_NAME` = Host von ntp-gui) klar getrennt,
+  Port-Veröffentlichung für Proxys in Docker, nginx-`map` mit `default`, Bridge-Modus
+  verbirgt Client-IPs nur je nach Docker-Setup, `PHC_REFCLOCK` nur als Slave,
+  Holdover (`clockClass 7`) und `timeSource NTP` beschrieben, `PTP_UTC_OFFSET`,
+  `PTP_HOLDOVER_SECONDS`, `PTP_TX_TIMESTAMP_TIMEOUT` und `PTP_UDS_ADDRESS` dokumentiert.
 
 ## [1.1.0] – 2026-11-01
 

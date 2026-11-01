@@ -41,7 +41,7 @@ Raspberry Pi starten, die Adresse per **DHCP Option 42** verteilen – fertig.
 - **Fällt nicht um** – stirbt gpsd oder ptp4l (Kabel gezogen, Karte weg), startet der Supervisor nur diesen Dienst neu; NTP läuft weiter
 - **Dashboard ohne Ballast** – reines Python aus der Distribution, kein npm, kein pip; Diagramme in eigenem SVG
 - **Monitoring eingebaut** – JSON-API, Prometheus-`/metrics` und `/healthz`; Verlauf über 24 h, übersteht Neustarts
-- **Getestet** – 221 Unittests und ein 68-Punkte-Integrationstest gegen das gebaute Image in der CI
+- **Getestet** – 245 Unittests und ein 68-Punkte-Integrationstest gegen das gebaute Image in der CI
 
 ## Auf einen Blick
 
@@ -177,9 +177,11 @@ docker compose up -d
 1. **Kopieren und starten** – so wie sie ist, läuft die Datei auf jedem Linux-Host.
 2. **Seite „Hardware“ öffnen** – sie erkennt Empfänger, PPS, PTP-Karten und fehlende
    Rechte und nennt die Blöcke, die du einkommentieren musst, mit fertigem Ausschnitt.
-3. **Einkommentieren** – Optionszeilen beginnen mit `#` und **zwei** Leerzeichen
-   (`#  - NET_ADMIN`); genau diese drei Zeichen löschen, dann stimmt die Einrückung.
-   Erklärungen haben nur ein Leerzeichen und bleiben stehen.
+3. **Einkommentieren** – Optionszeilen sind eingerückt und beginnen mit `#` und **zwei**
+   Leerzeichen (`      #  - NET_ADMIN`); genau diese drei Zeichen löschen, alles davor
+   stehen lassen, dann stimmt die Einrückung. Erklärungen haben nur ein Leerzeichen nach
+   `#` und bleiben stehen. Die Regel ist mechanisch: Keine andere Zeile der Datei hat dieses
+   Muster, selbst `sed -E 's/^( +)#  /\1/'` über die ganze Datei ergibt gültiges YAML.
 4. **`docker compose up -d`** – Geräte, Capabilities und Mounts übernimmt Docker nur beim
    Erzeugen des Containers; ein reiner Neustart reicht dafür nicht.
 
@@ -203,10 +205,10 @@ Der Hotplug-Block hängt deshalb stattdessen `/dev` des Hosts ein und erlaubt pe
 |---|---|
 | `c 166:* rwm` | `ttyACM*` – USB-GPS wie VK-162/u-blox |
 | `c 188:* rwm` | `ttyUSB*` – GPS hinter USB-Seriell-Adapter (CP210x, FTDI, PL2303) |
-| `c 204:* rwm` | `ttyAMA*` – UART des Raspberry Pi (GPS-HAT) |
+| `c 204:* rwm` | `ttyAMA*` – UART des Raspberry Pi (GPS-HAT; Pi 5, Pi 3/4 nur mit `disable-bt`) |
 | `c ${PPS_MAJOR:-136}:* rwm` | `/dev/ppsN` – PPS-Signal |
 | `c ${PTP_MAJOR:-0}:* rwm` | `/dev/ptpN` – PTP-Hardwareuhr der Netzwerkkarte |
-| `c 4:* rwm` (optional) | `ttyS*` – z. B. Mini-UART am Pi 3/4; gibt auch die virtuellen Konsolen frei |
+| `c 4:* rwm` (optional) | `ttyS*` – z. B. Mini-UART am Pi 3/4 ohne `disable-bt` (auch wenn `/dev/serial0` darauf zeigt); gibt auch die virtuellen Konsolen frei |
 
 PPS und PTP bekommen ihre Gerätenummer (Major) vom Kernel erst beim Booten, sie
 unterscheidet sich je System. Die Hardware-Seite zeigt sie an; du schreibst sie in eine
@@ -368,7 +370,8 @@ Geräte bleibt es bei normalem NTP.
    `/etc/shadow` dorthin zu kopieren.
 2. `NTS_SERVER=true` setzen (oder im Dashboard unter NTS einschalten) und Port `4460/tcp`
    erreichbar machen.
-3. `NTS_SERVER_NAME` auf den Namen setzen, unter dem die Clients den Server erreichen.
+3. `NTS_SERVER_NAME` auf den Namen setzen, unter dem die Clients den Server erreichen. Er
+   muss im Zertifikat stehen (ohne Reverse Proxy ist das derselbe Name wie für NTS-KE).
 
 Beim Start prüft ntp-gui das Paar (PEM-Format, höchstens 1 MB, Schlüssel passt zum
 Zertifikat) und legt Kopien für chronyd an (`root:_chrony`, `0640` – chronyd darf lesen, aber
@@ -398,9 +401,16 @@ Zertifikat selbst: Du hängst den Zertifikatsordner des Proxys schreibgeschützt
 **UDP 123 geht direkt.** Nach dem Schlüsselaustausch schickt der Client seine NTP-Pakete
 (UDP) an die Adresse, mit der er den Schlüsselaustausch gemacht hat – also an den Proxy,
 der UDP meist gar nicht weiterreicht. `NTS_SERVER_NAME` setzt in chrony `ntsntpserver`:
-Der Server nennt dem Client dann diesen Namen, und die NTP-Pakete gehen dorthin. Der Name
-muss auf den Host von ntp-gui zeigen und im Zertifikat stehen. Laufen Proxy und ntp-gui auf
-demselben Host, ist das automatisch erfüllt.
+Der Server nennt dem Client dann diesen Namen, und die NTP-Pakete gehen dorthin. Es geht um
+zwei Namen:
+
+- Der Name, unter dem die Clients den **Proxy** ansprechen (NTS-KE, TCP 4460), muss im
+  **Zertifikat** stehen – nur er wird per TLS geprüft.
+- `NTS_SERVER_NAME` muss auf den **Host von ntp-gui** zeigen (NTP, UDP 123). Für ihn prüft
+  niemand ein Zertifikat.
+
+Laufen Proxy und ntp-gui auf demselben Host, ist es derselbe Name, und beides ist mit einem
+Eintrag erfüllt.
 
 Außerdem: chronyd sieht hinter dem Proxy nur dessen IP-Adresse und beantwortet NTS-KE nur
 aus Netzen in `ALLOW_NETWORKS`. Mit den Standardwerten (alle privaten Netze, inklusive
@@ -433,13 +443,24 @@ environment:
 1. Unter **SSL Certificates** ein Let's-Encrypt-Zertifikat für `zeit.example.com` anlegen
    (aus dem LAN heraus mit DNS-Challenge).
 2. Herausfinden, in welchem Ordner es liegt: NPM legt je Zertifikat `live/npm-N/` an.
-   `grep -l zeit.example.com /opt/npm/letsencrypt/renewal/*.conf` nennt die Nummer.
+   Diese Schleife zeigt je Ordner die Namen im Zertifikat (sie funktioniert auch mit
+   DNS-Challenge, deren `renewal/*.conf` keinen Domainnamen enthält):
+   ```bash
+   for d in /opt/npm/letsencrypt/live/npm-*/; do
+     echo "$d: $(openssl x509 -noout -ext subjectAltName -in "$d/cert.pem" | tail -1)"
+   done
+   ```
 3. Den **ganzen** `letsencrypt`-Ordner nach `/certs` einhängen, nicht nur `live/npm-N` –
    die Dateien dort sind Verweise auf `../../archive/`.
 4. Unter **Streams → Add Stream**: Incoming Port `4460`, Forward Host = IP des Hosts,
    Forward Port `4461`, *TCP Forwarding* an, *UDP Forwarding* aus. **Kein** SSL-Zertifikat
    am Stream auswählen – das würde TLS terminieren.
-5. Im Compose von NPM den Port `4460:4460` veröffentlichen.
+5. Im Compose von NPM den Port `4460:4460` veröffentlichen (siehe unten).
+
+**Für alle Proxys gilt:** Läuft der Proxy selbst in Docker mit Bridge-Netzwerk, muss
+sein Compose den äußeren NTS-Port veröffentlichen (`4460:4460/tcp`), sonst kommt keine
+Verbindung an. Läuft ntp-gui mit Bridge-Netzwerk statt Host-Netzwerk, folgt dessen
+Port-Mapping `NTS_SERVER_PORT` (bei `4461` also `4461:4461/tcp`).
 
 #### Zoraxy
 
@@ -484,6 +505,7 @@ tcp:
 stream {
     map $ssl_preread_server_name $nts_backend {
         zeit.example.com  192.168.1.10:4461;
+        default           "";    # ohne passenden SNI-Namen: Verbindung wird abgewiesen
     }
     server {
         listen 4460;
@@ -647,24 +669,46 @@ Sekunden, `?seconds=` geht ebenso).
 
 Empfänger mit PPS-Ausgang (GPS-HAT, Modul an einem GPIO, USB-Adapter mit DCD-Leitung)
 liefern eine Sekundenflanke, die um Größenordnungen genauer ist als die NMEA-Sätze.
-Am Raspberry Pi wird der PPS-Pin über einen Overlay in `/boot/firmware/config.txt`
-sichtbar gemacht:
 
-```
-dtoverlay=pps-gpio,gpiopin=18
-```
+**GPS-HAT am Raspberry Pi vorbereiten:**
 
-Danach `/dev/pps0` in den Container reichen und aktivieren:
+1. **Serielle Konsole abschalten.** Sonst schreiben Kernel und Login-Prompt auf die
+   GPS-Leitung, und gpsd liest Unsinn. `sudo raspi-config` → *Interface Options* →
+   *Serial Port* → Login-Shell über seriell: **Nein**, serielle Hardware: **Ja**. Das
+   entfernt `console=serial0,115200` aus `/boot/firmware/cmdline.txt` (von Hand geht es
+   auch).
+2. **UART und PPS-Pin** in `/boot/firmware/config.txt` freischalten:
+   ```
+   enable_uart=1
+   dtoverlay=pps-gpio,gpiopin=18
+   ```
+3. **Nur Pi 3/4:** Dort liegt auf den Header-Pins 8/10 standardmäßig der Mini-UART
+   (`/dev/ttyS0`), dessen Takt an der CPU-Frequenz hängt; der gute UART (`/dev/ttyAMA0`)
+   gehört Bluetooth. Mit
+   ```
+   dtoverlay=disable-bt
+   ```
+   in `config.txt` und `sudo systemctl disable hciuart` wechselt der Header auf
+   `/dev/ttyAMA0` (Bluetooth ist dann aus). Beim **Pi 5** ist der Header-UART ohnehin
+   `/dev/ttyAMA0`.
+4. Neu starten.
+
+Am einfachsten nimmst du danach **`/dev/serial0`**: Der Symlink zeigt bei jedem Modell auf
+den UART an den Header-Pins, `ls -l /dev/serial0` nennt das echte Gerät. Docker löst ihn
+beim Durchreichen auf:
 
 ```yaml
 devices:
-  - /dev/ttyAMA0:/dev/ttyAMA0
+  - /dev/serial0:/dev/serial0
   - /dev/pps0:/dev/pps0
 environment:
   GPS_ENABLE: "true"
-  GPS_DEVICE: "/dev/ttyAMA0"
+  GPS_DEVICE: "/dev/serial0"
   GPS_PPS_DEVICE: "/dev/pps0"
 ```
+
+Mit dem Hotplug-Block (`/dev:/dev`) braucht der Container die Regel für das echte Gerät:
+`c 204:* rwm` für `ttyAMA0`, für den Mini-UART `ttyS0` zusätzlich `c 4:* rwm`.
 
 chrony bekommt dann zwei Refclocks: `GPS` liefert die grobe Zeit (welche Sekunde),
 `PPS` die exakte Flanke (`lock GPS`). Der VK-162 hat **kein** PPS. Ob Impulse wirklich
@@ -798,10 +842,17 @@ docker compose -f docker-compose.ptp.yml up -d
 | `PTP_SUMMARY_INTERVAL` | `4` | Wie oft ptp4l Kennzahlen ins Log schreibt (2^n s) |
 | `PHC2SYS_ENABLE` | `false` | Systemuhr und PTP-Hardwareuhr koppeln |
 | `PHC2SYS_OPTIONS` | automatisch | Leer = passend zur Rolle: Grandmaster `-a -rr -m`, sonst `-a -r -m` |
-| `PHC_REFCLOCK` | – | PTP-Uhr als chrony-Referenz, z. B. `/dev/ptp0` (PTP→NTP-Brücke) |
+| `PHC_REFCLOCK` | – | PTP-Uhr als chrony-Referenz, z. B. `/dev/ptp0` (PTP→NTP-Brücke). **Nur als PTP-Slave** (`PTP_MODE` `slave` oder `auto`), nicht mit `master`: Dort stellt phc2sys die PTP-Uhr nach der Systemuhr, chrony bekäme seine eigene Zeit zurück. ntp-gui lässt die Refclock-Zeile dann weg und schreibt eine WARNUNG ins Log |
 | `PHC_REFCLOCK_OPTIONS` | `poll 0 dpoll -2 offset 0 stratum 1` | Optionen der PHC-Refclock-Zeile |
 | `EXTRA_PTP4L_CONF` | – | Zusätzliche Zeilen im `[global]`-Abschnitt |
 | `CUSTOM_PTP4L_CONF` | `/config/ptp4l.conf` | Pfad einer eigenen ptp4l.conf, die – falls vorhanden – die erzeugte ersetzt |
+| `PTP_UTC_OFFSET` | `37` | Expertenwert, nur per Umgebung: TAI−UTC in Sekunden (0–100), den ein Grandmaster als `currentUtcOffset` ankündigt; weicht er von 37 ab, steht er auch als `utc_offset` in der ptp4l.conf. Erst nach einer neuen Schaltsekunde ändern |
+| `PTP_HOLDOVER_SECONDS` | `900` | Expertenwert, nur per Umgebung: So lange (0–86400 s, `0` = kein Holdover) kündigt ein Grandmaster nach dem letzten stabilen GPS+PPS-Lock noch `clockClass 7` (Holdover) an |
+| `PTP_TX_TIMESTAMP_TIMEOUT` | `10` | Expertenwert, nur per Umgebung: Wartezeit in ms (1–10000) auf den Sende-Zeitstempel der Karte (ptp4l `tx_timestamp_timeout`). Erhöhen, wenn ptp4l „timed out while polling for tx timestamp“ meldet |
+| `PTP_UDS_ADDRESS` | `/var/run/ptp4l` | Expertenwert, nur per Umgebung: Management-Socket von ptp4l (`uds_address`; phc2sys bekommt ihn per `-z`, pmc per `-s`). Nur ein absoluter Pfad ohne Leer- und Sonderzeichen |
+
+Ungültige Expertenwerte (außerhalb des Bereichs, kein gültiger Pfad) ersetzt ntp-gui durch den
+Standard und schreibt eine WARNUNG ins Log.
 
 Auch hier lässt sich alternativ eine eigene `/config/ptp4l.conf` mounten.
 
@@ -819,8 +870,11 @@ von der Rolle ab, und es darf immer nur **ein** Regler an der Systemuhr drehen:
 diese Zeit ist, passt ntp-gui die Angaben im PTP-Announce laufend an den Zustand von chrony
 an (`GRANDMASTER_SETTINGS_NP`): Mit stabilem GPS + PPS kündigt der Grandmaster
 `clockClass 6` und `timeSource GPS` an. Nur mit NMEA (USB-GPS ohne PPS) meldet er zwar
-`timeSource GPS`, bleibt aber bei `clockClass 248` mit grober `clockAccuracy`; ohne
-Synchronisation bei 248 und „interner Oszillator“. Ohne
+`timeSource GPS`, bleibt aber bei `clockClass 248` mit grober `clockAccuracy`. Fällt
+GPS + PPS weg, während chrony synchron bleibt, meldet er noch `PTP_HOLDOVER_SECONDS` lang
+(Standard 900 s) `clockClass 7` (Holdover: die Uhr läuft mit der gelernten Frequenz weiter),
+danach wieder 248. Hat chrony nur Internet-NTP als Quelle, kündigt er `timeSource NTP`
+(`0x50`) mit `clockClass 248` an; ohne Synchronisation 248 und „interner Oszillator“. Ohne
 eingeschaltetes phc2sys läuft die PHC frei – das Dashboard warnt dann.
 
 **Profile:**
@@ -868,7 +922,11 @@ Nur per Umgebung (sie betreffen den Start selbst oder sind Expertenwerte): `WEB_
 `DISABLE_CLOCK_CONTROL`, `EXTRA_CHRONY_CONF`, `EXTRA_PTP4L_CONF`, `CHRONY_LOG`,
 `CLIENTLOGLIMIT`, `MAXUPDATESKEW`, `CUSTOM_CHRONY_CONF`, `CUSTOM_PTP4L_CONF`, `GPS_OPTIONS`,
 `GPS_SHM_UNIT`, `GPS_PPS_SHM_UNIT`, `GPS_WAIT_SECONDS`, `GPSD_HOST`/`GPSD_PORT`,
-`PHC_REFCLOCK_OPTIONS`.
+`PHC_REFCLOCK_OPTIONS`, `PTP_UTC_OFFSET`, `PTP_HOLDOVER_SECONDS`, `PTP_TX_TIMESTAMP_TIMEOUT`,
+`PTP_UDS_ADDRESS`.
+
+Der Healthcheck (Dockerfile und alle Compose-Dateien) liest `WEB_PORT` selbst; bei einem
+anderen Port musst du ihn nicht anpassen.
 
 Das Dashboard hat **keine Verschlüsselung**. Für Zugriff über unsichere Netze einen
 Reverse Proxy mit TLS davorsetzen und `WEB_USER`/`WEB_PASSWORD` verwenden.

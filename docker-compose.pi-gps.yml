@@ -24,8 +24,8 @@ services:
     container_name: ntp-gui
     restart: unless-stopped
 
-    # Host-Netzwerk: kein NAT, das Dashboard zeigt die echten Client-IPs,
-    # NTP läuft direkt auf 123/udp, das Dashboard auf 8080.
+    # Host-Netzwerk: kein NAT dazwischen, das Dashboard zeigt sicher die
+    # echten Client-IPs. NTP läuft direkt auf 123/udp, das Dashboard auf 8080.
     network_mode: host
 
     # Der Pi hat keine Echtzeituhr (der Pi 5 nur mit Pufferbatterie) – chrony
@@ -40,12 +40,24 @@ services:
       # - /dev/serial/by-id/usb-u-blox_AG_-_www.u-blox.com_u-blox_7_-_GPS_GNSS_Receiver-if00:/dev/ttyACM0
       #
       # PPS-Variante (GPS-HAT oder Modul an UART + GPIO statt USB-GPS) –
-      # mikrosekundengenau statt Millisekunden. Auf dem Pi vorher in
-      # /boot/firmware/config.txt den PPS-Pin freischalten und neu starten:
-      #   dtoverlay=pps-gpio,gpiopin=18
-      #   enable_uart=1
+      # mikrosekundengenau statt Millisekunden. Auf dem Pi vorher:
+      #   a) Serielle Konsole abschalten, sonst schreiben Kernel und Login auf
+      #      die GPS-Leitung: sudo raspi-config → Interface Options → Serial
+      #      Port → Login-Shell „Nein“, serielle Hardware „Ja“ (entfernt
+      #      „console=serial0,115200“ aus /boot/firmware/cmdline.txt).
+      #   b) In /boot/firmware/config.txt PPS-Pin und UART freischalten:
+      #        dtoverlay=pps-gpio,gpiopin=18
+      #        enable_uart=1
+      #   c) Nur Pi 3/4: Dort hängt der Header-UART sonst am ungenauen
+      #      Mini-UART /dev/ttyS0, /dev/ttyAMA0 gehört Bluetooth. Mit
+      #        dtoverlay=disable-bt
+      #      in config.txt und „sudo systemctl disable hciuart“ bekommt der
+      #      GPS-HAT den richtigen UART (dann /dev/ttyAMA0). Beim Pi 5 ist der
+      #      Header-UART ohnehin /dev/ttyAMA0.
+      #   d) Neu starten. /dev/serial0 zeigt immer auf den Header-UART, egal
+      #      welches Modell: „ls -l /dev/serial0“ nennt das echte Gerät.
       # Dann oben die ttyACM0-Zeile durch diese beiden ersetzen:
-      # - /dev/ttyAMA0:/dev/ttyAMA0
+      # - /dev/serial0:/dev/serial0
       # - /dev/pps0:/dev/pps0
 
     environment:
@@ -53,6 +65,7 @@ services:
       WEB_TITLE: "Zeitserver (Pi + GPS)"
 
       GPS_ENABLE: "true"
+      # PPS-Variante (siehe devices oben): hier "/dev/serial0" eintragen.
       GPS_DEVICE: "/dev/ttyACM0"
       # Ein USB-GPS meldet die Zeit immer um einen festen Betrag zu spät
       # (typisch 20–150 ms). Nach ein paar Stunden im Dashboard unter
@@ -60,8 +73,7 @@ services:
       # Vorrang vor diesem Startwert.
       GPS_OFFSET: "0.0"
       GPS_SHOW_POSITION: "false"
-      # PPS-Variante (siehe devices oben):
-      # GPS_DEVICE: "/dev/ttyAMA0"
+      # PPS-Variante (siehe devices oben) – zusätzlich zu GPS_DEVICE oben:
       # GPS_PPS_DEVICE: "/dev/pps0"
 
       # PTB-Server als Plausibilitätsprüfung und Rückfallebene ohne GPS-Fix
@@ -78,7 +90,7 @@ services:
       - chrony-data:/var/lib/chrony   # Drift, Messwerte, Dashboard-Einstellungen und Verlauf
 
     healthcheck:
-      test: ["CMD", "python3", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8080/healthz',timeout=4)"]
+      test: ["CMD", "python3", "-c", "import os,urllib.request;urllib.request.urlopen('http://127.0.0.1:'+os.environ.get('WEB_PORT','8080')+'/healthz',timeout=4)"]
       interval: 30s
       timeout: 5s
       retries: 3
