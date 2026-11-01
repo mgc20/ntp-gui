@@ -1,0 +1,21 @@
+name: Idee
+description: Vorschlag für eine neue Funktion oder Verbesserung.
+labels: ["idea"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Welches Problem soll gelöst werden?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Wie könnte die Lösung aussehen?
+  - type: dropdown
+    id: privacy
+    attributes:
+      label: Verlassen dabei Daten die Instanz?
+      options:
+        - Nein, rein lokal
+        - Ja (bitte beschreiben, welche)
