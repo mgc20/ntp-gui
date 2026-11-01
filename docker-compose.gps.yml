@@ -5,6 +5,15 @@
 # Vorher am Host prüfen, welches Gerät der Empfänger belegt:
 #   dmesg | grep -i -E "ttyACM|ttyUSB|u-blox"
 #   ls -l /dev/ttyACM0
+#
+# Alle Optionen (GPS, PPS, PTP, NTS-Server hinter Reverse Proxy, Hotplug,
+# Dashboard-Passwort) mit Erklärung in einer Datei, zum Einkommentieren:
+# docker-compose.all-in-one.yml. Welche Blöcke du brauchst, sagt dir die
+# Seite „Hardware“ im Dashboard.
+#
+# Hinweis: Fehlt /dev/ttyACM0 beim Start, bricht „docker compose up“ ab. Für
+# einen Empfänger, der nicht immer steckt, nimm den Hotplug-Block der
+# All-in-one-Datei.
 services:
   ntp-gui:
     build: .
@@ -21,7 +30,7 @@ services:
 
     devices:
       - /dev/ttyACM0:/dev/ttyACM0   # der GPS-Empfänger
-      # - /dev/pps0:/dev/pps0       # nur bei Empfängern mit echtem PPS-Signal
+      # - /dev/pps0:/dev/pps0       # nur bei Empfängern mit echtem PPS-Signal (VK-162: keins)
 
     environment:
       TZ: "Europe/Berlin"
@@ -29,7 +38,8 @@ services:
 
       GPS_ENABLE: "true"
       GPS_DEVICE: "/dev/ttyACM0"
-      # Laufzeitversatz des Empfängers ausgleichen (siehe README, Kalibrierung).
+      # Laufzeitversatz des Empfängers. Am einfachsten im Dashboard unter
+      # GPS → „GPS kalibrieren“ messen und übernehmen (der Wert dort hat Vorrang).
       GPS_OFFSET: "0.0"
       # Position im Dashboard anzeigen (Standard: aus)
       GPS_SHOW_POSITION: "false"
@@ -49,6 +59,13 @@ services:
 
     volumes:
       - chrony-data:/var/lib/chrony
+
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8080/healthz',timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 45s
 
 volumes:
   chrony-data:

@@ -95,6 +95,15 @@ function expiry(nts) {
   return el("span", {}, `${new Date(nts.not_after * 1000).toLocaleDateString("de-DE")} `, badge(label, tone));
 }
 
+// Name, unter dem Clients den Server eintragen – passt er nicht zum Zertifikat,
+// scheitert bei ihnen die TLS-Prüfung.
+function serverName(nts) {
+  const port = isNum(nts.port) && nts.port !== 4460 ? ` (NTS-KE-Port ${nts.port})` : "";
+  const match = nts.name_matches_cert === true ? badge("passt zum Zertifikat", "good")
+    : nts.name_matches_cert === false ? badge("steht nicht im Zertifikat", "crit") : null;
+  return el("span", {}, el("span", { class: "mono", text: `${nts.name}${port} ` }), match);
+}
+
 // Eigener NTS-Server: nur sichtbar, wenn er eingeschaltet ist.
 export function ntsServerCard(nts) {
   if (!nts || !nts.enabled) return null;
@@ -106,6 +115,8 @@ export function ntsServerCard(nts) {
       ["Privater Schlüssel", el("span", {}, el("span", { class: "mono", text: `${nts.key || "–"} ` }), fileState(nts.key_exists, nts.key_readable)), "nts_server_files"],
       ["Gültig bis", expiry(nts), "nts_cert_expiry"],
       ["Name im Zertifikat", (nts.names || []).join(", ") || nts.subject || "–", "nts_cert_subject"],
+      nts.name ? ["Servername für Clients", serverName(nts), "nts_server_name"] : null,
+      nts.cert_issuer ? ["Aussteller", String(nts.cert_issuer), "nts_cert_issuer"] : null,
     ]),
     kv([
       ["Schlüsselaustausch angenommen", fmtNumber(nts.ke_accepted), "nts_ke_server"],

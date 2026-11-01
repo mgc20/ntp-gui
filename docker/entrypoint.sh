@@ -28,12 +28,18 @@ OPTIONAL_SERVICES=" gpsd ptp4l phc2sys "
 BACKOFF=(5 15 60 300)   # Pause vor dem 1., 2., 3. und jedem weiteren Neustart
 STABLE_AFTER=600        # lief ein Dienst so lange, beginnt der Backoff wieder bei 5 s
 HOTPLUG_EVERY=30        # Sekunden zwischen zwei Prüfungen auf neue/ersetzte Geräte
+NTS_CERT_EVERY=60       # Sekunden zwischen zwei Prüfungen auf ein erneuertes NTS-Zertifikat
+NTS_CERT_SETTLE=10      # so lange muss eine Änderung stabil sein (Zertifikat + Schlüssel)
 declare -A SVC_ENTRY=() SVC_STATE=() SVC_RESTARTS=() SVC_EXIT=() SVC_SINCE=() \
            SVC_NEXT=() SVC_STARTED=() SVC_FAILS=() SVC_NOTE=()
 HOTPLUG_PATHS=""        # konfigurierte, aber fehlende Geräte (von confgen)
 GPS_DEV_ID=""           # Identität des Geräteknotens, den gpsd liest
 GPS_DEV_GONE=0
 NEXT_HOTPLUG=0
+NTS_WATCH=""            # Zertifikat + Schlüssel des NTS-Servers (von confgen)
+NTS_CERT_SIG=""         # Stand beim letzten (Neu-)Laden von chronyd
+NTS_CERT_PENDING=""     # erkannte Änderung, die noch auf Stabilität wartet
+NEXT_NTS_CERT=0
 
 log() { printf '[%s] %s\n' "$1" "${*:2}"; }
 now() { printf '%(%s)T' -1; }
@@ -137,6 +143,47 @@ apply_config() {
   fi
   eval "$out"
   HOTPLUG_PATHS="${NTPGUI_HOTPLUG_PATHS:-}"
+  NTS_WATCH="${NTPGUI_NTS_WATCH:-}"
+  NTS_CERT_SIG="$(file_signature $NTS_WATCH)"
+  NTS_CERT_PENDING=""
+}
+
+# mtime, Größe und Inode jeder Datei (stat -L folgt Symlinks wie live/ → archive/
+# bei Let's Encrypt). Fehlende Dateien zählen als "-", damit auch Verschwinden
+# und Wiederkehren auffallen.
+file_signature() {  # file_signature <pfad...> -> eine Zeile
+  local path sig=""
+  for path in "$@"; do
+    sig+="$(stat -L -c '%Y:%s:%i' "$path" 2>/dev/null || echo -);"
+  done
+  printf '%s' "$sig"
+}
+
+# chrony liest Zertifikat und Schlüssel nur beim Start (chrony.conf(5),
+# ntsservercert: "The files are loaded only once. chronyd needs to be restarted
+# in order to load a renewed certificate."). Erneuert der Reverse Proxy oder
+# Certbot das Zertifikat, startet der Watchdog die Zeitdienste neu. Die Änderung
+# muss NTS_CERT_SETTLE Sekunden stabil sein, damit nicht zwischen dem Schreiben
+# von Zertifikat und Schlüssel neu geladen wird.
+check_nts_cert() {  # check_nts_cert <jetzt> -> 0 = neu laden
+  local t="$1" sig
+  [[ -n "$NTS_WATCH" ]] || return 1
+  sig="$(file_signature $NTS_WATCH)"
+  if [[ "$sig" == "$NTS_CERT_SIG" ]]; then
+    NTS_CERT_PENDING=""
+    NEXT_NTS_CERT=$(( t + NTS_CERT_EVERY ))
+    return 1
+  fi
+  if [[ "$sig" != "$NTS_CERT_PENDING" ]]; then
+    NTS_CERT_PENDING="$sig"
+    NEXT_NTS_CERT=$(( t + NTS_CERT_SETTLE ))
+    return 1
+  fi
+  # Schon hier übernehmen: Scheitert das Neuladen, nicht jede Minute erneut versuchen.
+  NTS_CERT_SIG="$sig"
+  NTS_CERT_PENDING=""
+  NEXT_NTS_CERT=$(( t + NTS_CERT_EVERY ))
+  return 0
 }
 
 # --- Einzelne Dienste starten ---------------------------------------------------
@@ -387,6 +434,10 @@ while true; do
   if (( NOW >= NEXT_HOTPLUG )); then
     NEXT_HOTPLUG=$(( NOW + HOTPLUG_EVERY ))
     check_hotplug
+  fi
+  if (( NOW >= NEXT_NTS_CERT )) && check_nts_cert "$NOW"; then
+    log nts "Zertifikat erneuert – chronyd lädt neu"
+    reload_services
   fi
   # ptp4l schreibt sein Log unbegrenzt; ab 5 MB auf die letzten 256 KB kürzen.
   # In-place (cat >), damit der O_APPEND-Deskriptor von ptp4l gültig bleibt.

@@ -49,19 +49,41 @@ def nts_server_insights(nts: dict[str, Any]) -> list[dict[str, Any]]:
             f"{' und '.join(unreadable)} existiert, lässt sich aber nicht lesen. Meist stimmen die "
             "Dateirechte nicht: Die Dateien müssen für den Container lesbar sein (z. B. chmod 640 "
             "und passende Gruppe).", "nts_server_files")
+    name = nts.get("name") or ""
+    if name and nts.get("name_matches_cert") is False:
+        cert_names = ", ".join(nts.get("names") or []) or "keine"
+        add("warn", "Zertifikat passt nicht zum Namen",
+            f"Zertifikat passt nicht zum Namen {name}: Es gilt nur für {cert_names}. Clients, die "
+            f"„{name}“ ansprechen, brechen den TLS-Schlüsselaustausch (NTS-KE) ab, weil sie den "
+            "Namen gegen das Zertifikat prüfen. Ein Zertifikat für diesen Namen (oder ein "
+            "passendes Wildcard-Zertifikat) eintragen oder den öffentlichen Namen korrigieren.",
+            "nts_name_mismatch")
+    # Nur, wenn der Status das Feld überhaupt kennt (chrony.nts_server_status ab 1.2.0)
+    # und sonst alles stimmt – ein fehlendes Zertifikat ist dann wichtiger.
+    elif "name" in nts and not name and not missing and not unreadable:
+        add("info", "NTS-Server ohne öffentlichen Namen",
+            "Es ist kein öffentlicher Name eingetragen. Nach dem Schlüsselaustausch schicken "
+            "die Clients ihre NTP-Pakete dann an dieselbe Adresse wie den Schlüsselaustausch. "
+            "Im LAN ohne Umweg passt das. Läuft NTS-KE (TCP 4460) aber über einen Reverse "
+            "Proxy wie Nginx Proxy Manager oder Zoraxy, landen die NTP-Pakete (UDP 123) beim "
+            "Proxy, der sie meist nicht weiterreicht. Dann den öffentlichen Namen setzen – "
+            "chrony nennt ihn den Clients per „ntsntpserver“ – und UDP 123 direkt (Portfreigabe "
+            "im Router) an diesen Server leiten.", "nts_no_name")
     days = nts.get("days_left")
     if isinstance(days, (int, float)):
         if days < 0:
             add("crit", "NTS-Zertifikat abgelaufen",
                 f"Das Zertifikat des NTS-Servers ist seit {abs(days):.0f} Tagen abgelaufen. Clients "
                 "lehnen den Schlüsselaustausch ab und bekommen keine abgesicherte Zeit mehr. Ein neues "
-                "Zertifikat ablegen; nach dem Speichern bzw. Neustart lädt chrony es.",
+                "Zertifikat ablegen – ntp-gui bemerkt die geänderte Datei innerhalb von etwa einer "
+                "Minute und startet chronyd neu, damit er es lädt.",
                 "nts_cert_expired")
         elif days < NTS_CERT_WARN_DAYS:
             add("warn", "NTS-Zertifikat läuft bald ab",
                 f"Das Zertifikat des NTS-Servers ist nur noch {days:.0f} Tage gültig. Danach lehnen "
-                "die Clients den Schlüsselaustausch ab. Rechtzeitig erneuern – chrony lädt es beim "
-                "nächsten Neustart der Zeitdienste.", "nts_cert_expiring")
+                "die Clients den Schlüsselaustausch ab. Rechtzeitig erneuern – sobald sich die Datei "
+                "ändert, startet ntp-gui chronyd automatisch neu (chrony liest Zertifikate nur "
+                "beim Start).", "nts_cert_expiring")
     return out
 
 

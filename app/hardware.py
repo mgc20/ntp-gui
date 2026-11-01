@@ -1461,6 +1461,11 @@ def report(cfg: dict, refresh: bool = False) -> dict[str, Any]:
         return rep
 
 
+def cached_report() -> dict[str, Any] | None:
+    """Der zuletzt erzeugte Bericht oder None – blockiert nie (für /metrics)."""
+    return _REPORT
+
+
 INSIGHT_KEYS = ("gps_usb", "gps_pps", "ptp_hw", "ptp_sw", "ptp_to_ntp", "gps_to_ptp", "nts")
 
 

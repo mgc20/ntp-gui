@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import os
 import shlex
+import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -26,6 +28,10 @@ PTP4L_CONF = os.environ.get("PTP4L_CONF", "/etc/linuxptp/ptp4l.conf")
 CUSTOM_CHRONY = os.environ.get("CUSTOM_CHRONY_CONF", "/config/chrony.conf")
 CUSTOM_PTP4L = os.environ.get("CUSTOM_PTP4L_CONF", "/config/ptp4l.conf")
 NTS_DUMPDIR = "/var/lib/chrony"
+# Private Kopien von Zertifikat und Schlüssel für chronyd (siehe prepare_nts_files).
+NTS_CERT_DIR = os.environ.get("NTPGUI_NTS_CERT_DIR", "/var/lib/chrony/nts-certs")
+NTS_DEFAULT_PORT = 4460
+NTS_MAX_FILE = 1024 * 1024  # PEM-Ketten sind wenige KB; alles darüber ist kein Zertifikat
 
 
 def _log(area: str, message: str) -> None:
@@ -44,7 +50,10 @@ def gps_device_ok(cfg: dict) -> bool:
     return bool(cfg["gps_enable"]) and os.path.exists(cfg["gps_device"])
 
 
-def render_chrony(cfg: dict, env: dict | None = None, warn=_log) -> str:
+def render_chrony(cfg: dict, env: dict | None = None, warn=_log,
+                  nts_files: tuple[str, str] | None = None) -> str:
+    """chrony.conf als Text. nts_files: (Zertifikat, Schlüssel), die chronyd lesen
+    soll – Standard sind die konfigurierten Pfade (apply() übergibt die Kopien)."""
     env = os.environ if env is None else env
     lines = [
         "# Generiert von ntp-gui – Änderungen gehen beim nächsten Speichern verloren.",
@@ -141,12 +150,25 @@ def render_chrony(cfg: dict, env: dict | None = None, warn=_log) -> str:
         if uses_nts and cfg["nts_nocerttimecheck"]:
             lines.append("nocerttimecheck 1")
     if cfg["nts_server_enable"]:
-        cert, key = cfg["nts_server_cert"], cfg["nts_server_key"]
-        if os.path.exists(cert) and os.path.exists(key):
-            lines += [f"ntsservercert {cert}", f"ntsserverkey {key}"]
-        else:
-            warn("nts", f"WARNUNG: NTS-Server aktiviert, aber {cert} oder {key} fehlt – "
-                        "NTS-Server bleibt aus.")
+        if nts_files is None:
+            cert, key = cfg["nts_server_cert"], cfg["nts_server_key"]
+            if os.path.exists(cert) and os.path.exists(key):
+                nts_files = (cert, key)
+            else:
+                warn("nts", f"WARNUNG: NTS-Server aktiviert, aber {cert} oder {key} fehlt – "
+                            "NTS-Server bleibt aus.")
+        if nts_files:
+            lines += [f"ntsservercert {nts_files[0]}", f"ntsserverkey {nts_files[1]}"]
+            # chrony.conf(5) 4.3, ntsport: TCP-Port des NTS-KE-Dienstes, Standard 4460.
+            if int(cfg.get("nts_server_port") or NTS_DEFAULT_PORT) != NTS_DEFAULT_PORT:
+                lines.append(f"ntsport {int(cfg['nts_server_port'])}")
+            # chrony.conf(5) 4.3, ntsntpserver: Name/Adresse des NTP-Servers, den der
+            # NTS-KE-Server den Clients nennt. Ohne ihn schicken Clients NTP an die
+            # Adresse der NTS-KE-Verbindung – hinter einem TCP-Proxy also an den Proxy.
+            # (ntsrotate 0 ist nur nötig, wenn NTP auf einem ANDEREN chronyd läuft; hier
+            # beantwortet derselbe chronyd beides.)
+            if cfg.get("nts_server_name"):
+                lines.append(f"ntsntpserver {cfg['nts_server_name']}")
 
     lines.append("")
     lines += [f"allow {net}" for net in cfg["allow_networks"]]
@@ -379,6 +401,160 @@ def hotplug_paths(cfg: dict) -> list[str]:
     return [p for p in paths if p.startswith("/dev/") and " " not in p]
 
 
+# --- NTS-Server: Zertifikat für chronyd bereitstellen ----------------------------
+# chrony liest Zertifikat und Schlüssel ERST NACH dem Ablegen der Root-Rechte:
+# In main.c (4.3) kommt NKS_Initialise() nach SYS_DropRoot(), und die
+# NTS-KE-Helfer rufen es in run_helper() ebenfalls erst nach SYS_DropRoot() auf
+# (nts_ke_server.c). chrony.conf(5) 4.3 zu ntsservercert/ntsserverkey: „The file
+# needs to be readable by the user under which chronyd is running after dropping
+# root privileges.“ Zertifikate eines Reverse Proxys (NPM: privkey.pem 0600 root)
+# kann _chrony deshalb nicht lesen. Lösung: bei jedem Start/Neuladen eine Kopie
+# in NTS_CERT_DIR anlegen, die _chrony nur lesen darf (root:_chrony 0640,
+# Verzeichnis 0750). Nur lesen, weil chronyd (ab 4.4) sonst „Having write access
+# to …“ meldet: ein Dienst, der seinen Schlüssel ändern kann, ist unnötig riskant.
+# Außerdem: „The files are loaded only once. chronyd needs to be restarted in
+# order to load a renewed certificate.“ – das übernimmt der Entrypoint-Watchdog.
+
+
+def _chrony_ids() -> tuple[int, int] | None:
+    try:
+        import pwd
+    except ImportError:  # pragma: no cover - nur Nicht-Unix
+        return None
+    for name in ("_chrony", "chrony"):
+        try:
+            entry = pwd.getpwnam(name)
+            return entry.pw_uid, entry.pw_gid
+        except KeyError:
+            continue
+    return None
+
+
+def _read_limited(path: str) -> bytes:
+    with open(path, "rb") as handle:
+        data = handle.read(NTS_MAX_FILE + 1)
+    if len(data) > NTS_MAX_FILE:
+        raise ValueError("größer als 1 MB – das ist kein PEM-Zertifikat")
+    return data
+
+
+def _public_key(args: list[str], data: bytes) -> bytes | None:
+    """Öffentlicher Schlüssel per openssl (Eingabe über stdin); None = nicht prüfbar."""
+    openssl = shutil.which("openssl")
+    if not openssl:
+        return None
+    try:
+        proc = subprocess.run([openssl, *args], input=data, capture_output=True,
+                              timeout=10, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return proc.stdout.strip() if proc.returncode == 0 and proc.stdout.strip() else b""
+
+
+def nts_pair_matches(cert: bytes, key: bytes) -> bool | None:
+    """Gehört der Schlüssel zum Zertifikat? None, wenn openssl fehlt."""
+    cert_pub = _public_key(["x509", "-noout", "-pubkey"], cert)
+    key_pub = _public_key(["pkey", "-pubout"], key)
+    if cert_pub is None or key_pub is None:
+        return None
+    return bool(cert_pub) and cert_pub == key_pub
+
+
+def _install_private(path: str, data: bytes, ids: tuple[int, int] | None) -> None:
+    try:
+        with open(path, "rb") as handle:
+            if handle.read(NTS_MAX_FILE + 1) == data:
+                if ids and os.geteuid() == 0:
+                    os.chown(path, 0, ids[1])
+                os.chmod(path, 0o640)
+                return
+    except OSError:
+        pass
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".ntpgui-")
+    try:
+        os.fchmod(fd, 0o640)
+        if ids and os.geteuid() == 0:
+            os.fchown(fd, 0, ids[1])
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def prepare_nts_files(cfg: dict, target_dir: str | None = None, warn=_log,
+                      ids: tuple[int, int] | None | bool = True) -> tuple[str, str] | None:
+    """Kopiert Zertifikat + Schlüssel für chronyd; liefert die Pfade für chrony.conf.
+
+    None = NTS-Server bleibt aus (Dateien fehlen/ungültig). Schlägt nur das Kopieren
+    fehl (z. B. ohne Root), werden die Originalpfade verwendet.
+    """
+    if not cfg.get("nts_server_enable"):
+        return None
+    target_dir = target_dir or NTS_CERT_DIR
+    if ids is True:
+        ids = _chrony_ids()
+    cert, key = cfg["nts_server_cert"], cfg["nts_server_key"]
+    copy_cert = os.path.join(target_dir, "server.crt")
+    copy_key = os.path.join(target_dir, "server.key")
+    have_copies = os.path.isfile(copy_cert) and os.path.isfile(copy_key)
+
+    if not (os.path.isfile(cert) and os.path.isfile(key)):
+        warn("nts", f"WARNUNG: NTS-Server aktiviert, aber {cert} oder {key} fehlt – "
+                    "NTS-Server bleibt aus.")
+        return None
+    for path in (cert, key):
+        real = os.path.realpath(path)
+        if real != path and not settings.cert_path_allowed(real):
+            warn("nts", f"WARNUNG: {path} zeigt auf {real} – außerhalb von /config, /certs und "
+                        "/etc/letsencrypt. Aus Sicherheitsgründen bleibt der NTS-Server aus.")
+            return None
+    try:
+        cert_data, key_data = _read_limited(cert), _read_limited(key)
+    except (OSError, ValueError) as exc:
+        warn("nts", f"WARNUNG: Zertifikat/Schlüssel nicht lesbar ({exc}) – NTS-Server bleibt aus.")
+        return None
+    if b"-----BEGIN CERTIFICATE-----" not in cert_data:
+        warn("nts", f"WARNUNG: {cert} ist kein PEM-Zertifikat – NTS-Server bleibt aus.")
+        return None
+    if b"PRIVATE KEY-----" not in key_data:
+        warn("nts", f"WARNUNG: {key} ist kein PEM-Schlüssel – NTS-Server bleibt aus.")
+        return None
+    if nts_pair_matches(cert_data, key_data) is False:
+        # Typisch mitten in einer Erneuerung (Zertifikat schon neu, Schlüssel noch alt).
+        # Ein unpassendes Paar ließe chronyd beim Start scheitern.
+        if have_copies:
+            warn("nts", "WARNUNG: Zertifikat und Schlüssel passen (noch) nicht zusammen – "
+                        "chronyd nutzt weiter das zuletzt gültige Paar.")
+            return copy_cert, copy_key
+        warn("nts", "WARNUNG: Zertifikat und Schlüssel passen nicht zusammen – "
+                    "NTS-Server bleibt aus.")
+        return None
+    try:
+        os.makedirs(target_dir, mode=0o750, exist_ok=True)
+        os.chmod(target_dir, 0o750)
+        if ids and os.geteuid() == 0:
+            os.chown(target_dir, 0, ids[1])
+        _install_private(copy_cert, cert_data, ids or None)
+        _install_private(copy_key, key_data, ids or None)
+    except OSError as exc:
+        warn("nts", f"WARNUNG: Kopie nach {target_dir} fehlgeschlagen ({exc}) – chronyd liest "
+                    "die Originale und braucht dafür selbst Leserechte.")
+        return cert, key
+    return copy_cert, copy_key
+
+
+def nts_watch_paths(cfg: dict) -> list[str]:
+    """Dateien, deren Änderung (Zertifikatserneuerung) chronyd neu laden muss."""
+    if not cfg.get("nts_server_enable") or os.path.isfile(CUSTOM_CHRONY):
+        return []
+    return [p for p in (cfg.get("nts_server_cert"), cfg.get("nts_server_key")) if p]
+
+
 def _write(path: str, content: str) -> None:
     directory = os.path.dirname(path) or "."
     os.makedirs(directory, exist_ok=True)
@@ -419,7 +595,7 @@ def apply(env: dict | None = None) -> dict:
         with open(CUSTOM_CHRONY, encoding="utf-8") as handle:
             _write(CHRONY_CONF, handle.read())
     else:
-        _write(CHRONY_CONF, render_chrony(cfg, env))
+        _write(CHRONY_CONF, render_chrony(cfg, env, nts_files=prepare_nts_files(cfg) or ()))
     _log("chrony", f"Konfiguration geschrieben nach {CHRONY_CONF}")
 
     ptp_on = bool(cfg["ptp_enable"]) and bool(cfg["ptp_interface"])
@@ -454,6 +630,7 @@ def apply(env: dict | None = None) -> dict:
         "NTPGUI_PHC2SYS_START": "1" if phc["start"] else "0",
         "NTPGUI_PHC2SYS_OPTIONS": phc["options"],
         "NTPGUI_CHRONY_NOCONTROL": "1" if phc["nocontrol"] else "0",
+        "NTPGUI_NTS_WATCH": " ".join(nts_watch_paths(cfg)),
     }
 
 

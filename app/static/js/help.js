@@ -12,6 +12,15 @@ export const HELP = {
       + "dabei die Laufzeit der Pakete und rechnet sie heraus. Im LAN erreicht NTP typisch "
       + "**0,1–1 ms** Genauigkeit, über das Internet **1–50 ms**, je nach Leitung.",
   },
+  services: {
+    title: "Dienste im Container",
+    text: "Der Container startet mehrere Programme: **chronyd** (Zeitdienst), das Dashboard und je "
+      + "nach Einstellung **gpsd**, **ptp4l** und **phc2sys**. Fällt ein optionaler Dienst aus – "
+      + "etwa weil der GPS-Empfänger abgezogen wurde –, startet der Supervisor ihn mit wachsender "
+      + "Pause (5 s, 15 s, 1 min, 5 min) neu, statt den ganzen Container zu beenden. So läuft NTP "
+      + "weiter. „aus“ heißt: in den Einstellungen nicht eingeschaltet. Fällt chronyd oder das "
+      + "Dashboard aus, startet der ganze Container neu, weil ohne sie nichts mehr funktioniert.",
+  },
   chronyd: {
     title: "Zeitdienst (chronyd)",
     text: "**chronyd** ist das Programm, das hier die Uhr stellt und die Zeit per NTP an das LAN "
@@ -396,14 +405,32 @@ export const HELP = {
     title: "Gültigkeit des Zertifikats",
     text: "TLS-Zertifikate laufen ab – Let's-Encrypt-Zertifikate nach 90 Tagen. Ist es abgelaufen, "
       + "lehnen die Clients den Schlüsselaustausch ab und bekommen keine abgesicherte Zeit mehr. "
-      + "Das Dashboard warnt 14 Tage vorher. chrony liest das Zertifikat nur beim Start: nach dem "
-      + "Erneuern die Zeitdienste neu starten (Einstellungen speichern oder Container neu starten).",
+      + "Das Dashboard warnt 14 Tage vorher. chrony liest das Zertifikat nur beim Start – deshalb "
+      + "prüft der Container jede Minute, ob Zertifikat oder Schlüssel ersetzt wurden, und lädt "
+      + "chronyd dann automatisch neu. Passen die beiden Dateien (noch) nicht zusammen, z. B. mitten "
+      + "in der Erneuerung, bleibt das zuletzt gültige Paar aktiv.",
   },
   nts_cert_subject: {
     title: "Name im Zertifikat",
     text: "Für welche Namen das Zertifikat gilt (CN und alternative Namen). Die Clients müssen den "
       + "Server unter **genau diesem Namen** eintragen, z. B. `server ntp.example.lan nts` – mit "
       + "der IP-Adresse oder einem anderen Namen schlägt die Prüfung fehl.",
+  },
+  nts_server_name: {
+    title: "Servername für Clients",
+    text: "Unter diesem Namen (und Port) sollen die Clients den NTS-Server erreichen – wichtig, wenn "
+      + "ein Reverse-Proxy oder eine Portweiterleitung davorsteht. chrony gibt den Namen per "
+      + "`ntsntpserver` im Schlüsselaustausch weiter, damit die Clients ihre NTP-Pakete (UDP 123) an "
+      + "den richtigen Rechner schicken. Der Name **muss im Zertifikat stehen** (CN oder alternativer "
+      + "Name, `*.example.com` deckt genau eine Ebene ab), sonst lehnen die Clients die TLS-Verbindung "
+      + "ab. Der Port wird nur angezeigt, wenn er vom Standard 4460 abweicht.",
+  },
+  nts_cert_issuer: {
+    title: "Aussteller des Zertifikats",
+    text: "Wer das Zertifikat unterschrieben hat, z. B. **Let's Encrypt**. Ein öffentlicher "
+      + "Aussteller wird von den Clients automatisch akzeptiert. Steht hier derselbe Name wie im "
+      + "Zertifikat selbst, ist es **selbst signiert** – dann müssen die Clients genau dieses "
+      + "Zertifikat (oder deine eigene CA) als vertrauenswürdig hinterlegt haben, sonst schlägt NTS fehl.",
   },
   nts_ke_server: {
     title: "NTS-KE-Verbindungen",
@@ -717,7 +744,7 @@ export const SELECT_STATE_SHORT = {
 };
 
 export const HELP_GROUPS = [
-  { title: "Grundlagen", keys: ["ntp", "chronyd", "stratum", "island", "minsources", "dhcp42", "clock_control",
+  { title: "Grundlagen", keys: ["ntp", "chronyd", "services", "stratum", "island", "minsources", "dhcp42", "clock_control",
     "setup_accuracy"] },
   { title: "Werte der Systemuhr", keys: ["reference", "system_offset", "uncertainty", "rms_offset", "frequency",
     "skew", "root_delay", "root_dispersion", "leap", "update_interval", "ref_time"] },
@@ -731,7 +758,8 @@ export const HELP_GROUPS = [
   { title: "NTP-Details je Server", keys: ["peer_delay", "peer_dispersion", "response_time", "precision",
     "jitter_asymmetry", "ntp_tests", "interleaved", "timestamping", "packets"] },
   { title: "NTS", keys: ["nts", "nts_authenticated", "nts_ke", "nts_cookies", "nocerttimecheck", "nts_server",
-    "nts_server_files", "nts_cert_expiry", "nts_cert_subject", "nts_ke_server", "nts_auth_packets"] },
+    "nts_server_files", "nts_server_name", "nts_cert_expiry", "nts_cert_subject", "nts_cert_issuer",
+    "nts_ke_server", "nts_auth_packets"] },
   { title: "GPS", keys: ["gps", "gps_value", "gps_offset", "gps_delay", "gps_role", "gps_recalibrate", "pps",
     "fix", "satellites", "dop", "snr", "skyplot", "gnss", "time_error", "cold_start"] },
   { title: "PTP", keys: ["ptp", "ptp_vs_ntp", "ptp_requirements", "grandmaster", "port_state",

@@ -42,7 +42,7 @@ PTP4L_CONF = os.environ.get("PTP4L_CONF", "/etc/linuxptp/ptp4l.conf")
 RUN_DIR = os.environ.get("NTPGUI_RUN_DIR", "/run/ntp-gui")
 START_TIME = time.time()
 MAX_BODY = 64 * 1024
-VERSION = os.environ.get("NTPGUI_VERSION", "1.1.0")
+VERSION = os.environ.get("NTPGUI_VERSION", "1.2.0")
 
 
 def env_number(name: str, default, kind=float, minimum=None):
@@ -154,6 +154,25 @@ def collector() -> None:
         time.sleep(max(2.0, interval))
 
 
+HARDWARE_FIRST_DELAY = 5.0
+HARDWARE_INTERVAL = 300.0
+
+
+def hardware_refresher(stop: threading.Event | None = None) -> None:
+    """Erzeugt den Hardware-Bericht im Hintergrund, damit Hinweise und Metriken
+    Daten haben, ohne dass eine Anfrage auf die PPS-Probe (≈ 1 s) wartet."""
+    stop = stop or threading.Event()
+    if stop.wait(HARDWARE_FIRST_DELAY):
+        return
+    while True:
+        try:
+            hardware.report(settings.values(), refresh=True)
+        except Exception as exc:  # die Prüfung darf das Dashboard nie stören
+            print(f"[web] Hardware-Prüfung fehlgeschlagen: {exc}", flush=True)
+        if stop.wait(HARDWARE_INTERVAL):
+            return
+
+
 def clock_control() -> dict:
     """Läuft chronyd mit -x? Liest die Kommandozeile aus /proc."""
     for entry in os.listdir("/proc"):
@@ -206,6 +225,79 @@ def reload_status() -> dict:
         return {"state": "unknown"}
 
 
+SERVICE_LABELS = {"chronyd": "chronyd (NTP)", "gpsd": "gpsd (GPS)", "ptp4l": "ptp4l (PTP)",
+                  "phc2sys": "phc2sys (PTP-Uhr ↔ Systemuhr)", "web": "Dashboard"}
+SERVICE_STATES = {"running", "restarting", "failed", "stopped"}
+
+
+def services_status() -> dict:
+    """Zustand der Dienste aus RUN_DIR/services.json (schreibt der Supervisor).
+
+    Fehlt die Datei oder ist sie kaputt (z. B. Dashboard ohne Supervisor
+    gestartet), gibt es ein leeres Ergebnis – das Dashboard läuft trotzdem.
+    """
+    try:
+        with open(os.path.join(RUN_DIR, "services.json"), encoding="utf-8") as handle:
+            raw = json.load(handle)
+    except (OSError, ValueError):
+        return {}
+    entries = raw.get("services") if isinstance(raw, dict) else None
+    if not isinstance(entries, dict):
+        return {}
+    out: dict = {}
+    for name, entry in entries.items():
+        if not isinstance(entry, dict):
+            continue
+        state = entry.get("state")
+        restarts = entry.get("restarts")
+        out[str(name)] = {
+            "state": state if state in SERVICE_STATES else "unknown",
+            "restarts": restarts if isinstance(restarts, int) and not isinstance(restarts, bool) else 0,
+            "last_exit": entry.get("last_exit") if isinstance(entry.get("last_exit"), int) else None,
+            "since": entry.get("since") if isinstance(entry.get("since"), (int, float)) else None,
+            "pid": entry.get("pid") if isinstance(entry.get("pid"), int) else None,
+            "optional": entry.get("optional") is True,
+            "next_retry": entry.get("next_retry") if isinstance(entry.get("next_retry"), (int, float)) else None,
+            "message": str(entry.get("message") or ""),
+            "label": SERVICE_LABELS.get(str(name), str(name)),
+        }
+    return out
+
+
+def service_insights(services: dict, now: float | None = None) -> list[dict]:
+    """Hinweise zu ausgefallenen Diensten (nur die optionalen startet der Supervisor neu)."""
+    now = time.time() if now is None else now
+    out: list[dict] = []
+    for name, svc in services.items():
+        label = svc.get("label") or name
+        note = f" Letzte Meldung: {svc['message']}" if svc.get("message") else ""
+        exit_text = f" (Exit-Code {svc['last_exit']})" if svc.get("last_exit") is not None else ""
+        if svc.get("state") == "restarting":
+            attempt = (svc.get("restarts") or 0) + 1  # restarts = bisherige Neustarts, dieser ist der nächste
+            retry = svc.get("next_retry")
+            wait = f" Nächster Versuch in etwa {max(0, int(retry - now))} s." if isinstance(retry, (int, float)) else ""
+            out.append({
+                "level": "warn", "key": f"service_{name}",
+                "title": f"{label} ist ausgefallen und wird neu gestartet (Versuch {attempt})",
+                "text": f"Der Dienst hat sich beendet{exit_text}. Der Supervisor startet ihn mit wachsender "
+                        "Pause neu, damit ein dauerhaft fehlendes Gerät nicht den Container blockiert – "
+                        f"die übrigen Zeitdienste laufen weiter.{wait or note} Häufige Ursache: das Gerät "
+                        "(GPS-Empfänger, Netzwerkkarte) ist abgesteckt oder im Container nicht freigegeben.",
+                "action": "hardware",
+            })
+        elif svc.get("state") == "failed":
+            out.append({
+                "level": "crit", "key": f"service_{name}",
+                "title": f"{label} läuft nicht",
+                "text": f"Der Dienst ist eingeschaltet, läuft aber nicht{exit_text}.{note} Fehlt ein Gerät, "
+                        "startet der Supervisor den Dienst von selbst, sobald es wieder auftaucht (Prüfung "
+                        "alle 30 s). Prüfe auf der Hardware-Seite, ob das Gerät im Container sichtbar ist; "
+                        "nach dem Speichern der Einstellungen startet der Supervisor die Dienste neu.",
+                "action": "hardware",
+            })
+    return out
+
+
 def trigger_reload() -> bool:
     """Bittet den Supervisor per SIGHUP, die Zeitdienste neu zu starten."""
     try:
@@ -241,6 +333,7 @@ def build_status() -> dict:
         "ptp": ptp.status(),
         "gps": gps.status(),
         "nts_server": chrony.nts_server_status(cfg),
+        "services": services_status(),
         "chrony_running": bool(tracking),
         "config": {key: cfg[key] for key in (
             "gps_enable", "gps_device", "gps_offset", "gps_delay", "gps_select", "gps_refid",
@@ -254,7 +347,8 @@ def build_status() -> dict:
             "reload": reload_status(),
         },
     }
-    status["insights"] = insights.build(status, cfg) + hardware.cached_insights(cfg)
+    status["insights"] = (insights.build(status, cfg) + service_insights(status["services"])
+                          + hardware.cached_insights(cfg))
     return status
 
 
@@ -324,7 +418,41 @@ def build_metrics() -> str:
         _metric(lines, "ntpgui_ptp_offset_seconds", offset / 1e9 if isinstance(offset, (int, float)) else None, "PTP offset from master")
         _metric(lines, "ntpgui_ptp_mean_path_delay_seconds", delay / 1e9 if isinstance(delay, (int, float)) else None, "PTP mean path delay")
         _metric(lines, "ntpgui_ptp_steps_removed", ptp_state.get("stepsRemoved"), "Steps removed from the grandmaster")
+
+    for name, svc in services_status().items():
+        labels = '{service="%s"}' % _escape_label(name)
+        _metric(lines, "ntpgui_service_up", 1 if svc["state"] == "running" else 0,
+                "1 when the supervised service is running", labels=labels)
+        _metric(lines, "ntpgui_service_restarts_total", svc["restarts"],
+                "Restarts of the service by the supervisor", kind="counter", labels=labels)
+
+    nts = chrony.nts_server_status(settings.values(), stats)
+    if nts.get("enabled"):
+        _metric(lines, "ntpgui_nts_server_cert_days_left", nts.get("days_left"),
+                "Days until the NTS server certificate expires")
+
+    _hardware_metrics(lines)
     return "\n".join(lines) + "\n"
+
+
+def _hardware_metrics(lines: list[str]) -> None:
+    """Nur aus dem zwischengespeicherten Hardware-Bericht – /metrics wartet nie auf PPS-Proben."""
+    getter = getattr(hardware, "cached_report", None)
+    try:
+        rep = getter() if callable(getter) else getattr(hardware, "_REPORT", None)
+    except Exception:  # Bericht kaputt → Metriken ohne Hardwareteil
+        return
+    if not isinstance(rep, dict):
+        return
+    for pps in rep.get("pps") or []:
+        if isinstance(pps, dict) and pps.get("dev"):
+            _metric(lines, "ntpgui_pps_live", 1 if pps.get("state") == "live" else 0,
+                    "1 when pulses arrive on the PPS device", labels='{device="%s"}' % _escape_label(pps["dev"]))
+    for row in rep.get("matrix") or []:
+        if isinstance(row, dict) and row.get("key") and row.get("status"):
+            labels = '{key="%s",status="%s"}' % (_escape_label(row["key"]), _escape_label(row["status"]))
+            _metric(lines, "ntpgui_hardware_capability", 1, "Result of the hardware check per capability",
+                    labels=labels)
 
 
 # ---------------------------------------------------------------------------
@@ -612,6 +740,7 @@ def main() -> None:
               "das Dashboard läuft ohne Authentifizierung.", flush=True)
 
     threading.Thread(target=collector, daemon=True, name="collector").start()
+    threading.Thread(target=hardware_refresher, daemon=True, name="hardware").start()
 
     def save_and_exit(*_):
         HISTORY.save(force=True)

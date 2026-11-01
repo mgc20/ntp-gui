@@ -168,6 +168,44 @@ def _as_host(value: Any) -> str:
     return text
 
 
+# Erlaubte Orte für Zertifikat/Schlüssel des NTS-Servers. /config ist das
+# Konfigurations-Volume, /certs der empfohlene Mount für Zertifikate eines
+# Reverse Proxys (z. B. NPM: /data/letsencrypt bzw. /etc/letsencrypt, Zoraxy:
+# conf/certs), /etc/letsencrypt für den direkten Certbot-Mount. Die Dateien
+# werden für chronyd kopiert (siehe confgen.prepare_nts_files) – deshalb darf
+# hier nicht jeder Pfad stehen, sonst ließe sich über das Dashboard z. B.
+# /etc/shadow in ein für _chrony lesbares Verzeichnis kopieren.
+NTS_CERT_ROOTS = ("/config/", "/certs/", "/etc/letsencrypt/")
+_CERT_PATH_RE = re.compile(r"^/[A-Za-z0-9._@+,~/-]{1,250}$")
+
+
+def cert_path_allowed(path: str) -> bool:
+    """Absolut, unter NTS_CERT_ROOTS, ohne '..', ohne Leer-/Steuerzeichen."""
+    if not isinstance(path, str) or not _CERT_PATH_RE.match(path):
+        return False
+    parts = path.split("/")
+    if any(part in {"..", "."} for part in parts) or "//" in path or path.endswith("/"):
+        return False
+    return any(path.startswith(root) and len(path) > len(root) for root in NTS_CERT_ROOTS)
+
+
+def _as_cert_path(value: Any) -> str:
+    text = str(value if value is not None else "").strip()
+    if not cert_path_allowed(text):
+        raise ValidationError(
+            "Absoluter Pfad unter " + ", ".join(r.rstrip("/") for r in NTS_CERT_ROOTS)
+            + " erwartet, ohne Leerzeichen und ohne „..“, z. B. /certs/live/npm-1/fullchain.pem")
+    return text
+
+
+def _as_public_name(value: Any) -> str:
+    """Öffentlicher Name des NTP-Servers für ntsntpserver; leer = keiner."""
+    text = str(value if value is not None else "").strip().rstrip(".").lower()
+    if not text:
+        return ""
+    return _as_host(text)
+
+
 def _as_network_list(value: Any) -> list[str]:
     items = value if isinstance(value, list) else re.split(r"[,\s]+", str(value or ""))
     networks = []
@@ -414,12 +452,34 @@ SCHEMA: list[dict] = [
            help="Bietet NTS auch den eigenen Clients an. Braucht ein TLS-Zertifikat, dem die "
                 "Clients vertrauen, und Clients, die NTS sprechen (chrony, NTPsec – Windows "
                 "und macOS können es nicht). Port 4460/tcp muss erreichbar sein."),
-    _field("nts_server_cert", "nts", "Zertifikat (PEM)", "text", "/config/nts.crt", _as_text,
+    _field("nts_server_cert", "nts", "Zertifikat (PEM)", "text", "/config/nts.crt", _as_cert_path,
            env="NTS_SERVER_CERT", advanced=True,
-           help="Pfad zum Zertifikat im Container, z. B. aus dem gemounteten /config."),
-    _field("nts_server_key", "nts", "Privater Schlüssel (PEM)", "text", "/config/nts.key", _as_text,
+           help="Pfad zum Zertifikat im Container – unter /config, /certs oder /etc/letsencrypt. "
+                "Am besten die volle Kette (fullchain), damit Clients auch das Zwischenzertifikat "
+                "bekommen. Zertifikate eines Reverse Proxys lassen sich direkt nutzen: den "
+                "Zertifikatsordner von Nginx Proxy Manager (z. B. …/letsencrypt/live/npm-1/"
+                "fullchain.pem) oder Zoraxy (conf/certs/<domain>.pem) schreibgeschützt nach "
+                "/certs mounten. Ändert sich die Datei (Erneuerung), startet chronyd automatisch "
+                "neu, weil chrony Zertifikate nur beim Start liest."),
+    _field("nts_server_key", "nts", "Privater Schlüssel (PEM)", "text", "/config/nts.key", _as_cert_path,
            env="NTS_SERVER_KEY", advanced=True,
-           help="Pfad zum zugehörigen privaten Schlüssel."),
+           help="Pfad zum zugehörigen privaten Schlüssel, z. B. …/live/npm-1/privkey.pem (NPM) "
+                "oder conf/certs/<domain>.key (Zoraxy). ntp-gui kopiert Zertifikat und Schlüssel "
+                "beim Start in ein Verzeichnis, das nur chronyd lesen darf – die Originale dürfen "
+                "also root gehören."),
+    _field("nts_server_name", "nts", "Öffentlicher Name des Servers", "text", "", _as_public_name,
+           env="NTS_SERVER_NAME", advanced=True, placeholder="kein eigener Name",
+           help="Der Name, unter dem Clients diesen Server erreichen, z. B. time.example.com – "
+                "er muss im Zertifikat stehen. Gesetzt teilt chrony ihn den Clients nach dem "
+                "Schlüsselaustausch mit (ntsntpserver), und sie schicken ihre NTP-Pakete an "
+                "diesen Namen. Wichtig hinter einem Reverse Proxy: Ohne Namen gehen die "
+                "NTP-Pakete an die Adresse, mit der der Schlüsselaustausch lief – also an den "
+                "Proxy, der UDP 123 meist gar nicht weiterreicht."),
+    _field("nts_server_port", "nts", "NTS-KE-Port (TCP)", "int", 4460, _as_number(int, 1, 65535),
+           env="NTS_SERVER_PORT", advanced=True,
+           help="Auf diesem TCP-Port nimmt chrony den TLS-Schlüsselaustausch (NTS-KE) an. "
+                "Standard ist 4460 – Clients erwarten ihn dort. Nur ändern, wenn ein Reverse "
+                "Proxy außen 4460 annimmt und intern an einen anderen Port weiterreicht."),
 
     # --- GPS ---------------------------------------------------------------
     _field("gps_enable", "gps", "GPS verwenden", "bool", False, _as_bool, env="GPS_ENABLE",

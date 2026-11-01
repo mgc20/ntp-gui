@@ -15,6 +15,9 @@
 #
 # Dashboard danach unter http://<pi-ip>:8080. Der erste Fix nach einem
 # Kaltstart kann bis zu 15 Minuten dauern; bis dahin helfen die PTB-Server.
+# Die Seite „Hardware“ zeigt, was erkannt wurde (Empfänger, PPS ja/nein, RTC)
+# und welche Zeilen du hier noch brauchst. Alle weiteren Optionen (Hotplug,
+# PTP, NTS-Server) stehen in docker-compose.all-in-one.yml.
 services:
   ntp-gui:
     image: ghcr.io/congp20/ntp-gui:latest   # arm64-Image
@@ -25,8 +28,8 @@ services:
     # NTP läuft direkt auf 123/udp, das Dashboard auf 8080.
     network_mode: host
 
-    # Der Pi hat keine Echtzeituhr – chrony muss die Uhr nach dem Booten
-    # per GPS stellen dürfen.
+    # Der Pi hat keine Echtzeituhr (der Pi 5 nur mit Pufferbatterie) – chrony
+    # muss die Uhr nach dem Booten per GPS stellen dürfen.
     cap_add:
       - SYS_TIME
 
@@ -35,6 +38,15 @@ services:
       # Stabiler, falls mehrere serielle USB-Geräte stecken (Name aus
       # ls /dev/serial/by-id/), im Container bleibt es /dev/ttyACM0:
       # - /dev/serial/by-id/usb-u-blox_AG_-_www.u-blox.com_u-blox_7_-_GPS_GNSS_Receiver-if00:/dev/ttyACM0
+      #
+      # PPS-Variante (GPS-HAT oder Modul an UART + GPIO statt USB-GPS) –
+      # mikrosekundengenau statt Millisekunden. Auf dem Pi vorher in
+      # /boot/firmware/config.txt den PPS-Pin freischalten und neu starten:
+      #   dtoverlay=pps-gpio,gpiopin=18
+      #   enable_uart=1
+      # Dann oben die ttyACM0-Zeile durch diese beiden ersetzen:
+      # - /dev/ttyAMA0:/dev/ttyAMA0
+      # - /dev/pps0:/dev/pps0
 
     environment:
       TZ: "Europe/Berlin"
@@ -42,11 +54,15 @@ services:
 
       GPS_ENABLE: "true"
       GPS_DEVICE: "/dev/ttyACM0"
-      # Nach ein paar Stunden kalibrieren: mittleren Offset der GPS-Quelle
-      # gegenüber den PTB-Servern ablesen und hier eintragen (Sekunden):
-      #   docker exec ntp-gui chronyc sourcestats
+      # Ein USB-GPS meldet die Zeit immer um einen festen Betrag zu spät
+      # (typisch 20–150 ms). Nach ein paar Stunden im Dashboard unter
+      # GPS → „GPS kalibrieren“ den Vorschlag übernehmen – der Wert dort hat
+      # Vorrang vor diesem Startwert.
       GPS_OFFSET: "0.0"
       GPS_SHOW_POSITION: "false"
+      # PPS-Variante (siehe devices oben):
+      # GPS_DEVICE: "/dev/ttyAMA0"
+      # GPS_PPS_DEVICE: "/dev/pps0"
 
       # PTB-Server als Plausibilitätsprüfung und Rückfallebene ohne GPS-Fix
       NTP_POOLS: ""
@@ -60,6 +76,15 @@ services:
 
     volumes:
       - chrony-data:/var/lib/chrony   # Drift, Messwerte, Dashboard-Einstellungen und Verlauf
+
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8080/healthz',timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 45s
+
+    stop_grace_period: 30s
 
 volumes:
   chrony-data:

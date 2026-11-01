@@ -2,7 +2,7 @@ import { el, fmtSeconds, fmtNumber, fmtDuration, isNum, sourceLabel } from "../u
 import { card, tile, kv, badge, insightList, rangeButtons, info } from "../ui.js";
 import { lineChart, stepDecimals } from "../charts.js";
 
-export const ROUTES = { gps: "gps", sources: "quellen", settings: "einstellungen", clients: "clients", ptp: "ptp" };
+export const ROUTES = { gps: "gps", sources: "quellen", settings: "einstellungen", clients: "clients", ptp: "ptp", hardware: "hardware" };
 
 function offsetTone(offset) {
   if (!isNum(offset)) return "muted";
@@ -58,6 +58,53 @@ export function trackingDetails(status, ref) {
     ["Uhrensteuerung", control === true ? badge("aktiv – chrony stellt die Uhr", "good")
       : control === false ? badge("aus (-x) – nur messen und verteilen", "warn") : "unbekannt", "clock_control"],
   ]));
+}
+
+// Dienste unter dem Supervisor (aus RUN_DIR/services.json).
+const SERVICE_STATE = {
+  running: ["läuft", "good"],
+  restarting: ["Neustart geplant", "warn"],
+  failed: ["ausgefallen", "crit"],
+  stopped: ["aus", "muted"],
+};
+const SERVICE_ORDER = ["chronyd", "gpsd", "ptp4l", "phc2sys", "web"];
+const SERVICE_INFO = { chronyd: "chronyd", ptp4l: "ptp_requirements", phc2sys: "phc2sys" };
+
+function serviceSince(svc) {
+  if (!isNum(svc.since)) return "–";
+  const age = Math.max(0, Date.now() / 1000 - svc.since);
+  return `seit ${fmtDuration(age)}`;
+}
+
+export function servicesCard(services) {
+  const names = Object.keys(services || {});
+  if (!names.length) return null;
+  names.sort((a, b) => {
+    const ia = SERVICE_ORDER.indexOf(a); const ib = SERVICE_ORDER.indexOf(b);
+    return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || a.localeCompare(b);
+  });
+  const rows = names.map((name) => {
+    const svc = services[name] || {};
+    const [label, tone] = SERVICE_STATE[svc.state] || [svc.state || "unbekannt", "muted"];
+    const retry = svc.state === "restarting" && isNum(svc.next_retry)
+      ? ` · nächster Versuch in ${fmtDuration(Math.max(0, svc.next_retry - Date.now() / 1000))}` : "";
+    return el("tr", {},
+      el("td", {}, el("span", { class: "state-cell" }, el("span", { text: svc.label || name }),
+        SERVICE_INFO[name] ? info(SERVICE_INFO[name], svc.label || name) : null),
+        svc.optional ? null : el("div", { class: "sub", text: "Pflichtdienst" })),
+      el("td", {}, badge(label, tone), svc.message ? el("div", { class: "sub", text: svc.message }) : null),
+      el("td", { class: "num", text: fmtNumber(svc.restarts ?? 0) }),
+      el("td", { text: svc.state === "stopped" ? "–" : `${serviceSince(svc)}${retry}` }));
+  });
+  return card("Dienste", {
+    help: "services",
+    sub: "Was der Supervisor im Container gestartet hat. Fällt ein optionaler Dienst (gpsd, ptp4l, phc2sys) aus, "
+      + "startet er ihn mit wachsender Pause (5 s, 15 s, 1 min, 5 min) neu – NTP läuft dabei weiter. "
+      + "„aus“ heißt: in den Einstellungen nicht eingeschaltet. Fällt chronyd oder das Dashboard aus, startet der ganze Container neu.",
+  }, el("div", { class: "table-scroll" }, el("table", { class: "services-table" },
+    el("thead", {}, el("tr", {}, ["Dienst", "Zustand", "Neustarts", "Seit"].map((label) =>
+      el("th", { class: label === "Neustarts" ? "num" : null, text: label })))),
+    el("tbody", {}, rows))));
 }
 
 export function render(ctx) {
@@ -135,6 +182,7 @@ export function render(ctx) {
     el("div", { class: "toolbar" }, el("span", { class: "toolbar-label", text: "Zeitraum der Diagramme" }),
       rangeButtons(ctx.range, ctx.setRange)),
     charts,
+    servicesCard(status.services),
     status.chrony_running ? card("Details zur Systemuhr", { help: "reference",
       sub: "Alles, was chrony über die eigene Uhr meldet (`chronyc tracking`). Das ⓘ erklärt jeden Wert." },
     trackingDetails(status, ref)) : null,

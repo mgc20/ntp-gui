@@ -1,3 +1,11 @@
+# Standard: NTP-Server für das LAN mit Internet-Quellen.
+#
+#   docker compose up -d     # Dashboard: http://<host>:8080
+#
+# Alle Optionen (GPS, PPS, PTP, NTS-Server hinter Reverse Proxy, Hotplug,
+# Dashboard-Passwort) mit Erklärung in einer Datei, zum Einkommentieren:
+# docker-compose.all-in-one.yml. Welche Blöcke du brauchst, sagt dir die
+# Seite „Hardware“ im Dashboard.
 services:
   ntp-gui:
     build: .

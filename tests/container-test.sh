@@ -8,20 +8,23 @@
 # Capability-Erkennung, Healthcheck, Basic-Auth, gemountete Konfiguration,
 # Verhalten ohne GPS-/PTP-Hardware, Einstellungen über die API samt Neustart
 # der Dienste, Neustart optionaler Dienste (gpsd/ptp4l/phc2sys) samt
-# services.json, Geräte-Hotplug, PTP-Grandmaster-Richtung und sauberes Stoppen.
+# services.json, Geräte-Hotplug, PTP-Grandmaster-Richtung, NTS-Server mit
+# eigenem Namen samt automatischem Neuladen nach Zertifikatswechsel und
+# sauberes Stoppen.
 set -uo pipefail
 
 IMAGE="${1:-ntp-gui:test}"
 PREFIX="ntpgui-it-$$"
 CFG_DIR="$(mktemp -d)"
+NTS_DIR="$(mktemp -d)"
 PASS=0
 FAIL=0
 
 cleanup() {
   docker rm -f "${PREFIX}-a" "${PREFIX}-b" "${PREFIX}-c" "${PREFIX}-d" "${PREFIX}-e" "${PREFIX}-f" \
-    "${PREFIX}-g" "${PREFIX}-h" "${PREFIX}-i" >/dev/null 2>&1
+    "${PREFIX}-g" "${PREFIX}-h" "${PREFIX}-i" "${PREFIX}-j" >/dev/null 2>&1
   docker volume rm "${PREFIX}-data" >/dev/null 2>&1
-  rm -rf "$CFG_DIR"
+  rm -rf "$CFG_DIR" "$NTS_DIR"
 }
 trap cleanup EXIT
 
@@ -249,7 +252,61 @@ fi
 docker rm -f "$HOSTNET" >/dev/null 2>&1
 
 echo
-echo "12) Sauberes Stoppen"
+echo "12) NTS-Server mit eigenem Namen, Zertifikat wird erneuert"
+# Selbst signiertes Zertifikat für den Namen, unter dem die Clients den Server
+# erreichen (z. B. hinter einem Reverse Proxy).
+NTS_NAME=zeit.example.test
+make_cert() { # make_cert <Seriennummer>
+  openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 30 \
+    -subj "/CN=${NTS_NAME}" -addext "subjectAltName=DNS:${NTS_NAME}" -set_serial "$1" \
+    -keyout "$NTS_DIR/new.key" -out "$NTS_DIR/new.crt" >/dev/null 2>&1
+  # Wie Certbot: neue Dateien schreiben und dann ersetzen.
+  mv -f "$NTS_DIR/new.key" "$NTS_DIR/nts.key" && mv -f "$NTS_DIR/new.crt" "$NTS_DIR/nts.crt"
+}
+# served_serial <container> -> Seriennummer des Zertifikats, das chronyd per NTS-KE ausliefert
+# chronyd nimmt NTS-KE nur aus den erlaubten Netzen an (allow), 127.0.0.1 gehört
+# nicht dazu – deshalb über die Container-Adresse im Docker-Netz verbinden.
+served_serial() {
+  local ip
+  ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$1")
+  docker exec "$1" sh -c "openssl s_client -connect ${ip}:4460 -servername ${NTS_NAME} -alpn ntske/1 \
+    </dev/null 2>/dev/null | openssl x509 -noout -serial 2>/dev/null" | sed 's/^serial=//'
+}
+if make_cert 0x1001; then
+  docker run -d --name "${PREFIX}-j" -p 18089:8080 -v "$NTS_DIR:/certs:ro" \
+    -e NTS_SERVER=true -e NTS_SERVER_CERT=/certs/nts.crt -e NTS_SERVER_KEY=/certs/nts.key \
+    -e NTS_SERVER_NAME="$NTS_NAME" -e NTP_PORT=10133 -e NTP_POOLS="" -e NTP_SERVERS="" "$IMAGE" >/dev/null
+  wait_for_health http://127.0.0.1:18089/healthz 90 || true
+  CONF=$(docker exec "${PREFIX}-j" cat /etc/chrony/chrony.conf)
+  contains "chrony.conf nennt den Servernamen" "$CONF" "ntsntpserver ${NTS_NAME}"
+  contains "chrony.conf nutzt die lesbare Kopie" "$CONF" "ntsservercert /var/lib/chrony/nts-certs/server.crt"
+  check "chronyd akzeptiert die Konfiguration" 0 "$(docker exec "${PREFIX}-j" sh -c 'chronyd -p -f /etc/chrony/chrony.conf >/dev/null 2>&1; echo $?')"
+  check "Kopie für _chrony nur lesbar (root:_chrony 640)" "root:_chrony 640" "$(docker exec "${PREFIX}-j" stat -c '%U:%G %a' /var/lib/chrony/nts-certs/server.key)"
+  if grep -qF "Having write access" <<<"$(docker logs "${PREFIX}-j" 2>&1)"; then bad "chronyd meldet Schreibzugriff auf Schlüssel"
+  else ok "chronyd meldet keinen Schreibzugriff auf Schlüssel"; fi
+  SERIAL=""
+  for ((i = 0; i < 30; i++)); do SERIAL=$(served_serial "${PREFIX}-j"); [[ -n "$SERIAL" ]] && break; sleep 1; done
+  check "NTS-KE liefert das Zertifikat aus" 1001 "$SERIAL"
+  MATCH=$(curl -s --max-time 10 http://127.0.0.1:18089/api/status \
+    | python3 -c 'import json,sys; n=json.load(sys.stdin)["nts_server"]; print(n.get("name"), n.get("name_matches_cert"), n.get("cert_self_signed"))' 2>/dev/null)
+  check "/api/status: Name passt zum Zertifikat" "${NTS_NAME} True True" "$MATCH"
+  make_cert 0x1002
+  RELOADED=""
+  for ((i = 0; i < 120; i++)); do
+    if grep -qF "Zertifikat erneuert" <<<"$(docker logs "${PREFIX}-j" 2>&1)" \
+       && [[ "$(served_serial "${PREFIX}-j")" == 1002 ]]; then RELOADED=1; break; fi
+    sleep 1
+  done
+  if [[ -n "$RELOADED" ]]; then ok "Erneuertes Zertifikat wird ohne Neustart des Containers geladen ($i s)"
+  else bad "Erneuertes Zertifikat nicht geladen (ausgeliefert: $(served_serial "${PREFIX}-j"))"; fi
+  check "Container läuft nach dem Neuladen" running "$(docker inspect -f '{{.State.Status}}' "${PREFIX}-j")"
+else
+  echo "  – openssl fehlt auf dem Host, Prüfung übersprungen"
+fi
+docker rm -f "${PREFIX}-j" >/dev/null 2>&1
+
+echo
+echo "13) Sauberes Stoppen"
 docker stop -t 15 "${PREFIX}-c" >/dev/null
 check "Exit-Code bei SIGTERM" 0 "$(docker inspect -f '{{.State.ExitCode}}' "${PREFIX}-c")"
 docker exec "${PREFIX}-a" pkill -x chronyd >/dev/null 2>&1
