@@ -25,7 +25,8 @@ def down(mode=3):
 class StateWatchChronydTest(unittest.TestCase):
     def setUp(self):
         self.events = []
-        self.watch = statewatch.StateWatcher(lambda *a, **k: self.events.append(a))
+        # Haltezeit für den GPS-Fix hier aus – sie hat einen eigenen Test (GpsFixHoldTest).
+        self.watch = statewatch.StateWatcher(lambda *a, **k: self.events.append(a), gps_fix_hold=0)
 
     def feed(self, *samples):
         for s in samples:
@@ -74,6 +75,32 @@ class StateWatchChronydTest(unittest.TestCase):
         self.feed(ok(mode=3), ok(mode=3), down(mode=1), down(mode=1))
         self.assertIn(("gps", "warn", "GPS-Fix verloren"), self.kinds())
 
+
+
+class GpsFixHoldTest(unittest.TestCase):
+    """Bericht 1.3.1: schwacher Empfang – Fix kommt und geht, das Protokoll lief voll."""
+
+    def setUp(self):
+        self.events, self.now = [], [0.0]
+        self.watch = statewatch.StateWatcher(lambda *a, **k: self.events.append(a),
+                                             clock=lambda: self.now[0])
+
+    def feed(self, modes, step=10.0):
+        for mode in modes:
+            self.watch.sample(ok(mode=mode))
+            self.now[0] += step
+
+    def titles(self):
+        return [e[2] for e in self.events if e[0] == "gps"]
+
+    def test_short_dropouts_are_quiet(self):
+        # 3D-Fix, dann immer wieder 20–40 s ohne Fix (wie im Diagnosepaket des Nutzers).
+        self.feed([3] * 3 + ([1] * 3 + [3] * 2) * 6)
+        self.assertEqual(self.titles(), [])
+
+    def test_lasting_loss_and_return_are_reported(self):
+        self.feed([3] * 3 + [1] * 8 + [3] * 8)
+        self.assertEqual(self.titles(), ["GPS-Fix verloren", "GPS-Fix wieder da"])
 
 if __name__ == "__main__":
     unittest.main()

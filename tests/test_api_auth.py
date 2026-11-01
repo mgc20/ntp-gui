@@ -279,7 +279,7 @@ class HostCheckServerTest(unittest.TestCase):
 class StateWatchTest(unittest.TestCase):
     def setUp(self):
         self.events = []
-        self.watch = statewatch.StateWatcher(lambda *a, **k: self.events.append(a))
+        self.watch = statewatch.StateWatcher(lambda *a, **k: self.events.append(a), gps_fix_hold=0)
 
     @staticmethod
     def sample(selected="A", mode=3):

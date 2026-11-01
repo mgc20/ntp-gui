@@ -21,40 +21,52 @@ alles andere durch den Datenschutzfilter (egress).
 from __future__ import annotations
 
 import threading
+import time
 from typing import Any, Callable
 
 CONFIRM = 2  # so oft hintereinander muss ein neuer Zustand gemessen werden
+# GPS-Fix: Bei schwachem Empfang (Antenne innen) kommt und geht der Fix im Minutentakt. Ein
+# Wechsel zählt erst, wenn er so lange anhält – sonst füllt sich das Protokoll mit
+# „verloren/wieder da“-Paaren, die nichts aussagen (chrony überbrückt kurze Lücken ohnehin).
+GPS_FIX_HOLD = 60.0
 
 
 class _Tracker:
-    """Merkt sich einen bestätigten Zustand und meldet bestätigte Wechsel."""
+    """Merkt sich einen bestätigten Zustand und meldet bestätigte Wechsel.
 
-    def __init__(self, confirm: int = CONFIRM) -> None:
+    Bestätigt heißt: confirm-mal hintereinander gemessen UND seit hold Sekunden unverändert."""
+
+    def __init__(self, confirm: int = CONFIRM, hold: float = 0.0,
+                 clock: Callable[[], float] = time.monotonic) -> None:
         self.confirm = max(1, confirm)
+        self.hold = max(0.0, hold)
+        self._clock = clock
         self.state: Any = None
         self.known = False
         self._candidate: Any = None
         self._count = 0
+        self._since = 0.0
+
+    def _seen(self, value: Any) -> bool:
+        """Kandidat zählen; True, wenn er bestätigt ist."""
+        if value == self._candidate:
+            self._count += 1
+        else:
+            self._candidate, self._count, self._since = value, 1, self._clock()
+        return self._count >= self.confirm and self._clock() - self._since >= self.hold
 
     def update(self, value: Any) -> tuple[bool, Any]:
         """Gibt (Wechsel bestätigt, alter Zustand) zurück."""
         if not self.known:
-            if value == self._candidate:
-                self._count += 1
-            else:
-                self._candidate, self._count = value, 1
-            if self._count >= self.confirm:
+            self._seen(value)
+            if self._count >= self.confirm:  # Ausgangszustand: keine Haltezeit, nur bestätigt
                 self.state, self.known = value, True
                 self._candidate, self._count = None, 0
             return False, None
         if value == self.state:
             self._candidate, self._count = None, 0
             return False, None
-        if value == self._candidate:
-            self._count += 1
-        else:
-            self._candidate, self._count = value, 1
-        if self._count >= self.confirm:
+        if self._seen(value):
             old = self.state
             self.state = value
             self._candidate, self._count = None, 0
@@ -88,14 +100,20 @@ def _fix(sample: dict) -> bool | None:
 
 
 class StateWatcher:
-    def __init__(self, emit: Callable[..., None], confirm: int = CONFIRM) -> None:
+    def __init__(self, emit: Callable[..., None], confirm: int = CONFIRM,
+                 gps_fix_hold: float | None = None, clock: Callable[[], float] = time.monotonic) -> None:
         self._emit = emit
         self._confirm = confirm
         self._lock = threading.Lock()
         self._source = _Tracker(confirm)
         self._chronyd = _Tracker(confirm)
-        self._fix = _Tracker(confirm)
+        self._fix_hold = GPS_FIX_HOLD if gps_fix_hold is None else gps_fix_hold
+        self._clock = clock
+        self._fix = self._fix_tracker()
         self._pps: dict[str, _Tracker] = {}
+
+    def _fix_tracker(self) -> _Tracker:
+        return _Tracker(self._confirm, self._fix_hold, self._clock)
 
     def _send(self, kind: str, level: str, title: str, data: dict | None = None) -> None:
         try:
@@ -137,7 +155,7 @@ class StateWatcher:
         fix = _fix(sample)
         if fix is None:
             # GPS ausgeschaltet: Zustand vergessen, damit Wiedereinschalten kein Ereignis ist.
-            self._fix = _Tracker(self._confirm)
+            self._fix = self._fix_tracker()
         else:
             changed, _old = self._fix.update(fix)
             if changed:
