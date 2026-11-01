@@ -11,7 +11,7 @@ Nutzen ★, Aufwand ◆, Risiko R, Wert = `Nutzen×2 − Aufwand − Risiko (+1 
 
 | # | Thema | Nutzen | Aufwand | Risiko | OSS | 🔒 | Wert | Stufe | Braucht aus 1.3 |
 |---|---|---|---|---|---|---|---|---|---|
-| A | Basis-Image trixie | ★★ | ◆◆ | R1 | ja | – | 2 (Voraussetzung) | **1.4** | Container-Test, Replay |
+| A | Basis-Image trixie | ★★ | ◆◆ | R1 | ja | – | 2 (Voraussetzung) | **1.3.1** ✅ | Container-Test, Replay |
 | 1 | Benachrichtigungen (Kern: Webhook, ntfy, Apprise-API; danach E-Mail, Gotify) | ★★★ | ◆ (Kern) / ◆◆ (alles) | R2 | teilw. | 🔒 | 2–3 | **1.4** | Ereignisse, Filter, Store |
 | 2 | MQTT + Home Assistant (nur senden) | ★★ | ◆◆ | R2 | ja | 🔒 | 1 | **1.4** | Ereignisse, Filter |
 | 3 | Allan-Abweichung, „wie lange hält die Uhr?“ | ★★ | ◆◆ | R1 | teilw. | – | 1–2 | **1.4** | Store (Verlauf), Replay |
@@ -60,10 +60,10 @@ einem Release binden. Unterschätzt sind vor allem:
 - **Temperaturausgleich:** Kreuzkorrelation, Klassen, zwei Fits und Rekonstruktion der
   unkompensierten Frequenz sind eher ◆◆◆, wenn man die Tests ernst nimmt. Vorschlag: in 1.4 nur
   **Sensor finden + Paare aufzeichnen + Streudiagramm**; Fit und Vorschlag in 1.5.
-- **trixie-Wechsel:** gpsd 3.22 → 3.25 und linuxptp 3.1 → 4.2 können Ausgabeformate ändern; die
-  Replay-Tests aus 1.3 fangen das nur, wenn es Aufzeichnungen *beider* Versionen gibt.
+- **trixie-Wechsel (erledigt in 1.3.1):** gpsd 3.22 → 3.25 und linuxptp 3.1 → 4.2; Replay-Aufzeichnungen
+  beider Versionen bleiben nötig, um Formatänderungen zu fangen.
 
-**Empfehlung für ein schlankes 1.4 (≈ 6–8 Wochen):** A, 1 (Kern), 7, 8, 5, 6 und die
+**Empfehlung für ein schlankes 1.4 (≈ 6–8 Wochen):** 1 (Kern), 7, 8, 5, 6 und die
 Doku-Ideen unten. MQTT, Allan, Temperatur-Fit und Verbund werden 1.4.x bzw. 1.5.
 
 ### Ergänzende Ideen mit hohem Nutzen und kleinem Aufwand
@@ -78,11 +78,11 @@ Doku-Ideen unten. MQTT, Allan, Temperatur-Fit und Verbund werden 1.4.x bzw. 1.5.
 
 ## 2. Die Themen im Einzelnen
 
-### A. Basis-Image auf Debian 13 „trixie“
+### A. Basis-Image auf Debian 13 „trixie“ (erledigt in 1.3.1)
 
 - **Was:** `FROM debian:trixie-slim`; chrony 4.6.1, gpsd 3.25, linuxptp 4.2.
 - **Warum:** bookworm ist seit 12.07.2026 nur noch LTS. `selectopts` (ab chrony 4.4) erlaubt, eine Quelle zur Laufzeit auf `noselect` zu setzen – ohne chronyd-Neustart, der den Regelzustand kostet. Das brauchen Holdover-Test, Störungs-Sperre und Probelauf beim Temperaturausgleich. `leapseclist` gibt es ab chrony 4.6.
-- **Falle:** `right/UTC` liegt in trixie in `tzdata-legacy`. `confgen.py` muss auf `leapseclist /usr/share/zoneinfo/leap-seconds.list` umstellen; ein bestehender Wert `LEAPSECTZ=right/UTC` wird migriert (Einstellungsmigration aus 1.3), nicht still verworfen.
+- **Falle:** `right/UTC` liegt in trixie in `tzdata-legacy`. **Umgesetzt:** `confgen.py` schreibt `leapseclist /usr/share/zoneinfo/leap-seconds.list`; ein gespeichertes `LEAPSECTZ=right/UTC` wird per Einstellungsmigration (Schema 3) entfernt, mit Hinweiskarte statt still.
 - **Abnahme:** Container-Test komplett grün; Replay-Tests aller Parser (chronyc, gpsd, ptp4l/pmc) grün; `chronyc tracking` zeigt nach Start einen Leap-Status ≠ „?“; Test, dass `leap-seconds.list` existiert und chrony sie lädt; Versionsstände der Kernpakete stehen im Release-Text.
 - **Sicherheit:** senkt das Risiko (aktuelle Pakete, regulärer Sicherheitssupport).
 

@@ -125,12 +125,23 @@ class ExpertEnvTests(unittest.TestCase):
         self.assertRegex(text, r"uds_address\s+/run/ptp/gm\n")
         self.assertRegex(text, r"utc_offset\s+38\n")
 
+    def test_ptp4l_role_options_use_linuxptp4_names(self):
+        # linuxptp 4.x (trixie) meldet slaveOnly/masterOnly als veraltet:
+        # "option slaveOnly is deprecated, please use clientOnly instead"
+        for mode, client, server in (("slave", 1, 0), ("master", 0, 1), ("auto", 0, 0)):
+            text = confgen.render_ptp4l(_cfg(ptp_mode=mode), {})
+            self.assertRegex(text, rf"\nclientOnly\s+{client}\n")
+            self.assertRegex(text, rf"\nserverOnly\s+{server}\n")
+            self.assertNotIn("slaveOnly", text)
+            self.assertNotIn("masterOnly", text)
+
     def test_invalid_values_fall_back_with_warning(self):
         env = {"PTP_TX_TIMESTAMP_TIMEOUT": "10\nslaveOnly 1", "PTP_UDS_ADDRESS": "/run/a b",
                "PTP_UTC_OFFSET": "-5", "PTP_HOLDOVER_SECONDS": "inf"}
         text = confgen.render_ptp4l(_cfg(), env)
         self.assertRegex(text, r"tx_timestamp_timeout\s+10\n")
-        self.assertNotIn("slaveOnly 1\n", text.replace("slaveOnly               0", ""))
+        self.assertNotIn("slaveOnly 1\n", text)
+        self.assertRegex(text, r"clientOnly\s+0\n")
         self.assertRegex(text, r"uds_address\s+/var/run/ptp4l\n")
         self.assertNotIn("utc_offset", text)
         warnings = confgen.expert_env_warnings(env)

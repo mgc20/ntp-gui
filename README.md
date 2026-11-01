@@ -7,7 +7,7 @@
 
 <p align="center">
   <a href="https://github.com/ConGp20/ntp-gui/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/ConGp20/ntp-gui/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="https://github.com/ConGp20/ntp-gui/releases/latest"><img alt="Release" src="https://img.shields.io/badge/release-v1.3.0-0969da"></a>
+  <a href="https://github.com/ConGp20/ntp-gui/releases/latest"><img alt="Release" src="https://img.shields.io/badge/release-v1.3.1-0969da"></a>
   <img alt="Plattformen" src="https://img.shields.io/badge/platform-amd64%20%7C%20arm64-1a7f37">
   <img alt="Image" src="https://img.shields.io/badge/image-ghcr.io-8250df">
   <a href="LICENSE"><img alt="Lizenz: MIT" src="https://img.shields.io/badge/license-MIT-59636e"></a>
@@ -981,7 +981,8 @@ dem Speichern eine `chrony.conf`, die unter `/api/config` einsehbar ist.
 | `LOCAL_STRATUM` | `10` | Stratum im Inselbetrieb |
 | `LOCAL_ORPHAN` | `false` | Orphan-Modus: zwei ntp-gui-Server, die sich gegenseitig als Quelle haben, einigen sich ohne Internet auf **eine** Inselzeit (der mit der kleinsten Referenz-ID gibt sie vor). Wirkt nur mit `SERVE_UNSYNCED` |
 | `NTP_RATELIMIT` | `false` | Anfragen je Client begrenzen (`ratelimit`) |
-| `LEAPSECTZ` | `right/UTC` | Schaltsekunden-Tabelle aus der Zeitzonen-Datenbank |
+| `LEAPSECLIST` | `/usr/share/zoneinfo/leap-seconds.list` | Schaltsekunden-Liste der IERS aus tzdata (`leapseclist`); eigene Liste unter `/config/` möglich, leer schaltet die Ankündigung ab |
+| `LEAPSECTZ` | – | Nur für eigene Images mit `right/`-Zeitzonen (`leapsectz`). Bis 1.3.0 Standard `right/UTC`; fehlt die Zone, gilt die Liste |
 | `NTS_NOCERTTIMECHECK` | `true` | Zertifikatszeit beim ersten NTS-Abgleich nicht prüfen |
 | `NTS_SERVER` | `false` | Selbst NTS-Server sein, siehe [NTS-Server für das LAN](#nts-server-für-das-lan) |
 | `NTS_SERVER_CERT` / `NTS_SERVER_KEY` | `/config/nts.crt` / `/config/nts.key` | Zertifikat (PEM, am besten fullchain) und Schlüssel. Nur Pfade unter `/config`, `/certs` oder `/etc/letsencrypt` |
@@ -1350,6 +1351,10 @@ Beim Update musst du nichts von Hand umbauen:
   Zertifikat/Schlüssel des NTS-Servers außerhalb von `/config`, `/certs` oder
   `/etc/letsencrypt` (seit 1.2.0 nicht mehr erlaubt) wird entfernt, statt bei jedem Start als
   „ungültig“ gemeldet zu werden.
+  Beispiel 1.3.1: Das Image basiert jetzt auf Debian 13 „trixie“; dort gibt es die Zeitzone
+  `right/UTC` nicht mehr. Ein gespeichertes `LEAPSECTZ=right/UTC` wird entfernt, chrony liest
+  die Schaltsekunden aus `/usr/share/zoneinfo/leap-seconds.list`. Steht `LEAPSECTZ` in deiner
+  Compose-Datei, kannst du die Zeile löschen.
 - **Sicherungen aus älteren Versionen** lassen sich importieren; sie durchlaufen dieselben
   Schritte. Eine Datei aus einer *neueren* Version bleibt unangetastet.
 - **Liegt `/var/lib/chrony` schreibgeschützt**, gelten die Änderungen nur im Speicher; die
@@ -1361,12 +1366,12 @@ Beim Update musst du nichts von Hand umbauen:
 ## Entwicklung
 
 ```bash
-python3 -m unittest discover -s tests -v     # 562 Tests: Parser, Einstellungen, Config, Kalibrierung, Hardware, NTS, Datenschutzfilter, API
+python3 -m unittest discover -s tests -v     # 570 Tests: Parser, Einstellungen, Config, Kalibrierung, Hardware, NTS, Datenschutzfilter, API
 docker build -t ntp-gui:test .
 tests/container-test.sh ntp-gui:test         # Integrationstest gegen das gebaute Image
 ```
 
-Der Integrationstest (111 Prüfungen) startet echte Container und prüft das, was Unittests
+Der Integrationstest (114 Prüfungen) startet echte Container und prüft das, was Unittests
 nicht abdecken: Erkennung von fehlendem `CAP_SYS_TIME`, Healthcheck, alle Endpunkte,
 Basic-Auth, gemountete Konfiguration, Verhalten ohne GPS-/PTP-Hardware, Neustart eines
 abgestürzten gpsd, eine echte NTP-Abfrage über das Netz, Einstellungen speichern samt

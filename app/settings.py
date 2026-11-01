@@ -320,6 +320,20 @@ def _as_timezone(value: Any) -> str:
     return text
 
 
+LEAPSECLIST_DEFAULT = "/usr/share/zoneinfo/leap-seconds.list"
+LEAPSECLIST_ROOTS = ("/usr/share/zoneinfo/", "/config/")
+
+
+def _as_leapseclist(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if (not re.match(r"^/[A-Za-z0-9_./+-]{1,200}$", text) or ".." in text
+            or not text.startswith(LEAPSECLIST_ROOTS)):
+        raise ValidationError("Pfad muss unter /usr/share/zoneinfo/ oder /config/ liegen")
+    return text
+
+
 SOURCE_TYPES = ("server", "pool", "peer")
 
 
@@ -418,9 +432,15 @@ SCHEMA: list[dict] = [
            help="Normalerweise wird die Uhr sanft nachgeregelt. Ist sie beim Start um mehr als "
                 "die Schwelle (Sekunden) daneben, darf chrony in den ersten N Messungen "
                 "springen. Wichtig für Geräte ohne Echtzeituhr wie den Raspberry Pi."),
-    _field("leapsectz", "ntp", "Schaltsekunden-Zeitzone", "text", "right/UTC", _as_timezone,
+    _field("leapseclist", "ntp", "Schaltsekunden-Liste", "text", LEAPSECLIST_DEFAULT,
+           _as_leapseclist, env="LEAPSECLIST", advanced=True,
+           help="Woher chrony bevorstehende Schaltsekunden kennt: die Liste der IERS aus dem "
+                "Paket tzdata. Standard ist richtig; leer schaltet die Ankündigung ab."),
+    _field("leapsectz", "ntp", "Schaltsekunden-Zeitzone (alt)", "text", "", _as_timezone,
            env="LEAPSECTZ", advanced=True,
-           help="Woher chrony bevorstehende Schaltsekunden kennt. Standard ist richtig."),
+           help="Nur für eigene Images mit „right/“-Zeitzonen. Leer lassen – seit 1.3.1 "
+                "gilt die Schaltsekunden-Liste. Ist die Zone im Image nicht vorhanden, wird "
+                "die Liste genommen."),
 
     # --- LAN-Server --------------------------------------------------------
     _field("allow_networks", "lan", "Erlaubte Netze", "networks", PRIVATE_NETWORKS,
@@ -1108,7 +1128,7 @@ def export_values() -> dict:
 # Neue Migration: Funktion _migrate_<N-1>_<N>(data) -> list[dict] schreiben,
 # in MIGRATIONS eintragen, SCHEMA_VERSION erhöhen, Test ergänzen.
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 MAX_NOTES = 50
 
 
@@ -1154,8 +1174,33 @@ def _migrate_1_2(data: dict) -> list[dict]:
     return notes
 
 
+def _migrate_2_3(data: dict) -> list[dict]:
+    """1.3.1 (Debian trixie): Schaltsekunden kommen aus leap-seconds.list.
+
+    trixie liefert „right/UTC“ nur noch im Paket tzdata-legacy. Ein gespeichertes
+    LEAPSECTZ=right/UTC (bis 1.3.0 der Standard) würde ins Leere zeigen.
+    """
+    stored = data.get("values")
+    if not isinstance(stored, dict) or "leapsectz" not in stored:
+        return []
+    value = str(stored.get("leapsectz") or "").strip()
+    if value not in ("", "right/UTC"):
+        return []
+    del stored["leapsectz"]
+    if not value:
+        return []
+    return [_note(
+        "3-leapsectz", 3, "Schaltsekunden: jetzt über die Liste",
+        "Bisher hat chrony bevorstehende Schaltsekunden aus der Zeitzone „right/UTC“ gelesen. "
+        "Seit 1.3.1 basiert das Image auf Debian 13 „trixie“, und dort gibt es diese Zone nicht "
+        "mehr. ntp-gui nutzt stattdessen die offizielle Schaltsekunden-Liste "
+        f"({LEAPSECLIST_DEFAULT}). Du musst nichts tun – das Ergebnis ist dasselbe.",
+        ["leapsectz", "leapseclist"])]
+
+
 MIGRATIONS: dict[int, Callable[[dict], list[dict]]] = {
     2: _migrate_1_2,
+    3: _migrate_2_3,
 }
 
 

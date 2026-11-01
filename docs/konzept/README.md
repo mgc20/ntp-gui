@@ -15,7 +15,7 @@ die schon im Image sind (chrony, gpsd, linuxptp), aus der Python-Standardbibliot
 fremden Containern, die der Nutzer *optional* daneben betreibt (Apprise-API, Caddy, Healthchecks).
 Eigener Code bleibt klein und dort, wo es nichts Passendes gibt.
 
-Version **1.4** („Melden, Einbinden, Uhrqualität sichtbar“) hebt das Image auf Debian 13 „trixie“
+Version **1.4** („Melden, Einbinden, Uhrqualität sichtbar“) baut auf dem trixie-Image aus 1.3.1 auf
 und bringt Benachrichtigungen, MQTT/Home Assistant, Allan-Abweichung, Messung für den
 Temperaturausgleich, Schaltsekunden-Übersicht, Vollbild-Uhr und einen opt-in Update-Hinweis.
 Nichts davon schreibt auf Hardware. Riskanteres (u-blox konfigurieren, GPS automatisch sperren,

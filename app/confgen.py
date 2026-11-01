@@ -50,6 +50,26 @@ def gps_device_ok(cfg: dict) -> bool:
     return bool(cfg["gps_enable"]) and os.path.exists(cfg["gps_device"])
 
 
+ZONEINFO = "/usr/share/zoneinfo"
+
+
+def leap_directive(cfg: dict, warn=_log, exists=os.path.exists) -> str | None:
+    """Woher chrony Schaltsekunden kennt. Eine gesetzte, vorhandene Zeitzone hat
+    Vorrang (eigene Images); sonst die Liste aus tzdata (Debian trixie)."""
+    tz = cfg.get("leapsectz") or ""
+    if tz:
+        if exists(os.path.join(ZONEINFO, tz)):
+            return f"leapsectz {tz}"
+        warn("ntp", f"HINWEIS: Zeitzone {tz} gibt es in diesem Image nicht – Schaltsekunden "
+                    "kommen aus der Liste. LEAPSECTZ kann aus der Compose-Datei entfernt werden.")
+    path = cfg.get("leapseclist") or ""
+    if path:
+        if exists(path):
+            return f"leapseclist {path}"
+        warn("ntp", f"WARNUNG: {path} fehlt – chrony kennt keine bevorstehenden Schaltsekunden.")
+    return None
+
+
 def render_chrony(cfg: dict, env: dict | None = None, warn=_log,
                   nts_files: tuple[str, str] | None = None) -> str:
     """chrony.conf als Text. nts_files: (Zertifikat, Schlüssel), die chronyd lesen
@@ -137,8 +157,9 @@ def render_chrony(cfg: dict, env: dict | None = None, warn=_log,
     ]
     if env.get("CHRONY_LOG"):
         lines.append(f"log {env['CHRONY_LOG']}")
-    if cfg["leapsectz"]:
-        lines.append(f"leapsectz {cfg['leapsectz']}")
+    leap = leap_directive(cfg, warn)
+    if leap:
+        lines.append(leap)
     lines += [
         f"clientloglimit {env.get('CLIENTLOGLIMIT', '10000000') or '10000000'}",
         "bindcmdaddress /var/run/chrony/chronyd.sock",
@@ -222,8 +243,8 @@ def render_ptp4l(cfg: dict, env: dict | None = None) -> str:
     body = f"""# Generiert von ntp-gui (Profil: {cfg.get('ptp_profile') or 'default'}).
 [global]
 domainNumber            {cfg['ptp_domain']}
-slaveOnly               {slave_only}
-masterOnly              {master_only}
+clientOnly              {slave_only}
+serverOnly              {master_only}
 priority1               {cfg['ptp_priority1']}
 priority2               {cfg['ptp_priority2']}
 clockClass              {cfg['ptp_clock_class']}

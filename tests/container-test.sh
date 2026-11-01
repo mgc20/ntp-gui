@@ -75,6 +75,11 @@ LOGS=$(docker logs "${PREFIX}-a" 2>&1)
 contains "Fehlende Capability wird erkannt" "$LOGS" "CAP_SYS_TIME fehlt"
 CMDLINE=$(docker exec "${PREFIX}-a" sh -c 'ps -o args= -C chronyd | head -1')
 contains "chronyd läuft mit -x" "$CMDLINE" "-x"
+# 1.3.1 (Debian trixie): Schaltsekunden aus leap-seconds.list, nicht aus right/UTC.
+CONF_A=$(docker exec "${PREFIX}-a" cat /etc/chrony/chrony.conf)
+contains "chrony.conf nutzt leapseclist" "$CONF_A" "leapseclist /usr/share/zoneinfo/leap-seconds.list"
+check "Schaltsekunden-Liste im Image" 0 "$(docker exec "${PREFIX}-a" sh -c 'grep -q "^[0-9]" /usr/share/zoneinfo/leap-seconds.list; echo $?')"
+check "chronyd akzeptiert die Konfiguration" 0 "$(docker exec "${PREFIX}-a" sh -c 'chronyd -p -f /etc/chrony/chrony.conf >/dev/null 2>&1; echo $?')"
 check "Dashboard antwortet"        200 "$(http http://127.0.0.1:18080/)"
 check "Stylesheet wird geliefert"  200 "$(http http://127.0.0.1:18080/static/app.css)"
 check "API antwortet"              200 "$(http http://127.0.0.1:18080/api/status)"

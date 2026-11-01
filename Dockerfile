@@ -1,5 +1,5 @@
 # ntp-gui – Chrony (NTP) + linuxptp (PTP) + Web-Dashboard in einem Container.
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 
 ARG DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
