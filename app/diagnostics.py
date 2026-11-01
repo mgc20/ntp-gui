@@ -580,7 +580,9 @@ def manifest(sections: list[dict], report: dict, generated: float) -> str:
     removed = report.get("removed", {})
     if removed:
         for key, count in sorted(removed.items()):
-            lines.append(f"  {count:>5} × {key}: {egress.CATEGORIES.get(key, key)}")
+            # Schlüssel in Klammern, nicht "schlüssel: wert" – sonst sähe die Schlussprüfung
+            # in "seriennummer: Seriennummern …" selbst eine Seriennummer.
+            lines.append(f"  {count:>5} × [{key}] {egress.CATEGORIES.get(key, key)}")
     else:
         lines.append("  Nichts gefunden, das entfernt werden musste.")
     lines += [

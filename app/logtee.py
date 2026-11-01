@@ -51,6 +51,9 @@ class RotatingFile:
             self.failed_at = time.monotonic()
             return False
 
+    def close(self) -> None:
+        self._close()
+
     def _close(self) -> None:
         if self.handle is not None:
             try:
@@ -115,6 +118,7 @@ def run(stdin=None, stdout=None, path: str | None = None, max_bytes: int = MAX_B
             except (OSError, ValueError):
                 stdout_ok = False
         target.write(line)
+    target.close()
     return 0
 
 

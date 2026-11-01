@@ -173,10 +173,10 @@ _MAC_RE = re.compile(r"(?<![0-9A-Fa-f:.-])(?:[0-9A-Fa-f]{2}([:-])(?:[0-9A-Fa-f]{
 _CLOCK_ID_RE = re.compile(r"(?<![0-9A-Fa-f.:])(?:[0-9A-Fa-f]{6}\.[0-9A-Fa-f]{4}\.[0-9A-Fa-f]{6}"
                           r"|(?:[0-9A-Fa-f]{2}:){7}[0-9A-Fa-f]{2})(?:-\d+)?(?![0-9A-Fa-f.:])")
 _EMAIL_RE = re.compile(r"(?<![\w.+-])[\w.+-]{1,64}@(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,24}(?![\w-])")
-_IPV4_RE = re.compile(r"(?<![\w.])((?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3})"
-                      r"(/\d{1,2})?(?![\w]|\.\d)")
-_IPV6_RE = re.compile(r"(?<![\w:.%])([0-9A-Fa-f]{0,4}(?::[0-9A-Fa-f]{0,4}){2,7}(?::\d{1,3}(?:\.\d{1,3}){3})?)"
-                      r"(%[\w.-]+)?(/\d{1,3})?(?![\w:%])")
+_IPV4_RE = re.compile(r"(?<![\d.])((?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3})"
+                      r"(/\d{1,2})?(?!\d|\.\d)")
+_IPV6_RE = re.compile(r"(?<![\w.%])([0-9A-Fa-f]{0,4}(?::[0-9A-Fa-f]{0,4}){2,7}(?::\d{1,3}(?:\.\d{1,3}){3})?)"
+                      r"(%[\w.-]+)?(/\d{1,3})?(?![\w:%]|\.\d)")
 _DOMAIN_RE = re.compile(r"(?<![\w@-])((?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+([A-Za-z]{2,24}))\.?"
                         r"(?![\w-]|\.[A-Za-z0-9])")
 _ZONE_RE = re.compile(r"\b(?:Africa|America|Antarctica|Arctic|Asia|Atlantic|Australia|Europe|Indian|Pacific"
@@ -413,14 +413,13 @@ class Sanitizer:
         s = self._sub(_EMAIL_RE, "e_mail", "<e-mail>", s)
         s = self._sub(_BYID_RE, "seriennummer", self._byid, s)
         s = self._sub(_SERIAL_KV_RE, "seriennummer", lambda m: m.group(1) + m.group(2) + "<seriennr>", s)
-        s = self._sub(_CLOCK_ID_RE, "uhr_id", lambda m: m.group(0) if not re.search(r"[1-9A-Fa-f]", m.group(0).split("-")[0])
-                      else self.clock_pseudonym(m.group(0)), s)
+        s = self._sub(_CLOCK_ID_RE, "uhr_id", self._clock_id, s)
         s = self._sub(_MAC_RE, "mac", lambda m: "<mac>" if _mac_identifies(m.group(0)) else m.group(0), s)
         s = self._sub(_ZONE_RE, "zeitzone", "<zeitzone>", s)
         s = self._sub(_ZONE_ABBR_RE, "zeitzone", "<zeitzone>", s)
         s = self._sub(_REFID_CTX_RE, "refid", self._refid, s)
+        s = _IPV6_RE.sub(self._ipv6, s)  # zuerst: ::ffff:1.2.3.4 ist eine Adresse
         s = _IPV4_RE.sub(self._ipv4, s)
-        s = _IPV6_RE.sub(self._ipv6, s)
         s = self._sub(_DOMAIN_RE, "hostname", self._domain, s)
         if self._names_re is not None:
             s = self._sub(self._names_re, "hostname", lambda m: self.host_pseudonym(m.group(1)), s)
@@ -433,6 +432,12 @@ class Sanitizer:
         key = m.group(2).lower()
         self.count("satellitenwinkel" if key in {"az", "el", "azimuth", "elevation"} else "position")
         return m.group(1) + m.group(2) + m.group(1) + m.group(3) + REMOVED
+
+    def _clock_id(self, m: re.Match) -> str:
+        ident, dash, port = m.group(0).partition("-")
+        if not re.search(r"[1-9A-Fa-f]", ident):
+            return m.group(0)  # 000000.0000.000000 = "keine Uhr"
+        return self.clock_pseudonym(ident) + dash + port
 
     def _byid(self, m: re.Match) -> str:
         body, suffix = m.group(1), m.group(2)
@@ -655,12 +660,15 @@ def _text_findings(text: str, path: str) -> list[dict]:
     for pattern, kind in ((_COORD_NMEA_RE, "position"), (_COORD_DMS_RE, "position"),
                           (_COORD_DEG_RE, "position"), (_NMEA_RE, "position"),
                           (_EMAIL_RE, "e_mail"),
-                          (_CLOCK_ID_RE, "uhr_id"), (_ZONE_RE, "zeitzone"),
+                          (_ZONE_RE, "zeitzone"),
                           (_ZONE_ABBR_RE, "zeitzone")):
         for m in pattern.finditer(text):
             if pattern is _NMEA_RE and m.group(0).endswith(REMOVED):
                 continue
             found.append(_finding(kind, path, m.group(0)))
+    for m in _CLOCK_ID_RE.finditer(text):
+        if re.search(r"[1-9A-Fa-f]", m.group(0).partition("-")[0]):
+            found.append(_finding("uhr_id", path, m.group(0)))
     for m in _MAC_RE.finditer(text):
         if _mac_identifies(m.group(0)):
             found.append(_finding("mac", path, m.group(0)))

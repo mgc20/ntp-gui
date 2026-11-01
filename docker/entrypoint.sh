@@ -145,7 +145,7 @@ start_logtee() {
   command -v python3 >/dev/null 2>&1 || return 0
   mkdir -p "$RUN_DIR" 2>/dev/null || return 0
   exec {LOG_OUT_FD}>&1 {LOG_ERR_FD}>&2
-  exec > >(python3 -u "${APP_DIR}/logtee.py" || exec cat) 2>&1
+  exec > >(python3 -u "${APP_DIR}/logtee.py" "${RUN_DIR}/ntp-gui.log" || exec cat) 2>&1
   LOGTEE_PID=$!
   # Ein 'wait' ohne Argument (shutdown) wartet auch auf die Prozess-Substitution,
   # solange sie in $! steht – und der tee endet erst nach uns. $! neu belegen.
