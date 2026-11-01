@@ -23,6 +23,11 @@ Einstellungen im Verbund teilen) folgt in **1.5**, wenn die Praxisdaten aus 1.3/
 Die **Community-Dienste** starten ohne eigenen Server-Code (Hardware-Liste über GitHub-Issues,
 Pool-Server mit ntp-gui selbst); der erste eigene Dienst ist der Server-Test als Selbsttest.
 
+**Gegenprüfung (01.11.2026):** Das volle 1.4 ist für einen Maintainer eher 3–4 Monate Arbeit;
+[version-1.4.md](version-1.4.md#realistischer-gesamtaufwand-gegenprüfung) schlägt ein schlankes
+1.4 vor. Jedes Dokument endet mit **„Offene Fragen“** – dort stehen die Entscheidungen, die nur
+der Maintainer treffen kann.
+
 ## Die Dokumente
 
 | Dokument | Inhalt | Wann lesen |

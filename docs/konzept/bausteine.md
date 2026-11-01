@@ -15,8 +15,9 @@ Commits) wurden nicht abgerufen; die Aktivität stützt sich auf Releases, PyPI 
 
 ## 1. Querschnitt: Basis-Image auf Debian 13 „trixie“
 
-Debian 12 „bookworm“ ist seit 12.07.2026 oldstable und wird nur noch vom LTS-Team gepflegt
-(Sicherheitsupdates bis 30.06.2028). Die Pakete dort sind für unsere Pläne zu alt.
+Debian 12 „bookworm“ ist seit dem Erscheinen von trixie (09.08.2025) oldstable; die reguläre
+Sicherheitsunterstützung endete am **12.07.2026**, seitdem pflegt nur noch das LTS-Team
+(bis 30.06.2028). Die Pakete dort sind für unsere Pläne zu alt.
 
 | Paket | bookworm (heute) | trixie | Warum es zählt |
 |---|---|---|---|
@@ -29,8 +30,12 @@ Debian 12 „bookworm“ ist seit 12.07.2026 oldstable und wird nur noch vom LTS
 **Falle:** In trixie stecken die Zonen `right/*` nicht mehr in `tzdata`, sondern in
 `tzdata-legacy`. Der heutige Standard `LEAPSECTZ=right/UTC` liefe ins Leere – chrony hätte
 **keine Schaltsekunden-Daten** und meldete das nur im Log. Lösung: auf
-`leapseclist /usr/share/zoneinfo/leap-seconds.list` umstellen (in trixie-`tzdata` enthalten).
-`gpsd`-`jam` und Antennenstatus im JSON gibt es erst ab gpsd 3.26 – also auch in trixie **nicht**.
+`leapseclist /usr/share/zoneinfo/leap-seconds.list` umstellen (in trixie-`tzdata` enthalten,
+geprüft; `right/` fehlt dort tatsächlich). Notlösung für den Übergang: `tzdata-legacy`
+mitinstallieren – ein Paket mehr, aber kein Code.
+`gpsd`-`jam` und Antennenstatus (`ant_stat`) im JSON gibt es erst ab gpsd 3.26 (11.05.2025) – also
+in trixie (3.25) **nicht**; erst forky/testing hat 3.27.5. In welcher JSON-Klasse die Felder stehen,
+ist vor der Umsetzung im gpsd-Quelltext zu prüfen.
 
 **Empfehlung:** Wechsel als eigenes Ticket am Anfang von 1.4, mit vollem Container-Test und
 Replay-Tests der Parser. Aufwand ◆◆, senkt das Risiko langfristig.
@@ -53,7 +58,7 @@ Replay-Tests der Parser. Aufwand ◆◆, senkt das Risiko langfristig.
 | eigener MQTT-Minimalclient | stdlib | – | 0 | klein, aber eigener Parser | ◆◆ (≈ 150–200 Zeilen) | Rückfall, falls paho wegfällt |
 | `mosquitto_pub` | EPL-2.0/EDL-1.0 | 2.0.11 | ≈ 0,5 MB | Fremdprozess je Nachricht | ◆ | **weglassen** (kein sauberes LWT) |
 | Home-Assistant-Discovery | Protokoll | – | 0 | – | ◆ | **übernehmen** |
-| **AllanTools** | LGPL-3 | nein | > 100 MB (numpy, scipy, matplotlib) | groß | – | **nur in CI als Test-Orakel**; ADEV selbst (≈ 50 Zeilen) |
+| **AllanTools** | LGPL-3 (letztes Release 2024.6, 04.07.2024) | nein | zig MB (numpy, scipy; matplotlib optional) | groß | – | **nur in CI als Test-Orakel**; ADEV selbst (≈ 50 Zeilen) |
 | **keepalived** (VRRP) | GPL-2.0 | 2.2.7 | ≈ 0,5 MB + libnl/libsnmp | braucht `NET_ADMIN`/`NET_RAW` | ◆ (Doku) | **Doku**: auf dem Host oder als Sidecar, `/healthz` als Prüfskript |
 | HTTPS mit `ssl` | PSF/OpenSSL | – | 0 | klein | ◆ (≈ 30 Zeilen) | **klein selbst**, opt-in |
 | **Caddy** | Apache-2.0 | 2.6.2 (alt, ≈ 36 MB) | 0 (offizielles Image) | beim Nutzer | ◆ (Doku) | **Sidecar** |
@@ -63,7 +68,7 @@ Replay-Tests der Parser. Aufwand ◆◆, senkt das Risiko langfristig.
 | Log-Versand | – | – | 0 | gering | ◆ | **Doku** (Alloy, Vector, Docker-Log-Treiber); optional `SysLogHandler` 🔒 |
 | **sigstore-python** | Apache-2.0 | – | groß (cryptography, pydantic, requests …) | mittel | – | **weglassen**; stattdessen Attestation im Release-Workflow |
 | `actions/attest` | MIT *(n. g.)* | – | 0 (CI) | 0 | ◆ | **übernehmen** im Release-Workflow |
-| **Diun / Watchtower** | MIT / Apache-2.0 *(n. g.)* | – | 0 | beim Nutzer | ◆ (Doku) | **Doku** für Nutzer, die Updates automatisieren wollen |
+| **Diun** (nur melden) / **WUD** | MIT *(n. g.)* | – | 0 | beim Nutzer | ◆ (Doku) | **Doku** für Nutzer, die Updates automatisieren wollen. **Nicht** Watchtower empfehlen: `containrrr/watchtower` ist seit 17.12.2025 archiviert, keine Sicherheitsupdates mehr |
 | **pyubx2** | BSD-3 *(n. g.)* | nein | klein | mittel | – | **weglassen**; die ≈ 5 benötigten UBX-Nachrichten mit `struct` |
 | **Weblate** (Übersetzung) | GPL-3 | – | 0 (gehostet, kostenlos für OSS *(n. g.)*) | 0 | ◆ | **übernehmen** für i18n ab 1.5 |
 
@@ -118,6 +123,7 @@ aus Debian verschwindet. Tests in CI gegen `eclipse-mosquitto` bzw. das Debian-P
 - **ts2phc:** schon im Image, aber hardwareabhängig (i210/i226, TimeHAT), Pins treiberabhängig, Konkurrenz mit gpsd um die serielle Schnittstelle. Später, experimentell, auf Testberichte der Community angewiesen.
 - **keepalived:** bräuchte `NET_ADMIN`/`NET_RAW` und eine libnl/libsnmp-Kette – nicht ins Image. Doku: auf dem Host oder als Sidecar mit `network_mode: host`, `track_script` mit `curl -fs http://127.0.0.1:8080/healthz`. Hinweis: Das NTS-Zertifikat muss den Namen der VIP enthalten.
 - **HTTPS:** `ssl.SSLContext(PROTOCOL_TLS_SERVER)` mit `minimum_version = TLSv1_2`, Zertifikate aus denselben erlaubten Pfaden wie bei NTS, Neuladen wie bei NTS. Caddy als Sidecar dokumentieren.
+  - **Falle (Verfügbarkeit):** Wird der lauschende Socket mit `wrap_socket()` und Standardwerten umhüllt, läuft der TLS-Handshake in `accept()` – also im einzigen Annahme-Thread von `ThreadingHTTPServer`. Ein Client, der verbindet und schweigt, blockiert dann das ganze Dashboard. Darum `do_handshake_on_connect=False` und Handshake mit Timeout im Arbeitsthread (bzw. in `get_request`/`finish_request` mit Socket-Timeout). Das ist genau die Art Detail, die ein Reverse Proxy schon gelöst hat.
 - **Logs:** bleiben auf stdout. Abholung auf dem Host (Grafana Alloy, Vector, Docker-Log-Treiber). Logs enthalten LAN-IPs der Clients – ein optionaler Syslog-Versand ist opt-in 🔒 und läuft durch den Filter (Option „LAN-IPs behalten“).
 
 ### 3.8 Grafana und Prometheus
@@ -137,6 +143,19 @@ aus Debian verschwindet. Tests in CI gegen `eclipse-mosquitto` bzw. das Debian-P
 - gpsd/linuxptp: [ubxtool-Handbuch](https://gpsd.gitlab.io/gpsd/ubxtool.html) · [gpsd JSON](https://gpsd.gitlab.io/gpsd/gpsd_json.html) · [ts2phc](https://linuxptp.nwtime.org/documentation/ts2phc/)
 - Benachrichtigungen/MQTT: [ntfy Publish-API](https://docs.ntfy.sh/publish/) · [Apprise auf PyPI](https://pypi.org/project/apprise/) · [Apprise-API](https://github.com/caronc/apprise-api) · [paho-mqtt auf PyPI](https://pypi.org/project/paho-mqtt/) · [Home Assistant MQTT-Discovery](https://www.home-assistant.io/integrations/mqtt/)
 - Allan: [NIST SP 1065](https://tf.nist.gov/general/pdf/2220.pdf) · [AllanTools auf PyPI](https://pypi.org/project/AllanTools/)
+- Pflegezustand (geprüft 01.11.2026): [Debian-Paketsuche gpsd](https://packages.debian.org/search?keywords=gpsd&searchon=names&exact=1&suite=all&section=all) · [linuxptp](https://packages.debian.org/search?keywords=linuxptp&searchon=names&exact=1&suite=all&section=all) · [gpsd NEWS (3.26: ant_stat, jam)](https://fossies.org/linux/gpsd/NEWS) · [paho-mqtt Release-Historie](https://pypi.org/project/paho-mqtt/#history) · [Watchtower archiviert (linuxiac)](https://linuxiac.com/docker-update-tool-watchtower-reaches-end-of-maintenance/) · [containrrr/watchtower](https://github.com/containrrr/watchtower)
 - Logs: [Promtail EOL (Grafana-Doku)](https://grafana.com/docs/loki/latest/send-data/promtail/) · [Big Bang ADR: Alloy statt Promtail](https://docs-bigbang.dso.mil/latest/docs/community/adrs/0004-alloy-replacing-promtail/)
 - Attestations: [actions/attest](https://github.com/actions/attest) · [gh attestation verify](https://cli.github.com/manual/gh_attestation_verify)
 - Lokal geprüft im Test-Image: `ubxtool`, `gpsctl`, `ts2phc` vorhanden; `ubxtool` scheitert ohne `python3-gps`; `leap-seconds.list` läuft am 28.06.2027 ab. *(Achtung: Das lokale Test-Image basiert auf Ubuntu 24.04, die Paketversionen darin sind nicht maßgeblich.)*
+
+## 5. Offene Fragen (Entscheidung des Maintainers)
+
+1. **Erste Nicht-stdlib-Abhängigkeit (paho-mqtt):** paho ist stabil, aber seit 29.04.2024 ohne
+   Release. Alternative ohne neue Abhängigkeit für die erste Stufe: Home Assistant per
+   REST-Sensor gegen `/api/v1` (nur Doku, siehe [version-1.4.md](version-1.4.md#offene-fragen)).
+   Lohnt MQTT in 1.4 schon, oder erst, wenn Nutzer danach fragen?
+2. **Übergang trixie:** `leapseclist` sofort (sauber, Migration nötig) oder für ein Release
+   `tzdata-legacy` mitinstallieren (null Code, ein Paket mehr)?
+3. **HTTPS im Dashboard selbst** (Handshake-Falle, Zertifikats-Neuladen) oder nur Reverse Proxy
+   dokumentieren? Sicherheit durch Einfachheit spricht für „nur Doku“, Bequemlichkeit im LAN
+   für stdlib-HTTPS.

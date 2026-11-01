@@ -60,9 +60,11 @@ gutem Grund (z. B. viele Nachfragen) und dann in kleinster Form (nur lesen, nur 
 - Sie erlaubt – auch indirekt, durch Kombination – eine **Ortsbestimmung** oder dauerhafte Wiedererkennung einer Instanz.
 - Sie zieht eine **große Abhängigkeitskette** ins Image (Faustwert: > 5 MB oder > 3 neue Pakete) für einen Nutzen, den nur wenige haben → Sidecar oder Doku.
 - Das Fremdprojekt ist **nicht mehr gepflegt** oder hat einen Bus-Faktor von 1 *und* wäre schwer zu ersetzen.
+  Beispiel: Watchtower wurde am 17.12.2025 archiviert – Empfehlungen in der Doku müssen bei jedem
+  Release kurz gegengeprüft werden (Archiv-Status, letztes Release).
 - Sie **schreibt auf Hardware oder die Uhr**, ohne dass es einen Weg zurück gibt.
 - Sie ist **nicht testbar** und nicht klar als experimentell abgrenzbar.
-- Sie dupliziert, was ein Werkzeug des Nutzers schon gut kann (Prometheus/Alertmanager, Watchtower/Diun, Reverse Proxy) → Doku statt Code.
+- Sie dupliziert, was ein Werkzeug des Nutzers schon gut kann (Prometheus/Alertmanager, Diun/WUD, Reverse Proxy) → Doku statt Code.
 
 „Nein“ heißt selten „nie“. Oft lautet die Antwort: **als Doku**, **als Sidecar** oder **nur lesend**.
 
@@ -128,3 +130,12 @@ Neue Pakete, neue Rechte, neue Tests, Doku. Wann überprüfen wir die Entscheidu
 - **Entscheidung:** Webhook, ntfy, Gotify und E-Mail mit stdlib (je 20–40 Zeilen). Für die über 100 weiteren Dienste: Doku zum **Apprise-API-Container als Sidecar**, angesprochen über den Webhook.
 - **Abwägung:** Apprise (BSD-2, sehr aktiv) bringt requests, urllib3, requests-oauthlib, click, markdown, PyYAML mit. Im Image wäre das für die meisten Nutzer Ballast mit eigener CVE-Historie. Als Sidecar bekommt, wer es will, die volle Vielfalt.
 - **Folge:** ★★★ · ◆ · R2 · OSS teilweise · 🔒 (Ereignistexte laufen durch den Filter).
+
+## 7. Offene Fragen
+
+1. **OSS-Bonus bei „teilweise“:** Die Faustformel gibt +1 nur bei „OSS: ja“; das Beispiel
+   Benachrichtigungen (6.6, „OSS teilweise“) rechnet trotzdem +1. Festlegen: +1 nur bei „ja“
+   (dann Wert 3) oder +0,5 bei „teilweise“?
+2. **Pflegekosten sichtbar machen:** Soll jede ADR eine Zeile „Was passiert, wenn das
+   Fremdprojekt eingestellt wird?“ bekommen (Ausstiegsplan)? Kostet zwei Minuten, hätte bei
+   Watchtower und Promtail geholfen.
