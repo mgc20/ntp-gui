@@ -5,6 +5,7 @@ import * as overview from "./pages/overview.js";
 import * as sources from "./pages/sources.js";
 import * as gps from "./pages/gps.js";
 import * as ptp from "./pages/ptp.js";
+import * as hardware from "./pages/hardware.js";
 import * as clients from "./pages/clients.js";
 import * as settings from "./pages/settings.js";
 import * as help from "./pages/help.js";
@@ -14,6 +15,7 @@ const PAGES = [
   { id: "quellen", title: "Zeitquellen", module: sources, history: true },
   { id: "gps", title: "GPS", module: gps, history: true },
   { id: "ptp", title: "PTP", module: ptp, history: true },
+  { id: "hardware", title: "Hardware", module: hardware, history: false },
   { id: "clients", title: "Clients", module: clients, history: true },
   { id: "einstellungen", title: "Einstellungen", module: settings },
   { id: "hilfe", title: "Hilfe", module: help },
@@ -116,12 +118,19 @@ function renderHeader() {
   else if (t.local_reference) { text = `Inselbetrieb · Stratum ${t.stratum ?? "–"}`; }
   pill.dataset.state = tone;
   label.textContent = text;
-  const problems = (status.insights || []).filter((i) => i.level === "warn" || i.level === "crit").length;
-  const badgeNode = nav.querySelector('a[data-page=""] .nav-badge');
-  badgeNode.textContent = problems ? String(problems) : "";
-  badgeNode.hidden = !problems;
+  const serious = (status.insights || []).filter((i) => i.level === "warn" || i.level === "crit");
+  // Übersicht zählt alle Probleme, „Hardware“ nur die aus dem Hardware-Check.
+  setBadge("", serious.length);
+  setBadge("hardware", serious.filter((i) => i.action === "hardware").length);
   document.getElementById("footer-note").textContent =
     `ntp-gui ${sys.version || ""} · aktualisiert ${fmtTime(sys.time)} · alle ${sys.refresh_seconds} s`;
+}
+
+function setBadge(pageId, count) {
+  const badgeNode = nav.querySelector(`a[data-page="${pageId}"] .nav-badge`);
+  if (!badgeNode) return;
+  badgeNode.textContent = count ? String(count) : "";
+  badgeNode.hidden = !count;
 }
 
 // --- Aktualisierung ------------------------------------------------------------
@@ -182,7 +191,8 @@ function watchReload() {
 // --- Start -------------------------------------------------------------------------
 function buildNav() {
   nav.replaceChildren(...PAGES.map((page) => el("a", { href: `#/${page.id}`, dataset: { page: page.id } },
-    el("span", { text: page.title }), page.id === "" ? el("span", { class: "nav-badge", hidden: true }) : null)));
+    el("span", { text: page.title }),
+    page.id === "" || page.id === "hardware" ? el("span", { class: "nav-badge", hidden: true }) : null)));
 }
 
 function initTheme() {

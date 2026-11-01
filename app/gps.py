@@ -66,13 +66,18 @@ def _sky_is_detailed(report: dict[str, Any] | None) -> bool:
     return bool(report) and ("satellites" in report or report.get("nSat") is not None)
 
 
-def poll_gpsd(timeout: float = 4.0) -> dict[str, Any]:
-    """Collect one VERSION/TPV/SKY set from gpsd. Returns {} when unreachable."""
+def _gpsd_address() -> tuple[str, int]:
     host = os.environ.get("GPSD_HOST", "127.0.0.1").strip() or "127.0.0.1"
     try:
         port = int(os.environ.get("GPSD_PORT", "2947"))
     except ValueError:
         port = 2947
+    return host, port
+
+
+def poll_gpsd(timeout: float = 4.0) -> dict[str, Any]:
+    """Collect one VERSION/TPV/SKY set from gpsd. Returns {} when unreachable."""
+    host, port = _gpsd_address()
     reports: dict[str, Any] = {}
     deadline = time.monotonic() + timeout
     try:
@@ -112,6 +117,31 @@ def poll_gpsd(timeout: float = 4.0) -> dict[str, Any]:
     return reports
 
 
+def parse_devices(report: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Die DEVICES-Meldung von gpsd: welche Geräte gpsd kennt und was es darüber weiß.
+
+    subtype/subtype1 enthalten bei u-blox den Inhalt von MON-VER (Firmware,
+    Hardware-Generation, Modulname), activated ist gesetzt, sobald gpsd den Port
+    öffnen konnte.
+    """
+    result = []
+    for dev in (report or {}).get("devices") or []:
+        if not isinstance(dev, dict):
+            continue
+        flags = dev.get("flags")
+        result.append({
+            "path": dev.get("path") or "",
+            "driver": dev.get("driver") or "",
+            "subtype": dev.get("subtype") or "",
+            "subtype1": dev.get("subtype1") or "",
+            "activated": dev.get("activated"),
+            "bps": dev.get("bps") if isinstance(dev.get("bps"), int) else None,
+            "flags": flags if isinstance(flags, int) else None,
+            "native": dev.get("native") if isinstance(dev.get("native"), int) else None,
+        })
+    return result
+
+
 def parse_reports(reports: dict[str, Any]) -> dict[str, Any]:
     """Turn raw gpsd reports into the flat structure the dashboard renders."""
     state: dict[str, Any] = {"running": bool(reports)}
@@ -119,6 +149,7 @@ def parse_reports(reports: dict[str, Any]) -> dict[str, Any]:
     if version:
         state["gpsd_release"] = version.get("release")
 
+    state["devices"] = parse_devices(reports.get("DEVICES"))
     devices = (reports.get("DEVICES") or {}).get("devices") or []
     if devices:
         state["device"] = devices[0].get("path")
@@ -212,3 +243,78 @@ def status() -> dict[str, Any]:
         _CACHE = state
         _CACHE_TIME = time.time()
         return dict(state)
+
+
+def summarize_pps(messages: list[dict[str, Any]]) -> dict[str, Any]:
+    """Wertet gesammelte PPS-/TOFF-Meldungen aus.
+
+    TOFF enthält für jede NMEA-Zeitmeldung die Systemzeit beim Empfang (clock)
+    und die gemeldete GPS-Zeit (real). clock - real ist die Verspätung der
+    NMEA-Zeit – ein zweiter Messweg neben dem Kalibrier-Assistenten.
+    """
+    pps = [m for m in messages if m.get("class") == "PPS"]
+    toff = [m for m in messages if m.get("class") == "TOFF"]
+    latencies = []
+    for msg in toff:
+        try:
+            clock = float(msg["clock_sec"]) + float(msg.get("clock_nsec", 0)) / 1e9
+            real = float(msg["real_sec"]) + float(msg.get("real_nsec", 0)) / 1e9
+        except (KeyError, TypeError, ValueError):
+            continue
+        latencies.append((clock - real) * 1000.0)
+    return {
+        "seen": bool(pps),
+        "pps_count": len(pps),
+        "pps_devices": sorted({str(m.get("device") or "") for m in pps} - {""}),
+        "toff_count": len(toff),
+        "toff_latency_ms": round(sum(latencies) / len(latencies), 2) if latencies else None,
+    }
+
+
+def probe_pps(timeout: float = 2.5) -> dict[str, Any]:
+    """Lauscht kurz mit „pps“:true an gpsd und sammelt PPS- und TOFF-Meldungen.
+
+    Ergebnis: reachable (gpsd erreichbar), seen (mindestens ein PPS), die
+    gemittelte NMEA-Verspätung aus TOFF und die DEVICES-Liste.
+    """
+    host, port = _gpsd_address()
+    messages: list[dict[str, Any]] = []
+    devices: list[dict[str, Any]] = []
+    reachable = False
+    deadline = time.monotonic() + timeout
+    try:
+        with socket.create_connection((host, port), timeout=timeout) as sock:
+            reachable = True
+            sock.sendall(b'?WATCH={"enable":true,"json":true,"pps":true}\n')
+            buffer = b""
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                sock.settimeout(remaining)
+                try:
+                    chunk = sock.recv(8192)
+                except socket.timeout:
+                    break
+                if not chunk:
+                    break
+                buffer += chunk
+                while b"\n" in buffer:
+                    line, _, buffer = buffer.partition(b"\n")
+                    try:
+                        report = json.loads(line)
+                    except ValueError:
+                        continue
+                    if not isinstance(report, dict):
+                        continue
+                    kind = report.get("class")
+                    if kind in {"PPS", "TOFF"}:
+                        messages.append(report)
+                    elif kind == "DEVICES":
+                        devices = parse_devices(report)
+    except OSError:
+        pass
+    result = summarize_pps(messages)
+    result["reachable"] = reachable
+    result["devices"] = devices
+    return result
