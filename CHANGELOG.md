@@ -7,6 +7,8 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 ## [Unveröffentlicht]
 
 ### Hinzugefügt
+- `docker-compose.pi-gps.yml`: Vorlage für einen Raspberry Pi mit USB-GPS
+  (Host-Netzwerk, PTB als Rückfallebene, Vorbereitungen im Kopfkommentar).
 - Grafiken im README: Banner, Architektur, DHCP-Ablauf und Genauigkeitsvergleich,
   jeweils in heller und dunkler Variante (`docs/graphics/`, erzeugt von
   `docs/graphics/make_graphics.py`).

@@ -168,6 +168,14 @@ dmesg | grep -i -E "ttyACM|ttyUSB|u-blox"   # welches Gerät ist es?
 docker compose -f docker-compose.gps.yml up -d
 ```
 
+**Auf einem Raspberry Pi** gibt es eine eigene Vorlage mit Host-Netzwerk und den nötigen
+Vorbereitungen im Kopfkommentar (Zeitdienst des Pi abschalten, Gerät finden):
+[`docker-compose.pi-gps.yml`](docker-compose.pi-gps.yml).
+
+```bash
+docker compose -f docker-compose.pi-gps.yml up -d
+```
+
 Oder direkt:
 
 ```bash
