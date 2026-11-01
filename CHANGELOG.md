@@ -18,8 +18,16 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
   meldete die alten Namen bei jedem Start als veraltet im PTP-Log.
 
 ### Behoben
+- **Diagnosepaket mit Aufzeichnung** brach mit „latenz_gerundet“ ab, obwohl richtig gefiltert
+  war: Die Schlussprüfung las die JSON-Zeilen der Aufzeichnung als Rohtext, so stand z. B.
+  „Precision (0.000000030 seconds)“ neben „Root delay“. Sie prüft JSON-Zeilen jetzt wie der
+  Filter.
+- **Datenschutz:** chrony-RefIDs von IPv6-Adressen (ein Hash der Adresse, z. B.
+  `Local address … (E41BC59B)` in `ntpdata`) blieben stehen, wenn sie zufällig im
+  Multicast-Bereich lagen. Unbedenklich sind jetzt nur Namen (GPS, PPS …), Loopback und 0.0.0.0.
+- „timezone to …“ in chrony-Logs wurde fälschlich als Zeitzone ersetzt.
 - Ohne `NTPGUI_VERSION` meldeten Dashboard, `/api/status` und Diagnosepaket noch Version
-  1.3.0.
+  1.3.0; das Startereignis hatte keine Version.
 
 ## [1.3.0] – 2026-11-01
 

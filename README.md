@@ -1371,7 +1371,7 @@ docker build -t ntp-gui:test .
 tests/container-test.sh ntp-gui:test         # Integrationstest gegen das gebaute Image
 ```
 
-Der Integrationstest (111 Prüfungen) startet echte Container und prüft das, was Unittests
+Der Integrationstest (114 Prüfungen) startet echte Container und prüft das, was Unittests
 nicht abdecken: Erkennung von fehlendem `CAP_SYS_TIME`, Healthcheck, alle Endpunkte,
 Basic-Auth, gemountete Konfiguration, Verhalten ohne GPS-/PTP-Hardware, Neustart eines
 abgestürzten gpsd, eine echte NTP-Abfrage über das Netz, Einstellungen speichern samt
