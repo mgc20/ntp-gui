@@ -15,7 +15,7 @@ const PRESETS = [
 // ⓘ neben einzelnen Feldern: verweist auf die ausführliche Erklärung in der Hilfe.
 // Der kurze Hilfetext unter jedem Feld kommt vom Server (Schema).
 export const FIELD_HELP = {
-  ntp_sources: "source_type", ntp_minsources: "minsources", leapsectz: "leap",
+  ntp_sources: "source_type", ntp_minsources: "minsources", leapsectz: "leap_source", leapseclist: "leap_source",
   serve_unsynced: "island", local_stratum: "island", local_orphan: "local_orphan",
   ntp_hw_timestamp: "timestamping",
   nts_nocerttimecheck: "nocerttimecheck", nts_server_enable: "nts_server",

@@ -1,6 +1,7 @@
 """Tests for settings, config generation, calibration, insights and the new parsers."""
 
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -255,7 +256,13 @@ class ConfgenTests(SettingsTestCase):
     @unittest.skipUnless(shutil.which("chronyd"), "chronyd not installed")
     def test_chronyd_accepts_config(self):
         device = "/dev/null"  # exists everywhere and passes the /dev/ check
+        version = subprocess.run(["chronyd", "-v"], capture_output=True, text=True).stdout
+        match = re.search(r"version (\d+)\.(\d+)", version)
+        # leapseclist kennt chrony erst ab 4.6 (Image: Debian trixie); ältere Test-Hosts
+        # prüfen den Rest der Konfiguration ohne diese Zeile.
+        extra = {} if match and (int(match[1]), int(match[2])) >= (4, 6) else {"leapseclist": ""}
         text, _ = self.render(
+            **extra,
             gps_enable=True, gps_device=device, ntp_ratelimit=True, ntp_minsources=2,
             ntp_sources=[{"type": "server", "host": "ptbtime1.ptb.de", "nts": True}])
         conf = os.path.join(self.tmp, "chrony.conf")
@@ -266,6 +273,22 @@ class ConfgenTests(SettingsTestCase):
             # der Container-Test prüft die erzeugte Konfiguration dann im Image.
             self.skipTest("chronyd darf die Testdatei nicht lesen (AppArmor)")
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_leap_directive(self):
+        import confgen
+        notes = []
+        warn = lambda _t, msg: notes.append(msg)
+        cfg = {"leapsectz": "", "leapseclist": "/usr/share/zoneinfo/leap-seconds.list"}
+        self.assertEqual(confgen.leap_directive(cfg, warn, exists=lambda p: True),
+                         "leapseclist /usr/share/zoneinfo/leap-seconds.list")
+        # Altes right/UTC im trixie-Image: fällt auf die Liste zurück, mit Hinweis.
+        cfg["leapsectz"] = "right/UTC"
+        self.assertEqual(confgen.leap_directive(cfg, warn, exists=lambda p: "right" not in p),
+                         "leapseclist /usr/share/zoneinfo/leap-seconds.list")
+        self.assertTrue(notes)
+        self.assertEqual(confgen.leap_directive(cfg, warn, exists=lambda p: True),
+                         "leapsectz right/UTC")
+        self.assertIsNone(confgen.leap_directive(cfg, warn, exists=lambda p: False))
 
     def test_ptp4l_config(self):
         settings.save({"ptp_enable": True, "ptp_interface": "eth0", "ptp_domain": 24,

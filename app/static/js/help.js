@@ -101,6 +101,15 @@ export const HELP = {
       + "synchron“ heißt: noch keine gültige Zeit. Diesen Status reicht der Server an seine Clients "
       + "weiter.",
   },
+  leap_source: {
+    title: "Woher kommen die Schaltsekunden?",
+    text: "Schaltsekunden werden vom IERS Monate vorher angekündigt. chrony liest diese "
+      + "Ankündigungen aus einer Datei und gibt sie an die Clients weiter – sonst wären alle Uhren "
+      + "nach einer Schaltsekunde für eine Weile um eine Sekunde daneben. Seit 1.3.1 (Debian 13) "
+      + "kommt die Liste aus **leap-seconds.list** im Paket tzdata; sie wird mit jedem Image-Update "
+      + "aktuell. Die alte Zeitzone „right/UTC“ gibt es in Debian 13 nicht mehr. Eine eigene Liste "
+      + "kannst du unter /config ablegen.",
+  },
   update_interval: {
     title: "Aktualisierungsintervall",
     text: "Wie viele Sekunden zwischen den letzten beiden Korrekturen der Uhr lagen. Es folgt dem "
@@ -818,7 +827,7 @@ export const HELP_GROUPS = [
   { title: "Grundlagen", keys: ["ntp", "chronyd", "services", "stratum", "island", "minsources", "dhcp42", "clock_control", "local_orphan",
     "setup_accuracy"] },
   { title: "Werte der Systemuhr", keys: ["reference", "system_offset", "uncertainty", "rms_offset", "frequency",
-    "skew", "root_delay", "root_dispersion", "leap", "update_interval", "ref_time"] },
+    "skew", "root_delay", "root_dispersion", "leap", "leap_source", "update_interval", "ref_time"] },
   { title: "Zeitquellen", keys: ["source_type", "hostname_vs_ip", "poll", "reach", "last_rx", "source_offset",
     "jitter", "interval", "samples", "score", "select_options", "server_reference"] },
   { title: "Warum eine Quelle (nicht) genutzt wird", keys: ["select_reason", "state_best", "state_combined",

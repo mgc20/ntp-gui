@@ -57,7 +57,7 @@ class MigrationTest(_Base):
         self.assertEqual(values["nts_server_key"], "/config/nts.key")
         self.assertEqual(values["web_title"], "bleibt")
         data = self.stored()
-        self.assertEqual(data["schema"], 2)
+        self.assertEqual(data["schema"], settings.SCHEMA_VERSION)
         self.assertNotIn("nts_server_cert", data["values"])
         self.assertEqual(data["auth"]["user"], "admin")
         notes = settings.migration_notes()
@@ -81,7 +81,7 @@ class MigrationTest(_Base):
     def test_valid_file_migrates_silently(self):
         self.write({"values": {"nts_server_cert": "/certs/live/x/fullchain.pem"}})
         self.assertEqual(settings.values()["nts_server_cert"], "/certs/live/x/fullchain.pem")
-        self.assertEqual(self.stored()["schema"], 2)
+        self.assertEqual(self.stored()["schema"], settings.SCHEMA_VERSION)
         self.assertEqual(settings.migration_notes(), [])
 
     def test_newer_schema_untouched(self):
@@ -153,6 +153,24 @@ class NewFieldsTest(_Base):
             self.assertTrue(settings.FIELDS[key]["help"], key)
         result = settings.save({"gps_autocal": "off", "clientmon_enable": False})
         self.assertFalse(result["restart"])
+
+
+class LeapMigrationTest(unittest.TestCase):
+    def test_right_utc_removed_with_note(self):
+        data, notes = settings.migrate_data({"schema": 2, "values": {"leapsectz": "right/UTC"}})
+        self.assertNotIn("leapsectz", data["values"])
+        self.assertEqual([n["id"] for n in notes], ["3-leapsectz"])
+        self.assertEqual(data["schema"], settings.SCHEMA_VERSION)
+
+    def test_custom_zone_kept(self):
+        data, notes = settings.migrate_data({"schema": 2, "values": {"leapsectz": "right/Europe/Berlin"}})
+        self.assertEqual(data["values"]["leapsectz"], "right/Europe/Berlin")
+        self.assertEqual(notes, [])
+
+    def test_leapseclist_path_checked(self):
+        self.assertRaises(settings.ValidationError, settings._as_leapseclist, "/etc/shadow")
+        self.assertRaises(settings.ValidationError, settings._as_leapseclist, "/config/../etc/x")
+        self.assertEqual(settings._as_leapseclist("/config/leap-seconds.list"), "/config/leap-seconds.list")
 
 
 if __name__ == "__main__":
