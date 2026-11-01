@@ -11,6 +11,11 @@
 # sind optional: Fallen sie aus, startet der Supervisor sie mit wachsender
 # Pause neu (5 s, 15 s, 60 s, dann alle 5 min) – NTP läuft derweil weiter.
 # Der Zustand jedes Dienstes steht in ${RUN_DIR}/services.json.
+#
+# Alle Ausgaben (Supervisor und Dienste) laufen zusätzlich durch logtee.py nach
+# ${RUN_DIR}/ntp-gui.log (Log-Seite, Diagnosepaket); `docker logs` zeigt weiter
+# alles. Wichtige Ereignisse (Neustarts, Neuladen, Zertifikat, Hotplug, Start)
+# hängt der Supervisor als JSON-Zeilen an ${RUN_DIR}/events.jsonl an.
 set -euo pipefail
 
 CHRONY_CONF="${CHRONY_CONF:-/etc/chrony/chrony.conf}"
@@ -40,6 +45,14 @@ NTS_WATCH=""            # Zertifikat + Schlüssel des NTS-Servers (von confgen)
 NTS_CERT_SIG=""         # Stand beim letzten (Neu-)Laden von chronyd
 NTS_CERT_PENDING=""     # erkannte Änderung, die noch auf Stabilität wartet
 NEXT_NTS_CERT=0
+
+LOGTEE_PID=""     # logtee.py (Prozess-Substitution), siehe start_logtee
+LOG_OUT_FD=""
+LOG_ERR_FD=""
+EVENTS_MAX=1048576  # events.jsonl ab 1 MB nach events.jsonl.1 verschieben
+# Ereignisse werden über diese Variable gemeldet: Die Unittests laden einzelne
+# Funktionen ohne emit_event – dort ist sie leer und der Aufruf ein ':'.
+EMIT_EVENT=emit_event
 
 log() { printf '[%s] %s\n' "$1" "${*:2}"; }
 now() { printf '%(%s)T' -1; }
@@ -90,9 +103,70 @@ json_str() {  # json_str <text> -> JSON-String samt Anführungszeichen
   local t="$1"
   t=${t//\\/\\\\}
   t=${t//\"/\\\"}
-  t=${t//$'\n'/ }
-  t=${t//$'\t'/ }
+  t=${t//[$'\x01'-$'\x1f'$'\x7f']/ }
   printf '"%s"' "$t"
+}
+
+# emit_event <kind> <level> <titel> [schlüssel=wert ...]
+# Hängt eine Zeile {"t","kind","level","title","data"} an ${RUN_DIR}/events.jsonl
+# an (liest das Dashboard über events.ingest_supervisor). Ganze Zahlen landen
+# als Zahl in data, alles andere als String. Schlägt nie fehl.
+emit_event() {
+  local kind="$1" level="$2" title="$3" pair key value data="" sep="" file size
+  shift 3 || return 0
+  for pair in "$@"; do
+    key="${pair%%=*}"
+    value="${pair#*=}"
+    [[ "$pair" == *=* && -n "$key" ]] || continue
+    if [[ "$value" =~ ^-?[0-9]{1,15}$ ]]; then
+      data+="${sep}$(json_str "$key"): ${value}"
+    else
+      data+="${sep}$(json_str "$key"): $(json_str "$value")"
+    fi
+    sep=", "
+  done
+  file="${RUN_DIR}/events.jsonl"
+  {
+    mkdir -p "$RUN_DIR"
+    size=$(stat -c %s "$file" 2>/dev/null || echo 0)
+    if (( size > EVENTS_MAX )); then mv -f "$file" "${file}.1"; fi
+    printf '{"t": %s, "kind": %s, "level": %s, "title": %s, "data": {%s}}\n' \
+      "$(now)" "$(json_str "$kind")" "$(json_str "$level")" "$(json_str "$title")" "$data" >> "$file"
+  } 2>/dev/null || true
+  return 0
+}
+
+# Ausgabe zusätzlich nach ${RUN_DIR}/ntp-gui.log (logtee.py, mit Rotation).
+# Stirbt der tee, übernimmt cat – der Supervisor darf nie an einer kaputten
+# Pipe (SIGPIPE) sterben. Die ursprünglichen Deskriptoren bleiben gesichert,
+# damit stop_logtee beim Beenden die letzten Zeilen noch ins Container-Log bringt.
+start_logtee() {
+  [[ "${NTPGUI_LOGTEE:-1}" == 1 && -f "${APP_DIR}/logtee.py" ]] || return 0
+  command -v python3 >/dev/null 2>&1 || return 0
+  mkdir -p "$RUN_DIR" 2>/dev/null || return 0
+  exec {LOG_OUT_FD}>&1 {LOG_ERR_FD}>&2
+  exec > >(python3 -u "${APP_DIR}/logtee.py" || exec cat) 2>&1
+  LOGTEE_PID=$!
+  # Ein 'wait' ohne Argument (shutdown) wartet auch auf die Prozess-Substitution,
+  # solange sie in $! steht – und der tee endet erst nach uns. $! neu belegen.
+  true & wait "$!" 2>/dev/null || true
+}
+
+# Beim Beenden: stdout/stderr zurück auf das Container-Log, damit der tee EOF
+# sieht, und kurz warten, bis er alles ausgegeben hat (sonst gehen mit dem Ende
+# von PID 1 die letzten Zeilen verloren).
+stop_logtee() {
+  local i st
+  [[ -n "$LOGTEE_PID" ]] || return 0
+  exec 1>&"$LOG_OUT_FD" 2>&"$LOG_ERR_FD"
+  for (( i = 0; i < 30; i++ )); do
+    st=""
+    read -r _ _ st _ < "/proc/${LOGTEE_PID}/stat" 2>/dev/null || break
+    [[ "$st" == Z ]] && break
+    sleep 0.1
+  done
+  LOGTEE_PID=""
+  return 0
 }
 
 # ${RUN_DIR}/services.json – je Dienst: state (running | restarting | failed |
@@ -216,6 +290,7 @@ start_gpsd() {
     log gps "WARNUNG: ${NTPGUI_GPS_DEVICE} fehlt – gpsd wartet, bis das Gerät wieder da ist."
     SVC_ENTRY[gpsd]=""
     set_state gpsd failed "Gerät ${NTPGUI_GPS_DEVICE} fehlt"
+    "${EMIT_EVENT:-:}" gps warn "GPS-Gerät ${NTPGUI_GPS_DEVICE} fehlt – gpsd wartet" device="$NTPGUI_GPS_DEVICE"
     case " $HOTPLUG_PATHS " in *" $NTPGUI_GPS_DEVICE "*) ;; *) HOTPLUG_PATHS="${HOTPLUG_PATHS:+$HOTPLUG_PATHS }$NTPGUI_GPS_DEVICE" ;; esac
     return 0
   fi
@@ -304,9 +379,11 @@ reload_services() {
     start_services
     write_status done "Neue Einstellungen aktiv"
     log main "Neustart abgeschlossen."
+    "${EMIT_EVENT:-:}" reload info "Neue Einstellungen aktiv – Zeitdienste neu gestartet" result=done
   else
     start_services
     write_status error "Konfiguration fehlerhaft – bisherige Einstellungen weiter aktiv"
+    "${EMIT_EVENT:-:}" reload warn "Konfiguration fehlerhaft – bisherige Einstellungen bleiben aktiv" result=error
   fi
 }
 
@@ -318,6 +395,7 @@ reload_chronyd() {
   write_status running "chronyd wird neu gestartet"
   if ! apply_config; then
     write_status error "Konfiguration fehlerhaft – chronyd läuft mit dem bisherigen Zertifikat weiter"
+    "${EMIT_EVENT:-:}" cert warn "Zertifikat erneuert, aber Konfiguration fehlerhaft – chronyd behält das alte" result=error
     return 0
   fi
   entry="${SVC_ENTRY[chronyd]:-}"
@@ -329,6 +407,7 @@ reload_chronyd() {
   start_chronyd
   write_status done "Zertifikat neu geladen"
   log main "chronyd neu gestartet."
+  "${EMIT_EVENT:-:}" cert info "NTS-Zertifikat erneuert – chronyd hat es neu geladen" result=done
 }
 
 shutdown() {
@@ -336,6 +415,11 @@ shutdown() {
   # auch mit restart=on-failure einen Neustart auslösen.
   local code="${1:-0}"
   log main "beende Dienste …"
+  if (( code == 0 )); then
+    "${EMIT_EVENT:-:}" service info "Container wird beendet" exit="$code"
+  else
+    "${EMIT_EVENT:-:}" service crit "Container wird wegen eines ausgefallenen Pflichtdienstes beendet" exit="$code"
+  fi
   stop_services
   [[ -n "$WEB_PID" ]] && kill "${WEB_PID%%=*}" 2>/dev/null || true
   wait 2>/dev/null || true
@@ -344,6 +428,7 @@ shutdown() {
   exit "$code"
 }
 trap 'shutdown 0' SIGTERM SIGINT
+trap 'stop_logtee' EXIT
 trap 'RELOAD_REQUESTED=1' SIGHUP
 
 # --- Watchdog-Bausteine -----------------------------------------------------------
@@ -374,6 +459,8 @@ schedule_restart() {  # schedule_restart <dienst>
   log main "Dienst '${name}' (PID ${entry%%=*}) wurde unerwartet beendet (Exit ${code}) –" \
            "Neustart in ${delay} s; NTP läuft weiter."
   set_state "$name" restarting "beendet mit Exit ${code}, neuer Versuch in ${delay} s"
+  "${EMIT_EVENT:-:}" service warn "Dienst ${name} unerwartet beendet (Exit ${code}) – Neustart in ${delay} s" \
+    service="$name" exit="$code" delay="$delay"
 }
 
 restart_service() {  # restart_service <dienst>
@@ -381,6 +468,10 @@ restart_service() {  # restart_service <dienst>
   SVC_RESTARTS[$name]=$(( ${SVC_RESTARTS[$name]:-0} + 1 ))
   log main "Starte '${name}' neu (Versuch ${SVC_RESTARTS[$name]})"
   "start_${name}"
+  if [[ "${SVC_STATE[$name]:-}" == running ]]; then
+    "${EMIT_EVENT:-:}" service info "Dienst ${name} läuft wieder (Versuch ${SVC_RESTARTS[$name]})" \
+      service="$name" attempt="${SVC_RESTARTS[$name]}"
+  fi
 }
 
 # Geräte, die beim Start fehlten, aufgetaucht? GPS-Empfänger ab- und wieder
@@ -390,6 +481,8 @@ check_hotplug() {
   for path in $HOTPLUG_PATHS; do
     if [[ -e "$path" ]]; then
       log main "Gerät ${path} ist jetzt vorhanden – Konfiguration wird neu geladen."
+      "${EMIT_EVENT:-:}" reload info "Gerät ${path} ist jetzt vorhanden – Konfiguration wird neu geladen" \
+        reason=hotplug device="$path"
       reload_services
       return 0
     fi
@@ -399,10 +492,14 @@ check_hotplug() {
     if [[ -z "$id" ]]; then
       if (( ! GPS_DEV_GONE )); then
         log gps "WARNUNG: ${NTPGUI_GPS_DEVICE} ist verschwunden (abgezogen?) – warte auf Rückkehr."
+        "${EMIT_EVENT:-:}" gps warn "GPS-Gerät ${NTPGUI_GPS_DEVICE} ist verschwunden (abgezogen?)" \
+          reason=hotplug device="$NTPGUI_GPS_DEVICE"
         GPS_DEV_GONE=1
       fi
     elif [[ "$id" != "$GPS_DEV_ID" ]]; then
       log gps "${NTPGUI_GPS_DEVICE} wurde neu angesteckt – Konfiguration wird neu geladen."
+      "${EMIT_EVENT:-:}" gps info "GPS-Gerät ${NTPGUI_GPS_DEVICE} wurde neu angesteckt" \
+        reason=hotplug device="$NTPGUI_GPS_DEVICE"
       reload_services
     fi
   fi
@@ -410,6 +507,7 @@ check_hotplug() {
 }
 
 # --- Vorbereitung ------------------------------------------------------------
+start_logtee
 mkdir -p /var/run/chrony /var/lib/chrony /var/log/chrony /etc/linuxptp "$RUN_DIR"
 echo "$$" > "${RUN_DIR}/supervisor.pid"
 write_status idle "bereit"
@@ -436,6 +534,7 @@ spawn web python3 "${APP_DIR}/server.py"
 WEB_PID="$SPAWNED"
 SVC_ENTRY[web]="$WEB_PID"
 set_state web running
+"$EMIT_EVENT" startup info "ntp-gui gestartet" version="${NTPGUI_VERSION:-}"
 
 # --- Watchdog ------------------------------------------------------------------
 # Statt 'wait -n': bash 5.2 übersieht damit Kinder, die vor dem Aufruf gestorben
@@ -449,6 +548,7 @@ while true; do
     entry="${SVC_ENTRY[$name]:-}"
     if ! service_alive "$entry"; then
       log main "Dienst '${name}' (PID ${entry%%=*}) wurde unerwartet beendet – Container wird gestoppt"
+      "$EMIT_EVENT" service crit "Pflichtdienst ${name} ausgefallen" service="$name"
       write_status error "Dienst ${name} ausgefallen"
       SVC_ENTRY[$name]=""
       set_state "$name" failed "unerwartet beendet"
