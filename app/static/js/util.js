@@ -125,3 +125,50 @@ export function storageGet(key, fallback) {
 export function storageSet(key, value) {
   try { window.localStorage.setItem(key, JSON.stringify(value)); } catch (error) { /* privat */ }
 }
+
+// --- Zwischenablage ----------------------------------------------------------
+// navigator.clipboard gibt es nur in einem „sicheren Kontext“ (https oder
+// localhost). Im LAN wird das Dashboard aber meist per http://<IP>:8080
+// geöffnet – dann bleibt nur der alte Weg über ein verstecktes Textfeld und
+// document.execCommand("copy"). Liefert true, wenn kopiert wurde; wirft nie.
+export async function copyText(text) {
+  const value = String(text ?? "");
+  if (navigator.clipboard && window.isSecureContext) {
+    try { await navigator.clipboard.writeText(value); return true; } catch (error) { /* weiter mit dem Fallback */ }
+  }
+  const area = document.createElement("textarea");
+  area.value = value;
+  area.setAttribute("readonly", "");
+  area.setAttribute("aria-hidden", "true");
+  area.style.cssText = "position:fixed;top:0;left:0;width:1px;height:1px;padding:0;border:0;opacity:0;";
+  const active = document.activeElement;
+  document.body.append(area);
+  let ok = false;
+  try {
+    area.focus({ preventScroll: true });
+    area.select();
+    area.setSelectionRange(0, value.length);
+    ok = document.execCommand("copy");
+  } catch (error) {
+    ok = false;
+  } finally {
+    area.remove();
+    if (active && typeof active.focus === "function") active.focus({ preventScroll: true });
+  }
+  return ok;
+}
+
+// Markiert den Inhalt eines Elements, damit nur noch Strg+C fehlt.
+export function selectContents(node) {
+  if (!node) return false;
+  try {
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(node);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    return true;
+  } catch (error) {
+    return false;
+  }
+}

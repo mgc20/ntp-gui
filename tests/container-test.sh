@@ -10,21 +10,25 @@
 # der Dienste, Neustart optionaler Dienste (gpsd/ptp4l/phc2sys) samt
 # services.json, Geräte-Hotplug, PTP-Grandmaster-Richtung, NTS-Server mit
 # eigenem Namen samt automatischem Neuladen nach Zertifikatswechsel und
-# sauberes Stoppen.
+# sauberes Stoppen. Ab 1.3: Log-Seite, Diagnosepaket ohne Standort-/Kennungsdaten,
+# Ereignisprotokoll, API-Schlüssel (read/admin), /api/v1, Übernahme des alten
+# Verlaufs (history.json.gz → SQLite) und passive Client-Messung im Bridge-Netz.
 set -uo pipefail
 
 IMAGE="${1:-ntp-gui:test}"
 PREFIX="ntpgui-it-$$"
 CFG_DIR="$(mktemp -d)"
 NTS_DIR="$(mktemp -d)"
+DIAG_DIR="$(mktemp -d)"
 PASS=0
 FAIL=0
 
 cleanup() {
   docker rm -f "${PREFIX}-a" "${PREFIX}-b" "${PREFIX}-c" "${PREFIX}-d" "${PREFIX}-e" "${PREFIX}-f" \
     "${PREFIX}-g" "${PREFIX}-h" "${PREFIX}-i" "${PREFIX}-j" >/dev/null 2>&1
-  docker volume rm "${PREFIX}-data" >/dev/null 2>&1
-  rm -rf "$CFG_DIR" "$NTS_DIR"
+  docker rm -f "${PREFIX}-k" >/dev/null 2>&1
+  docker volume rm "${PREFIX}-data" "${PREFIX}-hist" >/dev/null 2>&1
+  rm -rf "$CFG_DIR" "$NTS_DIR" "$DIAG_DIR"
 }
 trap cleanup EXIT
 
@@ -91,6 +95,94 @@ assert 'system' in d and 'sources' in d and 'gps' in d and 'ptp' in d, 'Felder f
 contains "Metrik ntpgui_up vorhanden" "$(curl -s http://127.0.0.1:18080/metrics)" "ntpgui_up 1"
 
 echo
+echo "1b) Log, Ereignisse, Diagnosepaket, Client-Messung (1.3)"
+LOGJSON=$(curl -s --max-time 10 'http://127.0.0.1:18080/api/logs?lines=500')
+if python3 -c "
+import json, sys
+d = json.loads(sys.argv[1])
+assert d['available'], 'Logdatei fehlt'
+texts = [l['text'] for l in d['lines']]
+assert any(t.startswith('[') and '] starte: ' in t for t in texts), 'keine Supervisor-Zeilen'
+assert any('chronyd' in t for t in texts), 'chronyd fehlt im Log'
+" "$LOGJSON" 2>/dev/null; then ok "/api/logs liefert Zeilen des Supervisors"; else bad "/api/logs ohne Supervisor-Zeilen"; fi
+contains "Log-Filter nach Text" "$(curl -s 'http://127.0.0.1:18080/api/logs?q=Dashboard&lines=5')" '"source": "web"'
+STARTUP=""
+for _ in $(seq 1 20); do
+  STARTUP=$(curl -s --max-time 5 'http://127.0.0.1:18080/api/events?kinds=startup' \
+    | python3 -c "import json,sys; print(sum(1 for e in json.load(sys.stdin)['events'] if e['source']=='supervisor'))" 2>/dev/null)
+  [[ "$STARTUP" =~ ^[1-9] ]] && break
+  sleep 1
+done
+if [[ "$STARTUP" =~ ^[1-9] ]]; then ok "Ereignisprotokoll enthält den Start (vom Supervisor)"; else bad "Start-Ereignis fehlt (${STARTUP:-keins})"; fi
+HDRS=$(curl -s --max-time 30 -D - -o "$DIAG_DIR/paket.tar.gz" 'http://127.0.0.1:18080/api/diagnostics/bundle?clients=1')
+contains "Diagnosepaket als Download" "$HDRS" 'attachment; filename="ntp-gui-diagnose-'
+if tar -tzf "$DIAG_DIR/paket.tar.gz" >"$DIAG_DIR/liste.txt" 2>/dev/null; then ok "Diagnosepaket ist ein gültiges tar.gz"; else bad "Diagnosepaket ist kein gültiges tar.gz"; fi
+contains "Diagnosepaket enthält MANIFEST.txt" "$(cat "$DIAG_DIR/liste.txt")" "/MANIFEST.txt"
+mkdir -p "$DIAG_DIR/x" && tar -xzf "$DIAG_DIR/paket.tar.gz" -C "$DIAG_DIR/x" 2>/dev/null
+CIP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "${PREFIX}-a")
+CMAC=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.MacAddress}}{{end}}' "${PREFIX}-a")
+CHOST=$(docker exec "${PREFIX}-a" hostname)
+LEAKS=$(python3 - "$DIAG_DIR/x" "$CIP" "$CMAC" "$CHOST" <<'PY'
+import ipaddress, os, re, sys
+root, ip, mac, host = sys.argv[1:5]
+found = []
+for dp, _, files in os.walk(root):
+    for name in files:
+        text = open(os.path.join(dp, name), encoding="utf-8", errors="replace").read()
+        for needle in (ip, mac, host):
+            if needle and needle.lower() in text.lower():
+                found.append(f"{name}: {needle}")
+        if re.search(r'"(lat|lon|alt|azimuth|elevation|az|el)"\s*:\s*-?\d', text):
+            found.append(f"{name}: Koordinaten/Satellitenwinkel")
+        for m in re.finditer(r"(?<![\w.:])(?:[0-9a-fA-F]{2}[:-]){5}[0-9a-fA-F]{2}(?![\w:])", text):
+            if int(m.group(0)[:2], 16) & 1 == 0 and m.group(0) not in ("00:00:00:00:00:00",):
+                found.append(f"{name}: MAC {m.group(0)}")
+        for m in re.finditer(r"(?<![\w.])(\d{1,3}(?:\.\d{1,3}){3})(?![\w.])", text):
+            try:
+                addr = ipaddress.ip_address(m.group(1))
+            except ValueError:
+                continue
+            if addr.is_global:
+                found.append(f"{name}: öffentliche IP {addr}")
+print("; ".join(found[:10]))
+PY
+)
+check "Diagnosepaket ohne Koordinaten, MAC, öffentliche/eigene IP, Hostname" "" "$LEAKS"
+PREVIEW=$(curl -s --max-time 30 'http://127.0.0.1:18080/api/diagnostics/preview')
+contains "Vorschau zeigt, was entfernt wurde" "$PREVIEW" '"removed"'
+CM=$(curl -s --max-time 10 http://127.0.0.1:18080/api/clients/offsets)
+if python3 -c "
+import json, sys
+d = json.loads(sys.argv[1])
+assert isinstance(d['available'], bool)
+assert d['available'] or (d.get('reason') or '').strip(), 'nicht verfügbar, aber ohne Begründung'
+if d['available']:
+    assert d['running'] and d['port'] == 10123, d
+" "$CM" 2>/dev/null; then ok "Client-Messung meldet Zustand im Bridge-Netz verständlich (available=$(python3 -c "import json,sys;print(json.loads(sys.argv[1])['available'])" "$CM" 2>/dev/null))"
+else bad "Client-Messung: unklare Antwort ($CM)"; fi
+
+echo
+echo "1c) Schutz vor DNS-Rebinding (ohne Passwort)"
+A=http://127.0.0.1:18080
+check "Fremder Host-Name: Dashboard 403"   403 "$(http -H 'Host: attacker.example' "$A/")"
+check "Fremder Host-Name: API 403"         403 "$(http -H 'Host: attacker.example:18080' "$A/api/status")"
+check ".fritz.box ist nicht automatisch lokal" 403 "$(http -H 'Host: pi.fritz.box' "$A/api/status")"
+check "healthz mit fremdem Host bleibt offen" 200 "$(http -H 'Host: attacker.example' "$A/healthz")"
+check "Container-IP als Host erlaubt"     200 "$(http -H "Host: $CIP:8080" "$A/api/status")"
+check "localhost als Host erlaubt"        200 "$(http -H 'Host: localhost:18080' "$A/api/status")"
+check "*.local als Host erlaubt"          200 "$(http -H 'Host: zeitserver.local' "$A/api/status")"
+contains "403 erklärt WEB_ALLOWED_HOSTS"  "$(curl -s -H 'Host: attacker.example' "$A/api/status")" "WEB_ALLOWED_HOSTS"
+# Ein überlanger Host-Name landet (bereinigt) im Log – der Export darf daran nicht scheitern.
+LONGHOST="$(printf 'a%.0s' $(seq 1 64)).attacker.de"
+check "Überlanger Host-Name abgewiesen"   403 "$(http -H "Host: $LONGHOST" "$A/api/status")"
+for _ in $(seq 1 10); do
+  grep -qF "<ungültig>" <<<"$(docker exec "${PREFIX}-a" tail -n 50 /run/ntp-gui/ntp-gui.log 2>/dev/null)" && break
+  sleep 1
+done
+contains "Log nennt den abgewiesenen Namen nur bereinigt" "$(docker exec "${PREFIX}-a" tail -n 50 /run/ntp-gui/ntp-gui.log 2>/dev/null)" "<ungültig>"
+check "Diagnose-Vorschau trotz fremdem Log-Eintrag" 200 "$(http --max-time 30 "$A/api/diagnostics/preview")"
+
+echo
 echo "2) NTP-Dienst im Netz"
 IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "${PREFIX}-a")
 if command -v chronyd >/dev/null 2>&1; then
@@ -119,13 +211,46 @@ check "Ohne Login abgewiesen"   401 "$(http http://127.0.0.1:18081/api/status)"
 check "Falsches Passwort abgewiesen" 401 "$(http -u admin:falsch http://127.0.0.1:18081/api/status)"
 check "Mit Login erlaubt"       200 "$(http -u 'admin:S3hr geheim' http://127.0.0.1:18081/api/status)"
 check "healthz bleibt offen"    200 "$(http http://127.0.0.1:18081/healthz)"
+check "Mit Login gilt jeder Host-Name" 200 "$(http -u 'admin:S3hr geheim' -H 'Host: attacker.example' http://127.0.0.1:18081/api/status)"
+check "Fremder Host ohne Login: 401" 401 "$(http -H 'Host: attacker.example' http://127.0.0.1:18081/api/status)"
+
+echo
+echo "3b) API-Schlüssel und /api/v1"
+B=http://127.0.0.1:18081
+LOGIN=(-u 'admin:S3hr geheim' -H 'Content-Type: application/json' -H 'X-NTP-GUI: 1')
+token_of() { python3 -c "import json,sys; print(json.load(sys.stdin).get('token',''))" 2>/dev/null; }
+READ_KEY=$(curl -s --max-time 15 "${LOGIN[@]}" -d '{"name":"Monitoring","scope":"read"}' "$B/api/apikeys" | token_of)
+ADMIN_KEY=$(curl -s --max-time 15 "${LOGIN[@]}" -d '{"name":"Automatisierung","scope":"admin"}' "$B/api/apikeys" | token_of)
+if [[ "$READ_KEY" == ntpg_* && "$ADMIN_KEY" == ntpg_* ]]; then ok "Schlüssel werden angelegt"; else bad "Schlüssel nicht angelegt"; fi
+JSON=(-H 'Content-Type: application/json')
+check "read-Schlüssel: GET erlaubt"            200 "$(http -H "Authorization: Bearer $READ_KEY" "$B/api/v1/status")"
+check "read-Schlüssel: /metrics erlaubt"       200 "$(http -H "Authorization: Bearer $READ_KEY" "$B/metrics")"
+check "read-Schlüssel: POST abgewiesen"        403 "$(http -X POST -H "Authorization: Bearer $READ_KEY" "${JSON[@]}" -d '{"values":{"web_title":"x"}}' "$B/api/v1/settings")"
+check "admin-Schlüssel: POST erlaubt (ohne X-NTP-GUI)" 200 "$(http -X POST -H "Authorization: Bearer $ADMIN_KEY" "${JSON[@]}" -d '{"values":{"web_refresh_seconds":7}}' "$B/api/v1/settings")"
+check "admin-Schlüssel: keine Schlüssel ausstellen" 403 "$(http -X POST -H "Authorization: Bearer $ADMIN_KEY" "${JSON[@]}" -d '{"name":"x","scope":"admin"}' "$B/api/apikeys")"
+check "admin-Schlüssel: Passwort nicht änderbar" 403 "$(http -X POST -H "Authorization: Bearer $ADMIN_KEY" "${JSON[@]}" -d '{"clear":true}' "$B/api/auth")"
+check "Falscher Schlüssel abgewiesen"         401 "$(http -H 'Authorization: Bearer ntpg_AAAAAAAAbbbbbbbbbbbbbbbbbbbbbbbb' "$B/api/v1/status")"
+KEY_ID=${READ_KEY:5:8}
+check "Schlüssel widerrufen" 200 "$(http -X POST "${LOGIN[@]}" -d "{\"id\":\"$KEY_ID\"}" "$B/api/apikeys/revoke")"
+check "Widerrufener Schlüssel abgewiesen"     401 "$(http -H "Authorization: Bearer $READ_KEY" "$B/api/v1/status")"
+SAME=$(python3 -c "
+import json, sys
+a, b = json.loads(sys.argv[1]), json.loads(sys.argv[2])
+print(sorted(a) == sorted(b))" "$(curl -s -u 'admin:S3hr geheim' "$B/api/status")" "$(curl -s -H "Authorization: Bearer $ADMIN_KEY" "$B/api/v1/status")" 2>/dev/null)
+check "/api/v1/status hat dieselben Schlüssel wie /api/status" True "$SAME"
+contains "GET /api/v1 beschreibt die Endpunkte" "$(curl -s -u 'admin:S3hr geheim' "$B/api/v1")" '"path": "/api/v1/status"'
+contains "Instanz-Kennung abrufbar" "$(curl -s -H "Authorization: Bearer $ADMIN_KEY" "$B/api/v1/instance")" '"instance_id"'
 
 echo
 echo "4) GPS und PTP aktiviert, aber keine Hardware vorhanden"
 docker run -d --name "${PREFIX}-c" -p 18082:8080 \
   -e GPS_ENABLE=true -e GPS_DEVICE=/dev/ttyACM0 -e GPS_WAIT_SECONDS=2 \
-  -e PTP_ENABLE=true -e NTP_PORT=10125 -e NTP_POOLS="" "$IMAGE" >/dev/null
+  -e PTP_ENABLE=true -e NTP_PORT=10125 -e NTP_POOLS="" \
+  -e WEB_ALLOWED_HOSTS="zeit.example.org, *.fritz.box" "$IMAGE" >/dev/null
 wait_for_health http://127.0.0.1:18082/healthz 90 || true
+check "WEB_ALLOWED_HOSTS: eingetragener Name erlaubt" 200 "$(http -H 'Host: zeit.example.org' http://127.0.0.1:18082/api/status)"
+check "WEB_ALLOWED_HOSTS: *.fritz.box erlaubt" 200 "$(http -H 'Host: pi.fritz.box' http://127.0.0.1:18082/api/status)"
+check "WEB_ALLOWED_HOSTS: anderer Name weiter 403" 403 "$(http -H 'Host: attacker.example' http://127.0.0.1:18082/api/status)"
 LOGS=$(docker logs "${PREFIX}-c" 2>&1)
 contains "Warnung wegen fehlendem GPS-Gerät" "$LOGS" "/dev/ttyACM0 nicht gefunden"
 contains "Warnung wegen fehlendem PTP-Interface" "$LOGS" "kein Interface gewählt"
@@ -212,6 +337,14 @@ if (( RESTARTED )); then ok "gpsd wird neu gestartet"; else bad "gpsd wurde nich
 check "Container läuft nach gpsd-Ausfall weiter" running "$(docker inspect -f '{{.State.Status}}' "${PREFIX}-g")"
 if wait_svc "${PREFIX}-g" gpsd state running 75; then ok "gpsd läuft wieder"; else bad "gpsd läuft nicht wieder (state: $(svc "${PREFIX}-g" gpsd state))"; fi
 contains "Watchdog meldet Neustart statt Stopp" "$(docker logs "${PREFIX}-g" 2>&1)" "NTP läuft weiter"
+RESTART_EVENT=""
+for _ in $(seq 1 20); do
+  RESTART_EVENT=$(curl -s --max-time 5 'http://127.0.0.1:18085/api/events?kinds=service' \
+    | python3 -c "import json,sys; print(sum(1 for e in json.load(sys.stdin)['events'] if 'gpsd' in e['title'] and 'beendet' in e['title']))" 2>/dev/null)
+  [[ "$RESTART_EVENT" =~ ^[1-9] ]] && break
+  sleep 1
+done
+if [[ "$RESTART_EVENT" =~ ^[1-9] ]]; then ok "Ereignisprotokoll enthält den Neustart von gpsd"; else bad "Neustart-Ereignis fehlt (${RESTART_EVENT:-keins})"; fi
 check "chronyd unberührt" 0 "$(svc "${PREFIX}-g" chronyd restarts)"
 docker rm -f "${PREFIX}-g" >/dev/null 2>&1
 
@@ -330,6 +463,28 @@ else
   echo "  – openssl fehlt auf dem Host, Prüfung übersprungen"
 fi
 docker rm -f "${PREFIX}-j" >/dev/null 2>&1
+
+echo
+echo "12b) Verlauf aus 1.2 (history.json.gz) wird übernommen"
+docker volume create "${PREFIX}-hist" >/dev/null
+docker run --rm -v "${PREFIX}-hist:/var/lib/chrony" --entrypoint python3 "$IMAGE" -c "
+import gzip, json, os, time
+os.makedirs('/var/lib/chrony/ntp-gui', exist_ok=True)
+now = int(time.time())
+samples = [{'t': now - 10 * (300 - i), 'offset': 1e-5 * (i % 7), 'stratum': 2, 'sources': {}} for i in range(300)]
+with gzip.open('/var/lib/chrony/ntp-gui/history.json.gz', 'wt') as h:
+    json.dump(samples, h)
+" >/dev/null 2>&1
+docker run -d --name "${PREFIX}-k" -p 18090:8080 -v "${PREFIX}-hist:/var/lib/chrony" \
+  -e NTP_PORT=10134 -e NTP_POOLS="" -e NTP_SERVERS="" "$IMAGE" >/dev/null
+wait_for_health http://127.0.0.1:18090/healthz 90 || true
+COUNT=$(curl -s --max-time 10 'http://127.0.0.1:18090/api/history?range=0&points=3000' \
+  | python3 -c "import json,sys; print(len(json.load(sys.stdin)['samples']))" 2>/dev/null)
+if [[ "$COUNT" =~ ^[0-9]+$ ]] && (( COUNT >= 300 )); then ok "Alter Verlauf ist da ($COUNT Punkte)"; else bad "Alter Verlauf fehlt (${COUNT:-?} Punkte)"; fi
+FILES=$(docker exec "${PREFIX}-k" ls /var/lib/chrony/ntp-gui)
+contains "Alte Datei als .migrated aufbewahrt" "$FILES" "history.json.gz.migrated"
+contains "SQLite-Datenbank angelegt" "$FILES" "ntp-gui.db"
+docker rm -f "${PREFIX}-k" >/dev/null 2>&1
 
 echo
 echo "13) Sauberes Stoppen"

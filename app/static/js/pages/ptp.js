@@ -1,5 +1,5 @@
 import { el, fmtNs, fmtNumber, isNum, rich } from "../util.js";
-import { card, tile, kv, info, badge, emptyNote, toast } from "../ui.js";
+import { card, tile, kv, info, badge, emptyNote, copyButton } from "../ui.js";
 import { lineChart } from "../charts.js";
 import { hardwareData, matrixList } from "./hardware.js";
 
@@ -92,12 +92,6 @@ volumes:
 function keepOpen(ctx, id) {
   return { class: "more", open: ctx.uiState[id] ? true : null,
     ontoggle: (event) => { ctx.uiState[id] = event.currentTarget.open; } };
-}
-
-function copyButton(code) {
-  return el("button", { type: "button", class: "copy", text: "Kopieren", onclick: async () => {
-    try { await navigator.clipboard.writeText(code); toast("Kopiert"); } catch (error) { toast("Kopieren nicht möglich – bitte markieren", "warn"); }
-  } });
 }
 
 export function render(ctx) {

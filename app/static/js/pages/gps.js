@@ -77,6 +77,117 @@ function disabledView(ctx) {
   ];
 }
 
+// --- Automatische Kalibrierung (GET /api/gps/autocal, POST /api/gps/autocal/rollback) ---
+const AUTOCAL_TONE = { off: "muted", suggest: "info", auto: "good" };
+const AUTOCAL_ACTION = { none: ["keine Änderung", "muted"], suggest: ["Vorschlag", "warn"], apply: ["wird geändert", "good"] };
+
+function fmtWhen(unix) {
+  if (!isNum(unix)) return "–";
+  return new Date(unix * 1000).toLocaleString("de-DE", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
+// Nach einer Offset-Änderung wartet die Messung erst die Einschwingzeit ab – der
+// Zeitpunkt liegt dann noch in der Zukunft. Maßgeblich ist die Uhr des Servers.
+function measuringLabel(ctx, since) {
+  const now = isNum(ctx.status?.system?.time) ? ctx.status.system.time : Date.now() / 1000;
+  return isNum(since) && since > now ? "Messung zählt ab" : "Messung zählt seit";
+}
+
+function fmtMs(value, signed = false) {
+  return isNum(value) ? `${signed && value > 0 ? "+" : ""}${fmtNumber(value, 1)} ms` : "–";
+}
+
+function autocalReference(decision) {
+  const ref = decision?.reference;
+  if (!ref || !isNum(ref.current_network)) return "–";
+  const inWindow = isNum(ref.window_median) ? ` · im Messzeitraum im Mittel ${fmtNumber(ref.window_median, 1)}` : "";
+  return `${fmtNumber(ref.current_network)} genutzt, davon ${fmtNumber(ref.current_nts || 0)} mit NTS${inWindow}`;
+}
+
+async function rollbackAutocal(ctx, button, change) {
+  const text = `Offset von ${change.new_offset} s auf ${change.old_offset} s zurücksetzen? chrony startet dafür kurz neu.`;
+  if (!window.confirm(text)) return;
+  button.disabled = true;
+  try {
+    const result = await apiPost("/api/gps/autocal/rollback", { steps: 1 });
+    toast(result.reload_triggered ? `Zurückgenommen – Offset ${result.restored_offset} s, Zeitdienste starten neu`
+      : `Zurückgenommen – Offset ${result.restored_offset} s`);
+    ctx.watchReload();
+    ctx.invalidate("autocal");
+    ctx.invalidate("calibration");
+    ctx.refresh();
+  } catch (error) {
+    toast(error.message, "crit");
+    button.disabled = false;
+  }
+}
+
+function autocalChanges(ctx, auto) {
+  const changes = auto.changes || [];
+  if (!changes.length) return emptyNote("Bisher keine automatischen Änderungen.");
+  const rollback = auto.rollback || {};
+  return el("table", { class: "mini-table" },
+    el("thead", {}, el("tr", {},
+      el("th", { text: "Zeit" }),
+      el("th", { text: "Art" }),
+      el("th", {}, "Offset ", info("gps_offset", "Offset")),
+      el("th", {}, "Grund ", info("autocal_changes", "Änderungen")),
+      el("th", {}, info("autocal_rollback", "Rückgängig")))),
+    el("tbody", {}, changes.map((change) => {
+      let action = null;
+      if (change.kind === "auto" && change.rolled_back) {
+        action = badge("zurückgenommen", "muted", `am ${fmtWhen(change.rolled_back)}`);
+      } else if (change.kind === "auto" && rollback.possible && rollback.change_id === change.id) {
+        const button = el("button", { type: "button", class: "button", text: "Rückgängig",
+          disabled: ctx.readonly || auto.readonly ? true : null,
+          title: `Offset wieder auf ${change.old_offset} s setzen` });
+        button.addEventListener("click", () => rollbackAutocal(ctx, button, change));
+        action = button;
+      } else if (change.kind === "auto" && rollback.change_id === change.id && rollback.reason) {
+        action = badge("nicht möglich", "warn", rollback.reason);
+      }
+      return el("tr", {},
+        el("td", { text: fmtWhen(change.t) }),
+        el("td", { text: change.kind === "rollback" ? "Rücknahme" : "automatisch" }),
+        el("td", { text: `${change.old_offset} s → ${change.new_offset} s` }),
+        el("td", { text: change.reason || "–" }),
+        el("td", {}, action));
+    })));
+}
+
+function autocalSection(ctx) {
+  const auto = ctx.data("autocal", "/api/gps/autocal", 60);
+  const head = el("h3", { class: "mini-head" }, "Automatische Kalibrierung ", info("autocal_mode", "Automatische Kalibrierung"));
+  if (!auto) return el("div", { class: "autocal" }, head, emptyNote("Wird geladen …"));
+  const decision = auto.decision || {};
+  const [actionLabel, actionTone] = AUTOCAL_ACTION[decision.action] || AUTOCAL_ACTION.none;
+  const settingsLink = el("a", { href: "#/einstellungen?s=gps", text: "Modus in den Einstellungen ändern" });
+  const parts = [
+    head,
+    el("div", { class: "cal-status", "data-tone": AUTOCAL_TONE[auto.mode] || "muted" },
+      badge(`Modus: ${auto.mode_label || auto.mode}`, AUTOCAL_TONE[auto.mode] || "muted"),
+      el("span", { text: auto.mode_text || "" })),
+    el("p", {}, settingsLink),
+  ];
+  if (auto.mode !== "off") {
+    parts.push(kv([
+      ["Entscheidung", el("span", {}, badge(actionLabel, actionTone), " ", decision.reason || "–"), "autocal_decision"],
+      isNum(decision.bias_ms) ? ["Gemessene Abweichung", `${fmtMs(decision.bias_ms, true)} (Streuung ± ${fmtMs(decision.spread_ms)})`, "autocal_bias"] : null,
+      isNum(decision.threshold_ms) ? ["Schwelle", fmtMs(decision.threshold_ms), "autocal_threshold"] : null,
+      decision.reference ? ["Vergleichsquellen", autocalReference(decision), "autocal_reference"] : null,
+      [measuringLabel(ctx, decision.measuring_since), fmtWhen(decision.measuring_since), "autocal_window"],
+      auto.mode === "auto" ? ["Nächste mögliche Änderung", fmtWhen(auto.next_change_at), "autocal_next"] : null,
+      auto.mode === "auto" ? ["Größter Schritt", fmtMs(auto.max_step_ms), "autocal_step"] : null,
+    ]));
+    if (decision.action === "suggest" && isNum(decision.new_offset)) {
+      parts.push(emptyNote(`Vorschlag: Offset ${decision.new_offset} s, Delay ${decision.new_delay} s – übernimm ihn oben mit „Vorschlag übernehmen“, wenn der Messzeitraum passt.`));
+    }
+  }
+  parts.push(el("h3", { class: "mini-head" }, "Letzte automatische Änderungen ", info("autocal_changes", "Änderungen")));
+  parts.push(autocalChanges(ctx, auto));
+  return el("div", { class: "autocal" }, parts);
+}
+
 function calibrationCard(ctx, gpsSource) {
   const cfg = ctx.status.config || {};
   const windowSeconds = ctx.uiState.calWindow ?? 0;
@@ -92,6 +203,7 @@ function calibrationCard(ctx, gpsSource) {
 
   if (!cal) {
     body.push(emptyNote("Messung wird geladen …"));
+    body.push(autocalSection(ctx));
     return card("GPS kalibrieren", { help: "gps_offset", id: "kalibrierung" }, body);
   }
   const tone = { ready: "good", calibrated: "good", preliminary: "warn", insufficient: "muted" }[cal.status] || "muted";
@@ -153,6 +265,7 @@ function calibrationCard(ctx, gpsSource) {
       + `${cfg.gps_delay} s nimmt chrony an, die GPS-Zeit könne bis zu ${fmtSeconds(cfg.gps_delay / 2)} daneben liegen – die Netzwerkquellen sind viel genauer. `
       + "Der vorgeschlagene kleinere Delay macht das GPS konkurrenzfähig.")));
   }
+  body.push(autocalSection(ctx));
   return card("GPS kalibrieren", { help: "gps_offset", id: "kalibrierung" }, body);
 }
 

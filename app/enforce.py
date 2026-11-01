@@ -1,0 +1,956 @@
+"""Zeitserver erzwingen: Namensliste, Anleitungen (Snippets) und Prüfung.
+
+Viele Geräte ignorieren DHCP Option 42 und fragen fest eingebaute Namen
+(time.windows.com, time.apple.com, pool.ntp.org …). Zwei Wege bringen sie
+trotzdem zu ntp-gui:
+
+  * DNS-Umschreibung: Der DNS-Server im LAN (AdGuard Home, Pi-hole, dnsmasq,
+    Unbound) beantwortet diese Namen mit der Adresse von ntp-gui.
+  * Firewall-Umleitung (DNAT): Der Router leitet jedes NTP-Paket (UDP 123),
+    das ins Internet will, auf ntp-gui um – auch bei fest eingetragenen IPs.
+
+Dieses Modul ist bewusst ohne Seiteneffekte beim Import. Die Snippet-
+Generatoren sind reine Funktionen (Server-IP + Namen → Text). check() schickt
+nur auf ausdrücklichen Klick ein paar NTP-Anfragen nach außen (ausgehend, kein
+Upload von Daten) und ist auf eine Prüfung je 30 s begrenzt.
+
+Namen in KNOWN_TIME_HOSTS sind geprüft (Herstellerdoku bzw. bekannte
+Standardwerte und tatsächlich auflösbar). Recherche-Stand 2026-11:
+  * Samsung- und LG-Fernseher holen die Zeit per HTTP(S) von Herstellerservern
+    (z. B. time.samsungcloudsolution.com, lgtvsdp.com) statt per NTP – eine
+    Umschreibung auf einen NTP-Server würde dort nur die Zeit kaputtmachen.
+    Deshalb stehen sie in NOT_NTP, nicht in der Liste.
+  * FRITZ!Box: Werkseinstellung ist 2.europe.pool.ntp.org (ältere FRITZ!OS:
+    0.europe.pool.ntp.org) – beides über *.pool.ntp.org abgedeckt. „ntp.fritz.box“
+    gibt es nicht; „fritz.box“ ist die Box selbst und darf nie umgeschrieben werden.
+  * Sonos: [0-3].sonostime.pool.ntp.org (Community-Mitschnitte, Hersteller-Zone im Pool).
+  * Synology DSM, NVIDIA Shield & Co. nutzen Standardnamen (pool.ntp.org,
+    time.google.com, time.android.com), die bereits enthalten sind.
+"""
+
+from __future__ import annotations
+
+import ipaddress
+import os
+import re
+import socket
+import struct
+import threading
+import time
+from typing import Any, Callable
+
+IP_PLACEHOLDER = "<IP-des-Servers>"
+NTP_EPOCH_OFFSET = 2208988800  # 1900-01-01 → 1970-01-01
+
+_HOST_RE = re.compile(r"^(?=.{1,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,62}$")
+
+
+def _n(prefix: str, suffix: str, count: int = 4) -> list[str]:
+    """_n("", "debian.pool.ntp.org") → 0.debian… bis 3.debian…"""
+    return [f"{prefix}{i}.{suffix}" for i in range(count)]
+
+
+# (Kennung, Anzeige, Namen, Hinweis)
+VENDORS: list[tuple[str, str, list[str], str]] = [
+    ("windows", "Windows / Xbox", ["time.windows.com"], "Standard von Windows (w32time) und Xbox."),
+    ("apple", "Apple (macOS, iOS, tvOS, HomePod)",
+     ["time.apple.com", "time.euro.apple.com", "time.asia.apple.com", "time-ios.apple.com",
+      "time-macos.apple.com"], "Je nach Gerät und Region einer dieser Namen."),
+    ("google", "Google (Android, ChromeOS, Nest)",
+     ["time.google.com", "time1.google.com", "time2.google.com", "time3.google.com", "time4.google.com",
+      "time.android.com"],
+     "Android fragt time.android.com; Google verschmiert Schaltsekunden („leap smear“) – "
+     "auch deshalb lohnt es sich, diese Geräte auf deinen Server zu holen."),
+    ("amazon", "Amazon (Echo, Fire TV, Kindle, AWS)",
+     ["time.aws.com", "time.amazon.com"] + _n("", "amazon.pool.ntp.org"),
+     "Echo- und Fire-Geräte nutzen die Amazon-Zone im NTP-Pool."),
+    ("ubuntu", "Ubuntu", ["ntp.ubuntu.com"] + _n("", "ubuntu.pool.ntp.org"),
+     "systemd-timesyncd bzw. chrony unter Ubuntu."),
+    ("debian", "Debian, Raspberry Pi OS", _n("", "debian.pool.ntp.org"), ""),
+    ("fedora", "Fedora, CentOS, RHEL",
+     _n("", "fedora.pool.ntp.org") + _n("", "centos.pool.ntp.org") + _n("", "rhel.pool.ntp.org"), ""),
+    ("other-linux", "Arch, openSUSE, Gentoo, NixOS",
+     _n("", "arch.pool.ntp.org") + _n("", "opensuse.pool.ntp.org") + _n("", "gentoo.pool.ntp.org")
+     + _n("", "nixos.pool.ntp.org"), ""),
+    ("openwrt", "OpenWrt, pfSense, OPNsense",
+     _n("", "openwrt.pool.ntp.org") + _n("", "pfsense.pool.ntp.org") + _n("", "opnsense.pool.ntp.org"),
+     "Router und Firewalls – nur relevant, wenn sie nicht selbst die Umleitung machen."),
+    ("ubiquiti", "Ubiquiti (UniFi, EdgeRouter)", _n("", "ubnt.pool.ntp.org"), ""),
+    ("sonos", "Sonos", _n("", "sonostime.pool.ntp.org"),
+     "Aus Mitschnitten der Community; Sonos dokumentiert die Namen nicht offiziell."),
+    ("fritzbox", "FRITZ!Box (als Client)", ["2.europe.pool.ntp.org", "0.europe.pool.ntp.org"],
+     "Werkseinstellung der FRITZ!Box; ältere FRITZ!OS-Versionen nutzen 0.europe.pool.ntp.org."),
+    ("pool", "NTP-Pool (viele IoT-Geräte, Linux, Router)",
+     ["pool.ntp.org"] + _n("", "pool.ntp.org") + ["de.pool.ntp.org"] + _n("", "de.pool.ntp.org")
+     + ["europe.pool.ntp.org"] + _n("", "europe.pool.ntp.org") + _n("", "android.pool.ntp.org"),
+     "Standard sehr vieler Geräte (ESP-Firmware, Kameras, NAS wie Synology, Linux)."),
+    ("vmware", "VMware", _n("", "vmware.pool.ntp.org"), ""),
+    ("nist", "NIST (USA)", ["time.nist.gov"], "In vielen Geräten aus den USA fest eingetragen."),
+]
+
+KNOWN_TIME_HOSTS: list[dict] = []
+_seen: set[str] = set()
+for _vid, _label, _hosts, _note in VENDORS:
+    for _host in _hosts:
+        if _host not in _seen:
+            _seen.add(_host)
+            KNOWN_TIME_HOSTS.append({"host": _host, "vendor": _vid, "label": _label})
+del _seen
+
+NTS_REASON = ("NTS-Server: Der Client prüft per TLS-Zertifikat, dass er wirklich mit diesem Server spricht. "
+              "Eine Umschreibung auf ntp-gui scheitert an dieser Prüfung – das Gerät hätte dann gar keine "
+              "Zeit mehr. Wer NTS nutzt, hat sich bewusst für einen bestimmten Server entschieden.")
+
+NEVER_REWRITE: dict[str, str] = {
+    "time.cloudflare.com": NTS_REASON + " Cloudflare beantwortet unter diesem Namen außerdem HTTPS.",
+    "nts.netnod.se": NTS_REASON,
+    "sth1.nts.netnod.se": NTS_REASON,
+    "sth2.nts.netnod.se": NTS_REASON,
+    "ptbtime1.ptb.de": NTS_REASON + " (PTB, Braunschweig – die gesetzliche Zeit in Deutschland)",
+    "ptbtime2.ptb.de": NTS_REASON + " (PTB)",
+    "ptbtime3.ptb.de": NTS_REASON + " (PTB)",
+    "ptbtime4.ptb.de": NTS_REASON + " (PTB)",
+    "nts.time.nl": NTS_REASON,
+    "ntp.zeitgitter.net": NTS_REASON,
+    "fritz.box": "Das ist die FRITZ!Box selbst (Weboberfläche, DNS, Telefonie). Eine Umschreibung legt "
+                 "die Box lahm. Zeigen deine Geräte auf fritz.box, stelle stattdessen die FRITZ!Box auf "
+                 "ntp-gui als Zeitquelle um.",
+}
+
+# Geräte, die ihre Zeit nicht per NTP holen – Umschreiben hilft nicht, sondern schadet.
+NOT_NTP: list[dict] = [
+    {"label": "Samsung-Fernseher (Tizen)",
+     "text": "holen die Uhrzeit per HTTPS von time.samsungcloudsolution.com. Das ist kein NTP – eine "
+             "DNS-Umschreibung auf ntp-gui würde die Uhr des Fernsehers nicht stellen, sondern die "
+             "Abfrage scheitern lassen. Bei Samsung-Signage-Displays lässt sich NTP im Menü einstellen."},
+    {"label": "LG-Fernseher (webOS)",
+     "text": "beziehen die Zeit über einen Hersteller-Dienst (lgtvsdp.com) per HTTP und ignorieren den "
+             "NTP-Server aus DHCP. Auch hier hilft keine Umschreibung."},
+]
+
+
+def is_never_rewrite(host: str) -> str | None:
+    """Grund, warum `host` nie umgeschrieben werden darf – oder None."""
+    host = str(host or "").strip().rstrip(".").lower()
+    if host in NEVER_REWRITE:
+        return NEVER_REWRITE[host]
+    if host.startswith("nts.") or ".nts." in host:
+        return NTS_REASON
+    if host.endswith(".fritz.box"):
+        return NEVER_REWRITE["fritz.box"]
+    # Eine Zone, unter der ein geschützter Name liegt (z. B. „cloudflare.com“), würde ihn mitnehmen.
+    for protected in NEVER_REWRITE:
+        if protected.endswith("." + host):
+            return f"Darunter liegt {protected}. " + NEVER_REWRITE[protected]
+    return None
+
+
+def merged_hostnames(extra: list[str] | None = None) -> tuple[list[dict], list[dict]]:
+    """Bekannte Namen + eigene Namen aus den Einstellungen.
+
+    Rückgabe: (Namen [{host, vendor, label}], übersprungen [{host, reason}]).
+    """
+    hosts = [dict(item) for item in KNOWN_TIME_HOSTS]
+    known = {item["host"] for item in hosts}
+    skipped = []
+    for raw in extra or []:
+        host = str(raw or "").strip().rstrip(".").lower()
+        if not host or host in known:
+            continue
+        if not _HOST_RE.match(host):
+            skipped.append({"host": host[:80], "reason": "Kein gültiger Hostname."})
+            continue
+        reason = is_never_rewrite(host)
+        if reason:
+            skipped.append({"host": host, "reason": reason})
+            continue
+        known.add(host)
+        hosts.append({"host": host, "vendor": "custom", "label": "Eigene Namen (Einstellungen)"})
+    return hosts, skipped
+
+
+def collapse_zones(hosts: list[str]) -> list[str]:
+    """Entfernt Namen, deren übergeordnete Zone schon in der Liste steht.
+
+    Für Systeme, die Subdomains mit umschreiben (dnsmasq address=/…/, AdGuard ||…^,
+    Unbound redirect): pool.ntp.org deckt 0.pool.ntp.org, de.pool.ntp.org … ab.
+    Eine Zone wird nur genutzt, wenn darunter kein geschützter Name liegt.
+    """
+    names = sorted({h.lower() for h in hosts}, key=lambda h: (h.count("."), h))
+    zones: list[str] = []
+    for host in names:
+        if any(host.endswith("." + zone) for zone in zones):
+            continue
+        zones.append(host)
+    return sorted(zones, key=_sort_key)
+
+
+def _sort_key(host: str) -> tuple:
+    return tuple(reversed(host.split(".")))
+
+
+# ---------------------------------------------------------------------------
+# Eingaben prüfen
+# ---------------------------------------------------------------------------
+
+def clean_server_ip(value: Any) -> str | None:
+    """Gültige Unicast-Adresse, unter der Geräte im LAN ntp-gui erreichen – sonst None.
+
+    Nie eine Adresse erfinden: Loopback, 0.0.0.0, Multicast und das Docker-
+    Standardnetz (172.17.0.0/16) sind von anderen Geräten aus nicht erreichbar.
+    """
+    text = str(value or "").strip().strip("[]")
+    if not text or len(text) > 64:
+        return None
+    try:
+        addr = ipaddress.ip_address(text)
+    except ValueError:
+        return None
+    if addr.is_loopback or addr.is_unspecified or addr.is_multicast or addr.is_reserved:
+        return None
+    if addr.version == 4 and addr in ipaddress.ip_network("172.17.0.0/16"):
+        return None
+    return str(addr)
+
+
+def _port(value: Any) -> int:
+    try:
+        port = int(value)
+    except (TypeError, ValueError):
+        return 123
+    return port if 1 <= port <= 65535 else 123
+
+
+# ---------------------------------------------------------------------------
+# Snippets
+# ---------------------------------------------------------------------------
+
+def _block(title: str, code: str, lang: str = "text") -> dict:
+    return {"title": title, "code": code, "lang": lang}
+
+
+def _rr(ip: str) -> str:
+    return "AAAA" if ":" in ip else "A"
+
+
+def snip_adguard(ip: str | None, hosts: list[str], port: int = 123) -> dict:
+    target = ip or IP_PLACEHOLDER
+    zones = collapse_zones(hosts)
+    # Ausnahme für ntp-gui selbst: sonst fragt chronyd beim Upstream-Pool sich selbst.
+    client = f",client=~{ip}" if ip else ""
+    rules = "\n".join(f"||{zone}^$dnsrewrite={target}{client}" for zone in zones)
+    rewrites = "\n".join(f"{zone}  →  {target}" for zone in zones)
+    notes = [
+        "Die Regeln mit `||name^` gelten auch für alle Subdomains – `||pool.ntp.org^` erfasst "
+        "0.pool.ntp.org, de.pool.ntp.org und alle Hersteller-Zonen.",
+        "AdGuard beantwortet für umgeschriebene Namen nur passende Anfragen: AAAA-Anfragen (IPv6) "
+        "bekommen eine leere Antwort. So weichen Geräte nicht über IPv6 zum echten Server aus.",
+    ]
+    if ip:
+        notes.append(f"`client=~{ip}` nimmt ntp-gui selbst aus. Sonst würde chronyd seine eigenen "
+                     "Zeitquellen (z. B. pool.ntp.org) bei sich selbst suchen.")
+    else:
+        notes.append("Trage die Adresse von ntp-gui ein und ergänze `,client=~<IP-des-Servers>`, damit "
+                     "ntp-gui selbst die echten Server erreicht.")
+    if port != 123:
+        notes.append(f"Achtung: ntp-gui lauscht auf Port {port}. DNS kann nur die Adresse umbiegen, nicht "
+                     "den Port – Geräte fragen weiter Port 123. Nutze dann die Firewall-Umleitung.")
+    return {
+        "kind": "dns",
+        "intro": "AdGuard Home → Filter → Benutzerdefinierte Filterregeln: Regeln einfügen und "
+                 "„Anwenden“. Die Liste unter Filter → DNS-Umschreibungen ist die Alternative per "
+                 "Klick, kennt aber keine Ausnahme für ntp-gui selbst.",
+        "blocks": [_block("Benutzerdefinierte Filterregeln", rules),
+                   _block("Alternative: DNS-Umschreibungen (je Zeile ein Eintrag)", rewrites)],
+        "notes": notes,
+    }
+
+
+def _dnsmasq_lines(target: str, zones: list[str]) -> str:
+    lines = []
+    for zone in zones:
+        lines.append(f"address=/{zone}/{target}")
+    # local=/…/ verhindert, dass AAAA-Anfragen (dnsmasq ≥ 2.86) zum echten DNS gehen.
+    lines.append("# AAAA-Anfragen nicht weiterreichen (sonst weichen Geräte über IPv6 aus):")
+    lines += [f"local=/{zone}/" for zone in zones]
+    return "\n".join(lines)
+
+
+def snip_dnsmasq(ip: str | None, hosts: list[str], port: int = 123) -> dict:
+    target = ip or IP_PLACEHOLDER
+    zones = collapse_zones(hosts)
+    return {
+        "kind": "dns",
+        "intro": "Datei z. B. /etc/dnsmasq.d/ntp-gui.conf anlegen und dnsmasq neu starten "
+                 "(`sudo systemctl restart dnsmasq`).",
+        "blocks": [_block("/etc/dnsmasq.d/ntp-gui.conf", "# ntp-gui: Zeitserver erzwingen\n"
+                          + _dnsmasq_lines(target, zones))],
+        "notes": _dns_common_notes(ip, port) + [
+            "`address=/name/` gilt auch für alle Subdomains, deshalb reicht pool.ntp.org für alle Pool-Namen.",
+        ],
+    }
+
+
+def snip_pihole(ip: str | None, hosts: list[str], port: int = 123) -> dict:
+    target = ip or IP_PLACEHOLDER
+    zones = collapse_zones(hosts)
+    toml_lines = ",\n".join(f'    "{line}"' for line in _dnsmasq_lines(target, zones).splitlines()
+                            if not line.startswith("#"))
+    exact = sorted({h.lower() for h in hosts}, key=_sort_key)
+    hosts_lines = ",\n".join(f'    "{target} {h}"' for h in exact)
+    return {
+        "kind": "dns",
+        "intro": "Pi-hole v6: Einstellungen → All settings → Miscellaneous → misc.dnsmasq_lines "
+                 "(Expertenmodus) – oder direkt in /etc/pihole/pihole.toml. Die dnsmasq-Zeilen erfassen "
+                 "auch Subdomains und blockieren den IPv6-Umweg. Pi-hole v5: dieselben Zeilen als "
+                 "/etc/dnsmasq.d/05-ntp-gui.conf, danach `pihole restartdns`.",
+        "blocks": [
+            _block("pihole.toml – [misc] dnsmasq_lines (empfohlen)", "[misc]\n  dnsmasq_lines = [\n"
+                   + toml_lines + "\n  ]", "toml"),
+            _block("Pi-hole v5: /etc/dnsmasq.d/05-ntp-gui.conf", _dnsmasq_lines(target, zones)),
+            _block("Alternative: pihole.toml – [dns] hosts (nur exakte Namen)", "[dns]\n  hosts = [\n"
+                   + hosts_lines + "\n  ]", "toml"),
+        ],
+        "notes": _dns_common_notes(ip, port) + [
+            "Die Variante `dns.hosts` (bzw. „Local DNS Records“ in der Oberfläche) kennt keine "
+            "Subdomains und lässt AAAA-Anfragen durch – Geräte mit IPv6 erreichen dann weiter den echten Server.",
+            "Pi-hole v6 liest /etc/dnsmasq.d nur, wenn misc.etc_dnsmasq_d eingeschaltet ist – "
+            "misc.dnsmasq_lines braucht das nicht. Nach dem Speichern startet der DNS-Dienst neu.",
+        ],
+    }
+
+
+def snip_unbound(ip: str | None, hosts: list[str], port: int = 123) -> dict:
+    target = ip or IP_PLACEHOLDER
+    zones = collapse_zones(hosts)
+    rr = _rr(ip) if ip else "A"
+    lines = ["server:"]
+    for zone in zones:
+        lines.append(f'    local-zone: "{zone}." redirect')
+        lines.append(f'    local-data: "{zone}. 300 IN {rr} {target}"')
+    return {
+        "kind": "dns",
+        "intro": "In unbound.conf (oder /etc/unbound/unbound.conf.d/ntp-gui.conf) einfügen und "
+                 "`sudo unbound-control reload` bzw. Neustart. OPNsense: Dienste → Unbound DNS → "
+                 "Overrides kann nur exakte Namen; die Zeilen gehören dort unter "
+                 "/usr/local/etc/unbound.opnsense.d/ntp-gui.conf.",
+        "blocks": [_block("unbound.conf", "\n".join(lines))],
+        "notes": _dns_common_notes(ip, port) + [
+            "`redirect` gilt für die Zone samt allen Subdomains; Anfragen nach anderen Typen (z. B. AAAA) "
+            "bekommen eine leere Antwort – genau richtig.",
+        ],
+    }
+
+
+def _dns_common_notes(ip: str | None, port: int) -> list[str]:
+    notes = [
+        "Wichtig: ntp-gui selbst darf diese Umschreibung nicht sehen, sonst sucht chronyd seine Quellen "
+        "(z. B. pool.ntp.org) bei sich selbst. Gib dem ntp-gui-Host einen anderen DNS-Server, nimm ihn "
+        "im DNS-Server aus (Client-Gruppe ohne diese Regeln) oder nutze als Quellen Namen, die nicht "
+        "umgeschrieben werden – etwa die NTS-Server ptbtime1.ptb.de oder time.cloudflare.com.",
+        "Geräte mit fester IP-Adresse statt Namen oder mit eigenem DNS (DNS-over-HTTPS, Google-DNS "
+        "fest eingetragen) erreichst du so nicht – dafür ist die Firewall-Umleitung da.",
+    ]
+    if not ip:
+        notes.insert(0, "Die Adresse von ntp-gui ist unbekannt – ersetze <IP-des-Servers> durch die "
+                        "LAN-Adresse des Hosts.")
+    if port != 123:
+        notes.append(f"Achtung: ntp-gui lauscht auf Port {port}. DNS kann nur die Adresse umbiegen, nicht "
+                     "den Port – nutze dann die Firewall-Umleitung.")
+    return notes
+
+
+HAIRPIN = (
+    "Hairpin-Problem: Stehen Gerät und ntp-gui im selben Netz, geht die Antwort von ntp-gui direkt "
+    "an das Gerät – am Router vorbei. Das Gerät hat aber den echten Server gefragt und erwartet die "
+    "Antwort von dessen Adresse; die Antwort von ntp-gui verwirft es. Abhilfe: Der Router setzt bei "
+    "umgeleiteten Paketen seine eigene Adresse als Absender (Masquerade/SNAT). Dann läuft auch die "
+    "Antwort über den Router und wird richtig zurückübersetzt. Nachteil: ntp-gui sieht diese Geräte "
+    "dann alle unter der Adresse des Routers. Sauberer ist ein eigenes Netz (VLAN) für ntp-gui – dann "
+    "gibt es kein Hairpin-Problem."
+)
+
+EXCLUDE = ("Die Ausnahme für ntp-gui selbst ist Pflicht: Ohne sie würden auch die Anfragen von "
+           "ntp-gui an seine eigenen Zeitquellen zu ntp-gui zurückgeleitet – eine Schleife, die Uhr "
+           "hätte keine echte Quelle mehr.")
+
+
+def snip_opnsense(ip: str | None, hosts: list[str], port: int = 123) -> dict:
+    target = ip or IP_PLACEHOLDER
+    steps = (
+        "1. Firewall → Aliase → Hinzufügen: Name „ntpgui“, Typ Host(s), Inhalt {ip}.\n"
+        "2. Firewall → NAT → Portweiterleitung (pfSense: Firewall → NAT → Port Forward) → Hinzufügen:\n"
+        "   Schnittstelle:      LAN (für jedes Client-Netz eine eigene Regel)\n"
+        "   TCP/IP-Version:     IPv4\n"
+        "   Protokoll:          UDP\n"
+        "   Quelle:             „Umkehren“ angehakt, Einzelner Host/Alias: ntpgui\n"
+        "   Ziel:               „Umkehren“ angehakt, Einzelner Host/Alias: ntpgui\n"
+        "   Zielport:           NTP (123)\n"
+        "   Umleitungsziel-IP:  ntpgui\n"
+        "   Umleitungsziel-Port: {port}\n"
+        "   Beschreibung:       ntp-gui: NTP umleiten\n"
+        "   NAT-Reflexion:      deaktivieren\n"
+        "   Filterregel-Zuordnung: Zugehörige Filterregel hinzufügen (bzw. „Pass“)\n"
+        "3. Speichern → Änderungen übernehmen.\n"
+        "4. Nur wenn Geräte im selben Netz wie ntp-gui umgeleitet werden (Hairpin):\n"
+        "   Firewall → NAT → Ausgehend: Modus „Hybrid“, dann Hinzufügen:\n"
+        "   Schnittstelle: LAN, Protokoll: UDP, Quelle: LAN-Netz, Ziel: ntpgui, Zielport: {port},\n"
+        "   Übersetzung: Schnittstellenadresse."
+    ).format(ip=target, port=port)
+    return {
+        "kind": "nat",
+        "intro": "Portweiterleitung auf der LAN-Seite: Jedes NTP-Paket, das ins Internet will, landet "
+                 "bei ntp-gui – auch von Geräten mit fest eingetragener Server-IP.",
+        "blocks": [_block("OPNsense / pfSense – Schritte", steps)],
+        "notes": [EXCLUDE, HAIRPIN,
+                  "Firewall-Umleitung betrifft nur IPv4. Hat dein Netz IPv6, sperre ausgehendes UDP 123 über "
+                  "IPv6 für Clients oder leite es ebenfalls um (NPTv6/DNAT mit IPv6-Adresse von ntp-gui).",
+                  "NTS-Anfragen (TCP 4460 für den Schlüsselaustausch) werden nicht umgeleitet – NTS-Clients "
+                  "bemerken eine Umleitung von UDP 123 und verwerfen die Antworten. Das ist gewollt."],
+    }
+
+
+def snip_mikrotik(ip: str | None, hosts: list[str], port: int = 123) -> dict:
+    target = ip or IP_PLACEHOLDER
+    code = (
+        f"/ip firewall address-list add list=ntpgui address={target} comment=\"ntp-gui\"\n"
+        "/ip firewall nat add chain=dstnat in-interface-list=LAN protocol=udp dst-port=123 \\\n"
+        "    src-address-list=!ntpgui dst-address-list=!ntpgui \\\n"
+        f"    action=dst-nat to-addresses={target} to-ports={port} comment=\"ntp-gui: NTP umleiten\"\n"
+        "# Hairpin: nur nötig, wenn Clients im selben Netz wie ntp-gui umgeleitet werden\n"
+        f"/ip firewall nat add chain=srcnat protocol=udp dst-address={target} dst-port={port} \\\n"
+        "    connection-nat-state=dstnat action=masquerade comment=\"ntp-gui: Hairpin\""
+    )
+    return {
+        "kind": "nat",
+        "intro": "RouterOS-Terminal (Winbox → New Terminal). `in-interface-list=LAN` setzt die "
+                 "Standard-Interface-Liste voraus; sonst `in-interface=bridge` angeben.",
+        "blocks": [_block("RouterOS 7", code)],
+        "notes": [EXCLUDE, HAIRPIN,
+                  "Die Hairpin-Regel greift dank `connection-nat-state=dstnat` nur bei umgeleiteten "
+                  "Paketen – Geräte, die ntp-gui direkt fragen, behalten ihre Adresse.",
+                  "Die NAT-Regeln müssen vor einer allgemeinen masquerade-/dst-nat-Regel stehen "
+                  "(`place-before=0` oder in Winbox nach oben ziehen)."],
+    }
+
+
+def snip_openwrt(ip: str | None, hosts: list[str], port: int = 123) -> dict:
+    target = ip or IP_PLACEHOLDER
+    code = (
+        "uci add firewall redirect\n"
+        "uci set firewall.@redirect[-1].name='ntp-gui NTP umleiten'\n"
+        "uci set firewall.@redirect[-1].target='DNAT'\n"
+        "uci set firewall.@redirect[-1].family='ipv4'\n"
+        "uci set firewall.@redirect[-1].src='lan'\n"
+        "uci set firewall.@redirect[-1].proto='udp'\n"
+        "uci set firewall.@redirect[-1].src_dport='123'\n"
+        f"uci set firewall.@redirect[-1].src_ip='!{target}'\n"
+        f"uci set firewall.@redirect[-1].src_dip='!{target}'\n"
+        f"uci set firewall.@redirect[-1].dest_ip='{target}'\n"
+        f"uci set firewall.@redirect[-1].dest_port='{port}'\n"
+        "uci set firewall.@redirect[-1].reflection='0'\n"
+        "# Hairpin: nur nötig, wenn ntp-gui im LAN steht, aus dem umgeleitet wird\n"
+        "uci add firewall nat\n"
+        "uci set firewall.@nat[-1].name='ntp-gui Hairpin'\n"
+        "uci set firewall.@nat[-1].family='ipv4'\n"
+        "uci set firewall.@nat[-1].src='lan'\n"
+        "uci set firewall.@nat[-1].proto='udp'\n"
+        f"uci set firewall.@nat[-1].dest_ip='{target}'\n"
+        f"uci set firewall.@nat[-1].dest_port='{port}'\n"
+        "uci set firewall.@nat[-1].target='MASQUERADE'\n"
+        "uci commit firewall\n"
+        "service firewall restart"
+    )
+    return {
+        "kind": "nat",
+        "intro": "Per SSH auf dem OpenWrt-Router (ab 22.03 mit fw4/nftables). In LuCI: Netzwerk → "
+                 "Firewall → Portweiterleitungen bzw. NAT-Regeln.",
+        "blocks": [_block("OpenWrt (uci)", code)],
+        "notes": [EXCLUDE, HAIRPIN,
+                  "Die Hairpin-Regel maskiert alle NTP-Pakete aus dem LAN an ntp-gui – also auch "
+                  "Geräte, die ntp-gui direkt fragen, sofern ihr Weg über den Router führt. Steht "
+                  "ntp-gui im selben Netz, betrifft das nur umgeleitete Pakete."],
+    }
+
+
+def snip_nftables(ip: str | None, hosts: list[str], port: int = 123) -> dict:
+    target = ip or IP_PLACEHOLDER
+    code = (
+        "# /etc/nftables.d/ntp-gui.nft – LAN-Interface anpassen\n"
+        "define LAN_IF = \"<LAN-Interface>\"\n"
+        f"define NTPGUI = {target}\n\n"
+        "table ip ntpgui {\n"
+        "  chain prerouting {\n"
+        "    type nat hook prerouting priority dstnat; policy accept;\n"
+        "    iifname $LAN_IF ip saddr != $NTPGUI ip daddr != $NTPGUI udp dport 123 \\\n"
+        f"      dnat to $NTPGUI:{port} comment \"ntp-gui: NTP umleiten\"\n"
+        "  }\n"
+        "  chain postrouting {\n"
+        "    type nat hook postrouting priority srcnat; policy accept;\n"
+        "    # Hairpin: nur umgeleitete Pakete, die ins selbe Netz zurückgehen\n"
+        f"    oifname $LAN_IF ct status dnat ip daddr $NTPGUI udp dport {port} masquerade\n"
+        "  }\n"
+        "}"
+    )
+    return {
+        "kind": "nat",
+        "intro": "Für einen Linux-Router mit nftables. Laden mit `sudo nft -f /etc/nftables.d/ntp-gui.nft`; "
+                 "dauerhaft per include in /etc/nftables.conf. Läuft ntp-gui auf dem Router selbst, "
+                 f"ersetze die dnat-Zeile durch `redirect to :{port}`.",
+        "blocks": [_block("nftables", code, "nft")],
+        "notes": [EXCLUDE, HAIRPIN,
+                  "Das Forwarding (net.ipv4.ip_forward=1) und eine Filterregel, die das Paket zu "
+                  "ntp-gui durchlässt, setzt das voraus."],
+    }
+
+
+def snip_unifi(ip: str | None, hosts: list[str], port: int = 123) -> dict:
+    target = ip or IP_PLACEHOLDER
+    steps = (
+        "UniFi Network 9.4 und neuer:\n"
+        "  Einstellungen → Policy Table → Create New Policy → NAT\n"
+        "UniFi Network 9.3:\n"
+        "  Einstellungen → Policy Engine → NAT → Create New\n\n"
+        "Regel 1 – Destination NAT:\n"
+        "  Typ:            Destination NAT\n"
+        "  Interface/Netz: dein Client-Netz (LAN bzw. VLAN)\n"
+        "  Protokoll:      UDP\n"
+        "  Quelle:         alle – aber ntp-gui ausnehmen (falls angeboten: „Exclude“ "
+        f"bzw. Quelle ≠ {target})\n"
+        f"  Ziel:           Port 123, Adresse ≠ {target}\n"
+        f"  Übersetzte IP:  {target}\n"
+        f"  Übersetzter Port: {port}\n\n"
+        "Regel 2 – nur für Hairpin (Client und ntp-gui im selben Netz):\n"
+        "  Typ: Source NAT / Masquerade, Protokoll UDP,\n"
+        f"  Ziel {target} Port {port}, Übersetzung: Adresse des Gateways"
+    )
+    return {
+        "kind": "nat",
+        "intro": "Eigene NAT-Regeln (DNAT) gibt es in der Oberfläche erst ab UniFi Network 9.3 "
+                 "(Policy Engine), ab 9.4 im Policy Table. Die Feldnamen ändern sich zwischen den "
+                 "Versionen leicht – halte dich an die Bedeutung.",
+        "blocks": [_block("UniFi Network – Schritte", steps)],
+        "notes": [
+            EXCLUDE,
+            "Bietet deine Version keine Ausnahme für die Quelle, lege ntp-gui in ein eigenes Netz (VLAN) "
+            "und wende die Regel nur auf die Client-Netze an – dann kann ntp-gui sich nicht selbst treffen, "
+            "und das Hairpin-Problem entfällt.",
+            "Ältere Versionen (vor 9.3) haben keine DNAT-Regeln in der Oberfläche. Dann bleibt die "
+            "DNS-Umschreibung (AdGuard Home oder Pi-hole als DNS-Server im DHCP eintragen) oder ein "
+            "anderer Router vor/nach dem UniFi-Gateway. Selbst eingespielte iptables-Regeln überleben "
+            "Neustarts und Updates nicht.",
+            HAIRPIN,
+        ],
+    }
+
+
+SYSTEMS: list[tuple[str, str, Callable[..., dict]]] = [
+    ("adguard", "AdGuard Home", snip_adguard),
+    ("pihole", "Pi-hole", snip_pihole),
+    ("dnsmasq", "dnsmasq", snip_dnsmasq),
+    ("unbound", "Unbound", snip_unbound),
+    ("opnsense", "OPNsense / pfSense", snip_opnsense),
+    ("mikrotik", "MikroTik", snip_mikrotik),
+    ("openwrt", "OpenWrt", snip_openwrt),
+    ("nftables", "nftables (Linux)", snip_nftables),
+    ("unifi", "UniFi", snip_unifi),
+]
+SYSTEM_IDS = [s[0] for s in SYSTEMS]
+
+EXPLAIN = [
+    {"title": "DNS-Umschreibung oder Firewall-Umleitung?",
+     "text": "Die **DNS-Umschreibung** ist einfach und sauber: Der DNS-Server im LAN antwortet auf "
+             "time.windows.com & Co. mit der Adresse von ntp-gui. Sie erreicht aber nur Geräte, die "
+             "einen Namen fragen und deinen DNS-Server nutzen. Die **Firewall-Umleitung** (DNAT) fängt "
+             "jedes NTP-Paket ab, das ins Internet will – auch fest eingetragene IP-Adressen. Beides "
+             "zusammen ist am gründlichsten."},
+    {"title": "Hairpin – wenn Gerät und ntp-gui im selben Netz stehen", "text": HAIRPIN},
+    {"title": "Nie umschreiben: NTS-Server", "text": NTS_REASON
+     + " Deshalb fehlen time.cloudflare.com, nts.netnod.se, ptbtime1–4.ptb.de, nts.time.nl und "
+       "ntp.zeitgitter.net absichtlich in der Liste – und eignen sich umgekehrt gut als Quellen für "
+       "ntp-gui selbst, weil sie nie zu dir zurückgebogen werden."},
+    {"title": "Schleife vermeiden", "text": EXCLUDE},
+]
+
+
+def snippets(system: str, server_ip: Any = None, extra_hosts: list[str] | None = None,
+             ntp_port: Any = 123) -> dict:
+    """Antwort für GET /api/enforce/snippets?system=…&ip=…"""
+    ip = clean_server_ip(server_ip)
+    port = _port(ntp_port)
+    hosts, skipped = merged_hostnames(extra_hosts)
+    names = [h["host"] for h in hosts]
+    result: dict[str, Any] = {
+        "server_ip": ip,
+        "placeholder": IP_PLACEHOLDER,
+        "ntp_port": port,
+        "systems": [{"id": sid, "title": title, "kind": func(None, [], 123)["kind"]}
+                    for sid, title, func in SYSTEMS],
+        "hostnames": hosts,
+        "skipped": skipped,
+        "never_rewrite": [{"host": h, "reason": r} for h, r in NEVER_REWRITE.items()],
+        "not_ntp": NOT_NTP,
+        "explain": EXPLAIN,
+    }
+    wanted = SYSTEM_IDS if system in (None, "", "all") else [system]
+    out = []
+    for sid, title, func in SYSTEMS:
+        if sid in wanted:
+            item = func(ip, names, port)
+            item.update(id=sid, title=title)
+            out.append(item)
+    if not out:
+        result["error"] = f"Unbekanntes System. Möglich: {', '.join(SYSTEM_IDS)}"
+    result["snippets"] = out
+    return result
+
+
+# ---------------------------------------------------------------------------
+# NTP-Abfrage (SNTP, Modus 3)
+# ---------------------------------------------------------------------------
+
+def build_request() -> tuple[bytes, bytes]:
+    """48-Byte-Anfrage; Sendezeitstempel zufällig (verrät nicht unsere Uhr, dient als Nonce)."""
+    nonce = os.urandom(8)
+    return b"\x23" + bytes(39) + nonce, nonce
+
+
+def _ts(raw: bytes) -> float:
+    sec, frac = struct.unpack("!II", raw)
+    return sec + frac / 2**32
+
+
+def parse_reply(data: bytes, nonce: bytes | None = None) -> dict | None:
+    """Wertet eine NTP-Antwort aus (Modus 4). None bei ungültigem Paket."""
+    if len(data) < 48:
+        return None
+    lvm, stratum, poll, precision = struct.unpack("!BBbb", data[:4])
+    mode = lvm & 7
+    if mode not in (4, 5):
+        return None
+    if nonce is not None and data[24:32] != nonce:
+        return None
+    root_delay, root_disp = struct.unpack("!iI", data[4:12])
+    refid_raw = data[12:16]
+    if stratum == 0:
+        refid = "KoD:" + refid_raw.decode("ascii", "replace").strip("\x00")
+    elif stratum == 1:
+        refid = refid_raw.decode("ascii", "replace").strip("\x00 ")
+    else:
+        refid = refid_raw.hex().upper()
+    return {
+        "leap": lvm >> 6, "version": (lvm >> 3) & 7, "mode": mode, "stratum": stratum,
+        "poll": poll, "precision": precision,
+        "root_delay": root_delay / 65536.0, "root_dispersion": root_disp / 65536.0,
+        "ref_id": refid_raw.hex().upper(), "ref_label": refid,
+        "ref_time": _ts(data[16:24]) - NTP_EPOCH_OFFSET if data[16:24] != bytes(8) else None,
+        "tx_time": _ts(data[40:48]) - NTP_EPOCH_OFFSET,
+    }
+
+
+def probe_many(targets: list[tuple[str, int]], timeout: float = 1.0) -> dict[tuple[str, int], dict | None]:
+    """Fragt mehrere NTP-Server gleichzeitig (ein Socket je Ziel, ein select)."""
+    import select
+    pending: dict[socket.socket, tuple[tuple[str, int], bytes, float]] = {}
+    results: dict[tuple[str, int], dict | None] = {t: None for t in targets}
+    for target in dict.fromkeys(targets):
+        host, port = target
+        try:
+            family = socket.AF_INET6 if ":" in host else socket.AF_INET
+            sock = socket.socket(family, socket.SOCK_DGRAM)
+            sock.setblocking(False)
+            packet, nonce = build_request()
+            sock.sendto(packet, (host, port))
+            pending[sock] = (target, nonce, time.monotonic())
+        except OSError:
+            continue
+    deadline = time.monotonic() + timeout
+    try:
+        while pending:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                break
+            ready, _, _ = select.select(list(pending), [], [], left)
+            for sock in ready:
+                target, nonce, sent = pending[sock]
+                try:
+                    data, addr = sock.recvfrom(512)
+                except OSError:
+                    data, addr = b"", None
+                reply = parse_reply(data, nonce) if data else None
+                if reply is None and data:
+                    continue  # fremdes Paket – weiter warten
+                if reply is not None:
+                    reply["rtt"] = time.monotonic() - sent
+                results[target] = reply
+                sock.close()
+                del pending[sock]
+    finally:
+        for sock in pending:
+            sock.close()
+    return results
+
+
+def _resolve(hosts: list[str], timeout: float) -> dict[str, list[str] | str]:
+    """getaddrinfo parallel in Threads; Ergebnis je Name: Adressliste oder Fehlertext."""
+    out: dict[str, list[str] | str] = {h: "Zeitüberschreitung bei der DNS-Abfrage" for h in hosts}
+
+    def work(host: str) -> None:
+        try:
+            infos = socket.getaddrinfo(host, 123, type=socket.SOCK_DGRAM)
+            addrs = []
+            for info in infos:
+                addr = info[4][0]
+                if addr not in addrs:
+                    addrs.append(addr)
+            out[host] = addrs
+        except socket.gaierror as exc:
+            out[host] = f"Name nicht auflösbar ({exc.strerror or exc})"
+        except Exception as exc:  # noqa: BLE001 – nie den Request scheitern lassen
+            out[host] = f"DNS-Fehler: {exc}"
+
+    threads = [threading.Thread(target=work, args=(h,), daemon=True, name="enforce-dns") for h in hosts]
+    for t in threads:
+        t.start()
+    deadline = time.monotonic() + timeout
+    for t in threads:
+        t.join(max(0.0, deadline - time.monotonic()))
+    return dict(out)
+
+
+# Öffentliche NTP-Server mit fester Adresse (2026-11 geprüft: time1.google.com → 216.239.35.0,
+# Cloudflare-Anycast 162.159.200.1; beide beantworten einfache NTP-Anfragen).
+PUBLIC_PROBES = [("216.239.35.0", "Google (time1.google.com)"),
+                 ("162.159.200.1", "Cloudflare")]
+
+TEST_HOSTS = ["time.windows.com", "time.apple.com", "time.google.com", "time.android.com",
+              "pool.ntp.org", "2.europe.pool.ntp.org", "ntp.ubuntu.com", "0.amazon.pool.ntp.org"]
+MAX_TEST_HOSTS = 12
+
+
+def same_server(reply: dict | None, ours: dict | None) -> bool:
+    """Stammt die Antwort von unserem chronyd? Vergleich von Stratum, Referenz-ID und -zeit."""
+    if not reply or not ours:
+        return False
+    if reply.get("stratum") != ours.get("stratum") or reply.get("ref_id") != ours.get("ref_id"):
+        return False
+    a, b = reply.get("ref_time"), ours.get("ref_time")
+    if a is None or b is None:
+        return False
+    if abs(a - b) > 0.002:
+        return False
+    # Root-Delay ist bei uns fest bis zur nächsten Messung; ±1 ms Toleranz für Rundung.
+    rd_a, rd_b = reply.get("root_delay"), ours.get("root_delay")
+    return rd_a is None or rd_b is None or abs(rd_a - rd_b) < 0.001
+
+
+def ours_from_tracking(tracking: dict | None) -> dict | None:
+    """Erwartete Antwortfelder unseres chronyd aus `chronyc tracking`."""
+    if not tracking or tracking.get("stratum") is None:
+        return None
+    return {"stratum": tracking.get("stratum"), "ref_id": str(tracking.get("ref_id") or "").upper(),
+            "ref_time": tracking.get("ref_time"), "root_delay": tracking.get("root_delay")}
+
+
+_CHECK_LOCK = threading.Lock()
+_LAST: dict[str, Any] = {"time": 0.0, "result": None}
+MIN_INTERVAL = 30.0
+
+
+def check(server_ips: list[str], hostnames: list[str] | None = None, ntp_port: int = 123,
+          tracking: dict | None = None, source_hosts: list[str] | None = None,
+          *, force: bool = False, now: Callable[[], float] = time.time,
+          resolver: Callable[..., dict] | None = None,
+          prober: Callable[..., dict] | None = None) -> dict:
+    """Prüft, ob DNS-Umschreibung und Firewall-Umleitung wirken (höchstens alle 30 s).
+
+    server_ips: Adressen, unter denen ntp-gui erreichbar ist (eigene Interfaces + Browser-Adresse).
+    tracking:   Ergebnis von chrony.tracking() als Vergleich.
+    source_hosts: Namen der eigenen Zeitquellen (Schleifen-Erkennung).
+    """
+    with _CHECK_LOCK:
+        t = now()
+        if not force and _LAST["result"] is not None and t - _LAST["time"] < MIN_INTERVAL:
+            cached = dict(_LAST["result"])
+            cached["cached"] = True
+            cached["retry_after"] = round(MIN_INTERVAL - (t - _LAST["time"]), 1)
+            return cached
+        result = _run_check(server_ips, hostnames, _port(ntp_port), tracking, source_hosts or [],
+                            resolver or _resolve, prober or probe_many)
+        result["time"] = t
+        result["cached"] = False
+        _LAST.update(time=t, result=result)
+        return result
+
+
+def _reset_rate_limit() -> None:
+    with _CHECK_LOCK:
+        _LAST.update(time=0.0, result=None)
+
+
+def _run_check(server_ips, hostnames, port, tracking, source_hosts, resolver, prober) -> dict:
+    started = time.monotonic()
+    ours_ips = set()
+    for ip in server_ips or []:
+        try:
+            ours_ips.add(str(ipaddress.ip_address(str(ip).strip("[]"))))
+        except ValueError:
+            continue
+    tests = []
+    for host in list(TEST_HOSTS) + list(hostnames or []):
+        host = str(host).strip().lower().rstrip(".")
+        if host and _HOST_RE.match(host) and host not in tests and not is_never_rewrite(host):
+            tests.append(host)
+    tests = tests[:MAX_TEST_HOSTS]
+    sources = []
+    for host in source_hosts:
+        host = str(host).strip().lower().rstrip(".")
+        if host and _HOST_RE.match(host) and host not in sources:
+            sources.append(host)
+    sources = sources[:8]
+
+    resolved = resolver(list(dict.fromkeys(tests + sources)), 1.2)
+
+    # NTP-Ziele: unser eigener chronyd (lokal), je Name die erste Adresse, öffentliche Fest-IPs.
+    targets: list[tuple[str, int]] = [("127.0.0.1", port)]
+    for host in tests:
+        addrs = resolved.get(host)
+        if isinstance(addrs, list) and addrs:
+            first = next((a for a in addrs if ":" not in a), addrs[0])
+            targets.append((first, port if first in ours_ips else 123))
+    targets += [(ip, 123) for ip, _label in PUBLIC_PROBES]
+    remaining = max(0.3, min(1.2, 2.8 - (time.monotonic() - started)))
+    replies = prober(targets, remaining)
+
+    ours = replies.get(("127.0.0.1", port)) or ours_from_tracking(tracking)
+    ours_note = None
+    if not ours:
+        ours_note = ("Eigener chronyd liefert keine Vergleichswerte – der Abgleich per NTP-Antwort ist "
+                     "nicht möglich, nur die DNS-Prüfung.")
+
+    rows = []
+    for host in tests:
+        addrs = resolved.get(host)
+        row: dict[str, Any] = {"host": host, "addresses": addrs if isinstance(addrs, list) else []}
+        if not isinstance(addrs, list):
+            row.update(level="warn", state="dns_error", verdict=str(addrs))
+            rows.append(row)
+            continue
+        if not addrs:
+            row.update(level="warn", state="dns_error", verdict="Keine Adresse erhalten.")
+            rows.append(row)
+            continue
+        to_us = [a for a in addrs if a in ours_ips]
+        first = next((a for a in addrs if ":" not in a), addrs[0])
+        reply = replies.get((first, port if first in ours_ips else 123))
+        row["resolves_to_us"] = bool(to_us)
+        row["reply"] = _slim(reply)
+        if to_us and len(to_us) == len(addrs):
+            row.update(level="good", state="dns_rewrite",
+                       verdict="DNS-Umschreibung wirkt: Der Name zeigt auf diesen Server.")
+        elif to_us:
+            row.update(level="warn", state="dns_partial",
+                       verdict="Der Name zeigt teils auf diesen Server, teils woandershin – vermutlich "
+                               "fehlt die IPv6-Sperre (AAAA). Geräte mit IPv6 erreichen dann den echten Server.")
+        elif same_server(reply, ours):
+            row.update(level="good", state="answered_by_us",
+                       verdict=f"Der Name zeigt auf {first}, dort antwortet aber dieser Server – "
+                               "DNS-Umschreibung auf eine Adresse, die der Container nicht als eigene "
+                               "kennt (z. B. Host-IP im Bridge-Netz). Wirkt.")
+        elif reply is None:
+            row.update(level="info", state="no_reply",
+                       verdict="Nicht umgeschrieben; der echte Server antwortet nicht. Vermutlich sperrt "
+                               "die Firewall NTP nach außen – dann müssen Geräte deinen Server kennen.")
+        else:
+            row.update(level="warn", state="not_redirected",
+                       verdict="Nicht umgeschrieben: Der Name zeigt auf den echten Server. Prüfe die "
+                               "DNS-Regeln – und ob ntp-gui überhaupt deinen DNS-Server nutzt.")
+        rows.append(row)
+
+    public = []
+    for ip, label in PUBLIC_PROBES:
+        reply = replies.get((ip, 123))
+        entry: dict[str, Any] = {"ip": ip, "label": label, "reply": _slim(reply)}
+        if reply is None:
+            entry.update(level="info", state="no_reply",
+                         verdict="Keine Antwort. Entweder sperrt die Firewall NTP nach außen, oder dieser "
+                                 "Host hat kein Internet. Für ntp-gui selbst wäre das ein Problem: Es braucht "
+                                 "Zugriff auf seine Zeitquellen.")
+        elif same_server(reply, ours):
+            entry.update(level="crit", state="loop",
+                         verdict="Schleife! Die Anfrage von ntp-gui an einen öffentlichen Server wurde zu "
+                                 "ntp-gui selbst zurückgeleitet. In der Firewall-Umleitung fehlt die Ausnahme "
+                                 "für ntp-gui – trag die Adresse dieses Hosts als Ausnahme ein.")
+        else:
+            entry.update(level="good", state="direct",
+                         verdict="ntp-gui erreicht den echten Server – die Ausnahme in der Firewall greift "
+                                 "(oder es gibt keine Umleitung). Ob Geräte umgeleitet werden, kann nur ein "
+                                 "Test auf einem Gerät zeigen (siehe Selbsttest).")
+        public.append(entry)
+
+    loops = []
+    for host in sources:
+        addrs = resolved.get(host)
+        if isinstance(addrs, list) and any(a in ours_ips for a in addrs):
+            loops.append({"host": host, "level": "crit",
+                          "verdict": f"Die eigene Zeitquelle {host} zeigt per DNS auf ntp-gui selbst. "
+                                     "chronyd fragt dann sich selbst. Nimm den ntp-gui-Host von der "
+                                     "DNS-Umschreibung aus oder nutze andere Quellen (z. B. ptbtime1.ptb.de)."})
+
+    levels = [r["level"] for r in rows] + [p["level"] for p in public] + [l["level"] for l in loops]
+    if "crit" in levels:
+        overall, summary = "crit", "Es gibt eine Schleife – ntp-gui erreicht seine eigenen Quellen nicht."
+    elif any(r["state"] in ("dns_rewrite", "answered_by_us") for r in rows):
+        n = sum(r["state"] in ("dns_rewrite", "answered_by_us") for r in rows)
+        overall = "good" if n == len(rows) else "warn"
+        summary = f"{n} von {len(rows)} geprüften Namen landen bei diesem Server."
+    else:
+        overall = "info"
+        summary = ("Keine DNS-Umschreibung erkannt. Mit Firewall-Umleitung ist das normal – ob sie wirkt, "
+                   "zeigt der Selbsttest auf einem Gerät oder die Client-Liste.")
+    return {
+        "level": overall, "summary": summary, "hosts": rows, "public": public, "loops": loops,
+        "ours": _slim(ours), "ours_note": ours_note, "server_ips": sorted(ours_ips),
+        "resolver_note": "Geprüft mit dem DNS-Server, den dieser Container nutzt. Nutzen deine Geräte "
+                         "einen anderen (z. B. Pi-hole per DHCP, ntp-gui aber den Router), kann das "
+                         "Ergebnis abweichen.",
+        "duration": round(time.monotonic() - started, 2),
+    }
+
+
+def _slim(reply: dict | None) -> dict | None:
+    if not reply:
+        return None
+    return {k: reply.get(k) for k in ("stratum", "ref_id", "ref_label", "ref_time", "root_delay",
+                                       "root_dispersion", "rtt") if k in reply}
+
+
+def source_hosts_from(cfg: dict) -> list[str]:
+    """Namen der eigenen Zeitquellen aus den Einstellungen (ntp_sources)."""
+    hosts = []
+    for entry in cfg.get("ntp_sources") or []:
+        host = str((entry or {}).get("host") or "")
+        try:
+            ipaddress.ip_address(host)
+            continue
+        except ValueError:
+            pass
+        if host:
+            hosts.append(host)
+    return hosts
+
+
+def api_snippets(query: dict, cfg: dict) -> dict:
+    """GET /api/enforce/snippets – query: system, ip."""
+    return snippets(query.get("system") or "all", query.get("ip"), cfg.get("enforce_hostnames") or [],
+                    cfg.get("ntp_port", 123))
+
+
+def api_check(query: dict, cfg: dict, own_addresses: list[str], tracking: dict | None) -> dict:
+    """GET /api/enforce/check – query: ip (Adresse aus Sicht des Browsers)."""
+    ips = list(own_addresses or [])
+    extra = clean_server_ip(query.get("ip"))
+    if extra:
+        ips.append(extra)
+    return check(ips, cfg.get("enforce_hostnames") or [], cfg.get("ntp_port", 123), tracking,
+                 source_hosts_from(cfg))

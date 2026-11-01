@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import json
 import os
-import socket
 import threading
 import time
 from typing import Any
+
+import providers
 
 FIX_MODES = {0: "unbekannt", 1: "kein Fix", 2: "2D-Fix", 3: "3D-Fix"}
 
@@ -79,36 +80,23 @@ def poll_gpsd(timeout: float = 4.0) -> dict[str, Any]:
     """Collect one VERSION/TPV/SKY set from gpsd. Returns {} when unreachable."""
     host, port = _gpsd_address()
     reports: dict[str, Any] = {}
-    deadline = time.monotonic() + timeout
     try:
-        with socket.create_connection((host, port), timeout=timeout) as sock:
-            sock.settimeout(timeout)
-            sock.sendall(b'?WATCH={"enable":true,"json":true}\n')
-            buffer = b""
-            while time.monotonic() < deadline:
+        with providers.gpsd_lines(host, port, '?WATCH={"enable":true,"json":true}', timeout) as lines:
+            for line in lines:
                 try:
-                    chunk = sock.recv(8192)
-                except socket.timeout:
-                    break
-                if not chunk:
-                    break
-                buffer += chunk
-                while b"\n" in buffer:
-                    line, _, buffer = buffer.partition(b"\n")
-                    if not line.strip():
-                        continue
-                    try:
-                        report = json.loads(line)
-                    except ValueError:
-                        continue
-                    kind = report.get("class")
-                    if kind not in {"VERSION", "TPV", "SKY", "DEVICES"}:
-                        continue
-                    # gpsd only carries the satellite list in some SKY cycles;
-                    # never let a bare SKY overwrite one that has the details.
-                    if kind == "SKY" and _sky_is_detailed(reports.get("SKY")) and not _sky_is_detailed(report):
-                        continue
-                    reports[kind] = report
+                    report = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(report, dict):
+                    continue
+                kind = report.get("class")
+                if kind not in {"VERSION", "TPV", "SKY", "DEVICES"}:
+                    continue
+                # gpsd only carries the satellite list in some SKY cycles;
+                # never let a bare SKY overwrite one that has the details.
+                if kind == "SKY" and _sky_is_detailed(reports.get("SKY")) and not _sky_is_detailed(report):
+                    continue
+                reports[kind] = report
                 # A fix report plus a detailed satellite report is all we need.
                 if "TPV" in reports and _sky_is_detailed(reports.get("SKY")):
                     return reports
@@ -281,37 +269,22 @@ def probe_pps(timeout: float = 2.5) -> dict[str, Any]:
     messages: list[dict[str, Any]] = []
     devices: list[dict[str, Any]] = []
     reachable = False
-    deadline = time.monotonic() + timeout
     try:
-        with socket.create_connection((host, port), timeout=timeout) as sock:
+        with providers.gpsd_lines(host, port, '?WATCH={"enable":true,"json":true,"pps":true}',
+                                  timeout) as lines:
             reachable = True
-            sock.sendall(b'?WATCH={"enable":true,"json":true,"pps":true}\n')
-            buffer = b""
-            while True:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    break
-                sock.settimeout(remaining)
+            for line in lines:
                 try:
-                    chunk = sock.recv(8192)
-                except socket.timeout:
-                    break
-                if not chunk:
-                    break
-                buffer += chunk
-                while b"\n" in buffer:
-                    line, _, buffer = buffer.partition(b"\n")
-                    try:
-                        report = json.loads(line)
-                    except ValueError:
-                        continue
-                    if not isinstance(report, dict):
-                        continue
-                    kind = report.get("class")
-                    if kind in {"PPS", "TOFF"}:
-                        messages.append(report)
-                    elif kind == "DEVICES":
-                        devices = parse_devices(report)
+                    report = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(report, dict):
+                    continue
+                kind = report.get("class")
+                if kind in {"PPS", "TOFF"}:
+                    messages.append(report)
+                elif kind == "DEVICES":
+                    devices = parse_devices(report)
     except OSError:
         pass
     result = summarize_pps(messages)

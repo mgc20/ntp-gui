@@ -1,4 +1,8 @@
 import { HELP_HARDWARE, HELP_GROUP_HARDWARE } from "./help-hardware.js";
+import { HELP_CLIENTS, HELP_GROUP_CLIENTS } from "./help-clients.js";
+import { HELP_AUTOCAL, HELP_GROUP_AUTOCAL } from "./help-autocal.js";
+import { HELP_DIAGNOSE, HELP_GROUP_DIAGNOSE } from "./help-diagnose.js";
+import { HELP_API, HELP_GROUP_API } from "./help-api.js";
 
 // Alle Erklärungen an einer Stelle. Die ⓘ-Knöpfe im Dashboard und die
 // Hilfeseite nutzen dieselben Texte. **fett** und `code` werden formatiert.
@@ -752,6 +756,44 @@ export const HELP = {
       + "Compose-Datei. **Dashboard**: hier gespeichert – hat Vorrang vor der Umgebung. "
       + "„Zurücksetzen“ entfernt den Dashboard-Wert, dann gilt wieder Umgebung bzw. Standard.",
   },
+  web_title: {
+    title: "Titel des Dashboards",
+    text: "Steht oben links und im Browser-Tab. Praktisch, wenn mehrere Zeitserver laufen – z. B. "
+      + "„Zeitserver Keller“ und „Zeitserver Büro“. Wirkt sofort, ohne Neustart.",
+  },
+  web_refresh: {
+    title: "Aktualisierung",
+    text: "Wie oft das Dashboard neue Werte vom Server holt (Standard **5 s**). Kürzer wirkt lebendiger, "
+      + "kostet aber etwas mehr Last auf kleinen Geräten wie dem Raspberry Pi. Ändert nichts an der "
+      + "Zeitsynchronisation selbst.",
+  },
+  history_interval: {
+    title: "Messintervall für Diagramme",
+    text: "Alle wie viele Sekunden ein Messpunkt für die Verlaufsdiagramme gespeichert wird (Standard "
+      + "**10 s**). Kürzer zeigt mehr Details, füllt aber die Datenbank schneller; die Werte werden für "
+      + "längere Zeiträume ohnehin zusammengefasst. chrony misst davon unabhängig.",
+  },
+  allow_networks: {
+    title: "Erlaubte Netze",
+    text: "Nur Geräte aus diesen Netzen bekommen eine NTP-Antwort, alle anderen werden still ignoriert. "
+      + "Standard sind alle **privaten Netze** (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, IPv6 ULA "
+      + "und Link-Local). Ein Netz pro Zeile in CIDR-Schreibweise. `all` erlaubt jedem – nur sinnvoll, "
+      + "wenn eine Firewall davor sitzt, sonst kann der Server für Angriffe missbraucht werden.",
+  },
+  gps_show_position: {
+    title: "Position anzeigen",
+    text: "Der GPS-Empfänger kennt seine Position auf wenige Meter genau – und damit den **Standort** "
+      + "dieses Servers. Deshalb ist die Anzeige standardmäßig **aus**: Dashboard und API zeigen dann "
+      + "keine Koordinaten. Für die Zeit spielt die Position keine Rolle. Das Diagnosepaket entfernt "
+      + "Koordinaten unabhängig von dieser Einstellung immer.",
+  },
+  settings_export: {
+    title: "Sicherung der Einstellungen",
+    text: "„Exportieren“ lädt die hier gespeicherten Werte als JSON-Datei herunter, **ungefiltert** und ohne "
+      + "Passwort – gedacht als Sicherung oder zum Übertragen auf einen zweiten Server. Sie enthält "
+      + "Servernamen, Hostnamen und Netze im Klartext. Für einen Fehlerbericht ist das **Diagnosepaket** "
+      + "auf der Seite „Diagnose“ gedacht: Es filtert solche Angaben heraus und zeigt vorher eine Vorschau.",
+  },
 };
 
 export const SELECT_STATE_HELP = {
@@ -791,12 +833,21 @@ export const HELP_GROUPS = [
     "nts_ke_server", "nts_auth_packets"] },
   { title: "GPS", keys: ["gps", "gps_value", "gps_offset", "gps_delay", "gps_role", "gps_recalibrate", "pps",
     "fix", "satellites", "dop", "snr", "skyplot", "gnss", "time_error", "cold_start"] },
+  HELP_GROUP_AUTOCAL,
   { title: "PTP", keys: ["ptp", "ptp_vs_ntp", "ptp_requirements", "grandmaster", "port_state",
     "offset_from_master", "mean_path_delay", "steps_removed", "clock_class", "clock_accuracy", "ptp_domain",
     "ptp_transport", "ptp_profile", "utc_offset", "phc", "phc2sys", "ptp_servo", "ptp_rms", "ptp_freq"] },
   { title: "Clients", keys: ["client_address", "client_packets", "client_dropped", "client_interval", "client_last", "served_rate"] },
-  { title: "Einstellungen", keys: ["settings_source"] },
+  HELP_GROUP_CLIENTS,
+  { title: "Einstellungen", keys: ["settings_source", "settings_export", "web_title", "web_refresh", "history_interval",
+    "allow_networks", "gps_show_position"] },
+  HELP_GROUP_API,
+  HELP_GROUP_DIAGNOSE,
   HELP_GROUP_HARDWARE,
 ];
 
 Object.assign(HELP, HELP_HARDWARE);
+Object.assign(HELP, HELP_CLIENTS);
+Object.assign(HELP, HELP_AUTOCAL);
+Object.assign(HELP, HELP_DIAGNOSE);
+Object.assign(HELP, HELP_API);

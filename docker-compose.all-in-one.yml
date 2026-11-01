@@ -47,8 +47,9 @@ services:
     restart: unless-stopped
 
     # Host-Netzwerk: kein NAT dazwischen. Darum sieht das Dashboard sicher die
-    # echten Client-IPs, und „Wer darf fragen?“ greift richtig. PTP geht
-    # ohnehin nur so (Multicast, Zeitstempel der echten Netzwerkkarte).
+    # echten Client-IPs, „Wer darf fragen?“ greift richtig, und die passive
+    # Messung der Client-Uhren ordnet jede Uhr dem richtigen Gerät zu. PTP
+    # geht ohnehin nur so (Multicast, Zeitstempel der echten Netzwerkkarte).
     # Belegt werden auf dem Host: 123/udp (NTP), 8080/tcp (Dashboard, folgt
     # WEB_PORT) und – nur mit NTS-Server – 4460/tcp (folgt NTS_SERVER_PORT).
     network_mode: host
@@ -72,6 +73,9 @@ services:
       # [OPTION PTP] Hardware-Zeitstempel der Netzwerkkarte einschalten
       # (NET_ADMIN) und PTP direkt über Ethernet senden (NET_RAW, für
       # PTP_TRANSPORT=L2 und das gPTP-Profil).
+      # NET_RAW braucht auch die passive Messung der Client-Uhren (Seite
+      # „Clients“). Docker gibt es standardmäßig mit; ausdrücklich eintragen
+      # musst du es nur, wenn dein Setup Capabilities entfernt (cap_drop).
       #  - NET_ADMIN
       #  - NET_RAW
 

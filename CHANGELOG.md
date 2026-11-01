@@ -4,6 +4,91 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), die Versionen folgen
 [Semantic Versioning](https://semver.org/lang/de/).
 
+## [1.3.0] – 2026-11-01
+
+### Hinzugefügt
+- **Seite „Diagnose“**: Container-Log mit Text- und Stufenfilter (`/api/logs`; der
+  Supervisor schreibt dafür zusätzlich nach `/run/ntp-gui/ntp-gui.log`, rotiert ab 2 MB,
+  abschaltbar mit `NTPGUI_LOGTEE=0`), Ereignisprotokoll und ein **Diagnosepaket**
+  (`/api/diagnostics/preview`, `/api/diagnostics/bundle`) mit Vorschau und deutscher
+  `MANIFEST.txt`. Das Paket wird nur heruntergeladen, nie hochgeladen.
+- **Zentraler Datenschutzfilter** (`app/egress.py`) für alles, was die Instanz verlässt:
+  keine Koordinaten, Höhe, Geschwindigkeit, Satellitenwinkel (Azimut/Elevation),
+  Seriennummern (USB, DMI, `/dev/serial/by-id`), MAC-Adressen und PTP-Clock-IDs,
+  öffentlichen IP-Adressen, eigenen Hostnamen, Domains und Zertifikatsnamen, Zeitzonennamen;
+  private Adressen werden zu stabilen Pseudonymen (`client-07`). Laufzeiten zu Servern
+  (Root/Peer delay, Fehlerschranken, RTT – auch in chronyc-Ausgaben und Aufzeichnungen) werden
+  für jeden Zweck auf 10 ms gerundet; von Satelliten bleiben nur Summen je System (keine
+  Satellitennummern). Zwei Schlussprüfungen – eine mit den Regeln des Filters, eine davon
+  unabhängige auf den fertigen Bytes – laufen über jede Datei des Pakets und brechen den
+  Export ab, wenn sie noch etwas finden; in Log und Aufzeichnung wird stattdessen nur die
+  beanstandete Zeile entfernt.
+- **Schutz vor DNS-Rebinding:** Ohne Passwort beantwortet das Dashboard nur Anfragen an
+  IP-Adressen, `localhost`, den eigenen bzw. einteilige Hostnamen, lokale Endungen (`*.local`,
+  `*.lan`, `*.home.arpa`, `*.internal` …), den NTS-Namen und `WEB_ALLOWED_HOSTS` (neu,
+  kommagetrennt, `*.domain`, `*` schaltet ab); alles andere bekommt `403` mit Erklärung.
+  `*.fritz.box` gilt bewusst nicht als lokal (`.box` ist eine öffentliche Endung). Mit
+  Passwort oder API-Schlüssel gilt jeder Name, `/healthz` ist immer offen.
+- **Ereignisprotokoll** (`/api/events`, 90 Tage): Neustarts und Ausfälle von Diensten,
+  Neuladen, Zertifikate, GPS-Gerät weg/neu angesteckt (vom Supervisor), Wechsel der
+  ausgewählten Quelle, GPS-Fix verloren/wieder da, PPS-Impulse ausgeblieben/wieder da,
+  geänderte Einstellungen (nur Feldnamen), Kalibrierung, API-Schlüssel.
+- **Zeitserver erzwingen** (Seite „Clients“, `/api/enforce/snippets`, `/api/enforce/check`):
+  Anleitungen für DNS-Umschreibung (AdGuard Home, Pi-hole, dnsmasq, Unbound) und
+  Firewall-Umleitung (OPNsense/pfSense, MikroTik, OpenWrt, nftables, UniFi) mit Ausnahme
+  für ntp-gui selbst und Hairpin-Regel, eigene Namen per `ENFORCE_HOSTNAMES`. NTS-Server
+  und `fritz.box` werden nie umgeschrieben. Die Prüfung (höchstens alle 30 s) erkennt
+  wirksame Umschreibung, fehlende IPv6-Sperre und Schleifen.
+- **Passive Messung der Client-Uhren** (`/api/clients/offsets`, `CLIENTMON`): Abweichung
+  jeder Client-Uhr aus ihren NTP-Anfragen, ohne etwas an die Geräte zu senden; erkennt
+  Clients, die ihre Zeit absichtlich verschleiern. Braucht `NET_RAW` und Host-Netzwerk.
+- **Automatische GPS-Kalibrierung** (`GPS_AUTOCAL=off|suggest|auto`,
+  `GPS_AUTOCAL_MAX_STEP_MS`, `GPS_AUTOCAL_MIN_HOURS`): höchstens ein kleiner Schritt je
+  24 h, nur mit vertrauenswürdiger Netzreferenz, jede Änderung im Ereignisprotokoll und
+  per Knopf umkehrbar (`/api/gps/autocal`, `POST /api/gps/autocal/rollback`). Die
+  Automatik stellt nie weiter, solange nicht belegt ist, dass die letzte Änderung wirkt
+  (Offset in der laufenden `chrony.conf` und erfolgreiches Neuladen); gemessen wird ab dem
+  Zeitpunkt, an dem sie aktiv wurde.
+- **API-Schlüssel** mit Recht „nur lesen“ oder „lesen und verwalten“
+  (`Authorization: Bearer ntpg_…`, gespeichert wird nur ein SHA-256-Hash – PBKDF2 hätte bei
+  144 Bit Zufall nichts gebracht, aber jede Anfrage mit erfundenem Schlüssel teuer gemacht;
+  Schlüssel aus Vorabversionen werden beim nächsten Gebrauch umgestellt). Im
+  Ereignisprotokoll steht nur die Kennung eines Schlüssels, nie sein Name. Passwort und Schlüssel
+  lassen sich nur mit Benutzer/Passwort verwalten, nie mit einem Schlüssel.
+- **Versionierte API `/api/v1`**; `GET /api/v1` beschreibt alle Endpunkte samt nötigem Recht.
+- **Aufzeichnung und Wiedergabe** der Datenquellen (`/api/recording`, `NTPGUI_REPLAY`,
+  `NTPGUI_REPLAY_SPEED`, `python3 app/providers.py replay-info`): alle Abfragen an chronyc,
+  pmc, ethtool und gpsd laufen über eine Stelle (`app/providers.py`).
+- Zufällige **Instanz-Kennung** (`/api/v1/instance`), jederzeit neu erzeugbar.
+- Integrationstest: Log-Seite, Diagnosepaket ohne Standort und Kennungen, API-Schlüssel,
+  Schutz vor DNS-Rebinding und `WEB_ALLOWED_HOSTS` (111 Prüfungen statt 68).
+
+### Geändert
+- Verlauf, Ereignisse, Client-Messwerte und API-Schlüssel liegen in SQLite (`ntp-gui.db`).
+  Der Verlauf reicht jetzt **30 Tage** (`HISTORY_DAYS`), lange Zeiträume kommen aus einer
+  5-Minuten-Vorverdichtung. Neue Punkte werden alle 5 Minuten geschrieben (schont
+  SD-Karten). `HISTORY_SIZE` ist nur noch eine Obergrenze, wenn es gesetzt ist. Ein
+  vorhandenes `history.json.gz` wird beim ersten Start übernommen und als `.migrated`
+  aufbewahrt.
+- Einstellungen tragen eine **Schema-Version** und werden beim Update einmalig migriert; was
+  dabei geändert wurde, zeigt die Einstellungsseite oben an (`/api/settings/notes`). Auch
+  Sicherungen älterer Versionen lassen sich importieren. Migration 1→2 entfernt gespeicherte
+  NTS-Zertifikatspfade außerhalb von `/config`, `/certs` und `/etc/letsencrypt`.
+- `/api/gps/calibration` ohne `window` wertet die letzten 24 h aus (`window=0`: alles) –
+  über 30 Tage Verlauf würde die Berechnung sonst Sekunden dauern.
+- Neue Navigationsseite „Diagnose“; die Einstellungsseite hat Karten für API-Schlüssel,
+  Instanz-Kennung und Update-Hinweise.
+
+### Behoben
+- **Kopieren-Knöpfe** (Clients, PTP, Hardware, API-Schlüssel) funktionieren auch über
+  einfaches `http://` im LAN: Ohne sichere Verbindung greift ein Ersatzweg; klappt auch der
+  nicht, wird der Text markiert und ein Hinweis zeigt Strg+C.
+- Hardware-Check: Ein USB-GPS an `ttyACM` (z. B. VK-162) wurde fälschlich als
+  USB-Seriell-Adapter mit möglichem DCD-PPS eingestuft, wenn der Treiber-Link in `/sys`
+  nicht lesbar war. `ttyACM`-Geräte kommen immer von `cdc_acm` und liefern kein PPS. Der
+  GPIO-PPS-Vorschlag bei „geht nicht“ ist jetzt klar als Lösung mit anderer Hardware
+  gekennzeichnet.
+
 ## [1.2.0] – 2026-11-01
 
 ### Achtung beim Update (Breaking Change)
@@ -184,6 +269,7 @@ Erste Veröffentlichung.
 - CI mit Unittests und Integrationstest gegen das gebaute Image; Release-Workflow,
   der das Image für amd64 und arm64 nach ghcr.io veröffentlicht.
 
+[1.3.0]: https://github.com/ConGp20/ntp-gui/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/ConGp20/ntp-gui/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/ConGp20/ntp-gui/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/ConGp20/ntp-gui/releases/tag/v1.0.0

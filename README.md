@@ -7,7 +7,7 @@
 
 <p align="center">
   <a href="https://github.com/ConGp20/ntp-gui/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/ConGp20/ntp-gui/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="https://github.com/ConGp20/ntp-gui/releases/latest"><img alt="Release" src="https://img.shields.io/badge/release-v1.2.0-0969da"></a>
+  <a href="https://github.com/ConGp20/ntp-gui/releases/latest"><img alt="Release" src="https://img.shields.io/badge/release-v1.3.0-0969da"></a>
   <img alt="Plattformen" src="https://img.shields.io/badge/platform-amd64%20%7C%20arm64-1a7f37">
   <img alt="Image" src="https://img.shields.io/badge/image-ghcr.io-8250df">
   <a href="LICENSE"><img alt="Lizenz: MIT" src="https://img.shields.io/badge/license-MIT-59636e"></a>
@@ -18,12 +18,14 @@
   <a href="#alles-in-einem">Alles in einem</a> ·
   <a href="#hardware-check">Hardware-Check</a> ·
   <a href="#per-dhcp-verteilen-option-42">DHCP</a> ·
+  <a href="#zeitserver-erzwingen">Erzwingen</a> ·
   <a href="#was-ist-möglich">Was ist möglich?</a> ·
   <a href="#nts--abgesicherte-zeit">NTS</a> ·
   <a href="#stratum-1-mit-gps">GPS</a> ·
   <a href="#ptp">PTP</a> ·
+  <a href="#diagnose--fehlersuche">Diagnose</a> ·
   <a href="#konfiguration">Konfiguration</a> ·
-  <a href="#endpunkte">API</a> ·
+  <a href="#api--automatisierung">API</a> ·
   <a href="ROADMAP.md">Roadmap</a> ·
   <a href="CONTRIBUTING.md">Mitmachen</a>
 </p>
@@ -37,13 +39,16 @@ Raspberry Pi starten, die Adresse per **DHCP Option 42** verteilen – fertig.
 - **Stratum 1 ohne Internet** – mit einem USB-GPS wie dem VK-162 für ~15 €, auf Wunsch mit PPS
 - **Alles im Dashboard einstellbar** – Zeitquellen, NTS, GPS, PTP, Zugriff; Umgebungsvariablen dienen nur noch als Startwerte
 - **Erklärt sich selbst** – zu jedem Wert ein ⓘ mit Erklärung, ein Hinweis-Kasten sagt, was gerade los ist und was zu tun ist
-- **GPS-Kalibrierassistent** – misst die USB-Verspätung gegen die Netzwerkquellen und übernimmt Offset und Delay per Klick
+- **GPS-Kalibrierassistent** – misst die USB-Verspätung gegen die Netzwerkquellen und übernimmt Offset und Delay per Klick – auf Wunsch auch automatisch, behutsam und umkehrbar
 - **NTS** – kryptografisch abgesicherte Zeit von PTB, Cloudflare, Netnod & Co., optional auch als NTS-Server – auch hinter einem Reverse Proxy, mit dessen Let's-Encrypt-Zertifikat
 - **Hardware-Check** – erkennt GPS-Empfänger, PPS, PTP-Netzwerkkarten, VM und Container-Rechte und sagt, was geht und welche Zeile in der Compose-Datei fehlt
+- **Zeitserver erzwingen** – fertige Anleitungen für AdGuard, Pi-hole, dnsmasq, Unbound, OPNsense, MikroTik, OpenWrt, nftables und UniFi, damit auch Geräte mit fest eingebautem Zeitserver bei dir landen – samt Prüfung per Klick
+- **Wie genau gehen meine Clients?** – misst passiv aus den NTP-Anfragen, wie weit die Uhr jedes Geräts im LAN danebenliegt
+- **Diagnose ohne Datenleck** – Log-Seite, Ereignisprotokoll und ein Diagnosepaket mit Vorschau; ein zentraler Datenschutzfilter sorgt dafür, dass sich aus dem Paket kein Standort ablesen lässt. Hochgeladen wird nichts
 - **Fällt nicht um** – stirbt gpsd oder ptp4l (Kabel gezogen, Karte weg), startet der Supervisor nur diesen Dienst neu; NTP läuft weiter
 - **Dashboard ohne Ballast** – reines Python aus der Distribution, kein npm, kein pip; Diagramme in eigenem SVG
-- **Monitoring eingebaut** – JSON-API, Prometheus-`/metrics` und `/healthz`; Verlauf über 24 h, übersteht Neustarts
-- **Getestet** – 245 Unittests und ein 68-Punkte-Integrationstest gegen das gebaute Image in der CI
+- **Monitoring eingebaut** – versionierte JSON-API `/api/v1` mit API-Schlüsseln (nur lesen / verwalten), Prometheus-`/metrics` und `/healthz`; Verlauf über 30 Tage (SQLite), übersteht Neustarts
+- **Getestet** – 478 Unittests und ein 95-Punkte-Integrationstest gegen das gebaute Image in der CI
 
 ## Auf einen Blick
 
@@ -52,12 +57,14 @@ Raspberry Pi starten, die Adresse per **DHCP Option 42** verteilen – fertig.
   <img alt="Übersicht von ntp-gui: Hinweise zum aktuellen Zustand, Kennzahlen und Verlaufsdiagramme" src="docs/screenshots/dashboard-light.png">
 </picture>
 
-Acht Seiten: **Übersicht** (Hinweise, Kennzahlen, Verlauf, Zustand der Dienste), **Zeitquellen**
+Neun Seiten: **Übersicht** (Hinweise, Kennzahlen, Verlauf, Zustand der Dienste), **Zeitquellen**
 (jede Quelle mit Zustand *und Grund* – ausgewählt, kombiniert, nicht kombiniert, Falseticker …),
 **GPS** (Himmelskarte, Signalstärken, Kalibrierassistent), **PTP** (Voraussetzungs-Check,
 Netzwerkkarten, Port-Zustand), **Hardware** (was diese Hardware kann und was dafür fehlt),
-**Clients** (wer fragt, wie oft, Snippets für DHCP-Server und Betriebssysteme),
-**Einstellungen** und **Hilfe** (Glossar und Entscheidungshilfe).
+**Clients** (wer fragt, wie oft, wie genau seine Uhr geht, Snippets für DHCP-Server und
+Betriebssysteme, Zeitserver erzwingen), **Diagnose** (Log, Ereignisse, Diagnosepaket),
+**Einstellungen** (mit API-Schlüsseln und Update-Hinweisen) und **Hilfe** (Glossar und
+Entscheidungshilfe).
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/sources-dark.png">
@@ -188,7 +195,8 @@ docker compose up -d
    Erzeugen des Containers; ein reiner Neustart reicht dafür nicht.
 
 Die Blöcke: Bridge-Netzwerk als Alternative (ohne PTP), Geräte einzeln durchreichen
-(USB-GPS, Pi-UART, PPS, PTP-Uhr), `NET_ADMIN`/`NET_RAW` für PTP, GPS, PTP mit Profil und
+(USB-GPS, Pi-UART, PPS, PTP-Uhr), `NET_ADMIN`/`NET_RAW` für PTP (`NET_RAW` braucht auch die
+passive Messung der Client-Uhren – in Docker ist es ohnehin Standard), GPS, PTP mit Profil und
 phc2sys, NTS-Server hinter einem Reverse Proxy, zwei Server im Verbund (`LOCAL_ORPHAN`),
 Dashboard-Passwort, `WEB_READONLY`, anderer Dashboard-Port und **Hotplug**.
 
@@ -286,7 +294,8 @@ dabei seine Messwerte); Felder mit „wirkt sofort“ brauchen gar keinen Neusta
   Konfiguration weiterhin komplett.
 
 Änderungen per API sind gegen CSRF geschützt: sie brauchen den Header `X-NTP-GUI: 1`, JSON
-als Inhalt und – falls der Browser einen `Origin` mitschickt – denselben Host.
+als Inhalt und – falls der Browser einen `Origin` mitschickt – denselben Host. Für Skripte
+gibt es [API-Schlüssel](#api-schlüssel); mit ihnen entfällt der Header.
 
 ## Per DHCP verteilen (Option 42)
 
@@ -338,6 +347,91 @@ oder die Clients direkt konfigurieren.
 
 Für IPv6 ist Option 42 nicht zuständig – dort verteilt man NTP über DHCPv6 Option 56
 (`OPTION_NTP_SERVER`) bzw. über den Router Advertisement Daemon.
+
+## Zeitserver erzwingen
+
+Option 42 ist nur ein Angebot. Viele Geräte ignorieren es und fragen fest eingebaute
+Namen: Windows `time.windows.com`, Apple `time.apple.com`, Android `time.android.com`,
+Sonos, Fire TV, Router, IoT-Geräte meist `pool.ntp.org`. Das ist nicht nur unschön: Ohne
+Internet gehen diese Uhren falsch, und auf der Seite **Clients** tauchen sie gar nicht auf.
+Die Seite **Clients → Zeitserver erzwingen** liefert dafür fertige Anleitungen – mit der
+Adresse deines Servers schon eingesetzt – und eine Prüfung.
+
+Es gibt zwei Wege, beide zusammen sind am gründlichsten:
+
+| Weg | Wie | Erreicht | Erreicht nicht |
+|---|---|---|---|
+| **DNS-Umschreibung** | Der DNS-Server im LAN beantwortet `time.windows.com` & Co. mit der Adresse von ntp-gui | Geräte, die einen Namen fragen und deinen DNS-Server nutzen | fest eingetragene IP-Adressen, Geräte mit eigenem DNS (DNS-over-HTTPS, `8.8.8.8` fest) |
+| **Firewall-Umleitung** (DNAT) | Der Router leitet jedes NTP-Paket (UDP 123), das ins Internet will, auf ntp-gui um | wirklich jedes Gerät | – |
+
+**Unterstützte Systeme:** DNS – AdGuard Home, Pi-hole, dnsmasq, Unbound; Firewall –
+OPNsense/pfSense, MikroTik, OpenWrt, nftables (Linux) und UniFi. Die Namensliste deckt
+Windows/Xbox, Apple, Google/Android, Amazon, die Linux-Distributionen, OpenWrt/pfSense/OPNsense,
+Ubiquiti, Sonos, die FRITZ!Box als Client, VMware, NIST und `*.pool.ntp.org` ab. Eigene
+Namen (etwa den fest eingetragenen Server einer Kamera) trägst du unter **Einstellungen →
+Weitere Namen für „Zeitserver erzwingen“** ein (`ENFORCE_HOSTNAMES`).
+
+Worauf die Anleitungen achten – und warum:
+
+- **ntp-gui selbst ist ausgenommen.** Sonst landen auch die Anfragen von ntp-gui an seine
+  eigenen Quellen wieder bei ntp-gui – eine Schleife, die Uhr hätte keine echte Quelle mehr.
+  Bei der Firewall heißt das: eine Ausnahme für die Adresse des Servers. Beim DNS: Der
+  ntp-gui-Host bekommt einen anderen DNS-Server oder ist in AdGuard/Pi-hole von der Regel
+  ausgenommen (AdGuard: `client=~<IP>`).
+- **Hairpin.** Stehen Gerät und ntp-gui im selben Netz, geht die Antwort von ntp-gui direkt
+  ans Gerät – am Router vorbei, mit dem falschen Absender, und das Gerät verwirft sie. Die
+  Firewall-Anleitungen enthalten dafür eine Masquerade-/SNAT-Regel. Nachteil: ntp-gui sieht
+  diese Geräte dann alle unter der Adresse des Routers. Sauberer ist ein eigenes VLAN für
+  ntp-gui.
+- **NTS-Namen werden nie umgeschrieben.** Ein NTS-Client prüft per TLS-Zertifikat, dass er
+  wirklich mit `time.cloudflare.com` oder `ptbtime1.ptb.de` spricht. Biegst du den Namen um,
+  scheitert die Prüfung, und das Gerät bekommt *gar keine* Zeit mehr. Deshalb fehlen
+  `time.cloudflare.com`, `nts.netnod.se`, `ptbtime1–4.ptb.de`, `nts.time.nl` und
+  `ntp.zeitgitter.net` absichtlich – und eignen sich umgekehrt gut als Quellen für ntp-gui
+  selbst, weil sie nie zu dir zurückgebogen werden. Ebenso nie umgeschrieben: `fritz.box`.
+- **Samsung- und LG-Fernseher** holen die Zeit per HTTPS vom Hersteller, nicht per NTP. Eine
+  Umschreibung würde dort nur die Uhr kaputtmachen; sie stehen darum nicht auf der Liste.
+- **Anderer NTP-Port als 123?** DNS biegt nur die Adresse um, nicht den Port – dann hilft nur
+  die Firewall-Umleitung.
+
+Der Knopf **Prüfen** löst die Namen über den DNS-Server des Containers auf, schickt je eine
+NTP-Anfrage an sie und an zwei öffentliche Server und vergleicht die Antworten mit diesem
+Server. Ergebnis je Name: *DNS-Umschreibung wirkt*, *teilweise* (meist fehlt die
+AAAA-Sperre für IPv6), *nicht umgeschrieben* oder *keine Antwort*. Wird die Anfrage von
+ntp-gui an einen öffentlichen Server zu ntp-gui selbst zurückgeleitet, meldet die Prüfung
+eine **Schleife**, ebenso, wenn eine eigene Zeitquelle per DNS auf ntp-gui zeigt. Gesendet
+wird nur auf deinen Klick, höchstens einmal je 30 Sekunden, und nur NTP-Anfragen – keine
+Daten über deine Instanz. Ob ein *Gerät* wirklich umgeleitet wird, kann der Server nicht von
+innen sehen; dafür zeigt die Seite einen Selbsttest für Windows, macOS und Linux.
+
+### Wie genau gehen meine Clients?
+
+Die Seite **Clients** zeigt je Gerät, wie weit seine Uhr danebenliegt – **rein passiv**: Jede
+NTP-Anfrage trägt die Uhrzeit des Clients beim Absenden, der Kernel stempelt sie beim
+Empfang mit der Zeit dieses Servers. Die Differenz ist die Abweichung der Client-Uhr (plus
+die Laufzeit im LAN, meist unter 1 ms). Positiv heißt: die Uhr des Geräts geht vor. An die
+Geräte wird nichts gesendet.
+
+| Zustand | Bedeutung |
+|---|---|
+| **messbar** | Der Client schreibt seine echte Uhrzeit in die Anfrage – das tun die meisten einfachen Clients (SNTP), etwa Windows, systemd-timesyncd, klassisches ntpd und viele IoT-Geräte |
+| **nicht messbar (verschleiert)** | chrony, OpenNTPD, NTPsec und NTS-Clients schreiben absichtlich eine Zufallszahl, damit Dritte ihre Uhr nicht auslesen können – gutes Verhalten, kein Fehler |
+| **nicht messbar (ohne Zeitstempel)** | Der Client sendet gar keine Uhrzeit mit |
+| **Uhr liegt mehr als einen Tag daneben** | gleichbleibend absurde Werte, z. B. 1970 nach einem Batterietausch – die Uhr ist wirklich falsch |
+
+Voraussetzungen:
+
+- **`CAP_NET_RAW`** – der Container liest NTP-Pakete über einen Paket-Socket mit; ein Filter
+  im Kernel lässt nur UDP an den NTP-Port durch. In Docker ist `NET_RAW` Standard; wer
+  Capabilities mit `cap_drop: [ALL]` entfernt, ergänzt `cap_add: [NET_RAW]`.
+- **Host-Netzwerk** (`network_mode: host`, wie in der All-in-one-Datei) – nur ohne NAT sieht
+  der Container die echten Client-Adressen. Hinter der Docker-Bridge erscheinen alle Geräte
+  unter einer Adresse.
+
+**Datenschutz:** Die Messwerte bleiben auf dieser Instanz (in `ntp-gui.db`). Ins
+Diagnosepaket kommt die Client-Liste nur, wenn du es ankreuzt – und dann mit Pseudonymen
+(`client-07`) statt Adressen. Abschalten: `CLIENTMON=false` oder in den Einstellungen
+(wirkt ohne Neustart). API: `/api/clients/offsets`.
 
 ## NTS – abgesicherte Zeit
 
@@ -672,7 +766,50 @@ kalibrieren nur nach einem Wechsel von Empfänger, USB-Port, Baudrate oder Firmw
 Ohne Dashboard geht es auch per Umgebung (`GPS_OFFSET`, `GPS_DELAY`, `GPS_SELECT`); den
 Offset liest man dann mit `chronyc sourcestats` ab (Spalte *Offset* der Zeile `GPS`). Den
 Vorschlag gibt es auch per API: `/api/gps/calibration?window=21600` (Zeitfenster in
-Sekunden, `?seconds=` geht ebenso).
+Sekunden, `?seconds=` geht ebenso; ohne Angabe die letzten 24 h, `window=0` den ganzen Verlauf).
+
+### GPS automatisch kalibrieren
+
+Die Verspätung eines USB-GPS ist fest, aber nicht für immer: Firmware, USB-Port oder Baudrate
+ändern sie. Damit du nicht daran denken musst, misst ntp-gui laufend weiter und kann den
+Offset selbst nachstellen. Einstellung **GPS → Automatische Kalibrierung** (`GPS_AUTOCAL`):
+
+| Modus | Was passiert |
+|---|---|
+| `off` | nichts – kein Vorschlag, keine Änderung |
+| `suggest` (Standard) | Die Seite **GPS** zeigt einen Vorschlag, sobald er belastbar ist. Du übernimmst ihn per Klick. |
+| `auto` | ntp-gui stellt den Offset selbst nach – behutsam, nach festen Regeln, mit Eintrag im Ereignisprotokoll |
+
+Die Regeln sind bewusst vorsichtig – lieber eine Änderung zu wenig als eine falsche:
+
+- **Genug Messdauer:** erst nach `GPS_AUTOCAL_MIN_HOURS` (Standard 6 h) gemeinsamer Messung
+  von GPS und Netzwerkquellen. Mehrere Stunden glätten Tagesschwankungen der Netzlaufzeit.
+  Nach jeder Offset-Änderung (auch von Hand) beginnt die Messung neu.
+- **Vertrauenswürdige Referenz:** mindestens zwei genutzte Netzwerkquellen oder eine genutzte
+  NTS-Quelle. Eine einzelne ungeschützte Quelle könnte selbst danebenliegen. Ohne
+  Netzwerkquelle (Internet weg) passiert nichts.
+- **Nur echte Abweichungen:** mindestens 1 ms und deutlich größer als die Messunsicherheit.
+  Eine Korrektur in die Gegenrichtung der letzten braucht die doppelte Schwelle – so pendelt
+  der Offset nicht hin und her.
+- **Kleine Schritte:** höchstens eine Änderung je 24 h, jeweils höchstens
+  `GPS_AUTOCAL_MAX_STEP_MS` (Standard 5 ms). Größere Abweichungen werden über mehrere Tage
+  abgebaut. Den Delay verkleinert ntp-gui erst beim letzten Schritt – ein kleiner Delay
+  macht das GPS für chrony attraktiver, das soll erst mit stimmendem Offset passieren.
+- **Im Zweifel ein Mensch:** Streut die Messung über 25 ms oder liegt sie über 0,5 s daneben,
+  stimmt etwas Grundsätzliches nicht (falsches Gerät, wackelige Leitung). Dann gibt es nur
+  einen Vorschlag.
+
+**Rücknahme:** Jede automatische Änderung steht mit Grund in der Tabelle auf der Seite **GPS**
+und im Ereignisprotokoll. **Rückgängig** stellt den vorigen Offset wieder her
+(`POST /api/gps/autocal/rollback`). Hast du den Offset seitdem von Hand geändert, verweigert
+ntp-gui die Rücknahme, statt deine Änderung zu überschreiben. Eine übernommene Änderung
+startet chronyd kurz neu. Mit `WEB_READONLY=true` ändert auch die Automatik nichts.
+
+**Kein Schritt auf unbestätigter Grundlage:** Bevor die Automatik erneut stellt, prüft sie, ob
+die letzte Änderung wirklich wirkt – der Offset in der laufenden `chrony.conf` muss stimmen und
+das Neuladen erfolgreich gewesen sein. Ist das nicht belegbar (z. B. Neuladen fehlgeschlagen),
+passiert nichts weiter, und der Grund steht auf der Seite **GPS**. Gemessen wird erst ab dem
+Zeitpunkt, an dem die Änderung tatsächlich aktiv wurde.
 
 ### PPS zusätzlich nutzen
 
@@ -743,6 +880,84 @@ Ein Detail für Tests: **gpsd akzeptiert keine PTY- oder TCP-Quellen als Zeitref
 liefert also Position und Satelliten, aber niemals Samples für chrony – dafür braucht es
 ein echtes serielles bzw. USB-Gerät.
 
+## Diagnose & Fehlersuche
+
+Die Seite **Diagnose** bündelt alles, was du für die Fehlersuche brauchst – ohne
+`docker logs` und ohne Shell im Container.
+
+**Log.** Der Supervisor schreibt seine Ausgabe zusätzlich nach `/run/ntp-gui/ntp-gui.log`
+(ab 2 MB wird sie zu `ntp-gui.log.1`; `docker logs` bekommt weiter alles). Die Seite zeigt die
+letzten Zeilen, filtert nach Text und nach *nur Warnungen* / *nur Fehler*. Das Log bleibt auf
+dem Server und wird darum nicht gefiltert. Abschalten lässt sich die Kopie mit
+`NTPGUI_LOGTEE=0`.
+
+**Ereignisprotokoll.** Was passiert ist, in einer Zeitleiste: Neustarts und Ausfälle von
+Diensten, angewendete Einstellungen (nur die Namen der Felder, nie die Werte), Wechsel der
+ausgewählten Zeitquelle, GPS-Fix verloren/wieder da, PPS-Impulse ausgeblieben/wieder da,
+GPS-Gerät abgezogen/neu angesteckt, Zertifikatswechsel, Kalibrierung. Ein Zustand zählt erst
+als gewechselt, wenn er zweimal hintereinander gemessen wurde – ein kurzes Flackern erzeugt
+kein Ereignis. Gespeichert in `ntp-gui.db` für 90 Tage (höchstens 50 000 Einträge); API:
+`/api/events?since=&kinds=&level=`.
+
+**Diagnosepaket.** Ein Klick erzeugt ein `.tar.gz` für einen Fehlerbericht: Version und
+Plattform, die erzeugte `chrony.conf`/`ptp4l.conf`, die Ausgaben von `chronyc` (tracking,
+sources, sourcestats, selectdata, ntpdata, serverstats, activity, authdata), GPS- und
+PTP-Zustand, Hardware-Check, Dienste, die Ereignisse der letzten 7 Tage, die letzten 2000
+Log-Zeilen, die Einstellungen ohne Zugangsdaten und vom Verlauf der letzten 24 h nur
+Kennzahlen. Die Client-Liste und eine Aufzeichnung kommen nur hinein, wenn du sie ankreuzt.
+**Vorschau** zeigt vorher genau den Inhalt, der im Paket landet, und was der Filter entfernt
+hat. Das Paket wird **nur heruntergeladen – hochgeladen wird nichts**. Ob und wo du es
+teilst, entscheidest du.
+
+### Was der Datenschutzfilter entfernt – und warum
+
+Alles, was die Instanz verlässt, läuft durch **einen** Filter (`app/egress.py`). Sein Ziel:
+Aus dem Paket darf sich **kein Standort ablesen lassen** und kein Gerät wiedererkennen.
+Ein GPS-Zeitserver kennt seine Position auf wenige Meter genau – das gehört in keinen
+Fehlerbericht.
+
+| Entfernt / ersetzt | Warum |
+|---|---|
+| Koordinaten, Höhe – auch in NMEA-Sätzen, gpsd-Meldungen und freiem Text | verraten den Standort direkt |
+| Geschwindigkeit, Kurs, Steigrate, **Azimut und Elevation der Satelliten** | Aus den Satellitenwinkeln zu einer bekannten Uhrzeit lässt sich die Position zurückrechnen |
+| **Liste der einzelnen Satelliten** (Nummern) | Welche Satelliten zu einer Uhrzeit sichtbar sind, grenzt die Region ein. Übrig bleiben Summen je System: gesehen, genutzt, mittlere und höchste Signalstärke |
+| **Laufzeiten** zu Servern (Root/Peer delay, Fehlerschranken, RTT – auch in Aufzeichnungen) → auf 10 ms gerundet | Viele genaue Laufzeiten zu bekannten Servern erlauben eine grobe Ortung |
+| Seriennummern (USB, DMI, `/dev/serial/by-id/…`, `iSerial`, `S/N`), lange Hex-Kennungen (machine-id, Container-ID) | machen ein Gerät eindeutig wiedererkennbar |
+| MAC-Adressen und PTP-Clock-IDs (aus der MAC gebildet) | ebenso; außerdem verrät der Herstellerteil die Hardware |
+| Öffentliche IP-Adressen (auch in chrony-Referenz-IDs und Reverse-DNS-Namen wie `ip-1-2-3-4`) → `<öffentliche-IP>` | verorten den Anschluss bis auf Stadt oder Provider |
+| Private Adressen → stabile Pseudonyme `client-07` | Im Paket bleibt erkennbar, *dass* es dasselbe Gerät ist, aber nicht welches |
+| Eigene Hostnamen, Domains, per Reverse-DNS aufgelöste Gerätenamen von Clients und Quellen, Zertifikatsangaben (Name, Ort, Organisation), E-Mail-Adressen, Zugangsdaten | Eine eigene Domain oder ein Gerätename führt direkt zu dir |
+| Eigener Dashboard-Titel, Zeitzonen-Namen (nur der UTC-Versatz bleibt) | Titel und Zeitzone engen den Ort ein |
+
+Lesbar bleiben die bekannten öffentlichen Zeitserver (PTB, Cloudflare, Netnod,
+`*.pool.ntp.org` …), Netzbereiche wie `192.168.0.0/16`, Gerätenamen wie `ttyACM0` und
+Dateinamen wie `chrony.conf` – ohne sie wäre der Bericht nutzlos.
+
+Nach dem Filtern prüfen **zwei Schlussprüfungen** den Inhalt und jede Datei im Paket: eine
+mit den Regeln des Filters (was der Filter noch ändern würde, ist ein Fund) und eine davon
+unabhängige, bewusst einfache Suche auf den fertigen Bytes. In Log und Aufzeichnung wird eine
+beanstandete Zeile durch `[Zeile entfernt – Datenschutz]` ersetzt – so kann niemand den Export
+blockieren, indem er seltsamen Text ins Log schreibt. Findet danach noch eine Prüfung etwas,
+wird **gar nichts** exportiert – die Fehlermeldung nennt nur Art und Stelle des Fundes, nie
+den Inhalt. Im Paket liegt eine
+`MANIFEST.txt`, die auf Deutsch auflistet, was drin ist und was aus welchem Grund wie oft
+entfernt wurde.
+
+### Aufzeichnung für Entwickler
+
+Manche Fehler zeigen sich nur mit genau deiner Hardware. Dafür kann ntp-gui für eine Weile
+mitschneiden, was es von `chronyc`, `pmc`, `ethtool` und gpsd zu sehen bekommt
+(**Diagnose → Aufzeichnung**, 1 bis 60 Minuten, höchstens 20 MB; die letzten drei
+Aufzeichnungen bleiben unter `/run/ntp-gui`). Ins Diagnosepaket kommt sie nur, wenn du es
+ankreuzt – gefiltert wie alles andere, also ohne Position und Satellitenwinkel.
+
+Entwickler spielen eine Aufzeichnung ohne echte Hardware wieder ab:
+
+```bash
+NTPGUI_REPLAY=/pfad/recording.jsonl NTPGUI_REPLAY_SPEED=10 …   # Dashboard zeigt die aufgezeichneten Daten
+python3 app/providers.py replay-info /pfad/recording.jsonl      # Inhalt einer Aufzeichnung
+```
+
 ## Konfiguration
 
 Alle Werte lassen sich **im Dashboard** einstellen (siehe [Einstellungen im Dashboard](#einstellungen-im-dashboard));
@@ -806,6 +1021,9 @@ unverändert übernommen und alle NTP-Variablen ignoriert.
 | `GPS_PPS_SHM` | `false` | PPS stattdessen über gpsd (SHM-Segment `GPS_PPS_SHM_UNIT`, Standard `1`) |
 | `GPS_WAIT_SECONDS` | `10` | So lange auf das Gerät warten (USB taucht nach dem Boot verzögert auf) |
 | `GPS_SHOW_POSITION` | `false` | Koordinaten im Dashboard anzeigen |
+| `GPS_AUTOCAL` | `suggest` | Automatische Kalibrierung: `off`, `suggest` (vorschlagen) oder `auto`, siehe [GPS automatisch kalibrieren](#gps-automatisch-kalibrieren) |
+| `GPS_AUTOCAL_MAX_STEP_MS` | `5.0` | Größter automatischer Kalibrierschritt in ms (0,1–50) |
+| `GPS_AUTOCAL_MIN_HOURS` | `6.0` | Mindest-Messdauer in Stunden, bevor vorgeschlagen oder geändert wird (0,5–168) |
 | `GPS_REFCLOCK_OPTIONS` | – | Zusätzliche chrony-Refclock-Optionen |
 | `GPS_OPTIONS` | – | Zusätzliche Argumente für gpsd (Wortliste, z. B. `-b` für nur lesen) |
 | `GPSD_HOST` / `GPSD_PORT` | `127.0.0.1` / `2947` | Wo das Dashboard gpsd abfragt |
@@ -929,24 +1147,57 @@ PHC-Refclock dient ihm als Referenz für Stratum und Statistik.
 | `WEB_PORT` / `WEB_BIND` | `8080` / `0.0.0.0` | Adresse des Dashboards |
 | `WEB_TITLE` | `NTP / PTP Time Server` | Überschrift |
 | `WEB_USER` / `WEB_PASSWORD` | – | Beide gesetzt ⇒ HTTP Basic Auth (alternativ Passwort im Dashboard setzen) |
+| `WEB_ALLOWED_HOSTS` | – | Weitere Namen, unter denen das Dashboard **ohne Passwort** antworten darf, kommagetrennt; `*.example.org` für alle Unternamen, `*` schaltet die Prüfung ab. Siehe [Schutz vor DNS-Rebinding](#schutz-vor-dns-rebinding) |
 | `WEB_READONLY` | `false` | Einstellungen im Dashboard sperren |
 | `WEB_REFRESH_SECONDS` | `5` | Aktualisierungsintervall im Browser |
-| `HISTORY_INTERVAL` / `HISTORY_SIZE` | `10` / `8640` | Messintervall und Länge des Verlaufs (Default: 24 h, wird stündlich und beim Stoppen gesichert) |
+| `HISTORY_INTERVAL` | `10` | Messintervall des Verlaufs in Sekunden |
+| `HISTORY_DAYS` | `30` | So viele Tage hält der Verlauf (SQLite, `ntp-gui.db`; 1–3650). Neue Punkte werden gesammelt und alle 5 Minuten sowie beim Stoppen geschrieben – das schont SD-Karten |
+| `HISTORY_SIZE` | – | Nur wenn gesetzt: harte Obergrenze an Messpunkten (wie bis 1.2, z. B. `8640` = 24 h bei 10 s) |
 | `WEB_ACCESS_LOG` | `false` | Zugriffe protokollieren |
 
 Nur per Umgebung (sie betreffen den Start selbst oder sind Expertenwerte): `WEB_PORT`,
-`WEB_BIND`, `WEB_READONLY`, `WEB_USER`/`WEB_PASSWORD`, `WEB_ACCESS_LOG`, `HISTORY_SIZE`,
+`WEB_BIND`, `WEB_READONLY`, `WEB_USER`/`WEB_PASSWORD`, `WEB_ALLOWED_HOSTS`, `WEB_ACCESS_LOG`, `HISTORY_SIZE`,
+`HISTORY_DAYS`, `NTPGUI_LOGTEE`, `NTPGUI_REPLAY`/`NTPGUI_REPLAY_SPEED`,
 `DISABLE_CLOCK_CONTROL`, `EXTRA_CHRONY_CONF`, `EXTRA_PTP4L_CONF`, `CHRONY_LOG`,
 `CLIENTLOGLIMIT`, `MAXUPDATESKEW`, `CUSTOM_CHRONY_CONF`, `CUSTOM_PTP4L_CONF`, `GPS_OPTIONS`,
 `GPS_SHM_UNIT`, `GPS_PPS_SHM_UNIT`, `GPS_WAIT_SECONDS`, `GPSD_HOST`/`GPSD_PORT`,
 `PHC_REFCLOCK_OPTIONS`, `PTP_UTC_OFFSET`, `PTP_HOLDOVER_SECONDS`, `PTP_TX_TIMESTAMP_TIMEOUT`,
 `PTP_UDS_ADDRESS`.
 
+### Clients, Diagnose und Entwicklung
+
+| Variable | Default | Bedeutung |
+|---|---|---|
+| `CLIENTMON` | `true` | Uhren der Clients passiv messen, siehe [Wie genau gehen meine Clients?](#wie-genau-gehen-meine-clients) |
+| `ENFORCE_HOSTNAMES` | – | Weitere Zeitserver-Namen für die Anleitungen unter [Zeitserver erzwingen](#zeitserver-erzwingen), kommagetrennt (nur DNS-Namen, höchstens 50) |
+| `NTPGUI_LOGTEE` | `1` | `0` schaltet die Log-Kopie für die Seite **Diagnose** ab |
+| `NTPGUI_REPLAY` | – | Nur für Entwicklung/Demo: Aufzeichnung (`.jsonl`) statt echter Dienste abspielen |
+| `NTPGUI_REPLAY_SPEED` | `1` | Tempo der Wiedergabe |
+
 Der Healthcheck (Dockerfile und alle Compose-Dateien) liest `WEB_PORT` selbst; bei einem
 anderen Port musst du ihn nicht anpassen.
 
 Das Dashboard hat **keine Verschlüsselung**. Für Zugriff über unsichere Netze einen
 Reverse Proxy mit TLS davorsetzen und `WEB_USER`/`WEB_PASSWORD` verwenden.
+
+#### Schutz vor DNS-Rebinding
+
+Ohne Passwort könnte sonst jede Webseite, die du im Browser öffnest, ihren eigenen Namen kurz
+auf die LAN-Adresse von ntp-gui zeigen lassen und dann Log, Status und GPS-Position lesen
+(„DNS-Rebinding“). Darum beantwortet ntp-gui **ohne Passwort** nur Anfragen an:
+
+- IP-Adressen (`http://192.168.1.10:8080`), `localhost` und `*.localhost`,
+- den eigenen Hostnamen des Containers und einteilige Namen (`http://raspberrypi:8080`) –
+  solche Namen kann kein öffentliches DNS liefern,
+- lokale Endungen: `*.local`, `*.lan`, `*.home.arpa`, `*.internal`, `*.home`, `*.corp`,
+  `*.localdomain`, `*.intranet`, `*.private`, `*.speedport.ip`,
+- den NTS-Namen (`NTS_SERVER_NAME`) und alles aus `WEB_ALLOWED_HOSTS`.
+
+Jeder andere Name bekommt `403` mit einer Erklärung; im Log steht er einmal (bereinigt).
+**`*.fritz.box` ist absichtlich nicht dabei:** `.box` ist eine echte, öffentlich vergebene
+Endung. Öffnest du das Dashboard als `ntp.fritz.box`, trage `WEB_ALLOWED_HOSTS=*.fritz.box`
+ein oder setze ein Passwort. Mit Passwort oder API-Schlüssel gilt jeder Name – die Anmeldung
+schützt dann. `/healthz` antwortet immer.
 
 ### Was im Container unter welchem Benutzer läuft
 
@@ -957,8 +1208,9 @@ Reverse Proxy mit TLS davorsetzen und `WEB_USER`/`WEB_PASSWORD` verwenden.
 | `ptp4l` / `phc2sys` | root | brauchen `CAP_NET_ADMIN` für Hardware-Zeitstempel |
 | Dashboard (`python3`) | root | ruft `chronyc` und `pmc` auf, deren Sockets root bzw. `_chrony` gehören |
 
-Das Dashboard schreibt nur seine eigenen Einstellungen und den Verlauf nach
-`/var/lib/chrony/ntp-gui`, führt keine Shell-Kommandos aus (alle Aufrufe nutzen feste
+Das Dashboard schreibt nur nach `/var/lib/chrony/ntp-gui` (Einstellungen, die Datenbank
+`ntp-gui.db` mit Verlauf, Ereignissen, Client-Messwerten und API-Schlüssel-Hashes,
+`autocal.json`, `instance-id`) und nach `/run/ntp-gui` (Log, Aufzeichnungen), führt keine Shell-Kommandos aus (alle Aufrufe nutzen feste
 Argumentlisten) und prüft jeden Wert gegen eine Positivliste, bevor er in eine
 Konfigurationsdatei gelangt. Trotzdem gilt: der Container ist für das eigene
 LAN gedacht, nicht für das offene Internet. Wer ihn exponiert, gehört hinter einen Reverse
@@ -994,30 +1246,136 @@ Für Prometheus gibt es `ntpgui_service_up` und `ntpgui_service_restarts_total`.
 | `/api/history?range=3600&points=600` | Verlauf (System, Quellen, GPS, PTP), ausgedünnt |
 | `/api/config` | Aktive `chrony.conf` / `ptp4l.conf` |
 | `/api/settings` | Einstellungen mit Schema, Wert und Herkunft; `POST` speichert |
-| `/api/settings/reset`, `/import`, `/export` | Dashboard-Werte zurücksetzen, importieren, sichern |
+| `/api/settings/reset`, `/import`, `/export` | Dashboard-Werte zurücksetzen, importieren (auch Sicherungen älterer Versionen), sichern |
+| `/api/settings/notes` | Hinweise der Einstellungs-Migration; `POST /api/settings/notes/ack` markiert sie als gelesen |
 | `/api/auth` | `POST`: Dashboard-Passwort setzen oder entfernen |
 | `/api/reload` | Stand des letzten Dienst-Neustarts; `POST` löst einen aus |
 | `/api/devices` | Serielle/PPS-/PTP-Geräte, Netzwerkkarten, PTP-Voraussetzungen |
 | `/api/hardware` | Hardware-Check (Empfänger, PPS, PTP, Plattform, Rechte, RTC, Matrix). Zwischengespeichert; `?refresh=1` prüft neu |
-| `/api/gps/calibration?window=21600` | Kalibriervorschlag für das GPS über die letzten n Sekunden (`?seconds=` geht ebenso; ohne: ganzer Verlauf) |
+| `/api/gps/calibration?window=21600` | Kalibriervorschlag für das GPS über die letzten n Sekunden (`?seconds=` geht ebenso; ohne: letzte 24 h, `window=0`: ganzer Verlauf) |
+| `/api/gps/autocal` | Automatische GPS-Kalibrierung: Modus, Entscheidung, letzte Änderungen; `POST /api/gps/autocal/rollback` nimmt die letzte zurück |
+| `/api/logs?lines=500&q=&level=warn` | Container-Log (lokal, ungefiltert) |
+| `/api/events?since=&kinds=&level=` | Ereignisprotokoll (Quellenwechsel, Fix verloren, PPS, Neustarts, Änderungen) |
+| `/api/diagnostics/preview`, `/bundle` | Diagnosepaket: Vorschau bzw. `.tar.gz` – gefiltert, ohne Standort und Kennungen, wird nie hochgeladen |
+| `/api/recording` | Aufzeichnung der Datenquellen; `POST {"seconds": 300}` startet, `{"action": "stop"}` stoppt |
+| `/api/enforce/snippets`, `/api/enforce/check` | Zeitserver erzwingen: Anleitungen (DNS/Firewall) und Prüfung |
+| `/api/clients/offsets` | Passiv gemessene Abweichung der Client-Uhren |
+| `/api/apikeys` (Alias `/api/keys`) | API-Schlüssel auflisten, `POST` legt an, `/api/apikeys/revoke` widerruft (nur mit Benutzer/Passwort) |
+| `/api/v1/instance` | Zufällige Instanz-Kennung; `POST /api/instance/rotate` erzeugt eine neue (nur mit Benutzer/Passwort) |
+| `/api/v1/…` | Versionierte, stabile API (Alias der Pfade oben); `GET /api/v1` beschreibt alle Endpunkte samt nötigem Recht, siehe [API & Automatisierung](#api--automatisierung) |
 | `/metrics` | Prometheus (u. a. Offset, Quellen, GPS, PTP, `ntpgui_service_*`, `ntpgui_hardware_capability`, `ntpgui_pps_live`, `ntpgui_nts_server_cert_days_left`) |
 | `/healthz` | `200`, solange chronyd antwortet (ohne Login) |
+
+## API & Automatisierung
+
+**`/api/v1`** ist die versionierte, stabile Schnittstelle für Skripte, Home Assistant & Co.:
+Jeder Pfad oben ist dort ohne `/api` erreichbar (`/api/v1/status`, `/api/v1/history`,
+`/api/v1/events` …). Innerhalb von 1.x ändern sich diese Pfade und ihre Felder nicht
+inkompatibel. `GET /api/v1` liefert die Liste aller Endpunkte samt Methode, Beschreibung und
+nötigem Recht. Die bisherigen `/api/…`-Pfade funktionieren weiter.
+
+### API-Schlüssel
+
+Statt das Dashboard-Passwort in Skripte zu schreiben, legst du unter **Einstellungen →
+API-Schlüssel** eigene Schlüssel an – je Anwendung einer, so kannst du jeden einzeln
+widerrufen.
+
+| Recht | Darf |
+|---|---|
+| **nur lesen** (`read`) | alle `GET`-Endpunkte, auch `/metrics` und das Diagnosepaket |
+| **lesen und verwalten** (`admin`) | zusätzlich Änderungen per `POST` (Einstellungen, Neustart, Kalibrierung zurücknehmen, Aufzeichnung) |
+| nur mit Benutzer und Passwort | Passwort ändern, API-Schlüssel anlegen/widerrufen, Instanz-Kennung neu erzeugen |
+
+Die letzte Zeile ist Absicht: Kein Schlüssel – auch kein `admin`-Schlüssel – kann das Passwort
+ändern oder sich neue Schlüssel ausstellen. Wird einer entwendet, reicht Widerrufen.
+
+Der Schlüssel hat die Form `ntpg_…` und wird **nur einmal** angezeigt; gespeichert wird nur
+ein SHA-256-Hash. Ein langsames Verfahren wie PBKDF2 bringt bei 144 Bit Zufall nichts und
+würde jede Anfrage mit einem erfundenen `ntpg_…` teuer machen; Schlüssel aus 1.3-Vorabversionen
+(PBKDF2) werden beim nächsten Gebrauch umgestellt. Im Ereignisprotokoll steht nur die Kennung
+eines Schlüssels, nie sein frei gewählter Name. Er geht als `Authorization: Bearer` mit und gilt immer mit seinem Recht –
+auch wenn kein Dashboard-Passwort gesetzt ist; ein Lese-Schlüssel kann also nie schreiben.
+Mit Schlüssel entfällt der CSRF-Header `X-NTP-GUI` (den Schlüssel schickt kein Browser von
+sich aus mit), `POST` braucht weiter `Content-Type: application/json`.
+
+```bash
+TOKEN=ntpg_…   # aus Einstellungen → API-Schlüssel
+
+# Zustand lesen (Recht „nur lesen“)
+curl -s -H "Authorization: Bearer $TOKEN" http://<host>:8080/api/v1/status
+
+# Ereignisse der letzten Stunde, nur Warnungen und Schlimmeres
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "http://<host>:8080/api/v1/events?since=$(( $(date +%s) - 3600 ))&level=warn"
+
+# Dienste neu starten (Recht „lesen und verwalten“)
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{}' http://<host>:8080/api/v1/reload
+```
+
+Ein falscher oder widerrufener Schlüssel ergibt `401`, ein zu schwaches Recht `403` mit
+dem nötigen Recht in `scope_required`.
+
+### Prometheus
+
+Ist ein Dashboard-Passwort gesetzt, braucht auch `/metrics` eine Anmeldung. Gib Prometheus
+dafür einen Schlüssel mit Recht **nur lesen**:
+
+```yaml
+scrape_configs:
+  - job_name: ntp-gui
+    metrics_path: /metrics
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/ntp-gui.token   # enthält nur ntpg_…
+    static_configs:
+      - targets: ["192.168.1.10:8080"]
+```
+
+### Instanz-Kennung
+
+`/api/v1/instance` liefert eine zufällige Kennung (UUID), die beim ersten Start entsteht. Sie
+enthält nichts über Hardware oder Standort und hilft künftigen, freiwilligen Diensten, Werte
+derselben Instanz zuzuordnen. **Einstellungen → Neu erzeugen** ersetzt sie jederzeit
+(`POST /api/instance/rotate`, nur mit Passwort).
+
+## Update-Hinweise
+
+Beim Update musst du nichts von Hand umbauen:
+
+- **Einstellungen tragen eine Schema-Version.** Beim ersten Start einer neuen Version bringt
+  ntp-gui die gespeicherten Einstellungen einmalig auf den neuen Stand. Was dabei geändert
+  wurde, steht als Karte **oben auf der Einstellungsseite** – mit Begründung; „Gelesen“
+  blendet sie aus (`/api/settings/notes`). Beispiel 1.3: Ein gespeicherter Pfad für
+  Zertifikat/Schlüssel des NTS-Servers außerhalb von `/config`, `/certs` oder
+  `/etc/letsencrypt` (seit 1.2.0 nicht mehr erlaubt) wird entfernt, statt bei jedem Start als
+  „ungültig“ gemeldet zu werden.
+- **Sicherungen aus älteren Versionen** lassen sich importieren; sie durchlaufen dieselben
+  Schritte. Eine Datei aus einer *neueren* Version bleibt unangetastet.
+- **Liegt `/var/lib/chrony` schreibgeschützt**, gelten die Änderungen nur im Speicher; die
+  Hinweise erscheinen trotzdem.
+- **Verlauf:** Ein vorhandenes `history.json.gz` (bis 1.2) wird beim ersten Start in
+  `ntp-gui.db` übernommen und als `history.json.gz.migrated` aufbewahrt. Kann die Datenbank
+  nicht geöffnet werden, arbeitet der Verlauf wie in 1.2 weiter.
 
 ## Entwicklung
 
 ```bash
-python3 -m unittest discover -s tests -v     # 221 Tests: Parser, Einstellungen, Config, Kalibrierung, Hardware, NTS
+python3 -m unittest discover -s tests -v     # 562 Tests: Parser, Einstellungen, Config, Kalibrierung, Hardware, NTS, Datenschutzfilter, API
 docker build -t ntp-gui:test .
 tests/container-test.sh ntp-gui:test         # Integrationstest gegen das gebaute Image
 ```
 
-Der Integrationstest (68 Prüfungen) startet echte Container und prüft das, was Unittests
+Der Integrationstest (111 Prüfungen) startet echte Container und prüft das, was Unittests
 nicht abdecken: Erkennung von fehlendem `CAP_SYS_TIME`, Healthcheck, alle Endpunkte,
 Basic-Auth, gemountete Konfiguration, Verhalten ohne GPS-/PTP-Hardware, Neustart eines
 abgestürzten gpsd, eine echte NTP-Abfrage über das Netz, Einstellungen speichern samt
 Neustart der Dienste und Persistenz über eine Neuerstellung, CSRF-Schutz, `WEB_READONLY`,
-den NTS-Server mit selbst signiertem Zertifikat samt Zertifikatswechsel wie bei Certbot und
-die Exit-Codes beim Stoppen. Dieselbe Datei läuft in der CI gegen das gebaute Image.
+den NTS-Server mit selbst signiertem Zertifikat samt Zertifikatswechsel wie bei Certbot, die
+Log-Seite, das Diagnosepaket (gültiges Archiv mit `MANIFEST.txt`, ohne Koordinaten,
+Satellitenwinkel, MAC, öffentliche IP und ohne Adresse oder Namen des Containers),
+API-Schlüssel, den Schutz vor DNS-Rebinding (fremder Host-Name → 403, `WEB_ALLOWED_HOSTS`, mit
+Login jeder Name) und die Exit-Codes beim Stoppen. Dieselbe Datei läuft in der CI gegen das gebaute Image.
 
 Lokal ohne Container starten (setzt installiertes `chrony` voraus; als root, und der
 System-chronyd sollte gestoppt sein). `CHRONY_CONF` auf einen Scratch-Pfad zeigen
@@ -1035,8 +1393,10 @@ CSV-Zeile, „nie gehört“ ist `4294967295` und `pmc` antwortet nur, wenn die 
 
 ## Bekannte Einschränkungen
 
-* Der Verlauf reicht standardmäßig 24 h zurück. Für Langzeitdaten `/metrics` mit
-  Prometheus abgreifen.
+* Der Verlauf reicht standardmäßig 30 Tage zurück (`HISTORY_DAYS`). Für längere Zeiträume
+  `/metrics` mit Prometheus abgreifen.
+* Die passive Messung der Client-Uhren sieht echte Client-Adressen nur mit Host-Netzwerk,
+  und Clients wie chrony oder NTS-Clients verschleiern ihre Uhrzeit absichtlich (nicht messbar).
 * Nach dem Speichern starten chronyd, gpsd und ptp4l kurz neu, nach einer
   Zertifikatserneuerung beim NTS-Server nur chronyd; für einige Sekunden antwortet der
   NTP-Server dann nicht.

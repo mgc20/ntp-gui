@@ -1,5 +1,5 @@
 // Wiederverwendbare Bausteine: Karten, Kacheln, ⓘ-Erklärungen, Badges.
-import { el, rich } from "./util.js";
+import { el, rich, copyText, selectContents } from "./util.js";
 import { HELP } from "./help.js";
 
 // --- ⓘ-Popover --------------------------------------------------------------
@@ -139,4 +139,18 @@ export function toast(message, tone = "good") {
   document.body.append(node);
   setTimeout(() => node.classList.add("is-leaving"), 3200);
   setTimeout(() => node.remove(), 3800);
+}
+
+// „Kopieren“-Knopf für Code-Schnipsel und Schlüssel. `target` ist das Element mit
+// dem Text (pre/code); klappt das Kopieren nicht, wird es markiert.
+export function copyButton(text, target) {
+  const button = el("button", { type: "button", class: "copy", text: "Kopieren" });
+  button.addEventListener("click", async () => {
+    const value = typeof text === "function" ? text() : text;
+    if (await copyText(value)) { toast("Kopiert"); return; }
+    const node = target || button.closest(".snippet, .apikey-token")?.querySelector("pre, code");
+    const marked = selectContents(node);
+    toast(marked ? "Kopieren nicht möglich – Text ist markiert, bitte Strg+C drücken" : "Kopieren nicht möglich – bitte markieren", "warn");
+  });
+  return button;
 }

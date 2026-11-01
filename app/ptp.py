@@ -5,13 +5,13 @@ from __future__ import annotations
 import json
 import os
 import re
-import shutil
-import subprocess
 import threading
 import time
 from typing import Any
 
-PMC = shutil.which("pmc") or "/usr/sbin/pmc"
+import providers
+
+PMC = providers.binary("pmc")
 PTP4L_LOG = os.environ.get("PTP_LOG_FILE", "/var/log/ptp4l.log")
 
 # Datasets we query, and the fields we lift out of each of them.
@@ -139,19 +139,14 @@ def _pmc_base(cfg: dict) -> list[str]:
 
 
 def _query(dataset: str, timeout: float = 3.0) -> dict[str, str]:
+    base = _pmc_base(_cfg())
     try:
-        proc = subprocess.run(
-            [*_pmc_base(_cfg()), f"GET {dataset}"],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
+        result = providers.call("pmc", [*base[1:], f"GET {dataset}"], timeout, binary_path=base[0])
+    except providers.ProviderError:
         return {}
-    if proc.returncode != 0 or not proc.stdout.strip():
+    if result.returncode != 0 or not result.stdout.strip():
         return {}
-    return parse_pmc_output(proc.stdout)
+    return parse_pmc_output(result.stdout)
 
 
 def log_tail(lines: int = 40, max_bytes: int = 65536) -> list[str]:
@@ -479,10 +474,11 @@ def _proc_identity(comm: str) -> str | None:
 
 
 def _send_grandmaster(cfg: dict, props: dict) -> bool:
+    base = _pmc_base(cfg)
     try:
-        proc = subprocess.run([*_pmc_base(cfg), grandmaster_command(props)],
-                              capture_output=True, text=True, timeout=3.0, check=False)
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
+        proc = providers.call("pmc", [*base[1:], grandmaster_command(props)], 3.0,
+                              binary_path=base[0])
+    except (providers.ProviderError, OSError) as exc:
         reason = str(exc)
     else:
         if proc.returncode == 0 and "RESPONSE MANAGEMENT GRANDMASTER_SETTINGS_NP" in proc.stdout:

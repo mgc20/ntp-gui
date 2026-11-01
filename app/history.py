@@ -1,9 +1,44 @@
-"""Verlauf der Messwerte für die Diagramme – im Speicher, gesichert als .json.gz.
+"""Verlauf der Messwerte für die Diagramme – in SQLite, mit Rückfall auf .json.gz.
 
 Ein Messpunkt enthält die Systemuhr (tracking), den Offset jeder Quelle, den
-Zähler der beantworteten Anfragen sowie GPS- und PTP-Werte. Gesichert wird
-stündlich und beim Beenden, komprimiert – so übersteht der Verlauf Neustarts,
-ohne die SD-Karte eines Raspberry Pi mit Schreiblast zu belasten.
+Zähler der beantworteten Anfragen sowie GPS- und PTP-Werte.
+
+Speicher (ab 1.3): Tabelle samples(t INTEGER PRIMARY KEY, json TEXT) in
+DATA_DIR/ntp-gui.db (store.py). Neue Messpunkte sammeln sich im Speicher und
+werden alle FLUSH_SECONDS (5 min), beim Beenden und bei save(force=True) in
+einer Transaktion geschrieben – so bleibt die Schreiblast auf der SD-Karte
+eines Raspberry Pi klein; ein Absturz kostet höchstens die letzten Minuten.
+Abfragen sehen trotzdem sofort alle Punkte (Datenbank + Puffer).
+
+Aufbewahrung:
+  * HISTORY_DAYS (Standard 30): Messpunkte, die mehr als so viele Tage älter
+    sind als der neueste, werden gelöscht. Bezug ist der neueste Messpunkt,
+    nicht die Uhr – ein Pi ohne Echtzeituhr, der mit falschem Datum startet,
+    löscht so nicht versehentlich den ganzen Verlauf. Umgekehrt zählt als
+    „neuester“ höchstens jetzt + FUTURE_SLACK: Ein einzelner Messpunkt mit
+    Zeitstempel in der Zukunft (falsches Datum von Hand, Quelle stellt die Uhr
+    vor, importierte Datei) löscht sonst bei jedem Schreiben den ganzen
+    Verlauf. Solche Punkte werden gar nicht erst gespeichert (auch nicht bei der
+    Übernahme der .json.gz); bereits vorhandene bleiben liegen, zählen aber
+    nicht als „neuester“.
+  * HISTORY_SIZE (wie in 1.2: Anzahl Messpunkte) bleibt eine OBERGRENZE, wenn
+    die Variable gesetzt ist. Ist sie nicht gesetzt, übergibt server.py den
+    alten Standard 8640 – der wird hier als „keine Obergrenze, nur Tage“
+    gedeutet, sonst bliebe es bei 24 Stunden. Wer HISTORY_SIZE ausdrücklich
+    setzt, behält genau das Verhalten von 1.2.
+
+Diagramme über 30 Tage (≈ 260 000 Punkte bei 10 s) werden in SQL nach
+Zeitfenstern verdichtet (json_extract/json_each + GROUP BY), statt alle
+Punkte in Python zu laden.
+
+Erster Start mit 1.3: eine vorhandene history.json.gz wird vollständig
+übernommen und danach in history.json.gz.migrated umbenannt.
+
+Rückfall: Lässt sich SQLite nicht öffnen (Datei beschädigt, Volume nur
+lesbar, sqlite3 fehlt), arbeitet der Verlauf wie in 1.2 im Speicher
+(höchstens HISTORY_SIZE bzw. 8640 Punkte) und sichert als .json.gz. Das
+Dashboard läuft also weiter, nur mit kürzerem Verlauf; stats() meldet den
+Modus, damit die Diagnose es zeigen kann.
 """
 
 from __future__ import annotations
@@ -17,65 +52,341 @@ import time
 from collections import deque
 from typing import Any
 
+try:
+    import sqlite3
+except ImportError:  # pragma: no cover – Python ohne sqlite3
+    sqlite3 = None  # type: ignore[assignment]
+
+import store
+
 _NUMERIC_TOP = ("offset", "rms", "freq", "skew", "root_delay", "root_dispersion",
                 "stratum", "served", "clients")
+_GROUPS = ("gps", "ptp")
+
+LEGACY_SIZE = 8640          # Standard von HISTORY_SIZE in 1.2 (24 h bei 10 s)
+DEFAULT_DAYS = 30.0
+FLUSH_SECONDS = 300.0
+MAX_PENDING = 5000          # Puffer, falls die Datenbank zeitweise nicht schreibbar ist
+FUTURE_SLACK = 86400.0      # Messpunkte mehr als 1 Tag in der Zukunft werden verworfen
+
+ROLLUP_SECONDS = 300        # Vorverdichtung: ein Punkt je 5 Minuten
+RAW_LIMIT = 30_000          # mehr Rohpunkte → aus der Vorverdichtung lesen
+
+_SCHEMA = [
+    "CREATE TABLE IF NOT EXISTS samples (t INTEGER PRIMARY KEY, json TEXT NOT NULL)",
+    # b = t // ROLLUP_SECONDS; t = Zeit des letzten Punkts im Fenster; json = gemittelter Punkt.
+    "CREATE TABLE IF NOT EXISTS samples_5m (b INTEGER PRIMARY KEY, t INTEGER NOT NULL, "
+    "json TEXT NOT NULL); CREATE INDEX IF NOT EXISTS samples_5m_t ON samples_5m(t)",
+]
+
+
+def retention_days(env: dict | None = None) -> float:
+    env = os.environ if env is None else env
+    try:
+        days = float(str(env.get("HISTORY_DAYS", DEFAULT_DAYS)).strip())
+    except ValueError:
+        return DEFAULT_DAYS
+    if not math.isfinite(days):
+        return DEFAULT_DAYS
+    return min(3650.0, max(1.0, days))
+
+
+def effective_size(size: int | None, env: dict | None = None) -> int | None:
+    """Obergrenze an Messpunkten oder None (nur Tage zählen). Siehe Modul-Doku."""
+    env = os.environ if env is None else env
+    if size is None:
+        return None
+    if int(size) == LEGACY_SIZE and "HISTORY_SIZE" not in env:
+        return None
+    return max(2, int(size))
+
+
+def _valid(sample: Any) -> bool:
+    return isinstance(sample, dict) and isinstance(sample.get("t"), (int, float)) \
+        and not isinstance(sample.get("t"), bool) and math.isfinite(sample["t"])
+
+
+def _latest_allowed(now: float | None = None) -> float:
+    """Spätester Zeitstempel, der noch als Gegenwart gilt."""
+    return (time.time() if now is None else now) + FUTURE_SLACK
+
+
+def _storable(sample: Any, now: float | None = None) -> bool:
+    return _valid(sample) and sample["t"] <= _latest_allowed(now)
 
 
 class History:
-    def __init__(self, size: int, path: str | None = None) -> None:
-        self._samples: deque[dict] = deque(maxlen=max(2, size))
-        self._lock = threading.Lock()
+    def __init__(self, size: int | None, path: str | None = None, days: float | None = None,
+                 db_path: str | None = None) -> None:
+        self.size = effective_size(size)
+        self.days = float(days) if days else retention_days()
         self.path = path
+        self._lock = threading.RLock()
         self._last_save = time.time()
+        self._pending: list[dict] = []
+        self.error: str | None = None
+        self.db_path: str | None = None
+        self.backend = "memory"
+        if path and sqlite3 is not None:
+            candidate = db_path or os.path.join(os.path.dirname(os.path.abspath(path)), store.DB_NAME)
+            try:
+                store.migrate("history", _SCHEMA, candidate)
+                self.db_path, self.backend = candidate, "sqlite"
+            except Exception as exc:  # Rückfall wie 1.2
+                self.error = f"SQLite nicht nutzbar ({exc}) – Verlauf nur im Speicher"
+                print(f"[web] {self.error}", flush=True)
+        self._samples: deque[dict] = deque(maxlen=self.size or LEGACY_SIZE)
+
+    # --- Hilfen ---------------------------------------------------------------
+    @property
+    def _sql(self) -> bool:
+        return self.backend == "sqlite"
+
+    def _db(self, sql: str, params: Any = ()) -> list[tuple]:
+        return store.query(sql, params, self.db_path)
+
+    def _pending_json(self) -> str:
+        return _dumps([s for s in self._pending if _valid(s)])
 
     # --- schreiben -----------------------------------------------------------
     def add(self, sample: dict) -> None:
         sample.setdefault("t", int(time.time()))
+        if not _storable(sample):
+            return  # Zeitstempel weit in der Zukunft – würde den Verlauf verdrängen
         with self._lock:
-            self._samples.append(sample)
+            if self._sql:
+                self._pending.append(sample)
+                if len(self._pending) >= MAX_PENDING:
+                    if not self._flush():
+                        del self._pending[:len(self._pending) - MAX_PENDING]
+            else:
+                self._samples.append(sample)
 
-    def resize(self, size: int) -> None:
+    def resize(self, size: int | None) -> None:
         with self._lock:
-            if self._samples.maxlen != size:
-                self._samples = deque(self._samples, maxlen=max(2, size))
+            self.size = None if size is None else max(2, int(size))
+            if self._samples.maxlen != (self.size or LEGACY_SIZE):
+                self._samples = deque(self._samples, maxlen=self.size or LEGACY_SIZE)
+
+    def _flush(self) -> bool:
+        """Puffer in die Datenbank schreiben und aufräumen. Aufruf unter self._lock."""
+        if not self._sql:
+            return False
+        latest = _latest_allowed()
+        rows = [(int(s["t"]), _dumps(s))
+                for s in self._pending if _valid(s) and s["t"] <= latest]
+        try:
+            with store.transaction(self.db_path) as conn:
+                if rows:
+                    conn.executemany("INSERT OR REPLACE INTO samples(t, json) VALUES(?, ?)", rows)
+                newest = conn.execute("SELECT max(t) FROM samples").fetchone()[0]
+                if newest is not None:
+                    newest = min(newest, latest)
+                    conn.execute("DELETE FROM samples WHERE t < ?", (newest - self.days * 86400,))
+                if self.size:
+                    conn.execute("DELETE FROM samples WHERE t < (SELECT t FROM samples "
+                                 "ORDER BY t DESC LIMIT 1 OFFSET ?)", (self.size - 1,))
+                _update_rollup(conn, {t // ROLLUP_SECONDS for t, _ in rows})
+                conn.execute("DELETE FROM samples_5m WHERE b < coalesce("
+                             "(SELECT min(t) FROM samples) / ?, b)", (ROLLUP_SECONDS,))
+        except Exception as exc:
+            self.error = f"Verlauf nicht gespeichert: {exc}"
+            return False
+        self._pending = []
+        self.error = None
+        return True
 
     # --- lesen ---------------------------------------------------------------
+    def _bounds(self) -> tuple[float | None, float | None]:
+        """(älteste erlaubte Zeit, neueste Zeit) nach Tagen und Obergrenze."""
+        rows = self._db("SELECT max(t) FROM samples")
+        newest = rows[0][0]
+        pend = [s["t"] for s in self._pending if _valid(s)]
+        if pend:
+            newest = max(pend) if newest is None else max(newest, max(pend))
+        if newest is None:
+            return None, None
+        newest = min(newest, _latest_allowed())
+        lower = newest - self.days * 86400
+        if self.size:
+            extra = len(set(pend))
+            if extra >= self.size:
+                lower = max(lower, sorted(set(pend))[-self.size])
+            else:
+                row = self._db("SELECT t FROM samples ORDER BY t DESC LIMIT 1 OFFSET ?",
+                               (self.size - extra - 1,))
+                if row:
+                    lower = max(lower, row[0][0])
+        # Auf den tatsächlich ältesten Punkt im Fenster hochziehen: davon hängt die
+        # Breite der Verdichtungsfenster ab.
+        first = self._db("SELECT min(t) FROM samples WHERE t >= ?", (lower,))[0][0]
+        candidates = [t for t in pend if t >= lower] + ([first] if first is not None else [])
+        if candidates:
+            lower = max(lower, min(candidates))
+        return lower, newest
+
+    def _raw_rows(self, lower: float, upper: float) -> list[str]:
+        """JSON-Texte der Punkte im Fenster (unter self._lock aufrufen)."""
+        rows = self._db(_cte("samples") + "SELECT j FROM d ORDER BY t",
+                        {"lo": lower, "hi": upper, "p": self._pending_json()})
+        return [text for (text,) in rows]
+
+    @staticmethod
+    def _decode(texts: list[str]) -> list[dict]:
+        """JSON dekodieren – bewusst AUSSERHALB von self._lock (bei 60 000 Punkten
+        dauert das auf einem Pi Sekunden, add() der Messschleife soll nicht warten)."""
+        out = []
+        for text in texts:
+            try:
+                out.append(json.loads(text))
+            except (TypeError, ValueError):
+                continue
+        return out
+
+    def _rows(self, lower: float, upper: float) -> list[dict]:
+        return self._decode(self._raw_rows(lower, upper))
+
     def snapshot(self, since: float | None = None) -> list[dict]:
+        texts = None
         with self._lock:
-            data = list(self._samples)
+            if self._sql:
+                try:
+                    lower, newest = self._bounds()
+                    if newest is None:
+                        return []
+                    if since is not None:
+                        lower = max(lower, since)
+                    texts = self._raw_rows(lower, newest)
+                except Exception as exc:
+                    self.error = f"Verlauf nicht lesbar: {exc}"
+                    data = list(self._pending)
+            else:
+                data = list(self._samples)
+        if texts is not None:
+            return self._decode(texts)
+        if data:
+            latest = _latest_allowed()
+            data = [s for s in data if s.get("t", 0) <= latest]
+        if data:
+            cutoff = data[-1].get("t", 0) - self.days * 86400
+            data = [s for s in data if s.get("t", 0) >= cutoff]
         if since is not None:
             data = [s for s in data if s.get("t", 0) >= since]
         return data
 
     def query(self, seconds: float | None = None, points: int = 600) -> list[dict]:
         """Ausschnitt der letzten `seconds` Sekunden, auf höchstens `points` verdichtet."""
+        if self._sql:
+            with self._lock:
+                try:
+                    texts, result = self._query_sql(seconds, points)
+                except Exception as exc:
+                    self.error = f"Verlauf nicht lesbar: {exc}"
+                    texts, result = None, None
+            if texts is not None:
+                return self._decode(texts)
+            if result is not None:
+                return result
         data = self.snapshot()
         if seconds and data:
             cutoff = data[-1]["t"] - seconds
             data = [s for s in data if s["t"] >= cutoff]
         return downsample(data, points)
 
+    def _query_sql(self, seconds: float | None, points: int) -> tuple[list[str] | None, list[dict] | None]:
+        """(Rohtexte zum Dekodieren außerhalb der Sperre, None) oder (None, fertige Punkte)."""
+        lower, newest = self._bounds()
+        if newest is None:
+            return None, []
+        if seconds:
+            lower = max(lower, newest - seconds)
+        params = {"lo": lower, "hi": newest, "p": self._pending_json()}
+        width = max(1, math.ceil((newest - lower + 1) / max(1, points)))
+        table = "samples_5m"
+        if width < ROLLUP_SECONDS:
+            count = self._db(_cte("samples") + "SELECT count(*) FROM d", params)[0][0]
+            if points <= 0 or count <= points:
+                return self._raw_rows(lower, newest), None
+            if count <= RAW_LIMIT:
+                table = "samples"
+        if table == "samples_5m":
+            # Grob genug für die Vorverdichtung: ~8640 statt ~260 000 Zeilen für 30 Tage.
+            # Fenster beginnen an der 5-Minuten-Grenze, damit jede 5-Minuten-Zeile
+            # vollständig in genau ein Fenster fällt.
+            width = max(ROLLUP_SECONDS, math.ceil(width / ROLLUP_SECONDS) * ROLLUP_SECONDS)
+            params["lo"] = (int(lower) // ROLLUP_SECONDS) * ROLLUP_SECONDS
+        params["w"] = width
+        return None, _aggregate(self._db, table, params)
+
+    def stats(self) -> dict:
+        """Zustand für Diagnose/Statusseite (ohne Messwerte)."""
+        info = {"backend": self.backend, "days": self.days, "size": self.size,
+                "pending": len(self._pending), "error": self.error, "rows": None,
+                "oldest": None, "newest": None}
+        with self._lock:
+            try:
+                if self._sql:
+                    count, oldest, newest = self._db("SELECT count(*), min(t), max(t) FROM samples")[0]
+                else:
+                    count = len(self._samples)
+                    oldest = self._samples[0]["t"] if self._samples else None
+                    newest = self._samples[-1]["t"] if self._samples else None
+                info.update(rows=count, oldest=oldest, newest=newest)
+            except Exception as exc:
+                info["error"] = str(exc)
+        return info
+
     # --- sichern -------------------------------------------------------------
     def load(self) -> int:
-        if not self.path or not os.path.exists(self.path):
-            return 0
-        try:
-            with gzip.open(self.path, "rt", encoding="utf-8") as handle:
-                data = json.load(handle)
-        except (OSError, ValueError, EOFError):
-            return 0
-        if not isinstance(data, list):
-            return 0
+        """Startet den Verlauf: übernimmt ggf. history.json.gz. Gibt die Zahl der Punkte zurück."""
+        if self._sql:
+            with self._lock:
+                self._migrate_gzip()
+                try:
+                    _backfill_rollup(self.db_path)
+                    self._flush()  # wendet Aufbewahrung/Obergrenze an
+                    return int(self._db("SELECT count(*) FROM samples")[0][0])
+                except Exception:
+                    return 0
+        data = _read_gzip(self.path)
         with self._lock:
-            for sample in data[-self._samples.maxlen:]:
-                if isinstance(sample, dict) and isinstance(sample.get("t"), (int, float)):
+            for sample in [s for s in data if _storable(s)][-self._samples.maxlen:]:
+                if _valid(sample):
                     self._samples.append(sample)
-        return len(self._samples)
+            return len(self._samples)
+
+    def _migrate_gzip(self) -> None:
+        if not self.path or not os.path.exists(self.path):
+            return
+        latest = _latest_allowed()
+        data = [s for s in _read_gzip(self.path) if _valid(s)]
+        skipped = sum(1 for s in data if s["t"] > latest)
+        rows = [(int(s["t"]), _dumps(s)) for s in data if s["t"] <= latest]
+        if skipped:
+            print(f"[web] Verlauf: {skipped} Messpunkt(e) mit Zeitstempel in der Zukunft "
+                  "nicht übernommen", flush=True)
+        try:
+            with store.transaction(self.db_path) as conn:
+                conn.executemany("INSERT OR IGNORE INTO samples(t, json) VALUES(?, ?)", rows)
+            os.replace(self.path, self.path + ".migrated")
+            print(f"[web] Verlauf aus {os.path.basename(self.path)} übernommen: {len(rows)} "
+                  f"Messpunkte (alte Datei: {os.path.basename(self.path)}.migrated)", flush=True)
+        except Exception as exc:
+            self.error = f"Alter Verlauf nicht übernommen: {exc}"
 
     def save(self, force: bool = False, every: float = 3600.0) -> bool:
+        """SQLite: Puffer schreiben (alle FLUSH_SECONDS oder force). Sonst .json.gz wie in 1.2."""
+        now = time.time()
+        if self._sql:
+            with self._lock:
+                if not force and now - self._last_save < min(every, FLUSH_SECONDS):
+                    return False
+                ok = self._flush()
+                if ok:
+                    self._last_save = now
+                return ok
         if not self.path:
             return False
-        now = time.time()
         if not force and now - self._last_save < every:
             return False
         data = self.snapshot()
@@ -91,6 +402,137 @@ class History:
         self._last_save = now
         return True
 
+
+def _finite(value: Any) -> Any:
+    """NaN/Inf → None (SQLite-JSON kennt sie nicht), Unbekanntes → Text."""
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {str(k): _finite(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_finite(v) for v in value]
+    if value is None or isinstance(value, (str, int, bool)):
+        return value
+    return str(value)
+
+
+def _dumps(value: Any) -> str:
+    try:
+        return json.dumps(value, separators=(",", ":"), allow_nan=False)
+    except (TypeError, ValueError):
+        return json.dumps(_finite(value), separators=(",", ":"), allow_nan=False)
+
+
+def _read_gzip(path: str | None) -> list:
+    if not path or not os.path.exists(path):
+        return []
+    try:
+        with gzip.open(path, "rt", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError, EOFError):
+        return []
+    return data if isinstance(data, list) else []
+
+
+# ---------------------------------------------------------------------------
+# Verdichten in SQL
+# ---------------------------------------------------------------------------
+
+# d(t, j): Messpunkte im Fenster [lo, hi] aus Datenbank UND Puffer (:p, JSON-Liste);
+# ein Punkt im Puffer ersetzt einen gleichen Zeitstempel aus der Datenbank.
+# Bei samples_5m stehen Fenster-Mittelwerte statt Rohpunkten in d (der Puffer
+# bleibt roh – er umfasst höchstens die letzten FLUSH_SECONDS).
+def _cte(table: str) -> str:
+    assert table in {"samples", "samples_5m"}
+    return f"""
+WITH pend(t, j) AS (
+    SELECT CAST(json_extract(value, '$.t') AS INTEGER), value FROM json_each(:p)
+), d(t, j) AS (
+    SELECT t, json FROM {table}
+     WHERE t >= :lo AND t <= :hi AND t NOT IN (SELECT t FROM pend)
+    UNION ALL
+    SELECT t, j FROM pend WHERE t >= :lo AND t <= :hi
+)
+"""
+
+
+def _update_rollup(conn, buckets: set[int]) -> None:
+    """Berechnet die 5-Minuten-Punkte der genannten Fenster aus den Rohdaten neu."""
+    for b in sorted(buckets):
+        rows = conn.execute("SELECT json FROM samples WHERE t >= ? AND t < ? ORDER BY t",
+                            (b * ROLLUP_SECONDS, (b + 1) * ROLLUP_SECONDS)).fetchall()
+        _store_bucket(conn, b, rows)
+
+
+def _store_bucket(conn, b: int, rows: list[tuple]) -> None:
+    chunk = []
+    for (text,) in rows:
+        try:
+            chunk.append(json.loads(text))
+        except ValueError:
+            continue
+    if not chunk:
+        conn.execute("DELETE FROM samples_5m WHERE b = ?", (b,))
+        return
+    merged = downsample(chunk, 1)[0]
+    conn.execute("INSERT OR REPLACE INTO samples_5m(b, t, json) VALUES(?, ?, ?)",
+                 (b, int(merged["t"]), _dumps(merged)))
+
+
+def _backfill_rollup(db_path: str | None) -> int:
+    """Ergänzt fehlende 5-Minuten-Punkte (nach Übernahme der .json.gz). Gibt die Zahl zurück."""
+    missing = [row[0] for row in store.query(
+        "SELECT DISTINCT t / ? FROM samples EXCEPT SELECT b FROM samples_5m",
+        (ROLLUP_SECONDS,), db_path)]
+    for start in range(0, len(missing), 500):
+        with store.transaction(db_path) as conn:
+            _update_rollup(conn, set(missing[start:start + 500]))
+    return len(missing)
+
+
+def _num_expr(doc: str, path: str) -> str:
+    return (f"CASE WHEN json_type({doc}, '{path}') IN ('integer', 'real') "
+            f"THEN json_extract({doc}, '{path}') END")
+
+
+def _aggregate(db, table: str, params: dict) -> list[dict]:
+    cte = _cte(table)
+    bucket = "CAST((d.t - :lo) / :w AS INTEGER)"
+    avgs = ", ".join(f"avg({_num_expr('d.j', '$.' + key)})" for key in _NUMERIC_TOP)
+    # Genau ein max(): die übrigen „nackten“ Spalten stammen aus dem neuesten Punkt
+    # des Fensters (SQLite-Garantie) – Zählerstand „served“ = letzter Wert.
+    top = db(cte + f"SELECT {bucket} AS b, max(d.t), json_extract(d.j, '$.served'), {avgs} "
+                    f"FROM d GROUP BY b ORDER BY b", params)
+    out: dict[int, dict] = {}
+    for row in top:
+        merged: dict[str, Any] = {"t": row[1]}
+        for key, value in zip(_NUMERIC_TOP, row[3:]):
+            if value is not None:
+                merged[key] = value
+        if row[2] is not None:
+            merged["served"] = row[2]
+        out[row[0]] = merged
+    sources = db(cte + f"SELECT {bucket} AS b, e.key, max(d.t), "
+                        "json_extract(e.value, '$.s'), json_extract(e.value, '$.k'), "
+                        f"avg({_num_expr('e.value', '$.o')}) "
+                        "FROM d, json_each(d.j, '$.sources') e "
+                        "WHERE e.type = 'object' GROUP BY b, e.key", params)
+    for b, name, _t, state, mode, offset in sources:
+        if b in out:
+            out[b].setdefault("sources", {})[name] = {"o": offset, "s": state, "k": mode}
+    for group in _GROUPS:
+        rows = db(cte + f"SELECT {bucket} AS b, e.key, "
+                         "avg(CASE WHEN e.type IN ('integer', 'real') THEN e.value END) "
+                         f"FROM d, json_each(d.j, '$.{group}') e GROUP BY b, e.key", params)
+        for b, key, value in rows:
+            if b in out:
+                out[b].setdefault(group, {})[key] = value
+    return [out[b] for b in sorted(out)]
+
+
+# ---------------------------------------------------------------------------
+# Verdichten in Python (Rückfall ohne SQLite, kleine Mengen)
+# ---------------------------------------------------------------------------
 
 def _mean(values: list[float]) -> float | None:
     values = [v for v in values if isinstance(v, (int, float)) and not isinstance(v, bool)
@@ -143,6 +585,30 @@ def _median(values: list[float]) -> float:
     return ordered[mid] if len(ordered) % 2 else (ordered[mid - 1] + ordered[mid]) / 2
 
 
+GPS_UNMEASURED_STATES = frozenset({"?", "x", "~"})
+
+
+def gps_measured(gps: Any) -> bool:
+    """Ist dieser GPS-Wert eines Messpunkts wirklich gemessen?
+
+    chrony meldet für eine Refclock ohne Daten weiter einen Offset (0 ns) –
+    mit Zustand „?“ (nicht erreichbar) und Reach 0. „x“ (Falschgeber) und „~“
+    (zu unruhig) taugen ebenfalls nicht als Messwert. Ältere Messpunkte haben
+    keinen Reach-Wert („r“), dann entscheidet nur der Zustand.
+    """
+    if not isinstance(gps, dict):
+        return False
+    offset = gps.get("o")
+    if isinstance(offset, bool) or not isinstance(offset, (int, float)) or not math.isfinite(offset):
+        return False
+    if gps.get("s") in GPS_UNMEASURED_STATES:
+        return False
+    reach = gps.get("r", gps.get("reach"))
+    if isinstance(reach, (int, float)) and not isinstance(reach, bool) and reach == 0:
+        return False
+    return True
+
+
 def calibrate(samples: list[dict], gps_name: str, current_offset: float,
               current_delay: float) -> dict[str, Any]:
     """Vergleicht den GPS-Offset mit den aktiven Netzwerkquellen.
@@ -157,10 +623,11 @@ def calibrate(samples: list[dict], gps_name: str, current_offset: float,
     for sample in samples:
         sources = sample.get("sources") or {}
         gps = sources.get(gps_name)
-        if not gps or not isinstance(gps.get("o"), (int, float)):
-            continue
+        if not gps_measured(gps):
+            continue  # GPS ohne Daten („?“, Reach 0 …) – sonst zählte 0 − Netz als Verspätung
         reference = [v.get("o") for name, v in sources.items()
-                     if name != gps_name and v.get("s") in {"*", "+"} and v.get("k") != "#"
+                     if name != gps_name and isinstance(v, dict) and v.get("s") in {"*", "+"}
+                     and v.get("k") != "#"
                      and isinstance(v.get("o"), (int, float))]
         if not reference:
             continue

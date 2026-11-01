@@ -28,6 +28,7 @@ import re
 import secrets
 import tempfile
 import threading
+import time
 from typing import Any, Callable
 
 DATA_DIR = os.environ.get("NTPGUI_DATA_DIR", "/var/lib/chrony/ntp-gui")
@@ -204,6 +205,33 @@ def _as_public_name(value: Any) -> str:
     if not text:
         return ""
     return _as_host(text)
+
+
+MAX_HOSTNAMES = 50
+
+
+def _as_host_list(value: Any) -> list[str]:
+    """Liste von DNS-Namen (keine IP-Adressen), klein geschrieben, ohne Dubletten."""
+    items = value if isinstance(value, list) else re.split(r"[,\s]+", str(value or ""))
+    names: list[str] = []
+    for item in items:
+        text = str(item if item is not None else "").strip().rstrip(".").lower()
+        if not text:
+            continue
+        try:
+            ipaddress.ip_address(text)
+        except ValueError:
+            pass
+        else:
+            raise ValidationError(f"„{text}“ ist eine IP-Adresse – hier sind nur Namen sinnvoll, "
+                                  "weil DNS-Umschreibung nur Namen umleiten kann")
+        if not _HOST_RE.match(text) or "." not in text:
+            raise ValidationError(f"„{text}“ ist kein gültiger Hostname (z. B. time.example.com)")
+        if text not in names:
+            names.append(text)
+    if len(names) > MAX_HOSTNAMES:
+        raise ValidationError(f"Höchstens {MAX_HOSTNAMES} Namen")
+    return names
 
 
 def _as_network_list(value: Any) -> list[str]:
@@ -440,6 +468,20 @@ SCHEMA: list[dict] = [
            lambda v: "*" if str(v).strip() in {"", "*"} else _as_interface(v),
            env="NTP_HW_TIMESTAMP_INTERFACE", advanced=True,
            help="„*“ für alle Interfaces, die es können."),
+    _field("clientmon_enable", "lan", "Uhren der Clients beobachten", "bool", True, _as_bool,
+           env="CLIENTMON", restart=RESTART_NONE,
+           help="Schätzt aus den NTP-Anfragen, wie weit die Uhr jedes Geräts im LAN "
+                "danebenliegt – rein passiv, es wird nichts an die Geräte gesendet. So siehst "
+                "du, welche Geräte deinen Server wirklich nutzen und ob ihre Uhr stimmt. Die "
+                "Werte bleiben auf dieser Instanz. Wirkt ohne Neustart."),
+    _field("enforce_hostnames", "lan", "Weitere Namen für „Zeitserver erzwingen“", "hostlist",
+           [], _as_host_list, env="ENFORCE_HOSTNAMES", restart=RESTART_NONE, advanced=True,
+           placeholder="z. B. time.example.com",
+           help="Zusätzliche Zeitserver-Namen, die die Anleitungen zum Erzwingen (DNS-"
+                "Umschreibung in AdGuard, Pi-hole, dnsmasq) auf diesen Server umleiten sollen – "
+                "etwa der fest eingetragene Server einer Kamera oder eines Fernsehers. Die "
+                "üblichen Namen (pool.ntp.org, time.windows.com, time.apple.com …) sind schon "
+                "enthalten. Mehrere Namen mit Komma oder Zeilenumbruch trennen."),
 
     # --- NTS ---------------------------------------------------------------
     _field("nts_nocerttimecheck", "nts", "Zertifikatszeit beim Start nicht prüfen", "bool", True,
@@ -546,6 +588,31 @@ SCHEMA: list[dict] = [
            env="GPS_SHOW_POSITION", restart=RESTART_NONE,
            help="Zeigt Koordinaten im Dashboard und in der API. Standardmäßig aus, weil die "
                 "Position den Standort verrät."),
+    _field("gps_autocal", "gps", "Automatische Kalibrierung", "select", "suggest",
+           _as_choice("off", "suggest", "auto"), env="GPS_AUTOCAL", restart=RESTART_NONE,
+           options=[("off", "aus – nichts vorschlagen, nichts ändern"),
+                    ("suggest", "vorschlagen – du entscheidest per Klick"),
+                    ("auto", "automatisch – behutsam selbst nachstellen")],
+           help="USB-GPS-Empfänger liefern die Zeit (NMEA) mit einer festen Verspätung von "
+                "typisch 20–150 ms. ntp-gui misst sie laufend gegen deine Netzwerkquellen. "
+                "„Vorschlagen“ zeigt dir den passenden Offset, du übernimmst ihn selbst. "
+                "„Automatisch“ stellt ihn nach, aber nur in kleinen Schritten, nur nach genug "
+                "Messdauer und mit Eintrag im Ereignisprotokoll – jede Änderung lässt sich "
+                "dort zurücknehmen. Wirkt ohne Neustart; erst das Übernehmen eines neuen "
+                "Offsets startet chronyd neu."),
+    _field("gps_autocal_max_step_ms", "gps", "Größter Kalibrierschritt", "float", 5.0,
+           _as_number(float, 0.1, 50.0), env="GPS_AUTOCAL_MAX_STEP_MS", unit="ms",
+           restart=RESTART_NONE, advanced=True,
+           help="So weit darf die automatische Kalibrierung den Offset auf einmal "
+                "verschieben. Kleine Schritte sind sicherer: Liegt eine Messung daneben "
+                "(z. B. weil eine Netzwerkquelle selbst falsch geht), richtet sie wenig "
+                "Schaden an und wird beim nächsten Durchgang korrigiert."),
+    _field("gps_autocal_min_hours", "gps", "Mindest-Messdauer vor dem Kalibrieren", "float", 6.0,
+           _as_number(float, 0.5, 168.0), env="GPS_AUTOCAL_MIN_HOURS", unit="h",
+           restart=RESTART_NONE, advanced=True,
+           help="Wie lange GPS und Netzwerkquellen gemeinsam gemessen haben müssen, bevor "
+                "ein Offset vorgeschlagen oder übernommen wird. Mehrere Stunden glätten "
+                "Tagesschwankungen der Netzlaufzeit – darum ist das Ergebnis dann belastbar."),
 
     # --- PTP ---------------------------------------------------------------
     _field("ptp_enable", "ptp", "PTP verwenden", "bool", False, _as_bool, env="PTP_ENABLE",
@@ -785,11 +852,24 @@ def _load_file() -> dict:
             data = {}
     except (OSError, ValueError):
         data = {}
+    if data and _schema_of(data) < SCHEMA_VERSION:
+        with _LOCK:
+            data, notes = migrate_data(data)
+            try:
+                _write_file(data)
+                stat = os.stat(SETTINGS_FILE)
+            except OSError as exc:
+                # Nur lesbares Volume: Migration gilt im Speicher, Hinweis bleibt sichtbar.
+                print(f"[web] Einstellungen migriert, aber nicht gespeichert: {exc}", flush=True)
+            for note in notes:
+                print(f"[web] Update der Einstellungen: {note['title']}", flush=True)
     _CACHE.update(mtime=stat.st_mtime_ns, data=data)
     return data
 
 
 def _write_file(data: dict) -> None:
+    data = dict(data)
+    data.setdefault("schema", SCHEMA_VERSION)
     os.makedirs(DATA_DIR, mode=0o700, exist_ok=True)
     try:
         os.chmod(DATA_DIR, 0o700)
@@ -1011,4 +1091,134 @@ def set_credentials(user: str, password: str | None) -> None:
 def export_values() -> dict:
     """Die im Dashboard gespeicherten Werte (ohne Passwort) – zum Sichern."""
     with _LOCK:
-        return {"values": dict(_load_file().get("values", {}))}
+        return {"schema": SCHEMA_VERSION, "values": dict(_load_file().get("values", {}))}
+
+
+# ---------------------------------------------------------------------------
+# Versionierte Einstellungen: Schema-Nummer + Migrationen
+# ---------------------------------------------------------------------------
+#
+# settings.json trägt "schema": N. Fehlt die Nummer, stammt die Datei aus
+# 1.2.x oder älter (= Schema 1). Jede Migration bringt die Daten von N-1 auf N,
+# ändert sie direkt und gibt Hinweise zurück, die das Dashboard unter „Was sich
+# beim Update geändert hat“ zeigt (migration_notes()). Migrationen werden nie
+# nachträglich geändert, nur neue angehängt – sonst liefen Installationen, die
+# schon migriert sind, in einen anderen Zustand als frische.
+#
+# Neue Migration: Funktion _migrate_<N-1>_<N>(data) -> list[dict] schreiben,
+# in MIGRATIONS eintragen, SCHEMA_VERSION erhöhen, Test ergänzen.
+
+SCHEMA_VERSION = 2
+MAX_NOTES = 50
+
+
+def _schema_of(data: dict) -> int:
+    try:
+        return max(1, int(data.get("schema", 1)))
+    except (TypeError, ValueError):
+        return 1
+
+
+def _note(note_id: str, schema: int, title: str, text: str, keys: list[str] | None = None) -> dict:
+    return {"id": note_id, "schema": schema, "title": title, "text": text,
+            "keys": keys or [], "t": int(time.time()), "seen": False}
+
+
+def _migrate_1_2(data: dict) -> list[dict]:
+    """1.2.0 erlaubt Zertifikat/Schlüssel des NTS-Servers nur unter NTS_CERT_ROOTS.
+
+    Ältere Versionen haben jeden Pfad gespeichert. So ein Wert würde jetzt bei
+    jedem Laden als „ungültig“ gemeldet und durch den Standard ersetzt – die
+    Migration räumt ihn sauber weg und erklärt, warum.
+    """
+    stored = data.get("values")
+    if not isinstance(stored, dict):
+        return []
+    notes = []
+    for key, what in (("nts_server_cert", "Zertifikat"), ("nts_server_key", "Schlüssel")):
+        if key not in stored:
+            continue
+        raw = stored[key]
+        if isinstance(raw, str) and cert_path_allowed(raw.strip()):
+            continue
+        del stored[key]
+        notes.append(_note(
+            f"2-{key}", 2, f"NTS-{what}: Pfad zurückgesetzt",
+            f"Der gespeicherte Pfad für das {what} des NTS-Servers lag außerhalb der "
+            f"erlaubten Ordner ({', '.join(r.rstrip('/') for r in NTS_CERT_ROOTS)}). "
+            "Seit 1.2.0 nimmt ntp-gui nur noch Dateien von dort, weil die Datei für chronyd "
+            "kopiert wird – ein beliebiger Pfad hätte sonst z. B. Systemdateien lesbar machen "
+            "können. Es gilt wieder der Standard bzw. die Umgebungsvariable. Bitte das "
+            "Zertifikat nach /certs (schreibgeschützt) mounten und den Pfad neu eintragen.",
+            [key]))
+    return notes
+
+
+MIGRATIONS: dict[int, Callable[[dict], list[dict]]] = {
+    2: _migrate_1_2,
+}
+
+
+def migrate_data(data: dict) -> tuple[dict, list[dict]]:
+    """Bringt Dateiinhalt (oder einen Export) auf SCHEMA_VERSION. Gibt (Daten, neue Hinweise)."""
+    data = json.loads(json.dumps(data))  # tiefe Kopie, nur JSON-Typen
+    current = _schema_of(data)
+    notes: list[dict] = []
+    if current > SCHEMA_VERSION:
+        # Datei einer neueren Version (Downgrade): nicht anfassen, nur lesen.
+        return data, notes
+    for target in range(current + 1, SCHEMA_VERSION + 1):
+        step = MIGRATIONS.get(target)
+        if step is not None:
+            notes += step(data)
+        data["schema"] = target
+    data["schema"] = max(current, SCHEMA_VERSION)
+    if notes and "values" in data:
+        stored = [n for n in data.get("migration_notes", []) if isinstance(n, dict)]
+        data["migration_notes"] = (stored + notes)[-MAX_NOTES:]
+    return data, notes
+
+
+def migrate_import(exported: dict) -> tuple[dict, list[str]]:
+    """Für /api/settings/import: Werte eines (auch älteren) Exports migrieren.
+
+    Gibt (Werte, Hinweistexte) zurück. Ein Export ohne "schema" stammt aus 1.2.x.
+    """
+    if not isinstance(exported, dict) or not isinstance(exported.get("values"), dict):
+        raise ValidationError("Datei enthält keine Einstellungen")
+    if _schema_of(exported) > SCHEMA_VERSION:
+        raise ValidationError("Die Datei stammt aus einer neueren Version von ntp-gui – "
+                              "bitte zuerst aktualisieren")
+    data, notes = migrate_data({"schema": exported.get("schema", 1),
+                                "values": exported["values"]})
+    return data["values"], [n["text"] for n in notes]
+
+
+def schema_version() -> int:
+    """Schema der gespeicherten Datei (SCHEMA_VERSION, wenn es noch keine gibt)."""
+    with _LOCK:
+        data = _load_file()
+    return _schema_of(data) if data else SCHEMA_VERSION
+
+
+def migration_notes(include_seen: bool = True) -> list[dict]:
+    """Hinweise „Was sich beim Update geändert hat“, neueste zuletzt."""
+    with _LOCK:
+        notes = _load_file().get("migration_notes", [])
+    return [dict(n) for n in notes if isinstance(n, dict)
+            and (include_seen or not n.get("seen"))]
+
+
+def ack_migration_notes() -> int:
+    """Markiert alle Hinweise als gelesen. Gibt die Zahl neu markierter zurück."""
+    with _LOCK:
+        data = dict(_load_file())
+        notes = [dict(n) for n in data.get("migration_notes", []) if isinstance(n, dict)]
+        fresh = [n for n in notes if not n.get("seen")]
+        if not fresh:
+            return 0
+        for note in notes:
+            note["seen"] = True
+        data["migration_notes"] = notes
+        _write_file(data)
+    return len(fresh)

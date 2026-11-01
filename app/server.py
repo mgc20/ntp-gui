@@ -2,13 +2,25 @@
 
 Lesend: Status, Verlauf, Konfiguration, Geräte, Metriken.
 Schreibend (POST): Einstellungen, Passwort, Neustart der Zeitdienste.
+Versionierte API: /api/v1/<pfad> ist ein Alias der bisherigen Pfade (apiv1.py).
 
 Schutz der schreibenden Routen:
   * ist ein Zugang gesetzt (Env oder Dashboard), gilt Basic-Auth für alles
-    außer /healthz;
+    außer /healthz – oder ein API-Schlüssel („Authorization: Bearer ntpg_…“)
+    mit dem Recht, das apiv1.required_scope() für den Pfad verlangt;
+  * ein mitgeschickter API-Schlüssel gilt immer mit seinem Recht, auch wenn
+    kein Passwort gesetzt ist – ein „read“-Schlüssel kann nie schreiben;
   * WEB_READONLY=true sperrt alle Änderungen;
-  * gegen Cross-Site-Requests: nur JSON, Pflicht-Header X-NTP-GUI, und ein
-    mitgeschickter Origin muss zum Host passen.
+  * gegen Cross-Site-Requests (Browser mit Basic-Auth): nur JSON, Pflicht-Header
+    X-NTP-GUI, und ein mitgeschickter Origin muss zum Host passen. Mit
+    API-Schlüssel entfällt X-NTP-GUI – den Schlüssel schickt kein Browser von
+    sich aus mit;
+  * gegen DNS-Rebinding (eine fremde Webseite lässt ihren Namen auf die
+    LAN-Adresse zeigen und liest dann Log, Status und Position): ohne Passwort
+    werden nur Anfragen an IP-Adressen, localhost, den eigenen Hostnamen,
+    lokale Namen (*.local, *.lan, *.home.arpa, *.internal …), den
+    NTS-Namen und WEB_ALLOWED_HOSTS beantwortet (host_allowed). Mit Passwort
+    schützt die Anmeldung, dann gilt jeder Name. /healthz ist immer offen.
 """
 
 from __future__ import annotations
@@ -16,8 +28,11 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import html
+import ipaddress
 import json
 import os
+import re
 import signal
 import socket
 import threading
@@ -27,14 +42,24 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+import apikeys
+import apiv1
+import autocal
 import chrony
+import clientmon
 import devices
+import diagnostics
+import enforce
+import events
 import gps
 import hardware
 import history as historymod
 import insights
+import instance
+import providers
 import ptp
 import settings
+import statewatch
 
 STATIC_DIR = Path(__file__).with_name("static")
 CHRONY_CONF = os.environ.get("CHRONY_CONF", "/etc/chrony/chrony.conf")
@@ -42,7 +67,10 @@ PTP4L_CONF = os.environ.get("PTP4L_CONF", "/etc/linuxptp/ptp4l.conf")
 RUN_DIR = os.environ.get("NTPGUI_RUN_DIR", "/run/ntp-gui")
 START_TIME = time.time()
 MAX_BODY = 64 * 1024
-VERSION = os.environ.get("NTPGUI_VERSION", "1.2.0")
+VERSION = os.environ.get("NTPGUI_VERSION", "1.3.0")
+EVENTS_INTERVAL = 5.0          # so oft liest der Server die Supervisor-Ereignisse ein
+CALIBRATION_DEFAULT_WINDOW = 86400.0  # /api/gps/calibration ohne window: letzte 24 h
+
 
 
 def env_number(name: str, default, kind=float, minimum=None):
@@ -75,6 +103,42 @@ def env_flag(name: str, default: bool = False) -> bool:
 # 24 h bei 10 s Abstand. Komprimiert gesichert sind das wenige MB.
 HISTORY_SIZE = env_number("HISTORY_SIZE", 8640, int, minimum=2)
 HISTORY = historymod.History(HISTORY_SIZE, os.path.join(settings.DATA_DIR, "history.json.gz"))
+
+# Endpunkte von 1.3, die auch unter /api/v1 erreichbar sind (Recht je Endpunkt).
+apiv1.endpoint("GET", "/logs", "/api/logs", "read",
+               "Die letzten Zeilen des Container-Logs (lokal, ungefiltert).",
+               ["available", "file", "total", "truncated", "lines"],
+               {"lines": "Anzahl (1–5000, Standard 500)", "q": "Text, der vorkommen muss",
+                "level": "warn oder crit: nur Warnungen/Fehler"})
+apiv1.endpoint("GET", "/diagnostics/preview", "/api/diagnostics/preview", "read",
+               "Vorschau des Diagnosepakets – genau das, was beim Herunterladen drinstünde, gefiltert.",
+               ["ok", "generated", "filename", "sections", "removed", "content"],
+               {"clients": "1 = Client-Liste einschließen (pseudonymisiert)",
+                "recording": "1 = letzte Aufzeichnung einschließen (gefiltert)"})
+apiv1.endpoint("GET", "/diagnostics/bundle", "/api/diagnostics/bundle", "read",
+               "Diagnosepaket als tar.gz (gefiltert, mit MANIFEST.txt). Wird nie hochgeladen.", [],
+               {"clients": "wie bei der Vorschau", "recording": "wie bei der Vorschau"})
+apiv1.endpoint("GET", "/recording", "/api/recording", "read",
+               "Zustand der Aufzeichnung der Datenquellen.", ["active", "ends", "entries", "size", "available"])
+apiv1.endpoint("POST", "/recording", "/api/recording", "admin",
+               "Aufzeichnung starten ({\"seconds\": 300}) oder beenden ({\"action\": \"stop\"}).",
+               ["active", "ends", "entries", "size", "available"])
+apiv1.endpoint("GET", "/enforce/snippets", "/api/enforce/snippets", "read",
+               "Anleitungen, um Zeitserver per DNS oder Firewall auf diesen Server umzuleiten.",
+               ["server_ip", "systems", "hostnames", "snippets"],
+               {"system": "adguard, pihole, dnsmasq, unbound, opnsense, mikrotik, openwrt, nftables, unifi oder all",
+                "ip": "Adresse dieses Servers aus Sicht der Clients"})
+apiv1.endpoint("GET", "/enforce/check", "/api/enforce/check", "read",
+               "Prüft, ob die Umleitung wirkt (höchstens alle 30 s).", ["level", "summary", "hosts"],
+               {"ip": "Adresse dieses Servers aus Sicht der Clients"})
+apiv1.endpoint("GET", "/clients/offsets", "/api/clients/offsets", "read",
+               "Passiv gemessene Abweichung der Client-Uhren.", ["available", "running", "reason", "clients"])
+apiv1.endpoint("GET", "/gps/autocal", "/api/gps/autocal", "read",
+               "Automatische GPS-Kalibrierung: Modus, aktuelle Entscheidung, letzte Änderungen.",
+               ["mode", "decision", "changes", "rollback"], {"fresh": "0 = letzte gespeicherte Entscheidung"})
+apiv1.endpoint("POST", "/gps/autocal/rollback", "/api/gps/autocal/rollback", "admin",
+               "Letzte automatische Änderung(en) zurücknehmen. Body: {\"steps\": 1}.",
+               ["ok", "restored_offset", "restored_delay", "reload_triggered", "change"])
 
 CONTENT_TYPES = {
     ".html": "text/html; charset=utf-8",
@@ -132,14 +196,21 @@ def collect_sample() -> dict:
     return sample
 
 
+# Erkennt Quellenwechsel, GPS-Fix verloren/wieder da und PPS-Ausfälle → Ereignisprotokoll.
+STATE_WATCH = statewatch.StateWatcher(events.emit)
+
+
 def collector() -> None:
     restored = HISTORY.load()
     if restored:
         print(f"[web] Verlauf wiederhergestellt: {restored} Messpunkte", flush=True)
     while True:
         try:
-            HISTORY.add(collect_sample())
+            sample = collect_sample()
+            HISTORY.add(sample)
             HISTORY.save()
+            STATE_WATCH.sample(sample)
+            autocal.maybe_tick()   # höchstens einmal pro Stunde, wirft nie
         except Exception as exc:  # ein Messfehler darf den Thread nie beenden
             print(f"[web] Messung fehlgeschlagen: {exc}", flush=True)
         try:
@@ -166,11 +237,37 @@ def hardware_refresher(stop: threading.Event | None = None) -> None:
         return
     while True:
         try:
-            hardware.report(settings.values(), refresh=True)
+            STATE_WATCH.hardware(hardware.report(settings.values(), refresh=True))
         except Exception as exc:  # die Prüfung darf das Dashboard nie stören
             print(f"[web] Hardware-Prüfung fehlgeschlagen: {exc}", flush=True)
         if stop.wait(HARDWARE_INTERVAL):
             return
+
+
+def events_ingester(stop: threading.Event | None = None, interval: float = EVENTS_INTERVAL) -> None:
+    """Übernimmt die Ereignisse des Supervisors (RUN_DIR/events.jsonl) ins Protokoll."""
+    stop = stop or threading.Event()
+    path = os.path.join(RUN_DIR, "events.jsonl")
+    while True:
+        try:
+            events.ingest_supervisor(path)
+        except Exception as exc:  # nie den Thread verlieren
+            print(f"[web] Ereignisse des Supervisors nicht gelesen: {exc}", flush=True)
+        if stop.wait(interval):
+            return
+
+
+def recording_status() -> dict:
+    """Zustand der Aufzeichnung für die Diagnose-Seite – ohne vollen Dateipfad."""
+    raw = providers.status()
+    out = {key: raw.get(key) for key in ("active", "until", "started", "bytes", "entries", "stopped",
+                                         "reason", "max_seconds", "max_bytes", "replay")}
+    path = raw.get("path")
+    out["file"] = os.path.basename(path) if path else None
+    out["available"] = bool(path and os.path.isfile(path))
+    out["ends"] = raw.get("until")     # Namen, die pages/diagnose.js liest
+    out["size"] = raw.get("bytes")
+    return out
 
 
 def clock_control() -> dict:
@@ -512,6 +609,92 @@ class AuthCache:
 AUTH_CACHE = AuthCache()
 
 
+# --- Schutz vor DNS-Rebinding -------------------------------------------------
+
+# Namen, die keine fremde Webseite für sich auf eine LAN-Adresse zeigen lassen
+# kann: reservierte bzw. nie öffentlich vergebene Endungen. Bewusst NICHT dabei:
+# ".fritz.box" – ".box" ist eine echte, öffentlich vergebene Endung (fritz.box war
+# schon fremd registriert). Wer das Dashboard über name.fritz.box öffnet, trägt
+# WEB_ALLOWED_HOSTS=*.fritz.box ein oder setzt ein Passwort.
+LOCAL_HOST_SUFFIXES = (".localhost", ".local", ".lan", ".home.arpa", ".internal", ".home", ".corp",
+                       ".localdomain", ".intranet", ".private", ".speedport.ip")
+_REJECTED_HOSTS: set[str] = set()
+_REJECTED_LOCK = threading.Lock()
+
+
+def _host_name(header: str) -> str:
+    """Host-Header → Name ohne Port, klein, ohne Schlusspunkt ('[::1]:80' → '::1')."""
+    host = (header or "").strip().lower()
+    if host.startswith("["):
+        return host[1:].split("]", 1)[0]
+    if host.count(":") == 1:
+        host = host.split(":", 1)[0]
+    return host.rstrip(".")
+
+
+def safe_host_for_log(host: str) -> str:
+    """Host-Header für Log und Fehlermeldung: nur [a-z0-9.-:], Labels ≤ 63 Zeichen, sonst „<ungültig>“.
+
+    Der Wert kommt ungeprüft von außen; ein überlanger oder seltsamer Name im Log würde sonst
+    später das Diagnosepaket stören (Schlussprüfung).
+    """
+    host = (host or "").strip().lower()
+    if not host or len(host) > 253 or not re.fullmatch(r"[a-z0-9.:-]+", host):
+        return "<ungültig>"
+    if any(len(label) > 63 for label in host.split(".")):
+        return "<ungültig>"
+    return host
+
+
+def _env_allowed_hosts() -> list[str]:
+    return [h.strip().lower().rstrip(".") for h in os.environ.get("WEB_ALLOWED_HOSTS", "").split(",")
+            if h.strip()]
+
+
+def host_allowed(header: str | None, nts_name: str = "") -> bool:
+    """Darf eine Anfrage mit diesem Host-Header ohne Anmeldung beantwortet werden?"""
+    if header is None or not header.strip():
+        return True  # HTTP/1.0 ohne Host – das schickt kein Browser
+    host = _host_name(header)
+    allowed = _env_allowed_hosts()
+    if "*" in allowed:
+        return True
+    try:
+        ipaddress.ip_address(host.split("%", 1)[0])
+        return True
+    except ValueError:
+        pass
+    if not host or "." not in host:
+        return True  # einteilige Namen (raspberrypi, localhost) löst kein öffentliches DNS auf
+    if host.endswith(LOCAL_HOST_SUFFIXES):
+        return True
+    own = set()
+    try:
+        own = {socket.gethostname().lower().rstrip("."), socket.getfqdn().lower().rstrip(".")}
+    except OSError:
+        pass
+    if host in own:
+        return True
+    if nts_name and host == str(nts_name).strip().lower().rstrip("."):
+        return True
+    for entry in allowed:
+        if entry.startswith("*.") and (host.endswith(entry[1:]) or host == entry[2:]):
+            return True
+        if host == entry:
+            return True
+    return False
+
+
+def host_rejection_text(host: str) -> str:
+    return (f"Zugriff über den Namen „{host}“ abgelehnt. Ohne Passwort beantwortet ntp-gui nur Anfragen "
+            "an IP-Adressen, localhost, den eigenen Hostnamen, einteilige Namen und lokale Namen (*.local, "
+            "*.lan, *.home.arpa, *.internal). Das schützt vor DNS-Rebinding: Sonst könnte jede "
+            "Webseite, die du besuchst, über einen eigenen Namen Log, Status und Position aus deinem "
+            "Netz lesen. Abhilfe: den Namen in WEB_ALLOWED_HOSTS eintragen (z. B. "
+            f"WEB_ALLOWED_HOSTS={host}, mehrere mit Komma, „*.example.org“ für alle Unternamen) oder "
+            "im Dashboard bzw. per WEB_USER/WEB_PASSWORD ein Passwort setzen – dann gilt jeder Name.")
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "ntp-gui"
     protocol_version = "HTTP/1.1"
@@ -543,6 +726,73 @@ class Handler(BaseHTTPRequestHandler):
     def _error(self, status: HTTPStatus, message: str, **extra) -> None:
         self._send_json({"error": message, **extra}, status)
 
+    def _identity(self) -> dict | None:
+        """Wer fragt? {"kind": "open"|"basic"|"key", "scope"?} oder None (abgelehnt).
+
+        Ein API-Schlüssel gilt immer mit seinem Recht – auch ohne gesetztes
+        Passwort. Sonst: ohne Passwort ist alles offen, mit Passwort Basic-Auth.
+        """
+        header = self.headers.get("Authorization", "")
+        if header[:7].lower() == "bearer ":
+            key = apikeys.verify(header[7:].strip())
+            return {"kind": "key", "scope": key["scope"], "id": key["id"]} if key else None
+        if not auth_info()["enabled"]:
+            return {"kind": "open"}
+        return {"kind": "basic"} if self._authorised() else None
+
+    def _host_ok(self, ident: dict) -> bool:
+        """DNS-Rebinding: ohne Anmeldung nur bekannte/lokale Namen. Antwortet selbst mit 403."""
+        if ident.get("kind") != "open":
+            return True  # Passwort oder API-Schlüssel schützen
+        header = self.headers.get("Host")
+        try:
+            nts_name = str(settings.values().get("nts_server_name") or "")
+        except Exception:
+            nts_name = ""
+        if host_allowed(header, nts_name):
+            return True
+        host = safe_host_for_log(_host_name(header or ""))
+        with _REJECTED_LOCK:
+            first = host not in _REJECTED_HOSTS and len(_REJECTED_HOSTS) < 1000
+            if first:
+                _REJECTED_HOSTS.add(host)
+        if first:
+            print(f"[web] Anfrage für unbekannten Host-Namen „{host}“ abgelehnt (Schutz vor DNS-Rebinding) – "
+                  "erlauben mit WEB_ALLOWED_HOSTS oder ein Passwort setzen.", flush=True)
+        text = host_rejection_text(host)
+        self.close_connection = True  # ein evtl. POST-Body bleibt ungelesen
+        path = urlparse(self.path).path
+        if path.startswith("/api") or path == "/metrics" or "json" in self.headers.get("Accept", ""):
+            self._error(HTTPStatus.FORBIDDEN, text, reason="host_not_allowed")
+        else:
+            body = ("<!doctype html><html lang=\"de\"><meta charset=\"utf-8\"><title>Zugriff abgelehnt</title>"
+                    "<body style=\"font-family:sans-serif;max-width:42em;margin:2em auto;padding:0 1em\">"
+                    f"<h1>Zugriff abgelehnt</h1><p>{html.escape(text)}</p></body></html>\n")
+            self._send(HTTPStatus.FORBIDDEN, body.encode("utf-8"), "text/html; charset=utf-8",
+                       {"Cache-Control": "no-store"})
+        return False
+
+    def _scope_ok(self, ident: dict, method: str, path: str) -> bool:
+        """Darf diese Identität die Methode auf dem Pfad nutzen (apiv1.required_scope)?"""
+        if ident["kind"] != "key":
+            return True
+        needed = apiv1.required_scope(method, path)
+        if needed == "session":
+            return False  # Zugang und Schlüssel nur mit Benutzer/Passwort verwalten
+        if needed == "admin" and ident["scope"] != "admin":
+            return False
+        return apikeys.allows(ident["scope"], method)
+
+    def _deny_scope(self, ident: dict, method: str, path: str) -> None:
+        needed = apiv1.required_scope(method, path)
+        if needed == "session":
+            text = ("Das geht nur mit Benutzer und Passwort, nicht mit einem API-Schlüssel – "
+                    "so kann ein entwendeter Schlüssel weder das Passwort ändern noch neue Schlüssel ausstellen.")
+        else:
+            text = (f"Dieser API-Schlüssel hat das Recht „{ident.get('scope')}“; hier ist "
+                    f"„{needed}“ nötig.")
+        self._error(HTTPStatus.FORBIDDEN, text, scope_required=needed)
+
     def _authorised(self) -> bool:
         info = auth_info()
         if not info["enabled"]:
@@ -570,8 +820,30 @@ class Handler(BaseHTTPRequestHandler):
         return AUTH_CACHE.check(header + "|" + str(info["source"]), verify)
 
     def _deny_auth(self) -> None:
+        if self.headers.get("Authorization", "")[:7].lower() == "bearer ":
+            # Kein Basic-Dialog im Browser für ein Skript mit falschem Schlüssel.
+            self._send_json({"error": "API-Schlüssel ungültig oder widerrufen"}, HTTPStatus.UNAUTHORIZED,
+                            {"WWW-Authenticate": 'Bearer realm="ntp-gui"'})
+            return
         self._send(HTTPStatus.UNAUTHORIZED, b"authentication required\n", "text/plain; charset=utf-8",
                    {"WWW-Authenticate": 'Basic realm="ntp-gui", charset="UTF-8"'})
+
+    @staticmethod
+    def _api_path(raw: str) -> tuple[str, bool]:
+        """Normalisiert den Pfad: /api/v1/<x> → bisheriger Pfad, /api/keys → /api/apikeys.
+
+        Gibt (Pfad, ist_v1_index) zurück. Unbekannte /api/v1/-Pfade bleiben, wie sie
+        sind (→ 404).
+        """
+        path = urlparse(raw).path.rstrip("/") or "/"
+        if apiv1.is_index(path):
+            return path, True
+        legacy = apiv1.resolve(path)
+        if legacy:
+            path = legacy
+        if path == "/api/keys" or path.startswith("/api/keys/"):
+            path = "/api/apikeys" + path[len("/api/keys"):]
+        return path, False
 
     def _serve_static(self, name: str) -> None:
         path = (STATIC_DIR / name).resolve()
@@ -589,17 +861,26 @@ class Handler(BaseHTTPRequestHandler):
         self.do_GET()
 
     def do_GET(self) -> None:
-        path = urlparse(self.path).path.rstrip("/") or "/"
+        path, index = self._api_path(self.path)
         if path == "/healthz":
             healthy = bool(chrony.tracking())
             self._send_json({"status": "ok" if healthy else "degraded", "chrony": healthy},
                             HTTPStatus.OK if healthy else HTTPStatus.SERVICE_UNAVAILABLE)
             return
-        if not self._authorised():
+        ident = self._identity()
+        if ident is None:
             self._deny_auth()
             return
+        if not self._host_ok(ident):
+            return
+        if not self._scope_ok(ident, "GET", path):
+            self._deny_scope(ident, "GET", path)
+            return
         try:
-            self._route_get(path)
+            if index:
+                self._send_json(apiv1.describe())
+            else:
+                self._route_get(path)
         except BrokenPipeError:
             pass
         except Exception as exc:  # nie wegen eines Parserfehlers ausfallen
@@ -634,7 +915,11 @@ class Handler(BaseHTTPRequestHandler):
             schema["readonly"] = env_flag("WEB_READONLY")
             schema["auth"] = auth_info()
             schema["reload"] = reload_status()
+            schema["schema_version"] = settings.SCHEMA_VERSION
+            schema["notes"] = settings.migration_notes(include_seen=False)
             self._send_json(schema)
+        elif path == "/api/settings/notes":
+            self._send_json({"schema": settings.schema_version(), "notes": settings.migration_notes()})
         elif path == "/api/settings/export":
             body = json.dumps(settings.export_values(), indent=2, ensure_ascii=False).encode()
             self._send(HTTPStatus.OK, body, "application/json; charset=utf-8",
@@ -649,20 +934,76 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(hardware.report(settings.values(), refresh=refresh))
         elif path == "/api/gps/calibration":
             cfg = settings.values()
-            window = env_like(query.get("window", query.get("seconds")), 0.0)
+            # Ohne window die letzten 24 h: über 30 Tage SQLite-Verlauf dauert es sonst Sekunden.
+            window = env_like(query.get("window", query.get("seconds")), CALIBRATION_DEFAULT_WINDOW)
             since = time.time() - window if window > 0 else None
             self._send_json(historymod.calibrate(HISTORY.snapshot(since), cfg["gps_refid"],
                                                  float(cfg["gps_offset"]), float(cfg["gps_delay"])))
+        elif path == "/api/gps/autocal":
+            self._send_json(autocal.api_status(settings.values(), fresh=query.get("fresh") != "0"))
+        elif path == "/api/events":
+            limit = int(env_like(query.get("limit"), 500))
+            since = env_like(query.get("since"), 0.0) or None
+            until = env_like(query.get("until"), 0.0) or None
+            level = query.get("level") if query.get("level") in events.LEVELS else None
+            self._send_json({"events": events.query(since=since, until=until, kinds=query.get("kinds") or None,
+                                                    level=level, limit=max(1, min(limit, 5000)))})
+        elif path == "/api/logs":
+            level = query.get("level") if query.get("level") in {"warn", "crit"} else ""
+            self._send_json(diagnostics.logs(int(env_like(query.get("lines"), 500)),
+                                             str(query.get("q") or ""), level))
+        elif path == "/api/diagnostics/preview":
+            try:
+                self._send_json(diagnostics.preview_locked(settings.values(), self._diag_options(query)))
+            except diagnostics.LeakError as exc:
+                self._leak_error(exc)
+        elif path == "/api/diagnostics/bundle":
+            try:
+                body = diagnostics.bundle_locked(settings.values(), self._diag_options(query))
+            except diagnostics.LeakError as exc:
+                self._leak_error(exc)
+                return
+            self._send(HTTPStatus.OK, body, "application/gzip",
+                       {"Content-Disposition": f'attachment; filename="{diagnostics.filename_for()}"',
+                        "Cache-Control": "no-store"})
+        elif path == "/api/recording":
+            self._send_json(recording_status())
+        elif path == "/api/enforce/snippets":
+            self._send_json(enforce.api_snippets(query, settings.values()))
+        elif path == "/api/enforce/check":
+            cfg = settings.values()
+            self._send_json(enforce.api_check(query, cfg, system_info(cfg)["addresses"], chrony.tracking()))
+        elif path == "/api/clients/offsets":
+            self._send_json(clientmon.status())
+        elif path == "/api/apikeys":
+            self._send_json({"keys": apikeys.list(), "auth_enabled": auth_info()["enabled"]})
+        elif path == "/api/v1/instance":
+            self._send_json(instance.info())
         elif path == "/metrics":
             self._send(HTTPStatus.OK, build_metrics().encode(), "text/plain; version=0.0.4; charset=utf-8")
         else:
             self._send(HTTPStatus.NOT_FOUND, b"not found\n", "text/plain; charset=utf-8")
 
+    def _diag_options(self, query: dict) -> dict:
+        options = diagnostics.options_from_query(query)
+        options.update(version=VERSION, uptime_seconds=int(time.time() - START_TIME),
+                       chrony_conf=CHRONY_CONF,
+                       history=HISTORY.snapshot(time.time() - 86400))
+        return options
+
+    def _leak_error(self, exc: Exception) -> None:
+        # Nur Art und Fundstelle – den gefundenen Text selbst nicht noch einmal ausgeben.
+        leaks = [{"kind": f.get("kind"), "path": f.get("path")} for f in getattr(exc, "findings", [])]
+        self._send_json({"ok": False, "error": str(exc), "leaks": leaks}, HTTPStatus.INTERNAL_SERVER_ERROR)
+
     # --- POST ----------------------------------------------------------------
-    def _csrf_ok(self) -> bool:
-        if self.headers.get("X-NTP-GUI") != "1":
-            return False
+    def _csrf_ok(self, ident: dict | None = None) -> bool:
         if not (self.headers.get("Content-Type") or "").startswith("application/json"):
+            return False
+        if ident is not None and ident.get("kind") == "key":
+            # Einen Bearer-Schlüssel hängt kein Browser von sich aus an eine fremde Anfrage.
+            return True
+        if self.headers.get("X-NTP-GUI") != "1":
             return False
         origin = self.headers.get("Origin")
         if origin:
@@ -685,11 +1026,20 @@ class Handler(BaseHTTPRequestHandler):
         return data
 
     def do_POST(self) -> None:
-        path = urlparse(self.path).path.rstrip("/")
-        if not self._authorised():
+        path, index = self._api_path(self.path)
+        ident = self._identity()
+        if ident is None:
             self._deny_auth()
             return
-        if not self._csrf_ok():
+        if not self._host_ok(ident):
+            return
+        if index:
+            self._error(HTTPStatus.METHOD_NOT_ALLOWED, "GET /api/v1 beschreibt die API; hier gibt es nichts zu senden")
+            return
+        if not self._scope_ok(ident, "POST", path):
+            self._deny_scope(ident, "POST", path)
+            return
+        if not self._csrf_ok(ident):
             self._error(HTTPStatus.FORBIDDEN, "Anfrage abgelehnt (nur aus dem Dashboard heraus)")
             return
         if env_flag("WEB_READONLY"):
@@ -701,7 +1051,7 @@ class Handler(BaseHTTPRequestHandler):
             self._error(HTTPStatus.BAD_REQUEST, f"Ungültige Anfrage: {exc}")
             return
         try:
-            self._route_post(path, data)
+            self._route_post(path, data, ident)
         except settings.ValidationError as exc:
             self._error(HTTPStatus.UNPROCESSABLE_ENTITY, str(exc),
                         fields=getattr(exc, "fields", {}))
@@ -718,22 +1068,83 @@ class Handler(BaseHTTPRequestHandler):
                                      "ausgelöst werden – bitte den Container neu starten.")
         return result
 
-    def _route_post(self, path: str, data: dict) -> None:
+    @staticmethod
+    def _settings_event(title: str, result: dict, ident: dict) -> None:
+        """Nur die Schlüssel ins Protokoll, nie die Werte (Hostnamen, Pfade …)."""
+        changed = result.get("changed")
+        keys = sorted(changed) if isinstance(changed, (list, dict, set, tuple)) else []
+        if not keys:
+            return
+        data = {"keys": keys[:50], "restart": bool(result.get("restart"))}
+        if ident.get("kind") == "key":
+            data["api_key"] = ident.get("id")
+        events.emit("settings", "info", f"{title}: {', '.join(keys[:8])}{' …' if len(keys) > 8 else ''}",
+                    data, source="api" if ident.get("kind") == "key" else "web")
+
+    def _route_post(self, path: str, data: dict, ident: dict | None = None) -> None:
+        ident = ident or {"kind": "open"}
         if path == "/api/settings":
-            changes = data.get("changes")
+            # „changes“ (Dashboard) oder „values“ (so beschreibt es /api/v1)
+            changes = data.get("changes", data.get("values"))
             if not isinstance(changes, dict) or not changes:
                 raise settings.ValidationError("Keine Änderungen übergeben")
-            self._send_json(self._after_change(settings.save(changes)))
+            result = settings.save(changes)
+            self._settings_event("Einstellungen geändert", result, ident)
+            self._send_json(self._after_change(result))
         elif path == "/api/settings/reset":
             keys = data.get("keys")
             if not isinstance(keys, list) or not keys:
                 raise settings.ValidationError("Keine Einstellungen zum Zurücksetzen übergeben")
-            self._send_json(self._after_change(settings.reset([str(k) for k in keys])))
+            result = settings.reset([str(k) for k in keys])
+            self._settings_event("Einstellungen zurückgesetzt", result, ident)
+            self._send_json(self._after_change(result))
         elif path == "/api/settings/import":
             values = data.get("values")
             if not isinstance(values, dict):
                 raise settings.ValidationError("Datei enthält keine Einstellungen")
-            self._send_json(self._after_change(settings.save(values)))
+            # Auch Sicherungen älterer Versionen: erst auf das aktuelle Schema bringen.
+            values, notes = settings.migrate_import({"schema": data.get("schema", 1), "values": values})
+            result = settings.save(values) if values else {"changed": [], "restart": False}
+            self._settings_event("Einstellungen importiert", result, ident)
+            result = self._after_change(result)
+            result["notes"] = notes
+            self._send_json(result)
+        elif path == "/api/settings/notes/ack":
+            self._send_json({"acknowledged": settings.ack_migration_notes()})
+        elif path == "/api/gps/autocal/rollback":
+            try:
+                self._send_json(autocal.rollback(data.get("steps", 1), cfg=settings.values()))
+            except autocal.AutocalError as exc:
+                self._error(HTTPStatus.CONFLICT, str(exc))
+        elif path == "/api/recording":
+            action = "stop" if data.get("stop") else str(data.get("action", "start"))
+            if action == "stop":
+                providers.stop()
+                self._send_json(recording_status())
+            elif action == "start":
+                try:
+                    providers.start_recording(data.get("seconds", 300))
+                except ValueError as exc:
+                    self._error(HTTPStatus.BAD_REQUEST, str(exc))
+                    return
+                events.emit("settings", "info", "Aufzeichnung der Datenquellen gestartet",
+                            {"seconds": data.get("seconds", 300)})
+                self._send_json(recording_status())
+            else:
+                self._error(HTTPStatus.BAD_REQUEST, "action muss „start“ oder „stop“ sein")
+        elif path == "/api/apikeys":
+            key_id, token = apikeys.create(data.get("name"), data.get("scope"))
+            entry = next((k for k in apikeys.list() if k["id"] == key_id), {})
+            self._send_json({"id": key_id, "token": token, "name": entry.get("name"),
+                             "scope": entry.get("scope"), "scope_label": entry.get("scope_label")})
+        elif path == "/api/apikeys/revoke":
+            if not apikeys.revoke(str(data.get("id", ""))):
+                self._error(HTTPStatus.NOT_FOUND, "Diesen Schlüssel gibt es nicht (mehr)")
+                return
+            self._send_json({"ok": True})
+        elif path == "/api/instance/rotate":
+            instance.rotate()  # schreibt selbst ein Ereignis
+            self._send_json(instance.info())
         elif path == "/api/auth":
             if auth_info()["source"] == "env":
                 raise settings.ValidationError("Der Zugang ist per WEB_USER/WEB_PASSWORD festgelegt "
@@ -764,10 +1175,15 @@ def main() -> None:
         print("[web] WARNUNG: WEB_USER und WEB_PASSWORD müssen beide gesetzt sein – "
               "das Dashboard läuft ohne Authentifizierung.", flush=True)
 
+    autocal.configure(history=HISTORY, trigger_reload=trigger_reload)
     threading.Thread(target=collector, daemon=True, name="collector").start()
     threading.Thread(target=hardware_refresher, daemon=True, name="hardware").start()
+    threading.Thread(target=events_ingester, daemon=True, name="events").start()
+    # Folgt clientmon_enable/ntp_port ohne Neustart.
+    threading.Thread(target=clientmon.watch, args=(settings.values,), daemon=True, name="clientmon-watch").start()
 
     def save_and_exit(*_):
+        clientmon.stop()
         HISTORY.save(force=True)
         raise SystemExit(0)
 
@@ -787,6 +1203,7 @@ def main() -> None:
     except (KeyboardInterrupt, SystemExit):
         pass
     finally:
+        clientmon.stop()
         HISTORY.save(force=True)
         server.server_close()
 
