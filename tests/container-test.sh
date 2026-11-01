@@ -290,6 +290,13 @@ if make_cert 0x1001; then
   MATCH=$(curl -s --max-time 10 http://127.0.0.1:18089/api/status \
     | python3 -c 'import json,sys; n=json.load(sys.stdin)["nts_server"]; print(n.get("name"), n.get("name_matches_cert"), n.get("cert_self_signed"))' 2>/dev/null)
   check "/api/status: Name passt zum Zertifikat" "${NTS_NAME} True True" "$MATCH"
+  # svc_pids <container> -> "dienst=pid" je laufendem Dienst laut services.json
+  svc_pids() {
+    docker exec "$1" cat /run/ntp-gui/services.json 2>/dev/null | python3 -c 'import json,sys
+s=json.load(sys.stdin)["services"]
+print(" ".join(f"{n}={v.get('"'"'pid'"'"')}" for n, v in sorted(s.items()) if v.get("state") == "running"))' 2>/dev/null
+  }
+  PIDS_BEFORE=$(svc_pids "${PREFIX}-j")
   make_cert 0x1002
   RELOADED=""
   for ((i = 0; i < 120; i++)); do
@@ -299,6 +306,15 @@ if make_cert 0x1001; then
   done
   if [[ -n "$RELOADED" ]]; then ok "Erneuertes Zertifikat wird ohne Neustart des Containers geladen ($i s)"
   else bad "Erneuertes Zertifikat nicht geladen (ausgeliefert: $(served_serial "${PREFIX}-j"))"; fi
+  # Nur chronyd darf neu starten; alle anderen Dienste behalten ihre PID.
+  PIDS_AFTER=$(svc_pids "${PREFIX}-j")
+  OTHERS_BEFORE=$(tr ' ' '\n' <<<"$PIDS_BEFORE" | grep -v '^chronyd=' | sort | tr '\n' ' ')
+  OTHERS_AFTER=$(tr ' ' '\n' <<<"$PIDS_AFTER" | grep -v '^chronyd=' | sort | tr '\n' ' ')
+  if [[ "$PIDS_BEFORE" == *chronyd=* && "$PIDS_AFTER" == *chronyd=* \
+        && "$(grep -o 'chronyd=[0-9]*' <<<"$PIDS_BEFORE")" != "$(grep -o 'chronyd=[0-9]*' <<<"$PIDS_AFTER")" \
+        && "$OTHERS_BEFORE" == "$OTHERS_AFTER" ]]; then
+    ok "Erneuerung startet nur chronyd neu (übrige Dienste: ${OTHERS_AFTER:-keine})"
+  else bad "Erneuerung startet nicht nur chronyd neu (vorher: $PIDS_BEFORE, nachher: $PIDS_AFTER)"; fi
   check "Container läuft nach dem Neuladen" running "$(docker inspect -f '{{.State.Status}}' "${PREFIX}-j")"
 else
   echo "  – openssl fehlt auf dem Host, Prüfung übersprungen"

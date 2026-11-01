@@ -23,7 +23,9 @@
   <a href="#stratum-1-mit-gps">GPS</a> ·
   <a href="#ptp">PTP</a> ·
   <a href="#konfiguration">Konfiguration</a> ·
-  <a href="#endpunkte">API</a>
+  <a href="#endpunkte">API</a> ·
+  <a href="ROADMAP.md">Roadmap</a> ·
+  <a href="CONTRIBUTING.md">Mitmachen</a>
 </p>
 
 Ein Container, der **NTP (chrony)**, optional einen **GPS-Empfänger** und **PTP (linuxptp)**
@@ -221,6 +223,11 @@ ist. Gilt nur für Linux-Hosts – Docker Desktop (macOS/Windows) reicht keine U
 
 ## Hardware-Check
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/hardware-dark.png">
+  <img alt="Hardware-Seite: Was diese Hardware kann – NTP-Server geht, USB-GPS nicht angeschlossen, Hardware-PTP nicht möglich wegen virtueller Netzwerkkarte" src="docs/screenshots/hardware-light.png">
+</picture>
+
 Die Seite **Hardware** beantwortet die Frage „Was kann *diese* Hardware von dem, was ntp-gui
 kann?“ – ohne dass du `dmesg`, `ethtool` und `/proc` selbst lesen musst. Sie liest nur
 (sysfs, `/proc`, `/dev`, die Geräteliste von gpsd, chrony-Tracking); serielle Geräte öffnet
@@ -382,8 +389,10 @@ Name im Zertifikat steht.
 
 **Erneuerung ohne Handarbeit:** chrony liest Zertifikate nur beim Start. Deshalb prüft der
 Container jede Minute, ob sich Zertifikat oder Schlüssel geändert haben. Bleibt die Änderung
-10 Sekunden stabil (damit beide Dateien geschrieben sind), startet er die Zeitdienste neu –
-im Log steht dann `[nts] Zertifikat erneuert – chronyd lädt neu`.
+10 Sekunden stabil (damit beide Dateien geschrieben sind), schreibt er die Konfiguration neu
+und startet nur chronyd neu – gpsd, ptp4l und phc2sys laufen weiter. Im Log steht dann
+`[nts] Zertifikat erneuert – chronyd lädt neu`. Scheitert das Neuschreiben, läuft der alte
+chronyd weiter, und der Status zeigt den Fehler.
 
 ### NTS hinter einem Reverse Proxy
 
@@ -693,8 +702,10 @@ liefern eine Sekundenflanke, die um Größenordnungen genauer ist als die NMEA-S
    `/dev/ttyAMA0`.
 4. Neu starten.
 
-Am einfachsten nimmst du danach **`/dev/serial0`**: Der Symlink zeigt bei jedem Modell auf
-den UART an den Header-Pins, `ls -l /dev/serial0` nennt das echte Gerät. Docker löst ihn
+Am einfachsten nimmst du danach **`/dev/serial0`**: Ist der UART wie oben eingeschaltet
+(`enable_uart=1`), zeigt der Symlink auf den UART an den Header-Pins. Prüfe es mit
+`ls -l /dev/serial0` – beim Pi 5 sollte dort `ttyAMA0` stehen; steht `ttyAMA10`, ist es der
+Debug-Anschluss zwischen den HDMI-Buchsen und `enable_uart=1` fehlt noch. Docker löst ihn
 beim Durchreichen auf:
 
 ```yaml
@@ -841,7 +852,7 @@ docker compose -f docker-compose.ptp.yml up -d
 | `PTP_LOG_MIN_DELAY_REQ_INTERVAL` | `-3` | Delay-Request-Intervall als 2^n s |
 | `PTP_SUMMARY_INTERVAL` | `4` | Wie oft ptp4l Kennzahlen ins Log schreibt (2^n s) |
 | `PHC2SYS_ENABLE` | `false` | Systemuhr und PTP-Hardwareuhr koppeln |
-| `PHC2SYS_OPTIONS` | automatisch | Leer = passend zur Rolle: Grandmaster `-a -rr -m`, sonst `-a -r -m` |
+| `PHC2SYS_OPTIONS` | automatisch | Leer = passend zur Rolle: Grandmaster `-a -rr -m`, sonst `-a -r -m`. Der alte Standard `-a -r -m` (bis 1.1.0) gilt als Grandmaster ebenfalls als „automatisch“ und wird zu `-a -rr -m` (HINWEIS im Log). Andere eigene Optionen, mit denen phc2sys als Grandmaster die Systemuhr stellen würde, laufen wie angegeben, erzeugen aber eine WARNUNG im Log und im Dashboard |
 | `PHC_REFCLOCK` | – | PTP-Uhr als chrony-Referenz, z. B. `/dev/ptp0` (PTP→NTP-Brücke). **Nur als PTP-Slave** (`PTP_MODE` `slave` oder `auto`), nicht mit `master`: Dort stellt phc2sys die PTP-Uhr nach der Systemuhr, chrony bekäme seine eigene Zeit zurück. ntp-gui lässt die Refclock-Zeile dann weg und schreibt eine WARNUNG ins Log |
 | `PHC_REFCLOCK_OPTIONS` | `poll 0 dpoll -2 offset 0 stratum 1` | Optionen der PHC-Refclock-Zeile |
 | `EXTRA_PTP4L_CONF` | – | Zusätzliche Zeilen im `[global]`-Abschnitt |
@@ -865,6 +876,10 @@ von der Rolle ab, und es darf immer nur **ein** Regler an der Systemuhr drehen:
 | **Grandmaster** (`master`) | `-a -rr` | regelt weiter | GPS/NTP → chronyd → Systemuhr → phc2sys → PHC → ptp4l → PTP-Clients |
 | **Slave** (`slave`, `auto`) | `-a -r` | läuft mit `-x` | PTP-Grandmaster → ptp4l → PHC → phc2sys → Systemuhr → chronyd → NTP-Clients |
 
+In der Rolle `auto` behandelt ntp-gui den Container wie einen Slave. Das Dashboard warnt
+deshalb, wenn `auto` mit Software-Zeitstempeln läuft oder phc2sys dabei die Systemuhr stellt:
+Soll der Container GPS-/NTP-Zeit per PTP verteilen, `PTP_MODE=master` wählen.
+
 **Grandmaster mit GPS:** chronyd stellt die Systemuhr nach GPS + PPS, `phc2sys -a -rr`
 überträgt sie auf die Netzwerkkarte, ptp4l verteilt sie. Damit die Clients wissen, wie gut
 diese Zeit ist, passt ntp-gui die Angaben im PTP-Announce laufend an den Zustand von chrony
@@ -886,7 +901,9 @@ eingeschaltetes phc2sys läuft die PHC frei – das Dashboard warnt dann.
 | `gptp` | IEEE 802.1AS (AVB/TSN, Automotive) | Layer 2, P2P, Priorität 248, Announce 2^0 s und weitere Werte aus linuxptp `gPTP.cfg` |
 
 Ein Profil setzt nur Felder, die noch auf ihrem Standard stehen – was du ausdrücklich
-änderst, gewinnt.
+änderst, gewinnt. Der wirksame Wert gilt überall: Mit `gptp` nutzt ptp4l Layer 2, auch wenn
+`PTP_TRANSPORT` auf dem Standard `UDPv4` steht – die PTP-Seite zeigt dann `L2`, und die
+Hardware-Prüfung verlangt `NET_RAW`.
 
 **PTP → NTP-Brücke:** Läuft der Container als PTP-Slave, kann chrony die PTP-Hardwareuhr
 direkt als Referenz benutzen und die Zeit als ganz normaler NTP-Server ins LAN geben:
@@ -1020,8 +1037,9 @@ CSV-Zeile, „nie gehört“ ist `4294967295` und `pmc` antwortet nur, wenn die 
 
 * Der Verlauf reicht standardmäßig 24 h zurück. Für Langzeitdaten `/metrics` mit
   Prometheus abgreifen.
-* Nach dem Speichern (und nach einer Zertifikatserneuerung beim NTS-Server) starten
-  chronyd, gpsd und ptp4l kurz neu; für einige Sekunden antwortet der Server dann nicht.
+* Nach dem Speichern starten chronyd, gpsd und ptp4l kurz neu, nach einer
+  Zertifikatserneuerung beim NTS-Server nur chronyd; für einige Sekunden antwortet der
+  NTP-Server dann nicht.
 * `chronyc clients` zählt nur, solange das Client-Log Platz hat (`CLIENTLOGLIMIT`).
 * Das Dashboard bringt kein TLS mit – für Zugriffe außerhalb des vertrauenswürdigen Netzes
   gehört ein Reverse Proxy davor.
@@ -1046,6 +1064,12 @@ die Version eintragen (z. B. `1.2.0`) und starten. Der Workflow
 Scheitert ein Schritt, entsteht kein halber Release. Bei einem privaten Repository
 ist auch das Image zunächst privat (`docker login ghcr.io` nötig); die Sichtbarkeit
 lässt sich in den Package-Einstellungen auf GitHub ändern.
+
+## Mitmachen
+
+ntp-gui ist ein Community-Projekt. Was geplant ist, steht in der [Roadmap](ROADMAP.md);
+wie du mithelfen kannst – auch ohne Programmieren, etwa mit einem Hardware-Bericht für die
+Kompatibilitätsliste –, steht in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Lizenz
 

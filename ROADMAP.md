@@ -18,7 +18,7 @@ Vorschläge, Erfahrungsberichte und Hilfe sind willkommen – siehe [CONTRIBUTIN
 - **Nur ausgehende Verbindungen.** Keine Instanz muss einen Port für einen Dienst öffnen.
 - **Jeder Wert wird erklärt.** Neue Anzeigen bekommen immer eine ⓘ-Erklärung.
 
-## 1.2 – Hardware-Check, NTS hinter dem Proxy, All-in-one ✅ in Arbeit
+## 1.2 – Hardware-Check, NTS hinter dem Proxy, All-in-one ✅
 
 - Hardware-Check: Was kann diese Hardware von dem, was ntp-gui kann? (GPS-Empfänger,
   PPS, PTP-Netzwerkkarten, VM, Container-Rechte, Echtzeituhr)
