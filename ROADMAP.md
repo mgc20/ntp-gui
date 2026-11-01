@@ -27,19 +27,19 @@ Vorschläge, Erfahrungsberichte und Hilfe sind willkommen – siehe [CONTRIBUTIN
 - NTS-Server hinter Reverse Proxy (Nginx Proxy Manager, Zoraxy, Traefik, nginx, HAProxy)
 - `docker-compose.all-in-one.yml`: kopieren, Optionen einkommentieren, fertig
 
-## 1.3 – Fehlersuche, erzwungene Zeitserver, Fundamente
+## 1.3 – Fehlersuche, erzwungene Zeitserver, Fundamente ✅
 
-| Thema | Nutzen | Aufwand |
-|---|---|---|
-| Diagnosepaket (ein Klick, mit Vorschau) und Log-Seite 🔒 | ★★★ | ◆ |
-| Zentraler Datenschutzfilter für alles, was die Instanz verlässt 🔒 | ★★★ | ◆◆ |
-| Zeitserver erzwingen: DNS-Umschreibung (AdGuard, Pi-hole, dnsmasq) und Firewall-Umleitung (OPNsense, MikroTik, OpenWrt, UniFi, nftables) samt Prüfung | ★★★ | ◆ |
-| Passive Messung der Client-Uhren (Abweichung je Gerät aus der NTP-Anfrage) | ★★★ | ◆◆ |
-| Automatische GPS-Kalibrierung (aus / vorschlagen / automatisch, behutsam, umkehrbar) | ★★ | ◆◆ |
-| Ereignisprotokoll (Quellenwechsel, Fix verloren, Neustarts, Änderungen) | ★★ | ◆ |
-| SQLite als Datenspeicher, versionierte Einstellungen mit Migration | ★★ | ◆◆ |
-| Austauschbare Datenquellen mit Aufzeichnung/Wiedergabe (Entwicklung, Demo-Modus) | ★★ | ◆◆ |
-| API-Schlüssel mit Rechten (nur lesen / verwalten), versionierte API `/api/v1` | ★★ | ◆ |
+| Thema | Nutzen | Aufwand | Stand |
+|---|---|---|---|
+| Diagnosepaket (ein Klick, mit Vorschau) und Log-Seite 🔒 | ★★★ | ◆ | ✅ |
+| Zentraler Datenschutzfilter für alles, was die Instanz verlässt 🔒 | ★★★ | ◆◆ | ✅ |
+| Zeitserver erzwingen: DNS-Umschreibung (AdGuard, Pi-hole, dnsmasq) und Firewall-Umleitung (OPNsense, MikroTik, OpenWrt, UniFi, nftables) samt Prüfung | ★★★ | ◆ | ✅ |
+| Passive Messung der Client-Uhren (Abweichung je Gerät aus der NTP-Anfrage) | ★★★ | ◆◆ | ✅ |
+| Automatische GPS-Kalibrierung (aus / vorschlagen / automatisch, behutsam, umkehrbar) | ★★ | ◆◆ | ✅ |
+| Ereignisprotokoll (Quellenwechsel, Fix verloren, Neustarts, Änderungen) | ★★ | ◆ | ✅ |
+| SQLite als Datenspeicher, versionierte Einstellungen mit Migration | ★★ | ◆◆ | ✅ |
+| Austauschbare Datenquellen mit Aufzeichnung/Wiedergabe (Entwicklung, Demo-Modus) | ★★ | ◆◆ | ✅ |
+| API-Schlüssel mit Rechten (nur lesen / verwalten), versionierte API `/api/v1` | ★★ | ◆ | ✅ |
 
 ## 1.3.1 – Debian 13 „trixie“
 

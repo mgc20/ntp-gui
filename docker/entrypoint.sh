@@ -147,8 +147,9 @@ start_logtee() {
   exec {LOG_OUT_FD}>&1 {LOG_ERR_FD}>&2
   exec > >(python3 -u "${APP_DIR}/logtee.py" "${RUN_DIR}/ntp-gui.log" || exec cat) 2>&1
   LOGTEE_PID=$!
-  # Ein 'wait' ohne Argument (shutdown) wartet auch auf die Prozess-Substitution,
-  # solange sie in $! steht – und der tee endet erst nach uns. $! neu belegen.
+  # Ein 'wait' ohne Argument wartet auch auf die Prozess-Substitution (bash 5.2
+  # sogar unabhängig von $!) – und der tee endet erst nach uns. Deshalb wartet
+  # shutdown nur auf 'jobs -p'; $! wird trotzdem neu belegt.
   true & wait "$!" 2>/dev/null || true
 }
 
@@ -422,7 +423,15 @@ shutdown() {
   fi
   stop_services
   [[ -n "$WEB_PID" ]] && kill "${WEB_PID%%=*}" 2>/dev/null || true
-  wait 2>/dev/null || true
+  # Nur auf die eigenen Hintergrundjobs warten: Ein 'wait' ohne Argument wartet in
+  # bash 5.2 auch auf die Prozess-Substitution des Log-Tees – und die endet erst
+  # nach uns (Container hinge dann bis zum SIGKILL).
+  local jobs_left
+  jobs_left=$(jobs -p)
+  if [[ -n "$jobs_left" ]]; then
+    # shellcheck disable=SC2086
+    wait $jobs_left 2>/dev/null || true
+  fi
   SVC_STATE[web]=stopped
   write_services
   exit "$code"

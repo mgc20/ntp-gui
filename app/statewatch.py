@@ -127,9 +127,9 @@ class StateWatcher:
                 if not isinstance(pps, dict) or not pps.get("dev"):
                     continue
                 dev, state = str(pps["dev"]), pps.get("state")
+                seen.add(dev)
                 if state == "unknown":
                     continue  # Probe nicht möglich – weder Verlust noch Rückkehr
-                seen.add(dev)
                 tracker = self._pps.setdefault(dev, _Tracker(1))
                 changed, old = tracker.update(state == "live")
                 if not changed:
