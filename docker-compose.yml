@@ -16,13 +16,16 @@ services:
     cap_add:
       - SYS_TIME
 
+    # Alle Werte unten sind nur Startwerte – im Dashboard unter „Einstellungen“
+    # lässt sich alles ändern; dort gespeicherte Werte haben Vorrang.
     environment:
       TZ: "Europe/Berlin"
       WEB_TITLE: "Zeitserver"
 
       # Upstream-Quellen
       NTP_POOLS: "de.pool.ntp.org"
-      # NTP_SERVERS: "ptbtime1.ptb.de,ptbtime2.ptb.de"
+      # Mit NTS abgesichert (TCP 4460 nach außen muss offen sein):
+      # NTP_NTS_SERVERS: "ptbtime1.ptb.de,ptbtime2.ptb.de"
 
       # Wer darf die Zeit abfragen? (Default: alle privaten Netze)
       ALLOW_NETWORKS: "192.168.0.0/16,10.0.0.0/8,172.16.0.0/12"
@@ -32,7 +35,7 @@ services:
       # WEB_PASSWORD: "bitte-aendern"
 
     volumes:
-      - chrony-data:/var/lib/chrony   # Drift-Datei über Neustarts hinweg
+      - chrony-data:/var/lib/chrony   # Drift, Messwerte, Dashboard-Einstellungen und Verlauf
       # - ./config:/config:ro         # eigene chrony.conf / ptp4l.conf
 
     healthcheck:

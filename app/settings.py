@@ -1,0 +1,813 @@
+"""Einstellungen: Schema, Validierung, Speicherung.
+
+Jede Einstellung hat einen Standardwert, optional eine Umgebungsvariable und
+optional einen Wert, der im Dashboard gespeichert wurde. Vorrang:
+
+    im Dashboard gespeichert  >  Umgebungsvariable  >  Standardwert
+
+Damit bleiben bestehende Compose-Dateien gültig (Env = Startwerte), und was
+im Dashboard eingestellt wird, gewinnt. Gespeichert wird als JSON im Volume
+von chrony (/var/lib/chrony), das in allen Compose-Vorlagen ohnehin
+persistent ist.
+
+Alles, was hier hereinkommt, landet später in chrony.conf/ptp4l.conf. Die
+Validierung ist deshalb streng: keine Zeilenumbrüche, nur erlaubte Zeichen,
+Optionen nur aus einer Positivliste. Ein Wert, der die Prüfung nicht besteht,
+wird abgelehnt statt "repariert".
+"""
+
+from __future__ import annotations
+
+import base64
+import hashlib
+import hmac
+import ipaddress
+import json
+import os
+import re
+import secrets
+import tempfile
+import threading
+from typing import Any, Callable
+
+DATA_DIR = os.environ.get("NTPGUI_DATA_DIR", "/var/lib/chrony/ntp-gui")
+SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json")
+
+# Abschnitte in der Reihenfolge, in der das Dashboard sie zeigt.
+SECTIONS = [
+    ("ntp", "Zeitquellen (NTP)", "Woher dieser Server selbst seine Zeit bezieht."),
+    ("lan", "Zeitserver für das LAN", "Wer diesen Server fragen darf und wie er antwortet."),
+    ("nts", "NTS (Network Time Security)", "Kryptografisch abgesicherte Zeit – als Client und optional als Server."),
+    ("gps", "GPS / GNSS", "Ein GPS-Empfänger als eigene Referenzuhr (Stratum 0)."),
+    ("ptp", "PTP (IEEE 1588)", "Präzisionszeit über das Netzwerk – braucht passende Hardware."),
+    ("web", "Dashboard", "Darstellung, Verlauf und Zugriffsschutz."),
+]
+
+# Welche Dienste eine Änderung neu starten muss.
+RESTART_SERVICES = "services"  # chronyd, gpsd, ptp4l, phc2sys
+RESTART_NONE = "none"          # wirkt sofort im Dashboard
+
+
+class ValidationError(ValueError):
+    """Ein Wert hat die Prüfung nicht bestanden."""
+
+
+# ---------------------------------------------------------------------------
+# Validatoren
+# ---------------------------------------------------------------------------
+
+_HOST_RE = re.compile(r"^(?=.{1,253}$)([A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*"
+                      r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.?$")
+_DEVICE_RE = re.compile(r"^/dev/[A-Za-z0-9._/:+-]{1,200}$")
+_IFACE_RE = re.compile(r"^[A-Za-z0-9._:-]{1,15}$")
+_SAFE_TEXT_RE = re.compile(r"^[^\x00-\x1f\x7f]{0,120}$")
+_REFID_RE = re.compile(r"^[A-Za-z0-9]{1,4}$")
+_NUMBER_RE = re.compile(r"^-?\d+(\.\d+)?([eE]-?\d+)?$")
+
+# chrony-Optionen für server/pool/peer, die im Dashboard erlaubt sind.
+# Wert = Anzahl erwarteter Zahlenargumente.
+SOURCE_OPTIONS = {
+    "iburst": 0, "burst": 0, "prefer": 0, "noselect": 0, "trust": 0, "require": 0,
+    "nts": 0, "xleave": 0, "auto_offline": 0, "offline": 0, "copy": 0,
+    "minpoll": 1, "maxpoll": 1, "presend": 1, "minstratum": 1, "polltarget": 1,
+    "version": 1, "port": 1, "ntsport": 1, "maxdelay": 1, "maxdelayratio": 1,
+    "maxdelaydevratio": 1, "mindelay": 1, "asymmetry": 1, "offset": 1, "filter": 1,
+    "maxsamples": 1, "minsamples": 1, "maxsources": 1, "certset": 1,
+}
+# chrony-Optionen für refclock-Zeilen.
+REFCLOCK_OPTIONS = {
+    "noselect": 0, "prefer": 0, "trust": 0, "require": 0, "tai": 0, "pps": 0,
+    "poll": 1, "dpoll": 1, "refid": 1, "lock": 1, "rate": 1, "minsamples": 1,
+    "maxsamples": 1, "offset": 1, "delay": 1, "precision": 1, "maxdispersion": 1,
+    "stratum": 1, "width": 1, "filter": 1, "maxlockage": 1,
+}
+# phc2sys-Kommandozeile: Schalter -> Anzahl Argumente.
+PHC2SYS_FLAGS = {
+    "-a": 0, "-r": 0, "-m": 0, "-q": 0, "-z": 1, "-s": 1, "-c": 1, "-d": 1,
+    "-O": 1, "-n": 1, "-N": 1, "-R": 1, "-L": 1, "-u": 1, "-w": 0, "-t": 1,
+    "-E": 1, "-P": 1, "-I": 1, "-S": 1, "-l": 1,
+}
+
+
+def _as_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on", "ja"}:
+        return True
+    if text in {"0", "false", "no", "off", "nein", ""}:
+        return False
+    raise ValidationError(f"„{value}“ ist kein Ja/Nein-Wert")
+
+
+def _as_number(kind: type, minimum=None, maximum=None) -> Callable[[Any], Any]:
+    def convert(value: Any):
+        if isinstance(value, bool):
+            raise ValidationError("Zahl erwartet")
+        try:
+            number = kind(str(value).strip()) if not isinstance(value, (int, float)) else kind(value)
+        except (TypeError, ValueError):
+            raise ValidationError(f"„{value}“ ist keine gültige Zahl") from None
+        if kind is float and (number != number or number in (float("inf"), float("-inf"))):
+            raise ValidationError("Zahl erwartet")
+        if minimum is not None and number < minimum:
+            raise ValidationError(f"Mindestens {minimum}")
+        if maximum is not None and number > maximum:
+            raise ValidationError(f"Höchstens {maximum}")
+        return number
+    return convert
+
+
+def _as_choice(*choices: str) -> Callable[[Any], str]:
+    def convert(value: Any) -> str:
+        text = str(value).strip()
+        if text not in choices:
+            raise ValidationError(f"Erlaubt: {', '.join(choices)}")
+        return text
+    return convert
+
+
+def _as_text(value: Any) -> str:
+    text = str(value if value is not None else "").strip()
+    if not _SAFE_TEXT_RE.match(text):
+        raise ValidationError("Steuerzeichen oder zu lang (max. 120 Zeichen)")
+    return text
+
+
+def _as_device(optional: bool = True) -> Callable[[Any], str]:
+    def convert(value: Any) -> str:
+        text = str(value if value is not None else "").strip()
+        if not text and optional:
+            return ""
+        if not _DEVICE_RE.match(text) or ".." in text:
+            raise ValidationError("Gerätepfad muss mit /dev/ beginnen, z. B. /dev/ttyACM0")
+        return text
+    return convert
+
+
+def _as_interface(value: Any) -> str:
+    text = str(value if value is not None else "").strip()
+    if text and not _IFACE_RE.match(text):
+        raise ValidationError("Ungültiger Interface-Name, z. B. eth0 oder enp1s0")
+    return text
+
+
+def _as_host(value: Any) -> str:
+    text = str(value).strip()
+    try:
+        ipaddress.ip_address(text)
+        return text
+    except ValueError:
+        pass
+    if not _HOST_RE.match(text):
+        raise ValidationError(f"„{text}“ ist kein gültiger Hostname oder keine IP-Adresse")
+    return text
+
+
+def _as_network_list(value: Any) -> list[str]:
+    items = value if isinstance(value, list) else re.split(r"[,\s]+", str(value or ""))
+    networks = []
+    for item in items:
+        item = str(item).strip()
+        if not item:
+            continue
+        if item.lower() == "all":
+            networks.append("all")
+            continue
+        try:
+            networks.append(str(ipaddress.ip_network(item, strict=False)))
+        except ValueError:
+            raise ValidationError(f"„{item}“ ist kein Netz, z. B. 192.168.0.0/16") from None
+    return networks
+
+
+def _check_options(text: str, allowed: dict[str, int], what: str) -> str:
+    tokens = str(text or "").split()
+    index = 0
+    while index < len(tokens):
+        word = tokens[index]
+        if word not in allowed:
+            raise ValidationError(f"Unbekannte {what}-Option „{word}“")
+        for offset in range(1, allowed[word] + 1):
+            if index + offset >= len(tokens):
+                raise ValidationError(f"„{word}“ braucht einen Wert")
+            argument = tokens[index + offset]
+            if word in {"refid", "lock"}:
+                if not _REFID_RE.match(argument):
+                    raise ValidationError(f"Ungültiger Wert für {word}")
+            elif not _NUMBER_RE.match(argument):
+                raise ValidationError(f"„{word}“ erwartet eine Zahl")
+        index += allowed[word] + 1
+    return " ".join(tokens)
+
+
+def _as_source_options(value: Any) -> str:
+    return _check_options(value, SOURCE_OPTIONS, "Quellen")
+
+
+def _as_refclock_options(value: Any) -> str:
+    return _check_options(value, REFCLOCK_OPTIONS, "Refclock")
+
+
+def _as_phc2sys_options(value: Any) -> str:
+    tokens = str(value or "").split()
+    index = 0
+    while index < len(tokens):
+        flag = tokens[index]
+        if flag not in PHC2SYS_FLAGS:
+            raise ValidationError(f"Unbekannter phc2sys-Schalter „{flag}“")
+        for offset in range(1, PHC2SYS_FLAGS[flag] + 1):
+            if index + offset >= len(tokens):
+                raise ValidationError(f"„{flag}“ braucht einen Wert")
+            argument = tokens[index + offset]
+            if not re.match(r"^[A-Za-z0-9._/:-]{1,64}$", argument):
+                raise ValidationError(f"Ungültiger Wert für {flag}")
+        index += PHC2SYS_FLAGS[flag] + 1
+    return " ".join(tokens)
+
+
+def _as_makestep(value: Any) -> str:
+    text = " ".join(str(value or "").split())
+    if not re.match(r"^\d+(\.\d+)?\s-?\d+$", text):
+        raise ValidationError("Format: Schwelle in Sekunden und Anzahl, z. B. „1.0 3“")
+    return text
+
+
+def _as_timezone(value: Any) -> str:
+    text = str(value or "").strip()
+    if text and not re.match(r"^[A-Za-z0-9_+/-]{1,64}$", text):
+        raise ValidationError("Ungültige Zeitzone")
+    return text
+
+
+SOURCE_TYPES = ("server", "pool", "peer")
+
+
+def _as_sources(value: Any) -> list[dict]:
+    if not isinstance(value, list):
+        raise ValidationError("Liste von Zeitquellen erwartet")
+    sources, seen = [], set()
+    for raw in value:
+        if not isinstance(raw, dict):
+            raise ValidationError("Ungültiger Eintrag in der Quellenliste")
+        host = str(raw.get("host", "")).strip()
+        if not host:
+            continue
+        kind = str(raw.get("type", "server")).strip()
+        if kind not in SOURCE_TYPES:
+            raise ValidationError(f"Typ muss server, pool oder peer sein (bei {host})")
+        entry = {
+            "type": kind,
+            "host": _as_host(host),
+            "nts": _as_bool(raw.get("nts", False)),
+            "prefer": _as_bool(raw.get("prefer", False)),
+            "noselect": _as_bool(raw.get("noselect", False)),
+            "options": _as_source_options(raw.get("options", "")),
+        }
+        if entry["prefer"] and entry["noselect"]:
+            raise ValidationError(f"{host}: „bevorzugen“ und „nur beobachten“ schließen sich aus")
+        if entry["nts"] and kind == "peer":
+            raise ValidationError(f"{host}: NTS gibt es nur für server und pool")
+        key = (kind, entry["host"].lower())
+        if key in seen:
+            raise ValidationError(f"{host} steht doppelt in der Liste")
+        seen.add(key)
+        sources.append(entry)
+    if len(sources) > 32:
+        raise ValidationError("Höchstens 32 Zeitquellen")
+    return sources
+
+
+def _env_sources(env: dict[str, str]) -> list[dict] | None:
+    """Baut die Quellenliste aus den bisherigen Variablen NTP_POOLS/SERVERS/PEERS."""
+    names = ("NTP_POOLS", "NTP_SERVERS", "NTP_PEERS", "NTP_NTS_SERVERS")
+    if not any(name in env for name in names):
+        return None
+    sources = []
+    for name, kind, nts in (("NTP_POOLS", "pool", False), ("NTP_SERVERS", "server", False),
+                            ("NTP_NTS_SERVERS", "server", True), ("NTP_PEERS", "peer", False)):
+        for host in re.split(r"[,\s]+", env.get(name, "") or ""):
+            if host.strip():
+                sources.append({"type": kind, "host": host.strip(), "nts": nts,
+                                "prefer": False, "noselect": False, "options": ""})
+    return sources
+
+
+# ---------------------------------------------------------------------------
+# Schema
+# ---------------------------------------------------------------------------
+
+PRIVATE_NETWORKS = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16",
+                    "fc00::/7", "fe80::/10"]
+
+
+def _field(key, section, label, kind, default, convert, *, env=None, help="", options=None,
+           advanced=False, restart=RESTART_SERVICES, unit=None, placeholder=None):
+    return {
+        "key": key, "section": section, "label": label, "type": kind, "default": default,
+        "convert": convert, "env": env, "help": help, "options": options,
+        "advanced": advanced, "restart": restart, "unit": unit, "placeholder": placeholder,
+    }
+
+
+SCHEMA: list[dict] = [
+    # --- NTP-Quellen -------------------------------------------------------
+    _field("ntp_sources", "ntp", "Zeitquellen", "sources",
+           [{"type": "pool", "host": "pool.ntp.org", "nts": False, "prefer": False,
+             "noselect": False, "options": ""}],
+           _as_sources, env=None,
+           help="Server, von denen dieser Zeitserver selbst die Zeit holt. „pool“ steht für "
+                "mehrere Server hinter einem Namen (z. B. de.pool.ntp.org), „server“ für genau "
+                "einen. Mit NTS werden die Antworten kryptografisch geprüft. „Bevorzugen“ macht "
+                "eine Quelle zur ersten Wahl, „nur beobachten“ zeigt sie an, ohne sie zu nutzen."),
+    _field("ntp_source_options", "ntp", "Optionen für alle Quellen", "text", "iburst",
+           _as_source_options, env="NTP_SERVER_OPTIONS", advanced=True,
+           help="chrony-Optionen, die an jede Quelle angehängt werden. „iburst“ schickt beim "
+                "Start vier schnelle Anfragen, damit die erste Synchronisation Sekunden statt "
+                "Minuten dauert."),
+    _field("ntp_pool_maxsources", "ntp", "Server je Pool", "int", 4,
+           _as_number(int, 1, 16), env="NTP_POOL_MAXSOURCES", advanced=True,
+           help="Wie viele Server chrony aus einem Pool-Namen gleichzeitig nutzt."),
+    _field("ntp_minsources", "ntp", "Mindestens übereinstimmende Quellen", "int", 1,
+           _as_number(int, 1, 8), env="NTP_MINSOURCES",
+           help="Erst wenn so viele Quellen dieselbe Zeit nennen, stellt chrony die Uhr. "
+                "2 oder 3 schützt davor, dass eine einzelne falsche Quelle die Zeit verbiegt – "
+                "braucht dann aber auch so viele erreichbare Quellen."),
+    _field("makestep", "ntp", "Uhr springen lassen", "text", "1.0 3", _as_makestep,
+           env="MAKESTEP", advanced=True,
+           help="Normalerweise wird die Uhr sanft nachgeregelt. Ist sie beim Start um mehr als "
+                "die Schwelle (Sekunden) daneben, darf chrony in den ersten N Messungen "
+                "springen. Wichtig für Geräte ohne Echtzeituhr wie den Raspberry Pi."),
+    _field("leapsectz", "ntp", "Schaltsekunden-Zeitzone", "text", "right/UTC", _as_timezone,
+           env="LEAPSECTZ", advanced=True,
+           help="Woher chrony bevorstehende Schaltsekunden kennt. Standard ist richtig."),
+
+    # --- LAN-Server --------------------------------------------------------
+    _field("allow_networks", "lan", "Erlaubte Netze", "networks", PRIVATE_NETWORKS,
+           _as_network_list, env="ALLOW_NETWORKS",
+           help="Nur Geräte aus diesen Netzen bekommen eine Antwort. Standard: alle privaten "
+                "Netze (10.x, 172.16–31.x, 192.168.x, IPv6 ULA und Link-Local). „all“ erlaubt "
+                "jedem – nur sinnvoll, wenn eine Firewall davor sitzt."),
+    _field("deny_networks", "lan", "Ausgenommene Netze", "networks", [], _as_network_list,
+           env="DENY_NETWORKS", advanced=True,
+           help="Netze innerhalb der erlaubten, die trotzdem keine Antwort bekommen, z. B. ein "
+                "Gäste-WLAN."),
+    _field("serve_unsynced", "lan", "Auch ohne Quelle Zeit ausliefern", "bool", True, _as_bool,
+           env="SERVE_UNSYNCED",
+           help="Inselbetrieb: Ist keine Quelle erreichbar, liefert der Server trotzdem die "
+                "eigene Uhrzeit aus (mit hohem Stratum, damit Clients sie als zweite Wahl "
+                "erkennen). Hält das LAN einheitlich, auch wenn das Internet ausfällt."),
+    _field("local_stratum", "lan", "Stratum im Inselbetrieb", "int", 10,
+           _as_number(int, 1, 15), env="LOCAL_STRATUM", advanced=True,
+           help="Wie „weit weg“ von einer echten Referenz sich der Server im Inselbetrieb "
+                "ausgibt. 10 ist üblich und sorgt dafür, dass echte Server Vorrang behalten."),
+    _field("ntp_ratelimit", "lan", "Anfragen begrenzen", "bool", False, _as_bool,
+           env="NTP_RATELIMIT", advanced=True,
+           help="Begrenzt, wie oft ein einzelner Client fragen darf. Schützt vor fehlerhaften "
+                "Geräten, die im Sekundentakt fragen. Im Heimnetz meist unnötig."),
+    _field("ntp_port", "lan", "NTP-Port", "int", 123, _as_number(int, 1, 65535),
+           env="NTP_PORT", advanced=True,
+           help="Standard ist 123. Nur ändern, wenn Clients einen anderen Port erwarten."),
+    _field("bind_address", "lan", "Nur auf dieser Adresse lauschen", "text", "", _as_text,
+           env="BIND_ADDRESS", advanced=True, placeholder="alle Adressen",
+           help="Leer lassen, um auf allen Adressen des Hosts zu antworten."),
+    _field("ntp_hw_timestamp", "lan", "Hardware-Zeitstempel für NTP", "bool", False, _as_bool,
+           env="NTP_HW_TIMESTAMP", advanced=True,
+           help="Lässt die Netzwerkkarte die Zeitstempel der NTP-Pakete setzen statt des "
+                "Kernels. Bringt nur mit Host-Netzwerk und einer NIC mit Hardware-Zeitstempeln "
+                "etwas (siehe PTP-Seite)."),
+    _field("ntp_hw_timestamp_interface", "lan", "Interface für Hardware-Zeitstempel", "text", "*",
+           lambda v: "*" if str(v).strip() in {"", "*"} else _as_interface(v),
+           env="NTP_HW_TIMESTAMP_INTERFACE", advanced=True,
+           help="„*“ für alle Interfaces, die es können."),
+
+    # --- NTS ---------------------------------------------------------------
+    _field("nts_nocerttimecheck", "nts", "Zertifikatszeit beim Start nicht prüfen", "bool", True,
+           _as_bool, env="NTS_NOCERTTIMECHECK",
+           help="NTS prüft TLS-Zertifikate – dafür muss die Uhr ungefähr stimmen. Ein "
+                "Raspberry Pi ohne Echtzeituhr startet aber mit falscher Zeit. Diese Option "
+                "erlaubt beim allerersten Abgleich eine Ausnahme. Danach wird normal geprüft."),
+    _field("nts_server_enable", "nts", "NTS-Server für das LAN anbieten", "bool", False, _as_bool,
+           env="NTS_SERVER", advanced=True,
+           help="Bietet NTS auch den eigenen Clients an. Braucht ein TLS-Zertifikat, dem die "
+                "Clients vertrauen, und Clients, die NTS sprechen (chrony, NTPsec – Windows "
+                "und macOS können es nicht). Port 4460/tcp muss erreichbar sein."),
+    _field("nts_server_cert", "nts", "Zertifikat (PEM)", "text", "/config/nts.crt", _as_text,
+           env="NTS_SERVER_CERT", advanced=True,
+           help="Pfad zum Zertifikat im Container, z. B. aus dem gemounteten /config."),
+    _field("nts_server_key", "nts", "Privater Schlüssel (PEM)", "text", "/config/nts.key", _as_text,
+           env="NTS_SERVER_KEY", advanced=True,
+           help="Pfad zum zugehörigen privaten Schlüssel."),
+
+    # --- GPS ---------------------------------------------------------------
+    _field("gps_enable", "gps", "GPS verwenden", "bool", False, _as_bool, env="GPS_ENABLE",
+           help="Startet gpsd und trägt den Empfänger als Referenzuhr in chrony ein."),
+    _field("gps_device", "gps", "Gerät", "device", "/dev/ttyACM0", _as_device(optional=False),
+           env="GPS_DEVICE",
+           help="Der serielle Port des Empfängers. USB-Empfänger wie der VK-162 erscheinen als "
+                "/dev/ttyACM0, am Raspberry-Pi-UART meist /dev/ttyAMA0. Das Gerät muss per "
+                "„devices:“ in den Container gereicht werden."),
+    _field("gps_offset", "gps", "Offset (Korrektur)", "float", 0.0, _as_number(float, -2.0, 2.0),
+           env="GPS_OFFSET", unit="s",
+           help="Gleicht die feste Verspätung aus, mit der ein Empfänger die Zeit meldet. Bei "
+                "USB-Empfängern typisch 0,02–0,15 s. Den richtigen Wert misst der "
+                "Kalibrier-Assistent auf der GPS-Seite."),
+    _field("gps_delay", "gps", "Angenommene Unsicherheit (Delay)", "float", 0.2,
+           _as_number(float, 0.0001, 1.0), env="GPS_DELAY", unit="s",
+           help="Wie stark chrony dem GPS misstraut. 0,2 s ist vorsichtig für unkalibrierte "
+                "Empfänger. Je kleiner, desto eher wird das GPS gegenüber Internet-Servern "
+                "gewählt. Nach der Kalibrierung schlägt der Assistent einen passenden Wert vor."),
+    _field("gps_select", "gps", "Rolle bei der Quellenauswahl", "select", "auto",
+           _as_choice("auto", "prefer", "noselect"), env="GPS_SELECT",
+           options=[("auto", "automatisch – chrony entscheidet"),
+                    ("prefer", "bevorzugen – GPS ist erste Wahl"),
+                    ("noselect", "nur beobachten – nie zur Synchronisation")],
+           help="„Bevorzugen“ macht das GPS zur Hauptquelle, solange es plausibel ist. "
+                "„Nur beobachten“ ist praktisch zum Kalibrieren."),
+    _field("gps_pps_device", "gps", "PPS-Gerät", "device", "", _as_device(optional=True),
+           env="GPS_PPS_DEVICE", placeholder="kein PPS",
+           help="Ein echter Sekundenimpuls (z. B. /dev/pps0 über GPIO am Raspberry Pi). "
+                "Macht die Zeit tausendfach genauer. Der VK-162 hat keinen PPS-Ausgang."),
+    _field("gps_pps_shm", "gps", "PPS über gpsd", "bool", False, _as_bool, env="GPS_PPS_SHM",
+           advanced=True,
+           help="Nutzt den PPS, den gpsd selbst erkennt (z. B. über die DCD-Leitung eines "
+                "seriellen Adapters), statt eines /dev/pps-Geräts."),
+    _field("gps_speed", "gps", "Baudrate", "text", "", lambda v: _check_digits(v),
+           env="GPS_SPEED", advanced=True, placeholder="automatisch",
+           help="Nur für serielle Empfänger mit fester Geschwindigkeit nötig. USB-Empfänger "
+                "erkennt gpsd selbst."),
+    _field("gps_poll", "gps", "Abfrageintervall (2^n s)", "int", 3, _as_number(int, -4, 6),
+           env="GPS_POLL", advanced=True,
+           help="Wie oft chrony die GPS-Zeit übernimmt: 3 bedeutet alle 8 Sekunden."),
+    _field("gps_filter", "gps", "Medianfilter", "int", 3, _as_number(int, 0, 64),
+           env="GPS_FILTER", advanced=True,
+           help="Aus so vielen Rohwerten nimmt chrony den Median – glättet USB-Ausreißer."),
+    _field("gps_precision", "gps", "Auflösung", "float", 0.1, _as_number(float, 1e-9, 1.0),
+           env="GPS_PRECISION", unit="s", advanced=True,
+           help="Wie fein die NMEA-Zeitangabe ist. 0,1 s ist vorsichtig; kalibriert passt 0,001."),
+    _field("gps_refid", "gps", "Name in der Quellenliste", "text", "GPS",
+           lambda v: _check_refid(v), env="GPS_REFID", advanced=True,
+           help="Bis zu vier Zeichen, z. B. GPS oder NMEA."),
+    _field("gps_refclock_options", "gps", "Weitere Refclock-Optionen", "text", "",
+           _as_refclock_options, env="GPS_REFCLOCK_OPTIONS", advanced=True,
+           help="Zusätzliche chrony-Optionen für die GPS-Zeile, z. B. „trust“."),
+    _field("gps_show_position", "gps", "Position anzeigen", "bool", False, _as_bool,
+           env="GPS_SHOW_POSITION", restart=RESTART_NONE,
+           help="Zeigt Koordinaten im Dashboard und in der API. Standardmäßig aus, weil die "
+                "Position den Standort verrät."),
+
+    # --- PTP ---------------------------------------------------------------
+    _field("ptp_enable", "ptp", "PTP verwenden", "bool", False, _as_bool, env="PTP_ENABLE",
+           help="Startet ptp4l. Setzt Host-Netzwerk voraus (network_mode: host) und für echte "
+                "Präzision eine Netzwerkkarte mit Hardware-Zeitstempeln – die PTP-Seite prüft das."),
+    _field("ptp_interface", "ptp", "Netzwerk-Interface", "interface", "", _as_interface,
+           env="PTP_INTERFACE",
+           help="Das Interface, über das PTP läuft, z. B. eth0 oder enp1s0."),
+    _field("ptp_mode", "ptp", "Rolle", "select", "auto", _as_choice("auto", "master", "slave"),
+           env="PTP_MODE",
+           options=[("auto", "automatisch – der beste Takt im Netz wird Grandmaster"),
+                    ("master", "Grandmaster – dieser Server gibt den Takt vor"),
+                    ("slave", "Slave – übernimmt die Zeit eines anderen Grandmasters")],
+           help="Mit GPS ist „Grandmaster“ richtig: Dieser Server verteilt dann GPS-Zeit per "
+                "PTP. „Slave“ passt, wenn es im Netz schon einen besseren Grandmaster gibt."),
+    _field("ptp_domain", "ptp", "Domain", "int", 0, _as_number(int, 0, 255), env="PTP_DOMAIN",
+           help="Getrennte PTP-Netze im selben LAN. Alle Teilnehmer brauchen dieselbe Domain; "
+                "0 ist der Standard."),
+    _field("ptp_transport", "ptp", "Transport", "select", "UDPv4",
+           _as_choice("UDPv4", "UDPv6", "L2"), env="PTP_TRANSPORT",
+           options=[("UDPv4", "UDP über IPv4 (Standard)"), ("UDPv6", "UDP über IPv6"),
+                    ("L2", "Ethernet direkt (Layer 2)")],
+           help="Alle Teilnehmer müssen denselben Transport nutzen. UDPv4 funktioniert fast "
+                "überall."),
+    _field("ptp_time_stamping", "ptp", "Zeitstempel", "select", "hardware",
+           _as_choice("hardware", "software"), env="PTP_TIME_STAMPING",
+           options=[("hardware", "Hardware – Nanosekunden, braucht passende NIC"),
+                    ("software", "Software – funktioniert überall, Mikrosekunden")],
+           help="Mit Software-Zeitstempeln läuft PTP auf jeder Karte, ist dann aber nicht "
+                "genauer als gutes NTP."),
+    _field("ptp_delay_mechanism", "ptp", "Laufzeitmessung", "select", "E2E",
+           _as_choice("E2E", "P2P", "Auto"), env="PTP_DELAY_MECHANISM", advanced=True,
+           options=[("E2E", "End-to-End (Standard)"), ("P2P", "Peer-to-Peer"),
+                    ("Auto", "automatisch")],
+           help="E2E passt für normale Netze. P2P nur, wenn alle Switches es unterstützen."),
+    _field("ptp_priority1", "ptp", "Priority 1", "int", 128, _as_number(int, 0, 255),
+           env="PTP_PRIORITY1", advanced=True,
+           help="Kleinere Zahl = eher Grandmaster. Zum Erzwingen z. B. 100 setzen."),
+    _field("ptp_priority2", "ptp", "Priority 2", "int", 128, _as_number(int, 0, 255),
+           env="PTP_PRIORITY2", advanced=True,
+           help="Gleichstandsentscheidung nach Priority 1."),
+    _field("ptp_clock_class", "ptp", "Clock Class", "int", 248, _as_number(int, 0, 255),
+           env="PTP_CLOCK_CLASS", advanced=True,
+           help="Wie gut der eigene Takt ist. 248 = „unbekannt/frei laufend“, 6 = „an GPS "
+                "gekoppelt“. Mit stabilem GPS darf man 6 setzen."),
+    _field("ptp_log_sync_interval", "ptp", "Sync-Intervall (2^n s)", "int", -3,
+           _as_number(int, -7, 4), env="PTP_LOG_SYNC_INTERVAL", advanced=True,
+           help="-3 bedeutet 8 Sync-Nachrichten pro Sekunde."),
+    _field("ptp_summary_interval", "ptp", "Log-Zusammenfassung (2^n s)", "int", 4,
+           _as_number(int, 0, 10), env="PTP_SUMMARY_INTERVAL", advanced=True,
+           help="Wie oft ptp4l eine Zusammenfassung ins Log schreibt (4 = alle 16 s)."),
+    _field("phc2sys_enable", "ptp", "Systemuhr an PTP koppeln (phc2sys)", "bool", False, _as_bool,
+           env="PHC2SYS_ENABLE",
+           help="Überträgt die PTP-Zeit der Netzwerkkarte auf die Systemuhr. Nur als PTP-Slave "
+                "sinnvoll. Dann stellt phc2sys die Uhr, und chrony liefert nur noch aus."),
+    _field("phc2sys_options", "ptp", "phc2sys-Optionen", "text", "-a -r -m", _as_phc2sys_options,
+           env="PHC2SYS_OPTIONS", advanced=True,
+           help="Standard „-a -r -m“: Quelle automatisch wählen, Systemuhr mitregeln, ins Log "
+                "schreiben."),
+    _field("phc_refclock", "ptp", "PTP-Hardwareuhr als chrony-Quelle", "device", "",
+           _as_device(optional=True), env="PHC_REFCLOCK", placeholder="aus",
+           help="PTP-zu-NTP-Brücke: chrony nutzt die PTP-Uhr der Netzwerkkarte (z. B. "
+                "/dev/ptp0) als Referenz und verteilt diese Zeit per NTP an Geräte ohne PTP."),
+
+    # --- Dashboard ---------------------------------------------------------
+    _field("web_title", "web", "Titel", "text", "NTP / PTP Time Server", _as_text,
+           env="WEB_TITLE", restart=RESTART_NONE, help="Überschrift im Dashboard."),
+    _field("web_refresh_seconds", "web", "Aktualisierung", "float", 5.0,
+           _as_number(float, 1.0, 300.0), env="WEB_REFRESH_SECONDS", unit="s",
+           restart=RESTART_NONE, help="Wie oft das Dashboard neue Werte holt."),
+    _field("history_interval", "web", "Messintervall für Diagramme", "float", 10.0,
+           _as_number(float, 2.0, 600.0), env="HISTORY_INTERVAL", unit="s",
+           restart=RESTART_NONE, advanced=True,
+           help="Alle wie viele Sekunden ein Messpunkt für die Verlaufsdiagramme entsteht."),
+]
+
+
+def _check_digits(value: Any) -> str:
+    text = str(value or "").strip()
+    if text and not re.match(r"^\d{3,7}$", text):
+        raise ValidationError("Baudrate als Zahl, z. B. 9600")
+    return text
+
+
+def _check_refid(value: Any) -> str:
+    text = str(value or "").strip()
+    if not _REFID_RE.match(text):
+        raise ValidationError("1–4 Buchstaben oder Ziffern")
+    return text
+
+
+FIELDS = {field["key"]: field for field in SCHEMA}
+
+# Nur per Umgebungsvariable – im Dashboard sichtbar, aber nicht änderbar.
+ENV_ONLY = [
+    ("WEB_PORT", "Port des Dashboards"),
+    ("WEB_BIND", "Adresse des Dashboards"),
+    ("DISABLE_CLOCK_CONTROL", "Uhrensteuerung abschalten"),
+    ("EXTRA_CHRONY_CONF", "Zusätzliche chrony-Zeilen"),
+    ("EXTRA_PTP4L_CONF", "Zusätzliche ptp4l-Zeilen"),
+    ("CLIENTLOGLIMIT", "Speicher für die Client-Liste"),
+    ("WEB_READONLY", "Einstellungen im Dashboard sperren"),
+]
+
+
+# ---------------------------------------------------------------------------
+# Laden, Speichern, effektive Werte
+# ---------------------------------------------------------------------------
+
+_LOCK = threading.RLock()  # reentrant: save() ruft values() unter der Sperre
+_CACHE: dict[str, Any] = {"mtime": None, "data": None}
+
+
+def _load_file() -> dict:
+    try:
+        stat = os.stat(SETTINGS_FILE)
+    except OSError:
+        return {}
+    if _CACHE["mtime"] == stat.st_mtime_ns and _CACHE["data"] is not None:
+        return _CACHE["data"]
+    try:
+        with open(SETTINGS_FILE, encoding="utf-8") as handle:
+            data = json.load(handle)
+        if not isinstance(data, dict):
+            data = {}
+    except (OSError, ValueError):
+        data = {}
+    _CACHE.update(mtime=stat.st_mtime_ns, data=data)
+    return data
+
+
+def _write_file(data: dict) -> None:
+    os.makedirs(DATA_DIR, mode=0o700, exist_ok=True)
+    try:
+        os.chmod(DATA_DIR, 0o700)
+    except OSError:
+        pass
+    fd, tmp = tempfile.mkstemp(dir=DATA_DIR, prefix=".settings-", suffix=".json")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(data, handle, indent=2, ensure_ascii=False, sort_keys=True)
+            handle.write("\n")
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, SETTINGS_FILE)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+    _CACHE.update(mtime=None, data=None)
+
+
+def _env_value(field: dict, env: dict[str, str]):
+    """Wert aus der Umgebung – oder None, wenn die Variable nicht gesetzt ist."""
+    if field["key"] == "ntp_sources":
+        sources = _env_sources(env)
+        return None if sources is None else _as_sources(sources)
+    name = field["env"]
+    if not name or name not in env:
+        return None
+    raw = env[name]
+    if field["type"] == "networks" and not str(raw).strip():
+        return []
+    return field["convert"](raw)
+
+
+def effective(env: dict[str, str] | None = None) -> dict[str, dict]:
+    """Alle Einstellungen mit Wert und Herkunft: gui > env > default.
+
+    Ein ungültiger Env-Wert fällt auf den Standard zurück und wird als Fehler
+    gemeldet, statt den Start zu verhindern.
+    """
+    env = dict(os.environ if env is None else env)
+    with _LOCK:
+        saved = dict(_load_file().get("values", {}))
+    result = {}
+    for field in SCHEMA:
+        key = field["key"]
+        entry = {"value": field["default"], "source": "default", "error": None, "env": None}
+        try:
+            env_value = _env_value(field, env)
+        except ValidationError as exc:
+            env_value = None
+            entry["error"] = f"Umgebungsvariable ungültig: {exc}"
+        if env_value is not None:
+            entry.update(value=env_value, source="env", env=env_value)
+        if key in saved:
+            try:
+                entry.update(value=field["convert"](saved[key]), source="gui")
+            except ValidationError as exc:
+                entry["error"] = f"Gespeicherter Wert ungültig: {exc}"
+        result[key] = entry
+    return result
+
+
+def values(env: dict[str, str] | None = None) -> dict[str, Any]:
+    return {key: entry["value"] for key, entry in effective(env).items()}
+
+
+def validate(changes: dict[str, Any]) -> dict[str, Any]:
+    """Prüft eingehende Änderungen. Wirft ValidationError mit Feldbezug."""
+    clean = {}
+    errors = {}
+    for key, raw in changes.items():
+        field = FIELDS.get(key)
+        if field is None:
+            errors[key] = "Unbekannte Einstellung"
+            continue
+        try:
+            clean[key] = field["convert"](raw)
+        except ValidationError as exc:
+            errors[key] = str(exc)
+    if errors:
+        error = ValidationError("; ".join(f"{FIELDS.get(k, {}).get('label', k)}: {v}" for k, v in errors.items()))
+        error.fields = errors  # type: ignore[attr-defined]
+        raise error
+    return clean
+
+
+def save(changes: dict[str, Any]) -> dict[str, Any]:
+    """Speichert geprüfte Änderungen. Gibt zurück, welche Dienste neu starten müssen."""
+    clean = validate(changes)
+    with _LOCK:
+        data = dict(_load_file())
+        stored = dict(data.get("values", {}))
+        before = values()
+        stored.update(clean)
+        data["values"] = stored
+        _write_file(data)
+    after = values()
+    changed = [key for key in clean if before.get(key) != after.get(key)]
+    restart = any(FIELDS[key]["restart"] == RESTART_SERVICES for key in changed)
+    return {"changed": changed, "restart": restart}
+
+
+def reset(keys: list[str]) -> dict[str, Any]:
+    """Entfernt im Dashboard gespeicherte Werte – es gilt wieder Env bzw. Standard."""
+    unknown = [key for key in keys if key not in FIELDS]
+    if unknown:
+        raise ValidationError(f"Unbekannte Einstellung: {', '.join(unknown)}")
+    with _LOCK:
+        data = dict(_load_file())
+        stored = dict(data.get("values", {}))
+        before = values()
+        for key in keys:
+            stored.pop(key, None)
+        data["values"] = stored
+        _write_file(data)
+    after = values()
+    changed = [key for key in keys if before.get(key) != after.get(key)]
+    restart = any(FIELDS[key]["restart"] == RESTART_SERVICES for key in changed)
+    return {"changed": changed, "restart": restart}
+
+
+def public_schema() -> dict:
+    """Schema + aktuelle Werte für das Dashboard (ohne Funktionen und Geheimnisse)."""
+    eff = effective()
+    fields = []
+    for field in SCHEMA:
+        entry = eff[field["key"]]
+        fields.append({
+            "key": field["key"], "section": field["section"], "label": field["label"],
+            "type": field["type"], "help": field["help"], "advanced": field["advanced"],
+            "restart": field["restart"], "unit": field["unit"],
+            "placeholder": field["placeholder"], "env": field["env"],
+            "options": [{"value": v, "label": l} for v, l in (field["options"] or [])],
+            "default": field["default"], "value": entry["value"], "source": entry["source"],
+            "env_value": entry["env"], "error": entry["error"],
+        })
+    env_only = [{"name": name, "label": label, "set": name in os.environ,
+                 "value": ("••••" if "PASSWORD" in name else os.environ.get(name, ""))}
+                for name, label in ENV_ONLY]
+    return {
+        "sections": [{"key": k, "label": l, "description": d} for k, l, d in SECTIONS],
+        "fields": fields,
+        "env_only": env_only,
+        "storage": storage_info(),
+    }
+
+
+def storage_info() -> dict:
+    """Wo gespeichert wird und ob es einen Neustart des Containers übersteht."""
+    persistent = _is_mounted(os.path.dirname(DATA_DIR.rstrip("/")) or DATA_DIR)
+    return {"path": SETTINGS_FILE, "persistent": persistent,
+            "exists": os.path.exists(SETTINGS_FILE)}
+
+
+def _is_mounted(path: str) -> bool:
+    """True, wenn path (oder ein Elternverzeichnis unterhalb von /) ein Mount ist."""
+    path = os.path.realpath(path)
+    try:
+        with open("/proc/self/mountinfo", encoding="utf-8") as handle:
+            mounts = [line.split()[4] for line in handle if len(line.split()) > 4]
+    except OSError:
+        return True  # unbekannt – nicht fälschlich warnen
+    while path not in ("", "/"):
+        if path in mounts:
+            return True
+        path = os.path.dirname(path)
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Passwort für das Dashboard
+# ---------------------------------------------------------------------------
+
+_PBKDF2_ROUNDS = 200_000
+
+
+def hash_password(password: str) -> str:
+    salt = secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, _PBKDF2_ROUNDS)
+    return "pbkdf2_sha256${}${}${}".format(
+        _PBKDF2_ROUNDS, base64.b64encode(salt).decode(), base64.b64encode(digest).decode())
+
+
+def verify_password(password: str, encoded: str) -> bool:
+    try:
+        scheme, rounds, salt, digest = encoded.split("$")
+        if scheme != "pbkdf2_sha256":
+            return False
+        calc = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"),
+                                   base64.b64decode(salt), int(rounds))
+        return hmac.compare_digest(calc, base64.b64decode(digest))
+    except (ValueError, TypeError):
+        return False
+
+
+def stored_credentials() -> dict | None:
+    with _LOCK:
+        auth = _load_file().get("auth")
+    if isinstance(auth, dict) and auth.get("user") and auth.get("hash"):
+        return {"user": str(auth["user"]), "hash": str(auth["hash"])}
+    return None
+
+
+def set_credentials(user: str, password: str | None) -> None:
+    """Setzt (oder mit password=None: entfernt) den Dashboard-Zugang."""
+    with _LOCK:
+        data = dict(_load_file())
+        if password is None:
+            data.pop("auth", None)
+        else:
+            user = str(user or "").strip()
+            if not re.match(r"^[A-Za-z0-9._@-]{1,64}$", user):
+                raise ValidationError("Benutzername: 1–64 Zeichen, nur Buchstaben, Ziffern und ._@-")
+            if len(password) < 8:
+                raise ValidationError("Passwort: mindestens 8 Zeichen")
+            data["auth"] = {"user": user, "hash": hash_password(password)}
+        _write_file(data)
+
+
+def export_values() -> dict:
+    """Die im Dashboard gespeicherten Werte (ohne Passwort) – zum Sichern."""
+    with _LOCK:
+        return {"values": dict(_load_file().get("values", {}))}

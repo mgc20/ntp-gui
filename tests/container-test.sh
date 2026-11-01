@@ -6,7 +6,8 @@
 #
 # Prüft das Laufzeitverhalten, das sich mit Unittests nicht abbilden lässt:
 # Capability-Erkennung, Healthcheck, Basic-Auth, gemountete Konfiguration,
-# Verhalten ohne GPS-/PTP-Hardware und sauberes Stoppen.
+# Verhalten ohne GPS-/PTP-Hardware, Einstellungen über die API samt Neustart
+# der Dienste und sauberes Stoppen.
 set -uo pipefail
 
 IMAGE="${1:-ntp-gui:test}"
@@ -16,7 +17,8 @@ PASS=0
 FAIL=0
 
 cleanup() {
-  docker rm -f "${PREFIX}-a" "${PREFIX}-b" "${PREFIX}-c" "${PREFIX}-d" >/dev/null 2>&1
+  docker rm -f "${PREFIX}-a" "${PREFIX}-b" "${PREFIX}-c" "${PREFIX}-d" "${PREFIX}-e" "${PREFIX}-f" >/dev/null 2>&1
+  docker volume rm "${PREFIX}-data" >/dev/null 2>&1
   rm -rf "$CFG_DIR"
 }
 trap cleanup EXIT
@@ -92,7 +94,7 @@ CONF
 docker run -d --name "${PREFIX}-b" -p 18081:8080 -v "$CFG_DIR:/config:ro" \
   -e WEB_USER=admin -e WEB_PASSWORD='S3hr geheim' "$IMAGE" >/dev/null
 wait_for_health http://127.0.0.1:18081/healthz 90 || true
-contains "Eigene Konfiguration wird übernommen" "$(docker logs "${PREFIX}-b" 2>&1)" "gemountete /config/chrony.conf"
+contains "Eigene Konfiguration wird übernommen" "$(docker logs "${PREFIX}-b" 2>&1)" "verwende gemountete /config/chrony.conf"
 STRATUM=$(curl -s -u 'admin:S3hr geheim' http://127.0.0.1:18081/api/status | python3 -c "import json,sys; print(json.load(sys.stdin)['tracking'].get('stratum'))" 2>/dev/null)
 check "Stratum aus eigener Konfiguration" 7 "$STRATUM"
 check "Ohne Login abgewiesen"   401 "$(http http://127.0.0.1:18081/api/status)"
@@ -107,8 +109,8 @@ docker run -d --name "${PREFIX}-c" -p 18082:8080 \
   -e PTP_ENABLE=true -e NTP_PORT=10125 -e NTP_POOLS="" "$IMAGE" >/dev/null
 wait_for_health http://127.0.0.1:18082/healthz 90 || true
 LOGS=$(docker logs "${PREFIX}-c" 2>&1)
-contains "Warnung wegen fehlendem GPS-Gerät" "$LOGS" "gpsd wird nicht gestartet"
-contains "Warnung wegen fehlendem PTP-Interface" "$LOGS" "PTP_INTERFACE ist leer"
+contains "Warnung wegen fehlendem GPS-Gerät" "$LOGS" "/dev/ttyACM0 nicht gefunden"
+contains "Warnung wegen fehlendem PTP-Interface" "$LOGS" "kein Interface gewählt"
 check "Container läuft trotzdem" running "$(docker inspect -f '{{.State.Status}}' "${PREFIX}-c")"
 REFCLOCKS=$(docker exec "${PREFIX}-c" sh -c 'grep -c refclock /etc/chrony/chrony.conf || true')
 check "Keine tote Refclock-Zeile" 0 "$REFCLOCKS"
@@ -129,7 +131,49 @@ contains "Watchdog meldet den toten Dienst" "$(docker logs "${PREFIX}-d" 2>&1)" 
 docker rm -f "${PREFIX}-d" >/dev/null 2>&1
 
 echo
-echo "6) Sauberes Stoppen"
+echo "6) Einstellungen über das Dashboard"
+docker volume create "${PREFIX}-data" >/dev/null
+docker run -d --name "${PREFIX}-e" -p 18083:8080 -v "${PREFIX}-data:/var/lib/chrony" \
+  -e NTP_PORT=10127 -e NTP_POOLS="" "$IMAGE" >/dev/null
+wait_for_health http://127.0.0.1:18083/healthz 90 || true
+API=http://127.0.0.1:18083/api/settings
+post() { curl -s -o /dev/null -w '%{http_code}' --max-time 10 -X POST "$@"; }
+check "Einstellungen abrufbar" 200 "$(http "$API")"
+check "POST ohne CSRF-Header abgewiesen" 403 "$(post -H 'Content-Type: application/json' -d '{"changes":{"web_title":"x"}}' "$API")"
+check "POST von fremder Origin abgewiesen" 403 "$(post -H 'Content-Type: application/json' -H 'X-NTP-GUI: 1' -H 'Origin: http://evil.example' -d '{"changes":{"web_title":"x"}}' "$API")"
+check "Ungültiger Wert abgewiesen" 422 "$(post -H 'Content-Type: application/json' -H 'X-NTP-GUI: 1' -d '{"changes":{"allow_networks":["10.0.0.0/8\ncmdallow"]}}' "$API")"
+RESULT=$(curl -s --max-time 10 -X POST -H 'Content-Type: application/json' -H 'X-NTP-GUI: 1' \
+  -d '{"changes":{"local_stratum":8,"web_title":"IT-Uhr"}}' "$API")
+contains "Speichern löst Neustart aus" "$RESULT" '"reload_triggered": true'
+STATE=""
+for _ in $(seq 1 40); do
+  STATE=$(curl -s --max-time 5 http://127.0.0.1:18083/api/reload | python3 -c "import json,sys; print(json.load(sys.stdin).get('state'))" 2>/dev/null)
+  [[ "$STATE" == "done" || "$STATE" == "error" ]] && break
+  sleep 1
+done
+check "Dienste neu gestartet" done "$STATE"
+check "Erzeugte chrony.conf ist gültig" 0 "$(docker exec "${PREFIX}-e" sh -c 'chronyd -p -f /etc/chrony/chrony.conf >/dev/null 2>&1; echo $?')"
+contains "chrony.conf enthält neuen Wert" "$(docker exec "${PREFIX}-e" cat /etc/chrony/chrony.conf)" "local stratum 8"
+STRATUM=""
+for _ in $(seq 1 20); do
+  STRATUM=$(curl -s http://127.0.0.1:18083/api/status | python3 -c "import json,sys; print(json.load(sys.stdin)['tracking'].get('stratum'))" 2>/dev/null)
+  [[ "$STRATUM" == "8" ]] && break
+  sleep 1
+done
+check "chronyd nutzt neuen Wert" 8 "$STRATUM"
+check "Container läuft nach Neustart" running "$(docker inspect -f '{{.State.Status}}' "${PREFIX}-e")"
+PERMS=$(docker exec "${PREFIX}-e" stat -c '%a' /var/lib/chrony/ntp-gui/settings.json)
+check "settings.json nur für root lesbar" 600 "$PERMS"
+docker rm -f "${PREFIX}-e" >/dev/null 2>&1
+docker run -d --name "${PREFIX}-f" -p 18084:8080 -v "${PREFIX}-data:/var/lib/chrony" \
+  -e NTP_PORT=10128 -e NTP_POOLS="" -e WEB_READONLY=true "$IMAGE" >/dev/null
+wait_for_health http://127.0.0.1:18084/healthz 90 || true
+contains "Einstellungen überleben Neuerstellung" "$(docker exec "${PREFIX}-f" cat /etc/chrony/chrony.conf)" "local stratum 8"
+check "WEB_READONLY sperrt Änderungen" 403 "$(post -H 'Content-Type: application/json' -H 'X-NTP-GUI: 1' -d '{"changes":{"web_title":"x"}}' http://127.0.0.1:18084/api/settings)"
+docker rm -f "${PREFIX}-f" >/dev/null 2>&1
+
+echo
+echo "7) Sauberes Stoppen"
 docker stop -t 15 "${PREFIX}-c" >/dev/null
 check "Exit-Code bei SIGTERM" 0 "$(docker inspect -f '{{.State.ExitCode}}' "${PREFIX}-c")"
 docker exec "${PREFIX}-a" pkill -x chronyd >/dev/null 2>&1

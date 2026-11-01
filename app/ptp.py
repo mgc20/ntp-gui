@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -17,7 +18,9 @@ _DATASETS = {
     "DEFAULT_DATA_SET": ["clockIdentity", "domainNumber", "numberPorts", "slaveOnly", "clockClass", "clockAccuracy"],
     "CURRENT_DATA_SET": ["stepsRemoved", "offsetFromMaster", "meanPathDelay"],
     "PARENT_DATA_SET": ["parentPortIdentity", "grandmasterIdentity", "gm.ClockClass", "gm.ClockAccuracy", "gm.OffsetScaledLogVariance", "grandmasterPriority1", "grandmasterPriority2"],
-    "PORT_DATA_SET": ["portIdentity", "portState", "logSyncInterval", "logMinDelayReqInterval"],
+    "PORT_DATA_SET": ["portIdentity", "portState", "logSyncInterval", "logMinDelayReqInterval",
+                      "peerMeanPathDelay", "logAnnounceInterval", "announceReceiptTimeout",
+                      "delayMechanism", "versionNumber"],
     "TIME_STATUS_NP": ["master_offset", "gmPresent", "gmIdentity"],
     "TIME_PROPERTIES_DATA_SET": ["currentUtcOffset", "timeTraceable", "frequencyTraceable", "ptpTimescale"],
 }
@@ -41,8 +44,53 @@ PORT_STATES = {
 }
 
 
+def _cfg() -> dict:
+    import settings  # spät importieren: ptp.py bleibt ohne settings testbar
+    return settings.values()
+
+
 def enabled() -> bool:
-    return os.environ.get("PTP_ENABLE", "false").strip().lower() in {"1", "true", "yes", "on"}
+    return bool(_cfg()["ptp_enable"])
+
+
+# Zusammenfassungen von ptp4l -m, z. B.
+#   "rms   12 max   30 freq  -1234 +/-   5 delay   456 +/-   3"   (Slave, summary_interval)
+#   "master offset    -12 s2 freq   +100 path delay    456"       (Slave, jede Sync-Nachricht)
+_SUMMARY_RE = re.compile(
+    r"rms\s+(?P<rms>-?\d+)\s+max\s+(?P<max>-?\d+)\s+freq\s+(?P<freq>[-+]?\d+)"
+    r"(?:\s+\+/-\s+(?P<freq_dev>\d+))?(?:\s+delay\s+(?P<delay>-?\d+)(?:\s+\+/-\s+(?P<delay_dev>\d+))?)?")
+_OFFSET_RE = re.compile(
+    r"master offset\s+(?P<offset>-?\d+)\s+s(?P<servo>\d)\s+freq\s+(?P<freq>[-+]?\d+)"
+    r"(?:\s+path delay\s+(?P<delay>-?\d+))?")
+_STATE_RE = re.compile(r"port \d+ \([^)]*\): (?P<old>[A-Z_]+) to (?P<new>[A-Z_]+) on (?P<event>[A-Z_]+)")
+
+
+def parse_log_metrics(lines: list[str]) -> dict[str, Any]:
+    """Letzte Kennzahlen und Zustandswechsel aus dem ptp4l-Log."""
+    result: dict[str, Any] = {"transitions": []}
+    for line in lines:
+        match = _SUMMARY_RE.search(line)
+        if match:
+            result["rms_ns"] = int(match.group("rms"))
+            result["max_ns"] = int(match.group("max"))
+            result["freq_ppb"] = int(match.group("freq"))
+            if match.group("delay"):
+                result["path_delay_ns"] = int(match.group("delay"))
+            continue
+        match = _OFFSET_RE.search(line)
+        if match:
+            result["last_offset_ns"] = int(match.group("offset"))
+            result["servo_state"] = "s" + match.group("servo")
+            result["freq_ppb"] = int(match.group("freq"))
+            if match.group("delay"):
+                result["path_delay_ns"] = int(match.group("delay"))
+            continue
+        match = _STATE_RE.search(line)
+        if match:
+            result["transitions"].append({"from": match.group("old"), "to": match.group("new"),
+                                          "event": match.group("event")})
+    result["transitions"] = result["transitions"][-8:]
+    return result
 
 
 def parse_pmc_output(text: str) -> dict[str, str]:
@@ -80,7 +128,7 @@ def _query(dataset: str, timeout: float = 3.0) -> dict[str, str]:
     socket = os.environ.get("PTP_UDS_ADDRESS", "/var/run/ptp4l")
     # The domain must match ptp4l's, otherwise the daemon silently ignores the
     # management message and pmc returns nothing but its "sending:" line.
-    domain = os.environ.get("PTP_DOMAIN", "0").strip() or "0"
+    domain = str(_cfg()["ptp_domain"])
     try:
         proc = subprocess.run(
             [PMC, "-u", "-b", "0", "-d", domain, "-s", socket, f"GET {dataset}"],
@@ -142,13 +190,15 @@ def status() -> dict[str, Any]:
 
 
 def _collect() -> dict[str, Any]:
-
+    cfg = _cfg()
     state: dict[str, Any] = {
         "enabled": True,
-        "interface": os.environ.get("PTP_INTERFACE", ""),
-        "mode": os.environ.get("PTP_MODE", "auto"),
-        "transport": os.environ.get("PTP_TRANSPORT", "UDPv4"),
-        "domain": os.environ.get("PTP_DOMAIN", "0"),
+        "interface": cfg["ptp_interface"],
+        "mode": cfg["ptp_mode"],
+        "transport": cfg["ptp_transport"],
+        "time_stamping": cfg["ptp_time_stamping"],
+        "domain": str(cfg["ptp_domain"]),
+        "phc2sys": bool(cfg["phc2sys_enable"]),
     }
 
     # Probe one dataset first: if ptp4l is gone, five more timeouts would only
@@ -176,4 +226,5 @@ def _collect() -> dict[str, Any]:
         offset = state.get("offsetFromMaster")
     state["offset_ns"] = None if state["is_grandmaster"] else offset
     state["log"] = log_tail()
+    state["log_metrics"] = parse_log_metrics(log_tail(lines=400))
     return state

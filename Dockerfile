@@ -12,6 +12,7 @@ RUN apt-get update \
         ca-certificates \
         iproute2 \
         procps \
+        ethtool \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /var/run/chrony /var/lib/chrony /var/log/chrony /etc/linuxptp /config
 
@@ -19,43 +20,16 @@ COPY app/ /app/
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
-# --- NTP -------------------------------------------------------------------
-ENV NTP_POOLS="pool.ntp.org" \
-    NTP_SERVERS="" \
-    NTP_PEERS="" \
-    NTP_PORT="123" \
-    ALLOW_NETWORKS="10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,169.254.0.0/16,fc00::/7,fe80::/10" \
-    DENY_NETWORKS="" \
-    SERVE_UNSYNCED="true" \
-    LOCAL_STRATUM="10" \
-    DISABLE_CLOCK_CONTROL="auto"
-
-# --- GPS -------------------------------------------------------------------
-ENV GPS_ENABLE="false" \
-    GPS_DEVICE="/dev/ttyACM0" \
-    GPS_OFFSET="0.0" \
-    GPS_SHOW_POSITION="false"
-
-# --- PTP -------------------------------------------------------------------
-ENV PTP_ENABLE="false" \
-    PTP_INTERFACE="" \
-    PTP_MODE="auto" \
-    PTP_DOMAIN="0" \
-    PTP_TRANSPORT="UDPv4" \
-    PTP_TIME_STAMPING="hardware" \
-    PHC2SYS_ENABLE="false"
-
-# --- Web -------------------------------------------------------------------
+# Alle einstellbaren Werte haben ihre Standards im Einstellungsschema
+# (app/settings.py) und lassen sich per Umgebungsvariable oder im Dashboard
+# setzen. Hier nur, was für den Start des Dashboards selbst nötig ist.
 ENV WEB_PORT="8080" \
     WEB_BIND="0.0.0.0" \
-    WEB_TITLE="NTP / PTP Time Server" \
-    WEB_REFRESH_SECONDS="5" \
-    HISTORY_INTERVAL="10" \
-    HISTORY_SIZE="720" \
-    PYTHONUNBUFFERED="1"
+    PYTHONUNBUFFERED="1" \
+    PYTHONDONTWRITEBYTECODE="1"
 
 WORKDIR /app
-EXPOSE 123/udp 319/udp 320/udp 8080/tcp
+EXPOSE 123/udp 319/udp 320/udp 4460/tcp 8080/tcp
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=45s --retries=3 \
     CMD python3 -c "import os,urllib.request;urllib.request.urlopen('http://127.0.0.1:'+os.environ.get('WEB_PORT','8080')+'/healthz',timeout=4)" || exit 1

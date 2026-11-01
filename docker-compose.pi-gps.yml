@@ -59,7 +59,7 @@ services:
       # WEB_PASSWORD: "bitte-aendern"
 
     volumes:
-      - chrony-data:/var/lib/chrony   # Drift-Datei bleibt über Neustarts erhalten
+      - chrony-data:/var/lib/chrony   # Drift, Messwerte, Dashboard-Einstellungen und Verlauf
 
 volumes:
   chrony-data:

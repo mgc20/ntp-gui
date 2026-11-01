@@ -25,12 +25,41 @@ except ValueError:
 _LOCK = threading.Lock()
 
 
+GNSS_SYSTEMS = {0: "GPS", 1: "SBAS", 2: "Galileo", 3: "BeiDou", 4: "IMES", 5: "QZSS",
+                6: "GLONASS", 7: "NavIC"}
+
+
+def _setting(key: str):
+    import settings  # spät importieren: gps.py bleibt ohne settings testbar
+    return settings.values()[key]
+
+
 def enabled() -> bool:
-    return os.environ.get("GPS_ENABLE", "false").strip().lower() in {"1", "true", "yes", "on"}
+    return bool(_setting("gps_enable"))
 
 
 def show_position() -> bool:
-    return os.environ.get("GPS_SHOW_POSITION", "false").strip().lower() in {"1", "true", "yes", "on"}
+    return bool(_setting("gps_show_position"))
+
+
+def _system_for(sat: dict) -> str:
+    """Satellitensystem aus gnssid, sonst aus der klassischen NMEA-PRN-Nummerierung."""
+    if isinstance(sat.get("gnssid"), int):
+        return GNSS_SYSTEMS.get(sat["gnssid"], "?")
+    prn = sat.get("PRN")
+    if not isinstance(prn, int):
+        return "?"
+    if 1 <= prn <= 32:
+        return "GPS"
+    if 33 <= prn <= 64 or 120 <= prn <= 158:
+        return "SBAS"
+    if 65 <= prn <= 96:
+        return "GLONASS"
+    if 201 <= prn <= 237 or 401 <= prn <= 437:
+        return "BeiDou"
+    if 301 <= prn <= 336:
+        return "Galileo"
+    return "?"
 
 
 def _sky_is_detailed(report: dict[str, Any] | None) -> bool:
@@ -126,6 +155,29 @@ def parse_reports(reports: dict[str, Any]) -> dict[str, Any]:
     for key in ("hdop", "pdop", "vdop"):
         if sky.get(key) is not None:
             state[key] = sky[key]
+    sky_list = []
+    for sat in satellites:
+        sky_list.append({
+            "prn": sat.get("PRN"), "system": _system_for(sat), "svid": sat.get("svid"),
+            "elevation": sat.get("el"), "azimuth": sat.get("az"), "snr": sat.get("ss"),
+            "used": bool(sat.get("used")), "health": sat.get("health"),
+        })
+    sky_list.sort(key=lambda s: (not s["used"], -(s["snr"] or 0)))
+    state["satellites"] = sky_list
+    systems: dict[str, dict] = {}
+    for sat in sky_list:
+        entry = systems.setdefault(sat["system"], {"seen": 0, "used": 0})
+        entry["seen"] += 1
+        entry["used"] += 1 if sat["used"] else 0
+    state["systems"] = systems
+    for key in ("gdop", "tdop", "xdop", "ydop"):
+        if sky.get(key) is not None:
+            state[key] = sky[key]
+    for key in ("eph", "epv", "speed"):
+        if tpv.get(key) is not None:
+            state[key] = tpv[key]
+    if tpv.get("leapseconds") is not None:
+        state["leapseconds"] = tpv["leapseconds"]
     # Signal strengths of the satellites actually used for the fix.
     snrs = [sat.get("ss") for sat in satellites if sat.get("used") and sat.get("ss") is not None]
     if snrs:
@@ -144,16 +196,16 @@ def status() -> dict[str, Any]:
             return dict(_CACHE)
         state = parse_reports(poll_gpsd())
         state["enabled"] = True
-        state.setdefault("device", os.environ.get("GPS_DEVICE", ""))
+        state.setdefault("device", _setting("gps_device"))
         # Only claim PPS when the device is actually there - the entrypoint skips
         # the refclock for a missing device, so reporting it would be a lie.
-        pps_device = os.environ.get("GPS_PPS_DEVICE", "").strip()
+        pps_device = (_setting("gps_pps_device") or "").strip()
         if pps_device and not os.path.exists(pps_device):
             state["pps"] = ""
             state["pps_missing"] = pps_device
         elif pps_device:
             state["pps"] = pps_device
-        elif os.environ.get("GPS_PPS_SHM", "false").lower() in {"1", "true", "yes", "on"}:
+        elif _setting("gps_pps_shm"):
             state["pps"] = "gpsd (SHM 1)"
         else:
             state["pps"] = ""

@@ -1,13 +1,22 @@
 #!/usr/bin/env bash
-# Generates the chrony/ptp4l configuration from environment variables and
-# supervises chronyd, ptp4l, phc2sys and the dashboard in one container.
+# Startet und überwacht chronyd, gpsd, ptp4l, phc2sys und das Dashboard.
+#
+# Die Konfiguration erzeugt /app/confgen.py aus den Einstellungen (Dashboard >
+# Umgebungsvariable > Standard). Ein SIGHUP – ausgelöst vom Dashboard nach dem
+# Speichern – erzeugt die Konfiguration neu und startet nur die Zeitdienste
+# neu; Container und Dashboard laufen weiter.
 set -euo pipefail
 
 CHRONY_CONF="${CHRONY_CONF:-/etc/chrony/chrony.conf}"
 PTP4L_CONF="${PTP4L_CONF:-/etc/linuxptp/ptp4l.conf}"
 PTP_LOG_FILE="${PTP_LOG_FILE:-/var/log/ptp4l.log}"
 APP_DIR="${APP_DIR:-/app}"
-PIDS=()
+RUN_DIR="${NTPGUI_RUN_DIR:-/run/ntp-gui}"
+export CHRONY_CONF PTP4L_CONF PTP_LOG_FILE NTPGUI_RUN_DIR="$RUN_DIR"
+
+SERVICE_PIDS=()   # Zeitdienste, Einträge "pid=comm"
+WEB_PID=""        # Dashboard, "pid=comm"
+RELOAD_REQUESTED=0
 
 log() { printf '[%s] %s\n' "$1" "${*:2}"; }
 
@@ -15,8 +24,8 @@ is_true() {
   case "${1,,}" in 1|true|yes|on) return 0 ;; *) return 1 ;; esac
 }
 
-# CAP_SYS_TIME is bit 25 of the effective capability set. Without it chronyd
-# cannot discipline the clock and must be started with -x.
+# CAP_SYS_TIME ist Bit 25 der effektiven Capabilities. Ohne darf chronyd die
+# Uhr nicht stellen und muss mit -x laufen.
 has_sys_time() {
   local caps
   caps=$(awk '/^CapEff:/ {print $2}' /proc/self/status 2>/dev/null || echo 0)
@@ -29,175 +38,14 @@ except ValueError:
 sys.exit(0 if (caps >> 25) & 1 else 1)" 2>/dev/null
 }
 
-# Beim Booten koennen USB-/PPS-Geraete spaeter auftauchen als der Container.
-wait_for_device() {
-  local path="$1" seconds="${2:-10}"
-  [[ -z "$path" ]] && return 1
-  [[ "$seconds" =~ ^[0-9]+$ ]] || seconds=10
-  for _ in $(seq 1 "$seconds"); do
-    [[ -e "$path" ]] && return 0
-    sleep 1
-  done
-  [[ -e "$path" ]]
-}
-
-split_list() {
-  # comma or whitespace separated -> one entry per line
-  tr ',' '\n' <<<"${1:-}" | tr -s ' \t' '\n' | sed '/^$/d'
-}
-
-write_chrony_conf() {
-  if [[ -f /config/chrony.conf ]]; then
-    log chrony "verwende gemountete /config/chrony.conf"
-    install -m 0644 /config/chrony.conf "$CHRONY_CONF"
-    return
-  fi
-
-  local conf
-  conf=$(mktemp)
-  {
-    echo "# Generiert von ntp-gui beim Containerstart – Änderungen gehen verloren."
-    echo "# Für eine eigene Konfiguration /config/chrony.conf mounten."
-    echo
-
-    local options="${NTP_SERVER_OPTIONS:-iburst}"
-    while read -r pool; do
-      [[ -n "$pool" ]] && echo "pool ${pool} ${options} maxsources ${NTP_POOL_MAXSOURCES:-4}"
-    done < <(split_list "${NTP_POOLS:-}")
-
-    while read -r server; do
-      [[ -n "$server" ]] && echo "server ${server} ${options}"
-    done < <(split_list "${NTP_SERVERS:-}")
-
-    while read -r peer; do
-      [[ -n "$peer" ]] && echo "peer ${peer} ${options}"
-    done < <(split_list "${NTP_PEERS:-}")
-
-    if is_true "${GPS_ENABLE:-false}" && [[ ! -e "${GPS_DEVICE:-/dev/ttyACM0}" ]]; then
-      # Ohne Empfaenger startet gpsd nicht - dann waere der Refclock eine
-      # Quelle, die dauerhaft als unerreichbar im Dashboard steht.
-      log gps "WARNUNG: GPS-Refclock wird übersprungen, ${GPS_DEVICE:-/dev/ttyACM0} fehlt." >&2
-    elif is_true "${GPS_ENABLE:-false}"; then
-      # gpsd hands the GPS time to chrony through a shared memory segment.
-      echo "refclock SHM ${GPS_SHM_UNIT:-0} refid ${GPS_REFID:-GPS}" \
-           "offset ${GPS_OFFSET:-0.0} delay ${GPS_DELAY:-0.2}" \
-           "precision ${GPS_PRECISION:-1e-1} poll ${GPS_POLL:-3}" \
-           "filter ${GPS_FILTER:-3} ${GPS_REFCLOCK_OPTIONS:-}"
-      if [[ -n "${GPS_PPS_DEVICE:-}" ]] && [[ -e "${GPS_PPS_DEVICE}" ]]; then
-        # A real 1PPS signal: nanosecond edges, disciplined by the GPS refclock.
-        echo "refclock PPS ${GPS_PPS_DEVICE} lock ${GPS_REFID:-GPS} refid PPS" \
-             "poll ${GPS_PPS_POLL:-3} ${GPS_PPS_OPTIONS:-}"
-      elif [[ -n "${GPS_PPS_DEVICE:-}" ]]; then
-        # chronyd would abort with "Could not open" and restart-loop the container.
-        log gps "WARNUNG: ${GPS_PPS_DEVICE} existiert nicht – PPS-Refclock wird übersprungen." >&2
-        log gps "         Gerät mit '--device ${GPS_PPS_DEVICE}' durchreichen." >&2
-      elif is_true "${GPS_PPS_SHM:-false}"; then
-        echo "refclock SHM ${GPS_PPS_SHM_UNIT:-1} refid PPS precision 1e-7" \
-             "lock ${GPS_REFID:-GPS} poll ${GPS_PPS_POLL:-3} ${GPS_PPS_OPTIONS:-}"
-      fi
-    fi
-
-    if [[ -n "${PHC_REFCLOCK:-}" ]]; then
-      if [[ -e "${PHC_REFCLOCK}" ]]; then
-        # Use the NIC's PTP hardware clock as a reference (PTP -> NTP bridge).
-        echo "refclock PHC ${PHC_REFCLOCK} ${PHC_REFCLOCK_OPTIONS:-poll 0 dpoll -2 offset 0 stratum 1}"
-      else
-        log ptp "WARNUNG: ${PHC_REFCLOCK} existiert nicht – PHC-Refclock wird übersprungen." >&2
-      fi
-    fi
-
-    echo
-    echo "driftfile /var/lib/chrony/chrony.drift"
-    echo "makestep ${MAKESTEP:-1.0 3}"
-    echo "maxupdateskew ${MAXUPDATESKEW:-100.0}"
-    echo "logdir /var/log/chrony"
-    [[ -n "${CHRONY_LOG:-}" ]] && echo "log ${CHRONY_LOG}"
-    echo "leapsectz ${LEAPSECTZ:-right/UTC}"
-    echo "clientloglimit ${CLIENTLOGLIMIT:-10000000}"
-    echo "bindcmdaddress /var/run/chrony/chronyd.sock"
-    echo "cmdport 0"
-    echo "port ${NTP_PORT:-123}"
-    [[ -n "${BIND_ADDRESS:-}" ]] && echo "bindaddress ${BIND_ADDRESS}"
-
-    if is_true "${NTP_HW_TIMESTAMP:-false}"; then
-      echo "hwtimestamp ${NTP_HW_TIMESTAMP_INTERFACE:-*}"
-    fi
-
-    echo
-    while read -r network; do
-      [[ -n "$network" ]] && echo "allow ${network}"
-    done < <(split_list "${ALLOW_NETWORKS:-}")
-    while read -r network; do
-      [[ -n "$network" ]] && echo "deny ${network}"
-    done < <(split_list "${DENY_NETWORKS:-}")
-
-    if is_true "${SERVE_UNSYNCED:-true}"; then
-      echo
-      echo "# Auch ohne erreichbare Uplink-Quelle Zeit ausliefern (Inselbetrieb)."
-      echo "local stratum ${LOCAL_STRATUM:-10}"
-    fi
-
-    if [[ -n "${EXTRA_CHRONY_CONF:-}" ]]; then
-      echo
-      echo "# EXTRA_CHRONY_CONF"
-      printf '%b\n' "${EXTRA_CHRONY_CONF}"
-    fi
-  } >"$conf"
-
-  install -m 0644 "$conf" "$CHRONY_CONF"
-  rm -f "$conf"
-}
-
-write_ptp4l_conf() {
-  if [[ -f /config/ptp4l.conf ]]; then
-    log ptp "verwende gemountete /config/ptp4l.conf"
-    install -m 0644 /config/ptp4l.conf "$PTP4L_CONF"
-    return
-  fi
-
-  local slave_only=0 master_only=0
-  case "${PTP_MODE:-auto}" in
-    slave|client) slave_only=1 ;;
-    master|grandmaster|server) master_only=1 ;;
-  esac
-
-  local delay_mechanism="${PTP_DELAY_MECHANISM:-E2E}"
-  local network_transport="${PTP_TRANSPORT:-UDPv4}"
-
-  cat >"$PTP4L_CONF" <<EOF
-# Generiert von ntp-gui beim Containerstart.
-[global]
-domainNumber            ${PTP_DOMAIN:-0}
-slaveOnly               ${slave_only}
-masterOnly              ${master_only}
-priority1               ${PTP_PRIORITY1:-128}
-priority2               ${PTP_PRIORITY2:-128}
-clockClass              ${PTP_CLOCK_CLASS:-248}
-delay_mechanism         ${delay_mechanism}
-network_transport       ${network_transport}
-time_stamping           ${PTP_TIME_STAMPING:-hardware}
-tx_timestamp_timeout    ${PTP_TX_TIMESTAMP_TIMEOUT:-10}
-logSyncInterval         ${PTP_LOG_SYNC_INTERVAL:--3}
-logMinDelayReqInterval  ${PTP_LOG_MIN_DELAY_REQ_INTERVAL:--3}
-logAnnounceInterval     ${PTP_LOG_ANNOUNCE_INTERVAL:-1}
-announceReceiptTimeout  ${PTP_ANNOUNCE_RECEIPT_TIMEOUT:-3}
-summary_interval        ${PTP_SUMMARY_INTERVAL:-4}
-uds_address             ${PTP_UDS_ADDRESS:-/var/run/ptp4l}
-${EXTRA_PTP4L_CONF:-}
-
-[${PTP_INTERFACE:-eth0}]
-EOF
-}
-
-# PIDS-Eintraege sind "pid=comm": der Watchdog prueft beides, damit ein
-# recycelter PID (der Zaehler wrappt bei langen Laufzeiten) nicht als
-# lebender Dienst durchgeht.
-start() {
+# Einträge sind "pid=comm": der Watchdog prüft beides, damit ein recycelter PID
+# nicht als lebender Dienst durchgeht.
+spawn() {  # spawn <name> <cmd...>  -> setzt SPAWNED
   local name="$1" comm; shift
   comm=$(basename "$1")
   log "$name" "starte: $*"
   "$@" &
-  PIDS+=("$!=${comm}")
+  SPAWNED="$!=${comm:0:15}"
 }
 
 service_alive() {
@@ -206,116 +54,154 @@ service_alive() {
   [[ "$actual" == "$comm" ]]
 }
 
-shutdown() {
-  # Exit-Code 0 nur beim geordneten Stoppen; ein weggestorbener Dienst muss
-  # auch mit restart=on-failure einen Neustart ausloesen.
-  local code="${1:-0}"
-  log main "beende Dienste …"
-  for entry in "${PIDS[@]:-}"; do
+write_status() {  # write_status <state> <message>
+  mkdir -p "$RUN_DIR"
+  printf '{"state": "%s", "message": "%s", "time": %s}\n' \
+    "$1" "${2//\"/\'}" "$(date +%s)" > "${RUN_DIR}/reload.json.tmp"
+  mv -f "${RUN_DIR}/reload.json.tmp" "${RUN_DIR}/reload.json"
+}
+
+# --- Konfiguration erzeugen und Zeitdienste starten -------------------------
+apply_config() {
+  local out
+  if ! out=$(python3 "${APP_DIR}/confgen.py" apply); then
+    log config "FEHLER: Konfiguration konnte nicht erzeugt werden – bisherige bleibt aktiv."
+    return 1
+  fi
+  eval "$out"
+}
+
+start_services() {
+  local chronyd_args=(-d -r -f "$CHRONY_CONF")
+  if is_true "${DISABLE_CLOCK_CONTROL:-auto}"; then
+    chronyd_args+=(-x)
+    log chrony "Uhrensteuerung deaktiviert (DISABLE_CLOCK_CONTROL)"
+  elif ! has_sys_time; then
+    chronyd_args+=(-x)
+    log chrony "WARNUNG: CAP_SYS_TIME fehlt – chronyd läuft mit -x und stellt die Uhr nicht."
+    log chrony "         Für einen echten Zeitserver den Container mit 'cap_add: [SYS_TIME]' starten."
+  elif [[ "${NTPGUI_PHC2SYS_START:-0}" == 1 ]]; then
+    # Zwei Regler auf derselben Uhr (phc2sys -r und chronyd) würden sich
+    # gegenseitig die Korrekturen überschreiben: phc2sys stellt die Uhr,
+    # chronyd liefert nur aus.
+    chronyd_args+=(-x)
+    log chrony "phc2sys steuert die Systemuhr – chronyd läuft mit -x und liefert nur aus."
+  fi
+  rm -f /run/chrony/chronyd.pid /var/run/chrony/chronyd.pid
+  spawn chrony /usr/sbin/chronyd "${chronyd_args[@]}"
+  SERVICE_PIDS=("$SPAWNED")
+
+  if [[ "${NTPGUI_GPS_START:-0}" == 1 ]]; then
+    local gpsd_args=(-N -n)
+    [[ -n "${NTPGUI_GPS_SPEED:-}" ]] && gpsd_args+=(-s "$NTPGUI_GPS_SPEED")
+    # shellcheck disable=SC2206  # GPS_OPTIONS ist bewusst eine Wortliste
+    [[ -n "${GPS_OPTIONS:-}" ]] && gpsd_args+=(${GPS_OPTIONS})
+    # -n: gpsd liest den Empfänger auch ohne Client – sonst bekommt chrony nie Zeit.
+    spawn gps /usr/sbin/gpsd "${gpsd_args[@]}" "$NTPGUI_GPS_DEVICE"
+    SERVICE_PIDS+=("$SPAWNED")
+  fi
+
+  if [[ "${NTPGUI_PTP_START:-0}" == 1 ]]; then
+    : >"$PTP_LOG_FILE"
+    log ptp "ptp4l auf ${NTPGUI_PTP_INTERFACE} (Domain ${NTPGUI_PTP_DOMAIN}, Modus ${NTPGUI_PTP_MODE})"
+    /usr/sbin/ptp4l -f "$PTP4L_CONF" -i "$NTPGUI_PTP_INTERFACE" -m >>"$PTP_LOG_FILE" 2>&1 &
+    SERVICE_PIDS+=("$!=ptp4l")
+    if [[ "${NTPGUI_PHC2SYS_START:-0}" == 1 ]]; then
+      sleep 2
+      # shellcheck disable=SC2086  # Optionen sind eine geprüfte Wortliste
+      spawn phc2sys /usr/sbin/phc2sys $NTPGUI_PHC2SYS_OPTIONS
+      SERVICE_PIDS+=("$SPAWNED")
+    fi
+  fi
+}
+
+stop_services() {
+  local entry
+  for entry in "${SERVICE_PIDS[@]:-}"; do
     [[ -n "$entry" ]] && kill "${entry%%=*}" 2>/dev/null || true
   done
+  for entry in "${SERVICE_PIDS[@]:-}"; do
+    [[ -n "$entry" ]] && wait "${entry%%=*}" 2>/dev/null || true
+  done
+  SERVICE_PIDS=()
+}
+
+reload_services() {
+  log main "Einstellungen geändert – Zeitdienste werden neu gestartet …"
+  write_status running "Zeitdienste werden neu gestartet"
+  stop_services
+  if apply_config; then
+    start_services
+    write_status done "Neue Einstellungen aktiv"
+    log main "Neustart abgeschlossen."
+  else
+    start_services
+    write_status error "Konfiguration fehlerhaft – bisherige Einstellungen weiter aktiv"
+  fi
+}
+
+shutdown() {
+  # Exit-Code 0 nur beim geordneten Stoppen; ein weggestorbener Dienst muss
+  # auch mit restart=on-failure einen Neustart auslösen.
+  local code="${1:-0}"
+  log main "beende Dienste …"
+  stop_services
+  [[ -n "$WEB_PID" ]] && kill "${WEB_PID%%=*}" 2>/dev/null || true
   wait 2>/dev/null || true
   exit "$code"
 }
 trap 'shutdown 0' SIGTERM SIGINT
+trap 'RELOAD_REQUESTED=1' SIGHUP
 
-mkdir -p /var/run/chrony /var/lib/chrony /var/log/chrony /etc/linuxptp
-# Nach einem harten Stopp (docker kill, Stromausfall) bleibt das Pidfile im
-# Container-Dateisystem liegen; zeigt der alte PID auf einen neuen Prozess,
-# verweigert chronyd den Start. Beim Containerstart kann es keinen legitimen
-# fremden chronyd geben - weg damit.
-rm -f /run/chrony/chronyd.pid /var/run/chrony/chronyd.pid
+# --- Vorbereitung ------------------------------------------------------------
+mkdir -p /var/run/chrony /var/lib/chrony /var/log/chrony /etc/linuxptp "$RUN_DIR"
+echo "$$" > "${RUN_DIR}/supervisor.pid"
+write_status idle "bereit"
 
-# chronyd drops privileges to its own user; if the runtime directories belong to
-# root it silently disables the command socket and the dashboard goes blind.
+# chronyd legt seine Rechte ab; gehören die Verzeichnisse root, schaltet er
+# still den Kommando-Socket ab und das Dashboard sieht nichts mehr. Das
+# Einstellungsverzeichnis des Dashboards bleibt root vorbehalten.
 CHRONY_USER=""
 for candidate in _chrony chrony; do
   if id -u "$candidate" >/dev/null 2>&1; then CHRONY_USER="$candidate"; break; fi
 done
 if [[ -n "$CHRONY_USER" ]]; then
-  chown -R "${CHRONY_USER}:${CHRONY_USER}" /var/run/chrony /var/lib/chrony /var/log/chrony
+  chown -R "${CHRONY_USER}:${CHRONY_USER}" /var/run/chrony /var/log/chrony
+  chown "${CHRONY_USER}:${CHRONY_USER}" /var/lib/chrony
+  find /var/lib/chrony -mindepth 1 -maxdepth 1 ! -name ntp-gui \
+    -exec chown -R "${CHRONY_USER}:${CHRONY_USER}" {} + 2>/dev/null || true
 fi
 chmod 750 /var/run/chrony
 
-if is_true "${GPS_ENABLE:-false}"; then
-  GPS_DEVICE="${GPS_DEVICE:-/dev/ttyACM0}"
-  wait_for_device "$GPS_DEVICE" "${GPS_WAIT_SECONDS:-10}" \
-    || log gps "WARNUNG: ${GPS_DEVICE} nicht gefunden."
-  [[ -n "${GPS_PPS_DEVICE:-}" ]] && wait_for_device "$GPS_PPS_DEVICE" "${GPS_WAIT_SECONDS:-10}" || true
-fi
+apply_config || { log main "Ohne gültige Konfiguration kein Start."; exit 1; }
+start_services
 
-write_chrony_conf
-log chrony "Konfiguration geschrieben nach ${CHRONY_CONF}"
+spawn web python3 "${APP_DIR}/server.py"
+WEB_PID="$SPAWNED"
 
-CHRONYD_ARGS=(-d -f "$CHRONY_CONF")
-if is_true "${DISABLE_CLOCK_CONTROL:-auto}"; then
-  CHRONYD_ARGS+=(-x)
-  log chrony "Uhrensteuerung deaktiviert (DISABLE_CLOCK_CONTROL)"
-elif ! has_sys_time; then
-  CHRONYD_ARGS+=(-x)
-  log chrony "WARNUNG: CAP_SYS_TIME fehlt – chronyd läuft mit -x und stellt die Uhr nicht."
-  log chrony "         Für einen echten Zeitserver den Container mit 'cap_add: [SYS_TIME]' starten."
-elif is_true "${PTP_ENABLE:-false}" && [[ -n "${PTP_INTERFACE:-}" ]] && is_true "${PHC2SYS_ENABLE:-false}"; then
-  # Zwei Regler auf derselben Uhr (phc2sys -r und chronyd) wuerden sich
-  # gegenseitig die Frequenzkorrekturen ueberschreiben. phc2sys uebernimmt
-  # die Uhr, chronyd liefert nur noch aus.
-  CHRONYD_ARGS+=(-x)
-  log chrony "phc2sys steuert die Systemuhr – chronyd läuft mit -x und liefert nur aus."
-fi
-start chrony /usr/sbin/chronyd "${CHRONYD_ARGS[@]}"
-
-if is_true "${GPS_ENABLE:-false}"; then
-  if [[ ! -e "$GPS_DEVICE" ]]; then
-    log gps "WARNUNG: ${GPS_DEVICE} existiert nicht – gpsd wird nicht gestartet."
-    log gps "         Den Container mit '--device ${GPS_DEVICE}' bzw. 'devices:' starten."
-  else
-    GPSD_ARGS=(-N -n)
-    [[ -n "${GPS_SPEED:-}" ]] && GPSD_ARGS+=(-s "${GPS_SPEED}")
-    [[ -n "${GPS_OPTIONS:-}" ]] && GPSD_ARGS+=(${GPS_OPTIONS})
-    # -n: gpsd liest den Empfänger auch ohne verbundenen Client. Ohne das
-    # bekommt chrony niemals Zeitstempel.
-    start gps /usr/sbin/gpsd "${GPSD_ARGS[@]}" "$GPS_DEVICE"
-  fi
-fi
-
-if is_true "${PTP_ENABLE:-false}"; then
-  if [[ -z "${PTP_INTERFACE:-}" ]]; then
-    log ptp "WARNUNG: PTP_ENABLE=true, aber PTP_INTERFACE ist leer – PTP wird nicht gestartet."
-  else
-    write_ptp4l_conf
-    : >"$PTP_LOG_FILE"
-    log ptp "ptp4l auf ${PTP_INTERFACE} (Domain ${PTP_DOMAIN:-0}, Modus ${PTP_MODE:-auto})"
-    /usr/sbin/ptp4l -f "$PTP4L_CONF" -i "${PTP_INTERFACE}" -m >>"$PTP_LOG_FILE" 2>&1 &
-    PIDS+=("$!=ptp4l")
-
-    if is_true "${PHC2SYS_ENABLE:-false}"; then
-      sleep 2
-      start phc2sys /usr/sbin/phc2sys ${PHC2SYS_OPTIONS:--a -r -m}
-    fi
-  fi
-fi
-
-export PTP_LOG_FILE CHRONY_CONF
-start web python3 "${APP_DIR}/server.py"
-
-# Watchdog statt 'wait -n': bash 5.2 uebersieht mit 'wait -n' Kinder, die vor
-# dem Aufruf gestorben sind, und set -e wuerde bei nichtnull-Status den
-# Aufraeumpfad ueberspringen. Der Watchdog erkennt jeden toten Dienst, auch
-# einen, der schon waehrend des Starts gestorben ist.
+# --- Watchdog ------------------------------------------------------------------
+# Statt 'wait -n': bash 5.2 übersieht damit Kinder, die vor dem Aufruf gestorben
+# sind. Der Watchdog erkennt jeden toten Dienst, auch beim Start.
 while true; do
-  for entry in "${PIDS[@]}"; do
+  if (( RELOAD_REQUESTED )); then
+    RELOAD_REQUESTED=0
+    reload_services
+  fi
+  for entry in "${SERVICE_PIDS[@]}" "$WEB_PID"; do
     if ! service_alive "$entry"; then
       log main "Dienst '${entry#*=}' (PID ${entry%%=*}) wurde unerwartet beendet – Container wird gestoppt"
+      write_status error "Dienst ${entry#*=} ausgefallen"
       shutdown 1
     fi
   done
-  # ptp4l schreibt sein Log unbegrenzt; ab 5 MB auf die letzten 256 KB kuerzen.
-  # In-place (cat >), damit der O_APPEND-Deskriptor von ptp4l gueltig bleibt.
+  # ptp4l schreibt sein Log unbegrenzt; ab 5 MB auf die letzten 256 KB kürzen.
+  # In-place (cat >), damit der O_APPEND-Deskriptor von ptp4l gültig bleibt.
   if [[ -f "$PTP_LOG_FILE" ]] && (( $(stat -c %s "$PTP_LOG_FILE" 2>/dev/null || echo 0) > 5242880 )); then
     tail -c 262144 "$PTP_LOG_FILE" > "${PTP_LOG_FILE}.tmp" 2>/dev/null \
       && cat "${PTP_LOG_FILE}.tmp" > "$PTP_LOG_FILE" \
       && rm -f "${PTP_LOG_FILE}.tmp" \
-      && log ptp "Log auf die letzten 256 KB gekuerzt" || true
+      && log ptp "Log auf die letzten 256 KB gekürzt" || true
   fi
-  sleep 5
+  # 'wait' auf ein Hintergrund-sleep, damit ein SIGHUP sofort wirkt.
+  sleep 2 & wait $! 2>/dev/null || true
 done
