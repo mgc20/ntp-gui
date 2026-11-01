@@ -196,11 +196,21 @@ echo "8) Optionaler Dienst stirbt – Container läuft weiter"
 docker run -d --name "${PREFIX}-g" -p 18085:8080 \
   -e GPS_ENABLE=true -e GPS_DEVICE=/dev/null -e NTP_PORT=10129 -e NTP_POOLS="" "$IMAGE" >/dev/null
 wait_for_health http://127.0.0.1:18085/healthz 90 || true
-check "gpsd läuft laut services.json" running "$(svc "${PREFIX}-g" gpsd state)"
+# Ältere gpsd-Versionen (Debian: 3.22) beenden sich auf /dev/null von selbst; der
+# Supervisor startet sie dann mit Backoff neu. Deshalb erst auf "running" warten
+# (deckt den 60-s-Backoff ab) und den Zähler vor dem Abschießen merken.
+if wait_svc "${PREFIX}-g" gpsd state running 75; then ok "gpsd läuft laut services.json"; else bad "gpsd läuft nicht (state: $(svc "${PREFIX}-g" gpsd state))"; fi
+BEFORE=$(svc "${PREFIX}-g" gpsd restarts); BEFORE=${BEFORE:-0}
 docker exec "${PREFIX}-g" pkill -x gpsd >/dev/null 2>&1
-if wait_svc "${PREFIX}-g" gpsd restarts 1 30; then ok "gpsd wird neu gestartet"; else bad "gpsd wurde nicht neu gestartet"; fi
+RESTARTED=0
+for _ in $(seq 1 30); do
+  NOW_R=$(svc "${PREFIX}-g" gpsd restarts)
+  if [[ "$NOW_R" =~ ^[0-9]+$ ]] && (( NOW_R > BEFORE )); then RESTARTED=1; break; fi
+  sleep 1
+done
+if (( RESTARTED )); then ok "gpsd wird neu gestartet"; else bad "gpsd wurde nicht neu gestartet"; fi
 check "Container läuft nach gpsd-Ausfall weiter" running "$(docker inspect -f '{{.State.Status}}' "${PREFIX}-g")"
-check "gpsd läuft wieder" running "$(svc "${PREFIX}-g" gpsd state)"
+if wait_svc "${PREFIX}-g" gpsd state running 75; then ok "gpsd läuft wieder"; else bad "gpsd läuft nicht wieder (state: $(svc "${PREFIX}-g" gpsd state))"; fi
 contains "Watchdog meldet Neustart statt Stopp" "$(docker logs "${PREFIX}-g" 2>&1)" "NTP läuft weiter"
 check "chronyd unberührt" 0 "$(svc "${PREFIX}-g" chronyd restarts)"
 docker rm -f "${PREFIX}-g" >/dev/null 2>&1
