@@ -243,8 +243,8 @@ def render_ptp4l(cfg: dict, env: dict | None = None) -> str:
     body = f"""# Generiert von ntp-gui (Profil: {cfg.get('ptp_profile') or 'default'}).
 [global]
 domainNumber            {cfg['ptp_domain']}
-slaveOnly               {slave_only}
-masterOnly              {master_only}
+clientOnly              {slave_only}
+serverOnly              {master_only}
 priority1               {cfg['ptp_priority1']}
 priority2               {cfg['ptp_priority2']}
 clockClass              {cfg['ptp_clock_class']}

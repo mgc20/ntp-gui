@@ -19,7 +19,7 @@ Debian 12 „bookworm“ ist seit dem Erscheinen von trixie (09.08.2025) oldstab
 Sicherheitsunterstützung endete am **12.07.2026**, seitdem pflegt nur noch das LTS-Team
 (bis 30.06.2028). Die Pakete dort sind für unsere Pläne zu alt.
 
-| Paket | bookworm (heute) | trixie | Warum es zählt |
+| Paket | bookworm (bis 1.3.0) | trixie (ab 1.3.1) | Warum es zählt |
 |---|---|---|---|
 | chrony | 4.3 | 4.6.1 | `selectopts` (Quelle zur Laufzeit sperren) ab **4.4**, `leapseclist` ab **4.6** |
 | gpsd (inkl. `ubxtool`) | 3.22 | 3.25 | bessere u-blox-F9-Unterstützung, `prRes`/`qual` im JSON |
@@ -28,17 +28,16 @@ Sicherheitsunterstützung endete am **12.07.2026**, seitdem pflegt nur noch das 
 | apprise | 1.2.0 | 1.9.3 | (bleibt trotzdem draußen, siehe unten) |
 
 **Falle:** In trixie stecken die Zonen `right/*` nicht mehr in `tzdata`, sondern in
-`tzdata-legacy`. Der heutige Standard `LEAPSECTZ=right/UTC` liefe ins Leere – chrony hätte
+`tzdata-legacy`. Der bisherige Standard `LEAPSECTZ=right/UTC` (bis 1.3.0) liefe ins Leere – chrony hätte
 **keine Schaltsekunden-Daten** und meldete das nur im Log. Lösung: auf
 `leapseclist /usr/share/zoneinfo/leap-seconds.list` umstellen (in trixie-`tzdata` enthalten,
-geprüft; `right/` fehlt dort tatsächlich). Notlösung für den Übergang: `tzdata-legacy`
-mitinstallieren – ein Paket mehr, aber kein Code.
+geprüft; `right/` fehlt dort tatsächlich). Umgesetzt in 1.3.1: `leapseclist
+/usr/share/zoneinfo/leap-seconds.list`, Migration Schema 3 (statt `tzdata-legacy`, siehe E2).
 `gpsd`-`jam` und Antennenstatus (`ant_stat`) im JSON gibt es erst ab gpsd 3.26 (11.05.2025) – also
 in trixie (3.25) **nicht**; erst forky/testing hat 3.27.5. In welcher JSON-Klasse die Felder stehen,
 ist vor der Umsetzung im gpsd-Quelltext zu prüfen.
 
-**Empfehlung:** Wechsel als eigenes Ticket am Anfang von 1.4, mit vollem Container-Test und
-Replay-Tests der Parser. Aufwand ◆◆, senkt das Risiko langfristig.
+**Umgesetzt in 1.3.1** als eigenes Release direkt nach 1.3.0, mit vollem Container-Test.
 
 ## 2. Übersicht
 
@@ -154,8 +153,8 @@ aus Debian verschwindet. Tests in CI gegen `eclipse-mosquitto` bzw. das Debian-P
    Release. Alternative ohne neue Abhängigkeit für die erste Stufe: Home Assistant per
    REST-Sensor gegen `/api/v1` (nur Doku, siehe [version-1.4.md](version-1.4.md#offene-fragen)).
    Lohnt MQTT in 1.4 schon, oder erst, wenn Nutzer danach fragen?
-2. **Übergang trixie:** `leapseclist` sofort (sauber, Migration nötig) oder für ein Release
-   `tzdata-legacy` mitinstallieren (null Code, ein Paket mehr)?
+2. ~~**Übergang trixie**~~ – entschieden ([E2](entscheidungen.md)): `leapseclist` sofort, mit
+   Migration (umgesetzt in 1.3.1).
 3. **HTTPS im Dashboard selbst** (Handshake-Falle, Zertifikats-Neuladen) oder nur Reverse Proxy
    dokumentieren? Sicherheit durch Einfachheit spricht für „nur Doku“, Bequemlichkeit im LAN
    für stdlib-HTTPS.

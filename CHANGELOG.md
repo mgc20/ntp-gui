@@ -4,6 +4,23 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), die Versionen folgen
 [Semantic Versioning](https://semver.org/lang/de/).
 
+## [1.3.1] – 2026-11-01
+
+### Geändert
+- **Basis-Image Debian 13 „trixie“** (`debian:trixie-slim`) statt bookworm: chrony 4.6.1,
+  gpsd 3.25, linuxptp 4.2, Python 3.13. bookworm bekommt seit 07/2026 nur noch LTS-Updates.
+- **Schaltsekunden über `leapseclist /usr/share/zoneinfo/leap-seconds.list`** (neue
+  Einstellung `LEAPSECLIST`); trixie hat keine Zone `right/UTC` mehr. Ein gespeichertes
+  `LEAPSECTZ=right/UTC` wird beim ersten Start automatisch entfernt (Einstellungs-Schema 3,
+  Hinweiskarte auf der Einstellungsseite). `LEAPSECTZ` bleibt nur für eigene Images mit
+  `right/`-Zonen; fehlt die Zone, nimmt ntp-gui die Liste.
+- `ptp4l.conf` schreibt `clientOnly`/`serverOnly` statt `slaveOnly`/`masterOnly`. linuxptp 4.2
+  meldete die alten Namen bei jedem Start als veraltet im PTP-Log.
+
+### Behoben
+- Ohne `NTPGUI_VERSION` meldeten Dashboard, `/api/status` und Diagnosepaket noch Version
+  1.3.0.
+
 ## [1.3.0] – 2026-11-01
 
 ### Hinzugefügt
@@ -269,6 +286,7 @@ Erste Veröffentlichung.
 - CI mit Unittests und Integrationstest gegen das gebaute Image; Release-Workflow,
   der das Image für amd64 und arm64 nach ghcr.io veröffentlicht.
 
+[1.3.1]: https://github.com/ConGp20/ntp-gui/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/ConGp20/ntp-gui/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/ConGp20/ntp-gui/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/ConGp20/ntp-gui/compare/v1.0.0...v1.1.0

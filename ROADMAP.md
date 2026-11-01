@@ -41,9 +41,9 @@ Vorschläge, Erfahrungsberichte und Hilfe sind willkommen – siehe [CONTRIBUTIN
 | Austauschbare Datenquellen mit Aufzeichnung/Wiedergabe (Entwicklung, Demo-Modus) | ★★ | ◆◆ | ✅ |
 | API-Schlüssel mit Rechten (nur lesen / verwalten), versionierte API `/api/v1` | ★★ | ◆ | ✅ |
 
-## 1.3.1 – Debian 13 „trixie“
+## 1.3.1 – Debian 13 „trixie“ ✅
 
-- Basis-Image auf Debian 13 (chrony 4.6, gpsd 3.25, linuxptp 4.2) – bookworm bekommt seit 07/2026 nur noch LTS-Updates
+- Basis-Image auf Debian 13 (chrony 4.6.1, gpsd 3.25, linuxptp 4.2, Python 3.13) – bookworm bekommt seit 07/2026 nur noch LTS-Updates
 - Schaltsekunden über `leapseclist` (automatische Migration von `LEAPSECTZ`)
 - Künftige Debian-Versionen werden zeitnah übernommen
 
