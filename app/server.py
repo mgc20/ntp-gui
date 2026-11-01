@@ -955,12 +955,12 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/diagnostics/preview":
             try:
                 self._send_json(diagnostics.preview_locked(settings.values(), self._diag_options(query)))
-            except diagnostics.LeakError as exc:
+            except (diagnostics.LeakError, RuntimeError) as exc:
                 self._leak_error(exc)
         elif path == "/api/diagnostics/bundle":
             try:
                 body = diagnostics.bundle_locked(settings.values(), self._diag_options(query))
-            except diagnostics.LeakError as exc:
+            except (diagnostics.LeakError, RuntimeError) as exc:
                 self._leak_error(exc)
                 return
             self._send(HTTPStatus.OK, body, "application/gzip",

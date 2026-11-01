@@ -287,20 +287,30 @@ function bundleCard(state) {
   const previewButton = el("button", { type: "button", class: "button", text: "Vorschau" });
   const downloadButton = el("button", { type: "button", class: "button primary", text: "Herunterladen" });
 
+  const busyNote = () => emptyNote("Paket wird zusammengestellt und gefiltert … "
+    + (state.recording ? "Mit Aufzeichnung kann das auf einem Raspberry Pi etwa eine Minute dauern. " : "")
+    + "Das Dashboard bleibt währenddessen bedienbar.");
+
   previewButton.addEventListener("click", async () => {
     previewButton.disabled = true;
-    output.replaceChildren(emptyNote("Paket wird zusammengestellt und gefiltert …"));
+    downloadButton.disabled = true;
+    output.replaceChildren(busyNote());
     try {
       output.replaceChildren(previewView(await getJson(`/api/diagnostics/preview?${query()}`)));
     } catch (error) {
       output.replaceChildren(previewView(error.data || { ok: false, error: error.message }));
     } finally {
       previewButton.disabled = false;
+      downloadButton.disabled = false;
     }
   });
 
   downloadButton.addEventListener("click", async () => {
     downloadButton.disabled = true;
+    previewButton.disabled = true;
+    // Nach einer Vorschau ist das Paket schon fertig (dieselben Daten, sofort); sonst wird es jetzt gebaut.
+    const hadPreview = output.querySelector(".diag-preview:not([data-state=error])") !== null;
+    if (!hadPreview) output.replaceChildren(busyNote());
     try {
       const response = await fetch(`/api/diagnostics/bundle?${query()}`, { cache: "no-store" });
       if (!response.ok) {
@@ -318,10 +328,12 @@ function bundleCard(state) {
       link.remove();
       setTimeout(() => URL.revokeObjectURL(url), 10000);
       toast("Diagnosepaket gespeichert – nichts wurde hochgeladen");
+      if (!hadPreview) output.replaceChildren();
     } catch (error) {
       toast(`Herunterladen fehlgeschlagen: ${error.message}`, "crit");
     } finally {
       downloadButton.disabled = false;
+      previewButton.disabled = false;
     }
   });
 

@@ -611,11 +611,26 @@ def _render(name: str, content: Any) -> tuple[str, str]:
     return f"{name}.json", json.dumps(content, indent=2, ensure_ascii=False, default=str) + "\n"
 
 
-def _build(cfg: dict, sections: list[str] | None, options: dict) -> tuple[dict, dict, dict]:
+def _gather(cfg: dict, sections: list[str] | None, options: dict) -> dict:
+    """Rohdaten einsammeln (im Dashboard-Prozess: GPS-, Client- und Aufzeichnungszustand liegen
+    dort im Speicher). Ergebnis ist reines JSON – der Filter kann in einem eigenen Prozess laufen."""
     options = dict(options or {})
     names = _sections(options, sections)
-    raw = _collect(cfg or {}, names, options)
-    sanitizer = egress.Sanitizer("diagnostics", _known_names(cfg or {}), _known_values(cfg or {}))
+    known = {key: sorted(str(v) for v in values) for key, values in _known_values(cfg or {}).items()}
+    job = {"names": names, "raw": _collect(cfg or {}, names, options),
+           "known_names": sorted(_known_names(cfg or {})), "known_values": known}
+    # Rundreise durch JSON auch im selben Prozess: Worker und Direktaufruf sehen dieselben Daten.
+    return json.loads(json.dumps(job, ensure_ascii=False, default=str))
+
+
+def _build(cfg: dict, sections: list[str] | None, options: dict) -> tuple[dict, dict, dict]:
+    return _process(_gather(cfg, sections, options))
+
+
+def _process(job: dict) -> tuple[dict, Any, dict]:
+    """Filtern und beide Schlussprüfungen – reine Funktion der eingesammelten Rohdaten."""
+    names, raw = job["names"], job["raw"]
+    sanitizer = egress.Sanitizer("diagnostics", job["known_names"], job["known_values"])
     content: dict[str, Any] = {}
     truncated: dict[str, bool] = {}
     for name in names:
@@ -704,8 +719,10 @@ def _report_with_labels(report: dict) -> dict:
 
 def preview(cfg: dict, options: dict | None = None) -> dict:
     """Für GET /api/diagnostics/preview: genau das, was im Paket stünde."""
-    options = options or {}
-    content, sanitizer, truncated = _build(cfg, None, options)
+    return _preview_of(*_build(cfg, None, options or {}))
+
+
+def _preview_of(content: dict, sanitizer: Any, truncated: dict) -> dict:
     report = sanitizer.report()
     sections = []
     for name, value in content.items():
@@ -769,10 +786,12 @@ def manifest(sections: list[dict], report: dict, generated: float) -> str:
 
 def bundle(cfg: dict, options: dict | None = None) -> bytes:
     """Für GET /api/diagnostics/bundle: tar.gz mit einer Datei je Abschnitt + MANIFEST.txt."""
-    options = options or {}
-    content, sanitizer, truncated = _build(cfg, None, options)
+    return _bundle_of(*_build(cfg, None, options or {}))
+
+
+def _bundle_of(content: dict, sanitizer: Any, truncated: dict, generated: float | None = None) -> bytes:
     report = sanitizer.report()
-    generated = time.time()
+    generated = generated or time.time()
     base = filename_for(generated)[:-len(".tar.gz")]
     files: list[tuple[str, bytes]] = []
     sections = []
@@ -804,14 +823,106 @@ def bundle(cfg: dict, options: dict | None = None) -> bytes:
     return buffer.getvalue()
 
 
+# ---------------------------------------------------------------------------
+# Für den Server: eigener Prozess + Wiederverwendung der Vorschau
+# ---------------------------------------------------------------------------
+# Filter und Prüfungen sind reine Rechenarbeit (auf dem Pi für 10 min Aufzeichnung etliche
+# Sekunden). Im Dashboard-Prozess würden sie über das GIL jede andere Anfrage ausbremsen.
+# Deshalb rechnet ein kurzlebiger Kindprozess mit niedriger Priorität (nice 10); er bekommt die
+# Rohdaten als JSON und liefert Vorschau *und* Paket in einem Durchgang. Der Download nach der
+# Vorschau nimmt dieses Ergebnis – das Paket ist damit genau das, was die Vorschau gezeigt hat.
+
 _lock = threading.Lock()  # nie zwei Pakete gleichzeitig bauen (CPU auf dem Pi schonen)
+WORKER_TIMEOUT = 900.0
+REUSE_SECONDS = 600.0      # so lange gilt eine Vorschau für den Download
+_last: dict[str, Any] = {}  # {"key", "t", "preview", "bundle"}
+
+
+def _package(job: dict) -> dict:
+    """Vorschau und Paket aus einem Filterlauf. LeakError steigt auf."""
+    content, sanitizer, truncated = _process(job)
+    generated = time.time()
+    view = _preview_of(content, sanitizer, truncated)
+    view["generated"] = int(generated)
+    view["filename"] = filename_for(generated)
+    return {"preview": view, "bundle": _bundle_of(content, sanitizer, truncated, generated)}
+
+
+def _run_worker(job: dict) -> dict:
+    """_package in einem eigenen Python-Prozess; fällt auf den Dashboard-Prozess zurück,
+    wenn kein Kindprozess gestartet werden kann."""
+    import base64
+    import subprocess
+    import sys
+    payload = json.dumps(job, ensure_ascii=False).encode("utf-8")
+    try:
+        proc = subprocess.run([sys.executable, "-X", "utf8", os.path.abspath(__file__), "--worker"],
+                              input=payload, capture_output=True, timeout=WORKER_TIMEOUT)
+    except (OSError, ValueError):
+        return _package(job)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"Das Diagnosepaket wurde nach {WORKER_TIMEOUT:g} s nicht fertig.") from None
+    try:
+        result = json.loads(proc.stdout.decode("utf-8"))
+    except ValueError:
+        tail = proc.stderr.decode("utf-8", errors="replace").strip().splitlines()[-1:]
+        raise RuntimeError("Diagnose-Prozess fehlgeschlagen" + (f": {tail[0]}" if tail else "")) from None
+    if not result.get("ok"):
+        if result.get("findings") is not None:
+            raise LeakError(result["findings"])
+        raise RuntimeError(result.get("error") or "Diagnose-Prozess fehlgeschlagen")
+    return {"preview": result["preview"], "bundle": base64.b64decode(result["bundle"])}
+
+
+def _key(cfg: dict, options: dict) -> str:
+    """Was die Auswahl bestimmt – nicht Laufzeit oder Verlauf, die sich jede Sekunde ändern."""
+    chosen = {k: options.get(k) for k in ("include_clients", "include_recording", "sections")}
+    return json.dumps([cfg, chosen], sort_keys=True, ensure_ascii=False, default=str)
+
+
+def _produce(cfg: dict, options: dict) -> dict:
+    result = _run_worker(_gather(cfg, None, options))
+    _last.clear()
+    _last.update(key=_key(cfg, options), t=time.monotonic(), **result)
+    return result
 
 
 def preview_locked(cfg: dict, options: dict | None = None) -> dict:
+    options = options or {}
     with _lock:
-        return preview(cfg, options)
+        return _produce(cfg, options)["preview"]
 
 
 def bundle_locked(cfg: dict, options: dict | None = None) -> bytes:
+    options = options or {}
     with _lock:
-        return bundle(cfg, options)
+        if (_last.get("key") == _key(cfg, options)
+                and time.monotonic() - _last.get("t", 0.0) < REUSE_SECONDS):
+            return _last["bundle"]
+        return _produce(cfg, options)["bundle"]
+
+
+def _worker_main() -> int:
+    import base64
+    import sys
+    try:
+        os.nice(10)
+    except (AttributeError, OSError):
+        pass
+    try:
+        job = json.loads(sys.stdin.buffer.read().decode("utf-8"))
+        result = _package(job)
+        out = {"ok": True, "preview": result["preview"],
+               "bundle": base64.b64encode(result["bundle"]).decode("ascii")}
+    except LeakError as exc:
+        out = {"ok": False, "findings": exc.findings}
+    except Exception as exc:  # noqa: BLE001 – Fehler als JSON an den Server
+        out = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+    sys.stdout.write(json.dumps(out, ensure_ascii=False, default=str))
+    return 0
+
+
+if __name__ == "__main__":
+    import sys
+    if sys.argv[1:] == ["--worker"]:
+        raise SystemExit(_worker_main())

@@ -106,8 +106,10 @@ export const HELP_DIAGNOSE = {
   },
   diag_download: {
     title: "Herunterladen",
-    text: "Erzeugt das Paket neu (mit dem aktuellen Stand) und speichert es im Browser. Es wird nirgendwohin "
-      + "geschickt. Für ein GitHub-Issue kannst du die Datei einfach anhängen.",
+    text: "Speichert das Paket im Browser. Hast du gerade die Vorschau angesehen (mit denselben Schaltern, "
+      + "innerhalb von 10 Minuten), bekommst du **genau dieses** Paket sofort; sonst wird es mit dem aktuellen "
+      + "Stand neu erzeugt. Es wird nirgendwohin geschickt. Für ein GitHub-Issue kannst du die Datei einfach "
+      + "anhängen.",
   },
   diag_recording: {
     title: "Aufzeichnung",

@@ -349,5 +349,78 @@ class RecordingExportTest(unittest.TestCase):
         self.assertEqual(egress.Sanitizer("diagnostics").text(line), line)
         self.assertEqual(egress.Sanitizer("diagnostics").text("timezone=Vienna"), "timezone=<zeitzone>")
 
+
+class WorkerTest(unittest.TestCase):
+    """Server-Pfad: Filter im eigenen Prozess, Download nach der Vorschau ohne zweiten Lauf."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp)
+        (self.tmp / "ntp-gui.log").write_text(LOG, encoding="utf-8")
+        collectors = fake_collectors()
+        collectors["recording"] = lambda cfg, o: RECORDING
+        for p in (mock.patch.object(diagnostics, "RUN_DIR", str(self.tmp)),
+                  mock.patch.dict(diagnostics.COLLECTORS, collectors),
+                  mock.patch.dict(diagnostics._last, {}, clear=True)):
+            p.start()
+            self.addCleanup(p.stop)
+        self.cfg = {"nts_server_name": "zeit.mueller-family.de", "web_title": "Zeit bei Müllers"}
+        self.options = {"include_clients": True, "include_recording": True}
+
+    def test_worker_matches_in_process(self):
+        direct = diagnostics.preview(self.cfg, dict(self.options))
+        worker = diagnostics.preview_locked(self.cfg, dict(self.options))
+        self.assertEqual(worker["content"], direct["content"])
+        self.assertEqual(worker["removed"], direct["removed"])
+
+    def test_download_reuses_preview(self):
+        view = diagnostics.preview_locked(self.cfg, dict(self.options, uptime_seconds=1))
+        with mock.patch.object(diagnostics, "_run_worker", side_effect=AssertionError("neu gebaut")):
+            body = diagnostics.bundle_locked(self.cfg, dict(self.options, uptime_seconds=99))
+        with tarfile.open(fileobj=io.BytesIO(body), mode="r:gz") as tar:
+            names = {Path(m.name).name for m in tar.getmembers()}
+            recording = next(m for m in tar.getmembers() if m.name.endswith("recording.jsonl"))
+            data = tar.extractfile(recording).read().decode("utf-8")
+        self.assertIn("recording.jsonl", names)
+        self.assertEqual(data, view["content"]["recording"].rstrip("\n") + "\n")
+
+    def test_other_options_rebuild(self):
+        diagnostics.preview_locked(self.cfg, dict(self.options))
+        with mock.patch.object(diagnostics, "_run_worker", wraps=diagnostics._run_worker) as run:
+            diagnostics.bundle_locked(self.cfg, dict(self.options, include_clients=False))
+        self.assertEqual(run.call_count, 1)
+
+    def test_worker_filters_and_reports_errors(self):
+        job = {"names": ["logs"], "raw": {"logs": "Position lat=48.1371543 lon=11.5761249"},
+               "known_names": [], "known_values": {}}
+        result = diagnostics._run_worker(job)
+        self.assertNotIn("48.137", result["preview"]["content"]["logs"])
+        self.assertTrue(result["bundle"].startswith(b"\x1f\x8b"))  # gzip
+        with self.assertRaises(RuntimeError):
+            diagnostics._run_worker({"names": ["logs"]})  # kaputter Auftrag → Fehlermeldung, kein Absturz
+
+    def test_fast_path_never_skips_a_change(self):
+        # Was der Schnellweg durchlässt, darf der volle Filter auch nicht ändern.
+        probe = egress.Sanitizer("diagnostics")
+        samples = ["0", "-12", "48.1371543", "11.5761249", "-0.000699052", "1793573550.754", "1e-05",
+                   "12345678901", "12345678901.12345678901", "2026-11-01T22:51:12.000Z",
+                   "2026-11-01T22:51:12Z", "4807.038", "0.023456789"]
+        for value in samples:
+            self.assertTrue(egress._PLAIN_SAFE_RE.fullmatch(value), value)
+            self.assertEqual(probe._plain_uncached(value), value, value)
+        for value in ("123456789012", "192.168.1.5", "48.137,11.576", "48.137 11.576", "2001:db8::1"):
+            self.assertIsNone(egress._PLAIN_SAFE_RE.fullmatch(value), value)
+
+    def test_cache_keeps_counts(self):
+        text = "\n".join(["Remote address  : 192.53.103.108 (C035676C)", "Leap status : Normal"] * 50)
+        cached = egress.Sanitizer("diagnostics")
+        out_cached = cached.text(text)
+        with mock.patch.object(egress, "PLAIN_CACHE_SIZE", 0):
+            plain = egress.Sanitizer("diagnostics")
+            out_plain = plain.text(text)
+        self.assertEqual(out_cached, out_plain)
+        self.assertEqual(cached.report(), plain.report())
+        self.assertEqual(cached.report()["removed"]["oeffentliche_ip"], 50)
+
 if __name__ == "__main__":
     unittest.main()

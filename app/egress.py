@@ -41,6 +41,7 @@ eine von beiden etwas, muss der Export abbrechen.
 
 from __future__ import annotations
 
+import functools
 import ipaddress
 import json
 import re
@@ -702,6 +703,14 @@ def _refid_harmless(hex8: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
+# Einzelne Zahl oder UTC-Zeitstempel (gpsd "time", Aufzeichnung) – der Filter ändert sie nie;
+# test_privacy_backstop prüft das gegen den vollen Filter.
+_PLAIN_SAFE_RE = re.compile(r"[-+]?\d{1,11}(?:\.\d{1,11})?(?:[eE][-+]?\d{1,3})?"
+                            r"|\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z")
+PLAIN_CACHE_SIZE = 200_000     # Zeilen je Filterlauf
+PLAIN_CACHE_MAX_LINE = 8192    # längere Zeilen werden nicht zwischengespeichert
+
+
 class Sanitizer:
     """Ein Filterlauf: Pseudonyme bleiben über alle Abschnitte eines Exports stabil."""
 
@@ -717,6 +726,9 @@ class Sanitizer:
         self._clock_ids: dict[str, str] = {}
         self._ifaces: dict[str, str] = {}
         self._lock = threading.RLock()
+        # Gleiche Zeilen kommen in Aufzeichnungen tausendfach vor („Leap status : Normal“).
+        # Das Ergebnis hängt nur von der Zeile und den (stabilen) Pseudonymen ab.
+        self._plain_cache: dict[str, tuple[str, tuple]] = {}
         known = dict(known or {})
         all_names = list(known_names) + list(known.pop("hostname", []) or [])
         names = sorted({str(n).strip().rstrip(".") for n in all_names if n and len(str(n).strip()) >= 3
@@ -835,6 +847,24 @@ class Sanitizer:
         return pattern.sub(wrapped, text)
 
     def _plain(self, s: str) -> str:
+        if _PLAIN_SAFE_RE.fullmatch(s):  # Zahl oder ISO-Zeitstempel: nichts zu filtern
+            return s
+        if len(s) > PLAIN_CACHE_MAX_LINE:
+            return self._plain_uncached(s)
+        hit = self._plain_cache.get(s)
+        if hit is not None:
+            out, delta = hit
+            for category, n in delta:  # Zählung wie beim ersten Mal (MANIFEST)
+                self.count(category, n)
+            return out
+        before = dict(self.removed)
+        out = self._plain_uncached(s)
+        delta = tuple((k, v - before.get(k, 0)) for k, v in self.removed.items() if v != before.get(k, 0))
+        if len(self._plain_cache) < PLAIN_CACHE_SIZE:
+            self._plain_cache[s] = (out, delta)
+        return out
+
+    def _plain_uncached(self, s: str) -> str:
         s = s.translate(_DOTS)
         s = self._sub(_NMEA_RE, "position", lambda m: m.group(0).split(",", 1)[0] + "," + REMOVED, s)
         if self._tokens_re is not None:  # Titel, Seriennummern, Interface-Namen aus der Konfiguration
@@ -1542,6 +1572,18 @@ def _finding(kind: str, path: str, text: str) -> dict:
 
 
 def _text_findings(text: str, path: str) -> list[dict]:
+    if len(text) > PLAIN_CACHE_MAX_LINE:
+        return _text_findings_uncached(text, path)
+    return [{"kind": kind, "path": path or "$", "text": snippet}
+            for kind, snippet in _text_findings_cached(text)]
+
+
+@functools.lru_cache(maxsize=65536)
+def _text_findings_cached(text: str) -> tuple:
+    return tuple((f["kind"], f["text"]) for f in _text_findings_uncached(text, ""))
+
+
+def _text_findings_uncached(text: str, path: str) -> list[dict]:
     found = []
     for pattern, kind in ((_COORD_NMEA_RE, "position"), (_COORD_DMS_RE, "position"),
                           (_COORD_DEG_RE, "position"), (_NMEA_RE, "position"),
@@ -1655,28 +1697,44 @@ def _walk(value: Any, path: str, found: list[dict], parent_gps: bool = False) ->
             _walk(sub, f"{path}[{i}]", found, parent_gps)
     elif isinstance(value, str):
         for number, line in enumerate(value.split("\n"), 1):  # wie der Filter: zeilenweise
-            parsed = _json_line(line)
-            if parsed is not None:
-                # JSON-Zeile (Aufzeichnung, gpsd): wie Sanitizer._line geparst prüfen – sonst
-                # stünden die Zeilen eines eingebetteten chronyc-Texts auf einer Zeile.
-                sub_path = f"{path} Zeile {number}" if path else f"Zeile {number}"
-                before = len(found)
-                _walk(parsed, sub_path, found)
-                if len(found) == before:
-                    found.extend(_struct_probe(parsed, sub_path))
-                continue
-            found.extend(_text_findings(line, path))
+            # JSON-Zeile (Aufzeichnung, gpsd): wie Sanitizer._line geparst prüfen – sonst
+            # stünden die Zeilen eines eingebetteten chronyc-Texts auf einer Zeile.
+            hits = _json_line_findings(line, f"{path} Zeile {number}" if path else f"Zeile {number}")
+            if hits is None:
+                found.extend(_text_findings(line, path))
+            else:
+                found.extend(hits)
 
 
-def _json_line(line: str) -> dict | None:
+_ROOT = "\0"  # Platzhalter-Pfad für zwischengespeicherte Funde
+
+
+def _json_line_findings(line: str, sub_path: str) -> list[dict] | None:
+    """Funde einer JSON-Objekt-Zeile (None: keine solche Zeile). Gleiche Zeilen werden nur
+    einmal geprüft – Aufzeichnungen durchlaufen die Prüfung sonst mehrfach komplett."""
     stripped = line.strip()
     if not (stripped.startswith("{") and stripped.endswith("}")) or len(stripped) >= 1_000_000:
         return None
+    hits = _json_line_findings_cached(stripped)
+    if hits is None:
+        return None
+    return [{"kind": kind, "path": sub_path + where[len(_ROOT):] if where.startswith(_ROOT) else where,
+             "text": text} for kind, where, text in hits]
+
+
+@functools.lru_cache(maxsize=16384)
+def _json_line_findings_cached(stripped: str) -> tuple | None:
     try:
         parsed = json.loads(stripped)
     except ValueError:
         return None
-    return parsed if isinstance(parsed, dict) else None
+    if not isinstance(parsed, dict):
+        return None
+    found: list[dict] = []
+    _walk(parsed, _ROOT, found)
+    if not found:
+        found.extend(_struct_probe(parsed, _ROOT))
+    return tuple((f["kind"], f["path"], f["text"]) for f in found)
 
 
 def check_no_leaks(obj_or_text: Any) -> list[dict]:
@@ -1691,19 +1749,11 @@ def check_no_leaks(obj_or_text: Any) -> list[dict]:
         obj_or_text = obj_or_text.decode("utf-8", errors="replace")
     if isinstance(obj_or_text, str):
         for number, line in enumerate(obj_or_text.split("\n"), 1):
-            stripped = line.strip()
-            if stripped.startswith("{") and stripped.endswith("}"):
-                try:
-                    parsed = json.loads(stripped)
-                except ValueError:
-                    parsed = None
-                if isinstance(parsed, dict):
-                    before = len(found)
-                    _walk(parsed, f"Zeile {number}", found)
-                    if len(found) == before:
-                        found.extend(_struct_probe(parsed, f"Zeile {number}"))
-                    continue
-            found.extend(_text_findings(line, f"Zeile {number}"))
+            hits = _json_line_findings(line, f"Zeile {number}")
+            if hits is None:
+                found.extend(_text_findings(line, f"Zeile {number}"))
+            else:
+                found.extend(hits)
         return found
     _walk(obj_or_text, "", found)
     if not found:
