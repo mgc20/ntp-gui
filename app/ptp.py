@@ -22,7 +22,8 @@ _DATASETS = {
                       "peerMeanPathDelay", "logAnnounceInterval", "announceReceiptTimeout",
                       "delayMechanism", "versionNumber"],
     "TIME_STATUS_NP": ["master_offset", "gmPresent", "gmIdentity"],
-    "TIME_PROPERTIES_DATA_SET": ["currentUtcOffset", "timeTraceable", "frequencyTraceable", "ptpTimescale"],
+    "TIME_PROPERTIES_DATA_SET": ["currentUtcOffset", "currentUtcOffsetValid", "timeTraceable",
+                                 "frequencyTraceable", "ptpTimescale", "timeSource"],
 }
 
 _NUMERIC_FIELDS = {
@@ -433,8 +434,9 @@ def _send_grandmaster(cfg: dict, props: dict) -> bool:
     else:
         if proc.returncode == 0 and "RESPONSE MANAGEMENT GRANDMASTER_SETTINGS_NP" in proc.stdout:
             return True
-        reason = (proc.stderr or proc.stdout or "keine Antwort von ptp4l").strip().splitlines()[-1:]
-        reason = reason[0] if reason else "keine Antwort von ptp4l"
+        lines = [line.strip() for line in (proc.stderr + "\n" + proc.stdout).splitlines()
+                 if line.strip() and not line.startswith("sending:")]
+        reason = lines[-1] if lines else "ptp4l antwortet nicht"
     if not _GM_STATE["logged_error"]:
         print(f"[ptp] Grandmaster-Daten nicht gesetzt ({reason}) – neuer Versuch alle "
               f"{int(_GM_RETRY)} s.", flush=True)

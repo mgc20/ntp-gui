@@ -183,7 +183,7 @@ export function render(ctx) {
     const sourceText = field.source === "env" && field.env ? `Umgebung (${field.env})` : SOURCE_LABEL[field.source];
     return el("div", { class: `field${error ? " has-error" : ""}`, id: `row-${field.key}` },
       el("div", { class: "field-head" },
-        el("span", { class: "field-label" }, el("label", { for: `f-${field.key}`, text: field.label }),
+        el("span", { class: "field-label" }, el("label", { for: `f-${field.key}`, text: field.label }), " ",
           FIELD_HELP[field.key] ? info(FIELD_HELP[field.key], field.label) : null),
         el("span", { class: "field-meta" },
           badge(sourceText, field.source === "gui" ? "info" : "muted"),

@@ -24,7 +24,9 @@ HELP_FILES = [JS / "help.js", JS / "help-hardware.js"]
 NOT_IN_GROUPS: dict[str, str] = {}
 
 # kv-Zeilen/Kacheln ohne ⓘ, die so gewollt sind ("datei.js:Beschriftung": Grund).
-NO_HELP_OK: dict[str, str] = {}
+NO_HELP_OK: dict[str, str] = {
+    "sources.js:Zustand": "Der Zustands-Badge im Wert bringt sein eigenes ⓘ für den konkreten Zustand mit.",
+}
 
 IDENT = re.compile(r"^[a-z][a-z0-9_]*$")
 
@@ -107,6 +109,29 @@ def _split_top(text: str) -> list[str]:
     return [p.strip() for p in parts]
 
 
+def _expression(text: str, i: int) -> str:
+    """Ausdruck ab i bis zum nächsten Komma bzw. zur schließenden Klammer der Ebene."""
+    start, depth = i, 0
+    while i < len(text):
+        c = text[i]
+        if c in "\"'`":
+            i = _skip_string(text, i)
+            continue
+        if c == "/" and _is_comment(text, i):
+            i = _skip_comment(text, i)
+            continue
+        if c in "([{":
+            depth += 1
+        elif c in ")]}":
+            if depth == 0:
+                break
+            depth -= 1
+        elif c == "," and depth == 0:
+            break
+        i += 1
+    return text[start:i]
+
+
 def _literals(expr: str) -> list[str]:
     """Alle einfachen String-Literale eines Ausdrucks (deckt `a ? "x" : "y"` ab)."""
     return [m.group(2) for m in re.finditer(r"([\"'])([^\"'\\\n]*)\1", expr)]
@@ -123,6 +148,7 @@ def _calls(text: str, name: str):
 def _object_entries(body: str) -> dict[str, str]:
     out = {}
     for part in _split_top(body):
+        part = re.sub(r"^(?:\s*(?://[^\n]*|/\*.*?\*/))*", "", part, flags=re.S).strip()
         key, sep, value = part.partition(":")
         key = key.strip().strip("\"'")
         if sep and IDENT.match(key):
@@ -131,7 +157,7 @@ def _object_entries(body: str) -> dict[str, str]:
 
 
 def _const(text: str, name: str, opener: str) -> str | None:
-    match = re.search(r"\b(?:export\s+)?const\s+" + re.escape(name) + r"\s*=\s*\\" + opener, text)
+    match = re.search(r"\b(?:export\s+)?const\s+" + re.escape(name) + r"\s*=\s*" + re.escape(opener), text)
     if not match:
         return None
     start = match.end() - 1
@@ -256,9 +282,7 @@ def used_keys():
             found += [(name, line, key) for key in _literals(first)]
         for match in re.finditer(r"\bhelp\s*:\s*", text):
             line = text.count("\n", 0, match.start()) + 1
-            rest = text[match.end():]
-            expr = _split_top(rest[:_match("(" + rest + ")", 0)])[0] if rest else ""
-            found += [(name, line, key) for key in _literals(expr)]
+            found += [(name, line, key) for key in _literals(_expression(text, match.end()))]
         for line, _label, expr in _kv_rows(text):
             if expr:
                 found += [(name, line, key) for key in _literals(expr)]

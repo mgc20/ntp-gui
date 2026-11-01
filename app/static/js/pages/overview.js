@@ -41,13 +41,14 @@ export function trackingDetails(status, ref) {
   const leap = LEAP[(t.leap_status || "").toLowerCase()];
   const refAge = isNum(t.ref_time) && t.ref_time > 0 ? Date.now() / 1000 - t.ref_time : null;
   const control = system.clock_control;
-  const rows = [
+  return el("div", { class: "grid-2" }, kv([
     ["Referenz", refText, "reference"],
     ["Stratum", t.stratum ?? "–", "stratum"],
     ["Abweichung jetzt", fmtSeconds(t.system_time_offset, 3, true), "system_offset"],
     ["RMS-Mittel", fmtSeconds(t.rms_offset), "rms_offset"],
     ["Frequenzfehler", ppm(t.frequency_ppm), "frequency"],
     ["Skew (Unsicherheit der Frequenz)", ppm(t.skew_ppm), "skew"],
+  ]), kv([
     ["Root Delay", fmtSeconds(t.root_delay), "root_delay"],
     ["Root Dispersion", fmtSeconds(t.root_dispersion), "root_dispersion"],
     ["Schaltsekunden-Status", leap ? badge(leap[0], leap[1]) : (t.leap_status || "–"), "leap"],
@@ -56,8 +57,7 @@ export function trackingDetails(status, ref) {
       : `${new Date(t.ref_time * 1000).toLocaleString("de-DE")} (vor ${fmtDuration(refAge)})`, "ref_time"],
     ["Uhrensteuerung", control === true ? badge("aktiv – chrony stellt die Uhr", "good")
       : control === false ? badge("aus (-x) – nur messen und verteilen", "warn") : "unbekannt", "clock_control"],
-  ];
-  return el("div", { class: "grid-2" }, kv(rows.slice(0, 6)), kv(rows.slice(6)));
+  ]));
 }
 
 export function render(ctx) {

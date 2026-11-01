@@ -7,7 +7,8 @@
 # Prüft das Laufzeitverhalten, das sich mit Unittests nicht abbilden lässt:
 # Capability-Erkennung, Healthcheck, Basic-Auth, gemountete Konfiguration,
 # Verhalten ohne GPS-/PTP-Hardware, Einstellungen über die API samt Neustart
-# der Dienste und sauberes Stoppen.
+# der Dienste, Neustart optionaler Dienste (gpsd/ptp4l/phc2sys) samt
+# services.json, Geräte-Hotplug, PTP-Grandmaster-Richtung und sauberes Stoppen.
 set -uo pipefail
 
 IMAGE="${1:-ntp-gui:test}"
@@ -17,7 +18,8 @@ PASS=0
 FAIL=0
 
 cleanup() {
-  docker rm -f "${PREFIX}-a" "${PREFIX}-b" "${PREFIX}-c" "${PREFIX}-d" "${PREFIX}-e" "${PREFIX}-f" >/dev/null 2>&1
+  docker rm -f "${PREFIX}-a" "${PREFIX}-b" "${PREFIX}-c" "${PREFIX}-d" "${PREFIX}-e" "${PREFIX}-f" \
+    "${PREFIX}-g" "${PREFIX}-h" "${PREFIX}-i" >/dev/null 2>&1
   docker volume rm "${PREFIX}-data" >/dev/null 2>&1
   rm -rf "$CFG_DIR"
 }
@@ -32,6 +34,19 @@ contains() { # contains <Beschreibung> <Text> <Suchbegriff>
   if grep -qF -e "$3" <<<"$2"; then ok "$1"; else bad "$1 (»$3« fehlt)"; fi
 }
 http() { curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$@"; }
+
+# svc <container> <dienst> <feld> -> Wert aus /run/ntp-gui/services.json
+svc() {
+  docker exec "$1" python3 -c "import json,sys; print(json.load(open('/run/ntp-gui/services.json'))['services'][sys.argv[1]][sys.argv[2]])" "$2" "$3" 2>/dev/null
+}
+wait_svc() { # wait_svc <container> <dienst> <feld> <wert> <sekunden>
+  local i
+  for ((i = 0; i < $5; i++)); do
+    [[ "$(svc "$1" "$2" "$3")" == "$4" ]] && return 0
+    sleep 1
+  done
+  return 1
+}
 
 wait_for_health() { # wait_for_health <url> <sekunden>
   local url="$1" limit="${2:-60}" i
@@ -173,7 +188,68 @@ check "WEB_READONLY sperrt Änderungen" 403 "$(post -H 'Content-Type: applicatio
 docker rm -f "${PREFIX}-f" >/dev/null 2>&1
 
 echo
-echo "7) Sauberes Stoppen"
+echo "8) Optionaler Dienst stirbt – Container läuft weiter"
+# /dev/null besteht die Geräteprüfung und gpsd läuft darauf (liest nur nichts).
+docker run -d --name "${PREFIX}-g" -p 18085:8080 \
+  -e GPS_ENABLE=true -e GPS_DEVICE=/dev/null -e NTP_PORT=10129 -e NTP_POOLS="" "$IMAGE" >/dev/null
+wait_for_health http://127.0.0.1:18085/healthz 90 || true
+check "gpsd läuft laut services.json" running "$(svc "${PREFIX}-g" gpsd state)"
+docker exec "${PREFIX}-g" pkill -x gpsd >/dev/null 2>&1
+if wait_svc "${PREFIX}-g" gpsd restarts 1 30; then ok "gpsd wird neu gestartet"; else bad "gpsd wurde nicht neu gestartet"; fi
+check "Container läuft nach gpsd-Ausfall weiter" running "$(docker inspect -f '{{.State.Status}}' "${PREFIX}-g")"
+check "gpsd läuft wieder" running "$(svc "${PREFIX}-g" gpsd state)"
+contains "Watchdog meldet Neustart statt Stopp" "$(docker logs "${PREFIX}-g" 2>&1)" "NTP läuft weiter"
+check "chronyd unberührt" 0 "$(svc "${PREFIX}-g" chronyd restarts)"
+docker rm -f "${PREFIX}-g" >/dev/null 2>&1
+
+echo
+echo "9) GPS-Gerät wird nachträglich eingesteckt (Hotplug)"
+# /dev/shm/... besteht die /dev/-Prüfung und lässt sich ohne mknod anlegen.
+docker run -d --name "${PREFIX}-h" -p 18086:8080 -e GPS_ENABLE=true -e GPS_DEVICE=/dev/shm/gps \
+  -e GPS_WAIT_SECONDS=1 -e NTP_PORT=10130 -e NTP_POOLS="" "$IMAGE" >/dev/null
+wait_for_health http://127.0.0.1:18086/healthz 90 || true
+check "gpsd wartet auf das Gerät" stopped "$(svc "${PREFIX}-h" gpsd state)"
+docker exec "${PREFIX}-h" touch /dev/shm/gps
+if wait_svc "${PREFIX}-h" gpsd state running 60; then ok "gpsd startet nach dem Einstecken"; else bad "Hotplug nicht erkannt"; fi
+check "GPS-Refclock nach Hotplug eingetragen" 1 "$(docker exec "${PREFIX}-h" sh -c 'grep -c "refclock SHM" /etc/chrony/chrony.conf')"
+docker rm -f "${PREFIX}-h" >/dev/null 2>&1
+
+echo
+echo "10) PTP-Grandmaster: Richtung von phc2sys, ptp4l-Ausfall"
+# Die veth-Karte im Container kann keine Hardware-Zeitstempel: ptp4l bricht ab
+# und wird mit Backoff neu gestartet, NTP und Dashboard laufen weiter.
+docker run -d --name "${PREFIX}-i" -p 18087:8080 -e PTP_ENABLE=true -e PTP_INTERFACE=eth0 \
+  -e PTP_MODE=master -e PHC2SYS_ENABLE=true -e NTP_PORT=10131 -e NTP_POOLS="" "$IMAGE" >/dev/null
+wait_for_health http://127.0.0.1:18087/healthz 90 || true
+CMDLINE=$(docker exec "${PREFIX}-i" sh -c 'ps -o args= -C phc2sys | head -1')
+contains "Grandmaster: phc2sys überträgt die Systemuhr (-a -rr)" "$CMDLINE" "-a -rr"
+contains "Grandmaster: chronyd regelt weiter" "$(docker logs "${PREFIX}-i" 2>&1)" "chronyd regelt weiter"
+if wait_svc "${PREFIX}-i" ptp4l last_exit 255 30 || [[ "$(svc "${PREFIX}-i" ptp4l state)" == restarting ]]; then
+  ok "ptp4l-Ausfall wird in services.json gemeldet"
+else
+  bad "ptp4l-Ausfall fehlt in services.json (state: $(svc "${PREFIX}-i" ptp4l state))"
+fi
+check "Container läuft trotz ptp4l-Ausfall" running "$(docker inspect -f '{{.State.Status}}' "${PREFIX}-i")"
+check "Dashboard antwortet trotz ptp4l-Ausfall" 200 "$(http http://127.0.0.1:18087/api/status)"
+docker rm -f "${PREFIX}-i" >/dev/null 2>&1
+
+echo
+echo "11) All-in-one-Start mit Host-Netzwerk, ohne Hardware"
+HOSTNET="${PREFIX}-host"
+if docker run -d --name "$HOSTNET" --network host -e WEB_PORT=18188 -e NTP_PORT=10132 -e NTP_POOLS="" \
+     -e GPS_ENABLE=true -e GPS_DEVICE=/dev/ttyACM-fehlt -e GPS_PPS_DEVICE=/dev/pps-fehlt \
+     -e GPS_WAIT_SECONDS=1 -e PTP_ENABLE=false -e NTS_NOCERTTIMECHECK=true "$IMAGE" >/dev/null 2>&1 \
+   && wait_for_health http://127.0.0.1:18188/healthz 60; then
+  ok "Start mit network_mode host ohne GPS/PPS/PTP-Hardware"
+  contains "Fehlende Geräte werden beobachtet" "$(docker logs "$HOSTNET" 2>&1)" "Warte auf Geräte"
+  check "Container läuft" running "$(docker inspect -f '{{.State.Status}}' "$HOSTNET")"
+else
+  echo "  – Host-Netzwerk hier nicht erreichbar, Prüfung übersprungen"
+fi
+docker rm -f "$HOSTNET" >/dev/null 2>&1
+
+echo
+echo "12) Sauberes Stoppen"
 docker stop -t 15 "${PREFIX}-c" >/dev/null
 check "Exit-Code bei SIGTERM" 0 "$(docker inspect -f '{{.State.ExitCode}}' "${PREFIX}-c")"
 docker exec "${PREFIX}-a" pkill -x chronyd >/dev/null 2>&1

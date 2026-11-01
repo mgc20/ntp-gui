@@ -136,24 +136,23 @@ export function render(ctx) {
       el("td", { class: "num", text: source.stratum ?? "–" }),
       el("td", { class: "num", text: fmtLogInterval(source.poll) }),
       el("td", {}, reachRegister(source.reach || 0)),
-      el("td", { class: "num", text: isNum(source.last_rx) ? fmtDuration(source.last_rx) : "–" }),
       el("td", { class: "num", text: fmtSeconds(source.offset, 3, true) }),
       el("td", { class: "num", text: isNum(source.std_dev) ? fmtSeconds(source.std_dev) : "–" }),
       el("td", { class: "num", text: uncertainty(source) }),
       el("td", {}, stateBadge(source)),
       el("td", {}, reasonCell(source))));
-    if (open) rows.push(el("tr", { class: "src-detail" }, el("td", { colspan: 11 }, details(source))));
+    if (open) rows.push(el("tr", { class: "src-detail" }, el("td", { colspan: 10 }, details(source))));
   }
 
   const head = [
     ["Quelle", "hostname_vs_ip"], ["Typ", "source_type"], ["Stratum", "stratum", "num"], ["Intervall", "poll", "num"],
-    ["Letzte 8", "reach"], ["Zuletzt", "last_rx", "num"], ["Offset", "source_offset", "num"], ["Jitter", "jitter", "num"],
+    ["Letzte 8", "reach"], ["Offset", "source_offset", "num"], ["Jitter", "jitter", "num"],
     ["Unsicherheit", "interval", "num"], ["Zustand", "state_combined"], ["Grund", "select_reason"],
   ];
   const table = el("div", { class: "table-scroll" }, el("table", { class: "sources-table" },
     el("thead", {}, el("tr", {}, head.map(([label, help, cls]) => el("th", { class: cls || null },
       el("span", { text: label }), info(help, label))))),
-    el("tbody", {}, rows.length ? rows : el("tr", {}, el("td", { colspan: 11, class: "empty-note", text: "Keine Zeitquellen konfiguriert." })))));
+    el("tbody", {}, rows.length ? rows : el("tr", {}, el("td", { colspan: 10, class: "empty-note", text: "Keine Zeitquellen konfiguriert." })))));
 
   // Offset je Quelle
   const names = [...new Set(history.flatMap((s) => Object.keys(s.sources || {})))];
