@@ -37,7 +37,7 @@ Raspberry Pi starten, die Adresse per **DHCP Option 42** verteilen – fertig.
 - **NTS** – kryptografisch abgesicherte Zeit von PTB, Cloudflare, Netnod & Co., optional auch als NTS-Server
 - **Dashboard ohne Ballast** – reines Python aus der Distribution, kein npm, kein pip; Diagramme in eigenem SVG
 - **Monitoring eingebaut** – JSON-API, Prometheus-`/metrics` und `/healthz`; Verlauf über 24 h, übersteht Neustarts
-- **Getestet** – 62 Unittests und ein 41-Punkte-Integrationstest gegen das gebaute Image in der CI
+- **Getestet** – 62 Unittests und ein 42-Punkte-Integrationstest gegen das gebaute Image in der CI
 
 ## Auf einen Blick
 

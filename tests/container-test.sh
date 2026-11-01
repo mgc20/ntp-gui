@@ -152,6 +152,7 @@ for _ in $(seq 1 40); do
   sleep 1
 done
 check "Dienste neu gestartet" done "$STATE"
+check "Erzeugte chrony.conf ist gültig" 0 "$(docker exec "${PREFIX}-e" sh -c 'chronyd -p -f /etc/chrony/chrony.conf >/dev/null 2>&1; echo $?')"
 contains "chrony.conf enthält neuen Wert" "$(docker exec "${PREFIX}-e" cat /etc/chrony/chrony.conf)" "local stratum 8"
 STRATUM=""
 for _ in $(seq 1 20); do

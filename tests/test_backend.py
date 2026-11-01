@@ -261,6 +261,10 @@ class ConfgenTests(SettingsTestCase):
         conf = os.path.join(self.tmp, "chrony.conf")
         Path(conf).write_text(text)
         result = subprocess.run(["chronyd", "-p", "-f", conf], capture_output=True, text=True)
+        if result.returncode and "Permission denied" in result.stderr:
+            # AppArmor-Profil des Hosts (z. B. GitHub-Runner) erlaubt chronyd kein /tmp –
+            # der Container-Test prüft die erzeugte Konfiguration dann im Image.
+            self.skipTest("chronyd darf die Testdatei nicht lesen (AppArmor)")
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_ptp4l_config(self):
