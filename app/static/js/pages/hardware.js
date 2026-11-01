@@ -75,7 +75,7 @@ export function matrixList(rows) {
         el("p", { text: row.text || "" }),
         row.accuracy ? el("p", { class: "hw-accuracy" }, el("span", { class: "muted", text: "Genauigkeit: " }),
           el("span", { class: "mono", text: row.accuracy }), " ", info("hw_accuracy", "Genauigkeit")) : null,
-        row.fix ? snippet(row.fix, row.status === "change" ? "So geht es" : "Hinweis") : null));
+        row.fix ? snippet(row.fix, row.status === "change" ? "So geht es" : row.status === "no" ? "Nur mit anderer Hardware" : "Hinweis") : null));
   }));
 }
 

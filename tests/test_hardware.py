@@ -910,3 +910,25 @@ class TestInsightsWithoutReport(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTtyAcmWithoutDriverLink(HardwareTestCase):
+    """Regression: VK-162 wurde ohne lesbaren Treiber-Link als USB-Seriell/DCD eingestuft."""
+
+    def test_ttyacm_is_never_dcd(self):
+        self.host.usb_tty("ttyACM0", "", "1546", "01a7", "u-blox AG - www.u-blox.com",
+                          "u-blox 7 - GPS/GNSS Receiver")
+        rep = self.run_report(base_cfg(gps_enable=True))
+        rec = rep["gps"]["receivers"][0]
+        self.assertEqual(rec["pps_path"], "none")
+        self.assertIn("kein PPS möglich", rec["verdict"])
+        self.assertNotEqual(self.row(rep, "gps_pps")["status"], "limited")
+
+    def test_pi_usb_stick_fix_is_marked_as_other_hardware(self):
+        self.host.pi()
+        self.host.usb_tty("ttyACM0", "cdc_acm", "1546", "01a7", "u-blox AG - www.u-blox.com",
+                          "u-blox 7 - GPS/GNSS Receiver")
+        row = self.row(self.run_report(base_cfg(gps_enable=True)), "gps_pps")
+        self.assertEqual(row["status"], "no")
+        if row["fix"]:
+            self.assertIn("nicht mit einem USB-Stick", row["fix"])

@@ -506,7 +506,10 @@ def receivers_info(cfg: dict, platform_: dict, perms: dict, pps_list: list[dict]
         live_gpio = next((p for p in gpio if p["state"] == "live"), None)
         if name in ldisc:
             pps_path = "dcd_usb" if (usb or driver in USB_SERIAL_DRIVERS) else "dcd_uart"
-        elif driver == "cdc_acm":
+        elif driver == "cdc_acm" or name.startswith("ttyACM"):
+            # ttyACM* legt ausschließlich cdc_acm an (USB-Modem-Klasse): Über diese Anbindung
+            # kommt kein PPS beim Rechner an – auch dann nicht, wenn sich der Treiber-Link in
+            # /sys nicht lesen lässt (sonst landete der Stick fälschlich bei „USB-Seriell/DCD“).
             pps_path = "none"
         elif driver in USB_SERIAL_DRIVERS or usb:
             pps_path = "dcd_usb"
@@ -1079,7 +1082,10 @@ def build_matrix(cfg: dict, rep: dict, ctx: dict) -> tuple[list[dict], list[str]
     dcd_usb = next((r for r in receivers if r["pps_path"] == "dcd_usb"), None)
     uart_dcd = next((r for r in receivers if r["pps_path"] in {"dcd_uart", "unknown"}
                      and r["tty"] not in {os.path.basename(p["path"]) for p in kernel_pps}), None)
-    gpio_overlay = ("# /boot/firmware/config.txt (am Host), danach neu starten:\n"
+    gpio_overlay = ("# NUR mit einem GPS-Modul/HAT, dessen PPS-Pin an GPIO18 angeschlossen ist –\n"
+                    "# nicht mit einem USB-Stick. /dev/pps0 entsteht erst durch dieses Overlay;\n"
+                    "# vorher lässt „devices:“ den Containerstart scheitern.\n"
+                    "# /boot/firmware/config.txt (am Host), danach neu starten:\n"
                     "dtoverlay=pps-gpio,gpiopin=18\n\n"
                     "# im Compose:\ndevices:\n  - /dev/pps0:/dev/pps0\n"
                     "environment:\n  GPS_PPS_DEVICE: /dev/pps0")
