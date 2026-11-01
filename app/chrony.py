@@ -8,7 +8,10 @@ is stable across chrony releases, and fall back to parsing the human readable
 
 from __future__ import annotations
 
+import os
+import re
 import shutil
+import time
 import subprocess
 from typing import Any
 
@@ -90,8 +93,10 @@ class ChronyError(RuntimeError):
 def run(*args: str, timeout: float = 5.0) -> str:
     """Run chronyc with the given arguments and return stdout."""
     try:
+        host = os.environ.get("CHRONYC_HOST")  # nur für Entwicklung/Tests
+        prefix = ["-h", host] if host else []
         proc = subprocess.run(
-            [CHRONYC, *args],
+            [CHRONYC, *prefix, *args],
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -268,4 +273,190 @@ def merged_sources() -> list[dict[str, Any]]:
                 "frequency_skew_ppm": extra.get("frequency_skew_ppm"),
             }
         )
+    return merged
+
+
+# ---------------------------------------------------------------------------
+# Quellenauswahl, NTP-Details und NTS (chrony >= 4.1)
+# ---------------------------------------------------------------------------
+
+# Zustandsbuchstaben aus "chronyc selectdata" (identisch in 4.3 und 4.5).
+SELECT_STATES = {
+    "*": "best", "+": "combined", "-": "not_combined", "x": "falseticker",
+    "N": "noselect", "s": "unsynchronised", "M": "missing_samples",
+    "d": "distance", "D": "large_distance", "~": "jittery", "w": "waits_others",
+    "W": "waits_others", "S": "stale", "O": "orphan", "T": "not_trusted",
+    "P": "not_preferred", "U": "waits_update",
+}
+_OPTION_LETTERS = {"N": "noselect", "P": "prefer", "T": "trust", "R": "require"}
+
+
+def _options(letters: list[str]) -> list[str]:
+    return [_OPTION_LETTERS[c] for c in letters if c in _OPTION_LETTERS]
+
+
+def parse_selectdata(text: str) -> list[dict[str, Any]]:
+    """chronyc -c selectdata: state,name,auth,<conf opts>,<eff opts>,last,score,lo,hi,leap.
+
+    Die Zahl der Optionsspalten hat sich zwischen Versionen geändert; die
+    festen Felder am Anfang und Ende werden deshalb von beiden Seiten gelesen.
+    """
+    rows = []
+    for row in _csv_rows(text):
+        parts = row.split(",")
+        if len(parts) < 8:
+            continue
+        head, tail = parts[:3], parts[-5:]
+        middle = parts[3:-5]
+        half = len(middle) // 2
+        try:
+            lo, hi = float(tail[2]), float(tail[3])
+        except ValueError:
+            lo = hi = None
+        rows.append({
+            "state_code": head[0],
+            "select_state": SELECT_STATES.get(head[0], head[0]),
+            "name": head[1],
+            "authenticated": head[2] == "Y",
+            "configured_options": _options(middle[:half]),
+            "effective_options": _options(middle[half:]),
+            "last_sample_ago": _coerce(tail[0], int),
+            "score": _coerce(tail[1], float),
+            "interval_low": lo,
+            "interval_high": hi,
+            "leap": tail[4],
+        })
+    return rows
+
+
+_NTPDATA_KEYS = {
+    "Remote address": "remote", "Remote port": "remote_port", "Local address": "local",
+    "Leap status": "leap", "Version": "version", "Mode": "mode", "Stratum": "stratum",
+    "Poll interval": "poll", "Precision": "precision", "Root delay": "root_delay",
+    "Root dispersion": "root_dispersion", "Reference ID": "reference_id",
+    "Reference time": "reference_time", "Offset": "offset", "Peer delay": "peer_delay",
+    "Peer dispersion": "peer_dispersion", "Response time": "response_time",
+    "Jitter asymmetry": "jitter_asymmetry", "NTP tests": "ntp_tests",
+    "Interleaved": "interleaved", "Authenticated": "authenticated",
+    "TX timestamping": "tx_timestamping", "RX timestamping": "rx_timestamping",
+    "Total TX": "total_tx", "Total RX": "total_rx", "Total valid RX": "total_valid_rx",
+    "Total good RX": "total_good_rx",
+}
+
+
+def _leading_number(text: str):
+    match = re.match(r"^\s*([-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)", text)
+    if not match:
+        return None
+    number = float(match.group(1))
+    return int(number) if re.fullmatch(r"[-+]?\d+", match.group(1)) else number
+
+
+def parse_ntpdata(text: str) -> list[dict[str, Any]]:
+    """chronyc ntpdata (Klartext, Blöcke durch Leerzeilen getrennt).
+
+    Die Klartextausgabe ist über Versionen stabiler als die CSV-Spalten.
+    """
+    blocks, current = [], {}
+    for line in text.splitlines():
+        if not line.strip():
+            if current:
+                blocks.append(current)
+                current = {}
+            continue
+        label, sep, value = line.partition(":")
+        if not sep:
+            continue
+        key = _NTPDATA_KEYS.get(label.strip())
+        if not key:
+            continue
+        value = value.strip()
+        if key in {"remote", "local", "reference_id"}:
+            current[key] = value.split(" (")[0].strip()
+            if key == "reference_id" and "(" in value:
+                current["reference_name"] = value.split("(", 1)[1].rstrip(")")
+        elif key in {"leap", "mode", "interleaved", "authenticated", "tx_timestamping",
+                     "rx_timestamping", "reference_time", "ntp_tests"}:
+            current[key] = value
+        elif key in {"poll", "precision"}:
+            current[key] = _leading_number(value)
+            seconds = re.search(r"\(([-+\d.eE]+) seconds\)", value)
+            if seconds:
+                current[key + "_seconds"] = float(seconds.group(1))
+        else:
+            current[key] = _leading_number(value)
+    if current:
+        blocks.append(current)
+    for block in blocks:
+        tests = (block.get("ntp_tests") or "").replace(" ", "")
+        if tests:
+            block["ntp_tests_passed"] = tests.count("1")
+            block["ntp_tests_total"] = len(tests)
+    return blocks
+
+
+def parse_authdata(text: str) -> list[dict[str, Any]]:
+    """chronyc -c authdata: name,mode,keyid,type,klen,last_ke,attempts,nak,cookies,cookie_len."""
+    rows = []
+    for row in _csv_rows(text):
+        parts = row.split(",")
+        if len(parts) < 10:
+            continue
+        last = _coerce(parts[5], int)
+        rows.append({
+            "name": parts[0], "mode": parts[1], "key_id": _coerce(parts[2], int),
+            "key_type": _coerce(parts[3], int), "key_length": _coerce(parts[4], int),
+            "last_ke_ago": None if last == 0xFFFFFFFF else last,
+            "ke_attempts": _coerce(parts[6], int), "nak": _coerce(parts[7], int),
+            "cookies": _coerce(parts[8], int), "cookie_length": _coerce(parts[9], int),
+        })
+    return rows
+
+
+def selectdata() -> list[dict[str, Any]]:
+    return _safe(lambda: parse_selectdata(run("-c", "selectdata")), default=[])
+
+
+def ntpdata() -> list[dict[str, Any]]:
+    return _safe(lambda: parse_ntpdata(run("ntpdata")), default=[])
+
+
+def authdata() -> list[dict[str, Any]]:
+    return _safe(lambda: parse_authdata(run("-c", "authdata")), default=[])
+
+
+_NAME_CACHE: dict[str, tuple[float, str]] = {}
+
+
+def source_name(address: str) -> str | None:
+    """Konfigurierter Name (z. B. ptbtime1.ptb.de) zu einer Quell-IP, 10 min gecacht."""
+    now = time.time()
+    cached = _NAME_CACHE.get(address)
+    if cached and now - cached[0] < 600:
+        return cached[1] or None
+    try:
+        name = run("sourcename", address, timeout=2.0).strip()
+    except ChronyError:
+        name = ""
+    if name == address:
+        name = ""
+    _NAME_CACHE[address] = (now, name)
+    return name or None
+
+
+def detailed_sources() -> list[dict[str, Any]]:
+    """Alles, was chrony je Quelle weiß, zusammengeführt."""
+    merged = merged_sources()
+    select = {row["name"]: row for row in selectdata()}
+    ntp = {row.get("remote"): row for row in ntpdata() if row.get("remote")}
+    auth = {row["name"]: row for row in authdata()}
+    for source in merged:
+        name = source.get("name") or ""
+        sel = select.get(name)
+        if sel:
+            source.update({k: v for k, v in sel.items() if k != "name"})
+        if source.get("mode") in {"^", "="}:
+            source["ntp"] = ntp.get(name)
+            source["auth"] = auth.get(name)
+            source["hostname"] = source_name(name)
     return merged

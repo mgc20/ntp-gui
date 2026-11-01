@@ -7,7 +7,7 @@
 
 <p align="center">
   <a href="https://github.com/ConGp20/ntp-gui/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/ConGp20/ntp-gui/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="https://github.com/ConGp20/ntp-gui/releases/latest"><img alt="Release" src="https://img.shields.io/badge/release-v1.0.0-0969da"></a>
+  <a href="https://github.com/ConGp20/ntp-gui/releases/latest"><img alt="Release" src="https://img.shields.io/badge/release-v1.1.0-0969da"></a>
   <img alt="Plattformen" src="https://img.shields.io/badge/platform-amd64%20%7C%20arm64-1a7f37">
   <img alt="Image" src="https://img.shields.io/badge/image-ghcr.io-8250df">
   <a href="LICENSE"><img alt="Lizenz: MIT" src="https://img.shields.io/badge/license-MIT-59636e"></a>
@@ -16,6 +16,8 @@
 <p align="center">
   <a href="#schnellstart">Schnellstart</a> ·
   <a href="#per-dhcp-verteilen-option-42">DHCP</a> ·
+  <a href="#was-ist-möglich">Was ist möglich?</a> ·
+  <a href="#nts--abgesicherte-zeit">NTS</a> ·
   <a href="#stratum-1-mit-gps">GPS</a> ·
   <a href="#ptp">PTP</a> ·
   <a href="#konfiguration">Konfiguration</a> ·
@@ -29,16 +31,30 @@ Raspberry Pi starten, die Adresse per **DHCP Option 42** verteilen – fertig.
 
 - **Ein Container, alles drin** – chronyd, gpsd, ptp4l/phc2sys und das Dashboard, überwacht von einem Supervisor
 - **Stratum 1 ohne Internet** – mit einem USB-GPS wie dem VK-162 für ~15 €, auf Wunsch mit PPS
-- **Dashboard ohne Ballast** – reines Python aus der Distribution, kein npm, kein pip, ~100 KB Code
-- **Monitoring eingebaut** – JSON-API, Prometheus-`/metrics` und `/healthz` für den Healthcheck
-- **Konfiguriert per Umgebungsvariablen** – oder mit einer eigenen `chrony.conf`/`ptp4l.conf` unter `/config`
-- **Getestet** – 32 Unittests und ein 29-Punkte-Integrationstest gegen das gebaute Image in der CI
+- **Alles im Dashboard einstellbar** – Zeitquellen, NTS, GPS, PTP, Zugriff; Umgebungsvariablen dienen nur noch als Startwerte
+- **Erklärt sich selbst** – zu jedem Wert ein ⓘ mit Erklärung, ein Hinweis-Kasten sagt, was gerade los ist und was zu tun ist
+- **GPS-Kalibrierassistent** – misst die USB-Verspätung gegen die Netzwerkquellen und übernimmt Offset und Delay per Klick
+- **NTS** – kryptografisch abgesicherte Zeit von PTB, Cloudflare, Netnod & Co., optional auch als NTS-Server
+- **Dashboard ohne Ballast** – reines Python aus der Distribution, kein npm, kein pip; Diagramme in eigenem SVG
+- **Monitoring eingebaut** – JSON-API, Prometheus-`/metrics` und `/healthz`; Verlauf über 24 h, übersteht Neustarts
+- **Getestet** – 62 Unittests und ein 41-Punkte-Integrationstest gegen das gebaute Image in der CI
 
 ## Auf einen Blick
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/dashboard-dark.png">
-  <img alt="Dashboard von ntp-gui: Status, Offset-Verlauf, Zeitquellen, PTP und Clients" src="docs/dashboard-light.png">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/dashboard-dark.png">
+  <img alt="Übersicht von ntp-gui: Hinweise zum aktuellen Zustand, Kennzahlen und Verlaufsdiagramme" src="docs/screenshots/dashboard-light.png">
+</picture>
+
+Sieben Seiten: **Übersicht** (Hinweise, Kennzahlen, Verlauf), **Zeitquellen** (jede Quelle mit
+Zustand *und Grund* – ausgewählt, kombiniert, nicht kombiniert, Falseticker …),
+**GPS** (Himmelskarte, Signalstärken, Kalibrierassistent), **PTP** (Voraussetzungs-Check,
+Netzwerkkarten, Port-Zustand), **Clients** (wer fragt, wie oft, Snippets für DHCP-Server und
+Betriebssysteme), **Einstellungen** und **Hilfe** (Glossar und Entscheidungshilfe).
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/sources-dark.png">
+  <img alt="Zeitquellen-Seite: GPS mit Zustand „nicht kombiniert“ und Grund „Unsicherheit zu groß“, zwei Server ausgewählt bzw. kombiniert" src="docs/screenshots/sources-light.png">
 </picture>
 
 ## So funktioniert's
@@ -61,6 +77,37 @@ sie beim Verbindungsaufbau per DHCP.
 | Dashboard | Status, Offset-Verlauf, Zeitquellen, Clients, GPS-Fix, PTP-Zustand, aktive Konfiguration |
 | `/metrics` | Prometheus-Endpunkt (Offset, Stratum, Quellen, Paketzähler, GPS, PTP) |
 | `/healthz` | Health-Check für Docker/Kubernetes (ohne Login erreichbar) |
+
+## Was ist möglich?
+
+Jede Stufe baut auf der vorigen auf. Für die meisten Heimnetze reicht die zweite Zeile.
+
+| Aufbau | Genauigkeit im LAN | Hardware | Wann sinnvoll |
+|---|---|---|---|
+| **NTP aus dem Internet** | 1–50 ms | keine | Standard. Reicht für PCs, Server, Smart-Home, Logs und Zertifikate – bei stabiler Festnetz-/Glasfaserleitung. |
+| **+ NTS** | wie oben | keine | Gleiche Genauigkeit, aber gegen gefälschte Zeit abgesichert. Empfehlenswert. |
+| **+ USB-GPS ohne PPS** | 1–10 ms | ~15 € (z. B. VK-162) | *Nicht* genauer als gutes Festnetz-NTP. Lohnt bei Mobilfunk/LTE/5G, Starlink, häufigen Ausfällen, Netzen ohne Internet oder als unabhängige Kontrolle. Einmal kalibrieren. |
+| **+ GPS mit PPS** | < 1 µs | ~30–60 € (GPS-HAT oder Modul an GPIO) | Tausendfach genauer. Für Messaufbauten, Audio/Video über IP und als Basis für PTP. |
+| **+ PTP** | < 1 µs im LAN | NIC mit Hardware-Zeitstempeln (z. B. Intel i210) | Nur mit GPS+PPS als Referenz und Clients, die PTP sprechen. AES67/Dante, Labor, Lernen. |
+
+**Kurz zu den Begriffen:**
+
+- **NTP** (Network Time Protocol) – der Standard, den jedes Gerät spricht. Der Client fragt,
+  der Server antwortet mit Zeitstempeln; aus Hin- und Rückweg errechnet der Client seine
+  Abweichung. Genauigkeit begrenzt durch schwankende Laufzeiten im Netz.
+- **Stratum** – Abstand zur Referenzuhr. Ein GPS ist Stratum 0, der Server daran Stratum 1,
+  wer von ihm lernt Stratum 2 usw. Kleiner ist nicht automatisch genauer, aber kürzer.
+- **NTS** (Network Time Security, RFC 8915) – NTP mit TLS-Schlüsselaustausch und signierten
+  Paketen. Schützt gegen gefälschte Antworten, nicht gegen Ungenauigkeit.
+- **GPS/GNSS** – Satelliten tragen Atomuhren; der Empfänger kennt daraus die Zeit. Über USB
+  kommt sie aber als Textzeile (NMEA) mit Puffer-Verzögerung an – daher die Millisekunden.
+- **PPS** (Pulse Per Second) – ein elektrischer Impuls exakt zum Sekundenwechsel, an einem
+  GPIO-Pin oder einer seriellen Steuerleitung. Erst er macht GPS mikrosekundengenau.
+- **PTP** (Precision Time Protocol, IEEE 1588) – Zeitverteilung, bei der die *Netzwerkkarte*
+  die Pakete stempelt. Erreicht Nanosekunden, braucht aber passende Hardware auf beiden
+  Seiten und taugt nur so viel wie die Referenz dahinter.
+
+Alle Begriffe erklärt das Dashboard auch selbst: auf der Seite **Hilfe** und per ⓘ neben jedem Wert.
 
 ## Schnellstart
 
@@ -100,6 +147,36 @@ Für einen echten Zeitserver also `SYS_TIME` setzen.
 **Wichtig:** Container teilen sich die Uhr mit dem Host. Ein Container mit `SYS_TIME`
 stellt damit die Uhr des *Hosts*. Deshalb gehört dieser Dienst in eine eigene VM oder auf
 einen dedizierten Host – nicht auf einen Docker-Host, auf dem noch anderes läuft.
+
+## Einstellungen im Dashboard
+
+Alles Wesentliche lässt sich unter **Einstellungen** ändern – Zeitquellen (mit Vorlagen für
+PTB, Cloudflare, Netnod und pool.ntp.org), Zugriff aus dem LAN, NTS, GPS, PTP und das
+Dashboard selbst. Jedes Feld zeigt, woher sein Wert kommt:
+
+| Herkunft | Bedeutung |
+|---|---|
+| **Dashboard** | im GUI gespeichert – hat Vorrang |
+| **Umgebung** | aus der Compose-Datei bzw. `-e …` |
+| **Standard** | eingebauter Standardwert |
+
+Umgebungsvariablen funktionieren also weiter, sind aber nur noch **Startwerte**. Ein Klick
+auf „zurücksetzen“ entfernt den Dashboard-Wert wieder. Nach dem Speichern startet der
+Container die Zeitdienste mit der neuen Konfiguration neu (wenige Sekunden, chrony behält
+dabei seine Messwerte); Felder mit „wirkt sofort“ brauchen gar keinen Neustart.
+
+- Gespeichert wird in `/var/lib/chrony/ntp-gui/settings.json` (Rechte `0600`). Damit das eine
+  Neuerstellung des Containers übersteht, muss `/var/lib/chrony` auf einem **Volume** liegen –
+  die mitgelieferten Compose-Dateien tun das; das Dashboard warnt, wenn nicht.
+- Ein **Passwort** fürs Dashboard lässt sich direkt dort setzen (gespeichert als PBKDF2-Hash).
+  `WEB_USER`/`WEB_PASSWORD` aus der Umgebung haben Vorrang.
+- `WEB_READONLY=true` sperrt alle Änderungen – das Dashboard zeigt dann nur an.
+- **Exportieren/Importieren** sichert die Dashboard-Werte als JSON (ohne Passwort).
+- Eine gemountete `/config/chrony.conf` bzw. `/config/ptp4l.conf` ersetzt die erzeugte
+  Konfiguration weiterhin komplett.
+
+Änderungen per API sind gegen CSRF geschützt: sie brauchen den Header `X-NTP-GUI: 1`, JSON
+als Inhalt und – falls der Browser einen `Origin` mitschickt – denselben Host.
 
 ## Per DHCP verteilen (Option 42)
 
@@ -152,12 +229,40 @@ oder die Clients direkt konfigurieren.
 Für IPv6 ist Option 42 nicht zuständig – dort verteilt man NTP über DHCPv6 Option 56
 (`OPTION_NTP_SERVER`) bzw. über den Router Advertisement Daemon.
 
+## NTS – abgesicherte Zeit
+
+Klassisches NTP ist unverschlüsselt und unsigniert: Wer im Pfad sitzt, kann eine falsche
+Uhrzeit unterschieben – und mit falscher Zeit scheitern Zertifikate, 2FA-Codes und Logs.
+**NTS** (RFC 8915) holt per TLS (TCP-Port **4460**) Schlüssel ab und signiert danach jedes
+NTP-Paket. Die Genauigkeit bleibt gleich.
+
+Einschalten: in den Einstellungen bei einer Quelle den Haken **NTS** setzen – oder eine
+der Vorlagen nehmen. Per Umgebung:
+
+```yaml
+environment:
+  NTP_NTS_SERVERS: "ptbtime1.ptb.de,ptbtime2.ptb.de,nts.netnod.se,time.cloudflare.com"
+```
+
+Öffentliche NTS-Server: `ptbtime1/2/3.ptb.de` (PTB, Braunschweig), `time.cloudflare.com`,
+`nts.netnod.se`, `ntp.zeitgitter.net`, `nts.time.nl`. Auf der Seite **Zeitquellen** zeigt
+jede Quelle, ob ihre Antworten authentifiziert sind, wie viele Cookies vorrätig sind und
+wann der letzte Schlüsselaustausch war.
+
+**Henne-Ei-Problem:** Für TLS muss die Uhr ungefähr stimmen – ein Raspberry Pi ohne
+Echtzeituhr startet aber mit falscher Zeit. Deshalb ist `nocerttimecheck 1` voreingestellt
+(„Zertifikatszeit beim Start nicht prüfen“): Beim allerersten Abgleich wird die
+Gültigkeitszeit des Zertifikats nicht geprüft, danach normal.
+
+**NTS-Server für das LAN** (optional): Zertifikat und Schlüssel nach `/config/nts.crt` und
+`/config/nts.key` mounten, `NTS-Server` einschalten und Port `4460/tcp` freigeben. Sinnvoll
+nur, wenn die Clients NTS können (chrony ≥ 4, NTPsec) und dem Zertifikat vertrauen – für
+Windows, macOS und die meisten Geräte bleibt es bei normalem NTP.
+
 ## Stratum 1 mit GPS
 
 Mit einem GPS-Empfänger wird der Container unabhängig vom Internet: `gpsd` liest den
 Empfänger, chrony nutzt ihn als Referenzuhr und liefert die Zeit als Stratum 1 ins LAN.
-
-![Dashboard mit GPS](docs/dashboard-gps.png)
 
 Ein **VK-162** (u-blox 7, ~15 €) ist dafür der einfachste Einstieg: einstecken, er meldet
 sich als `/dev/ttyACM0`, kein Treiber nötig. Antenne ans Fenster oder nach draußen –
@@ -198,29 +303,65 @@ sieht `/dev/ttyACM0` sonst nicht.
   <img alt="Typische Genauigkeit: Internet-NTP 1–50 ms, USB-GPS 1–10 ms, GPS mit PPS 0,1–1 µs, PTP mit Hardware-Zeitstempeln 20 ns–1 µs" src="docs/graphics/accuracy-light.svg">
 </picture>
 
-Die Bremse beim USB-Empfänger ist nicht das GPS, sondern der USB-Bus: die NMEA-Sätze
-kommen gepuffert und mit schwankender Verzögerung an. Für ein Heimnetz, in dem sonst
-alles über das Internet synchronisiert, ist das trotzdem eine deutliche Verbesserung –
-und der Dienst läuft dann auch ohne Internetanbindung weiter.
+Die Bremse beim USB-Empfänger ist nicht das GPS, sondern der Weg: die Zeit kommt als
+NMEA-Textzeile, gepuffert und mit schwankender Verzögerung. **Ohne PPS ist ein USB-GPS
+deshalb nicht genauer als NTP über eine gute Festnetzleitung** – beides landet im
+einstelligen Millisekundenbereich. Sein Wert liegt woanders:
+
+- **Unabhängigkeit** – die Zeit stimmt auch ohne Internet (Ausfall, abgeschottetes Netz).
+- **Schlechte Uplinks** – über Mobilfunk/LTE/5G, Starlink oder Satellit schwanken die
+  Laufzeiten um zig Millisekunden; dort ist das USB-GPS klar besser als Internet-NTP.
+- **Kontrolle** – eine zweite, unabhängige Meinung, die gefälschte oder falsche
+  Internetzeit als Falseticker entlarvt.
+
+Mehr Genauigkeit bringt erst ein **PPS-Signal**.
 
 Wer die Nanosekunden-Klasse will, braucht einen Empfänger mit PPS-Ausgang. Jeff Geerlings
 [time-pi](https://github.com/geerlingguy/time-pi) ist genau das: Raspberry Pi 5 mit
 PPS-fähigem GPS-Modul, das als PTP-Grandmaster arbeitet – dieselbe Kombination, die
 dieser Container mit `GPS_PPS_DEVICE` und `PTP_ENABLE` abbildet.
 
-### Offset kalibrieren
+### Warum steht das GPS auf „nicht kombiniert“ – und der Offset bei +57 ms?
 
-Ein USB-Empfänger liefert die Zeit systematisch zu spät. Diesen konstanten Versatz nimmt
-`GPS_OFFSET` heraus. Vorgehen: erst einige Stunden mit guten Internet-Quellen mitlaufen
-lassen, dann den mittleren Offset des GPS-Refclocks ablesen –
+Typisches Bild nach ein paar Stunden mit USB-GPS: Die Internetquellen sind *ausgewählt*
+bzw. *kombiniert*, das GPS steht mit einem konstanten Offset von z. B. **+57 ms** daneben
+und wird nicht genutzt. Das ist kein Fehler, sondern zwei Einstellungen, die ab Werk
+bewusst vorsichtig sind:
 
-```bash
-docker exec ntp-gui-gps chronyc sourcestats
-docker exec ntp-gui-gps chronyc sources   # Spalte "Last sample" der Zeile "#? GPS"
-```
+1. **Offset** – der Empfänger meldet die Zeit immer um denselben Betrag zu spät
+   (NMEA-Zeile + serielle Übertragung + USB-Puffer, typisch 20–150 ms). Dieser Wert ist je
+   Empfänger, Firmware und Baudrate konstant – er wird nicht besser, wenn man wartet,
+   sondern muss einmal eingetragen werden.
+2. **Delay** – sagt chrony, wie unsicher die GPS-Zeit ist. Mit dem Standard `0.2` s gilt
+   das GPS als „± 100 ms“ und verliert gegen jede Internetquelle mit ± 5 ms
+   (*Unsicherheit zu groß*). Mit falschem Offset *und* kleinem Delay wäre es dagegen ein
+   **Falseticker**: es widerspricht den anderen und wird verworfen.
 
-– und den abgelesenen Wert als `GPS_OFFSET` in Sekunden eintragen (positiver Wert
-verschiebt die GPS-Zeit nach vorne). Danach steht der Refclock auf `#*`.
+Erst beides zusammen – richtiger Offset, passender Delay – macht das GPS konkurrenzfähig.
+Bei funktionierendem Internet ist das optional; wichtig wird es, wenn das GPS bei einem
+Ausfall übernehmen soll.
+
+### GPS kalibrieren – im Dashboard
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/gps-calibration-dark.png">
+  <img alt="GPS-Kalibrierassistent: gemessene Verspätung +56,99 ms, vorgeschlagener Offset 0,057 s und Delay 0,005 s, Diagramm der Differenz GPS minus Netzwerk" src="docs/screenshots/gps-calibration-light.png">
+</picture>
+
+Der Assistent auf der Seite **GPS** vergleicht laufend jede GPS-Messung mit den gerade
+genutzten Netzwerkquellen (Median der Differenz, robuste Streuung) und schlägt vor:
+
+- **Offset** = bisheriger Offset + gemessene Verspätung,
+- **Delay** = etwa die sechsfache Streuung (mindestens 5 ms, höchstens 0,2 s),
+- **Rolle**: automatisch, bevorzugt (`prefer`) oder nur beobachten (`noselect`).
+
+Vorgehen: GPS mit Internetquellen **einige Stunden** mitlaufen lassen (ab 30 Minuten gibt es
+einen vorläufigen Wert), dann **Vorschlag übernehmen**. chrony startet neu, die Abweichung im
+Diagramm pendelt danach um 0 und das GPS wird *kombiniert* oder *ausgewählt*. Neu
+kalibrieren nur nach einem Wechsel von Empfänger, USB-Port, Baudrate oder Firmware.
+
+Ohne Dashboard geht es auch per Umgebung (`GPS_OFFSET`, `GPS_DELAY`, `GPS_SELECT`); den
+Offset liest man dann mit `chronyc sourcestats` ab (Spalte *Offset* der Zeile `GPS`).
 
 ### PPS zusätzlich nutzen
 
@@ -258,7 +399,8 @@ chrony bekommt dann zwei Refclocks: `GPS` liefert die grobe Zeit (welche Sekunde
 | GPS-Fix bleibt „kein Fix" | Antenne ohne Himmelssicht; ein Kaltstart dauert bis zu 15 Minuten |
 | Fix vorhanden, Refclock trotzdem `#?` | gpsd schreibt in ein anderes SHM-Segment → `GPS_SHM_UNIT=2` probieren |
 | PPS-Zeile fehlt in der chrony.conf | `GPS_PPS_DEVICE` zeigt auf ein Gerät, das im Container nicht existiert – der Container überspringt sie bewusst, weil chronyd sonst gar nicht startet |
-| Offset konstant ein paar hundert ms | normal bei USB – siehe Kalibrierung oben |
+| Offset konstant einige zehn bis hundert ms | normal bei USB – Kalibrierassistent auf der GPS-Seite |
+| Zustand „Falseticker“ | Offset nicht kalibriert, aber Delay schon verkleinert – erst kalibrieren |
 
 Ein Detail für Tests: **gpsd akzeptiert keine PTY- oder TCP-Quellen als Zeitreferenz**
 (`ntpshm_alloc: sourcetype ... not using for NTP`). Ein per `socat` simulierter Empfänger
@@ -267,8 +409,9 @@ ein echtes serielles bzw. USB-Gerät.
 
 ## Konfiguration
 
-Alles läuft über Umgebungsvariablen. Beim Start wird daraus eine `chrony.conf` erzeugt,
-die im Dashboard unten einsehbar ist.
+Alle Werte lassen sich **im Dashboard** einstellen (siehe [Einstellungen im Dashboard](#einstellungen-im-dashboard));
+die Umgebungsvariablen unten setzen die Startwerte. Daraus entsteht beim Start bzw. nach
+dem Speichern eine `chrony.conf`, die unter `/api/config` einsehbar ist.
 
 ### NTP
 
@@ -276,16 +419,22 @@ die im Dashboard unten einsehbar ist.
 |---|---|---|
 | `NTP_POOLS` | `pool.ntp.org` | Pools, kommagetrennt |
 | `NTP_SERVERS` | – | Einzelne Server, kommagetrennt |
+| `NTP_NTS_SERVERS` | – | Server mit NTS, kommagetrennt (z. B. `ptbtime1.ptb.de`) |
 | `NTP_PEERS` | – | Symmetrische Peers (z. B. ein zweiter Zeitserver im Cluster) |
+| `NTP_MINSOURCES` | `1` | So viele Quellen müssen übereinstimmen, bevor die Uhr gestellt wird |
 | `NTP_SERVER_OPTIONS` | `iburst` | Optionen hinter jedem Server/Pool (z. B. `iburst minpoll 4`) |
 | `NTP_POOL_MAXSOURCES` | `4` | Quellen je Pool |
 | `ALLOW_NETWORKS` | alle privaten Netze | Wer die Zeit abfragen darf |
 | `DENY_NETWORKS` | – | Ausnahmen dazu |
 | `SERVE_UNSYNCED` | `true` | Zeit auch ohne Uplink ausliefern (Inselbetrieb) |
 | `LOCAL_STRATUM` | `10` | Stratum im Inselbetrieb |
+| `NTP_RATELIMIT` | `false` | Anfragen je Client begrenzen (`ratelimit`) |
+| `LEAPSECTZ` | `right/UTC` | Schaltsekunden-Tabelle aus der Zeitzonen-Datenbank |
+| `NTS_NOCERTTIMECHECK` | `true` | Zertifikatszeit beim ersten NTS-Abgleich nicht prüfen |
+| `NTS_SERVER` | `false` | Selbst NTS-Server sein (`NTS_SERVER_CERT`, `NTS_SERVER_KEY`, Standard `/config/nts.crt`/`.key`) |
 | `NTP_PORT` | `123` | NTP-Port |
 | `BIND_ADDRESS` | – | Auf eine Adresse beschränken |
-| `NTP_HW_TIMESTAMP` | `false` | Hardware-Zeitstempel für NTP (`hwtimestamp`) |
+| `NTP_HW_TIMESTAMP` | `false` | Hardware-Zeitstempel für NTP (`hwtimestamp`, Interface über `NTP_HW_TIMESTAMP_INTERFACE`) |
 | `DISABLE_CLOCK_CONTROL` | `auto` | `true` erzwingt `-x` (Uhr wird nie gestellt). Bei `auto` und bei `false` prüft der Container `CAP_SYS_TIME` und ergänzt `-x` nur, wenn die Capability fehlt |
 | `MAKESTEP` | `1.0 3` | `makestep`-Parameter |
 | `EXTRA_CHRONY_CONF` | – | Beliebige zusätzliche Zeilen (`\n` als Trenner) |
@@ -301,6 +450,7 @@ unverändert übernommen und alle NTP-Variablen ignoriert.
 | `GPS_DEVICE` | `/dev/ttyACM0` | Gerätepfad des Empfängers |
 | `GPS_SPEED` | – | Feste Baudrate (nur bei seriellen Empfängern nötig) |
 | `GPS_OFFSET` | `0.0` | Konstanter Zeitversatz in Sekunden (Kalibrierung) |
+| `GPS_SELECT` | `auto` | Rolle in chrony: `auto`, `prefer` oder `noselect` |
 | `GPS_REFID` | `GPS` | Name des Refclocks in `chronyc sources` |
 | `GPS_SHM_UNIT` | `0` | SHM-Segment, über das gpsd die Zeit übergibt |
 | `GPS_POLL` / `GPS_FILTER` | `3` / `3` | Poll-Intervall (2^n s) und Medianfilter |
@@ -313,8 +463,19 @@ unverändert übernommen und alle NTP-Variablen ignoriert.
 
 ### PTP
 
-PTP braucht das **Host-Netzwerk** (Multicast) und für brauchbare Genauigkeit eine NIC mit
-Hardware-Zeitstempeln. Vorher prüfen:
+PTP lohnt sich nur, wenn alle Voraussetzungen erfüllt sind – sonst ist NTP genauso gut:
+
+| Voraussetzung | Warum |
+|---|---|
+| **Gute Referenz** – GPS **mit PPS** | PTP verteilt nur so genau, wie die Quelle ist. Mit Internet-NTP als Quelle verteilt man Millisekunden-Fehler auf Nanosekunden genau. |
+| **NIC mit Hardware-Zeitstempeln** | z. B. Intel i210/i211/i225/i226, Raspberry Pi 5/CM4. Virtuelle NICs (virtio, Hyper-V, VMware) haben keine – in VMs nur Software-PTP. |
+| **Host-Netzwerk** (`network_mode: host`) | PTP braucht Multicast und die echte Netzwerkkarte; über die Docker-Bridge geht es nicht. |
+| **`NET_ADMIN`, `NET_RAW`** und `/dev/ptp0` | um Hardware-Zeitstempel einzuschalten und die PTP-Uhr der Karte zu lesen. |
+| **Netzwerk** | Jeder einfache Switch kostet Mikrosekunden. Für Nanosekunden: PTP-fähige Switches (Transparent/Boundary Clock) oder direkte Verbindung. |
+| **Clients, die PTP sprechen** | Linux (linuxptp), viele Audio-/Video- und Netzwerkgeräte. Windows nur eingeschränkt, macOS nicht – die bleiben bei NTP. |
+
+Die Seite **PTP** im Dashboard prüft das live: Host-Netzwerk, Interface, Hardware-Zeitstempel
+(`ethtool -T`) und PTP-Uhr je Netzwerkkarte. Von Hand:
 
 ```bash
 ethtool -T eth0   # "hardware-transmit"/"hardware-receive" und "PTP Hardware Clock: 0"
@@ -332,7 +493,11 @@ docker compose -f docker-compose.ptp.yml up -d
 | `PTP_DOMAIN` | `0` | PTP-Domain |
 | `PTP_TRANSPORT` | `UDPv4` | `UDPv4`, `UDPv6` oder `L2` |
 | `PTP_TIME_STAMPING` | `hardware` | `hardware` oder `software` |
+| `PTP_DELAY_MECHANISM` | `E2E` | `E2E`, `P2P` oder `Auto` |
 | `PTP_PRIORITY1` / `PTP_PRIORITY2` | `128` | BMCA-Priorität (kleiner = eher Grandmaster) |
+| `PTP_CLOCK_CLASS` | `248` | Selbstauskunft über die Uhrqualität (6 = an GPS gekoppelt, 248 = Standard) |
+| `PTP_LOG_SYNC_INTERVAL` | `-3` | Sync-Intervall als 2^n s (−3 = 8 pro Sekunde) |
+| `PTP_SUMMARY_INTERVAL` | `4` | Wie oft ptp4l Kennzahlen ins Log schreibt (2^n s) |
 | `PHC2SYS_ENABLE` | `false` | Systemuhr an die PTP-Hardwareuhr koppeln |
 | `PHC2SYS_OPTIONS` | `-a -r -m` | Optionen für phc2sys |
 | `EXTRA_PTP4L_CONF` | – | Zusätzliche Zeilen im `[global]`-Abschnitt |
@@ -362,10 +527,15 @@ PHC-Refclock dient ihm als Referenz für Stratum und Statistik.
 |---|---|---|
 | `WEB_PORT` / `WEB_BIND` | `8080` / `0.0.0.0` | Adresse des Dashboards |
 | `WEB_TITLE` | `NTP / PTP Time Server` | Überschrift |
-| `WEB_USER` / `WEB_PASSWORD` | – | Beide gesetzt ⇒ HTTP Basic Auth |
+| `WEB_USER` / `WEB_PASSWORD` | – | Beide gesetzt ⇒ HTTP Basic Auth (alternativ Passwort im Dashboard setzen) |
+| `WEB_READONLY` | `false` | Einstellungen im Dashboard sperren |
 | `WEB_REFRESH_SECONDS` | `5` | Aktualisierungsintervall im Browser |
-| `HISTORY_INTERVAL` / `HISTORY_SIZE` | `10` / `720` | Messintervall und Länge des Verlaufs (Default: 2 h) |
+| `HISTORY_INTERVAL` / `HISTORY_SIZE` | `10` / `8640` | Messintervall und Länge des Verlaufs (Default: 24 h, wird stündlich und beim Stoppen gesichert) |
 | `WEB_ACCESS_LOG` | `false` | Zugriffe protokollieren |
+
+Nur per Umgebung (sie betreffen den Start selbst): `WEB_PORT`, `WEB_BIND`, `WEB_READONLY`,
+`DISABLE_CLOCK_CONTROL`, `EXTRA_CHRONY_CONF`, `EXTRA_PTP4L_CONF`, `CLIENTLOGLIMIT`,
+`GPS_SHM_UNIT`, `GPS_WAIT_SECONDS`, `HISTORY_SIZE`.
 
 Das Dashboard hat **keine Verschlüsselung**. Für Zugriff über unsichere Netze einen
 Reverse Proxy mit TLS davorsetzen und `WEB_USER`/`WEB_PASSWORD` verwenden.
@@ -379,8 +549,10 @@ Reverse Proxy mit TLS davorsetzen und `WEB_USER`/`WEB_PASSWORD` verwenden.
 | `ptp4l` / `phc2sys` | root | brauchen `CAP_NET_ADMIN` für Hardware-Zeitstempel |
 | Dashboard (`python3`) | root | ruft `chronyc` und `pmc` auf, deren Sockets root bzw. `_chrony` gehören |
 
-Das Dashboard schreibt nichts, führt keine Shell-Kommandos aus (alle Aufrufe nutzen feste
-Argumentlisten) und hat keinen Upload-Pfad. Trotzdem gilt: der Container ist für das eigene
+Das Dashboard schreibt nur seine eigenen Einstellungen und den Verlauf nach
+`/var/lib/chrony/ntp-gui`, führt keine Shell-Kommandos aus (alle Aufrufe nutzen feste
+Argumentlisten) und prüft jeden Wert gegen eine Positivliste, bevor er in eine
+Konfigurationsdatei gelangt. Trotzdem gilt: der Container ist für das eigene
 LAN gedacht, nicht für das offene Internet. Wer ihn exponiert, gehört hinter einen Reverse
 Proxy mit TLS und Authentifizierung.
 
@@ -392,16 +564,22 @@ Der Endpunkt verrät nur, ob chronyd antwortet.
 | Pfad | Inhalt |
 |---|---|
 | `/` | Dashboard |
-| `/api/status` | Kompletter Zustand als JSON |
-| `/api/history` | Offset-Verlauf (Ringpuffer im Speicher) |
-| `/api/config` | Aktive `chrony.conf` |
+| `/api/status` | Kompletter Zustand als JSON, inkl. Hinweisen (`insights`) |
+| `/api/history?range=3600&points=600` | Verlauf (System, Quellen, GPS, PTP), ausgedünnt |
+| `/api/config` | Aktive `chrony.conf` / `ptp4l.conf` |
+| `/api/settings` | Einstellungen mit Schema, Wert und Herkunft; `POST` speichert |
+| `/api/settings/reset`, `/import`, `/export` | Dashboard-Werte zurücksetzen, importieren, sichern |
+| `/api/auth` | `POST`: Dashboard-Passwort setzen oder entfernen |
+| `/api/reload` | Stand des letzten Dienst-Neustarts; `POST` löst einen aus |
+| `/api/devices` | Serielle/PPS-/PTP-Geräte, Netzwerkkarten, PTP-Voraussetzungen |
+| `/api/gps/calibration?seconds=21600` | Kalibriervorschlag für das GPS |
 | `/metrics` | Prometheus |
 | `/healthz` | `200`, solange chronyd antwortet (ohne Login) |
 
 ## Entwicklung
 
 ```bash
-python3 -m unittest discover -s tests -v     # Parser-Tests (ohne laufenden chronyd)
+python3 -m unittest discover -s tests -v     # Parser-, Einstellungs-, Config- und Kalibrier-Tests
 docker build -t ntp-gui:test .
 tests/container-test.sh ntp-gui:test         # Integrationstest gegen das gebaute Image
 ```
@@ -409,7 +587,8 @@ tests/container-test.sh ntp-gui:test         # Integrationstest gegen das gebaut
 Der Integrationstest startet echte Container und prüft das, was Unittests nicht abdecken:
 Erkennung von fehlendem `CAP_SYS_TIME`, Healthcheck, alle Endpunkte, Basic-Auth,
 gemountete Konfiguration, Verhalten ohne GPS-/PTP-Hardware, eine echte NTP-Abfrage über
-das Netz und die Exit-Codes beim Stoppen. Dieselbe Datei läuft in der CI gegen das
+das Netz, Einstellungen speichern samt Neustart der Dienste und Persistenz über eine
+Neuerstellung, CSRF-Schutz, `WEB_READONLY` und die Exit-Codes beim Stoppen. Dieselbe Datei läuft in der CI gegen das
 gebaute Image.
 
 Lokal ohne Container starten (setzt installiertes `chrony` voraus; als root, und der
@@ -428,10 +607,10 @@ CSV-Zeile, „nie gehört“ ist `4294967295` und `pmc` antwortet nur, wenn die 
 
 ## Bekannte Einschränkungen
 
-* Die Konfiguration ist read-only einsehbar; Änderungen laufen über Umgebungsvariablen
-  bzw. eine gemountete Datei, nicht über das GUI.
-* Der Offset-Verlauf liegt im Speicher und geht bei einem Neustart verloren. Für
-  Langzeitdaten `/metrics` mit Prometheus abgreifen.
+* Der Verlauf reicht standardmäßig 24 h zurück. Für Langzeitdaten `/metrics` mit
+  Prometheus abgreifen.
+* Nach dem Speichern starten chronyd, gpsd und ptp4l kurz neu; für einige Sekunden
+  antwortet der Server dann nicht.
 * `chronyc clients` zählt nur, solange das Client-Log Platz hat (`CLIENTLOGLIMIT`).
 * Das Dashboard bringt kein TLS mit – für Zugriffe außerhalb des vertrauenswürdigen Netzes
   gehört ein Reverse Proxy davor.
@@ -440,7 +619,7 @@ CSV-Zeile, „nie gehört“ ist `4294967295` und `pmc` antwortet nur, wenn die 
 ## Release
 
 Veröffentlicht wird über GitHub Actions: im Repo unter **Actions → Release → Run workflow**
-die Version eintragen (z. B. `1.0.0`) und starten. Der Workflow
+die Version eintragen (z. B. `1.1.0`) und starten. Der Workflow
 
 1. lehnt Versionen ab, die kein SemVer sind oder deren Tag schon existiert,
 2. führt Unittests und den Integrationstest gegen das frisch gebaute Image aus,

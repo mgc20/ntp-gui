@@ -1,0 +1,127 @@
+// Kleine Helfer: DOM-Bau, Formatierung, API-Zugriff.
+// Daten aus der API landen ausschließlich als Text im DOM (textContent),
+// nie als HTML – Hostnamen, Logzeilen oder Gerätenamen können so nichts
+// einschleusen.
+
+export function el(tag, attrs = {}, ...children) {
+  const node = tag === "svg" || attrs.svg ? document.createElementNS("http://www.w3.org/2000/svg", tag)
+    : document.createElement(tag);
+  for (const [key, value] of Object.entries(attrs)) {
+    if (value === null || value === undefined || value === false || key === "svg") continue;
+    if (key === "class") node.setAttribute("class", value);
+    else if (key === "text") node.textContent = value;
+    else if (key === "dataset") Object.assign(node.dataset, value);
+    else if (key.startsWith("on") && typeof value === "function") node.addEventListener(key.slice(2), value);
+    else if (key === "value" && "value" in node) node.value = value;
+    else if (key === "checked") node.checked = Boolean(value);
+    else node.setAttribute(key, value === true ? "" : value);
+  }
+  for (const child of children.flat(Infinity)) {
+    if (child === null || child === undefined || child === false) continue;
+    node.append(child instanceof Node ? child : document.createTextNode(String(child)));
+  }
+  return node;
+}
+
+export function svgEl(tag, attrs = {}) {
+  const node = document.createElementNS("http://www.w3.org/2000/svg", tag);
+  for (const [key, value] of Object.entries(attrs)) {
+    if (value !== null && value !== undefined) node.setAttribute(key, value);
+  }
+  return node;
+}
+
+// Vertrauenswürdige, im Code geschriebene Texte mit **fett** und `code`.
+export function rich(text) {
+  const span = document.createElement("span");
+  const parts = String(text).split(/(\*\*[^*]+\*\*|`[^`]+`)/g);
+  for (const part of parts) {
+    if (part.startsWith("**") && part.endsWith("**")) span.append(el("strong", { text: part.slice(2, -2) }));
+    else if (part.startsWith("`") && part.endsWith("`")) span.append(el("code", { text: part.slice(1, -1) }));
+    else if (part) span.append(document.createTextNode(part));
+  }
+  return span;
+}
+
+export function isNum(value) {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+// Sekunden in eine lesbare Größe (ns/µs/ms/s).
+export function fmtSeconds(value, digits = 3, signed = false) {
+  if (!isNum(value)) return "–";
+  const abs = Math.abs(value);
+  const sign = signed && value > 0 ? "+" : "";
+  if (abs === 0) return "0 s";
+  if (abs < 1e-6) return `${sign}${(value * 1e9).toFixed(0)} ns`;
+  if (abs < 1e-3) return `${sign}${(value * 1e6).toFixed(abs < 1e-5 ? 2 : 1)} µs`;
+  // Höchstens fünf signifikante Stellen – „100.000 ms“ läse sich im Deutschen wie hunderttausend.
+  if (abs < 1) return `${sign}${(value * 1e3).toFixed(Math.min(digits, abs >= 0.1 ? 1 : 3))} ms`;
+  return `${sign}${value.toFixed(digits)} s`;
+}
+
+export function fmtNs(value) {
+  return isNum(value) ? fmtSeconds(value / 1e9, 2, true) : "–";
+}
+
+export function fmtDuration(seconds) {
+  if (!isNum(seconds)) return "–";
+  const s = Math.max(0, Math.round(seconds));
+  if (s < 60) return `${s} s`;
+  if (s < 3600) return `${Math.floor(s / 60)} min`;
+  if (s < 86400) return `${Math.floor(s / 3600)} h ${Math.floor((s % 3600) / 60)} min`;
+  return `${Math.floor(s / 86400)} d ${Math.floor((s % 86400) / 3600)} h`;
+}
+
+export function fmtLogInterval(exponent) {
+  if (!isNum(exponent)) return "–";
+  const seconds = 2 ** exponent;
+  return seconds < 1 ? `${seconds.toFixed(3).replace(/0+$/, "")} s` : fmtDuration(seconds);
+}
+
+export function fmtNumber(value, digits = 0) {
+  return isNum(value) ? value.toLocaleString("de-DE", { maximumFractionDigits: digits, minimumFractionDigits: digits }) : "–";
+}
+
+export function fmtTime(unix, seconds = true) {
+  return new Date(unix * 1000).toLocaleTimeString("de-DE", seconds
+    ? { hour: "2-digit", minute: "2-digit", second: "2-digit" } : { hour: "2-digit", minute: "2-digit" });
+}
+
+export function sourceLabel(source) {
+  if (!source) return "–";
+  return source.hostname || source.name || "–";
+}
+
+// --- API -------------------------------------------------------------------
+
+export async function apiGet(path) {
+  const response = await fetch(path, { cache: "no-store", headers: { Accept: "application/json" } });
+  if (!response.ok) throw new Error(`${path}: HTTP ${response.status}`);
+  return response.json();
+}
+
+export async function apiPost(path, body) {
+  const response = await fetch(path, {
+    method: "POST",
+    cache: "no-store",
+    headers: { "Content-Type": "application/json", "X-NTP-GUI": "1" },
+    body: JSON.stringify(body || {}),
+  });
+  let data = {};
+  try { data = await response.json(); } catch (error) { /* leere Antwort */ }
+  if (!response.ok) {
+    const failure = new Error(data.error || `HTTP ${response.status}`);
+    failure.fields = data.fields || {};
+    throw failure;
+  }
+  return data;
+}
+
+export function storageGet(key, fallback) {
+  try { return JSON.parse(window.localStorage.getItem(key)) ?? fallback; } catch (error) { return fallback; }
+}
+
+export function storageSet(key, value) {
+  try { window.localStorage.setItem(key, JSON.stringify(value)); } catch (error) { /* privat */ }
+}
