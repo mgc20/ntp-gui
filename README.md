@@ -27,14 +27,12 @@ zusammenbringt und alles in einem Web-Dashboard sichtbar macht. Gedacht als klei
 Zeitserver-Appliance für das eigene Netz: in einer VM, auf einem Mini-PC oder einem
 Raspberry Pi starten, die Adresse per **DHCP Option 42** verteilen – fertig.
 
-| | |
-|---|---|
-| **Ein Container, alles drin** | chronyd, gpsd, ptp4l/phc2sys und das Dashboard, überwacht von einem Supervisor |
-| **Stratum 1 ohne Internet** | mit einem USB-GPS wie dem VK-162 für ~15 €, auf Wunsch mit PPS |
-| **Dashboard ohne Ballast** | reines Python aus der Distribution – kein npm, kein pip, ~100 KB Code |
-| **Monitoring eingebaut** | JSON-API, Prometheus-`/metrics` und `/healthz` für den Healthcheck |
-| **Konfiguriert per Umgebungsvariablen** | oder mit einer eigenen `chrony.conf`/`ptp4l.conf` unter `/config` |
-| **Getestet** | 32 Unittests und ein 29-Punkte-Integrationstest gegen das gebaute Image in der CI |
+- **Ein Container, alles drin** – chronyd, gpsd, ptp4l/phc2sys und das Dashboard, überwacht von einem Supervisor
+- **Stratum 1 ohne Internet** – mit einem USB-GPS wie dem VK-162 für ~15 €, auf Wunsch mit PPS
+- **Dashboard ohne Ballast** – reines Python aus der Distribution, kein npm, kein pip, ~100 KB Code
+- **Monitoring eingebaut** – JSON-API, Prometheus-`/metrics` und `/healthz` für den Healthcheck
+- **Konfiguriert per Umgebungsvariablen** – oder mit einer eigenen `chrony.conf`/`ptp4l.conf` unter `/config`
+- **Getestet** – 32 Unittests und ein 29-Punkte-Integrationstest gegen das gebaute Image in der CI
 
 ## Auf einen Blick
 
