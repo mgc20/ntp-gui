@@ -296,7 +296,11 @@ _ZONE_WORDS_RE = re.compile(r"(?i)\b(?:[A-Z][\w.]*\.?\s+){1,4}(?:standard|daylig
                             r"|\bmitteleuropäische\s+zeit\b")
 # „Zeitzone: Berlin“, „zone: Berlin“, „timezone=Vienna“, „Time zone: Europe/Berlin (CET, +0100)“
 _ZONE_LABEL_RE = re.compile(r"(?i)\b(time\s?zone|zeitzone|zone|tz)([ \t]*[:=][ \t]*|(?<=one)[ \t]+)([\"']?)"
-                            r"(?!<)(?!(?:UTC|GMT|Z)?[+-]?\d)(?!(?:UTC|GMT|Z)\b)([A-Za-z][A-Za-z_+/-]*)")
+                            r"(?!<)(?!(?:UTC|GMT|Z)?[+-]?\d)(?!(?:UTC|GMT|Z)\b)"
+                            # Füllwörter nach „timezone“ sind kein Wert („Using right/UTC timezone to obtain …“)
+                            r"(?!(?:to|is|for|of|from|the|set|not|and|in|on|with|data|database|file|files|info"
+                            r"|changed|offset|unknown|none|auf|ist|für|von|nicht|wird|und|mit|daten|datei)\b)"
+                            r"([A-Za-z][A-Za-z_+/-]*)")
 # Koordinaten mit Bezeichnung: lat=…, "Latitude 48.1", Breite: 48,1, latE7=…, az 123, el 45,
 # Lat.: 48.1, mlat=48.1 (OSM-Link), lat%3D48.1 (URL-kodiert), CFG-TMODE-LAT,481371540 …
 _POS_LABELS = (r"breitengrad|l(?:ä|ae)ngengrad|latitude|longitude|lati|longi|mlat|mlon|lat|lon|lng|altitude|althae"
@@ -1648,8 +1652,29 @@ def _walk(value: Any, path: str, found: list[dict], parent_gps: bool = False) ->
         for i, sub in enumerate(value):
             _walk(sub, f"{path}[{i}]", found, parent_gps)
     elif isinstance(value, str):
-        for line in value.split("\n"):  # wie der Filter: zeilenweise
+        for number, line in enumerate(value.split("\n"), 1):  # wie der Filter: zeilenweise
+            parsed = _json_line(line)
+            if parsed is not None:
+                # JSON-Zeile (Aufzeichnung, gpsd): wie Sanitizer._line geparst prüfen – sonst
+                # stünden die Zeilen eines eingebetteten chronyc-Texts auf einer Zeile.
+                sub_path = f"{path} Zeile {number}" if path else f"Zeile {number}"
+                before = len(found)
+                _walk(parsed, sub_path, found)
+                if len(found) == before:
+                    found.extend(_struct_probe(parsed, sub_path))
+                continue
             found.extend(_text_findings(line, path))
+
+
+def _json_line(line: str) -> dict | None:
+    stripped = line.strip()
+    if not (stripped.startswith("{") and stripped.endswith("}")) or len(stripped) >= 1_000_000:
+        return None
+    try:
+        parsed = json.loads(stripped)
+    except ValueError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 def check_no_leaks(obj_or_text: Any) -> list[dict]:

@@ -284,5 +284,64 @@ class LogsTest(unittest.TestCase):
         self.assertEqual(len(diagnostics.logs(lines="kaputt")["lines"]), 9)
 
 
+
+# Echte chronyc-Ausgaben (chrony 4.3/4.5), wie sie providers._record in die Aufzeichnung schreibt.
+NTPDATA = ("\nRemote address  : 203.0.113.9 (CB007109)\nRemote port     : 123\nLeap status     : Normal\n"
+           "Stratum         : 1\nPoll interval   : 7 (128 seconds)\nPrecision       : -25 (0.000000030 seconds)\n"
+           "Root delay      : 0.000015259 seconds\nRoot dispersion : 0.000015259 seconds\n"
+           "Offset          : -0.000699052 seconds\nPeer delay      : 0.023456789 seconds\n"
+           "Peer dispersion : 0.000000055 seconds\nResponse time   : 0.000037578 seconds\n")
+RECORDING = "".join(json.dumps(entry, separators=(",", ":")) + "\n" for entry in (
+    {"t": 1.0, "kind": "chronyc", "args": ["ntpdata"], "out": NTPDATA},
+    {"t": 1.1, "kind": "chronyc", "args": ["-c", "tracking"],
+     "out": "CB007109,203.0.113.9,2,1793567527.899899431,-0.000001608,-0.000000035,0.000000145,"
+            "-0.001,-0.000,0.001,0.023456789,0.000009993,12.1,Normal\n"},
+    {"t": 1.2, "kind": "chronyc", "args": ["-c", "sources"],
+     "out": "^,*,203.0.113.9,1,7,377,107,0.000345460,0.000699052,0.012345678\n"},
+    {"t": 1.3, "kind": "chronyc", "args": ["tracking"],
+     "out": "Reference ID    : CB007109 (203.0.113.9)\nStratum         : 2\n"
+            "System time     : 0.000000044 seconds slow of NTP time\nRoot delay      : 0.023456789 seconds\n"
+            "Root dispersion : 0.000459329 seconds\nUpdate interval : 2.1 seconds\n"},
+))
+
+
+class RecordingExportTest(unittest.TestCase):
+    """Fehlerbericht 1.3.0: Export mit Aufzeichnung brach mit „latenz_gerundet“ ab."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp)
+        collectors = fake_collectors()
+        collectors["recording"] = lambda cfg, o: RECORDING
+        for p in (mock.patch.object(diagnostics, "RUN_DIR", str(self.tmp)),
+                  mock.patch.dict(diagnostics.COLLECTORS, collectors)):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def test_recording_with_chronyc_text_exports(self):
+        content = diagnostics.build({}, ["recording"], {"include_recording": True})
+        entries = [json.loads(line) for line in content["recording"].splitlines() if line.startswith("{")]
+        self.assertEqual(len(entries), 4)
+        ntpdata = entries[0]["out"]
+        self.assertIn("Peer delay      : 0.02 seconds", ntpdata)
+        self.assertIn("Root delay      : 0.00 seconds", ntpdata)
+        # Werte ohne Laufzeit-Bedeutung bleiben genau (Analyse braucht sie).
+        self.assertIn("Precision       : -25 (0.000000030 seconds)", ntpdata)
+        self.assertIn("Offset          : -0.000699052 seconds", ntpdata)
+        self.assertNotIn("203.0.113.9", content["recording"])
+        self.assertTrue(entries[2]["out"].rstrip().endswith(",0.01"))
+        self.assertIn("Root delay      : 0.02 seconds", entries[3]["out"])
+
+    def test_check_reads_json_lines_like_the_filter(self):
+        # Ungefiltert muss die Prüfung die genaue Laufzeit weiterhin finden – je Eintrag, nicht je Rohzeile.
+        findings = egress.check_no_leaks({"recording": RECORDING})
+        self.assertTrue(any(f["kind"] == "latenz_gerundet" for f in findings), findings)
+        self.assertTrue(all("Zeile" in f["path"] for f in findings), findings)
+
+    def test_timezone_filler_word_kept(self):
+        line = "2026-11-01T21:05:35Z Using right/UTC timezone to obtain leap second data"
+        self.assertEqual(egress.Sanitizer("diagnostics").text(line), line)
+        self.assertEqual(egress.Sanitizer("diagnostics").text("timezone=Vienna"), "timezone=<zeitzone>")
+
 if __name__ == "__main__":
     unittest.main()
