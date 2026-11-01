@@ -21,6 +21,50 @@ def _ms(seconds: float | None) -> str:
     return f"{seconds * 1e6:.0f} µs"
 
 
+NTS_CERT_WARN_DAYS = 14
+
+
+def nts_server_insights(nts: dict[str, Any]) -> list[dict[str, Any]]:
+    """Eigener NTS-Server: fehlende/unlesbare Dateien und ablaufendes Zertifikat."""
+    if not nts.get("enabled"):
+        return []
+    out: list[dict[str, Any]] = []
+
+    def add(level, title, text, key):
+        out.append({"level": level, "title": title, "text": text, "action": "settings", "key": key})
+
+    missing = [path for path, ok in ((nts.get("cert"), nts.get("cert_exists")),
+                                     (nts.get("key"), nts.get("key_exists"))) if not ok]
+    unreadable = [path for path, exists, ok in (
+        (nts.get("cert"), nts.get("cert_exists"), nts.get("cert_readable")),
+        (nts.get("key"), nts.get("key_exists"), nts.get("key_readable", True))) if exists and not ok]
+    if missing:
+        add("warn", "NTS-Server ohne Zertifikat",
+            f"Der NTS-Server ist eingeschaltet, aber {' und '.join(p or '(kein Pfad)' for p in missing)} "
+            "fehlt. chrony startet den NTS-Server deshalb nicht – normales NTP läuft weiter. Zertifikat "
+            "und Schlüssel nach /config legen (Volume) oder die Pfade in den Einstellungen anpassen.",
+            "nts_server_files")
+    elif unreadable:
+        add("warn", "NTS-Zertifikat nicht lesbar",
+            f"{' und '.join(unreadable)} existiert, lässt sich aber nicht lesen. Meist stimmen die "
+            "Dateirechte nicht: Die Dateien müssen für den Container lesbar sein (z. B. chmod 640 "
+            "und passende Gruppe).", "nts_server_files")
+    days = nts.get("days_left")
+    if isinstance(days, (int, float)):
+        if days < 0:
+            add("crit", "NTS-Zertifikat abgelaufen",
+                f"Das Zertifikat des NTS-Servers ist seit {abs(days):.0f} Tagen abgelaufen. Clients "
+                "lehnen den Schlüsselaustausch ab und bekommen keine abgesicherte Zeit mehr. Ein neues "
+                "Zertifikat ablegen; nach dem Speichern bzw. Neustart lädt chrony es.",
+                "nts_cert_expired")
+        elif days < NTS_CERT_WARN_DAYS:
+            add("warn", "NTS-Zertifikat läuft bald ab",
+                f"Das Zertifikat des NTS-Servers ist nur noch {days:.0f} Tage gültig. Danach lehnen "
+                "die Clients den Schlüsselaustausch ab. Rechtzeitig erneuern – chrony lädt es beim "
+                "nächsten Neustart der Zeitdienste.", "nts_cert_expiring")
+    return out
+
+
 def build(status: dict[str, Any], cfg: dict[str, Any]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
 
@@ -88,6 +132,8 @@ def build(status: dict[str, Any], cfg: dict[str, Any]) -> list[dict[str, Any]]:
                     "Cookies. Häufige Ursachen: Port 4460 nach außen gesperrt, Uhr beim Start so "
                     "falsch, dass das TLS-Zertifikat abgelehnt wird, Server ohne NTS.",
                     action="sources", key=f"nts:{source.get('name')}")
+
+    out.extend(nts_server_insights(status.get("nts_server") or {}))
 
     gps = status.get("gps") or {}
     if gps.get("enabled"):

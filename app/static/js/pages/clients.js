@@ -45,7 +45,7 @@ export function render(ctx) {
   });
   const table = el("div", { class: "table-scroll" }, el("table", {},
     el("thead", {}, el("tr", {},
-      el("th", { text: "Adresse" }),
+      el("th", {}, "Adresse ", info("client_address")),
       el("th", { class: "num" }, "Anfragen ", info("client_packets")),
       el("th", { class: "num" }, "Verworfen ", info("client_dropped")),
       el("th", { class: "num" }, "Intervall ", info("client_interval")),

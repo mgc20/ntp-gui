@@ -1,15 +1,15 @@
 import { el, rich } from "../util.js";
-import { card } from "../ui.js";
+import { card, info } from "../ui.js";
 import { HELP, HELP_GROUPS } from "../help.js";
 
 export const live = false;
 
 const SETUPS = [
-  ["Nur Internet (NTP)", "1–50 ms", "keine", "Standard. Reicht für PCs, Server, Smart-Home, Logs und Zertifikate – wenn die Internetleitung stabil ist (Festnetz/Glasfaser)."],
-  ["+ NTS", "wie oben", "keine", "Gleiche Genauigkeit, aber gegen gefälschte Zeit abgesichert. Empfehlenswert: PTB, Cloudflare oder Netnod mit NTS eintragen."],
-  ["+ USB-GPS ohne PPS", "1–10 ms", "~15 € (z. B. VK-162)", "Nicht genauer als gutes Festnetz-NTP. Lohnt bei Mobilfunk/Starlink/Satellit, häufigen Ausfällen, Netzen ohne Internet oder als unabhängige Kontrolle. Einmal kalibrieren."],
-  ["+ GPS mit PPS", "< 1 µs", "~30–60 € (GPS-HAT oder Modul + GPIO)", "Tausendfach genauer. Für Messaufbauten, Audio/Video über IP und als Basis für PTP. Am Raspberry Pi über GPIO."],
-  ["+ PTP", "< 1 µs im LAN", "NIC mit Hardware-Zeitstempeln (z. B. Intel i210, gebraucht ab ~30 €)", "Nur sinnvoll mit GPS+PPS als Referenz und Clients, die PTP können. Für Audio-over-IP (AES67/Dante), Labore, zum Lernen."],
+  ["Nur Internet (NTP)", "ntp", "1–50 ms", "keine", "Standard. Reicht für PCs, Server, Smart-Home, Logs und Zertifikate – wenn die Internetleitung stabil ist (Festnetz/Glasfaser)."],
+  ["+ NTS", "nts", "wie oben", "keine", "Gleiche Genauigkeit, aber gegen gefälschte Zeit abgesichert. Empfehlenswert: PTB, Cloudflare oder Netnod mit NTS eintragen."],
+  ["+ USB-GPS ohne PPS", "gps_value", "1–10 ms", "~15 € (z. B. VK-162)", "Nicht genauer als gutes Festnetz-NTP. Lohnt bei Mobilfunk/Starlink/Satellit, häufigen Ausfällen, Netzen ohne Internet oder als unabhängige Kontrolle. Einmal kalibrieren."],
+  ["+ GPS mit PPS", "pps", "< 1 µs", "~30–60 € (GPS-HAT oder Modul + GPIO)", "Tausendfach genauer. Für Messaufbauten, Audio/Video über IP und als Basis für PTP. Am Raspberry Pi über GPIO."],
+  ["+ PTP", "ptp_vs_ntp", "< 1 µs im LAN", "NIC mit Hardware-Zeitstempeln (z. B. Intel i210, gebraucht ab ~30 €)", "Nur sinnvoll mit GPS+PPS als Referenz und Clients, die PTP können. Für Audio-over-IP – AES67 (Dante nur im AES67-Modus), Ravenna –, Labore, zum Lernen."],
 ];
 
 export function render(ctx) {
@@ -37,9 +37,11 @@ export function render(ctx) {
   return [
     card("Welcher Aufbau passt zu mir?", { class: "explain", sub: "Jede Stufe baut auf der vorigen auf. Für die meisten Heimnetze reicht die zweite Zeile." },
       el("div", { class: "table-scroll" }, el("table", { class: "setup-table" },
-        el("thead", {}, el("tr", {}, ["Aufbau", "Genauigkeit", "Hardware", "Wann sinnvoll"].map((h) => el("th", { text: h })))),
-        el("tbody", {}, SETUPS.map(([name, accuracy, hardware, when]) => el("tr", {},
-          el("th", { text: name }), el("td", { class: "mono", text: accuracy }), el("td", { text: hardware }), el("td", { text: when }))))))),
+        el("thead", {}, el("tr", {}, [["Aufbau", null], ["Genauigkeit", "setup_accuracy"], ["Hardware", "hw_check"],
+          ["Wann sinnvoll", null]].map(([h, help]) => el("th", {}, el("span", { text: h }), help ? info(help, h) : null)))),
+        el("tbody", {}, SETUPS.map(([name, help, accuracy, hardware, when]) => el("tr", {},
+          el("th", {}, el("span", { text: name }), info(help, name)), el("td", { class: "mono", text: accuracy }),
+          el("td", { text: hardware }), el("td", { text: when }))))))),
     el("div", { class: "toolbar" }, search),
     list,
   ];

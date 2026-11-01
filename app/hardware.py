@@ -476,6 +476,8 @@ def receivers_info(cfg: dict, platform_: dict, perms: dict, pps_list: list[dict]
     by_id = _by_id_map()
     pps_seen_on = {os.path.basename(d) for d in (gpsd_pps or {}).get("pps_devices") or []}
     gps_on = bool(cfg.get("gps_enable"))
+    configured_raw = str(cfg.get("gps_device") or "").strip()
+    configured_tty = "" if configured_raw.lower() == "auto" else _resolve_tty(configured_raw)
     result = []
     for name in names:
         base = _sys("class", "tty", name)
@@ -498,6 +500,7 @@ def receivers_info(cfg: dict, platform_: dict, perms: dict, pps_list: list[dict]
         else:
             usable = True
         product, gps_like = _receiver_product(usb, gpsd, name)
+        gps_like = gps_like or (gps_on and name == configured_tty) or name in pps_seen_on
         interface = _interface_label(driver, usb)
         # PPS-Weg: entscheidet die Anbindung, nicht die Chip-Generation.
         live_gpio = next((p for p in gpio if p["state"] == "live"), None)
@@ -585,15 +588,13 @@ def receivers_info(cfg: dict, platform_: dict, perms: dict, pps_list: list[dict]
             "accuracy": accuracy, "verdict": verdict, "tone": tone,
             "_gps_like": gps_like or bool(gpsd), "_major": _device_major("tty", name),
         })
-    configured = str(cfg.get("gps_device") or "").strip()
-    if configured.lower() == "auto":
+    if configured_raw.lower() == "auto":
         chosen = next((r for r in result if r["_gps_like"]), result[0] if result else None)
         if chosen:
             chosen["configured"] = True
-    elif configured:
-        name = _resolve_tty(configured)
+    elif configured_tty:
         for rec in result:
-            if rec["tty"] == name:
+            if rec["tty"] == configured_tty:
                 rec["configured"] = True
     order = {"ttyACM": 0, "ttyUSB": 1}
     result.sort(key=lambda r: (not r["configured"], not r["_gps_like"],
@@ -1024,10 +1025,16 @@ def build_matrix(cfg: dict, rep: dict, ctx: dict) -> tuple[list[dict], list[str]
             rows.append(_row("gps_usb", title_usb, "change",
                              f"Empfänger am Host erkannt ({label}), aber nicht nutzbar im Container. {text}",
                              fix or None, active=gps_on))
-        elif main["usable"] is False and perms["dev_mounted"] and not (main["gpsd"] or {}).get("activated"):
-            text, fix = _fix_cgroup(main["dev"], main["_major"])
+        elif main["usable"] is False and perms["dev_mounted"] and not perms["privileged"] \
+                and not (main["gpsd"] or {}).get("activated"):
+            major = main["_major"] if main["_major"] is not None else "<Major>"
             rows.append(_row("gps_usb", title_usb, "change",
-                             f"gpsd kann {main['dev']} nicht öffnen. {text}", fix, active=gps_on))
+                             f"gpsd kann {main['dev']} nicht öffnen. Zwei mögliche Gründe: Der Port ist am "
+                             "Host belegt (gpsd oder ModemManager: sudo systemctl disable --now gpsd.socket "
+                             "gpsd ModemManager) – oder, weil /dev des Hosts eingehängt ist, fehlt die "
+                             f"Freigabe der Gerätenummer: im Compose unter „device_cgroup_rules:“ die Zeile "
+                             f"„- \"c {major}:* rwm\"“ ergänzen.",
+                             f'device_cgroup_rules:\n  - "c {major}:* rwm"', active=gps_on))
         elif not gps_on:
             rows.append(_row("gps_usb", title_usb, "change",
                              f"Empfänger {label} ist im Container. GPS in den Einstellungen einschalten "

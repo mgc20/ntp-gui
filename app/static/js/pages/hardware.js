@@ -61,7 +61,7 @@ function snippet(code, title) {
 
 // Eine Zeile der Fähigkeitsmatrix im Stil der PTP-Prüfliste.
 export function matrixList(rows) {
-  if (!rows || !rows.length) return emptyNote("Keine Ergebnisse.");
+  if (!rows || !rows.length) return emptyNote("Der Server hat keine Ergebnisse geliefert – „Neu prüfen“ versuchen oder das Container-Log ansehen.");
   return el("ul", { class: "checklist hw-matrix" }, rows.map((row) => {
     const s = STATUS[row.status] || STATUS.unknown;
     return el("li", { "data-state": s.state, "data-active": row.active ? "true" : null },
@@ -180,7 +180,8 @@ function gpsCard(report) {
       accuracyLadder(null, report)];
   if (receivers.length) {
     body.push(kv([
-      ["gpsd sieht PPS", yesNo(gpsdPps.seen), "hw_gpsd_pps"],
+      ["gpsd sieht PPS", gpsdPps.seen === false && (report.pps || []).some((p) => p.kind === "gpio" && p.state === "live")
+        ? "nein – normal, chrony liest /dev/pps direkt" : yesNo(gpsdPps.seen), "hw_gpsd_pps"],
       ["NMEA-Verspätung (gpsd)", isNum(gpsdPps.toff_latency_ms) ? `${fmtNumber(gpsdPps.toff_latency_ms, 1)} ms` : "–", "hw_toff"],
     ]));
   }
@@ -323,7 +324,7 @@ function headCard(report, ctx) {
   return card("Dieses System", { help: "hw_check", actions: el("span", { class: "button-row" },
     el("span", { class: "muted hw-stamp", text: isNum(report.generated) ? `Stand ${fmtTime(report.generated)}` : "" }),
     button, info("hw_refresh", "Neu prüfen")) },
-    el("p", { class: "hw-summary", text: plat.summary || model }),
+    el("p", { class: "hw-summary", text: plat.summary || (model !== "–" ? model : "Plattform nicht erkannt") }),
     kv([
       ["Board / Modell", model, "hw_board"],
       ["Architektur", plat.arch || "–", "hw_arch"],

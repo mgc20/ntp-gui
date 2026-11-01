@@ -8,6 +8,7 @@ is stable across chrony releases, and fall back to parsing the human readable
 
 from __future__ import annotations
 
+import calendar
 import os
 import re
 import shutil
@@ -462,6 +463,114 @@ def detailed_sources() -> list[dict[str, Any]]:
     return merged
 
 
-def nts_server_status(cfg: dict) -> dict:
-    """Platzhalter: Zustand des eigenen NTS-Servers."""
-    return {"enabled": bool(cfg.get("nts_server_enable"))}
+OPENSSL = shutil.which("openssl")
+_CERT_CACHE: dict[tuple, tuple[float, dict[str, Any]]] = {}
+_CERT_TTL = 60.0
+
+
+def _readable(path: str) -> bool:
+    try:
+        with open(path, "rb") as handle:
+            handle.read(1)
+        return True
+    except OSError:
+        return False
+
+
+def parse_openssl_cert(text: str) -> dict[str, Any]:
+    """Ausgabe von `openssl x509 -noout -enddate -subject -ext subjectAltName`.
+
+    Liefert not_after (Unix-Zeit), den CN und die alternativen Namen (SAN).
+    """
+    info: dict[str, Any] = {"not_after": None, "common_name": None, "alt_names": []}
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("notAfter="):
+            raw = " ".join(stripped.split("=", 1)[1].split())
+            for fmt in ("%b %d %H:%M:%S %Y %Z", "%b %d %H:%M:%S %Y"):
+                try:
+                    info["not_after"] = calendar.timegm(time.strptime(raw, fmt))
+                    break
+                except ValueError:
+                    continue
+        elif stripped.startswith("subject="):
+            match = re.search(r"CN\s*=\s*([^,/]+)", stripped)
+            if match:
+                info["common_name"] = match.group(1).strip()
+        elif "Subject Alternative Name" in stripped and index + 1 < len(lines):
+            names = []
+            for part in lines[index + 1].split(","):
+                _, _, value = part.strip().partition(":")
+                if value:
+                    names.append(value.strip())
+            info["alt_names"] = names
+    return info
+
+
+def _cert_info(path: str) -> dict[str, Any]:
+    """openssl-Auswertung des Zertifikats, 60 s gecacht (Schlüssel: Pfad + mtime)."""
+    if not OPENSSL:
+        return {"openssl": False}
+    try:
+        mtime = os.stat(path).st_mtime
+    except OSError:
+        return {"openssl": True}
+    now = time.time()
+    key = (path, mtime)
+    cached = _CERT_CACHE.get(key)
+    if cached and now - cached[0] < _CERT_TTL:
+        return cached[1]
+    info: dict[str, Any] = {"openssl": True, "error": None}
+    # -ext gibt es erst ab OpenSSL 1.1.1; ohne SAN reicht notfalls auch der CN.
+    for args in (["-enddate", "-subject", "-ext", "subjectAltName"], ["-enddate", "-subject"]):
+        try:
+            proc = subprocess.run([OPENSSL, "x509", "-noout", *args, "-in", path],
+                                  capture_output=True, text=True, timeout=5, check=False)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            info["error"] = str(exc)
+            break
+        if proc.returncode == 0:
+            info.update(parse_openssl_cert(proc.stdout))
+            info["error"] = None
+            break
+        lines = (proc.stderr or "").strip().splitlines()
+        info["error"] = lines[-1] if lines else "openssl konnte das Zertifikat nicht lesen"
+    _CERT_CACHE.clear()  # immer nur ein Zertifikat – alte Einträge nicht ansammeln
+    _CERT_CACHE[key] = (now, info)
+    return info
+
+
+def nts_server_status(cfg: dict, stats: dict | None = None) -> dict:
+    """Zustand des eigenen NTS-Servers: Dateien, Ablaufdatum, Zähler aus serverstats."""
+    enabled = bool(cfg.get("nts_server_enable"))
+    cert = cfg.get("nts_server_cert") or ""
+    key = cfg.get("nts_server_key") or ""
+    result: dict[str, Any] = {"enabled": enabled, "cert": cert, "key": key}
+    if not enabled:
+        return result
+    result.update({
+        "cert_exists": bool(cert) and os.path.isfile(cert),
+        "key_exists": bool(key) and os.path.isfile(key),
+    })
+    result["cert_readable"] = result["cert_exists"] and _readable(cert)
+    result["key_readable"] = result["key_exists"] and _readable(key)
+    info = _cert_info(cert) if result["cert_readable"] else {}
+    not_after = info.get("not_after")
+    names = [n for n in [info.get("common_name"), *info.get("alt_names", [])] if n]
+    result.update({
+        "openssl": info.get("openssl", bool(OPENSSL)),
+        "cert_error": info.get("error"),
+        "not_after": not_after,
+        "days_left": None if not_after is None else round((not_after - time.time()) / 86400, 1),
+        "subject": info.get("common_name"),
+        "names": list(dict.fromkeys(names)),
+    })
+    if stats is None:
+        stats = serverstats()
+    result.update({
+        "ke_accepted": stats.get("nts_ke_connections_accepted"),
+        "ke_dropped": stats.get("nts_ke_connections_dropped"),
+        "authenticated_packets": stats.get("authenticated_ntp_packets"),
+    })
+    return result

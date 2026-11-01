@@ -431,5 +431,6 @@ input[type="search"] { max-width: 320px; }
   .stat-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .stat-value { font-size: 19px; }
   .kv { flex-direction: column; gap: 2px; } .kv dd { text-align: left; }
+  .kv dd .badge-row { justify-content: flex-start; }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; scroll-behavior: auto !important; } }
