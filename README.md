@@ -1,19 +1,59 @@
-# ntp-gui
+<p align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/graphics/banner-dark.svg">
+  <img alt="ntp-gui – Zeitserver-Appliance für das LAN" src="docs/graphics/banner-light.svg">
+</picture>
+</p>
 
-Ein Container, der **NTP (Chrony)**, **PTP (linuxptp)** und optional einen **GPS-Empfänger**
-zusammenbringt und alles in einem Web-Dashboard sichtbar macht. Gedacht als kleine Zeitserver-Appliance für das eigene
-Netz: in einer VM oder auf einem kleinen Host starten, die Adresse per **DHCP Option 42**
-verteilen – fertig.
+<p align="center">
+  <a href="https://github.com/ConGp20/ntp-gui/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/ConGp20/ntp-gui/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/ConGp20/ntp-gui/releases/latest"><img alt="Release" src="https://img.shields.io/badge/release-v1.0.0-0969da"></a>
+  <img alt="Plattformen" src="https://img.shields.io/badge/platform-amd64%20%7C%20arm64-1a7f37">
+  <img alt="Image" src="https://img.shields.io/badge/image-ghcr.io-8250df">
+  <a href="LICENSE"><img alt="Lizenz: MIT" src="https://img.shields.io/badge/license-MIT-59636e"></a>
+</p>
 
-![Dashboard](docs/dashboard-dark.png)
+<p align="center">
+  <a href="#schnellstart">Schnellstart</a> ·
+  <a href="#per-dhcp-verteilen-option-42">DHCP</a> ·
+  <a href="#stratum-1-mit-gps">GPS</a> ·
+  <a href="#ptp">PTP</a> ·
+  <a href="#konfiguration">Konfiguration</a> ·
+  <a href="#endpunkte">API</a>
+</p>
 
-<details>
-<summary>Helles Design</summary>
+Ein Container, der **NTP (chrony)**, optional einen **GPS-Empfänger** und **PTP (linuxptp)**
+zusammenbringt und alles in einem Web-Dashboard sichtbar macht. Gedacht als kleine
+Zeitserver-Appliance für das eigene Netz: in einer VM, auf einem Mini-PC oder einem
+Raspberry Pi starten, die Adresse per **DHCP Option 42** verteilen – fertig.
 
-![Dashboard hell](docs/dashboard-light.png)
-</details>
+| | |
+|---|---|
+| **Ein Container, alles drin** | chronyd, gpsd, ptp4l/phc2sys und das Dashboard, überwacht von einem Supervisor |
+| **Stratum 1 ohne Internet** | mit einem USB-GPS wie dem VK-162 für ~15 €, auf Wunsch mit PPS |
+| **Dashboard ohne Ballast** | reines Python aus der Distribution – kein npm, kein pip, ~100 KB Code |
+| **Monitoring eingebaut** | JSON-API, Prometheus-`/metrics` und `/healthz` für den Healthcheck |
+| **Konfiguriert per Umgebungsvariablen** | oder mit einer eigenen `chrony.conf`/`ptp4l.conf` unter `/config` |
+| **Getestet** | 32 Unittests und ein 29-Punkte-Integrationstest gegen das gebaute Image in der CI |
 
-## Was drin ist
+## Auf einen Blick
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/dashboard-dark.png">
+  <img alt="Dashboard von ntp-gui: Status, Offset-Verlauf, Zeitquellen, PTP und Clients" src="docs/dashboard-light.png">
+</picture>
+
+## So funktioniert's
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/graphics/architecture-dark.svg">
+  <img alt="Architektur: Internet-NTP, GPS und PTP speisen chronyd im Container, der die Zeit per NTP ins LAN verteilt" src="docs/graphics/architecture-light.svg">
+</picture>
+
+chronyd im Container sammelt die Zeit aus allen verfügbaren Quellen, wählt die beste und
+stellt damit die Uhr. Ein GPS-Empfänger kommt über `gpsd` dazu, PTP über `ptp4l`. Die
+Clients im LAN fragen per NTP auf Port 123 – welche Adresse sie fragen sollen, erfahren
+sie beim Verbindungsaufbau per DHCP.
 
 | Komponente | Zweck |
 |---|---|
@@ -23,9 +63,6 @@ verteilen – fertig.
 | Dashboard | Status, Offset-Verlauf, Zeitquellen, Clients, GPS-Fix, PTP-Zustand, aktive Konfiguration |
 | `/metrics` | Prometheus-Endpunkt (Offset, Stratum, Quellen, Paketzähler, GPS, PTP) |
 | `/healthz` | Health-Check für Docker/Kubernetes (ohne Login erreichbar) |
-
-Das Dashboard kommt ohne Framework und ohne externe Abhängigkeiten aus – im Container
-läuft nur `python3` aus der Distribution, dazu Chrony und linuxptp. Kein npm, kein pip.
 
 ## Schnellstart
 
@@ -69,7 +106,14 @@ einen dedizierten Host – nicht auf einen Docker-Host, auf dem noch anderes lä
 ## Per DHCP verteilen (Option 42)
 
 Der Zeitserver nützt nur etwas, wenn die Clients ihn kennen. DHCP Option 42 (`ntp-servers`)
-verteilt die Adresse automatisch. Beispiele mit der Server-IP `192.168.1.10`:
+verteilt die Adresse automatisch, der Client fragt danach direkt bei ntp-gui an:
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/graphics/dhcp-flow-dark.svg">
+  <img alt="Ablauf: DHCP-Offer und -Ack enthalten Option 42 mit der Adresse von ntp-gui, danach fragt der Client per NTP an" src="docs/graphics/dhcp-flow-light.svg">
+</picture>
+
+Die Option wird im DHCP-Server eingetragen. Beispiele mit der Server-IP `192.168.1.10`:
 
 **ISC dhcpd** (`/etc/dhcp/dhcpd.conf`)
 ```
@@ -143,11 +187,10 @@ sieht `/dev/ttyACM0` sonst nicht.
 
 ### Wie genau wird das?
 
-| Aufbau | Realistische Genauigkeit |
-|---|---|
-| USB-GPS ohne PPS (VK-162 & Co.) | **1–10 ms**, nach Kalibrierung einstellige Millisekunden |
-| GPS mit PPS (HAT, GPIO, `/dev/pps0`) | **< 1 µs** |
-| PPS + PTP mit Hardware-Zeitstempeln | **< 1 µs** im gesamten LAN |
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/graphics/accuracy-dark.svg">
+  <img alt="Typische Genauigkeit: Internet-NTP 1–50 ms, USB-GPS 1–10 ms, GPS mit PPS 0,1–1 µs, PTP mit Hardware-Zeitstempeln 20 ns–1 µs" src="docs/graphics/accuracy-light.svg">
+</picture>
 
 Die Bremse beim USB-Empfänger ist nicht das GPS, sondern der USB-Bus: die NMEA-Sätze
 kommen gepuffert und mit schwankender Verzögerung an. Für ein Heimnetz, in dem sonst
