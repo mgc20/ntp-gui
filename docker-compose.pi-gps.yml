@@ -1,0 +1,65 @@
+# Raspberry Pi + USB-GPS (z. B. VK-162) als Stratum-1-Zeitserver im LAN.
+#
+#   docker compose -f docker-compose.pi-gps.yml up -d
+#
+# Vorher auf dem Pi (64-bit-OS, Pi 3/4/5):
+#   1. Zeitdienst des Pi abschalten – er belegt Port 123 und würde sonst
+#      gleichzeitig mit dem Container an der Uhr drehen:
+#        sudo systemctl disable --now systemd-timesyncd
+#        sudo systemctl disable --now chrony        # nur falls installiert
+#   2. Ein gpsd auf dem Pi selbst belegt Empfänger und Port 2947:
+#        sudo systemctl disable --now gpsd.socket gpsd
+#   3. Empfänger finden:
+#        ls -l /dev/ttyACM* /dev/serial/by-id/
+#   4. Ist das Image privat: docker login ghcr.io
+#
+# Dashboard danach unter http://<pi-ip>:8080. Der erste Fix nach einem
+# Kaltstart kann bis zu 15 Minuten dauern; bis dahin helfen die PTB-Server.
+services:
+  ntp-gui:
+    image: ghcr.io/congp20/ntp-gui:latest   # arm64-Image
+    container_name: ntp-gui
+    restart: unless-stopped
+
+    # Host-Netzwerk: kein NAT, das Dashboard zeigt die echten Client-IPs,
+    # NTP läuft direkt auf 123/udp, das Dashboard auf 8080.
+    network_mode: host
+
+    # Der Pi hat keine Echtzeituhr – chrony muss die Uhr nach dem Booten
+    # per GPS stellen dürfen.
+    cap_add:
+      - SYS_TIME
+
+    devices:
+      - /dev/ttyACM0:/dev/ttyACM0
+      # Stabiler, falls mehrere serielle USB-Geräte stecken (Name aus
+      # ls /dev/serial/by-id/), im Container bleibt es /dev/ttyACM0:
+      # - /dev/serial/by-id/usb-u-blox_AG_-_www.u-blox.com_u-blox_7_-_GPS_GNSS_Receiver-if00:/dev/ttyACM0
+
+    environment:
+      TZ: "Europe/Berlin"
+      WEB_TITLE: "Zeitserver (Pi + GPS)"
+
+      GPS_ENABLE: "true"
+      GPS_DEVICE: "/dev/ttyACM0"
+      # Nach ein paar Stunden kalibrieren: mittleren Offset der GPS-Quelle
+      # gegenüber den PTB-Servern ablesen und hier eintragen (Sekunden):
+      #   docker exec ntp-gui chronyc sourcestats
+      GPS_OFFSET: "0.0"
+      GPS_SHOW_POSITION: "false"
+
+      # PTB-Server als Plausibilitätsprüfung und Rückfallebene ohne GPS-Fix
+      NTP_POOLS: ""
+      NTP_SERVERS: "ptbtime1.ptb.de,ptbtime2.ptb.de,ptbtime3.ptb.de"
+
+      ALLOW_NETWORKS: "192.168.0.0/16,10.0.0.0/8,172.16.0.0/12"
+
+      # Dashboard absichern (optional):
+      # WEB_USER: "admin"
+      # WEB_PASSWORD: "bitte-aendern"
+
+    volumes:
+      - chrony-data:/var/lib/chrony   # Drift-Datei bleibt über Neustarts erhalten
+
+volumes:
+  chrony-data:
