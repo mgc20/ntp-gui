@@ -57,6 +57,19 @@ class LogteeTest(unittest.TestCase):
         logtee.run(io.BytesIO(b"a\nb\n"), BrokenStream(), str(self.path))
         self.assertEqual(self.path.read_bytes(), b"a\nb\n")
 
+    def test_interrupted_read_is_retried(self):
+        class Flaky(io.BytesIO):
+            calls = 0
+
+            def readline(self, *a):
+                Flaky.calls += 1
+                if Flaky.calls == 2:
+                    raise InterruptedError("EINTR")
+                return super().readline(*a)
+        out = io.BytesIO()
+        logtee.run(Flaky(b"a\nb\nc\n"), out, str(self.path))
+        self.assertEqual(out.getvalue(), b"a\nb\nc\n")
+
     def test_deleted_file_is_recreated(self):
         target = logtee.RotatingFile(str(self.path))
         target.write(b"eins\n")
@@ -89,8 +102,9 @@ class SupervisorEventsTest(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.tmp)
 
-    def bash(self, body, check=True):
-        script = (f"set -euo pipefail\nRUN_DIR='{self.tmp}'\nAPP_DIR='{ROOT / 'app'}'\nEVENTS_MAX=1048576\n"
+    def bash(self, body, check=True, app_dir=None):
+        script = (f"set -euo pipefail\nRUN_DIR='{self.tmp}'\nAPP_DIR='{app_dir or ROOT / 'app'}'\n"
+                  "EVENTS_MAX=1048576\n"
                   "LOGTEE_PID=''\nLOG_OUT_FD=''\nLOG_ERR_FD=''\nnow() { echo 1700000000; }\n"
                   + _functions("json_str", "emit_event", "start_logtee", "stop_logtee") + "\n" + body)
         return subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30, check=check)
@@ -142,6 +156,36 @@ exit 3
         self.assertIn("[main] auf stdout", log)
         self.assertIn("[main] auf stderr", log)
         self.assertIn("[kind] von einem Kindprozess", log)
+
+    def test_cat_takes_over_when_logtee_exits_cleanly(self):
+        """Review 1/3: endet logtee mit Exit 0 (z. B. nach einem Lesefehler), liest cat weiter."""
+        fake = self.tmp / "fakeapp"
+        fake.mkdir()
+        (fake / "logtee.py").write_text("import sys\nsys.stdout.write(sys.stdin.readline())\n"
+                                        "sys.stdout.flush()\nsys.exit(0)\n")
+        result = self.bash("""
+trap stop_logtee EXIT
+start_logtee
+echo "[main] erste Zeile"
+for i in $(seq 1 3000); do echo "[main] Zeile $i"; done
+echo "[main] letzte Zeile"
+exit 5
+""", check=False, app_dir=fake)
+        self.assertEqual(result.returncode, 5, result.stderr[-500:])
+        self.assertIn("[main] erste Zeile", result.stdout)
+        self.assertIn("[main] letzte Zeile", result.stdout)
+
+    def test_stop_prints_no_stray_error(self):
+        """Review 1/4: kein „/proc/<pid>/stat: No such file or directory“ beim Beenden."""
+        result = self.bash("""
+trap stop_logtee EXIT
+start_logtee
+echo "[main] hallo"
+exit 0
+""", check=False)
+        self.assertEqual(result.returncode, 0)
+        self.assertNotIn("/stat", result.stdout + result.stderr)
+        self.assertIn("[main] hallo", result.stdout)
 
     def test_logtee_off(self):
         result = self.bash("NTPGUI_LOGTEE=0\nstart_logtee\necho hallo")

@@ -197,6 +197,31 @@ function buildNav() {
     page.id === "" || page.id === "hardware" ? el("span", { class: "nav-badge", hidden: true }) : null)));
 }
 
+// Auf schmalen Bildschirmen scrollt die Navigation seitwärts. Ein weicher Rand
+// zeigt, dass es links bzw. rechts weitergeht; der aktive Eintrag wird sichtbar
+// gehalten, auch wenn er weit rechts steht (z. B. „Einstellungen“).
+function updateNavFade() {
+  const max = nav.scrollWidth - nav.clientWidth;
+  nav.classList.toggle("fade-start", nav.scrollLeft > 2);
+  nav.classList.toggle("fade-end", max > 2 && nav.scrollLeft < max - 2);
+}
+
+function revealActiveNav(smooth) {
+  const active = nav.querySelector("a.is-active");
+  if (!active || nav.scrollWidth <= nav.clientWidth) { updateNavFade(); return; }
+  const left = active.offsetLeft; // .nav ist position: relative (app.css)
+  const right = left + active.offsetWidth;
+  const pad = 32;
+  let target = null;
+  if (left - pad < nav.scrollLeft) target = Math.max(0, left - pad);
+  else if (right + pad > nav.scrollLeft + nav.clientWidth) target = right + pad - nav.clientWidth;
+  if (target !== null) nav.scrollTo({ left: target, behavior: smooth ? "smooth" : "auto" });
+  updateNavFade();
+}
+
+nav.addEventListener("scroll", updateNavFade, { passive: true });
+window.addEventListener("resize", updateNavFade);
+
 function initTheme() {
   let theme = storageGet("ntp-gui-theme", null);
   if (!theme) theme = window.matchMedia?.("(prefers-color-scheme: light)").matches ? "light" : "dark";
@@ -219,9 +244,11 @@ window.addEventListener("hashchange", () => {
   window.scrollTo(0, 0);
   const page = currentPage();
   if (page.history) refresh(); else render();
+  revealActiveNav(true);
 });
 
 buildNav();
 initTheme();
 render();
+revealActiveNav(false);
 refresh();

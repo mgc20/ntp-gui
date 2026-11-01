@@ -86,6 +86,13 @@ function fmtWhen(unix) {
   return new Date(unix * 1000).toLocaleString("de-DE", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
+// Nach einer Offset-Änderung wartet die Messung erst die Einschwingzeit ab – der
+// Zeitpunkt liegt dann noch in der Zukunft. Maßgeblich ist die Uhr des Servers.
+function measuringLabel(ctx, since) {
+  const now = isNum(ctx.status?.system?.time) ? ctx.status.system.time : Date.now() / 1000;
+  return isNum(since) && since > now ? "Messung zählt ab" : "Messung zählt seit";
+}
+
 function fmtMs(value, signed = false) {
   return isNum(value) ? `${signed && value > 0 ? "+" : ""}${fmtNumber(value, 1)} ms` : "–";
 }
@@ -168,7 +175,7 @@ function autocalSection(ctx) {
       isNum(decision.bias_ms) ? ["Gemessene Abweichung", `${fmtMs(decision.bias_ms, true)} (Streuung ± ${fmtMs(decision.spread_ms)})`, "autocal_bias"] : null,
       isNum(decision.threshold_ms) ? ["Schwelle", fmtMs(decision.threshold_ms), "autocal_threshold"] : null,
       decision.reference ? ["Vergleichsquellen", autocalReference(decision), "autocal_reference"] : null,
-      ["Messung zählt seit", fmtWhen(decision.measuring_since), "autocal_window"],
+      [measuringLabel(ctx, decision.measuring_since), fmtWhen(decision.measuring_since), "autocal_window"],
       auto.mode === "auto" ? ["Nächste mögliche Änderung", fmtWhen(auto.next_change_at), "autocal_next"] : null,
       auto.mode === "auto" ? ["Größter Schritt", fmtMs(auto.max_step_ms), "autocal_step"] : null,
     ]));

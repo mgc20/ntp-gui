@@ -105,10 +105,10 @@ def run(stdin=None, stdout=None, path: str | None = None, max_bytes: int = MAX_B
     while True:
         try:
             line = stdin.readline()
-        except KeyboardInterrupt:
-            continue
+        except (KeyboardInterrupt, InterruptedError):
+            continue  # Signal während des Lesens – einfach weiterlesen
         except OSError:
-            break
+            break  # Lesefehler: aufhören; im Supervisor übernimmt dann cat die Pipe
         if not line:
             break
         if stdout_ok:

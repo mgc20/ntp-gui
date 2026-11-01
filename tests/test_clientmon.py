@@ -9,9 +9,11 @@ import socket
 import struct
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
 
@@ -251,6 +253,90 @@ class ModuleTest(unittest.TestCase):
             store.close_all()
             settings.DATA_DIR = saved
             shutil.rmtree(tmp, ignore_errors=True)
+
+
+
+class FakeMonitor:
+    """Ersetzt clientmon.Monitor: kein Socket, steuerbarer Thread."""
+    instances = []
+    available_next = True
+
+    def __init__(self, port):
+        self.port = port
+        self.available = FakeMonitor.available_next
+        self.reason = None if self.available else "Keine Berechtigung (Test)"
+        self.thread = None
+        self.stopped = False
+        self.release = threading.Event()
+        self.table = clientmon.ClientTable()
+        self.packets = self.ignored = self.kernel_drops = 0
+        self.filtered = False
+        self.since = 0
+        FakeMonitor.instances.append(self)
+
+    def start(self):
+        if self.available:
+            self.thread = threading.Thread(target=self.release.wait, daemon=True)
+            self.thread.start()
+
+    def stop(self):
+        self.stopped = True
+        self.release.set()
+        if self.thread:
+            self.thread.join(2)
+
+
+class SyncTest(unittest.TestCase):
+    """Review 1/6: sync() prüft, ob der Thread lebt, und erlaubt nach einem Fehlstart einen neuen Versuch."""
+
+    def setUp(self):
+        FakeMonitor.instances = []
+        FakeMonitor.available_next = True
+        patches = [mock.patch.object(clientmon, "Monitor", FakeMonitor),
+                   mock.patch.object(clientmon, "_MONITOR", None),
+                   mock.patch.dict(clientmon._FAILED, {"port": None, "t": None})]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+        self.addCleanup(lambda: clientmon._MONITOR and clientmon._MONITOR.stop())
+
+    def test_dead_thread_is_restarted(self):
+        clientmon.sync(True, 123)
+        self.assertEqual(len(FakeMonitor.instances), 1)
+        clientmon.sync(True, 123)
+        self.assertEqual(len(FakeMonitor.instances), 1)   # läuft – nichts tun
+        first = FakeMonitor.instances[0]
+        first.release.set()                                 # _run endet (select-Fehler)
+        first.thread.join(2)
+        self.assertFalse(clientmon.status()["running"])
+        clientmon.sync(True, 123)
+        self.assertEqual(len(FakeMonitor.instances), 2)
+        self.assertTrue(first.stopped)
+        self.assertTrue(clientmon.status()["running"])
+
+    def test_failed_start_retries_on_port_change_and_later(self):
+        FakeMonitor.available_next = False
+        clientmon.sync(True, 123)
+        clientmon.sync(True, 123)
+        self.assertEqual(len(FakeMonitor.instances), 1)    # nicht alle 10 s erneut
+        clientmon.sync(True, 1123)                          # anderer Port: sofort versuchen
+        self.assertEqual(len(FakeMonitor.instances), 2)
+        FakeMonitor.available_next = True
+        clientmon.sync(True, 1123)
+        self.assertEqual(len(FakeMonitor.instances), 2)
+        with mock.patch.object(clientmon.time, "monotonic",
+                               return_value=time.monotonic() + clientmon.RETRY_SECONDS + 1):
+            clientmon.sync(True, 1123)
+        self.assertEqual(len(FakeMonitor.instances), 3)
+        self.assertTrue(clientmon.status()["running"])
+
+    def test_disable_resets_failure(self):
+        FakeMonitor.available_next = False
+        clientmon.sync(True, 123)
+        clientmon.sync(False, 123)
+        FakeMonitor.available_next = True
+        clientmon.sync(True, 123)
+        self.assertEqual(len(FakeMonitor.instances), 2)
 
 
 if __name__ == "__main__":

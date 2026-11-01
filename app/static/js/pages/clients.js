@@ -1,5 +1,5 @@
 import { el, apiGet, fmtDuration, fmtNumber, fmtLogInterval, fmtSeconds, isNum, rich } from "../util.js";
-import { card, tile, info, badge, rangeButtons, emptyNote, toast } from "../ui.js";
+import { card, tile, info, badge, rangeButtons, emptyNote, toast, copyButton } from "../ui.js";
 import { lineChart, stepDecimals } from "../charts.js";
 import { requestRate } from "./overview.js";
 
@@ -34,9 +34,7 @@ function serverAddress(status) {
 
 function snippet(title, code) {
   const pre = el("pre", { class: "code", text: code });
-  const copy = el("button", { type: "button", class: "copy", text: "Kopieren", onclick: async () => {
-    try { await navigator.clipboard.writeText(code); toast("Kopiert"); } catch (error) { toast("Kopieren nicht möglich – bitte markieren", "warn"); }
-  } });
+  const copy = copyButton(code, pre);
   return el("div", { class: "snippet" }, el("div", { class: "snippet-head" }, el("strong", { text: title }), copy), pre);
 }
 
@@ -165,8 +163,10 @@ function enforceSection(ctx, ip) {
   }
   const systems = data.snippets;
   const selected = systems.find((s) => s.id === ctx.uiState.enforceSystem) || systems[0];
-  const group = (kind, label) => el("div", { class: "enforce-tabs", role: "group", "aria-label": label },
-    el("span", { class: "enforce-kind", text: label }),
+  // Das ⓘ sitzt neben der Gruppenbeschriftung – hinter den Knöpfen rutschte es auf schmalen
+  // Bildschirmen allein in eine eigene Zeile.
+  const group = (kind, label, help) => el("div", { class: "enforce-tabs", role: "group", "aria-label": label },
+    el("span", { class: "enforce-kind" }, label, " ", info(help, label)),
     systems.filter((s) => s.kind === kind).map((s) => el("button", {
       type: "button", class: `range${s.id === selected.id ? " is-active" : ""}`, text: s.title,
       "aria-pressed": s.id === selected.id ? "true" : "false",
@@ -181,11 +181,13 @@ function enforceSection(ctx, ip) {
       + "oder pool.ntp.org fragen. Wähle dein System – die Anleitung ist mit der Adresse dieses Servers ausgefüllt"
       + (data.server_ip ? ` (**${data.server_ip}**).` : ", sobald sie bekannt ist – bis dahin steht dort **<IP-des-Servers>**."),
     actions: checkButton },
+    // „Nie umschreiben: NTS-Server“ kommt mit der Begründung aus dem Server-Text (enforce.EXPLAIN).
     el("div", { class: "enforce-explain" }, (data.explain || []).map((item) => el("details", {},
-      el("summary", { text: item.title }), el("p", {}, rich(item.text))))),
+      el("summary", {}, item.title, /NTS/.test(item.title || "") ? [" ", info("enforce_nts")] : null),
+      el("p", {}, rich(item.text))))),
     el("div", { class: "enforce-tabbar" },
-      el("div", { class: "enforce-group" }, group("dns", "DNS-Umschreibung"), info("enforce_dns")),
-      el("div", { class: "enforce-group" }, group("nat", "Firewall-Umleitung"), info("enforce_nat"))),
+      el("div", { class: "enforce-group" }, group("dns", "DNS-Umschreibung", "enforce_dns")),
+      el("div", { class: "enforce-group" }, group("nat", "Firewall-Umleitung", "enforce_nat"))),
     el("div", { class: "enforce-panel" },
       el("p", { class: "card-sub" }, rich(selected.intro || "")),
       el("div", { class: "enforce-blocks" }, (selected.blocks || []).map((b) => snippet(b.title, b.code))),
@@ -197,10 +199,6 @@ function enforceSection(ctx, ip) {
       el("p", { class: "mono enforce-hostlist", text: names.join("  ") }),
       (data.skipped || []).length ? el("ul", { class: "enforce-notes" }, data.skipped.map((s) =>
         el("li", {}, el("span", { class: "mono", text: s.host }), el("span", { text: ` – nicht übernommen: ${s.reason}` })))) : null),
-    el("details", { class: "enforce-names" },
-      el("summary", {}, "Nie umschreiben: NTS-Server ", info("enforce_nts")),
-      el("ul", { class: "enforce-notes" }, (data.never_rewrite || []).map((n) =>
-        el("li", {}, el("span", { class: "mono", text: n.host }))))),
     el("details", { class: "enforce-names" },
       el("summary", {}, "Geräte ohne NTP (Fernseher) ", info("enforce_not_ntp")),
       el("ul", { class: "enforce-notes" }, (data.not_ntp || []).map((n) =>

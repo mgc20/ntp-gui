@@ -39,7 +39,15 @@ Regeln (bewusst vorsichtig – lieber eine Änderung zu wenig als eine falsche):
   6. Höchstens eine automatische Änderung je 24 h (auch eine Rücknahme startet
      die 24 h neu), Schrittweite höchstens gps_autocal_max_step_ms. Größere
      Abweichungen werden über mehrere Tage in Schritten abgebaut.
-  7. Delay: Beim letzten Schritt (Rest unter der Schwelle) wird der Delay-
+  7. Wirksamkeit: Vor jeder weiteren Änderung muss belegt sein, dass die letzte
+     automatische Änderung (oder Rücknahme) wirklich läuft – laut
+     RUN_DIR/reload.json (Neuladen „done“ nach der Änderung) bzw. laut dem
+     Offset in der GPS-Refclock-Zeile von CHRONY_CONF. Ist das Neuladen
+     gescheitert oder nicht belegbar, wird nichts weiter verstellt – sonst
+     stiege der gespeicherte Offset Tag für Tag, während chronyd den alten
+     weiterbenutzt. Die Messung zählt erst ab dem Zeitpunkt, an dem die
+     Änderung nachweislich aktiv wurde.
+  8. Delay: Beim letzten Schritt (Rest unter der Schwelle) wird der Delay-
      Vorschlag aus calibrate() übernommen; vorher wird der Delay nie verkleinert
      (höchstens vergrößert) – ein kleiner Delay macht das GPS chrony gegenüber
      attraktiver, das soll erst mit stimmendem Offset passieren.
@@ -77,6 +85,7 @@ MAX_SPREAD = 0.025             # darüber nur noch Vorschläge
 MAX_AUTO_BIAS = 0.5            # darüber nur noch Vorschläge
 OFFSET_LIMITS = (-2.0, 2.0)    # Wertebereich von gps_offset in settings.py
 OFFSET_EPS = 5e-5              # Offsets gelten als gleich (Rundung auf 0,1 ms)
+CAL_CACHE_SECONDS = 300.0      # api_status(fresh=True): Messung höchstens so lange wiederverwenden
 
 MODE_LABELS = {"off": "aus", "suggest": "vorschlagen", "auto": "automatisch"}
 MODE_TEXTS = {
@@ -159,7 +168,7 @@ def reference_stats(samples: list[dict], gps_name: str) -> dict:
     for sample in samples or []:
         sources = sample.get("sources") or {}
         gps = sources.get(gps_name)
-        if not isinstance(gps, dict) or _num(gps.get("o")) is None:
+        if not _gps_measured(gps):
             continue
         counts.append(sum(1 for name, v in sources.items()
                           if name != gps_name and isinstance(v, dict) and v.get("s") in _USED_STATES
@@ -170,6 +179,12 @@ def reference_stats(samples: list[dict], gps_name: str) -> dict:
         "window_median": _median(with_ref) if with_ref else 0,
         "window_min": min(with_ref) if with_ref else 0,
     }
+
+
+def _gps_measured(gps: Any) -> bool:
+    """Wie history.gps_measured() – GPS-Wert wirklich gemessen (nicht „?“, „x“, „~“, Reach 0)."""
+    import history as historymod
+    return historymod.gps_measured(gps)
 
 
 def _is_nts(source: dict) -> bool:
@@ -371,7 +386,7 @@ def path() -> str:
 
 def _empty() -> dict:
     return {"version": STATE_VERSION, "changes": [], "observed": None, "last_decision": None,
-            "last_tick": None, "last_suggestion": None}
+            "last_tick": None, "last_suggestion": None, "pending": None}
 
 
 def load(file: str | None = None) -> dict:
@@ -435,6 +450,88 @@ def _observe(state: dict, offset: float, now: float) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Ist die letzte Änderung wirklich aktiv?
+# ---------------------------------------------------------------------------
+
+def _run_dir() -> str:
+    return os.environ.get("NTPGUI_RUN_DIR", "/run/ntp-gui")
+
+
+def _chrony_conf() -> str:
+    return os.environ.get("CHRONY_CONF", "/etc/chrony/chrony.conf")
+
+
+def conf_offset(text: str, refid: str) -> float | None:
+    """Offset aus der Refclock-Zeile mit dieser refid (wie confgen sie schreibt) oder None."""
+    for line in text.splitlines():
+        parts = line.split("#", 1)[0].split()
+        if len(parts) < 2 or parts[0] != "refclock":
+            continue
+        options = parts[3:] if len(parts) > 3 else []
+        values = {}
+        for key, value in zip(options, options[1:]):
+            values.setdefault(key, value)
+        if values.get("refid") != refid:
+            continue
+        try:
+            value = float(values.get("offset", "0"))
+        except ValueError:
+            return None
+        return value if math.isfinite(value) else None
+    return None
+
+
+def _read_reload() -> dict | None:
+    try:
+        with open(os.path.join(_run_dir(), "reload.json"), encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def check_active(cfg: dict, change: dict | None) -> dict:
+    """Läuft der eingestellte gps_offset wirklich? Rückgabe {"active", "reason", "since"}.
+
+    active: True (belegt), False (belegt NICHT aktiv: alte Konfiguration oder
+    Neuladen fehlgeschlagen), None (nicht belegbar – z. B. ohne Supervisor).
+    change: letzte automatische Änderung/Rücknahme ({"t", ...}) oder None.
+    since: ab wann die Änderung aktiv ist (Zeit aus reload.json), sonst None.
+    """
+    want = _cfg_float(cfg, "gps_offset", 0.0)
+    refid = str(cfg.get("gps_refid") or "GPS")
+    running = None
+    try:
+        with open(_chrony_conf(), encoding="utf-8") as handle:
+            running = conf_offset(handle.read(), refid)
+    except (OSError, UnicodeDecodeError):
+        running = None
+    if running is not None and abs(running - want) > OFFSET_EPS:
+        return {"active": False, "since": None,
+                "reason": f"In der laufenden chrony-Konfiguration steht noch Offset {running} s "
+                          f"statt {want} s."}
+    t = _num((change or {}).get("t"))
+    if t is None:
+        return {"active": True, "since": None, "reason": ""}
+    reload = _read_reload() or {}
+    state, when = reload.get("state"), _num(reload.get("time"))
+    fresh = when is not None and when >= t - 1  # Sekundenauflösung im Supervisor
+    if fresh and state == "error":
+        return {"active": False, "since": None,
+                "reason": "Das Neuladen der Zeitdienste ist fehlgeschlagen (" +
+                          str(reload.get("message") or "Konfiguration fehlerhaft") + ")."}
+    if fresh and state == "running":
+        return {"active": None, "since": None, "reason": "Die Zeitdienste werden gerade neu gestartet."}
+    if fresh and state in {"done", "idle"}:
+        return {"active": True, "since": when, "reason": ""}
+    if running is not None:
+        return {"active": True, "since": None, "reason": ""}
+    return {"active": None, "since": None,
+            "reason": "Es ist nicht belegbar, dass die Zeitdienste seit der Änderung neu geladen "
+                      "wurden (kein Supervisor?)."}
+
+
+# ---------------------------------------------------------------------------
 # Abhängigkeiten (vom Server gesetzt, in Tests ersetzt)
 # ---------------------------------------------------------------------------
 
@@ -444,6 +541,7 @@ _DEPS: dict[str, Callable | None] = {
     "save_settings": None,     # (changes) -> {"changed", "restart"}
     "trigger_reload": None,    # () -> bool
     "emit_event": None,        # (kind, level, title, data) -> None
+    "check_active": None,      # (cfg, last_change) -> {"active", "reason", "since"}
 }
 
 
@@ -495,6 +593,8 @@ def _deps(overrides: dict | None = None) -> dict:
         deps["emit_event"] = _emit
     if deps["trigger_reload"] is None:
         deps["trigger_reload"] = lambda: False
+    if deps["check_active"] is None:
+        deps["check_active"] = check_active
     return deps
 
 
@@ -519,14 +619,51 @@ def _window(cfg: dict, observed: dict, now: float) -> float:
     return max(0.0, min(cap, now - float(observed["since"]) - SETTLE_SECONDS))
 
 
-def _evaluate(cfg: dict, now: float, state: dict, deps: dict) -> dict:
-    """Messung holen und entscheiden – ändert nur state["observed"], sonst nichts."""
+_NOT_ACTIVE = ("Die letzte Änderung ist noch nicht aktiv (Neuladen fehlgeschlagen?) – es wird "
+               "nichts weiter verstellt.")
+
+
+def _verify(cfg: dict, state: dict, deps: dict, now: float) -> dict:
+    """Prüft, ob der eingestellte Offset läuft; ändert ggf. state["observed"]/["pending"].
+
+    Wurde eine Änderung erst später aktiv (Neuladen verzögert, Container später
+    neu gestartet), zählt die Messung ab diesem Zeitpunkt – davor lief noch der
+    alte Offset und hätte den Median verfälscht.
+    """
+    last = _last_auto_event(state)
+    try:
+        check = dict(deps["check_active"](cfg, last) or {})
+    except Exception as exc:
+        check = {"active": None, "reason": f"Prüfung nicht möglich: {exc}"}
+    pending = state.get("pending")
+    if check.get("active") is True and isinstance(pending, dict):
+        observed = state.get("observed") or {}
+        since = _num(check.get("since"))
+        if since is not None and _num(observed.get("since")) is not None \
+                and abs(float(observed.get("offset", 0.0)) - _cfg_float(cfg, "gps_offset", 0.0)) <= OFFSET_EPS:
+            observed["since"] = max(float(observed["since"]), min(since, now))
+            state["observed"] = observed
+        state["pending"] = None
+    return check
+
+
+def _evaluate(cfg: dict, now: float, state: dict, deps: dict, cached: bool = False) -> dict:
+    """Messung holen und entscheiden – ändert nur state["observed"]/["pending"], sonst nichts."""
     offset = _cfg_float(cfg, "gps_offset", 0.0)
     observed = _observe(state, offset, now)
+    active = None
+    if _mode(cfg) != "off" and cfg.get("gps_enable"):
+        active = _verify(cfg, state, deps, now)
+        observed = state["observed"]
     window = _window(cfg, observed, now)
     info = {"window_seconds": window, "measuring_since": float(observed["since"]) + SETTLE_SECONDS}
     if _mode(cfg) == "off" or not cfg.get("gps_enable"):
         decision = decide(cfg, None, None, now)
+    elif active is not None and active.get("active") is not True:
+        reason = _NOT_ACTIVE
+        if active.get("reason"):
+            reason += " " + str(active["reason"])
+        decision = _result("none", reason, cfg, not_active=True)
     elif window < 60 and observed.get("first"):
         decision = _result("none", "Die automatische Kalibrierung hat gerade zu messen begonnen. "
                            "Erste Entscheidung nach der Mindest-Messdauer.", cfg)
@@ -536,9 +673,15 @@ def _evaluate(cfg: dict, now: float, state: dict, deps: dict) -> dict:
                            "Medianfilter sich einschwingen.", cfg)
     else:
         try:
-            cal = dict(deps["get_calibration"](window) or {}) if deps["get_calibration"] else {}
+            getter = deps["get_calibration"]
+            if getter and cached:
+                getter = _cached_getter(getter, cfg, now)
+            cal = dict(getter(window) or {}) if getter else {}
         except Exception as exc:
             cal = {"status": "insufficient", "error": str(exc)}
+        duration = _num(cal.get("duration_seconds"))
+        if duration is not None and duration > window:
+            cal["duration_seconds"] = window  # nie mehr Messdauer als das Fenster hergibt
         reference = dict(cal.get("reference") or {})
         try:
             reference.update(summarize_sources(deps["get_sources"](), cfg.get("gps_refid") or "GPS"))
@@ -601,6 +744,10 @@ def _apply(cfg: dict, decision: dict, state: dict, deps: dict, now: float) -> di
             reloaded = bool(deps["trigger_reload"]())
         except Exception:
             reloaded = False
+        if not reloaded:
+            decision["reason"] += (" Achtung: Die Zeitdienste ließen sich nicht neu starten – der neue "
+                                   "Offset ist erst nach einem Neustart aktiv; bis dahin wird nichts "
+                                   "weiter verstellt.")
     entry = {
         "id": _next_id(state), "t": now, "kind": "auto",
         "old_offset": old_offset, "new_offset": decision["new_offset"],
@@ -609,7 +756,11 @@ def _apply(cfg: dict, decision: dict, state: dict, deps: dict, now: float) -> di
         "reason": decision["reason"], "rolled_back": None,
     }
     state["changes"].append(entry)
+    # Die Messung beginnt neu; als „aktiv“ gilt die Änderung erst, wenn _verify()
+    # es belegt (pending) – bis dahin keine weitere Änderung.
     state["observed"] = {"offset": decision["new_offset"], "since": now}
+    state["pending"] = {"change_id": entry["id"], "t": now}
+    entry["reload_triggered"] = reloaded
     decision["reload_triggered"] = reloaded
     decision["change_id"] = entry["id"]
     _emit(deps, "calibration", "info",
@@ -706,6 +857,7 @@ def rollback(steps: int = 1, cfg: dict | None = None, now: float | None = None,
         }
         state["changes"].append(entry)
         state["observed"] = {"offset": restore_offset, "since": now}
+        state["pending"] = {"change_id": entry["id"], "t": now}
         state["last_suggestion"] = None
         save(state, file)
     _emit(deps, "calibration", "warn",
@@ -720,19 +872,48 @@ def rollback(steps: int = 1, cfg: dict | None = None, now: float | None = None,
 # Anzeige (GET /api/gps/autocal)
 # ---------------------------------------------------------------------------
 
-def api_status(cfg: dict | None = None, now: float | None = None, fresh: bool = True,
+_CAL_CACHE: dict[str, Any] = {"key": None, "t": None, "window": None, "result": None}
+
+
+def _cached_getter(getter: Callable, cfg: dict, now: float) -> Callable:
+    """get_calibration mit kurzem Zwischenspeicher für die Anzeige.
+
+    Eine Auswertung liest bis zu 14 Tage Verlauf (Sekunden auf einem Pi) und
+    hält dabei die Sperre des Verlaufs; die Seite fragt jede Minute. tick()
+    nutzt den Zwischenspeicher nie.
+    """
+    key = (id(getter), cfg.get("gps_refid"), cfg.get("gps_offset"), cfg.get("gps_delay"))
+
+    def get(window: float) -> dict:
+        c = _CAL_CACHE
+        t = _num(c.get("t"))
+        if c.get("key") == key and t is not None and 0 <= now - t < CAL_CACHE_SECONDS \
+                and abs(float(c.get("window") or 0.0) - window) <= CAL_CACHE_SECONDS * 2:
+            return dict(c["result"])
+        result = dict(getter(window) or {})
+        c.update(key=key, t=now, window=window, result=dict(result))
+        return result
+    return get
+
+
+def api_status(cfg: dict | None = None, now: float | None = None, fresh: bool = False,
                deps: dict | None = None, file: str | None = None) -> dict:
-    """Alles für die Kalibrierkarte. fresh=True rechnet die Entscheidung neu
-    (ohne etwas zu ändern); sonst die zuletzt gespeicherte aus tick()."""
+    """Alles für die Kalibrierkarte.
+
+    Standard: die von tick() (stündlich) gespeicherte Entscheidung – billig.
+    fresh=True rechnet neu (ohne etwas zu ändern), nutzt aber eine höchstens
+    CAL_CACHE_SECONDS alte Messung erneut. Ohne gespeicherte Entscheidung
+    (noch kein tick) wird ebenfalls gerechnet.
+    """
     now = time.time() if now is None else now
     cfg = cfg if cfg is not None else settings.values()
     with _LOCK:
         state = load(file)
     mode = _mode(cfg)
     decision = state.get("last_decision")
-    if fresh:
+    if fresh or not isinstance(decision, dict):
         try:
-            decision = dict(_evaluate(cfg, now, state, _deps(deps)), t=now)
+            decision = dict(_evaluate(cfg, now, state, _deps(deps), cached=True), t=now)
         except Exception as exc:
             decision = {"action": "none", "reason": f"Prüfung fehlgeschlagen: {exc}", "t": now}
     last_auto = _last_auto_event(state)

@@ -100,8 +100,10 @@ class PositionTest(unittest.TestCase):
         for key in ("mode", "has_fix", "hdop", "pdop", "vdop", "gdop", "tdop", "satellites_used",
                     "satellites_seen", "snr_avg", "time", "leapseconds", "systems", "pps"):
             self.assertEqual(clean[key], GPS_STATUS[key], key)
-        sat = clean["satellites"][0]
-        self.assertEqual(sat, {"prn": 5, "system": "GPS", "svid": 5, "snr": 45, "used": True, "health": 1})
+        # Keine Einzelsatelliten (PRN) mehr – die sichtbare Menge zu einer Zeit grenzt die Region ein.
+        self.assertNotIn("prn", json.dumps(clean["satellites"]))
+        self.assertEqual(clean["satellites"]["je_system"]["GPS"]["benutzt"], 1)
+        self.assertGreaterEqual(report["removed"]["satellitenliste"], 1)
         self.assertGreaterEqual(report["removed"]["position"], 5)
         self.assertEqual(report["removed"]["satellitenwinkel"], 4)
         self.assertEqual(report["removed"]["bewegung"], 3)
@@ -112,10 +114,13 @@ class PositionTest(unittest.TestCase):
         clean, _ = egress.sanitize(TPV, "recording")
         self.assertEqual(set(clean), {"class", "device", "status", "mode", "time", "leapseconds", "ept"})
 
-    def test_gpsd_sky_keeps_prn_snr_used(self):
+    def test_gpsd_sky_keeps_only_per_system_sums(self):
         clean, report = egress.sanitize(SKY, "recording")
-        self.assertEqual(clean["satellites"][0], {"PRN": 5, "gnssid": 0, "svid": 5, "ss": 45.0, "used": True,
-                                                  "health": 1})
+        self.assertNotIn("PRN", json.dumps(clean))
+        self.assertNotIn("svid", json.dumps(clean))
+        gps = clean["satellites"]["je_system"]["GPS"]
+        self.assertEqual(gps["gesehen"], len(SKY["satellites"]))
+        self.assertEqual(gps["snr_max"], 45)
         self.assertEqual(clean["hdop"], 0.9)
         self.assertEqual(report["removed"]["satellitenwinkel"], 4)
 
@@ -429,7 +434,7 @@ class TimezoneAndLatencyTest(unittest.TestCase):
         clean, _ = egress.sanitize({"timezone": "Europe/Vienna", "tz": "+01:00", "zone": "UTC"}, "diagnostics")
         self.assertEqual(clean, {"timezone": "<zeitzone>", "tz": "+01:00", "zone": "UTC"})
 
-    def test_community_rounds_delays(self):
+    def test_every_purpose_rounds_delays(self):
         data = {"root_delay": 0.012345, "sources": [{"delay": 0.0237, "offset": 0.0000123}],
                 "rtt_ms": 23.7, "peer_delay": 0.004}
         clean, report = egress.sanitize(data, "community")
@@ -438,8 +443,10 @@ class TimezoneAndLatencyTest(unittest.TestCase):
         self.assertEqual(clean["rtt_ms"], 20)
         self.assertEqual(clean["peer_delay"], 0.0)
         self.assertEqual(report["removed"]["latenz_gerundet"], 4)
-        diag, _ = egress.sanitize(data, "diagnostics")
-        self.assertEqual(diag["root_delay"], 0.012345)
+        # Seit 1.3: für jeden Zweck – auch Diagnosepakete verlassen die Instanz.
+        for purpose in ("diagnostics", "recording"):
+            other, _ = egress.sanitize(data, purpose)
+            self.assertEqual(other, clean, purpose)
 
 
 class ContractTest(unittest.TestCase):

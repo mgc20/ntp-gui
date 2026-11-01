@@ -14,7 +14,13 @@ Schutz der schreibenden Routen:
   * gegen Cross-Site-Requests (Browser mit Basic-Auth): nur JSON, Pflicht-Header
     X-NTP-GUI, und ein mitgeschickter Origin muss zum Host passen. Mit
     API-Schlüssel entfällt X-NTP-GUI – den Schlüssel schickt kein Browser von
-    sich aus mit.
+    sich aus mit;
+  * gegen DNS-Rebinding (eine fremde Webseite lässt ihren Namen auf die
+    LAN-Adresse zeigen und liest dann Log, Status und Position): ohne Passwort
+    werden nur Anfragen an IP-Adressen, localhost, den eigenen Hostnamen,
+    lokale Namen (*.local, *.lan, *.home.arpa, *.internal …), den
+    NTS-Namen und WEB_ALLOWED_HOSTS beantwortet (host_allowed). Mit Passwort
+    schützt die Anmeldung, dann gilt jeder Name. /healthz ist immer offen.
 """
 
 from __future__ import annotations
@@ -22,8 +28,11 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import html
+import ipaddress
 import json
 import os
+import re
 import signal
 import socket
 import threading
@@ -600,6 +609,92 @@ class AuthCache:
 AUTH_CACHE = AuthCache()
 
 
+# --- Schutz vor DNS-Rebinding -------------------------------------------------
+
+# Namen, die keine fremde Webseite für sich auf eine LAN-Adresse zeigen lassen
+# kann: reservierte bzw. nie öffentlich vergebene Endungen. Bewusst NICHT dabei:
+# ".fritz.box" – ".box" ist eine echte, öffentlich vergebene Endung (fritz.box war
+# schon fremd registriert). Wer das Dashboard über name.fritz.box öffnet, trägt
+# WEB_ALLOWED_HOSTS=*.fritz.box ein oder setzt ein Passwort.
+LOCAL_HOST_SUFFIXES = (".localhost", ".local", ".lan", ".home.arpa", ".internal", ".home", ".corp",
+                       ".localdomain", ".intranet", ".private", ".speedport.ip")
+_REJECTED_HOSTS: set[str] = set()
+_REJECTED_LOCK = threading.Lock()
+
+
+def _host_name(header: str) -> str:
+    """Host-Header → Name ohne Port, klein, ohne Schlusspunkt ('[::1]:80' → '::1')."""
+    host = (header or "").strip().lower()
+    if host.startswith("["):
+        return host[1:].split("]", 1)[0]
+    if host.count(":") == 1:
+        host = host.split(":", 1)[0]
+    return host.rstrip(".")
+
+
+def safe_host_for_log(host: str) -> str:
+    """Host-Header für Log und Fehlermeldung: nur [a-z0-9.-:], Labels ≤ 63 Zeichen, sonst „<ungültig>“.
+
+    Der Wert kommt ungeprüft von außen; ein überlanger oder seltsamer Name im Log würde sonst
+    später das Diagnosepaket stören (Schlussprüfung).
+    """
+    host = (host or "").strip().lower()
+    if not host or len(host) > 253 or not re.fullmatch(r"[a-z0-9.:-]+", host):
+        return "<ungültig>"
+    if any(len(label) > 63 for label in host.split(".")):
+        return "<ungültig>"
+    return host
+
+
+def _env_allowed_hosts() -> list[str]:
+    return [h.strip().lower().rstrip(".") for h in os.environ.get("WEB_ALLOWED_HOSTS", "").split(",")
+            if h.strip()]
+
+
+def host_allowed(header: str | None, nts_name: str = "") -> bool:
+    """Darf eine Anfrage mit diesem Host-Header ohne Anmeldung beantwortet werden?"""
+    if header is None or not header.strip():
+        return True  # HTTP/1.0 ohne Host – das schickt kein Browser
+    host = _host_name(header)
+    allowed = _env_allowed_hosts()
+    if "*" in allowed:
+        return True
+    try:
+        ipaddress.ip_address(host.split("%", 1)[0])
+        return True
+    except ValueError:
+        pass
+    if not host or "." not in host:
+        return True  # einteilige Namen (raspberrypi, localhost) löst kein öffentliches DNS auf
+    if host.endswith(LOCAL_HOST_SUFFIXES):
+        return True
+    own = set()
+    try:
+        own = {socket.gethostname().lower().rstrip("."), socket.getfqdn().lower().rstrip(".")}
+    except OSError:
+        pass
+    if host in own:
+        return True
+    if nts_name and host == str(nts_name).strip().lower().rstrip("."):
+        return True
+    for entry in allowed:
+        if entry.startswith("*.") and (host.endswith(entry[1:]) or host == entry[2:]):
+            return True
+        if host == entry:
+            return True
+    return False
+
+
+def host_rejection_text(host: str) -> str:
+    return (f"Zugriff über den Namen „{host}“ abgelehnt. Ohne Passwort beantwortet ntp-gui nur Anfragen "
+            "an IP-Adressen, localhost, den eigenen Hostnamen, einteilige Namen und lokale Namen (*.local, "
+            "*.lan, *.home.arpa, *.internal). Das schützt vor DNS-Rebinding: Sonst könnte jede "
+            "Webseite, die du besuchst, über einen eigenen Namen Log, Status und Position aus deinem "
+            "Netz lesen. Abhilfe: den Namen in WEB_ALLOWED_HOSTS eintragen (z. B. "
+            f"WEB_ALLOWED_HOSTS={host}, mehrere mit Komma, „*.example.org“ für alle Unternamen) oder "
+            "im Dashboard bzw. per WEB_USER/WEB_PASSWORD ein Passwort setzen – dann gilt jeder Name.")
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "ntp-gui"
     protocol_version = "HTTP/1.1"
@@ -644,6 +739,38 @@ class Handler(BaseHTTPRequestHandler):
         if not auth_info()["enabled"]:
             return {"kind": "open"}
         return {"kind": "basic"} if self._authorised() else None
+
+    def _host_ok(self, ident: dict) -> bool:
+        """DNS-Rebinding: ohne Anmeldung nur bekannte/lokale Namen. Antwortet selbst mit 403."""
+        if ident.get("kind") != "open":
+            return True  # Passwort oder API-Schlüssel schützen
+        header = self.headers.get("Host")
+        try:
+            nts_name = str(settings.values().get("nts_server_name") or "")
+        except Exception:
+            nts_name = ""
+        if host_allowed(header, nts_name):
+            return True
+        host = safe_host_for_log(_host_name(header or ""))
+        with _REJECTED_LOCK:
+            first = host not in _REJECTED_HOSTS and len(_REJECTED_HOSTS) < 1000
+            if first:
+                _REJECTED_HOSTS.add(host)
+        if first:
+            print(f"[web] Anfrage für unbekannten Host-Namen „{host}“ abgelehnt (Schutz vor DNS-Rebinding) – "
+                  "erlauben mit WEB_ALLOWED_HOSTS oder ein Passwort setzen.", flush=True)
+        text = host_rejection_text(host)
+        self.close_connection = True  # ein evtl. POST-Body bleibt ungelesen
+        path = urlparse(self.path).path
+        if path.startswith("/api") or path == "/metrics" or "json" in self.headers.get("Accept", ""):
+            self._error(HTTPStatus.FORBIDDEN, text, reason="host_not_allowed")
+        else:
+            body = ("<!doctype html><html lang=\"de\"><meta charset=\"utf-8\"><title>Zugriff abgelehnt</title>"
+                    "<body style=\"font-family:sans-serif;max-width:42em;margin:2em auto;padding:0 1em\">"
+                    f"<h1>Zugriff abgelehnt</h1><p>{html.escape(text)}</p></body></html>\n")
+            self._send(HTTPStatus.FORBIDDEN, body.encode("utf-8"), "text/html; charset=utf-8",
+                       {"Cache-Control": "no-store"})
+        return False
 
     def _scope_ok(self, ident: dict, method: str, path: str) -> bool:
         """Darf diese Identität die Methode auf dem Pfad nutzen (apiv1.required_scope)?"""
@@ -743,6 +870,8 @@ class Handler(BaseHTTPRequestHandler):
         ident = self._identity()
         if ident is None:
             self._deny_auth()
+            return
+        if not self._host_ok(ident):
             return
         if not self._scope_ok(ident, "GET", path):
             self._deny_scope(ident, "GET", path)
@@ -901,6 +1030,8 @@ class Handler(BaseHTTPRequestHandler):
         ident = self._identity()
         if ident is None:
             self._deny_auth()
+            return
+        if not self._host_ok(ident):
             return
         if index:
             self._error(HTTPStatus.METHOD_NOT_ALLOWED, "GET /api/v1 beschreibt die API; hier gibt es nichts zu senden")

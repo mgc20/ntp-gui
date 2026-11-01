@@ -47,12 +47,15 @@ export const HELP_DIAGNOSE = {
     title: "Art des Ereignisses",
     text: "**Dienst** (Neustart/Ausfall), **Neuladen** (Einstellungen übernommen, Gerät eingesteckt), "
       + "**Einstellungen**, **Quelle** (chrony hat eine andere Zeitquelle gewählt), **GPS** (Fix, Gerät), "
-      + "**PPS** (Impulse), **Kalibrierung**, **Zertifikat** (NTS), **Schaltsekunde**, **Start**.",
+      + "**PPS** (Impulse), **Kalibrierung**, **Zertifikat** (NTS), **Schaltsekunde**, **Start**; seltener "
+      + "**Clients**, **API** und **Sonstiges**. Angelegte oder widerrufene API-Schlüssel stehen unter "
+      + "**Einstellungen**. Die Auswahl zeigt nur Ereignisse dieser Art.",
   },
   diag_event_level: {
-    title: "Gewicht",
+    title: "Stufe",
     text: "Info: normaler Vorgang. Warnung: etwas läuft schlechter als möglich (z. B. GPS-Fix weg, Dienst "
-      + "neu gestartet). Kritisch: der Zeitdienst ist betroffen (Pflichtdienst ausgefallen).",
+      + "neu gestartet). Kritisch: der Zeitdienst ist betroffen (Pflichtdienst ausgefallen). Der Filter "
+      + "„ab Warnung“ zeigt Warnungen und kritische Ereignisse, „nur Kritisch“ nur die schweren Fälle.",
   },
   diag_bundle: {
     title: "Diagnosepaket",

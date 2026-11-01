@@ -162,6 +162,27 @@ if d['available']:
 else bad "Client-Messung: unklare Antwort ($CM)"; fi
 
 echo
+echo "1c) Schutz vor DNS-Rebinding (ohne Passwort)"
+A=http://127.0.0.1:18080
+check "Fremder Host-Name: Dashboard 403"   403 "$(http -H 'Host: attacker.example' "$A/")"
+check "Fremder Host-Name: API 403"         403 "$(http -H 'Host: attacker.example:18080' "$A/api/status")"
+check ".fritz.box ist nicht automatisch lokal" 403 "$(http -H 'Host: pi.fritz.box' "$A/api/status")"
+check "healthz mit fremdem Host bleibt offen" 200 "$(http -H 'Host: attacker.example' "$A/healthz")"
+check "Container-IP als Host erlaubt"     200 "$(http -H "Host: $CIP:8080" "$A/api/status")"
+check "localhost als Host erlaubt"        200 "$(http -H 'Host: localhost:18080' "$A/api/status")"
+check "*.local als Host erlaubt"          200 "$(http -H 'Host: zeitserver.local' "$A/api/status")"
+contains "403 erklärt WEB_ALLOWED_HOSTS"  "$(curl -s -H 'Host: attacker.example' "$A/api/status")" "WEB_ALLOWED_HOSTS"
+# Ein überlanger Host-Name landet (bereinigt) im Log – der Export darf daran nicht scheitern.
+LONGHOST="$(printf 'a%.0s' $(seq 1 64)).attacker.de"
+check "Überlanger Host-Name abgewiesen"   403 "$(http -H "Host: $LONGHOST" "$A/api/status")"
+for _ in $(seq 1 10); do
+  grep -qF "<ungültig>" <<<"$(docker exec "${PREFIX}-a" tail -n 50 /run/ntp-gui/ntp-gui.log 2>/dev/null)" && break
+  sleep 1
+done
+contains "Log nennt den abgewiesenen Namen nur bereinigt" "$(docker exec "${PREFIX}-a" tail -n 50 /run/ntp-gui/ntp-gui.log 2>/dev/null)" "<ungültig>"
+check "Diagnose-Vorschau trotz fremdem Log-Eintrag" 200 "$(http --max-time 30 "$A/api/diagnostics/preview")"
+
+echo
 echo "2) NTP-Dienst im Netz"
 IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "${PREFIX}-a")
 if command -v chronyd >/dev/null 2>&1; then
@@ -190,6 +211,8 @@ check "Ohne Login abgewiesen"   401 "$(http http://127.0.0.1:18081/api/status)"
 check "Falsches Passwort abgewiesen" 401 "$(http -u admin:falsch http://127.0.0.1:18081/api/status)"
 check "Mit Login erlaubt"       200 "$(http -u 'admin:S3hr geheim' http://127.0.0.1:18081/api/status)"
 check "healthz bleibt offen"    200 "$(http http://127.0.0.1:18081/healthz)"
+check "Mit Login gilt jeder Host-Name" 200 "$(http -u 'admin:S3hr geheim' -H 'Host: attacker.example' http://127.0.0.1:18081/api/status)"
+check "Fremder Host ohne Login: 401" 401 "$(http -H 'Host: attacker.example' http://127.0.0.1:18081/api/status)"
 
 echo
 echo "3b) API-Schlüssel und /api/v1"
@@ -222,8 +245,12 @@ echo
 echo "4) GPS und PTP aktiviert, aber keine Hardware vorhanden"
 docker run -d --name "${PREFIX}-c" -p 18082:8080 \
   -e GPS_ENABLE=true -e GPS_DEVICE=/dev/ttyACM0 -e GPS_WAIT_SECONDS=2 \
-  -e PTP_ENABLE=true -e NTP_PORT=10125 -e NTP_POOLS="" "$IMAGE" >/dev/null
+  -e PTP_ENABLE=true -e NTP_PORT=10125 -e NTP_POOLS="" \
+  -e WEB_ALLOWED_HOSTS="zeit.example.org, *.fritz.box" "$IMAGE" >/dev/null
 wait_for_health http://127.0.0.1:18082/healthz 90 || true
+check "WEB_ALLOWED_HOSTS: eingetragener Name erlaubt" 200 "$(http -H 'Host: zeit.example.org' http://127.0.0.1:18082/api/status)"
+check "WEB_ALLOWED_HOSTS: *.fritz.box erlaubt" 200 "$(http -H 'Host: pi.fritz.box' http://127.0.0.1:18082/api/status)"
+check "WEB_ALLOWED_HOSTS: anderer Name weiter 403" 403 "$(http -H 'Host: attacker.example' http://127.0.0.1:18082/api/status)"
 LOGS=$(docker logs "${PREFIX}-c" 2>&1)
 contains "Warnung wegen fehlendem GPS-Gerät" "$LOGS" "/dev/ttyACM0 nicht gefunden"
 contains "Warnung wegen fehlendem PTP-Interface" "$LOGS" "kein Interface gewählt"

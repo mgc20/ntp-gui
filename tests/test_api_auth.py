@@ -143,6 +143,139 @@ class ApiAuthTest(unittest.TestCase):
         self.assertIsInstance(payload["notes"], list)
 
 
+class HostCheckTest(unittest.TestCase):
+    """DNS-Rebinding: ohne Passwort nur bekannte bzw. lokale Host-Namen."""
+
+    def test_host_allowed_rules(self):
+        with mock.patch.dict(os.environ, {"WEB_ALLOWED_HOSTS": ""}), \
+                mock.patch.object(server.socket, "gethostname", return_value="ntpbox"), \
+                mock.patch.object(server.socket, "getfqdn", return_value="ntpbox.example.net"):
+            for ok in ("192.0.2.5:8080", "127.0.0.1", "[::1]:8080", "[fe80::1%eth0]:80", "localhost:8080",
+                       "app.localhost", "raspberrypi:8080", "ntpbox", "NTPBOX.example.net.", "pi.local",
+                       "pi.lan:8080", "pi.home.arpa", "zeit.internal", "", None):
+                with self.subTest(ok=ok):
+                    self.assertTrue(server.host_allowed(ok))
+            for bad in ("attacker.example:8080", "rebind.evil.com", "192.0.2.5.nip.io", "localhost.evil.com",
+                        "fritz.box.evil.com", "local.evil.com",
+                        # ".box" ist eine öffentliche Endung – fritz.box war schon fremd registriert
+                        "pi.fritz.box", "fritz.box"):
+                with self.subTest(bad=bad):
+                    self.assertFalse(server.host_allowed(bad))
+            self.assertTrue(server.host_allowed("zeit.example.org", nts_name="Zeit.Example.org"))
+        with mock.patch.dict(os.environ, {"WEB_ALLOWED_HOSTS": "zeit.example.org, *.mein-dorf.us"}):
+            self.assertTrue(server.host_allowed("zeit.example.org:8080"))
+            self.assertTrue(server.host_allowed("ntp.mein-dorf.us"))
+            self.assertTrue(server.host_allowed("mein-dorf.us"))
+            self.assertFalse(server.host_allowed("evil-mein-dorf.us"))
+            self.assertFalse(server.host_allowed("attacker.example"))
+        with mock.patch.dict(os.environ, {"WEB_ALLOWED_HOSTS": "*"}):
+            self.assertTrue(server.host_allowed("attacker.example"))
+        with mock.patch.dict(os.environ, {"WEB_ALLOWED_HOSTS": "*.fritz.box"}):
+            self.assertTrue(server.host_allowed("pi.fritz.box"))
+
+    def test_logged_host_is_cleaned(self):
+        """Der Host-Header landet im Log – überlang oder mit fremden Zeichen nur als <ungültig>."""
+        self.assertEqual(server.safe_host_for_log("attacker.example"), "attacker.example")
+        self.assertEqual(server.safe_host_for_log("a" * 64 + ".attacker.de"), "<ungültig>")
+        self.assertEqual(server.safe_host_for_log("x" * 300), "<ungültig>")
+        self.assertEqual(server.safe_host_for_log("evil\u201c.de"), "<ungültig>")
+        self.assertEqual(server.safe_host_for_log("evil.de/../x"), "<ungültig>")
+
+
+class HostCheckServerTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        env = {k: v for k, v in os.environ.items() if k not in {"WEB_USER", "WEB_PASSWORD", "WEB_ALLOWED_HOSTS"}}
+        cls.patches = [
+            mock.patch.object(settings, "DATA_DIR", cls.tmp.name),
+            mock.patch.object(settings, "SETTINGS_FILE", os.path.join(cls.tmp.name, "settings.json")),
+            mock.patch.object(server, "RUN_DIR", cls.tmp.name),
+            mock.patch.dict(os.environ, env, clear=True),
+        ]
+        for patch in cls.patches:
+            patch.start()
+        apikeys._READY["db"] = None
+        apikeys.clear_cache()
+        server.AUTH_CACHE.clear()
+        server._REJECTED_HOSTS.clear()
+        cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        cls.port = cls.httpd.server_address[1]
+        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
+        cls.thread.start()
+        cls.key_id, cls.key = apikeys.create("Lesen", "read")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+        for patch in reversed(cls.patches):
+            patch.stop()
+        store.close_all()
+        apikeys._READY["db"] = None
+        apikeys.clear_cache()
+        cls.tmp.cleanup()
+
+    def request(self, method, path, host, headers=None, body=None):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        conn.putrequest(method, path, skip_host=True)
+        conn.putheader("Host", host)
+        for k, v in (headers or {}).items():
+            conn.putheader(k, v)
+        data = json.dumps(body).encode() if body is not None else b""
+        if method == "POST":
+            conn.putheader("Content-Type", "application/json")
+            conn.putheader("Content-Length", str(len(data)))
+        conn.endheaders(data if method == "POST" else None)
+        resp = conn.getresponse()
+        raw = resp.read()
+        ctype = resp.getheader("Content-Type", "")
+        conn.close()
+        return resp.status, raw, ctype
+
+    def test_ip_and_localhost_allowed(self):
+        self.assertEqual(self.request("GET", "/api/v1/instance", f"127.0.0.1:{self.port}")[0], 200)
+        self.assertEqual(self.request("GET", "/api/v1/instance", f"localhost:{self.port}")[0], 200)
+
+    def test_foreign_host_rejected_with_german_explanation(self):
+        server._REJECTED_HOSTS.clear()
+        with mock.patch("builtins.print") as printed:
+            status, raw, ctype = self.request("GET", "/api/logs", "attacker.example:8087")
+            self.assertEqual(status, 403)
+            self.assertIn("json", ctype)
+            payload = json.loads(raw)
+            self.assertEqual(payload["reason"], "host_not_allowed")
+            self.assertIn("WEB_ALLOWED_HOSTS", payload["error"])
+            self.assertIn("Passwort", payload["error"])
+            status, raw, ctype = self.request("GET", "/", "attacker.example")
+            self.assertEqual(status, 403)
+            self.assertIn("text/html", ctype)
+            self.assertIn("WEB_ALLOWED_HOSTS".encode(), raw)
+            self.assertEqual(self.request("POST", "/api/reload", "attacker.example", {"X-NTP-GUI": "1"}, {})[0], 403)
+            self.assertEqual(self.request("GET", "/api/status", "attacker.example")[0], 403)
+        logged = [c for c in printed.call_args_list if "attacker.example" in str(c)]
+        self.assertEqual(len(logged), 1)  # nur einmal je Name protokolliert
+
+    def test_healthz_always_allowed(self):
+        self.assertNotEqual(self.request("GET", "/healthz", "attacker.example")[0], 403)
+
+    def test_env_allow_list(self):
+        with mock.patch.dict(os.environ, {"WEB_ALLOWED_HOSTS": "zeit.example.org"}), mock.patch("builtins.print"):
+            self.assertEqual(self.request("GET", "/api/v1/instance", "zeit.example.org:8080")[0], 200)
+            self.assertEqual(self.request("GET", "/api/v1/instance", "attacker.example")[0], 403)
+
+    def test_api_key_works_with_any_host(self):
+        status, _, _ = self.request("GET", "/api/v1/instance", "ntp.example.org",
+                                    {"Authorization": f"Bearer {self.key}"})
+        self.assertEqual(status, 200)
+
+    def test_with_password_any_host(self):
+        with mock.patch.dict(os.environ, {"WEB_USER": "admin", "WEB_PASSWORD": "geheim123"}):
+            auth = {"Authorization": "Basic " + base64.b64encode(b"admin:geheim123").decode()}
+            self.assertEqual(self.request("GET", "/api/v1/instance", "zeit.example.org", auth)[0], 200)
+            self.assertEqual(self.request("GET", "/api/v1/instance", "zeit.example.org")[0], 401)
+
+
 class StateWatchTest(unittest.TestCase):
     def setUp(self):
         self.events = []

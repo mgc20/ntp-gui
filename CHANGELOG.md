@@ -16,9 +16,19 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
   keine Koordinaten, Höhe, Geschwindigkeit, Satellitenwinkel (Azimut/Elevation),
   Seriennummern (USB, DMI, `/dev/serial/by-id`), MAC-Adressen und PTP-Clock-IDs,
   öffentlichen IP-Adressen, eigenen Hostnamen, Domains und Zertifikatsnamen, Zeitzonennamen;
-  private Adressen werden zu stabilen Pseudonymen (`client-07`). Eine Schlussprüfung mit
-  denselben Regeln läuft über jede Datei des Pakets und bricht den Export ab, wenn sie noch
-  etwas findet.
+  private Adressen werden zu stabilen Pseudonymen (`client-07`). Laufzeiten zu Servern
+  (Root/Peer delay, Fehlerschranken, RTT – auch in chronyc-Ausgaben und Aufzeichnungen) werden
+  für jeden Zweck auf 10 ms gerundet; von Satelliten bleiben nur Summen je System (keine
+  Satellitennummern). Zwei Schlussprüfungen – eine mit den Regeln des Filters, eine davon
+  unabhängige auf den fertigen Bytes – laufen über jede Datei des Pakets und brechen den
+  Export ab, wenn sie noch etwas finden; in Log und Aufzeichnung wird stattdessen nur die
+  beanstandete Zeile entfernt.
+- **Schutz vor DNS-Rebinding:** Ohne Passwort beantwortet das Dashboard nur Anfragen an
+  IP-Adressen, `localhost`, den eigenen bzw. einteilige Hostnamen, lokale Endungen (`*.local`,
+  `*.lan`, `*.home.arpa`, `*.internal` …), den NTS-Namen und `WEB_ALLOWED_HOSTS` (neu,
+  kommagetrennt, `*.domain`, `*` schaltet ab); alles andere bekommt `403` mit Erklärung.
+  `*.fritz.box` gilt bewusst nicht als lokal (`.box` ist eine öffentliche Endung). Mit
+  Passwort oder API-Schlüssel gilt jeder Name, `/healthz` ist immer offen.
 - **Ereignisprotokoll** (`/api/events`, 90 Tage): Neustarts und Ausfälle von Diensten,
   Neuladen, Zertifikate, GPS-Gerät weg/neu angesteckt (vom Supervisor), Wechsel der
   ausgewählten Quelle, GPS-Fix verloren/wieder da, PPS-Impulse ausgeblieben/wieder da,
@@ -35,17 +45,23 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 - **Automatische GPS-Kalibrierung** (`GPS_AUTOCAL=off|suggest|auto`,
   `GPS_AUTOCAL_MAX_STEP_MS`, `GPS_AUTOCAL_MIN_HOURS`): höchstens ein kleiner Schritt je
   24 h, nur mit vertrauenswürdiger Netzreferenz, jede Änderung im Ereignisprotokoll und
-  per Knopf umkehrbar (`/api/gps/autocal`, `POST /api/gps/autocal/rollback`).
+  per Knopf umkehrbar (`/api/gps/autocal`, `POST /api/gps/autocal/rollback`). Die
+  Automatik stellt nie weiter, solange nicht belegt ist, dass die letzte Änderung wirkt
+  (Offset in der laufenden `chrony.conf` und erfolgreiches Neuladen); gemessen wird ab dem
+  Zeitpunkt, an dem sie aktiv wurde.
 - **API-Schlüssel** mit Recht „nur lesen“ oder „lesen und verwalten“
-  (`Authorization: Bearer ntpg_…`, nur der Hash wird gespeichert). Passwort und Schlüssel
+  (`Authorization: Bearer ntpg_…`, gespeichert wird nur ein SHA-256-Hash – PBKDF2 hätte bei
+  144 Bit Zufall nichts gebracht, aber jede Anfrage mit erfundenem Schlüssel teuer gemacht;
+  Schlüssel aus Vorabversionen werden beim nächsten Gebrauch umgestellt). Im
+  Ereignisprotokoll steht nur die Kennung eines Schlüssels, nie sein Name. Passwort und Schlüssel
   lassen sich nur mit Benutzer/Passwort verwalten, nie mit einem Schlüssel.
 - **Versionierte API `/api/v1`**; `GET /api/v1` beschreibt alle Endpunkte samt nötigem Recht.
 - **Aufzeichnung und Wiedergabe** der Datenquellen (`/api/recording`, `NTPGUI_REPLAY`,
   `NTPGUI_REPLAY_SPEED`, `python3 app/providers.py replay-info`): alle Abfragen an chronyc,
   pmc, ethtool und gpsd laufen über eine Stelle (`app/providers.py`).
 - Zufällige **Instanz-Kennung** (`/api/v1/instance`), jederzeit neu erzeugbar.
-- Integrationstest: Log-Seite, Diagnosepaket ohne Standort und Kennungen, API-Schlüssel
-  (95 Prüfungen statt 68).
+- Integrationstest: Log-Seite, Diagnosepaket ohne Standort und Kennungen, API-Schlüssel,
+  Schutz vor DNS-Rebinding und `WEB_ALLOWED_HOSTS` (111 Prüfungen statt 68).
 
 ### Geändert
 - Verlauf, Ereignisse, Client-Messwerte und API-Schlüssel liegen in SQLite (`ntp-gui.db`).
@@ -64,6 +80,9 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
   Instanz-Kennung und Update-Hinweise.
 
 ### Behoben
+- **Kopieren-Knöpfe** (Clients, PTP, Hardware, API-Schlüssel) funktionieren auch über
+  einfaches `http://` im LAN: Ohne sichere Verbindung greift ein Ersatzweg; klappt auch der
+  nicht, wird der Text markiert und ein Hinweis zeigt Strg+C.
 - Hardware-Check: Ein USB-GPS an `ttyACM` (z. B. VK-162) wurde fälschlich als
   USB-Seriell-Adapter mit möglichem DCD-PPS eingestuft, wenn der Treiber-Link in `/sys`
   nicht lesbar war. `ttyACM`-Geräte kommen immer von `cdc_acm` und liefern kein PPS. Der

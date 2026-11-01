@@ -231,6 +231,9 @@ class Harness:
         self.restart = restart
         self.target = None
         self.cfg = cfg()
+        # Simulierter Supervisor: welcher Offset läuft in chronyd, klappt das Neuladen?
+        self.running_offset = self.cfg["gps_offset"]
+        self.reload_ok = True
 
     def deps(self):
         def get_calibration(window):
@@ -246,14 +249,23 @@ class Harness:
         def save_settings(changes):
             self.saved.append(dict(changes))
             self.cfg.update(changes)
+            if not self.restart:
+                self.running_offset = self.cfg["gps_offset"]
             return {"changed": list(changes), "restart": self.restart}
 
         def reload():
             self.reloads += 1
+            if self.reload_ok:
+                self.running_offset = self.cfg["gps_offset"]
             return True
+
+        def check_active(cfg_, change):
+            ok = abs(self.running_offset - cfg_["gps_offset"]) < 1e-9
+            return {"active": ok, "since": None, "reason": "" if ok else "alter Offset läuft"}
 
         return {"get_calibration": get_calibration, "get_sources": lambda: self.sources,
                 "save_settings": save_settings, "trigger_reload": reload,
+                "check_active": check_active,
                 "emit_event": lambda *a: self.events.append(a)}
 
 
@@ -321,7 +333,8 @@ class TickTest(unittest.TestCase):
 
     def test_manual_change_restarts_measurement(self):
         self.tick(NOW)
-        self.h.cfg["gps_offset"] = 0.06
+        self.h.cfg["gps_offset"] = 0.06   # von Hand gespeichert, Supervisor hat neu geladen
+        self.h.running_offset = 0.06
         d = self.tick(NOW + 7 * H)
         self.assertEqual(d["action"], "none")
         self.assertIn("gerade geändert", d["reason"])
@@ -538,6 +551,194 @@ class PrivacyTest(unittest.TestCase):
         text = Path(file).read_text() + json.dumps(h.events)
         for leak in ("203.0.113.7", "198.51.100.9", "example.org"):
             self.assertNotIn(leak, text)
+
+
+class VerifyActiveTest(unittest.TestCase):
+    """Review 1/1: kein weiterer Schritt, solange die letzte Änderung nicht nachweislich läuft."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.file = os.path.join(self.tmp, "autocal.json")
+        self.h = Harness()
+        self.h.target = 0.062  # echte Verspätung: braucht mehrere 5-ms-Schritte
+        env = mock.patch.dict(os.environ, {"WEB_READONLY": ""})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def tick(self, now, deps=None):
+        return autocal.tick(self.h.cfg, now, deps=deps or self.h.deps(), file=self.file)
+
+    def test_failed_reload_stops_drift(self):
+        self.h.reload_ok = False          # Supervisor behält die alte chrony.conf
+        self.tick(NOW)
+        self.assertEqual(self.tick(NOW + 7 * H)["action"], "apply")
+        for day in range(1, 6):
+            d = self.tick(NOW + 7 * H + day * 25 * H)
+            self.assertEqual(d["action"], "none")
+            self.assertIn("nicht aktiv", d["reason"])
+        self.assertEqual(self.h.saved, [{"gps_offset": 0.055}])
+        self.assertEqual(self.h.cfg["gps_offset"], 0.055)
+
+    def test_resumes_after_late_activation(self):
+        self.h.reload_ok = False
+        self.tick(NOW)
+        self.tick(NOW + 7 * H)
+        self.assertEqual(self.tick(NOW + 40 * H)["action"], "none")
+        # Später (z. B. Container neu gestartet) läuft der neue Offset – ab dann zählt die Messung.
+        self.h.running_offset = self.h.cfg["gps_offset"]
+        deps = self.h.deps()
+        deps["check_active"] = lambda c, ch: {"active": True, "since": NOW + 41 * H, "reason": ""}
+        d = self.tick(NOW + 42 * H, deps)
+        self.assertEqual(d["action"], "none")
+        self.assertEqual(self.state_observed()["since"], NOW + 41 * H)
+        self.assertIsNone(autocal.load(self.file)["pending"])
+        d = self.tick(NOW + 41 * H + 7 * H, deps)
+        self.assertEqual(d["action"], "apply")
+        self.assertEqual(self.h.cfg["gps_offset"], 0.06)
+
+    def state_observed(self):
+        return autocal.load(self.file)["observed"]
+
+    def test_reload_not_triggered_is_reported_and_blocks(self):
+        deps = self.h.deps()
+        deps["trigger_reload"] = lambda: False
+        self.tick(NOW, deps)
+        d = self.tick(NOW + 7 * H, deps)
+        self.assertEqual(d["action"], "apply")
+        self.assertFalse(d["reload_triggered"])
+        self.assertIn("nicht neu starten", d["reason"])
+        self.assertFalse(autocal.load(self.file)["changes"][-1]["reload_triggered"])
+        self.assertIsNotNone(autocal.load(self.file)["pending"])
+        self.assertEqual(self.tick(NOW + 40 * H, deps)["action"], "none")
+
+    def test_check_failure_refuses(self):
+        self.tick(NOW)
+        deps = self.h.deps()
+        deps["check_active"] = mock.Mock(side_effect=RuntimeError("kaputt"))
+        d = self.tick(NOW + 7 * H, deps)
+        self.assertEqual(d["action"], "none")
+        self.assertEqual(self.h.saved, [])
+
+
+class CheckActiveTest(unittest.TestCase):
+    """Die Standardprüfung liest RUN_DIR/reload.json und die GPS-Zeile aus CHRONY_CONF."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.conf = self.tmp / "chrony.conf"
+        env = mock.patch.dict(os.environ, {"NTPGUI_RUN_DIR": str(self.tmp), "CHRONY_CONF": str(self.conf)})
+        env.start()
+        self.addCleanup(env.stop)
+        self.change = {"t": NOW, "kind": "auto", "new_offset": 0.055}
+
+    def write_conf(self, offset):
+        self.conf.write_text("server a.example iburst\n"
+                             f"refclock SHM 0 refid GPS offset {offset} delay 0.2 precision 1e-1 poll 4\n"
+                             "refclock PPS /dev/pps0 lock GPS refid PPS offset 0.5\n")
+
+    def write_reload(self, state, t):
+        (self.tmp / "reload.json").write_text(json.dumps({"state": state, "message": "m", "time": t}))
+
+    def check(self, change="default", **over):
+        return autocal.check_active(cfg(gps_offset=0.055, **over), self.change if change == "default" else change)
+
+    def test_conf_offset_parser(self):
+        text = ("# refclock SHM 0 refid GPS offset 9\nrefclock SHM 0 refid GPS offset 0.0123 delay 0.2\n"
+                "refclock PPS /dev/pps0 lock GPS refid PPS offset -0.5\n")
+        self.assertEqual(autocal.conf_offset(text, "GPS"), 0.0123)
+        self.assertEqual(autocal.conf_offset(text, "PPS"), -0.5)
+        self.assertIsNone(autocal.conf_offset(text, "NMEA"))
+        self.assertEqual(autocal.conf_offset("refclock SHM 0 refid GPS delay 0.2", "GPS"), 0.0)
+        self.assertIsNone(autocal.conf_offset("refclock SHM 0 refid GPS offset nan", "GPS"))
+
+    def test_old_offset_in_conf(self):
+        self.write_conf(0.05)
+        self.write_reload("done", NOW + 5)
+        result = self.check()
+        self.assertIs(result["active"], False)
+        self.assertIn("0.05", result["reason"])
+        # Gilt auch ohne automatische Änderung (z. B. Hand-Änderung, Neuladen gescheitert).
+        self.assertIs(self.check(change=None)["active"], False)
+
+    def test_reload_error_after_change(self):
+        self.write_reload("error", NOW + 3)
+        result = self.check()
+        self.assertIs(result["active"], False)
+        self.assertIn("fehlgeschlagen", result["reason"])
+
+    def test_reload_running(self):
+        self.write_reload("running", NOW + 1)
+        self.assertIsNone(self.check()["active"])
+
+    def test_reload_done_after_change(self):
+        self.write_reload("done", NOW + 4)
+        result = self.check()
+        self.assertIs(result["active"], True)
+        self.assertEqual(result["since"], NOW + 4)
+
+    def test_stale_reload_without_conf_is_unverified(self):
+        self.write_reload("done", NOW - 3600)
+        self.assertIsNone(self.check()["active"])
+        self.write_reload("error", NOW - 3600)   # alter Fehler zählt nicht
+        self.assertIsNone(self.check()["active"])
+
+    def test_matching_conf_is_enough(self):
+        self.write_conf(0.055)
+        self.assertIs(self.check()["active"], True)
+        self.write_reload("error", NOW + 2)       # Neuladen danach gescheitert
+        self.assertIs(self.check()["active"], False)
+
+    def test_nothing_known(self):
+        self.assertIsNone(self.check()["active"])                 # ohne Supervisor: nicht belegbar
+        self.assertIs(self.check(change=None)["active"], True)    # nichts zu belegen
+
+
+class StatusCacheTest(unittest.TestCase):
+    """Review 1/6: GET /api/gps/autocal rechnet nicht bei jedem Aufruf den Verlauf durch."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.file = os.path.join(self.tmp, "autocal.json")
+        self.h = Harness()
+        self.h.cfg["gps_autocal"] = "suggest"
+        cache = mock.patch.dict(autocal._CAL_CACHE, {"key": None, "t": None, "window": None, "result": None})
+        cache.start()
+        self.addCleanup(cache.stop)
+
+    def test_default_uses_tick_result(self):
+        autocal.tick(self.h.cfg, NOW, deps=self.h.deps(), file=self.file)
+        autocal.tick(self.h.cfg, NOW + 7 * H, deps=self.h.deps(), file=self.file)
+        calls = len(self.h.windows)
+        s = autocal.api_status(self.h.cfg, NOW + 7.5 * H, deps=self.h.deps(), file=self.file)
+        self.assertEqual(len(self.h.windows), calls)
+        self.assertEqual(s["decision"]["action"], "suggest")
+        self.assertEqual(s["decision"]["t"], NOW + 7 * H)
+
+    def test_fresh_is_cached_briefly(self):
+        autocal.tick(self.h.cfg, NOW, deps=self.h.deps(), file=self.file)
+        calls = len(self.h.windows)
+        deps = self.h.deps()
+        autocal.api_status(self.h.cfg, NOW + 7 * H, fresh=True, deps=deps, file=self.file)
+        autocal.api_status(self.h.cfg, NOW + 7 * H + 60, fresh=True, deps=deps, file=self.file)
+        self.assertEqual(len(self.h.windows), calls + 1)
+        autocal.api_status(self.h.cfg, NOW + 7 * H + autocal.CAL_CACHE_SECONDS + 1, fresh=True,
+                           deps=deps, file=self.file)
+        self.assertEqual(len(self.h.windows), calls + 2)
+        # tick() nutzt den Zwischenspeicher nie.
+        autocal.tick(self.h.cfg, NOW + 7 * H + autocal.CAL_CACHE_SECONDS + 2, deps=deps, file=self.file)
+        self.assertEqual(len(self.h.windows), calls + 3)
+
+
+class UnmeasuredGpsTest(unittest.TestCase):
+    def test_reference_stats_skips_dead_gps(self):
+        net = {"a": {"o": 0.001, "s": "*", "k": "^"}, "b": {"o": 0.002, "s": "+", "k": "^"}}
+        samples = [{"t": i, "sources": dict(net, GPS={"o": 0.0, "s": "?", "k": "#"})} for i in range(5)]
+        samples += [{"t": 10, "sources": dict(net, GPS={"o": 0.01, "s": "-", "k": "#", "r": 0})}]
+        samples += [{"t": 11, "sources": dict(net, GPS={"o": 0.01, "s": "-", "k": "#", "r": 255})}]
+        self.assertEqual(autocal.reference_stats(samples, "GPS")["window_samples"], 1)
 
 
 class HelpKeysTest(unittest.TestCase):

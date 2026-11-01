@@ -137,15 +137,16 @@ emit_event() {
 }
 
 # Ausgabe zusätzlich nach ${RUN_DIR}/ntp-gui.log (logtee.py, mit Rotation).
-# Stirbt der tee, übernimmt cat – der Supervisor darf nie an einer kaputten
-# Pipe (SIGPIPE) sterben. Die ursprünglichen Deskriptoren bleiben gesichert,
+# Endet der tee – egal mit welchem Exit-Code, auch 0 nach einem Lesefehler –,
+# übernimmt cat: Der Supervisor darf nie an einer kaputten Pipe sterben (als
+# PID 1 ignoriert er SIGPIPE, dann scheitert printf mit EPIPE und set -e endet). Die ursprünglichen Deskriptoren bleiben gesichert,
 # damit stop_logtee beim Beenden die letzten Zeilen noch ins Container-Log bringt.
 start_logtee() {
   [[ "${NTPGUI_LOGTEE:-1}" == 1 && -f "${APP_DIR}/logtee.py" ]] || return 0
   command -v python3 >/dev/null 2>&1 || return 0
   mkdir -p "$RUN_DIR" 2>/dev/null || return 0
   exec {LOG_OUT_FD}>&1 {LOG_ERR_FD}>&2
-  exec > >(python3 -u "${APP_DIR}/logtee.py" "${RUN_DIR}/ntp-gui.log" || exec cat) 2>&1
+  exec > >(python3 -u "${APP_DIR}/logtee.py" "${RUN_DIR}/ntp-gui.log"; exec cat) 2>&1
   LOGTEE_PID=$!
   # Ein 'wait' ohne Argument wartet auch auf die Prozess-Substitution (bash 5.2
   # sogar unabhängig von $!) – und der tee endet erst nach uns. Deshalb wartet
@@ -162,7 +163,9 @@ stop_logtee() {
   exec 1>&"$LOG_OUT_FD" 2>&"$LOG_ERR_FD"
   for (( i = 0; i < 30; i++ )); do
     st=""
-    read -r _ _ st _ < "/proc/${LOGTEE_PID}/stat" 2>/dev/null || break
+    # Klammern: Die Umleitung von stderr muss auch den Fehler des Öffnens
+    # (Prozess schon abgeräumt) schlucken – sonst steht er bei jedem Stopp im Log.
+    { read -r _ _ st _ < "/proc/${LOGTEE_PID}/stat"; } 2>/dev/null || break
     [[ "$st" == Z ]] && break
     sleep 0.1
   done

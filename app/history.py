@@ -14,7 +14,13 @@ Aufbewahrung:
   * HISTORY_DAYS (Standard 30): Messpunkte, die mehr als so viele Tage älter
     sind als der neueste, werden gelöscht. Bezug ist der neueste Messpunkt,
     nicht die Uhr – ein Pi ohne Echtzeituhr, der mit falschem Datum startet,
-    löscht so nicht versehentlich den ganzen Verlauf.
+    löscht so nicht versehentlich den ganzen Verlauf. Umgekehrt zählt als
+    „neuester“ höchstens jetzt + FUTURE_SLACK: Ein einzelner Messpunkt mit
+    Zeitstempel in der Zukunft (falsches Datum von Hand, Quelle stellt die Uhr
+    vor, importierte Datei) löscht sonst bei jedem Schreiben den ganzen
+    Verlauf. Solche Punkte werden gar nicht erst gespeichert (auch nicht bei der
+    Übernahme der .json.gz); bereits vorhandene bleiben liegen, zählen aber
+    nicht als „neuester“.
   * HISTORY_SIZE (wie in 1.2: Anzahl Messpunkte) bleibt eine OBERGRENZE, wenn
     die Variable gesetzt ist. Ist sie nicht gesetzt, übergibt server.py den
     alten Standard 8640 – der wird hier als „keine Obergrenze, nur Tage“
@@ -61,6 +67,7 @@ LEGACY_SIZE = 8640          # Standard von HISTORY_SIZE in 1.2 (24 h bei 10 s)
 DEFAULT_DAYS = 30.0
 FLUSH_SECONDS = 300.0
 MAX_PENDING = 5000          # Puffer, falls die Datenbank zeitweise nicht schreibbar ist
+FUTURE_SLACK = 86400.0      # Messpunkte mehr als 1 Tag in der Zukunft werden verworfen
 
 ROLLUP_SECONDS = 300        # Vorverdichtung: ein Punkt je 5 Minuten
 RAW_LIMIT = 30_000          # mehr Rohpunkte → aus der Vorverdichtung lesen
@@ -99,6 +106,15 @@ def _valid(sample: Any) -> bool:
         and not isinstance(sample.get("t"), bool) and math.isfinite(sample["t"])
 
 
+def _latest_allowed(now: float | None = None) -> float:
+    """Spätester Zeitstempel, der noch als Gegenwart gilt."""
+    return (time.time() if now is None else now) + FUTURE_SLACK
+
+
+def _storable(sample: Any, now: float | None = None) -> bool:
+    return _valid(sample) and sample["t"] <= _latest_allowed(now)
+
+
 class History:
     def __init__(self, size: int | None, path: str | None = None, days: float | None = None,
                  db_path: str | None = None) -> None:
@@ -135,6 +151,8 @@ class History:
     # --- schreiben -----------------------------------------------------------
     def add(self, sample: dict) -> None:
         sample.setdefault("t", int(time.time()))
+        if not _storable(sample):
+            return  # Zeitstempel weit in der Zukunft – würde den Verlauf verdrängen
         with self._lock:
             if self._sql:
                 self._pending.append(sample)
@@ -154,14 +172,16 @@ class History:
         """Puffer in die Datenbank schreiben und aufräumen. Aufruf unter self._lock."""
         if not self._sql:
             return False
+        latest = _latest_allowed()
         rows = [(int(s["t"]), _dumps(s))
-                for s in self._pending if _valid(s)]
+                for s in self._pending if _valid(s) and s["t"] <= latest]
         try:
             with store.transaction(self.db_path) as conn:
                 if rows:
                     conn.executemany("INSERT OR REPLACE INTO samples(t, json) VALUES(?, ?)", rows)
                 newest = conn.execute("SELECT max(t) FROM samples").fetchone()[0]
                 if newest is not None:
+                    newest = min(newest, latest)
                     conn.execute("DELETE FROM samples WHERE t < ?", (newest - self.days * 86400,))
                 if self.size:
                     conn.execute("DELETE FROM samples WHERE t < (SELECT t FROM samples "
@@ -186,6 +206,7 @@ class History:
             newest = max(pend) if newest is None else max(newest, max(pend))
         if newest is None:
             return None, None
+        newest = min(newest, _latest_allowed())
         lower = newest - self.days * 86400
         if self.size:
             extra = len(set(pend))
@@ -204,18 +225,29 @@ class History:
             lower = max(lower, min(candidates))
         return lower, newest
 
-    def _rows(self, lower: float, upper: float) -> list[dict]:
+    def _raw_rows(self, lower: float, upper: float) -> list[str]:
+        """JSON-Texte der Punkte im Fenster (unter self._lock aufrufen)."""
         rows = self._db(_cte("samples") + "SELECT j FROM d ORDER BY t",
                         {"lo": lower, "hi": upper, "p": self._pending_json()})
+        return [text for (text,) in rows]
+
+    @staticmethod
+    def _decode(texts: list[str]) -> list[dict]:
+        """JSON dekodieren – bewusst AUSSERHALB von self._lock (bei 60 000 Punkten
+        dauert das auf einem Pi Sekunden, add() der Messschleife soll nicht warten)."""
         out = []
-        for (text,) in rows:
+        for text in texts:
             try:
                 out.append(json.loads(text))
-            except ValueError:
+            except (TypeError, ValueError):
                 continue
         return out
 
+    def _rows(self, lower: float, upper: float) -> list[dict]:
+        return self._decode(self._raw_rows(lower, upper))
+
     def snapshot(self, since: float | None = None) -> list[dict]:
+        texts = None
         with self._lock:
             if self._sql:
                 try:
@@ -224,12 +256,17 @@ class History:
                         return []
                     if since is not None:
                         lower = max(lower, since)
-                    return self._rows(lower, newest)
+                    texts = self._raw_rows(lower, newest)
                 except Exception as exc:
                     self.error = f"Verlauf nicht lesbar: {exc}"
                     data = list(self._pending)
             else:
                 data = list(self._samples)
+        if texts is not None:
+            return self._decode(texts)
+        if data:
+            latest = _latest_allowed()
+            data = [s for s in data if s.get("t", 0) <= latest]
         if data:
             cutoff = data[-1].get("t", 0) - self.days * 86400
             data = [s for s in data if s.get("t", 0) >= cutoff]
@@ -242,19 +279,25 @@ class History:
         if self._sql:
             with self._lock:
                 try:
-                    return self._query_sql(seconds, points)
+                    texts, result = self._query_sql(seconds, points)
                 except Exception as exc:
                     self.error = f"Verlauf nicht lesbar: {exc}"
+                    texts, result = None, None
+            if texts is not None:
+                return self._decode(texts)
+            if result is not None:
+                return result
         data = self.snapshot()
         if seconds and data:
             cutoff = data[-1]["t"] - seconds
             data = [s for s in data if s["t"] >= cutoff]
         return downsample(data, points)
 
-    def _query_sql(self, seconds: float | None, points: int) -> list[dict]:
+    def _query_sql(self, seconds: float | None, points: int) -> tuple[list[str] | None, list[dict] | None]:
+        """(Rohtexte zum Dekodieren außerhalb der Sperre, None) oder (None, fertige Punkte)."""
         lower, newest = self._bounds()
         if newest is None:
-            return []
+            return None, []
         if seconds:
             lower = max(lower, newest - seconds)
         params = {"lo": lower, "hi": newest, "p": self._pending_json()}
@@ -263,7 +306,7 @@ class History:
         if width < ROLLUP_SECONDS:
             count = self._db(_cte("samples") + "SELECT count(*) FROM d", params)[0][0]
             if points <= 0 or count <= points:
-                return self._rows(lower, newest)
+                return self._raw_rows(lower, newest), None
             if count <= RAW_LIMIT:
                 table = "samples"
         if table == "samples_5m":
@@ -273,7 +316,7 @@ class History:
             width = max(ROLLUP_SECONDS, math.ceil(width / ROLLUP_SECONDS) * ROLLUP_SECONDS)
             params["lo"] = (int(lower) // ROLLUP_SECONDS) * ROLLUP_SECONDS
         params["w"] = width
-        return _aggregate(self._db, table, params)
+        return None, _aggregate(self._db, table, params)
 
     def stats(self) -> dict:
         """Zustand für Diagnose/Statusseite (ohne Messwerte)."""
@@ -307,7 +350,7 @@ class History:
                     return 0
         data = _read_gzip(self.path)
         with self._lock:
-            for sample in data[-self._samples.maxlen:]:
+            for sample in [s for s in data if _storable(s)][-self._samples.maxlen:]:
                 if _valid(sample):
                     self._samples.append(sample)
             return len(self._samples)
@@ -315,8 +358,13 @@ class History:
     def _migrate_gzip(self) -> None:
         if not self.path or not os.path.exists(self.path):
             return
+        latest = _latest_allowed()
         data = [s for s in _read_gzip(self.path) if _valid(s)]
-        rows = [(int(s["t"]), _dumps(s)) for s in data]
+        skipped = sum(1 for s in data if s["t"] > latest)
+        rows = [(int(s["t"]), _dumps(s)) for s in data if s["t"] <= latest]
+        if skipped:
+            print(f"[web] Verlauf: {skipped} Messpunkt(e) mit Zeitstempel in der Zukunft "
+                  "nicht übernommen", flush=True)
         try:
             with store.transaction(self.db_path) as conn:
                 conn.executemany("INSERT OR IGNORE INTO samples(t, json) VALUES(?, ?)", rows)
@@ -537,6 +585,30 @@ def _median(values: list[float]) -> float:
     return ordered[mid] if len(ordered) % 2 else (ordered[mid - 1] + ordered[mid]) / 2
 
 
+GPS_UNMEASURED_STATES = frozenset({"?", "x", "~"})
+
+
+def gps_measured(gps: Any) -> bool:
+    """Ist dieser GPS-Wert eines Messpunkts wirklich gemessen?
+
+    chrony meldet für eine Refclock ohne Daten weiter einen Offset (0 ns) –
+    mit Zustand „?“ (nicht erreichbar) und Reach 0. „x“ (Falschgeber) und „~“
+    (zu unruhig) taugen ebenfalls nicht als Messwert. Ältere Messpunkte haben
+    keinen Reach-Wert („r“), dann entscheidet nur der Zustand.
+    """
+    if not isinstance(gps, dict):
+        return False
+    offset = gps.get("o")
+    if isinstance(offset, bool) or not isinstance(offset, (int, float)) or not math.isfinite(offset):
+        return False
+    if gps.get("s") in GPS_UNMEASURED_STATES:
+        return False
+    reach = gps.get("r", gps.get("reach"))
+    if isinstance(reach, (int, float)) and not isinstance(reach, bool) and reach == 0:
+        return False
+    return True
+
+
 def calibrate(samples: list[dict], gps_name: str, current_offset: float,
               current_delay: float) -> dict[str, Any]:
     """Vergleicht den GPS-Offset mit den aktiven Netzwerkquellen.
@@ -551,10 +623,11 @@ def calibrate(samples: list[dict], gps_name: str, current_offset: float,
     for sample in samples:
         sources = sample.get("sources") or {}
         gps = sources.get(gps_name)
-        if not gps or not isinstance(gps.get("o"), (int, float)):
-            continue
+        if not gps_measured(gps):
+            continue  # GPS ohne Daten („?“, Reach 0 …) – sonst zählte 0 − Netz als Verspätung
         reference = [v.get("o") for name, v in sources.items()
-                     if name != gps_name and v.get("s") in {"*", "+"} and v.get("k") != "#"
+                     if name != gps_name and isinstance(v, dict) and v.get("s") in {"*", "+"}
+                     and v.get("k") != "#"
                      and isinstance(v.get("o"), (int, float))]
         if not reference:
             continue

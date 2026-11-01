@@ -113,5 +113,80 @@ class EventsTest(unittest.TestCase):
         self.assertEqual(events.ingest_supervisor(os.path.join(self.tmp, "fehlt")), 0)
 
 
+    @staticmethod
+    def _line(t, title):
+        return json.dumps({"t": t, "kind": "service", "level": "info", "title": title}) + "\n"
+
+    def test_ingest_reads_rest_after_rotation(self):
+        """Review 1/5: Zeilen, die vor der Rotation noch in die alte Datei kamen, gehen nicht verloren."""
+        path = os.path.join(self.tmp, "events.jsonl")
+        now = int(time.time())
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(self._line(now - 9, "eins"))
+        self.assertEqual(events.ingest_supervisor(path), 1)
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(self._line(now - 8, "zwei"))
+            handle.write(self._line(now - 7, "drei"))
+        os.replace(path, path + ".1")     # wie emit_event im Supervisor ab 1 MB
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(self._line(now - 6, "vier"))
+        self.assertEqual(events.ingest_supervisor(path), 3)
+        self.assertEqual(events.ingest_supervisor(path), 0)
+        self.assertEqual(sorted(r["title"] for r in events.query()), ["drei", "eins", "vier", "zwei"])
+
+    def test_ingest_rotation_without_new_file_yet(self):
+        path = os.path.join(self.tmp, "events.jsonl")
+        now = int(time.time())
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(self._line(now - 9, "eins"))
+        events.ingest_supervisor(path)
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(self._line(now - 8, "zwei"))
+        os.replace(path, path + ".1")
+        self.assertEqual(events.ingest_supervisor(path), 0)   # neue Datei fehlt noch
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(self._line(now - 5, "drei"))
+        self.assertEqual(events.ingest_supervisor(path), 2)
+        self.assertEqual(sorted(r["title"] for r in events.query()), ["drei", "eins", "zwei"])
+
+    def test_ingest_detects_inode_reuse(self):
+        """Gleicher Inode, gleiche Größe, anderer Inhalt (tmpfs nach Container-Neustart): neu lesen."""
+        path = os.path.join(self.tmp, "events.jsonl")
+        now = int(time.time())
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(self._line(now - 100, "Start A"))
+        self.assertEqual(events.ingest_supervisor(path), 1)
+        # Inhalt gleicher Länge an gleicher Stelle (Inode bleibt): simuliert die Wiederverwendung.
+        with open(path, "r+", encoding="utf-8") as handle:
+            handle.write(self._line(now - 1, "Start B"))
+        self.assertEqual(events.ingest_supervisor(path), 1)
+        self.assertEqual(sorted(r["title"] for r in events.query()), ["Start A", "Start B"])
+        self.assertEqual(events.ingest_supervisor(path), 0)
+
+    def test_ingest_fingerprint_survives_growth(self):
+        path = os.path.join(self.tmp, "events.jsonl")
+        now = int(time.time())
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(self._line(now - 50, "a"))
+        events.ingest_supervisor(path)
+        for i in range(10):   # wächst über 256 Bytes hinaus
+            with open(path, "a", encoding="utf-8") as handle:
+                handle.write(self._line(now - 40 + i, f"n{i}"))
+            self.assertEqual(events.ingest_supervisor(path), 1)
+        self.assertEqual(events.count(), 11)
+
+    def test_ingest_legacy_state_without_fingerprint(self):
+        path = os.path.join(self.tmp, "events.jsonl")
+        now = int(time.time())
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(self._line(now - 50, "alt"))
+        events._ensure()
+        with store.transaction() as conn:
+            conn.execute("INSERT INTO events_meta(key, value) VALUES(?, ?)",
+                         ("ingest:" + os.path.abspath(path),
+                          json.dumps({"inode": os.stat(path).st_ino, "offset": os.stat(path).st_size})))
+        self.assertEqual(events.ingest_supervisor(path), 0)   # schon gelesen – nicht doppelt
+
+
 if __name__ == "__main__":
     unittest.main()

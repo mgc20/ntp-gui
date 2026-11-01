@@ -3,8 +3,10 @@
 ``preview(cfg, options)`` zeigt im Dashboard genau das, was exportiert würde,
 ``bundle(cfg, options)`` liefert dasselbe als tar.gz (eine Datei je Abschnitt
 plus MANIFEST.txt). Beides läuft durch den zentralen Datenschutzfilter
-(egress, Zweck "diagnostics"); ``egress.check_no_leaks`` ist die letzte
-Schranke – findet sie etwas, wird **nichts** exportiert.
+(egress, Zweck "diagnostics"). Danach zwei Schranken: ``egress.check_no_leaks``
+und die davon unabhängige ``egress.backstop`` auf den fertigen Bytes (sie sucht
+u. a. exakt nach allem, was die Konfiguration an eigenen Namen, Seriennummern
+und Interfaces kennt). Findet eine davon etwas, wird **nichts** exportiert.
 
 Hochgeladen wird nichts: Das Paket landet nur im Browser der Person, die es
 anfordert. Sie entscheidet, wem sie es gibt.
@@ -17,6 +19,7 @@ from __future__ import annotations
 
 import gzip
 import io
+import ipaddress
 import json
 import os
 import platform
@@ -40,16 +43,28 @@ RECORDING_CAP = 4 * 1024 * 1024
 LOG_LINES = 2000
 LOG_READ_BYTES = 1024 * 1024
 EVENT_DAYS = 7
+# Tabellen im CSV-Modus (-c): Im Klartext kürzt chronyc lange Namen mit ">" – eine gekürzte
+# IPv6-Adresse würde der Filter nicht mehr sicher erkennen. Schlüssel/Wert-Ausgaben (tracking,
+# ntpdata, serverstats, activity) kürzen nichts und bleiben lesbarer Klartext.
 CHRONY_COMMANDS = [
     ("tracking", ("tracking",)),
-    ("sources", ("-n", "sources", "-v")),
-    ("sourcestats", ("-n", "sourcestats", "-v")),
-    ("selectdata", ("-n", "selectdata", "-v")),
+    ("sources", ("-n", "-c", "sources")),
+    ("sourcestats", ("-n", "-c", "sourcestats")),
+    ("selectdata", ("-n", "-c", "selectdata")),
     ("ntpdata", ("-n", "ntpdata")),
     ("serverstats", ("serverstats",)),
     ("activity", ("activity",)),
-    ("authdata", ("-n", "authdata")),
+    ("authdata", ("-n", "-c", "authdata")),
 ]
+CHRONY_ARGS = dict(CHRONY_COMMANDS)
+CSV_COLUMNS = {
+    "sources": "Modus,Zustand,Name/IP,Stratum,Poll,Reach,LastRx,Offset (korrigiert),Offset (gemessen),"
+               "Fehlerschranke (auf 10 ms gerundet)",
+    "sourcestats": "Name/IP,Messpunkte,Läufe,Spanne,Frequenz (ppm),Frequenz-Schiefe (ppm),Offset,Std.-Abw.",
+    "selectdata": "Zustand,Name/IP,Auth,Optionen (konfiguriert …),Optionen (wirksam …),Letzte Messung,Score,"
+                  "Intervall unten,Intervall oben (Netzquellen auf 10 ms gerundet),Schaltsekunde",
+    "authdata": "Name/IP,Modus,KeyID,Typ,Schlüssellänge,Letzter Schlüsseltausch,Versuche,NAK,Cookies,Cookie-Länge",
+}
 
 SECTION_TITLES = {
     "meta": "Version, Laufzeit, Plattform",
@@ -273,7 +288,10 @@ def _collect_chrony(cfg: dict, options: dict) -> dict:
         futures = {name: pool.submit(_chronyc, args) for name, args in CHRONY_COMMANDS}
         for name, future in futures.items():
             try:
-                out[name] = future.result(timeout=DEADLINE)
+                text = future.result(timeout=DEADLINE)
+                if name in CSV_COLUMNS and isinstance(text, str):
+                    text = f"# Spalten: {CSV_COLUMNS[name]}\n{text}"
+                out[name] = text
             except Exception as exc:  # chronyd weg, Zeitüberschreitung …
                 out[name] = f"Fehler: {exc}"
     try:
@@ -326,7 +344,22 @@ def _collect_events(cfg: dict, options: dict) -> Any:
         import events
     except ImportError:
         return {"hinweis": "Ereignisprotokoll nicht verfügbar"}
-    return events.query(since=time.time() - EVENT_DAYS * 86400, limit=2000)
+    rows = events.query(since=time.time() - EVENT_DAYS * 86400, limit=2000)
+    return [_without_key_name(row) for row in rows]
+
+
+def _without_key_name(row: Any) -> Any:
+    """Ältere Ereignisse trugen den frei gewählten Namen eines API-Schlüssels im Titel."""
+    if not isinstance(row, dict) or not str(row.get("title", "")).startswith("API-Schlüssel"):
+        return row
+    row = dict(row)
+    data = dict(row.get("data") or {}) if isinstance(row.get("data"), dict) else {}
+    data.pop("name", None)
+    key_id = data.get("id")
+    head = str(row["title"]).split(":", 1)[0]
+    row["title"] = f"{head}: {key_id}" if key_id else head
+    row["data"] = data
+    return row
 
 
 def _collect_logs(cfg: dict, options: dict) -> str:
@@ -462,20 +495,101 @@ def _collect(cfg: dict, names: list[str], options: dict) -> dict:
 # Filtern, Prüfen, Verpacken
 # ---------------------------------------------------------------------------
 
+def _read_first_line(path: str) -> str:
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            return handle.readline().strip()
+    except OSError:
+        return ""
+
+
+def _sys_root() -> str:
+    return os.environ.get("NTPGUI_SYS_ROOT", "/sys")
+
+
+def _hardware_serials() -> list[str]:
+    """Echte Seriennummern dieses Geräts (USB, DMI) – für die exakte Suche im Export."""
+    import glob
+    root = _sys_root()
+    found = []
+    for path in sorted(glob.glob(os.path.join(root, "bus", "usb", "devices", "*", "serial")))[:256]:
+        found.append(_read_first_line(path))
+    for name in ("product_serial", "board_serial", "chassis_serial", "product_uuid"):
+        found.append(_read_first_line(os.path.join(root, "class", "dmi", "id", name)))
+    return [v for v in dict.fromkeys(found) if egress.serial_is_specific(v)]
+
+
+def _interface_names(cfg: dict) -> list[str]:
+    names = [cfg.get("ptp_interface"), cfg.get("ntp_hw_timestamp_interface")]
+    try:
+        names += os.listdir(os.path.join(_sys_root(), "class", "net"))
+    except OSError:
+        pass
+    return [str(n) for n in dict.fromkeys(names) if n and str(n) not in {"*", "auto"}]
+
+
+def _cert_names(cfg: dict) -> list[str]:
+    path = cfg.get("nts_server_cert")
+    if not path or not os.path.isfile(str(path)):
+        return []
+    try:
+        import chrony
+        info = chrony._cert_info(str(path))
+    except Exception:
+        return []
+    names = [info.get("common_name"), *(info.get("alt_names") or [])]
+    return [str(n).lstrip("*.") for n in names if n]
+
+
+def _is_ip(text: str) -> bool:
+    try:
+        ipaddress.ip_address(str(text).strip().strip("[]").split("%", 1)[0])
+        return True
+    except ValueError:
+        return False
+
+
 def _known_names(cfg: dict) -> list[str]:
+    """Eigene Host- und Domainnamen: Rechner, NTS, Quellen, Erzwingen-Liste, Zertifikat, bind_address."""
     names = set()
     try:
         names.add(socket.gethostname())
         names.add(socket.getfqdn())
     except OSError:
         pass
-    for key in ("nts_server_name",):
+    for key in ("nts_server_name", "bind_address"):
         if cfg.get(key):
             names.add(str(cfg[key]))
+    for source in cfg.get("ntp_sources") or []:
+        if isinstance(source, dict) and source.get("host"):
+            names.add(str(source["host"]))
+    hosts = cfg.get("enforce_hostnames") or []
+    if isinstance(hosts, str):
+        hosts = re.split(r"[\s,]+", hosts)
+    names.update(str(h) for h in hosts if h)
+    names.update(_cert_names(cfg))
     for env in ("HOSTNAME", "NTPGUI_PUBLIC_NAME"):
         if os.environ.get(env):
             names.add(os.environ[env])
-    return [n for n in names if n and n not in {"localhost", "localhost.localdomain"}]
+    out = []
+    for name in names:
+        n = str(name).strip().strip("[]").rstrip(".")
+        if not n or n in {"localhost", "localhost.localdomain", "*", "auto"} or _is_ip(n):
+            continue
+        if egress.is_public_host(n):
+            continue  # öffentliche Zeitdienste (ptbtime1.ptb.de …) bleiben lesbar
+        out.append(n)
+    return out
+
+
+def _known_values(cfg: dict) -> dict:
+    """Weitere exakt zu suchende Werte: Titel, Seriennummern, eigene Interface-Namen."""
+    title = str(cfg.get("web_title") or "").strip()
+    return {
+        "titel": [title] if title and title not in egress.DEFAULT_TITLES else [],
+        "seriennummer": _hardware_serials(),
+        "schnittstelle": _interface_names(cfg),
+    }
 
 
 def _render(name: str, content: Any) -> tuple[str, str]:
@@ -501,7 +615,7 @@ def _build(cfg: dict, sections: list[str] | None, options: dict) -> tuple[dict, 
     options = dict(options or {})
     names = _sections(options, sections)
     raw = _collect(cfg or {}, names, options)
-    sanitizer = egress.Sanitizer("diagnostics", _known_names(cfg or {}))
+    sanitizer = egress.Sanitizer("diagnostics", _known_names(cfg or {}), _known_values(cfg or {}))
     content: dict[str, Any] = {}
     truncated: dict[str, bool] = {}
     for name in names:
@@ -509,24 +623,76 @@ def _build(cfg: dict, sections: list[str] | None, options: dict) -> tuple[dict, 
         cut = False
         if isinstance(value, str):
             value, cut = _cap_text(value, RECORDING_CAP if name == "recording" else SECTION_CAP)
-        clean = sanitizer.obj(value)
+        if name == "chrony" and isinstance(value, dict):
+            clean = {sanitizer.text(k): (sanitizer.chronyc(CHRONY_ARGS[k], v) if k in CHRONY_ARGS
+                                         and isinstance(v, str) else sanitizer.obj(v))
+                     for k, v in value.items()}
+        else:
+            clean = sanitizer.obj(value)
         filename, text = _render(name, clean)
         cap = RECORDING_CAP if name == "recording" else SECTION_CAP
         if len(text.encode("utf-8")) > cap:
             text, more = _cap_text(text, cap)
             cut = cut or more
             clean = text  # gekürzt: als Text weiterreichen, damit Vorschau == Paket
+        if name in LINE_SECTIONS and isinstance(clean, str):
+            clean = drop_leaky_lines(clean, sanitizer)
+        elif name == "ptp" and isinstance(clean, dict) and isinstance(clean.get("log"), str):
+            clean = dict(clean, log=drop_leaky_lines(clean["log"], sanitizer))
         content[name] = clean
         truncated[name] = cut
     findings = egress.check_no_leaks(content)
     if findings:
         raise LeakError(findings)
-    return content, sanitizer.report(), truncated
+    rendered = {}
+    compact = {}
+    for name, value in content.items():
+        filename, text = _render(name, value)
+        rendered[filename] = text.encode("utf-8")
+        if not isinstance(value, str):
+            # Eingerückt steht jede Zahl auf einer eigenen Zeile – kompakt sieht die Schlussprüfung
+            # auch Zahlenpaare in Listen und Objekten.
+            compact[f"{filename} (kompakt)"] = json.dumps(value, separators=(",", ":"), ensure_ascii=False,
+                                                          default=str).encode("utf-8")
+    findings = egress.backstop(rendered, sanitizer.backstop_known()) + egress.backstop_compact_json(compact)
+    if findings:
+        raise LeakError(findings)
+    return content, sanitizer, truncated
+
+
+LINE_SECTIONS = {"logs", "recording"}
+DROPPED_LINE = "[Zeile entfernt – Datenschutz]"
+
+
+def drop_leaky_lines(text: str, sanitizer: "egress.Sanitizer") -> str:
+    """Log-Zeilen, die eine der beiden Schlussprüfungen beanstandet, ganz entfernen.
+
+    In Logs und Aufzeichnungen steht fremder Text (z. B. ein abgelehnter Host-Name). Statt den
+    ganzen Export abzubrechen – das ließe sich von außen erzwingen –, fliegt nur die Zeile raus.
+    Danach laufen beide Prüfungen wie immer über das ganze Paket.
+    """
+    bad: set[int] = set()
+    for finding in egress.check_no_leaks(text):
+        match = re.search(r"Zeile (\d+)", str(finding.get("path", "")))
+        if match:
+            bad.add(int(match.group(1)))
+    for finding in egress.backstop({"abschnitt": text.encode("utf-8")}, sanitizer.backstop_known()):
+        match = re.search(r"Zeile (\d+)", str(finding.get("path", "")))
+        if match:
+            bad.add(int(match.group(1)))
+    if not bad:
+        return text
+    lines = text.split("\n")
+    for number in bad:
+        if 1 <= number <= len(lines):
+            lines[number - 1] = DROPPED_LINE
+    sanitizer.count("zeile_entfernt", len(bad))
+    return "\n".join(lines)
 
 
 def build(cfg: dict, sections: list[str] | None = None, options: dict | None = None) -> dict:
     """Gefilterte Abschnitte {name: inhalt}. Wirft LeakError, wenn die Schlussprüfung anschlägt."""
-    content, _report, _cut = _build(cfg, sections, options or {})
+    content, _sanitizer, _cut = _build(cfg, sections, options or {})
     return content
 
 
@@ -539,7 +705,8 @@ def _report_with_labels(report: dict) -> dict:
 def preview(cfg: dict, options: dict | None = None) -> dict:
     """Für GET /api/diagnostics/preview: genau das, was im Paket stünde."""
     options = options or {}
-    content, report, truncated = _build(cfg, None, options)
+    content, sanitizer, truncated = _build(cfg, None, options)
+    report = sanitizer.report()
     sections = []
     for name, value in content.items():
         filename, text = _render(name, value)
@@ -603,7 +770,8 @@ def manifest(sections: list[dict], report: dict, generated: float) -> str:
 def bundle(cfg: dict, options: dict | None = None) -> bytes:
     """Für GET /api/diagnostics/bundle: tar.gz mit einer Datei je Abschnitt + MANIFEST.txt."""
     options = options or {}
-    content, report, truncated = _build(cfg, None, options)
+    content, sanitizer, truncated = _build(cfg, None, options)
+    report = sanitizer.report()
     generated = time.time()
     base = filename_for(generated)[:-len(".tar.gz")]
     files: list[tuple[str, bytes]] = []
@@ -613,12 +781,18 @@ def bundle(cfg: dict, options: dict | None = None) -> bytes:
         files.append((filename, text.encode("utf-8")))
         sections.append({"name": name, "file": filename, "title": SECTION_TITLES.get(name, name),
                          "truncated": truncated.get(name, False)})
-    manifest_text = manifest(sections, report, generated)
+    # Auch das MANIFEST durch den Filter: Ein Titel wie „Zeitserver“ stünde sonst in unseren
+    # eigenen Erklärungen und die Schlussprüfung bräche (zu Recht) ab.
+    manifest_text = sanitizer.text(manifest(sections, report, generated))
     # Schlussprüfung auf genau den Bytes, die das Paket verlassen.
     for filename, data in files + [("MANIFEST.txt", manifest_text.encode("utf-8"))]:
         findings = egress.check_no_leaks(data.decode("utf-8"))
         if findings:
             raise LeakError([dict(f, path=f"{filename}: {f['path']}") for f in findings])
+    findings = egress.backstop(dict(files + [("MANIFEST.txt", manifest_text.encode("utf-8"))]),
+                               sanitizer.backstop_known())
+    if findings:
+        raise LeakError(findings)
     buffer = io.BytesIO()
     with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
         for filename, data in [("MANIFEST.txt", manifest_text.encode("utf-8"))] + files:

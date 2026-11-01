@@ -57,7 +57,8 @@ class ApiKeysTest(TempDir):
     def test_only_hash_stored(self):
         _id, token = apikeys.create("x", "admin")
         stored = store.query("SELECT hash FROM api_keys")[0][0]
-        self.assertTrue(stored.startswith("pbkdf2_sha256$"))
+        self.assertRegex(stored, r"^sha256\$[0-9a-f]{64}$")
+        self.assertEqual(stored, apikeys.hash_token(token))
         raw = Path(store.path()).read_bytes() + (Path(store.path() + "-wal").read_bytes()
                                                    if os.path.exists(store.path() + "-wal") else b"")
         self.assertNotIn(token[13:].encode(), raw)
@@ -95,10 +96,56 @@ class ApiKeysTest(TempDir):
         self.assertFalse(apikeys.allows("bogus", "GET"))
 
     def test_events_logged_without_secret(self):
-        _id, token = apikeys.create("Skript", "read")
+        key_id, token = apikeys.create("HA Familie Schmidt, Lindenweg 7", "read")
+        apikeys.revoke(key_id)
         rows = events.query(kinds=["settings"])
-        self.assertTrue(any("Skript" in r["title"] for r in rows))
+        titles = [r["title"] for r in rows]
+        self.assertIn(f"API-Schlüssel angelegt: {key_id}", titles)
+        self.assertIn(f"API-Schlüssel widerrufen: {key_id}", titles)
+        # Der frei gewählte Name gehört nicht ins Ereignisprotokoll (→ Diagnosepaket).
+        self.assertNotIn("Schmidt", repr(rows))
+        self.assertNotIn("Lindenweg", repr(rows))
         self.assertNotIn(token, repr(rows))
+
+    def test_unknown_token_is_cheap(self):
+        """Erfundene Schlüssel dürfen kein PBKDF2 auslösen (CPU-Erschöpfung ohne Anmeldung)."""
+        apikeys.create("x", "read")
+        with mock.patch.object(settings, "verify_password", side_effect=AssertionError("PBKDF2")), \
+                mock.patch.object(settings, "hash_password", side_effect=AssertionError("PBKDF2")):
+            for i in range(20):
+                self.assertIsNone(apikeys.verify("ntpg_" + f"{i:08d}" + "b" * 24))
+
+    def test_legacy_pbkdf2_hash_verified_then_rehashed(self):
+        key_id, token = apikeys.create("alt", "admin")
+        legacy = settings.hash_password(token)
+        store.execute("UPDATE api_keys SET hash=? WHERE id=?", (legacy, key_id))
+        apikeys.clear_cache()
+        forged = token[:13] + ("A" if token[13] != "A" else "B") + token[14:]
+        self.assertIsNone(apikeys.verify(forged))
+        self.assertEqual(store.query("SELECT hash FROM api_keys")[0][0], legacy)  # falscher → bleibt
+        self.assertEqual(apikeys.verify(token)["id"], key_id)
+        self.assertEqual(store.query("SELECT hash FROM api_keys")[0][0], apikeys.hash_token(token))
+        apikeys.clear_cache()
+        self.assertEqual(apikeys.verify(token)["id"], key_id)  # auch nach der Umstellung
+
+    def test_unknown_hash_scheme_rejected(self):
+        key_id, token = apikeys.create("x", "read")
+        store.execute("UPDATE api_keys SET hash=? WHERE id=?", ("md5$abc", key_id))
+        apikeys.clear_cache()
+        self.assertIsNone(apikeys.verify(token))
+
+    def test_revoke_during_running_verify_is_not_cached(self):
+        """Läuft eine Prüfung noch, während widerrufen wird, darf ihr Ergebnis nicht in den Merker."""
+        key_id, token = apikeys.create("x", "admin")
+        real = apikeys._verify_slow
+
+        def slow(kid, tok):
+            result = real(kid, tok)   # liest den Schlüssel noch als gültig …
+            apikeys.revoke(key_id)    # … währenddessen wird er widerrufen
+            return result
+        with mock.patch.object(apikeys, "_verify_slow", side_effect=slow):
+            self.assertIsNotNone(apikeys.verify(token))  # diese eine Anfrage lief schon
+        self.assertIsNone(apikeys.verify(token))  # danach sofort ungültig – nicht aus dem Merker
 
 
 class InstanceTest(TempDir):

@@ -756,6 +756,44 @@ export const HELP = {
       + "Compose-Datei. **Dashboard**: hier gespeichert – hat Vorrang vor der Umgebung. "
       + "„Zurücksetzen“ entfernt den Dashboard-Wert, dann gilt wieder Umgebung bzw. Standard.",
   },
+  web_title: {
+    title: "Titel des Dashboards",
+    text: "Steht oben links und im Browser-Tab. Praktisch, wenn mehrere Zeitserver laufen – z. B. "
+      + "„Zeitserver Keller“ und „Zeitserver Büro“. Wirkt sofort, ohne Neustart.",
+  },
+  web_refresh: {
+    title: "Aktualisierung",
+    text: "Wie oft das Dashboard neue Werte vom Server holt (Standard **5 s**). Kürzer wirkt lebendiger, "
+      + "kostet aber etwas mehr Last auf kleinen Geräten wie dem Raspberry Pi. Ändert nichts an der "
+      + "Zeitsynchronisation selbst.",
+  },
+  history_interval: {
+    title: "Messintervall für Diagramme",
+    text: "Alle wie viele Sekunden ein Messpunkt für die Verlaufsdiagramme gespeichert wird (Standard "
+      + "**10 s**). Kürzer zeigt mehr Details, füllt aber die Datenbank schneller; die Werte werden für "
+      + "längere Zeiträume ohnehin zusammengefasst. chrony misst davon unabhängig.",
+  },
+  allow_networks: {
+    title: "Erlaubte Netze",
+    text: "Nur Geräte aus diesen Netzen bekommen eine NTP-Antwort, alle anderen werden still ignoriert. "
+      + "Standard sind alle **privaten Netze** (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, IPv6 ULA "
+      + "und Link-Local). Ein Netz pro Zeile in CIDR-Schreibweise. `all` erlaubt jedem – nur sinnvoll, "
+      + "wenn eine Firewall davor sitzt, sonst kann der Server für Angriffe missbraucht werden.",
+  },
+  gps_show_position: {
+    title: "Position anzeigen",
+    text: "Der GPS-Empfänger kennt seine Position auf wenige Meter genau – und damit den **Standort** "
+      + "dieses Servers. Deshalb ist die Anzeige standardmäßig **aus**: Dashboard und API zeigen dann "
+      + "keine Koordinaten. Für die Zeit spielt die Position keine Rolle. Das Diagnosepaket entfernt "
+      + "Koordinaten unabhängig von dieser Einstellung immer.",
+  },
+  settings_export: {
+    title: "Sicherung der Einstellungen",
+    text: "„Exportieren“ lädt die hier gespeicherten Werte als JSON-Datei herunter, **ungefiltert** und ohne "
+      + "Passwort – gedacht als Sicherung oder zum Übertragen auf einen zweiten Server. Sie enthält "
+      + "Servernamen, Hostnamen und Netze im Klartext. Für einen Fehlerbericht ist das **Diagnosepaket** "
+      + "auf der Seite „Diagnose“ gedacht: Es filtert solche Angaben heraus und zeigt vorher eine Vorschau.",
+  },
 };
 
 export const SELECT_STATE_HELP = {
@@ -801,7 +839,8 @@ export const HELP_GROUPS = [
     "ptp_transport", "ptp_profile", "utc_offset", "phc", "phc2sys", "ptp_servo", "ptp_rms", "ptp_freq"] },
   { title: "Clients", keys: ["client_address", "client_packets", "client_dropped", "client_interval", "client_last", "served_rate"] },
   HELP_GROUP_CLIENTS,
-  { title: "Einstellungen", keys: ["settings_source"] },
+  { title: "Einstellungen", keys: ["settings_source", "settings_export", "web_title", "web_refresh", "history_interval",
+    "allow_networks", "gps_show_position"] },
   HELP_GROUP_API,
   HELP_GROUP_DIAGNOSE,
   HELP_GROUP_HARDWARE,

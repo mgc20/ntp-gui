@@ -1,7 +1,7 @@
 // Hardware-Check: Was kann dieses Gerät von dem, was ntp-gui kann?
 // Alle Werte aus /api/hardware landen nur als Text im DOM (el/textContent).
 import { el, apiGet, fmtNumber, fmtTime, isNum, rich } from "../util.js";
-import { card, kv, info, badge, emptyNote, toast } from "../ui.js";
+import { card, kv, info, badge, emptyNote, toast, copyButton } from "../ui.js";
 
 // Kein Neuaufbau alle paar Sekunden: Kopierbare Ausschnitte bleiben markierbar,
 // aufgeklappte Details bleiben offen. Neu geladen wird per Knopf oder Seitenwechsel.
@@ -51,12 +51,10 @@ let fresh = null;
 let busy = false;
 
 function snippet(code, title) {
-  const copy = el("button", { type: "button", class: "copy", text: "Kopieren", onclick: async () => {
-    try { await navigator.clipboard.writeText(code); toast("Kopiert"); } catch (error) { toast("Kopieren nicht möglich – bitte markieren", "warn"); }
-  } });
+  const pre = el("pre", { class: "code", text: code });
   return el("div", { class: "snippet" },
-    el("div", { class: "snippet-head" }, el("strong", { text: title || "Änderung" }), copy),
-    el("pre", { class: "code", text: code }));
+    el("div", { class: "snippet-head" }, el("strong", { text: title || "Änderung" }), copyButton(code, pre)),
+    pre);
 }
 
 // Eine Zeile der Fähigkeitsmatrix im Stil der PTP-Prüfliste.

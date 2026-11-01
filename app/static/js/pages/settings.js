@@ -1,5 +1,5 @@
 import { el, rich, apiPost, apiGet } from "../util.js";
-import { card, info, badge, kv, emptyNote, toast } from "../ui.js";
+import { card, info, badge, kv, emptyNote, toast, copyButton, isPopoverOpen } from "../ui.js";
 
 export const live = false; // nicht bei jedem Refresh neu aufbauen – Eingaben bleiben stehen
 
@@ -28,15 +28,13 @@ export const FIELD_HELP = {
   ptp_clock_class: "clock_class", phc2sys_enable: "phc2sys", phc_refclock: "phc",
   gps_autocal: "autocal_mode", gps_autocal_max_step_ms: "autocal_step", gps_autocal_min_hours: "autocal_window",
   clientmon_enable: "clientmon",
+  web_title: "web_title", web_refresh_seconds: "web_refresh", history_interval: "history_interval",
+  gps_device: "hw_device_path", allow_networks: "allow_networks", gps_show_position: "gps_show_position",
 };
 
 function fmtDate(unix) {
   return typeof unix === "number" && Number.isFinite(unix)
     ? new Date(unix * 1000).toLocaleString("de-DE", { dateStyle: "short", timeStyle: "short" }) : "nie";
-}
-
-async function copyText(text) {
-  try { await navigator.clipboard.writeText(text); toast("Kopiert"); } catch (error) { toast("Kopieren nicht möglich – bitte markieren", "warn"); }
 }
 
 // Update-Hinweise: was die Migration der Einstellungen geändert hat und warum.
@@ -55,10 +53,48 @@ function notesCard(ctx, notes, readonly) {
     el("strong", { text: note.title }), el("p", {}, rich(note.text))))));
 }
 
+// Liste der Schlüssel. „Zuletzt benutzt“ ändert sich, während die Seite offen ist –
+// deshalb tauscht ein Zeitgeber nur diese Liste aus (die Seite selbst baut sich
+// nicht neu auf, damit Eingaben stehen bleiben).
+const KEYS_REFRESH_SECONDS = 30;
+let keysTimer = null;
+
+function keyListNodes(ctx, keys, disabled) {
+  if (keys === undefined) return [emptyNote("Schlüssel werden geladen …")];
+  if (!keys || !keys.keys || !keys.keys.length) return [emptyNote("Noch keine Schlüssel angelegt.")];
+  const revoke = async (key) => {
+    if (!window.confirm(`Schlüssel „${key.name}“ widerrufen? Programme, die ihn nutzen, bekommen danach keinen Zugriff mehr.`)) return;
+    try {
+      await apiPost("/api/apikeys/revoke", { id: key.id });
+      toast("Widerrufen");
+      ctx.invalidate("apikeys");
+      ctx.rerender();
+    } catch (error) { toast(error.message, "crit"); }
+  };
+  return [el("ul", { class: "apikey-list" }, keys.keys.map((key) => el("li", { class: "apikey" },
+    el("div", { class: "apikey-main" },
+      el("strong", { text: key.name }), " ", badge(key.scope_label || key.scope, key.scope === "admin" ? "warn" : "info"),
+      el("span", { class: "mono muted", text: ` ntpg_${key.id}…` })),
+    kv([["Angelegt", fmtDate(key.created), "api_keys"], ["Zuletzt benutzt", fmtDate(key.last_used), "api_key_used"]]),
+    el("button", { type: "button", class: "button", text: "Widerrufen", disabled, onclick: () => revoke(key) }))))];
+}
+
+function watchKeys(ctx, box, disabled) {
+  clearInterval(keysTimer);
+  keysTimer = setInterval(async () => {
+    if (!box.isConnected) { clearInterval(keysTimer); keysTimer = null; return; }
+    if (document.hidden || isPopoverOpen() || box.contains(document.activeElement)) return;
+    try {
+      const fresh = await apiGet("/api/apikeys");
+      if (box.isConnected) box.replaceChildren(...keyListNodes(ctx, fresh, disabled));
+    } catch (error) { /* nächster Versuch beim nächsten Takt */ }
+  }, KEYS_REFRESH_SECONDS * 1000);
+}
+
 // API-Schlüssel anlegen, auflisten, widerrufen + Instanz-Kennung.
 function apiCard(ctx, readonly, auth) {
   const ui = ctx.uiState;
-  const keys = ctx.data("apikeys", "/api/apikeys", 0);
+  const keys = ctx.data("apikeys", "/api/apikeys", KEYS_REFRESH_SECONDS);
   const inst = ctx.data("instance", "/api/v1/instance", 0);
   const disabled = readonly ? true : null;
   const body = [];
@@ -73,7 +109,7 @@ function apiCard(ctx, readonly, auth) {
       el("p", { class: "muted", text: "Jetzt kopieren – er wird nur dieses eine Mal angezeigt." }),
       el("div", { class: "apikey-token" },
         el("code", { class: "mono", text: token }),
-        el("button", { type: "button", class: "copy", text: "Kopieren", onclick: () => copyText(token) })),
+        copyButton(token)),
       el("button", { type: "button", class: "button", text: "Ich habe ihn gespeichert",
         onclick: () => { ui.newKey = null; ctx.rerender(); } })));
   }
@@ -92,24 +128,9 @@ function apiCard(ctx, readonly, auth) {
     el("label", {}, el("span", { text: "Name" }), name),
     el("label", {}, el("span", {}, "Recht ", info("api_key_scope", "Recht")), scope),
     el("button", { type: "button", class: "button primary", text: "Schlüssel anlegen", disabled, onclick: create })));
-  if (keys === undefined) body.push(emptyNote("Schlüssel werden geladen …"));
-  else if (!keys.keys || !keys.keys.length) body.push(emptyNote("Noch keine Schlüssel angelegt."));
-  else {
-    body.push(el("ul", { class: "apikey-list" }, keys.keys.map((key) => el("li", { class: "apikey" },
-      el("div", { class: "apikey-main" },
-        el("strong", { text: key.name }), " ", badge(key.scope_label || key.scope, key.scope === "admin" ? "warn" : "info"),
-        el("span", { class: "mono muted", text: ` ntpg_${key.id}…` })),
-      kv([["Angelegt", fmtDate(key.created), "api_keys"], ["Zuletzt benutzt", fmtDate(key.last_used), "api_key_used"]]),
-      el("button", { type: "button", class: "button", text: "Widerrufen", disabled, onclick: async () => {
-        if (!window.confirm(`Schlüssel „${key.name}“ widerrufen? Programme, die ihn nutzen, bekommen danach keinen Zugriff mehr.`)) return;
-        try {
-          await apiPost("/api/apikeys/revoke", { id: key.id });
-          toast("Widerrufen");
-          ctx.invalidate("apikeys");
-          ctx.rerender();
-        } catch (error) { toast(error.message, "crit"); }
-      } })))));
-  }
+  const keyBox = el("div", { class: "apikey-box" }, keyListNodes(ctx, keys, disabled));
+  body.push(keyBox);
+  ctx.afterRender(() => watchKeys(ctx, keyBox, disabled));
   body.push(el("p", { class: "field-help" }, rich("Beschreibung aller Endpunkte samt nötigem Recht: `GET /api/v1`. "
     + "Beispiel: `curl -H \"Authorization: Bearer ntpg_…\" http://<server>:8080/api/v1/status`"), " ", info("api_v1", "Versionierte API")));
 
@@ -143,10 +164,11 @@ export function render(ctx) {
   ui.showAdvanced = ui.showAdvanced || {};
   ui.fieldErrors = ui.fieldErrors || {};
   const readonly = schema.readonly;
-  const fields = schema.fields;
+  const fields = Array.isArray(schema.fields) ? schema.fields : [];
   const byKey = Object.fromEntries(fields.map((f) => [f.key, f]));
-  const current = (key) => (key in ui.draft ? ui.draft[key] : byKey[key].value);
-  const changedKeys = () => Object.keys(ui.draft).filter((k) => !same(ui.draft[k], byKey[k].value));
+  const current = (key) => (key in ui.draft ? ui.draft[key] : byKey[key]?.value);
+  // Entwürfe für Felder, die der Server nicht (mehr) kennt, zählen nicht.
+  const changedKeys = () => Object.keys(ui.draft).filter((k) => k in byKey && !same(ui.draft[k], byKey[k].value));
 
   const saveBar = el("div", { class: "save-bar", hidden: true });
   const updateBar = () => {
@@ -205,7 +227,7 @@ export function render(ctx) {
         return el("label", { class: "switch" }, input, el("span", { class: "switch-track", "aria-hidden": "true" }), text);
       }
       case "select": {
-        const select = el("select", { id, disabled }, field.options.map((o) =>
+        const select = el("select", { id, disabled }, (field.options || []).map((o) =>
           el("option", { value: o.value, selected: o.value === value ? true : null, text: o.label })));
         select.addEventListener("change", () => setDraft(field.key, select.value));
         return select;
@@ -239,9 +261,9 @@ export function render(ctx) {
         const wrap = [input];
         if (listId && devices) {
           const options = field.type === "interface"
-            ? devices.interfaces.map((n) => [n.name, n.ptp_hardware ? "PTP-tauglich" : n.virtual_nic ? "virtuell" : "nur Software"])
-            : [...devices.serial.map((d) => [d.path, d.description]), ...devices.serial.filter((d) => d.stable_path).map((d) => [d.stable_path, "fester Name"]),
-              ...devices.pps.map((d) => [d.path, d.description]), ...devices.ptp_clocks.map((d) => [d.path, d.description])];
+            ? (devices.interfaces || []).map((n) => [n.name, n.ptp_hardware ? "PTP-tauglich" : n.virtual_nic ? "virtuell" : "nur Software"])
+            : [...(devices.serial || []).map((d) => [d.path, d.description]), ...(devices.serial || []).filter((d) => d.stable_path).map((d) => [d.stable_path, "fester Name"]),
+              ...(devices.pps || []).map((d) => [d.path, d.description]), ...(devices.ptp_clocks || []).map((d) => [d.path, d.description])];
           wrap.push(el("datalist", { id: listId }, options.map(([v, l]) => el("option", { value: v, label: l }))));
         }
         if (field.unit) wrap.push(el("span", { class: "unit-suffix", text: field.unit }));
@@ -308,8 +330,12 @@ export function render(ctx) {
 
   const out = [];
   out.push(notesCard(ctx, schema.notes, readonly));
+  if (!fields.length) {
+    out.push(card("Einstellungen nicht lesbar", { class: "card-alert" },
+      emptyNote("Der Server hat keine Felder geliefert – Seite neu laden oder das Container-Log ansehen.")));
+  }
   if (readonly) out.push(card("Einstellungen gesperrt", { class: "card-alert" }, emptyNote("`WEB_READONLY=true` ist gesetzt – hier lässt sich nur ansehen, nicht ändern.")));
-  if (!schema.storage.persistent) {
+  if (!((schema.storage || {}).persistent ?? true)) {
     out.push(card("Achtung: Einstellungen sind nicht dauerhaft", { class: "card-alert" }, el("p", {}, rich(
       "`/var/lib/chrony` liegt auf keinem Volume. Gespeichertes geht verloren, wenn der Container **neu erstellt** wird (ein Neustart reicht nicht). "
       + "In der Compose-Datei: `volumes: [chrony-data:/var/lib/chrony]`."))));
@@ -319,7 +345,7 @@ export function render(ctx) {
     + "Nach dem Speichern starten die Zeitdienste neu – das dauert wenige Sekunden, chrony behält seine Messhistorie. "
     + "Eine eigene `/config/chrony.conf` ersetzt die erzeugte Konfiguration komplett."))));
 
-  for (const section of schema.sections) {
+  for (const section of Array.isArray(schema.sections) ? schema.sections : []) {
     const sectionFields = fields.filter((f) => f.section === section.key);
     if (!sectionFields.length) continue;
     const advancedCount = sectionFields.filter((f) => f.advanced).length;
@@ -383,10 +409,13 @@ export function render(ctx) {
     el("div", { class: "button-row" },
       el("a", { class: "button", href: "/api/settings/export", download: "ntp-gui-einstellungen.json", text: "Exportieren" }),
       el("button", { type: "button", class: "button", text: "Importieren …", disabled: readonly ? true : null, onclick: () => fileInput.click() }),
-      fileInput)));
+      fileInput),
+    el("p", { class: "field-help export-note" }, el("span", {}, rich("Die Sicherung ist **ungefiltert**: Sie enthält "
+      + "Hostnamen, Server und Netze genau so, wie sie hier eingetragen sind. Nicht öffentlich teilen – für "
+      + "Fehlerberichte das gefilterte **Diagnosepaket** nehmen.")), info("settings_export", "Sicherung"))));
 
   out.push(card("Nur per Umgebungsvariable", { sub: "Diese Werte steuern den Start selbst und lassen sich deshalb nur in der Compose-Datei setzen." },
-    el("table", { class: "mini-table" }, el("tbody", {}, schema.env_only.map((e) => el("tr", {},
+    el("table", { class: "mini-table" }, el("tbody", {}, (schema.env_only || []).map((e) => el("tr", {},
       el("td", { class: "mono", text: e.name }), el("td", { text: e.label }),
       el("td", { class: "mono", text: e.set ? (e.value || "(gesetzt)") : "–" })))))));
 

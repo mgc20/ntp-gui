@@ -445,7 +445,8 @@ class Monitor:
         while not self.stop_event.is_set():
             try:
                 ready, _, _ = select.select([sock], [], [], 0.5)
-            except (OSError, ValueError):
+            except (OSError, ValueError) as exc:
+                self.reason = f"Mitlesen abgebrochen: {exc} – neuer Versuch folgt."
                 break
             if not ready:
                 self._housekeeping()
@@ -597,13 +598,20 @@ def nat_hint(clients: dict[str, dict], gateway: str | None) -> str | None:
 _LOCK = threading.Lock()
 _MONITOR: Monitor | None = None
 _LAST_REASON: str | None = "Nicht gestartet (in den Einstellungen ausgeschaltet)."
+RETRY_SECONDS = 300.0   # nach einem Fehlstart (z. B. CAP_NET_RAW fehlt) erst so spät erneut
+# Letzter Fehlstart: Port und Zeitpunkt (monotonic). Ein anderer Port wird sofort versucht.
+_FAILED: dict = {"port": None, "t": None}
+
+
+def _alive(monitor: Monitor | None) -> bool:
+    return monitor is not None and monitor.thread is not None and monitor.thread.is_alive()
 
 
 def start(port: int = 123) -> dict:
     """Startet die Messung (idempotent; anderer Port → Neustart)."""
     global _MONITOR, _LAST_REASON
     with _LOCK:
-        if _MONITOR is not None and _MONITOR.port == port and _MONITOR.thread and _MONITOR.thread.is_alive():
+        if _MONITOR is not None and _MONITOR.port == port and _alive(_MONITOR):
             return status()
         if _MONITOR is not None:
             _MONITOR.stop()
@@ -613,8 +621,10 @@ def start(port: int = 123) -> dict:
         if monitor.available:
             _MONITOR = monitor
             _LAST_REASON = None
+            _FAILED.update(port=None, t=None)
         else:
             _LAST_REASON = monitor.reason
+            _FAILED.update(port=int(port), t=time.monotonic())
     return status()
 
 
@@ -625,22 +635,27 @@ def stop() -> None:
             _MONITOR.stop()
             _MONITOR = None
         _LAST_REASON = "Nicht gestartet (in den Einstellungen ausgeschaltet)."
+        _FAILED.update(port=None, t=None)
 
 
 def sync(enabled: bool, port: int) -> None:
     """Passt den Zustand an die Einstellungen an (für den Server-Thread)."""
     if enabled:
         with _LOCK:
-            running = _MONITOR is not None and _MONITOR.port == port
-            failed_before = _MONITOR is None and _LAST_REASON is not None and \
-                not _LAST_REASON.startswith("Nicht gestartet")
-        if not running and not failed_before:
+            # Läuft nur, wenn der Mess-Thread lebt: endet _run (select/OSError), wird neu gestartet.
+            running = _MONITOR is not None and _MONITOR.port == port and _alive(_MONITOR)
+            failed_t = _FAILED["t"]
+            # Fehlstart auf DIESEM Port: nicht alle 10 s erneut, aber nach RETRY_SECONDS
+            # (Rechte nachgereicht?) – ein anderer Port wird sofort versucht.
+            wait = _MONITOR is None and _FAILED["port"] == port and failed_t is not None \
+                and time.monotonic() - failed_t < RETRY_SECONDS
+        if not running and not wait:
             start(port)
     else:
         with _LOCK:
-            active = _MONITOR is not None
+            active = _MONITOR is not None or _FAILED["port"] is not None
         if active:
-            stop()
+            stop()  # setzt auch einen Fehlstart zurück: Wiedereinschalten versucht sofort
 
 
 def watch(get_cfg, stop_event: threading.Event | None = None, interval: float = 10.0) -> None:
@@ -666,8 +681,9 @@ def status() -> dict:
     clients = monitor.table.snapshot()
     return {
         "available": True,
-        "running": bool(monitor.thread and monitor.thread.is_alive()),
-        "reason": nat_hint(clients, default_gateway()),
+        "running": _alive(monitor),
+        "reason": nat_hint(clients, default_gateway()) if _alive(monitor) or not monitor.reason
+        else monitor.reason,
         "clients": clients,
         "packets": monitor.packets,
         "ignored": monitor.ignored,

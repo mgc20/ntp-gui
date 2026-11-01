@@ -194,6 +194,38 @@ class DiagnosticsTest(unittest.TestCase):
         self.assertTrue(real)
 
 
+class ChronySectionTest(unittest.TestCase):
+    def test_tables_use_csv_mode(self):
+        """Klartext-Tabellen kürzen lange Namen mit ">" – gekürzte IPv6 wären nicht sicher erkennbar."""
+        for name in ("sources", "sourcestats", "selectdata", "authdata"):
+            self.assertIn("-c", diagnostics.CHRONY_ARGS[name], name)
+
+    def test_chrony_section_rounded_and_labelled(self):
+        outputs = {
+            "tracking": "Reference ID    : C035676C (ptbtime1.ptb.de)\nRoot delay      : 0.012345678 seconds",
+            "sources": "^,*,2a01:4f8:c17:5c1b:1234:5678:9abc:def0,1,6,377,34,-0.00001,-0.00001,0.0234567",
+            "ntpdata": "Remote address  : 192.53.103.108 (C035676C)\nPeer delay      : 0.023456789 seconds",
+        }
+
+        def fake(args, timeout=2.0):
+            for name, cmd in diagnostics.CHRONY_COMMANDS:
+                if tuple(args) == cmd:
+                    return outputs.get(name, "")
+            return ""
+        with mock.patch.object(diagnostics, "_chronyc", side_effect=fake), \
+                mock.patch("chrony.clients", return_value=[]), \
+                mock.patch("chrony.detailed_sources", return_value=[]):
+            raw = diagnostics._collect_chrony({}, {})
+        with mock.patch.dict(diagnostics.COLLECTORS, {"chrony": lambda cfg, o: raw}):
+            content = diagnostics.build({}, ["chrony"])
+        chrony = content["chrony"]
+        self.assertIn("# Spalten:", chrony["sources"])
+        self.assertTrue(chrony["sources"].splitlines()[1].endswith(",0.02"))
+        self.assertNotIn("2a01", chrony["sources"])
+        self.assertIn("Root delay      : 0.01 seconds", chrony["tracking"])
+        self.assertIn("Peer delay      : 0.02 seconds", chrony["ntpdata"])
+
+
 class HelpersTest(unittest.TestCase):
     def test_options_from_query(self):
         self.assertEqual(diagnostics.options_from_query({"clients": "1", "recording": "0"}),

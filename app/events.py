@@ -16,6 +16,7 @@ Aufbewahrung: 90 Tage und höchstens 50 000 Einträge – geprüft bei jedem
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import threading
@@ -195,12 +196,78 @@ def _meta_get(key: str) -> str | None:
     return rows[0][0] if rows else None
 
 
+FINGERPRINT_BYTES = 256
+
+
+def _fingerprint(handle, length: int) -> str | None:
+    """sha1 der ersten `length` Bytes (None, wenn die Datei kürzer ist)."""
+    handle.seek(0)
+    head = handle.read(length)
+    if len(head) < length:
+        return None
+    return hashlib.sha1(head).hexdigest()
+
+
+def _same_file(handle, st, saved: dict) -> bool:
+    """Ist das dieselbe Datei wie beim letzten Lesen? Inode allein reicht nicht:
+    tmpfs (RUN_DIR) nummeriert Inodes je Mount neu, ext4 vergibt freie wieder."""
+    if saved.get("inode") != st.st_ino:
+        return False
+    offset = saved.get("offset")
+    if not isinstance(offset, int) or offset < 0 or offset > st.st_size:
+        return False
+    fp, length = saved.get("fp"), saved.get("fp_len")
+    if fp is None or not isinstance(length, int) or length < 0:
+        return True  # Zustand einer Vorabversion ohne Fingerabdruck: wie bisher nur Inode
+    return _fingerprint(handle, length) == fp
+
+
+def _parse_lines(chunk: bytes) -> list[tuple]:
+    rows = []
+    for line in chunk.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            item = json.loads(line.decode("utf-8", "replace"))
+        except ValueError:
+            continue
+        if not isinstance(item, dict):
+            continue
+        data = item.get("data")
+        rows.append(_clean(item.get("kind"), item.get("level"), item.get("title"),
+                           data if isinstance(data, dict) else None, "supervisor",
+                           item.get("t")))
+    return rows
+
+
+def _rest_of_rotated(path: str, saved: dict) -> list[tuple]:
+    """Nach einer Rotation (events.jsonl → .1): die seit dem letzten Lesen noch
+    in die alte Datei geschriebenen Zeilen übernehmen."""
+    if not saved:
+        return []
+    try:
+        with open(path + ".1", "rb") as handle:
+            st = os.fstat(handle.fileno())
+            if not _same_file(handle, st, saved):
+                return []
+            handle.seek(int(saved["offset"]))
+            # Die alte Datei ist abgeschlossen: auch eine letzte Zeile ohne \n zählt.
+            return _parse_lines(handle.read(2 * MAX_INGEST_BYTES))
+    except (OSError, ValueError, TypeError, KeyError):
+        return []
+
+
 def ingest_supervisor(path: str) -> int:
-    """Liest neue Zeilen aus events.jsonl ein. Gibt die Zahl übernommener Ereignisse zurück."""
+    """Liest neue Zeilen aus events.jsonl ein. Gibt die Zahl übernommener Ereignisse zurück.
+
+    Die Leseposition gilt nur für dieselbe Datei: Inode, Größe und ein
+    Fingerabdruck der ersten 256 Bytes (sha1) müssen passen, sonst wird von
+    vorn gelesen. Wurde die Datei rotiert, wird zuerst der Rest von .1 gelesen.
+    """
     with _INGEST_LOCK:
         try:
             _ensure()
-            st = os.stat(path)
         except Exception:
             return 0
         key = "ingest:" + os.path.abspath(path)
@@ -208,13 +275,21 @@ def ingest_supervisor(path: str) -> int:
             saved = json.loads(_meta_get(key) or "{}")
         except Exception:
             saved = {}
-        offset = int(saved.get("offset", 0)) if saved.get("inode") == st.st_ino else 0
-        if offset > st.st_size:  # gekürzt oder ersetzt
-            offset = 0
-        if offset == st.st_size:
-            return 0
+        if not isinstance(saved, dict):
+            saved = {}
+        rows: list[tuple] = []
         try:
             with open(path, "rb") as handle:
+                st = os.fstat(handle.fileno())
+                if _same_file(handle, st, saved):
+                    offset = int(saved["offset"])
+                else:
+                    rows.extend(_rest_of_rotated(path, saved))
+                    offset = 0
+                if offset == st.st_size and not rows:
+                    return 0
+                fp_len = min(FINGERPRINT_BYTES, st.st_size)
+                fp = _fingerprint(handle, fp_len)
                 handle.seek(offset)
                 chunk = handle.read(MAX_INGEST_BYTES)
         except OSError:
@@ -224,35 +299,20 @@ def ingest_supervisor(path: str) -> int:
             # Unvollständige Zeile: warten – außer sie ist absurd lang, dann überspringen.
             if len(chunk) >= MAX_INGEST_BYTES:
                 offset += len(chunk)
-                chunk = b""
-            else:
-                return 0
+            chunk = b""
         else:
             chunk = chunk[:end + 1]
-        rows = []
-        for line in chunk.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                item = json.loads(line.decode("utf-8", "replace"))
-            except ValueError:
-                continue
-            if not isinstance(item, dict):
-                continue
-            data = item.get("data")
-            rows.append(_clean(item.get("kind"), item.get("level"), item.get("title"),
-                               data if isinstance(data, dict) else None, "supervisor",
-                               item.get("t")))
+        rows.extend(_parse_lines(chunk))
         new_offset = offset + len(chunk)
+        state = {"inode": st.st_ino, "offset": new_offset, "size": st.st_size,
+                 "fp": fp, "fp_len": fp_len}
         try:
             with store.transaction() as conn:
                 if rows:
                     conn.executemany("INSERT INTO events(t, kind, level, title, data, source) "
                                      "VALUES (?, ?, ?, ?, ?, ?)", rows)
                 conn.execute("INSERT INTO events_meta(key, value) VALUES(?, ?) ON CONFLICT(key) "
-                             "DO UPDATE SET value=excluded.value",
-                             (key, json.dumps({"inode": st.st_ino, "offset": new_offset})))
+                             "DO UPDATE SET value=excluded.value", (key, json.dumps(state)))
         except Exception:
             return 0
         _STATE["since_prune"] += len(rows)

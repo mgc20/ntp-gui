@@ -9,6 +9,11 @@ liefert ein leeres TPV) einen „Fix verloren/wieder da“-Doppelpack erzeugen.
 Der allererste Zustand nach dem Start ist kein Wechsel: Nach einem Neustart des
 Dashboards soll nicht „Quelle gewechselt“ im Protokoll stehen.
 
+Ein Messpunkt ohne Quellenliste heißt „Zustand unbekannt“ (chronyc gescheitert,
+chronyd startet gerade neu) – daraus wird KEIN Quellenwechsel. Antwortet chronyd
+gar nicht (weder Quellen noch tracking), gibt es ein eigenes Ereignis
+„chronyd nicht erreichbar“ – ebenfalls nur beim bestätigten Wechsel.
+
 Ereignisse bleiben lokal (SQLite); was davon ins Diagnosepaket geht, läuft wie
 alles andere durch den Datenschutzfilter (egress).
 """
@@ -64,6 +69,16 @@ def _selected_source(sample: dict) -> str | None:
     return None
 
 
+_TRACKING_KEYS = ("stratum", "offset", "freq", "root_delay")
+
+
+def _chronyd_reachable(sample: dict) -> bool:
+    """Hat chronyd geantwortet? Quellen ODER tracking-Werte reichen."""
+    if sample.get("sources"):
+        return True
+    return any(sample.get(key) is not None for key in _TRACKING_KEYS)
+
+
 def _fix(sample: dict) -> bool | None:
     gps = sample.get("gps")
     if not isinstance(gps, dict):
@@ -78,6 +93,7 @@ class StateWatcher:
         self._confirm = confirm
         self._lock = threading.Lock()
         self._source = _Tracker(confirm)
+        self._chronyd = _Tracker(confirm)
         self._fix = _Tracker(confirm)
         self._pps: dict[str, _Tracker] = {}
 
@@ -92,30 +108,45 @@ class StateWatcher:
         if not isinstance(sample, dict):
             return
         with self._lock:
-            changed, old = self._source.update(_selected_source(sample))
-            if changed:
-                new = self._source.state
-                if new is None:
-                    self._send("source", "warn", "Keine Zeitquelle mehr ausgewählt",
-                               {"from": old})
-                elif old is None:
-                    self._send("source", "info", f"Zeitquelle ausgewählt: {new}", {"to": new})
-                else:
-                    self._send("source", "info", f"Zeitquelle gewechselt: {old} → {new}",
-                               {"from": old, "to": new})
-            fix = _fix(sample)
-            if fix is None:
-                # GPS ausgeschaltet: Zustand vergessen, damit Wiedereinschalten kein Ereignis ist.
-                self._fix = _Tracker(self._confirm)
+            reachable = _chronyd_reachable(sample)
+            changed, _old = self._chronyd.update(reachable)
+            if changed and not reachable:
+                self._send("service", "warn", "chronyd nicht erreichbar",
+                           {"service": "chronyd"})
+            elif changed:
+                self._send("service", "info", "chronyd wieder erreichbar", {"service": "chronyd"})
+            if sample.get("sources"):
+                self._source_update(sample)
+            # Ohne Quellenliste ist die Auswahl unbekannt: kein Wechsel, Tracker unverändert.
+            self._gps_update(sample)
+
+    def _source_update(self, sample: dict) -> None:
+        changed, old = self._source.update(_selected_source(sample))
+        if changed:
+            new = self._source.state
+            if new is None:
+                self._send("source", "warn", "Keine Zeitquelle mehr ausgewählt",
+                           {"from": old})
+            elif old is None:
+                self._send("source", "info", f"Zeitquelle ausgewählt: {new}", {"to": new})
             else:
-                changed, _old = self._fix.update(fix)
-                if changed:
-                    gps = sample.get("gps") or {}
-                    data = {"mode": gps.get("mode"), "used": gps.get("used")}
-                    if fix:
-                        self._send("gps", "info", "GPS-Fix wieder da", data)
-                    else:
-                        self._send("gps", "warn", "GPS-Fix verloren", data)
+                self._send("source", "info", f"Zeitquelle gewechselt: {old} → {new}",
+                           {"from": old, "to": new})
+
+    def _gps_update(self, sample: dict) -> None:
+        fix = _fix(sample)
+        if fix is None:
+            # GPS ausgeschaltet: Zustand vergessen, damit Wiedereinschalten kein Ereignis ist.
+            self._fix = _Tracker(self._confirm)
+        else:
+            changed, _old = self._fix.update(fix)
+            if changed:
+                gps = sample.get("gps") or {}
+                data = {"mode": gps.get("mode"), "used": gps.get("used")}
+                if fix:
+                    self._send("gps", "info", "GPS-Fix wieder da", data)
+                else:
+                    self._send("gps", "warn", "GPS-Fix verloren", data)
 
     # --- Hardware-Bericht ----------------------------------------------------
     def hardware(self, report: Any) -> None:

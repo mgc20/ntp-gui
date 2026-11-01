@@ -13,7 +13,10 @@ const LOG_LINES = 500;
 const EVENT_KINDS = {
   service: "Dienst", reload: "Neuladen", settings: "Einstellungen", source: "Quelle", gps: "GPS",
   pps: "PPS", calibration: "Kalibrierung", cert: "Zertifikat", leap: "Schaltsekunde", startup: "Start",
+  clients: "Clients", api: "API", other: "Sonstiges",
 };
+// Filter „Stufe“: die API liefert ab der gewählten Stufe aufwärts (warn → warn + crit).
+const LEVEL_FILTERS = [["", "alle Stufen"], ["warn", "ab Warnung"], ["crit", "nur Kritisch"]];
 const LEVEL_LABEL = { info: "Info", warn: "Warnung", crit: "Kritisch" };
 const EVENT_RANGES = [[86400, "24 h"], [7 * 86400, "7 Tage"], [30 * 86400, "30 Tage"]];
 
@@ -35,7 +38,7 @@ function every(ms, node, fn) {
 
 function uiState(ctx) {
   if (!ctx.uiState.diag) {
-    ctx.uiState.diag = { q: "", problems: false, auto: true, eventRange: 86400, clients: false,
+    ctx.uiState.diag = { q: "", problems: false, auto: true, eventRange: 86400, eventKind: "", eventLevel: "", clients: false,
       recording: false, minutes: 5 };
   }
   return ctx.uiState.diag;
@@ -91,8 +94,8 @@ function logCard(state) {
     if (state.q) params.set("q", state.q);
     if (state.problems) params.set("level", "warn");
     try {
-      const data = await getJson(`/api/logs?${params}`);
-      const lines = data.lines || [];
+      const data = (await getJson(`/api/logs?${params}`)) || {};
+      const lines = Array.isArray(data.lines) ? data.lines : [];
       const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 40;
       if (!lines.length) {
         list.replaceChildren(emptyNote(data.available === false
@@ -163,13 +166,18 @@ function eventsCard(state) {
   const body = el("div", { class: "diag-events" }, emptyNote("lädt …"));
   const load = async () => {
     const since = Math.floor(Date.now() / 1000) - state.eventRange;
+    const params = new URLSearchParams({ since: String(since), limit: "300" });
+    if (state.eventKind) params.set("kinds", state.eventKind);
+    if (state.eventLevel) params.set("level", state.eventLevel);
+    const filtered = Boolean(state.eventKind || state.eventLevel);
     try {
-      const data = await getJson(`/api/events?${new URLSearchParams({ since: String(since), limit: "300" })}`);
-      const events = (Array.isArray(data) ? data : data.events || []).slice()
-        .sort((a, b) => (b.t || 0) - (a.t || 0));
+      const data = await getJson(`/api/events?${params}`);
+      const list = Array.isArray(data) ? data : (data && Array.isArray(data.events) ? data.events : []);
+      const events = list.filter((e) => e && typeof e === "object").sort((a, b) => (b.t || 0) - (a.t || 0));
       body.replaceChildren(events.length
         ? el("ul", { class: "diag-event-list" }, events.map(eventRow))
-        : emptyNote("In diesem Zeitraum ist nichts Besonderes passiert."));
+        : emptyNote(filtered ? "Keine Ereignisse, die zum Filter passen."
+          : "In diesem Zeitraum ist nichts Besonderes passiert."));
     } catch (error) {
       body.replaceChildren(emptyNote(error.status === 404
         ? "Das Ereignisprotokoll ist in diesem Build noch nicht verfügbar."
@@ -189,14 +197,25 @@ function eventsCard(state) {
       load();
     },
   }));
+  const select = (options, value, label, onPick) => {
+    const node = el("select", { "aria-label": label }, options.map(([v, text]) =>
+      el("option", { value: v, selected: v === value ? true : null, text })));
+    node.addEventListener("change", () => { onPick(node.value); load(); });
+    return node;
+  };
+  const kindSelect = select([["", "alle Arten"], ...Object.entries(EVENT_KINDS)], state.eventKind,
+    "Art des Ereignisses", (v) => { state.eventKind = v; });
+  const levelSelect = select(LEVEL_FILTERS, state.eventLevel, "Stufe", (v) => { state.eventLevel = v; });
   load();
   every(30000, body, load);
   return card("Ereignisse", { help: "diag_events",
     actions: el("div", { class: "range-group", role: "group", "aria-label": "Zeitraum" }, buttons),
     sub: "Neustarts, Quellenwechsel, GPS-Fix, Zertifikate – neueste oben." },
-  el("div", { class: "diag-legend" },
-    el("span", { class: "toolbar-label", text: "Art" }), info("diag_event_kind", "Art des Ereignisses"),
-    el("span", { class: "toolbar-label", text: "Gewicht" }), info("diag_event_level", "Gewicht")),
+  el("div", { class: "toolbar diag-toolbar diag-event-filters" },
+    el("label", { class: "diag-field" }, el("span", { class: "toolbar-label", text: "Art" }), kindSelect),
+    info("diag_event_kind", "Art des Ereignisses"),
+    el("label", { class: "diag-field" }, el("span", { class: "toolbar-label", text: "Stufe" }), levelSelect),
+    info("diag_event_level", "Stufe")),
   body);
 }
 
@@ -332,7 +351,8 @@ function recordingCard(state, readonly) {
   const start = el("button", { type: "button", class: "button primary", text: "Aufzeichnung starten", disabled: readonly });
   const stop = el("button", { type: "button", class: "button", text: "Stoppen", hidden: true, disabled: readonly });
 
-  const show = (data) => {
+  const show = (raw) => {
+    const data = raw && typeof raw === "object" ? raw : {};
     const active = Boolean(data.active);
     start.hidden = active;
     stop.hidden = !active;

@@ -40,9 +40,11 @@ export const HELP_AUTOCAL = {
       + "keine Netzwerkquelle nutzbar (Internet weg), ist das GPS die einzige Quelle: Dann ändert sich nichts.",
   },
   autocal_window: {
-    title: "Messung seit",
+    title: "Messung zählt seit / ab",
     text: "Ab diesem Zeitpunkt zählen die Messwerte. Jede Änderung des Offsets – automatisch, per "
       + "Rücknahme oder von Hand – startet die Messung neu, weil die alten Werte zum alten Offset gehören. "
+      + "Nach einer Änderung und nach dem Start wartet sie zuerst etwa 15 Minuten, bis chrony eingeschwungen ist; solange steht hier "
+      + "„zählt **ab**“ mit einem Zeitpunkt in der Zukunft. "
       + "Bevor etwas vorgeschlagen oder geändert wird, muss die eingestellte Mindest-Messdauer erreicht sein.",
   },
   autocal_next: {

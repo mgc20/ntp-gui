@@ -805,6 +805,12 @@ und im Ereignisprotokoll. **Rückgängig** stellt den vorigen Offset wieder her
 ntp-gui die Rücknahme, statt deine Änderung zu überschreiben. Eine übernommene Änderung
 startet chronyd kurz neu. Mit `WEB_READONLY=true` ändert auch die Automatik nichts.
 
+**Kein Schritt auf unbestätigter Grundlage:** Bevor die Automatik erneut stellt, prüft sie, ob
+die letzte Änderung wirklich wirkt – der Offset in der laufenden `chrony.conf` muss stimmen und
+das Neuladen erfolgreich gewesen sein. Ist das nicht belegbar (z. B. Neuladen fehlgeschlagen),
+passiert nichts weiter, und der Grund steht auf der Seite **GPS**. Gemessen wird erst ab dem
+Zeitpunkt, an dem die Änderung tatsächlich aktiv wurde.
+
 ### PPS zusätzlich nutzen
 
 Empfänger mit PPS-Ausgang (GPS-HAT, Modul an einem GPIO, USB-Adapter mit DCD-Leitung)
@@ -913,21 +919,27 @@ Fehlerbericht.
 | Entfernt / ersetzt | Warum |
 |---|---|
 | Koordinaten, Höhe – auch in NMEA-Sätzen, gpsd-Meldungen und freiem Text | verraten den Standort direkt |
-| Geschwindigkeit, Kurs, Steigrate, **Azimut und Elevation der Satelliten** | Aus den Satellitenwinkeln zu einer bekannten Uhrzeit lässt sich die Position zurückrechnen. Übrig bleiben Satellitennummer, System, Signalstärke und „genutzt“ |
-| Seriennummern (USB, DMI, `/dev/serial/by-id/…`, `iSerial`) | machen ein Gerät eindeutig wiedererkennbar |
+| Geschwindigkeit, Kurs, Steigrate, **Azimut und Elevation der Satelliten** | Aus den Satellitenwinkeln zu einer bekannten Uhrzeit lässt sich die Position zurückrechnen |
+| **Liste der einzelnen Satelliten** (Nummern) | Welche Satelliten zu einer Uhrzeit sichtbar sind, grenzt die Region ein. Übrig bleiben Summen je System: gesehen, genutzt, mittlere und höchste Signalstärke |
+| **Laufzeiten** zu Servern (Root/Peer delay, Fehlerschranken, RTT – auch in Aufzeichnungen) → auf 10 ms gerundet | Viele genaue Laufzeiten zu bekannten Servern erlauben eine grobe Ortung |
+| Seriennummern (USB, DMI, `/dev/serial/by-id/…`, `iSerial`, `S/N`), lange Hex-Kennungen (machine-id, Container-ID) | machen ein Gerät eindeutig wiedererkennbar |
 | MAC-Adressen und PTP-Clock-IDs (aus der MAC gebildet) | ebenso; außerdem verrät der Herstellerteil die Hardware |
-| Öffentliche IP-Adressen (auch in chrony-Referenz-IDs) → `<öffentliche-IP>` | verorten den Anschluss bis auf Stadt oder Provider |
+| Öffentliche IP-Adressen (auch in chrony-Referenz-IDs und Reverse-DNS-Namen wie `ip-1-2-3-4`) → `<öffentliche-IP>` | verorten den Anschluss bis auf Stadt oder Provider |
 | Private Adressen → stabile Pseudonyme `client-07` | Im Paket bleibt erkennbar, *dass* es dasselbe Gerät ist, aber nicht welches |
-| Eigene Hostnamen, Domains, Zertifikatsnamen, E-Mail-Adressen, Zugangsdaten | Eine eigene Domain führt direkt zu dir |
+| Eigene Hostnamen, Domains, per Reverse-DNS aufgelöste Gerätenamen von Clients und Quellen, Zertifikatsangaben (Name, Ort, Organisation), E-Mail-Adressen, Zugangsdaten | Eine eigene Domain oder ein Gerätename führt direkt zu dir |
 | Eigener Dashboard-Titel, Zeitzonen-Namen (nur der UTC-Versatz bleibt) | Titel und Zeitzone engen den Ort ein |
 
 Lesbar bleiben die bekannten öffentlichen Zeitserver (PTB, Cloudflare, Netnod,
 `*.pool.ntp.org` …), Netzbereiche wie `192.168.0.0/16`, Gerätenamen wie `ttyACM0` und
 Dateinamen wie `chrony.conf` – ohne sie wäre der Bericht nutzlos.
 
-Nach dem Filtern prüft eine **Schlussprüfung** den Inhalt und jede Datei im Paket noch einmal
-mit denselben Erkennungsregeln. Findet sie noch etwas, wird **gar nichts** exportiert – die
-Fehlermeldung nennt nur Art und Stelle des Fundes, nie den Inhalt. Im Paket liegt eine
+Nach dem Filtern prüfen **zwei Schlussprüfungen** den Inhalt und jede Datei im Paket: eine
+mit den Regeln des Filters (was der Filter noch ändern würde, ist ein Fund) und eine davon
+unabhängige, bewusst einfache Suche auf den fertigen Bytes. In Log und Aufzeichnung wird eine
+beanstandete Zeile durch `[Zeile entfernt – Datenschutz]` ersetzt – so kann niemand den Export
+blockieren, indem er seltsamen Text ins Log schreibt. Findet danach noch eine Prüfung etwas,
+wird **gar nichts** exportiert – die Fehlermeldung nennt nur Art und Stelle des Fundes, nie
+den Inhalt. Im Paket liegt eine
 `MANIFEST.txt`, die auf Deutsch auflistet, was drin ist und was aus welchem Grund wie oft
 entfernt wurde.
 
@@ -1135,6 +1147,7 @@ PHC-Refclock dient ihm als Referenz für Stratum und Statistik.
 | `WEB_PORT` / `WEB_BIND` | `8080` / `0.0.0.0` | Adresse des Dashboards |
 | `WEB_TITLE` | `NTP / PTP Time Server` | Überschrift |
 | `WEB_USER` / `WEB_PASSWORD` | – | Beide gesetzt ⇒ HTTP Basic Auth (alternativ Passwort im Dashboard setzen) |
+| `WEB_ALLOWED_HOSTS` | – | Weitere Namen, unter denen das Dashboard **ohne Passwort** antworten darf, kommagetrennt; `*.example.org` für alle Unternamen, `*` schaltet die Prüfung ab. Siehe [Schutz vor DNS-Rebinding](#schutz-vor-dns-rebinding) |
 | `WEB_READONLY` | `false` | Einstellungen im Dashboard sperren |
 | `WEB_REFRESH_SECONDS` | `5` | Aktualisierungsintervall im Browser |
 | `HISTORY_INTERVAL` | `10` | Messintervall des Verlaufs in Sekunden |
@@ -1143,7 +1156,7 @@ PHC-Refclock dient ihm als Referenz für Stratum und Statistik.
 | `WEB_ACCESS_LOG` | `false` | Zugriffe protokollieren |
 
 Nur per Umgebung (sie betreffen den Start selbst oder sind Expertenwerte): `WEB_PORT`,
-`WEB_BIND`, `WEB_READONLY`, `WEB_USER`/`WEB_PASSWORD`, `WEB_ACCESS_LOG`, `HISTORY_SIZE`,
+`WEB_BIND`, `WEB_READONLY`, `WEB_USER`/`WEB_PASSWORD`, `WEB_ALLOWED_HOSTS`, `WEB_ACCESS_LOG`, `HISTORY_SIZE`,
 `HISTORY_DAYS`, `NTPGUI_LOGTEE`, `NTPGUI_REPLAY`/`NTPGUI_REPLAY_SPEED`,
 `DISABLE_CLOCK_CONTROL`, `EXTRA_CHRONY_CONF`, `EXTRA_PTP4L_CONF`, `CHRONY_LOG`,
 `CLIENTLOGLIMIT`, `MAXUPDATESKEW`, `CUSTOM_CHRONY_CONF`, `CUSTOM_PTP4L_CONF`, `GPS_OPTIONS`,
@@ -1166,6 +1179,25 @@ anderen Port musst du ihn nicht anpassen.
 
 Das Dashboard hat **keine Verschlüsselung**. Für Zugriff über unsichere Netze einen
 Reverse Proxy mit TLS davorsetzen und `WEB_USER`/`WEB_PASSWORD` verwenden.
+
+#### Schutz vor DNS-Rebinding
+
+Ohne Passwort könnte sonst jede Webseite, die du im Browser öffnest, ihren eigenen Namen kurz
+auf die LAN-Adresse von ntp-gui zeigen lassen und dann Log, Status und GPS-Position lesen
+(„DNS-Rebinding“). Darum beantwortet ntp-gui **ohne Passwort** nur Anfragen an:
+
+- IP-Adressen (`http://192.168.1.10:8080`), `localhost` und `*.localhost`,
+- den eigenen Hostnamen des Containers und einteilige Namen (`http://raspberrypi:8080`) –
+  solche Namen kann kein öffentliches DNS liefern,
+- lokale Endungen: `*.local`, `*.lan`, `*.home.arpa`, `*.internal`, `*.home`, `*.corp`,
+  `*.localdomain`, `*.intranet`, `*.private`, `*.speedport.ip`,
+- den NTS-Namen (`NTS_SERVER_NAME`) und alles aus `WEB_ALLOWED_HOSTS`.
+
+Jeder andere Name bekommt `403` mit einer Erklärung; im Log steht er einmal (bereinigt).
+**`*.fritz.box` ist absichtlich nicht dabei:** `.box` ist eine echte, öffentlich vergebene
+Endung. Öffnest du das Dashboard als `ntp.fritz.box`, trage `WEB_ALLOWED_HOSTS=*.fritz.box`
+ein oder setze ein Passwort. Mit Passwort oder API-Schlüssel gilt jeder Name – die Anmeldung
+schützt dann. `/healthz` antwortet immer.
 
 ### Was im Container unter welchem Benutzer läuft
 
@@ -1258,7 +1290,10 @@ Die letzte Zeile ist Absicht: Kein Schlüssel – auch kein `admin`-Schlüssel �
 ändern oder sich neue Schlüssel ausstellen. Wird einer entwendet, reicht Widerrufen.
 
 Der Schlüssel hat die Form `ntpg_…` und wird **nur einmal** angezeigt; gespeichert wird nur
-ein Hash (PBKDF2). Er geht als `Authorization: Bearer` mit und gilt immer mit seinem Recht –
+ein SHA-256-Hash. Ein langsames Verfahren wie PBKDF2 bringt bei 144 Bit Zufall nichts und
+würde jede Anfrage mit einem erfundenen `ntpg_…` teuer machen; Schlüssel aus 1.3-Vorabversionen
+(PBKDF2) werden beim nächsten Gebrauch umgestellt. Im Ereignisprotokoll steht nur die Kennung
+eines Schlüssels, nie sein frei gewählter Name. Er geht als `Authorization: Bearer` mit und gilt immer mit seinem Recht –
 auch wenn kein Dashboard-Passwort gesetzt ist; ein Lese-Schlüssel kann also nie schreiben.
 Mit Schlüssel entfällt der CSRF-Header `X-NTP-GUI` (den Schlüssel schickt kein Browser von
 sich aus mit), `POST` braucht weiter `Content-Type: application/json`.
@@ -1326,12 +1361,12 @@ Beim Update musst du nichts von Hand umbauen:
 ## Entwicklung
 
 ```bash
-python3 -m unittest discover -s tests -v     # 478 Tests: Parser, Einstellungen, Config, Kalibrierung, Hardware, NTS, Datenschutzfilter, API
+python3 -m unittest discover -s tests -v     # 562 Tests: Parser, Einstellungen, Config, Kalibrierung, Hardware, NTS, Datenschutzfilter, API
 docker build -t ntp-gui:test .
 tests/container-test.sh ntp-gui:test         # Integrationstest gegen das gebaute Image
 ```
 
-Der Integrationstest (95 Prüfungen) startet echte Container und prüft das, was Unittests
+Der Integrationstest (111 Prüfungen) startet echte Container und prüft das, was Unittests
 nicht abdecken: Erkennung von fehlendem `CAP_SYS_TIME`, Healthcheck, alle Endpunkte,
 Basic-Auth, gemountete Konfiguration, Verhalten ohne GPS-/PTP-Hardware, Neustart eines
 abgestürzten gpsd, eine echte NTP-Abfrage über das Netz, Einstellungen speichern samt
@@ -1339,7 +1374,8 @@ Neustart der Dienste und Persistenz über eine Neuerstellung, CSRF-Schutz, `WEB_
 den NTS-Server mit selbst signiertem Zertifikat samt Zertifikatswechsel wie bei Certbot, die
 Log-Seite, das Diagnosepaket (gültiges Archiv mit `MANIFEST.txt`, ohne Koordinaten,
 Satellitenwinkel, MAC, öffentliche IP und ohne Adresse oder Namen des Containers),
-API-Schlüssel und die Exit-Codes beim Stoppen. Dieselbe Datei läuft in der CI gegen das gebaute Image.
+API-Schlüssel, den Schutz vor DNS-Rebinding (fremder Host-Name → 403, `WEB_ALLOWED_HOSTS`, mit
+Login jeder Name) und die Exit-Codes beim Stoppen. Dieselbe Datei läuft in der CI gegen das gebaute Image.
 
 Lokal ohne Container starten (setzt installiertes `chrony` voraus; als root, und der
 System-chronyd sollte gestoppt sein). `CHRONY_CONF` auf einen Scratch-Pfad zeigen

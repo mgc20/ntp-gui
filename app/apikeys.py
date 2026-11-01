@@ -7,13 +7,20 @@ Ein Schlüssel hat einen Namen und ein Recht:
 
 Format: "ntpg_" + 32 URL-sichere Zeichen. Die ersten 8 Zeichen nach dem
 Präfix sind die öffentliche Kennung (id, steht in der Liste), die übrigen 24
-(144 Bit Zufall) das Geheimnis. Gespeichert wird nur ein gesalzener
-PBKDF2-Hash des ganzen Schlüssels – wie beim Passwort. Den Klartext gibt es
-genau einmal, bei create().
+(144 Bit Zufall) das Geheimnis. Gespeichert wird nur ein SHA-256-Hash des
+ganzen Schlüssels ("sha256$<hex>"). Ein langsames Verfahren wie PBKDF2 ist
+hier unnötig – bei 144 Bit Zufall hilft Durchprobieren nicht – und wäre eine
+Einladung, die CPU mit erfundenen Schlüsseln auszulasten (jede Anfrage mit
+"ntpg_…" würde ohne Anmeldung 200 000 PBKDF2-Runden kosten).
 
-Weil PBKDF2 auf einem Pi spürbar Zeit kostet, merkt sich verify() geprüfte
-Schlüssel kurz im Speicher – nur als HMAC mit einem Zufallswert dieses
-Prozesses, nie im Klartext. revoke() leert den Merker sofort.
+Ältere Einträge (1.3-Vorabversionen) tragen noch einen PBKDF2-Hash. Sie
+werden weiter geprüft und beim nächsten erfolgreichen Gebrauch auf SHA-256
+umgestellt.
+
+verify() merkt sich geprüfte Schlüssel kurz im Speicher – nur als HMAC mit
+einem Zufallswert dieses Prozesses, nie im Klartext. revoke() leert den
+Merker sofort; ein Generationszähler verhindert, dass eine gerade laufende
+Prüfung den widerrufenen Schlüssel danach wieder hineinschreibt.
 """
 
 from __future__ import annotations
@@ -52,8 +59,11 @@ _SCHEMA = [
     """,
 ]
 
+HASH_SCHEME = "sha256"
+
 _LOCK = threading.Lock()
 _CACHE: dict[bytes, tuple[float, dict | None]] = {}
+_GENERATION = [0]  # erhöht bei jedem clear_cache()
 _CACHE_KEY = secrets.token_bytes(32)
 _LAST_WRITE: dict[str, float] = {}
 _READY: dict[str, Any] = {"db": None}
@@ -70,6 +80,22 @@ def _ensure() -> None:
 def clear_cache() -> None:
     with _LOCK:
         _CACHE.clear()
+        _GENERATION[0] += 1
+
+
+def hash_token(token: str) -> str:
+    """Gespeicherte Form eines Schlüssels: "sha256$<64 Hex-Zeichen>"."""
+    return f"{HASH_SCHEME}${hashlib.sha256(token.encode('utf-8')).hexdigest()}"
+
+
+def _token_matches(token: str, encoded: str) -> tuple[bool, bool]:
+    """(passt, sollte neu gehasht werden)."""
+    encoded = str(encoded or "")
+    if encoded.startswith(HASH_SCHEME + "$"):
+        return hmac.compare_digest(hash_token(token).encode(), encoded.encode()), False
+    if encoded.startswith("pbkdf2_sha256$"):
+        return settings.verify_password(token, encoded), True
+    return False, False
 
 
 def _validate(name: Any, scope: Any) -> tuple[str, str]:
@@ -96,8 +122,8 @@ def create(name: str, scope: str) -> tuple[str, str]:
             if not conn.execute("SELECT 1 FROM api_keys WHERE id=?", (key_id,)).fetchone():
                 break
         conn.execute("INSERT INTO api_keys(id, name, scope, hash, created) VALUES(?, ?, ?, ?, ?)",
-                     (key_id, name, scope, settings.hash_password(token), time.time()))
-    _event("API-Schlüssel angelegt", key_id, name, scope)
+                     (key_id, name, scope, hash_token(token), time.time()))
+    _event("API-Schlüssel angelegt", key_id, scope)
     return key_id, token
 
 
@@ -112,11 +138,11 @@ def list() -> list[dict]:  # noqa: A001 – Name laut Schnittstelle
 def revoke(key_id: str) -> bool:
     """Widerruft (löscht) einen Schlüssel. True, wenn es ihn gab."""
     _ensure()
-    rows = store.query("SELECT name, scope FROM api_keys WHERE id=?", (str(key_id),))
+    rows = store.query("SELECT scope FROM api_keys WHERE id=?", (str(key_id),))
     removed = store.execute("DELETE FROM api_keys WHERE id=?", (str(key_id),)) > 0
     clear_cache()
     if removed and rows:
-        _event("API-Schlüssel widerrufen", str(key_id), rows[0][0], rows[0][1])
+        _event("API-Schlüssel widerrufen", str(key_id), rows[0][0])
     return removed
 
 
@@ -133,14 +159,18 @@ def verify(token: str) -> dict | None:
         now = time.monotonic()
         with _LOCK:
             cached = _CACHE.get(digest)
+            generation = _GENERATION[0]
         if cached and cached[0] > now:
             result = cached[1]
         else:
             result = _verify_slow(match.group(1), token)
             with _LOCK:
-                if len(_CACHE) > 1000:
-                    _CACHE.clear()
-                _CACHE[digest] = (now + CACHE_SECONDS, result)
+                # Nur merken, wenn inzwischen kein revoke()/clear_cache() lief –
+                # sonst wäre ein gerade widerrufener Schlüssel noch 60 s gültig.
+                if _GENERATION[0] == generation:
+                    if len(_CACHE) > 1000:
+                        _CACHE.clear()
+                    _CACHE[digest] = (now + CACHE_SECONDS, result)
         if result:
             _touch(result["id"])
             return dict(result)
@@ -153,14 +183,21 @@ def _verify_slow(key_id: str, token: str) -> dict | None:
     _ensure()
     rows = store.query("SELECT id, name, scope, hash FROM api_keys WHERE id=?", (key_id,))
     if not rows:
-        # Gleiche Rechenzeit wie bei einem existierenden Schlüssel.
+        # Gleicher (billiger) Vergleich wie bei einem existierenden Schlüssel.
         if _READY.get("dummy") is None:
-            _READY["dummy"] = settings.hash_password(secrets.token_urlsafe(16))
-        settings.verify_password(token, _READY["dummy"])
+            _READY["dummy"] = hash_token(PREFIX + secrets.token_urlsafe(24))
+        _token_matches(token, _READY["dummy"])
         return None
     ident, name, scope, encoded = rows[0]
-    if not settings.verify_password(token, encoded) or scope not in SCOPES:
+    ok, rehash = _token_matches(token, encoded)
+    if not ok or scope not in SCOPES:
         return None
+    if rehash:
+        try:  # Altbestand (PBKDF2) → SHA-256, nur wenn der Eintrag unverändert ist
+            store.execute("UPDATE api_keys SET hash=? WHERE id=? AND hash=?",
+                          (hash_token(token), ident, encoded))
+        except Exception:
+            pass
     return {"id": ident, "name": name, "scope": scope}
 
 
@@ -184,10 +221,12 @@ def allows(scope: str, method: str) -> bool:
     return scope == "admin"
 
 
-def _event(title: str, key_id: str, name: str, scope: str) -> None:
+def _event(title: str, key_id: str, scope: str) -> None:
+    # Nur die Kennung – der frei gewählte Name („HA Familie Schmidt, Lindenweg 7“)
+    # hat im Ereignisprotokoll (und damit im Diagnosepaket) nichts verloren.
     try:
         import events
-        events.emit("settings", "info", f"{title}: {name}",
+        events.emit("settings", "info", f"{title}: {key_id}",
                     {"id": key_id, "scope": scope}, source="web")
     except Exception:
         pass
