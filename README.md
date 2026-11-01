@@ -388,6 +388,21 @@ CSV-Zeile, „nie gehört“ ist `4294967295` und `pmc` antwortet nur, wenn die 
   gehört ein Reverse Proxy davor.
 * PTP braucht das Host-Netzwerk; über eine Docker-Bridge funktioniert es nicht.
 
+## Release
+
+Veröffentlicht wird über GitHub Actions: im Repo unter **Actions → Release → Run workflow**
+die Version eintragen (z. B. `1.0.0`) und starten. Der Workflow
+
+1. lehnt Versionen ab, die kein SemVer sind oder deren Tag schon existiert,
+2. führt Unittests und den Integrationstest gegen das frisch gebaute Image aus,
+3. baut das Image für `linux/amd64` und `linux/arm64` und pusht es nach
+   `ghcr.io/<owner>/ntp-gui` mit den Tags `1.0.0`, `1.0` und `latest`,
+4. legt erst danach den Git-Tag `v1.0.0` und das GitHub-Release an.
+
+Scheitert ein Schritt, entsteht kein halber Release. Bei einem privaten Repository
+ist auch das Image zunächst privat (`docker login ghcr.io` nötig); die Sichtbarkeit
+lässt sich in den Package-Einstellungen auf GitHub ändern.
+
 ## Lizenz
 
 [MIT](LICENSE)

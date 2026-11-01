@@ -1,0 +1,139 @@
+name: Release
+
+# Per Knopfdruck veröffentlichen: Actions → Release → "Run workflow".
+# Reihenfolge mit Absicht: erst alles testen, dann das Image veröffentlichen,
+# erst danach Tag und GitHub-Release anlegen. Scheitert ein Schritt, bleibt
+# kein halber Release (Tag ohne Image) zurück.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version ohne führendes v, z. B. 1.0.0"
+        required: true
+        default: "1.0.0"
+
+permissions:
+  contents: write   # Tag und Release anlegen
+  packages: write   # Image nach ghcr.io pushen
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ inputs.version }}
+    steps:
+      - name: Release nur von main
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::Release bitte von main starten (aktuell: ${GITHUB_REF})"
+          exit 1
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Version prüfen
+        run: |
+          set -euo pipefail
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Version '$VERSION' ist kein SemVer (erwartet z. B. 1.0.0)"
+            exit 1
+          fi
+          if git rev-parse -q --verify "refs/tags/v${VERSION}" >/dev/null; then
+            echo "::error::Tag v${VERSION} existiert bereits"
+            exit 1
+          fi
+          echo "Release v${VERSION} von $(git rev-parse --short HEAD)"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Unittests
+        run: python3 -m unittest discover -s tests -v
+
+      - name: Entrypoint-Syntax prüfen
+        run: bash -n docker/entrypoint.sh
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Image für den Integrationstest bauen
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: ntp-gui:release-test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Integrationstest
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends chrony || true
+          ./tests/container-test.sh ntp-gui:release-test
+
+      - name: In die GitHub Container Registry einloggen
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Metadaten
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}},value=v${{ inputs.version }}
+            type=semver,pattern={{major}}.{{minor}},value=v${{ inputs.version }}
+            type=raw,value=latest
+
+      - name: Image bauen und veröffentlichen (amd64 + arm64)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Tag anlegen
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "v${VERSION}" -m "ntp-gui ${VERSION}"
+          git push origin "v${VERSION}"
+
+      - name: GitHub-Release anlegen
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Container-Image"
+            echo
+            echo "Für linux/amd64 und linux/arm64 (Raspberry Pi):"
+            echo
+            echo '```'
+            echo "$TAGS"
+            echo '```'
+            echo
+            echo "Schnellstart:"
+            echo
+            echo '```bash'
+            echo "docker run -d -p 123:123/udp -p 8080:8080 --cap-add SYS_TIME $(echo "$TAGS" | head -n1)"
+            echo '```'
+          } > release-notes.md
+          gh release create "v${VERSION}" --title "ntp-gui ${VERSION}" \
+            --notes-file release-notes.md --generate-notes
