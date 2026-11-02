@@ -628,5 +628,19 @@ class WorkerTest(unittest.TestCase):
         self.assertEqual(cached.report(), plain.report())
         self.assertEqual(cached.report()["removed"]["oeffentliche_ip"], 50)
 
+
+class HistoryTempSummaryTest(unittest.TestCase):
+    def test_temperature_and_hourly_profile(self):
+        samples = [{"t": 1000 + i * 600, "freq": 1.0 + 0.01 * (i // 6), "temp": 40.0 + (i // 6)} for i in range(18)]
+        out = diagnostics.summarize_history(samples)
+        self.assertEqual(out["metrics"]["temp"]["min"], 40.0)
+        self.assertEqual([row["h"] for row in out["temp_freq_hourly"]], [0, 1, 2])
+        self.assertEqual(out["temp_freq_hourly"][2], {"h": 2, "n": 6, "temp": 42.0, "freq": 1.02})
+
+    def test_without_temperature_no_profile(self):
+        out = diagnostics.summarize_history([{"t": 1, "freq": 1.0}, {"t": 2, "freq": 1.1}])
+        self.assertNotIn("temp_freq_hourly", out)
+        self.assertNotIn("temp", out["metrics"])
+
 if __name__ == "__main__":
     unittest.main()

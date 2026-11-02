@@ -411,6 +411,10 @@ def _stats(values: list[float]) -> dict | None:
             "p95_abs": p95, "last": values[-1] if isinstance(values[-1], (int, float)) else None}
 
 
+def _num(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and value == value
+
+
 def summarize_history(samples: list[dict], since: float | None = None) -> dict:
     """Kennzahlen statt Rohdaten: Anzahl, Min/Max/Mittel, 95 %-Wert je Größe."""
     if since is not None:
@@ -423,10 +427,26 @@ def summarize_history(samples: list[dict], since: float | None = None) -> dict:
         "from": samples[0].get("t"), "to": samples[-1].get("t"),
         "metrics": {},
     }
-    for key in ("offset", "rms", "freq", "skew", "root_delay", "root_dispersion", "stratum", "clients"):
+    for key in ("offset", "rms", "freq", "skew", "root_delay", "root_dispersion", "stratum", "clients", "temp"):
         stats = _stats([s.get(key) for s in samples])
         if stats:
             out["metrics"][key] = stats
+    # Temperatur ↔ Frequenz (Grundlage für den Temperaturausgleich): Mittel je Stunde seit Beginn
+    # des Zeitraums – nur Kennzahlen, keine Rohdaten; Stunden zählen ab „from“, nicht nach Uhrzeit.
+    start = samples[0].get("t") or 0
+    hours: dict[int, dict[str, list]] = {}
+    for sample in samples:
+        temp, freq = sample.get("temp"), sample.get("freq")
+        if not (_num(temp) and _num(freq)):
+            continue
+        slot = hours.setdefault(int(((sample.get("t") or start) - start) // 3600), {"temp": [], "freq": []})
+        slot["temp"].append(float(temp))
+        slot["freq"].append(float(freq))
+    if hours:
+        out["temp_freq_hourly"] = [
+            {"h": h, "n": len(v["temp"]), "temp": round(sum(v["temp"]) / len(v["temp"]), 2),
+             "freq": round(sum(v["freq"]) / len(v["freq"]), 4)}
+            for h, v in sorted(hours.items())]
     strata = [s.get("stratum") for s in samples if s.get("stratum") is not None]
     out["stratum_changes"] = sum(1 for a, b in zip(strata, strata[1:]) if a != b)
     sources: dict[str, dict] = {}

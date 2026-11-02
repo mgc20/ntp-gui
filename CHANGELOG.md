@@ -10,6 +10,8 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 - **Diagnosepaket nimmt bis zu 12 MB Aufzeichnung mit** (bisher 4 MB). Eine einstündige
   Aufzeichnung wurde sonst auf die letzte halbe Stunde gekürzt. Auf dem Raspberry Pi dauert das
   Paket damit länger; das Dashboard bleibt währenddessen bedienbar.
+- Die Verlaufs-Kennzahlen im Diagnosepaket enthalten die Temperatur und ein Stundenprofil
+  Temperatur ↔ Frequenz (Mittel je Stunde) – Grundlage für den Temperaturausgleich.
 
 ## [1.4.0] – 2026-11-02
 
