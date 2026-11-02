@@ -9,6 +9,8 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _isolation  # noqa: E402,F401 – vor jedem App-Import: Host-Pfade umlenken
 
 import confgen  # noqa: E402
 import ptp  # noqa: E402
@@ -160,14 +162,25 @@ class ExpertEnvTests(unittest.TestCase):
             self.assertIn("/run/ptp/gm", ptp._pmc_base(GrandmasterUpdateTests.CFG))
 
 
+# Anfangszustand, wie ihn ein frisch gestarteter Prozess sieht
+PRISTINE_GM_STATE = dict(ptp._GM_STATE)
+
+
 class GrandmasterUpdateTests(unittest.TestCase):
     CFG = {"ptp_enable": True, "ptp_interface": "eth0", "ptp_mode": "master", "ptp_domain": 0,
            "ptp_profile": "default", "gps_refid": "GPS"}
 
     def setUp(self):
         self.saved = dict(ptp._GM_STATE)
-        ptp._GM_STATE.update(key=None, accuracy=None, sent=0.0, failed=0.0, last_locked=None,
+        ptp._GM_STATE.update(key=None, accuracy=None, sent=float("-inf"), failed=0.0, last_locked=None,
                              logged_error=False)
+        # Die ptp4l-Kennung kommt sonst aus der Prozesstabelle des Hosts: Läuft dort gerade ein ptp4l an
+        # oder ab (z. B. Ptp4lSyntaxTests einer parallel laufenden Testsuite), ändert sich der Schlüssel
+        # und es wird mitten im Test „wegen Neustart“ gesendet. Tests, die die Kennung brauchen, patchen
+        # sie selbst; die Kennung selbst prüft Ptp4lIdentityTests.
+        patcher = mock.patch.object(ptp, "_ptp4l_identity", return_value="svc:1:1")
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def tearDown(self):
         ptp._GM_STATE.clear()
@@ -182,6 +195,15 @@ class GrandmasterUpdateTests(unittest.TestCase):
             ptp._update_grandmaster(self.CFG, TRACK_UNSYNC, [], 1013.0)        # < 5 s: warten
             ptp._update_grandmaster(self.CFG, TRACK_PPS, PPS_LOCKED, 1400.0)   # zurück auf 6
         self.assertEqual([p["clockClass"] for p in sent], [6, 7, 6])
+
+    def test_first_send_right_after_boot(self):
+        """monotonic() zählt ab Systemstart: Auch 2 s nach dem Booten geht die erste Ankündigung hinaus."""
+        ptp._GM_STATE.clear()
+        ptp._GM_STATE.update(PRISTINE_GM_STATE)  # Zustand wie direkt nach dem Import
+        sent = []
+        with mock.patch.object(ptp, "_send_grandmaster", side_effect=lambda c, p: sent.append(p) or True):
+            ptp._update_grandmaster(self.CFG, TRACK_PPS, PPS_LOCKED, 2.0)
+        self.assertEqual(len(sent), 1)
 
     def test_failure_backs_off_and_never_raises(self):
         calls = []
@@ -206,6 +228,24 @@ class GrandmasterUpdateTests(unittest.TestCase):
             ptp._update_grandmaster(self.CFG, TRACK_PPS, PPS_LOCKED, 1030.0)   # wieder unverändert
         self.assertEqual(len(sent), 2)
 
+    def test_status_shows_effective_transport(self):
+        self.assertEqual(ptp._effective_transport({"ptp_profile": "gptp", "ptp_transport": "UDPv4"}), "L2")
+        self.assertEqual(ptp._effective_transport({"ptp_profile": "gptp", "ptp_transport": "UDPv6"}), "UDPv6")
+        self.assertEqual(ptp._effective_transport({"ptp_profile": "default", "ptp_transport": "UDPv4"}), "UDPv4")
+
+    def test_not_master_does_nothing(self):
+        with mock.patch.object(ptp, "_send_grandmaster") as send:
+            for mode in ("slave", "auto"):
+                ptp._update_grandmaster(dict(self.CFG, ptp_mode=mode), TRACK_PPS, PPS_LOCKED, 1000.0)
+            ptp._update_grandmaster(dict(self.CFG, ptp_enable=False), TRACK_PPS, PPS_LOCKED, 1000.0)
+        send.assert_not_called()
+
+    def test_gptp_profile_adds_transport_specific(self):
+        self.assertIn("-t", ptp._pmc_base(dict(self.CFG, ptp_profile="gptp")))
+        self.assertNotIn("-t", ptp._pmc_base(self.CFG))
+
+
+class Ptp4lIdentityTests(unittest.TestCase):
     def test_ptp4l_identity_sources(self):
         tmp = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, tmp)
@@ -224,22 +264,6 @@ class GrandmasterUpdateTests(unittest.TestCase):
             comm = handle.read().strip()
         self.assertIn(f"proc:{os.getpid()}:", ptp._proc_identity(comm) or "")
         self.assertIsNone(ptp._proc_identity("kein-solcher-prozess"))
-
-    def test_status_shows_effective_transport(self):
-        self.assertEqual(ptp._effective_transport({"ptp_profile": "gptp", "ptp_transport": "UDPv4"}), "L2")
-        self.assertEqual(ptp._effective_transport({"ptp_profile": "gptp", "ptp_transport": "UDPv6"}), "UDPv6")
-        self.assertEqual(ptp._effective_transport({"ptp_profile": "default", "ptp_transport": "UDPv4"}), "UDPv4")
-
-    def test_not_master_does_nothing(self):
-        with mock.patch.object(ptp, "_send_grandmaster") as send:
-            for mode in ("slave", "auto"):
-                ptp._update_grandmaster(dict(self.CFG, ptp_mode=mode), TRACK_PPS, PPS_LOCKED, 1000.0)
-            ptp._update_grandmaster(dict(self.CFG, ptp_enable=False), TRACK_PPS, PPS_LOCKED, 1000.0)
-        send.assert_not_called()
-
-    def test_gptp_profile_adds_transport_specific(self):
-        self.assertIn("-t", ptp._pmc_base(dict(self.CFG, ptp_profile="gptp")))
-        self.assertNotIn("-t", ptp._pmc_base(self.CFG))
 
 
 def _cfg(**over):
@@ -332,7 +356,9 @@ class Phc2sysPlanTests(unittest.TestCase):
     def test_phc_refclock_skipped_as_master_with_phc2sys(self):
         def render(**over):
             warnings = []
-            text = confgen.render_chrony(_cfg(phc_refclock="/dev/null", **over), {},
+            # leapseclist aus dem Fixture: ohne tzdata im Image käme sonst eine Warnung dazu
+            leap_list = str(Path(__file__).resolve().parent / "fixtures" / "leap-seconds.list")
+            text = confgen.render_chrony(_cfg(phc_refclock="/dev/null", leapseclist=leap_list, **over), {},
                                          warn=lambda *a: warnings.append(a))
             return text, warnings
         text, warnings = render(ptp_mode="master")

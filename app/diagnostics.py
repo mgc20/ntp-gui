@@ -563,14 +563,63 @@ def _is_ip(text: str) -> bool:
         return False
 
 
-def _known_names(cfg: dict) -> list[str]:
-    """Eigene Host- und Domainnamen: Rechner, NTS, Quellen, Erzwingen-Liste, Zertifikat, bind_address."""
+# --- Eigene Rechnernamen ------------------------------------------------------
+# socket.getfqdn() fragt das DNS rückwärts – bei einem langsamen Resolver (Hostname nicht in
+# /etc/hosts, „timeout:2 attempts:3“) dauert das Sekunden. Früher geschah das bei jeder Anfrage
+# mit fremdem Host-Kopf (blockierte einen Handler-Thread, von außen auslösbar) und beim
+# Diagnose-Export außerhalb seiner Frist. Jetzt: einmal im Hintergrund, Ergebnis gemerkt.
+OWN_NAMES_TTL = 3600.0
+_OWN: dict[str, Any] = {"fqdn": None, "t": None, "thread": None, "started": None, "done": threading.Event()}
+_OWN_LOCK = threading.Lock()
+
+
+def _lookup_fqdn(done: threading.Event) -> None:
+    try:
+        fqdn = socket.getfqdn()
+    except (OSError, UnicodeError):
+        fqdn = ""
+    with _OWN_LOCK:
+        if _OWN["thread"] is threading.current_thread():  # nach _reset_own_names() verwerfen
+            _OWN.update(fqdn=fqdn, t=time.monotonic(), thread=None)
+    done.set()
+
+
+def own_hostnames(wait: float = 0.0) -> set[str]:
+    """Eigene Rechnernamen (klein, ohne Punkt am Ende): gethostname() sofort, dazu der FQDN aus
+    einer Hintergrund-Abfrage (stündlich aufgefrischt). Solange die allererste Abfrage läuft,
+    wartet ein Aufrufer bis höchstens `wait` Sekunden nach deren Start – alle Aufrufer zusammen
+    also nicht länger als einmal `wait`, egal wie lange der Resolver hängt."""
     names = set()
     try:
         names.add(socket.gethostname())
-        names.add(socket.getfqdn())
     except OSError:
         pass
+    now = time.monotonic()
+    with _OWN_LOCK:
+        stale = _OWN["t"] is None or now - _OWN["t"] >= OWN_NAMES_TTL
+        if stale and _OWN["thread"] is None:
+            done = _OWN["done"] if _OWN["t"] is None else threading.Event()
+            thread = threading.Thread(target=_lookup_fqdn, args=(done,), daemon=True, name="own-fqdn")
+            _OWN.update(thread=thread, started=now)
+            thread.start()
+        done, fqdn, started = _OWN["done"], _OWN["fqdn"], _OWN["started"]
+    if fqdn is None and wait > 0 and started is not None:
+        done.wait(max(0.0, started + wait - now))
+        fqdn = _OWN["fqdn"]
+    if fqdn:
+        names.add(fqdn)
+    return {n.lower().rstrip(".") for n in names if n}
+
+
+def _reset_own_names() -> None:
+    """Für Tests: Cache vergessen (die nächste Abfrage startet neu, laufende werden verworfen)."""
+    with _OWN_LOCK:
+        _OWN.update(fqdn=None, t=None, thread=None, started=None, done=threading.Event())
+
+
+def _known_names(cfg: dict) -> list[str]:
+    """Eigene Host- und Domainnamen: Rechner, NTS, Quellen, Erzwingen-Liste, Zertifikat, bind_address."""
+    names = set(own_hostnames(wait=min(1.0, DEADLINE / 2)))
     for key in ("nts_server_name", "bind_address"):
         if cfg.get(key):
             names.add(str(cfg[key]))

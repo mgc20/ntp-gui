@@ -26,6 +26,8 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "app"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _isolation  # noqa: E402,F401 – vor jedem App-Import: Host-Pfade umlenken
 
 import dnsfwd  # noqa: E402
 import enforce  # noqa: E402
@@ -498,7 +500,12 @@ class ForwarderTest(unittest.TestCase):
         self.assertEqual(reply[:2], query[:2])
         self.assertEqual(dnsfwd.addresses(reply, 1)[0], [ANSWER_IP])
         self.assertEqual((dead.fail, good.ok), (1, 1))
+        # Ausfallzeit monoton gemessen (ein Uhrsprung verlängert sie nicht), nach außen als Uhrzeit
         self.assertGreater(dead.down_until, time.monotonic())
+        self.assertLessEqual(dead.down_until - time.monotonic(), dnsfwd.DOWN_SECONDS)
+        shown = dead.public()["down_until"] - time.time()
+        self.assertTrue(0 < shown <= dnsfwd.DOWN_SECONDS + 1, shown)
+        self.assertIs(dnsfwd.EventGate().clock, time.monotonic)
         self.assertEqual(fwd.state, "ok")
         self.assertEqual(self.events, [])  # „ok“ direkt nach dem Start ist kein Ereignis
         # Zweite Anfrage (anderer Name): ausgefallener Server wird übersprungen
@@ -1065,7 +1072,8 @@ class StatusFileTest(unittest.TestCase):
         self.assertEqual(rc, 2)
         error = dnsfwd.read_status(tmp)["error"]
         self.assertIn(f"Port {port} auf 127.0.0.1 ist belegt", error)
-        self.assertNotIn("Port 53", error)
+        # Wortgrenze: Ein Zufallsport wie 53348 enthält „Port 53“ als Teilzeichenkette.
+        self.assertNotRegex(error, r"\bPort 53\b")
         self.assertNotIn("NET_BIND_SERVICE", error)
 
 

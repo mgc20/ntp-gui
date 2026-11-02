@@ -355,7 +355,8 @@ def grandmaster_command(props: dict) -> str:
     return " ".join(parts)
 
 
-_GM_STATE: dict[str, Any] = {"key": None, "accuracy": None, "sent": 0.0, "failed": 0.0,
+# sent=-inf: noch nie gesendet (monotonic() zählt ab Systemstart, 0.0 sperrte die ersten 5 s).
+_GM_STATE: dict[str, Any] = {"key": None, "accuracy": None, "sent": float("-inf"), "failed": 0.0,
                              "last_locked": None, "logged_error": False}
 _GM_MIN_GAP = 5.0          # nie öfter als alle 5 s senden
 _GM_ACCURACY_GAP = 60.0    # reine Genauigkeitsänderungen höchstens minütlich
@@ -399,7 +400,7 @@ def update_grandmaster(cfg: dict, tracking: dict, sources: list) -> None:
 
 def _update_grandmaster(cfg: dict, tracking: dict, sources: list, now: float) -> None:
     if not (cfg.get("ptp_enable") and cfg.get("ptp_interface") and cfg.get("ptp_mode") == "master"):
-        _GM_STATE.update(key=None, accuracy=None, sent=0.0)
+        _GM_STATE.update(key=None, accuracy=None, sent=float("-inf"))
         return
     last_locked = _GM_STATE["last_locked"]
     props = grandmaster_properties(

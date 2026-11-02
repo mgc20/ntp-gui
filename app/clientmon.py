@@ -792,7 +792,9 @@ def _migrate(store_mod) -> None:
 # ---------------------------------------------------------------------------
 
 ARPHRD_ETHER = 1
-_ROUTES: dict = {"t": 0.0, "v4": [], "v6": []}
+# t=None: noch nie gelesen. Nicht 0.0 – monotonic() zählt ab Systemstart, in der ersten Minute
+# nach dem Booten galt der leere Anfangs-Cache sonst als frisch (alle Clients „nicht im Netz“).
+_ROUTES: dict = {"t": None, "v4": [], "v6": []}
 ROUTES_TTL = 60.0
 
 
@@ -813,7 +815,7 @@ def frame_mac(addr: Any) -> str | None:
 def _connected_routes() -> tuple[list, list]:
     """Direkt angeschlossene Netze je Interface aus /proc (ohne Gateway)."""
     now = time.monotonic()
-    if now - _ROUTES["t"] < ROUTES_TTL:
+    if _ROUTES["t"] is not None and now - _ROUTES["t"] < ROUTES_TTL:
         return _ROUTES["v4"], _ROUTES["v6"]
     v4, v6 = [], []
     try:

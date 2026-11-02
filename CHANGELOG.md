@@ -143,7 +143,24 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
   das am Host noch nie einen Impuls gezählt hat, wird nicht mehr zum Einbinden vorgeschlagen.
 - Hardware-Check auf dem Pi: Neben einem erkannten USB-Empfänger erscheint die leere Mini-UART
   `ttyS0` nicht mehr als zweite „Empfänger“-Karte mit „PPS über GPIO möglich“.
-- Benachrichtigungen: Das Ereignis „gedrosselt“ blieb in der ersten Stunde nach dem Systemstart aus.
+- **Container konnte sich beim Speichern von Einstellungen beenden** (auch in 1.3.x): Kam eine
+  Änderung genau, während die Zeitdienste neu starteten, traf das Signal an den Supervisor die
+  bash mitten in einer Befehlsersetzung („trap: unexpected EOF while looking for matching `)'“) –
+  der Supervisor und damit der Container endeten. Das Dashboard bittet jetzt per Datei
+  (`/run/ntp-gui/reload.request`) um das Neuladen statt per SIGHUP. Im Belastungstest (150
+  schnelle Wechsel) bleibt der Container stabil; vorher endete er nach 21 bzw. 48 Wechseln.
+- Ein frisch gestarteter Dienst galt in den ersten Millisekunden als „beendet“ (der Prozess trug
+  noch den Namen der Shell); der Supervisor wartet jetzt kurz auf den Start.
+- Sperrzeiten (Benachrichtigungen, Prüfung „Zeitserver erzwingen“, Anmelde-Cache) laufen auf der
+  monotonen Uhr: Stellt chrony die Systemuhr (Pi ohne Echtzeituhr), verlängert das keine Sperre
+  mehr. Mehrere Zeitvergleiche gingen in der ersten Stunde nach dem Systemstart falsch
+  (Startwert 0 statt „noch nie“) – u. a. blieb das Benachrichtigungs-Ereignis „gedrosselt“ aus.
+- Eigener Rechnername: Der vollständige Name (Rückwärts-DNS) wird einmal im Hintergrund
+  ermittelt und gemerkt, statt bei jeder Anfrage mit fremdem Host-Kopf – ein langsamer Resolver
+  hielt sonst jedes Mal einen Anfrage-Thread fest.
+- DNS-Weiterleiter: Die Statusdatei konnte bei gleichzeitigem Schreiben halb geschrieben gelesen
+  werden (Dashboard zeigte den Weiterleiter dann als „gestoppt“); die Meldung bei belegtem Port
+  nennt jetzt den richtigen Port.
 
 ### Sicherheit
 - **Datenschutz bei Benachrichtigungen:** Jede Nachricht läuft durch den Datenschutzfilter

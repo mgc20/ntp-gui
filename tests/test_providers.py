@@ -14,6 +14,8 @@ from unittest import mock
 
 APP = Path(__file__).resolve().parents[1] / "app"
 sys.path.insert(0, str(APP))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _isolation  # noqa: E402,F401 – vor jedem App-Import: Host-Pfade umlenken
 
 import chrony  # noqa: E402
 import gps  # noqa: E402
@@ -296,7 +298,7 @@ class GpsdReplayTests(ProviderTestBase):
         try:
             path = providers.start_recording(60)["path"]
             live = gps.poll_gpsd(timeout=2)
-            live_pps = gps.probe_pps(timeout=0.5)
+            live_pps = gps.probe_pps(timeout=5)  # endet beim EOF des Fake-gpsd
             providers.stop()
         finally:
             fake.close()
@@ -309,8 +311,8 @@ class GpsdReplayTests(ProviderTestBase):
 
         # gpsd ist weg – die Wiedergabe liefert dieselben Meldungen.
         self.replay(path)
-        self.assertEqual(gps.poll_gpsd(timeout=0.5), live)
-        replayed = gps.probe_pps(timeout=0.5)
+        self.assertEqual(gps.poll_gpsd(timeout=5), live)
+        replayed = gps.probe_pps(timeout=5)
         self.assertTrue(replayed["reachable"] and replayed["seen"])
         self.assertEqual(replayed["pps_devices"], live_pps["pps_devices"])
 

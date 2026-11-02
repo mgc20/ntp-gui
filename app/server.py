@@ -550,14 +550,27 @@ def service_insights(services: dict, now: float | None = None) -> list[dict]:
     return out
 
 
+RELOAD_REQUEST = "reload.request"
+
+
 def trigger_reload() -> bool:
-    """Bittet den Supervisor per SIGHUP, die Zeitdienste neu zu starten."""
+    """Bittet den Supervisor, die Zeitdienste neu zu starten: Anforderungsdatei in RUN_DIR, die
+    seine Hauptschleife alle 2 s prüft.
+
+    Früher per SIGHUP. Traf das Signal die bash genau beim Auswerten eines „$( … )“ (z. B. während
+    ein Dienst gerade startete), verlor ihr Parser den Faden („trap: unexpected EOF while looking
+    for matching `)'“) – und der Supervisor samt Container beendete sich. Eine Datei kann das nicht.
+    """
+    supervisor = os.path.join(RUN_DIR, "supervisor.pid")
+    if not os.path.exists(supervisor):
+        return False  # kein Supervisor (Entwicklung, Tests) – niemand würde die Datei lesen
+    path = os.path.join(RUN_DIR, RELOAD_REQUEST)
     try:
-        with open(os.path.join(RUN_DIR, "supervisor.pid"), encoding="utf-8") as handle:
-            pid = int(handle.read().strip())
-        os.kill(pid, signal.SIGHUP)
+        with open(path + ".tmp", "w", encoding="utf-8") as handle:
+            handle.write(f"{time.time():.3f}\n")
+        os.replace(path + ".tmp", path)
         return True
-    except (OSError, ValueError):
+    except OSError:
         return False
 
 
@@ -882,13 +895,14 @@ def _hardware_metrics(lines: list[str]) -> None:
 class AuthCache:
     """PBKDF2 kostet auf einem Pi spürbar Zeit – geprüfte Zugänge kurz merken."""
 
-    def __init__(self) -> None:
-        self._ok: dict[str, float] = {}
+    def __init__(self, clock=time.monotonic) -> None:
+        self._ok: dict[str, float] = {}  # Schlüssel → gültig bis (monotonic: Uhrsprünge zählen nicht)
         self._lock = threading.Lock()
+        self.clock = clock
 
     def check(self, header: str, verify) -> bool:
         key = hashlib.sha256(header.encode()).hexdigest()
-        now = time.time()
+        now = self.clock()
         with self._lock:
             if self._ok.get(key, 0) > now:
                 return True
@@ -966,12 +980,9 @@ def host_allowed(header: str | None, nts_name: str = "") -> bool:
         return True  # einteilige Namen (raspberrypi, localhost) löst kein öffentliches DNS auf
     if host.endswith(LOCAL_HOST_SUFFIXES):
         return True
-    own = set()
-    try:
-        own = {socket.gethostname().lower().rstrip("."), socket.getfqdn().lower().rstrip(".")}
-    except OSError:
-        pass
-    if host in own:
+    # Gemerkte eigene Namen: kein Rückwärts-DNS je Anfrage (ein fremder Host-Kopf hätte sonst
+    # jedes Mal einen Handler-Thread für die Dauer der DNS-Abfrage blockiert).
+    if host in diagnostics.own_hostnames(wait=1.0):
         return True
     if nts_name and host == str(nts_name).strip().lower().rstrip("."):
         return True
@@ -1583,6 +1594,7 @@ def main() -> None:
     threading.Thread(target=events_ingester, daemon=True, name="events").start()
     notify.start(VERSION)  # eigener Thread je Kanal; ohne angelegte Kanäle geht nichts hinaus
     updatecheck.start(VERSION)  # opt-in; ausgeschaltet keine Anfrage nach außen
+    diagnostics.own_hostnames()  # eigenen FQDN schon jetzt im Hintergrund auflösen (Host-Prüfung)
     # Folgt clientmon_enable/ntp_port ohne Neustart.
     threading.Thread(target=clientmon.watch, args=(settings.values,), daemon=True, name="clientmon-watch").start()
 

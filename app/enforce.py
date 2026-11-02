@@ -873,13 +873,14 @@ def ours_from_tracking(tracking: dict | None) -> dict | None:
 
 
 _CHECK_LOCK = threading.Lock()
-_LAST: dict[str, Any] = {"time": 0.0, "result": None}
+_LAST: dict[str, Any] = {"time": 0.0, "mono": 0.0, "result": None}  # nur mit result gültig
 MIN_INTERVAL = 30.0
 
 
 def check(server_ips: list[str], hostnames: list[str] | None = None, ntp_port: int = 123,
           tracking: dict | None = None, source_hosts: list[str] | None = None,
           *, force: bool = False, now: Callable[[], float] = time.time,
+          clock: Callable[[], float] = time.monotonic,
           resolver: Callable[..., dict] | None = None,
           prober: Callable[..., dict] | None = None) -> dict:
     """Prüft, ob DNS-Umschreibung und Firewall-Umleitung wirken (höchstens alle 30 s).
@@ -887,25 +888,28 @@ def check(server_ips: list[str], hostnames: list[str] | None = None, ntp_port: i
     server_ips: Adressen, unter denen ntp-gui erreichbar ist (eigene Interfaces + Browser-Adresse).
     tracking:   Ergebnis von chrony.tracking() als Vergleich.
     source_hosts: Namen der eigenen Zeitquellen (Schleifen-Erkennung).
+    now liefert die angezeigte Uhrzeit, clock (monotonic) misst den Abstand – ein Sprung der
+    Systemuhr (Pi ohne RTC, chrony stellt die Uhr) verlängert die Sperre nicht.
     """
     with _CHECK_LOCK:
         t = now()
-        if not force and _LAST["result"] is not None and t - _LAST["time"] < MIN_INTERVAL:
+        mono = clock()
+        if not force and _LAST["result"] is not None and mono - _LAST["mono"] < MIN_INTERVAL:
             cached = dict(_LAST["result"])
             cached["cached"] = True
-            cached["retry_after"] = round(MIN_INTERVAL - (t - _LAST["time"]), 1)
+            cached["retry_after"] = round(MIN_INTERVAL - (mono - _LAST["mono"]), 1)
             return cached
         result = _run_check(server_ips, hostnames, _port(ntp_port), tracking, source_hosts or [],
                             resolver or _resolve, prober or probe_many)
         result["time"] = t
         result["cached"] = False
-        _LAST.update(time=t, result=result)
+        _LAST.update(time=t, mono=mono, result=result)
         return result
 
 
 def _reset_rate_limit() -> None:
     with _CHECK_LOCK:
-        _LAST.update(time=0.0, result=None)
+        _LAST.update(time=0.0, mono=0.0, result=None)
 
 
 def _run_check(server_ips, hostnames, port, tracking, source_hosts, resolver, prober) -> dict:

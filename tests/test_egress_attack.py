@@ -18,6 +18,9 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _isolation  # noqa: E402,F401 – vor jedem App-Import: Host-Pfade umlenken
+from _support import fake_hostnames  # noqa: E402
 
 import diagnostics  # noqa: E402
 import egress  # noqa: E402
@@ -278,6 +281,7 @@ class ExportDenialTest(unittest.TestCase):
     """Ein von außen ins Log geschriebener Host-Name darf den Export nicht verhindern."""
 
     def setUp(self):
+        fake_hostnames(self)  # kein Rückwärts-DNS des Runners
         self.tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.tmp)
         log = "\n".join([

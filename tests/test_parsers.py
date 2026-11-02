@@ -3,9 +3,13 @@
 import os
 import sys
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _isolation  # noqa: E402,F401 – vor jedem App-Import: Host-Pfade umlenken
+from _support import closed_tcp_port  # noqa: E402
 
 import chrony  # noqa: E402
 import gps  # noqa: E402
@@ -240,22 +244,31 @@ class TestRefclockSource(unittest.TestCase):
 class TestGpsdPortParsing(unittest.TestCase):
     """A malformed GPSD_PORT must degrade to 'gpsd unreachable', never to HTTP 500."""
 
-    def tearDown(self):
-        os.environ.pop("GPSD_PORT", None)
-        os.environ.pop("GPSD_HOST", None)
+    # Geprüft wird das Parsen selbst. Früher fragten die Tests den echten Standard 127.0.0.1:2947
+    # bzw. Port 1 ab – auf einem Rechner mit gpsd (dem Ziel des Produkts) antwortet der aber.
 
-    def test_garbage_port_returns_empty(self):
-        os.environ["GPSD_PORT"] = "localhost:2947"
-        self.assertEqual(gps.poll_gpsd(timeout=0.2), {})
+    def env(self, **values):
+        patcher = mock.patch.dict(os.environ, values)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_garbage_port_falls_back_to_default(self):
+        self.env(GPSD_PORT="localhost:2947")
+        self.assertEqual(gps._gpsd_address(), ("127.0.0.1", 2947))
 
     def test_empty_host_falls_back(self):
-        os.environ["GPS_ENABLE"] = "true"
-        os.environ["GPSD_HOST"] = "   "
-        os.environ["GPSD_PORT"] = "1"  # geschlossener Port -> leeres Ergebnis
-        try:
+        self.env(GPSD_HOST="   ", GPSD_PORT="2948")
+        self.assertEqual(gps._gpsd_address(), ("127.0.0.1", 2948))
+
+    def test_unreachable_returns_empty(self):
+        self.env(GPS_ENABLE="true", GPSD_HOST="   ", GPSD_PORT=str(closed_tcp_port(self)))
+        self.assertEqual(gps.poll_gpsd(timeout=0.2), {})
+
+    def test_garbage_port_never_raises(self):
+        self.env(GPSD_PORT="localhost:2947")
+        with mock.patch.object(gps.providers, "gpsd_lines", side_effect=ConnectionRefusedError) as lines:
             self.assertEqual(gps.poll_gpsd(timeout=0.2), {})
-        finally:
-            os.environ.pop("GPS_ENABLE", None)
+        self.assertEqual(lines.call_args[0][:2], ("127.0.0.1", 2947))
 
 
 class TestLogTail(unittest.TestCase):

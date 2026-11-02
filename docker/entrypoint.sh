@@ -2,9 +2,10 @@
 # Startet und überwacht chronyd, gpsd, ptp4l, phc2sys und das Dashboard.
 #
 # Die Konfiguration erzeugt /app/confgen.py aus den Einstellungen (Dashboard >
-# Umgebungsvariable > Standard). Ein SIGHUP – ausgelöst vom Dashboard nach dem
-# Speichern – erzeugt die Konfiguration neu und startet nur die Zeitdienste
-# neu; Container und Dashboard laufen weiter.
+# Umgebungsvariable > Standard). Nach dem Speichern legt das Dashboard
+# RUN_DIR/reload.request an (ein manuelles SIGHUP wirkt genauso): Die
+# Konfiguration wird neu erzeugt, nur die Zeitdienste starten neu; Container
+# und Dashboard laufen weiter.
 #
 # chronyd und das Dashboard sind Pflicht: Stirbt einer davon, endet der
 # Container mit Exit 1, damit Docker ihn neu startet. gpsd, ptp4l und phc2sys
@@ -90,12 +91,31 @@ spawn() {  # spawn <name> <cmd...>  -> setzt SPAWNED
   log "$name" "starte: $*"
   "$@" &
   SPAWNED="$!=${comm:0:15}"
+  wait_exec "$!"
+}
+
+# Direkt nach "cmd &" trägt das Kind bis zu seinem exec noch den Namen dieser Shell in
+# /proc/PID/comm. Ein service_alive in diesem Fenster hielte den eben gestarteten Dienst für
+# tot (reload_chronyd ließe den alten chronyd laufen, der Watchdog meldete „unerwartet
+# beendet“). wait_exec wartet höchstens ~1 s, bis das exec geschehen ist.
+wait_exec() {  # wait_exec <pid>
+  local pid="$1" own i
+  own=$(cat "/proc/$$/comm" 2>/dev/null) || return 0
+  for (( i = 0; i < 100; i++ )); do
+    [[ "$(cat "/proc/${pid}/comm" 2>/dev/null)" != "$own" ]] && return 0
+    sleep 0.01
+  done
+  return 0
 }
 
 service_alive() {
   local pid="${1%%=*}" comm="${1#*=}" actual
   [[ -n "$pid" ]] || return 1
   actual=$(cat "/proc/${pid}/comm" 2>/dev/null) || return 1
+  if [[ "$actual" != "$comm" && "$actual" == "$(cat "/proc/$$/comm" 2>/dev/null)" ]]; then
+    wait_exec "$pid"  # gerade erst gestartet: exec abwarten statt „tot“ zu melden
+    actual=$(cat "/proc/${pid}/comm" 2>/dev/null) || return 1
+  fi
   [[ "$actual" == "$comm" ]]
 }
 
@@ -321,6 +341,7 @@ start_ptp4l() {
   log ptp "ptp4l auf ${NTPGUI_PTP_INTERFACE} (Domain ${NTPGUI_PTP_DOMAIN}, Modus ${NTPGUI_PTP_MODE})"
   /usr/sbin/ptp4l -f "$PTP4L_CONF" -i "$NTPGUI_PTP_INTERFACE" -m >>"$PTP_LOG_FILE" 2>&1 &
   SVC_ENTRY[ptp4l]="$!=ptp4l"
+  wait_exec "$!"
   set_state ptp4l running
 }
 
@@ -571,6 +592,7 @@ check_hotplug() {
 start_logtee
 mkdir -p /var/run/chrony /var/lib/chrony /var/log/chrony /etc/linuxptp "$RUN_DIR"
 echo "$$" > "${RUN_DIR}/supervisor.pid"
+rm -f "${RUN_DIR}/reload.request"  # Anforderung von vor dem Start ist erledigt
 write_status idle "bereit"
 
 # chronyd legt seine Rechte ab; gehören die Verzeichnisse root, schaltet er
@@ -603,6 +625,13 @@ NTPGUI_VERSION="${NTPGUI_VERSION:-$(sed -n 's/^VERSION = os\.environ\.get("NTPGU
 # Statt 'wait -n': bash 5.2 übersieht damit Kinder, die vor dem Aufruf gestorben
 # sind. Der Watchdog erkennt jeden toten Dienst, auch beim Start.
 while true; do
+  # Neuladen: Das Dashboard legt reload.request an (kein SIGHUP mehr – ein Signal mitten in einem
+  # „$( … )“ brachte den bash-Parser durcheinander und beendete den Container). Datei zuerst
+  # löschen: Kommt während des Neuladens eine neue Anforderung, folgt ein weiterer Durchgang.
+  if [[ -e "${RUN_DIR}/reload.request" ]]; then
+    rm -f "${RUN_DIR}/reload.request"
+    RELOAD_REQUESTED=1
+  fi
   if (( RELOAD_REQUESTED )); then
     RELOAD_REQUESTED=0
     reload_services
@@ -643,6 +672,6 @@ while true; do
       && rm -f "${PTP_LOG_FILE}.tmp" \
       && log ptp "Log auf die letzten 256 KB gekürzt" || true
   fi
-  # 'wait' auf ein Hintergrund-sleep, damit ein SIGHUP sofort wirkt.
+  # 'wait' auf ein Hintergrund-sleep, damit ein (manuelles) SIGHUP sofort wirkt.
   sleep 2 & wait $! 2>/dev/null || true
 done

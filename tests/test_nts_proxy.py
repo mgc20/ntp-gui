@@ -14,6 +14,8 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "app"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _isolation  # noqa: E402,F401 – vor jedem App-Import: Host-Pfade umlenken
 
 import chrony  # noqa: E402
 import confgen  # noqa: E402
@@ -384,7 +386,7 @@ BACKOFF=(5 15 60 300); STABLE_AFTER=600
                               timeout=timeout, check=True).stdout.split()
 
     def test_schedule_restart_never_blocks_on_live_child(self):
-        self.FUNCS = ("service_alive", "set_state", "schedule_restart")
+        self.FUNCS = ("wait_exec", "service_alive", "set_state", "schedule_restart")
         out = self.run_bash("""
 sleep 60 >/dev/null 2>&1 & pid=$!
 SVC_ENTRY[ptp4l]="$pid=falscher-comm"; SVC_STATE[ptp4l]=running
@@ -400,8 +402,24 @@ echo "tot:${SVC_STATE[ptp4l]}:${SVC_EXIT[ptp4l]}:${SVC_NEXT[ptp4l]}"
         self.assertNotEqual(out[0].split(":")[2], "")
         self.assertEqual(out[1], "tot:restarting:143:1005")
 
+    def test_service_alive_right_after_start(self):
+        """Regression: Direkt nach "cmd &" heißt das Kind bis zum exec noch wie die Shell
+        (/proc/PID/comm). service_alive meldete den eben gestarteten Dienst dann als tot –
+        unter Last in 10 von 200 Fällen. Hier wird das Fenster absichtlich auf 0,3 s gedehnt."""
+        self.FUNCS = ("wait_exec", "service_alive")
+        out = self.run_bash("""
+( sleep 0.3; exec sleep 60 ) >/dev/null 2>&1 & p=$!
+service_alive "$p=sleep" && echo lebt || echo tot
+kill "$p"
+sleep 60 >/dev/null 2>&1 & q=$!
+wait_exec "$q"
+[[ "$(cat /proc/$q/comm)" == sleep ]] && echo exec_fertig
+kill "$q"
+""")
+        self.assertEqual(out, ["lebt", "exec_fertig"])
+
     def test_cert_renewal_restarts_only_chronyd(self):
-        self.FUNCS = ("service_alive", "reload_chronyd")
+        self.FUNCS = ("wait_exec", "service_alive", "reload_chronyd")
         out = self.run_bash("""
 apply_config() { echo apply; }
 start_chronyd() { sleep 60 >/dev/null 2>&1 & SVC_ENTRY[chronyd]="$!=sleep"; echo start_chronyd; }
@@ -418,7 +436,7 @@ kill "$gps" "${SVC_ENTRY[chronyd]%%=*}"
         self.assertEqual(out, ["apply", "start_chronyd", "alt_beendet", "gpsd_lebt", "neuer_pid"])
 
     def test_cert_renewal_keeps_chronyd_when_config_fails(self):
-        self.FUNCS = ("service_alive", "reload_chronyd")
+        self.FUNCS = ("wait_exec", "service_alive", "reload_chronyd")
         out = self.run_bash("""
 apply_config() { return 1; }
 start_chronyd() { echo FALSCH_start; }

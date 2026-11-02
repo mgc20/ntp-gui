@@ -8,9 +8,13 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _isolation  # noqa: E402,F401 – vor jedem App-Import: Host-Pfade umlenken
+from _support import closed_tcp_port  # noqa: E402
 
 import devices  # noqa: E402
 import gps  # noqa: E402
@@ -872,7 +876,7 @@ class TestGpsModule(unittest.TestCase):
         old = os.environ.get("GPSD_PORT")
         os.environ["GPSD_PORT"] = str(port)
         try:
-            result = gps.probe_pps(timeout=0.5)
+            result = gps.probe_pps(timeout=5)  # endet beim EOF des Fake-gpsd, nicht nach 5 s
         finally:
             if old is None:
                 os.environ.pop("GPSD_PORT", None)
@@ -886,15 +890,8 @@ class TestGpsModule(unittest.TestCase):
         self.assertEqual(result["devices"][0]["driver"], "u-blox")
 
     def test_probe_unreachable(self):
-        old = os.environ.get("GPSD_PORT")
-        os.environ["GPSD_PORT"] = "1"
-        try:
+        with mock.patch.dict(os.environ, {"GPSD_PORT": str(closed_tcp_port(self))}):
             result = gps.probe_pps(timeout=0.2)
-        finally:
-            if old is None:
-                os.environ.pop("GPSD_PORT", None)
-            else:
-                os.environ["GPSD_PORT"] = old
         self.assertFalse(result["reachable"] or result["seen"])
 
 

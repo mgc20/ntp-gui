@@ -14,6 +14,8 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _isolation  # noqa: E402,F401 – vor jedem App-Import: Host-Pfade umlenken
 
 import server  # noqa: E402
 
@@ -49,6 +51,23 @@ class RunDirMixin:
     def write(self, content):
         with open(os.path.join(self.tmp.name, "services.json"), "w", encoding="utf-8") as handle:
             handle.write(content if isinstance(content, str) else json.dumps(content))
+
+
+class TriggerReloadTest(RunDirMixin, unittest.TestCase):
+    """Neuladen per Anforderungsdatei statt SIGHUP (ein Signal mitten in „$( … )“ beendete den
+    bash-Supervisor mit „trap: unexpected EOF while looking for matching `)'“)."""
+
+    def test_writes_request_file_and_sends_no_signal(self):
+        Path(self.tmp.name, "supervisor.pid").write_text("12345\n")
+        with mock.patch.object(server.os, "kill") as kill:
+            self.assertTrue(server.trigger_reload())
+        kill.assert_not_called()
+        self.assertTrue(Path(self.tmp.name, server.RELOAD_REQUEST).exists())
+        self.assertFalse(Path(self.tmp.name, server.RELOAD_REQUEST + ".tmp").exists())
+
+    def test_without_supervisor_reports_false(self):
+        self.assertFalse(server.trigger_reload())
+        self.assertFalse(Path(self.tmp.name, server.RELOAD_REQUEST).exists())
 
 
 class ServicesTest(RunDirMixin, unittest.TestCase):

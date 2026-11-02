@@ -22,6 +22,9 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "app"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _isolation  # noqa: E402,F401 – vor jedem App-Import: Host-Pfade umlenken
+from _support import fake_hostnames  # noqa: E402
 
 import history  # noqa: E402
 import leap  # noqa: E402
@@ -467,6 +470,7 @@ class ClockHttpTest(unittest.TestCase):
         cls.tmp.cleanup()
 
     def setUp(self):
+        fake_hostnames(self)  # Host-Prüfung ohne Rückwärts-DNS des Runners
         server._CLOCK_CACHE.update(t=None, tracking=None)
 
     def request(self, path, auth=False, host="example.com"):
@@ -540,13 +544,17 @@ class ClockHttpTest(unittest.TestCase):
 
     def test_time_status_is_cached(self):
         self.set_public(False)
-        with mock.patch.object(server.chrony, "tracking", return_value=dict(self.TRACKING)) as tracking:
+        # Cache-Verhalten, unabhängig vom Tempo des Runners: Die Lebensdauer ist hier 60 s, damit eine
+        # Verzögerung (> 1 s, VM-Steal) mitten in der Schleife den Cache nicht ablaufen lässt.
+        with mock.patch.object(server.chrony, "tracking", return_value=dict(self.TRACKING)) as tracking, \
+                mock.patch.object(server, "CLOCK_CACHE_SECONDS", 60):
             for _ in range(5):
                 self.assertEqual(self.request("/api/v1/time", auth=True)[0], 200)
-            self.assertEqual(tracking.call_count, 1, "höchstens ein chronyc je Sekunde")
-            server._CLOCK_CACHE["t"] -= 2
+            self.assertEqual(tracking.call_count, 1, "höchstens ein chronyc je Cache-Dauer")
+            server._CLOCK_CACHE["t"] -= 120
             self.request("/api/v1/time", auth=True)
             self.assertEqual(tracking.call_count, 2)
+        self.assertEqual(server.CLOCK_CACHE_SECONDS, 1.0)
 
     def test_v1_description(self):
         status, body = self.request("/api/v1", auth=True)
@@ -554,7 +562,9 @@ class ClockHttpTest(unittest.TestCase):
         self.assertTrue({"/api/v1/time", "/api/v1/leap", "/api/v1/temperature"} <= paths)
 
     def test_leap_and_temperature_endpoints(self):
-        status, body = self.request("/api/v1/leap", auth=True)
+        # Fixture statt /usr/share/zoneinfo/leap-seconds.list des Hosts (fehlt ohne tzdata)
+        with mock.patch.object(server.leap, "chrony_source", return_value=("list", str(LEAP_REAL))):
+            status, body = self.request("/api/v1/leap", auth=True)
         self.assertEqual(status, 200)
         payload = json.loads(body)
         self.assertIn("tai_utc", payload)

@@ -16,6 +16,9 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _isolation  # noqa: E402,F401 – vor jedem App-Import: Host-Pfade umlenken
+from _support import closed_tcp_port  # noqa: E402
 
 import apiv1  # noqa: E402
 import egress  # noqa: E402
@@ -152,7 +155,7 @@ class ValidateTest(unittest.TestCase):
 class RouterTest(unittest.TestCase):
     def setUp(self):
         self.now = [1000.0]
-        self.router = notify.ChannelRouter(channel(), clock=lambda: self.now[0])
+        self.router = notify.ChannelRouter(channel(), clock=lambda: self.now[0], wall=lambda: self.now[0])
 
     def offer(self, *args, **kw):
         return self.router.offer(ev(*args, **kw))
@@ -220,19 +223,19 @@ class RouterTest(unittest.TestCase):
         self.assertEqual((len(a), len(b)), (1, 1))
 
     def test_filters(self):
-        router = notify.ChannelRouter(channel(min_level="crit", kinds=["gps"]), clock=lambda: 1000.0)
+        router = notify.ChannelRouter(channel(min_level="crit", kinds=["gps"]), clock=lambda: 1000.0, wall=lambda: 1000.0)
         self.assertEqual(router.offer(ev("gps", "warn", "x", 1000)), [])
         self.assertEqual(router.offer(ev("service", "crit", "x", 1000)), [])
         self.assertEqual(len(router.offer(ev("gps", "crit", "x", 1000))), 1)
         # „behoben“ kommt trotz Mindeststufe crit – es gehört zum gemeldeten Problem.
         self.assertEqual(len(router.offer(ev("gps", "info", "wieder da", 1100))), 1)
-        info = notify.ChannelRouter(channel(min_level="info"), clock=lambda: 1000.0)
+        info = notify.ChannelRouter(channel(min_level="info"), clock=lambda: 1000.0, wall=lambda: 1000.0)
         self.assertEqual(len(info.offer(ev("source", "info", "Zeitquelle gewechselt", 1000))), 1)
         self.assertEqual(info.offer(ev("source", "info", "Zeitquelle gewechselt", 1000)), [])  # entprellt
 
     def test_update_events_never_pair(self):
         """Zwei Achtung-Releases nacheinander, dann ein normales: jedes kommt einzeln, nie „behoben“."""
-        router = notify.ChannelRouter(channel(min_level="info"), clock=lambda: self.now[0])
+        router = notify.ChannelRouter(channel(min_level="info"), clock=lambda: self.now[0], wall=lambda: self.now[0])
 
         def update(version, level, t, attention=False):
             self.now[0] = t
@@ -255,14 +258,14 @@ class RouterTest(unittest.TestCase):
         self.assertIn("update", events.KINDS)
         self.assertEqual(notify.KIND_LABELS["update"], "Update-Hinweis")
         # auch ohne Betreff (gleicher Schlüssel „update:“): die Art allein verhindert das Paaren
-        bare = notify.ChannelRouter(channel(min_level="info", debounce_min=0), clock=lambda: 5000.0)
+        bare = notify.ChannelRouter(channel(min_level="info", debounce_min=0), clock=lambda: 5000.0, wall=lambda: 5000.0)
         self.assertEqual(len(bare.offer(ev("update", "warn", "Neue Version 1.4.0 – Achtung", 5000))), 1)
         self.assertEqual(len(bare.offer(ev("update", "warn", "Neue Version 1.5.0 – Achtung", 5000))), 1)
         last = bare.offer(ev("update", "info", "Neue Version 1.5.1 verfügbar", 5000))
         self.assertEqual([(m["title"], m["resolved"]) for m in last], [("Neue Version 1.5.1 verfügbar", False)])
 
     def test_resolved_can_be_switched_off(self):
-        router = notify.ChannelRouter(channel(resolved=False), clock=lambda: 1000.0)
+        router = notify.ChannelRouter(channel(resolved=False), clock=lambda: 1000.0, wall=lambda: 1000.0)
         router.offer(ev("gps", "warn", "GPS-Fix verloren", 1000))
         self.assertEqual(router.offer(ev("gps", "info", "GPS-Fix wieder da", 1050)), [])
 
@@ -270,9 +273,19 @@ class RouterTest(unittest.TestCase):
         self.assertEqual(self.offer("notify", "crit", "Kanal kaputt", 1000), [])
 
     def test_debounce_zero(self):
-        router = notify.ChannelRouter(channel(debounce_min=0, min_level="info"), clock=lambda: 1000.0)
+        router = notify.ChannelRouter(channel(debounce_min=0, min_level="info"), clock=lambda: 1000.0, wall=lambda: 1000.0)
         self.assertEqual(len(router.offer(ev("source", "info", "a", 1000))), 1)
         self.assertEqual(len(router.offer(ev("source", "info", "b", 1000))), 1)
+
+    def test_wall_clock_step_does_not_extend_debounce(self):
+        """Sperrzeiten laufen monoton; die Uhrzeit liefert nur die gemeldeten Dauern."""
+        self.assertIs(notify.ChannelRouter(channel()).clock, time.monotonic)
+        mono, wall = [100.0], [2_000_000_000.0]
+        router = notify.ChannelRouter(channel(min_level="info"), clock=lambda: mono[0], wall=lambda: wall[0])
+        self.assertEqual(len(router.offer(ev("source", "info", "a", None))), 1)
+        wall[0] -= 86400                         # Uhr springt einen Tag zurück …
+        mono[0] += 16 * 60                       # … die Sperrzeit (15 min) ist trotzdem um
+        self.assertEqual(len(router.offer(ev("source", "info", "b", None))), 1)
 
     def test_duration_format(self):
         self.assertEqual(notify.fmt_duration(42), "42 s")
@@ -393,8 +406,9 @@ class DeliverTest(unittest.TestCase):
         notify.deliver(channel(url=self.target.url), self.clean)  # liest höchstens MAX_RESPONSE, kein Fehler
 
     def test_connection_refused_text_has_no_url(self):
+        port = closed_tcp_port(self)  # sicher ablehnend, unabhängig von Diensten des Hosts (discard/9)
         with self.assertRaises(notify.DeliveryError) as ctx:
-            notify.deliver(channel(url="http://127.0.0.1:9/geheim-pfad"), self.clean)
+            notify.deliver(channel(url=f"http://127.0.0.1:{port}/geheim-pfad"), self.clean)
         self.assertNotIn("geheim", str(ctx.exception))
         self.assertNotIn("127.0.0.1", str(ctx.exception))
 
@@ -461,16 +475,30 @@ class EndToEndTest(TempData):
         data.update(over)
         return notify.save_channel(data)["id"]
 
+    def settle(self, timeout: float = 10.0, quiet: float = 0.3) -> None:
+        """Für Prüfungen „nichts weiter verschickt“: erst auf einen festen Endzustand warten
+        (Verteiler hat alle Ereignisse gesehen, keine Warteschlange mehr), dann kurz ruhig."""
+        n = notify.NOTIFIER
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            with n.lock:
+                cids = list(n.senders)
+            if n.last_id >= events.max_id() and all(n.queued(c) == 0 for c in cids):
+                break
+            time.sleep(0.02)
+        else:
+            self.fail("Benachrichtigungen kamen nicht zur Ruhe")
+        time.sleep(quiet)
+
     def test_gps_crit_within_5s_exactly_one(self):
         self.add(kinds=["gps"])
         self.add(name="nur PPS", kinds=["pps"])
         notify.start("test")
-        time.sleep(0.3)
         start = time.monotonic()
         events.emit("gps", "crit", "GPS-Fix verloren bei 52.52001, 13.40495", {"lat": 52.52001})
         self.assertTrue(self.target.wait(1, timeout=5.0))
         self.assertLess(time.monotonic() - start, 5.0)
-        time.sleep(0.5)
+        self.settle()
         self.assertEqual(len(self.target.requests), 1)
         body = self.target.requests[0]["body"].decode()
         self.assertNotIn("52.52", body)
@@ -479,13 +507,12 @@ class EndToEndTest(TempData):
     def test_ten_in_a_minute_then_resolved(self):
         self.add()
         notify.start("test")
-        time.sleep(0.3)
         for _ in range(10):
             events.emit("gps", "warn", "GPS-Fix verloren")
         time.sleep(0.5)
         events.emit("gps", "info", "GPS-Fix wieder da")
-        self.assertTrue(self.target.wait(2))
-        time.sleep(0.5)
+        self.assertTrue(self.target.wait(2, timeout=10))
+        self.settle()
         titles = [json.loads(r["body"])["title"] for r in self.target.requests]
         self.assertEqual(len(titles), 2)
         self.assertEqual(titles[0], "GPS-Fix verloren")
@@ -496,10 +523,9 @@ class EndToEndTest(TempData):
         cid = self.add()
         with mock.patch.object(notify, "RETRY_DELAYS", (0.05, 0.05, 0.05)):
             notify.start("test")
-            time.sleep(0.3)
             events.emit("service", "crit", "Pflichtdienst chronyd ausgefallen", {"service": "chronyd"})
-            self.assertTrue(self.target.wait(4))
-            end = time.monotonic() + 3
+            self.assertTrue(self.target.wait(4, timeout=10))
+            end = time.monotonic() + 10
             dropped = []
             while time.monotonic() < end and not dropped:
                 dropped = events.query(kinds=["notify"])
@@ -509,23 +535,22 @@ class EndToEndTest(TempData):
         status = notify.get_channel(cid)
         self.assertEqual((status["failed"], status["dropped"]), (4, 1))
         self.assertIn("HTTP 500", status["last_error"])
-        time.sleep(0.5)
+        self.settle()
         self.assertEqual(len(self.target.requests), 4)  # das notify-Ereignis selbst geht nicht hinaus
 
     def test_rate_limit(self):
         cid = self.add(rate_per_hour=2, debounce_min=0)
         notify.start("test")
-        time.sleep(0.3)
         for i in range(5):
             events.emit("service", "warn", f"Dienst d{i} beendet", {"service": f"d{i}"})
-        self.target.wait(2)
+        self.target.wait(2, timeout=10)
         # Auf den Zustand warten statt fest zu schlafen: Auf einem ausgelasteten CI-Runner kam das
         # „verworfen“-Ereignis erst nach mehr als 0,8 s an.
-        end = time.monotonic() + 5
+        end = time.monotonic() + 10
         while time.monotonic() < end and (notify.get_channel(cid)["dropped"] < 3
                                            or not events.query(kinds=["notify"])):
             time.sleep(0.05)
-        time.sleep(0.3)  # kein vierter Versand und kein zweites Ereignis hinterher
+        self.settle()  # kein vierter Versand und kein zweites Ereignis hinterher
         self.assertEqual(len(self.target.requests), 2)
         self.assertEqual(notify.get_channel(cid)["dropped"], 3)
         self.assertEqual(len(events.query(kinds=["notify"])), 1)
@@ -543,14 +568,15 @@ class EndToEndTest(TempData):
 
     def test_hanging_channel_blocks_nothing(self):
         slow = Target()
-        slow.delay = 3.0
+        slow.delay = 30.0  # hängt viel länger als die Wartezeit unten: ein Blockieren fiele auf
         try:
             self.add(name="langsam", url=slow.url)
             self.add(name="schnell")
             notify.start("test")
-            time.sleep(0.3)
+            start = time.monotonic()
             events.emit("gps", "crit", "GPS-Fix verloren")
-            self.assertTrue(self.target.wait(1, timeout=1.5))
+            self.assertTrue(self.target.wait(1, timeout=10))
+            self.assertLess(time.monotonic() - start, 10)
         finally:
             slow.close()
 
@@ -558,9 +584,8 @@ class EndToEndTest(TempData):
         self.add(enabled=False)
         events.emit("gps", "crit", "vor dem Start")  # lag schon vor dem Start in der Datenbank
         notify.start("test")
-        time.sleep(0.3)
         events.emit("gps", "crit", "GPS-Fix verloren")
-        time.sleep(0.6)
+        self.settle()
         self.assertEqual(self.target.requests, [])
 
     def test_test_message(self):
@@ -582,9 +607,8 @@ class EndToEndTest(TempData):
         settings.save({"notify_dashboard_url": "http://zeit.lan:8080/"})
         self.add()
         notify.start("test")
-        time.sleep(0.3)
         events.emit("gps", "crit", "GPS-Fix verloren")
-        self.assertTrue(self.target.wait(1))
+        self.assertTrue(self.target.wait(1, timeout=10))
         self.assertEqual(json.loads(self.target.requests[0]["body"])["link"], "http://zeit.lan:8080/#/gps")
         with self.assertRaises(settings.ValidationError):
             settings.save({"notify_dashboard_url": "javascript:alert(1)"})
@@ -605,7 +629,7 @@ class ScopeTest(unittest.TestCase):
 class RouterFindingsTest(unittest.TestCase):
     def setUp(self):
         self.now = [0.0]
-        self.router = notify.ChannelRouter(channel(), clock=lambda: self.now[0])
+        self.router = notify.ChannelRouter(channel(), clock=lambda: self.now[0], wall=lambda: self.now[0])
 
     def at(self, t, kind, level, title, data=None):
         self.now[0] = t
@@ -707,7 +731,8 @@ class DeadlineTest(unittest.TestCase):
         with mock.patch.object(notify, "TIMEOUT", 0.6), \
                 self.assertRaisesRegex(notify.DeliveryError, "Zeitüberschreitung"):
             notify.deliver(channel(url=target.url), self.clean)
-        self.assertLess(time.monotonic() - start, 2.0)
+        # Der Dripper bräuchte ~100 s; 5 s belegen die Gesamtfrist und lassen einem vollen Runner Luft.
+        self.assertLess(time.monotonic() - start, 5.0)
 
     def test_dripping_body_hits_total_deadline(self):
         target = Dripper()
@@ -724,14 +749,17 @@ class DeadlineTest(unittest.TestCase):
             target.close()
 
     def test_slow_name_resolution_hits_deadline(self):
+        hang = threading.Event()
+        self.addCleanup(hang.set)
+
         def slow(*args, **kwargs):
-            time.sleep(3)
+            hang.wait(30)  # hängt weit länger als die geprüfte Schranke
             raise OSError("zu spät")
         start = time.monotonic()
         with mock.patch.object(notify.socket, "getaddrinfo", slow), mock.patch.object(notify, "TIMEOUT", 0.4), \
                 self.assertRaisesRegex(notify.DeliveryError, "Zeitüberschreitung"):
             notify.deliver(channel(url="http://ziel.lan/"), self.clean)
-        self.assertLess(time.monotonic() - start, 1.5)
+        self.assertLess(time.monotonic() - start, 5.0)
 
     def test_send_test_bounded(self):
         target = Dripper()
@@ -747,7 +775,7 @@ class DeadlineTest(unittest.TestCase):
                     result = notify.send_test(cid)
             self.assertFalse(result["ok"])
             self.assertIn("Zeitüberschreitung", result["error"])
-            self.assertLess(time.monotonic() - start, 2.0)
+            self.assertLess(time.monotonic() - start, 5.0)
         finally:
             target.close()
             notify._reset_for_tests()
@@ -837,21 +865,42 @@ class PositionTest(TempData):
         try:
             notify.save_channel({"name": "Hook", "type": "webhook", "url": target.url + "/hook"})
             notify.start("test")
-            time.sleep(0.3)
             events.emit("gps", "warn", "GPS-Fix verloren")
             events.emit("service", "crit", "Pflichtdienst gpsd ausgefallen", {"service": "gpsd"})
-            self.assertTrue(target.wait(2))
-            time.sleep(0.3)
+            self.assertTrue(target.wait(2, timeout=10))
+            end = time.monotonic() + 10
+            while time.monotonic() < end and notify.NOTIFIER.last_id < events.max_id():
+                time.sleep(0.02)
             rows = store.query("SELECT value FROM notify_meta WHERE key='last_id'")
             self.assertEqual(int(rows[0][0]), events.max_id())                # sofort gesichert, nicht erst nach 10 s
             notify._reset_for_tests()                                         # „Neustart“
             notify.start("test")
-            time.sleep(0.8)
             events.emit("settings", "info", "weckt den Verteiler")
-            time.sleep(0.6)
+            end = time.monotonic() + 10
+            while time.monotonic() < end and notify.NOTIFIER.last_id < events.max_id():
+                time.sleep(0.02)
+            self.assertGreaterEqual(notify.NOTIFIER.last_id, events.max_id())
+            time.sleep(0.3)  # ein erneuter Versand der beiden alten Meldungen hätte jetzt Zeit gehabt
             self.assertEqual(len(target.requests), 2)
         finally:
             target.close()
+
+    def test_emit_right_after_start_is_delivered(self):
+        """Regression: start() legt die Position selbst fest. Vorher tat das erst der Router-Thread;
+        ein Ereignis vor seinem ersten Lauf galt als „schon gesehen“ und ging nie hinaus."""
+        target = Target()
+        self.addCleanup(target.close)
+        notify.save_channel({"name": "Hook", "type": "webhook", "url": target.url + "/hook"})
+        real = notify.Notifier._run
+
+        def late_run(self_):
+            time.sleep(0.4)  # Thread kommt auf einem ausgelasteten Rechner spät dran
+            real(self_)
+
+        with mock.patch.object(notify.Notifier, "_run", late_run):
+            notify.start("test")
+            events.emit("gps", "crit", "GPS-Fix verloren")
+            self.assertTrue(target.wait(1, timeout=10))
 
     def test_stop_flushes_position(self):
         notify._ensure()

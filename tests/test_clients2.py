@@ -21,6 +21,9 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _isolation  # noqa: E402,F401 – vor jedem App-Import: Host-Pfade umlenken
+from _support import fake_hostnames  # noqa: E402
 
 import clientinfo  # noqa: E402
 import clientmon  # noqa: E402
@@ -135,6 +138,10 @@ class TableTest(unittest.TestCase):
         self.assertEqual(table.snapshot(private=True)["192.168.1.5"]["mac"], "aa:bb:cc:00:11:22")
 
 
+# Anfangszustand des Routen-Caches, wie ihn ein frisch gestarteter Prozess sieht
+PRISTINE_ROUTES = dict(clientmon._ROUTES)
+
+
 class MacTest(unittest.TestCase):
     def test_frame_mac(self):
         self.assertEqual(clientmon.frame_mac(("eth0", 0x800, 0, 1, b"\x00\x11\x22\x33\x44\x55")), "00:11:22:33:44:55")
@@ -152,6 +159,30 @@ class MacTest(unittest.TestCase):
             self.assertFalse(clientmon.on_link("10.0.0.9", "eth0"))   # über Router → MAC des Routers
             self.assertTrue(clientmon.on_link("fd00::9", "eth0"))
             self.assertTrue(clientmon.on_link("fe80::1", "eth7"))
+
+    def test_routes_read_shortly_after_boot(self):
+        """Regression: monotonic() zählt ab Systemstart. Mit dem Anfangswert t=0.0 galt der leere
+        Routen-Cache in der ersten Minute nach dem Booten als frisch – alle Clients „nicht im Netz“."""
+        import io
+        route = ("Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\tMTU\tWindow\tIRTT\n"
+                 "docker0\t000011AC\t00000000\t0001\t0\t0\t0\t0000FFFF\t0\t0\t0\n")
+        real_open = open
+
+        def fake_open(path, *args, **kwargs):
+            if path == "/proc/net/route":
+                return io.StringIO(route)
+            if path == "/proc/net/ipv6_route":
+                return io.StringIO("")
+            return real_open(path, *args, **kwargs)
+
+        saved = dict(clientmon._ROUTES)
+        self.addCleanup(clientmon._ROUTES.update, saved)
+        clientmon._ROUTES.update(PRISTINE_ROUTES)  # Zustand wie direkt nach dem Import
+        with mock.patch.object(clientmon.time, "monotonic", return_value=30.0), \
+                mock.patch("builtins.open", fake_open):
+            v4, _v6 = clientmon._connected_routes()
+            self.assertEqual([(i, str(n)) for i, n in v4], [("docker0", "172.17.0.0/16")])
+            self.assertTrue(clientmon.on_link("172.17.0.5", "docker0"))
 
     def test_handle_records_mac_only_on_link(self):
         monitor = clientmon.Monitor(123)
@@ -280,6 +311,10 @@ class AddressTest(unittest.TestCase):
 
 
 class MetaTest(TempDataMixin, unittest.TestCase):
+    def setUp(self):
+        super().setUp()
+        fake_hostnames(self)  # notify → diagnostics._known_names ohne Rückwärts-DNS des Runners
+
     def test_set_get_delete(self):
         clientinfo.set_meta("192.168.1.5", "Drucker Büro", "stellt nur nach Neustart")
         self.assertEqual(clientinfo.names(), {"192.168.1.5": "Drucker Büro"})
@@ -427,25 +462,28 @@ class RdnsTest(unittest.TestCase):
         def resolver(ip):
             calls.append(ip)
             return ("nas.fritz.box", [], [ip])
-        self.assertEqual(clientinfo.reverse_name("192.168.1.5", resolver), "nas.fritz.box")
-        self.assertEqual(clientinfo.reverse_name("192.168.1.5", resolver), "nas.fritz.box")
+        # timeout=5: Hier geht es um Cache und Prüfung, nicht um die Frist (eigener Test unten).
+        # Mit der Produktfrist (1 s) würde ein voller Runner None für 10 min cachen.
+        self.assertEqual(clientinfo.reverse_name("192.168.1.5", resolver, timeout=5), "nas.fritz.box")
+        self.assertEqual(clientinfo.reverse_name("192.168.1.5", resolver, timeout=5), "nas.fritz.box")
         self.assertEqual(len(calls), 1)
-        self.assertIsNone(clientinfo.reverse_name("192.168.1.6", lambda ip: ("<script>", [], [])))
+        self.assertIsNone(clientinfo.reverse_name("192.168.1.6", lambda ip: ("<script>", [], []), timeout=5))
 
         def failing(ip):
             raise socket.herror(1, "unknown")
-        self.assertIsNone(clientinfo.reverse_name("192.168.1.7", failing))
+        self.assertIsNone(clientinfo.reverse_name("192.168.1.7", failing, timeout=5))
 
     def test_timeout(self):
         release = threading.Event()
 
+        self.addCleanup(release.set)
+
         def slow(ip):
-            release.wait(5)
+            release.wait(30)  # hängt weit länger als die Schranke unten
             return ("slow.lan", [], [])
         started = time.monotonic()
         self.assertIsNone(clientinfo.reverse_name("192.168.1.8", slow, timeout=0.2))
-        self.assertLess(time.monotonic() - started, 1.5)
-        release.set()
+        self.assertLess(time.monotonic() - started, 5)
 
 
 class OuiTest(unittest.TestCase):
@@ -607,8 +645,10 @@ class ProbeTest(unittest.TestCase):
         server.bind(("127.0.0.1", 0))
         port = server.getsockname()[1]
         skew = 0.25
+        ready = threading.Event()
 
         def serve():
+            ready.set()
             data, addr = server.recvfrom(512)
             now = time.time() + skew
             ts = clientinfo_ntp64(now)
@@ -617,14 +657,17 @@ class ProbeTest(unittest.TestCase):
             server.sendto(reply, addr)
         thread = threading.Thread(target=serve, daemon=True)
         thread.start()
+        self.assertTrue(ready.wait(10))
         try:
-            result = clientinfo.ntp_query("127.0.0.1", port, timeout=2.0)
+            result = clientinfo.ntp_query("127.0.0.1", port, timeout=5.0)
         finally:
             thread.join(3)
             server.close()
         self.assertIsNotNone(result)
-        self.assertAlmostEqual(result["offset"], skew, delta=0.05)
+        # Der Fake stempelt beim Antworten, nicht beim Empfang. NTP garantiert dann nur
+        # |offset − skew| ≤ rtt/2 – ein fester Wert (0,05 s) scheiterte an jeder Thread-Verzögerung.
         self.assertGreaterEqual(result["rtt"], 0)
+        self.assertLessEqual(abs(result["offset"] - skew), result["rtt"] / 2 + 0.02)
         self.assertEqual(result["stratum"], 2)
 
     def test_query_no_answer(self):
@@ -634,7 +677,7 @@ class ProbeTest(unittest.TestCase):
         try:
             started = time.monotonic()
             self.assertIsNone(clientinfo.ntp_query("127.0.0.1", port, timeout=0.3))
-            self.assertLess(time.monotonic() - started, 1.5)
+            self.assertLess(time.monotonic() - started, 5)
         finally:
             sock.close()
 
