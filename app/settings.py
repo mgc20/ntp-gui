@@ -952,7 +952,9 @@ SCHEMA: list[dict] = [
            help="Ab welcher Stufe eine GNSS-Meldung über deine Benachrichtigungskanäle hinausgeht. "
                 "Schnee, ein Flugzeug oder ein Lkw vor dem Fenster lassen das Signal kurz "
                 "einbrechen – das ist ein „Hinweis“. Würde jeder davon gemeldet, lernt man, "
-                "Alarme zu ignorieren. Im Ereignisprotokoll steht immer alles."),
+                "Alarme zu ignorieren. Im Ereignisprotokoll steht immer alles. Was du hier "
+                "freigibst, geht auch an Kanäle, deren Mindeststufe höher liegt (z. B. „Warnung“) – "
+                "die Auswahl der Ereignisarten im Kanal gilt weiter."),
 
     # --- PTP ---------------------------------------------------------------
     _field("ptp_enable", "ptp", "PTP verwenden", "bool", False, _as_bool, env="PTP_ENABLE",

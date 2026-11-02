@@ -15,18 +15,34 @@ schwach (allein nur „Hinweis“ – Schnee, Flugzeuge, ein Lkw vor dem Fenster
                  (Schnee auf der Antenne) zählt nicht.
   * uniform      unnatürlich gleichmäßiges C/N0: ≥ 6 Satelliten fast gleich stark (ein Spoofer
                  sendet alle Signale aus einer Antenne; echte Satelliten stehen verschieden hoch).
-  * falseticker  chrony markiert das GPS dauerhaft als Falseticker.
+  * falseticker  chrony markiert das GPS dauerhaft als Falseticker. Hält das mit ≥ 2 NTS-Quellen
+                 5 min an, zählt es als **stark** (Konzept 1.4, Thema 12: „bzw. chrony markiert
+                 GPS als Falseticker“) – das fängt auch einen Spoofer, der schon beim Start da war.
 stark (→ „Störung“):
   * time         GPS-Zeit weicht vom Median von ≥ 2 NTS-Quellen ab (ohne NTS: ≥ 3 Netzquellen),
-                 deutlich über der gewohnten Streuung (Grundlinie: Median der letzten 30 min).
-  * position     Positionssprung > 100 m bei einem stationären Empfänger (und > 3 × eph).
+                 deutlich über der gewohnten Streuung. Gemessen wird gegen einen **Anker**: Er
+                 startet beim Median der ersten Minuten und folgt der 30-min-Grundlinie höchstens
+                 10 ms je Stunde. Ein Spoofer, der die Zeit langsam wegzieht (0,5 … 2 ms/min),
+                 entfernt sich so vom Anker und wird nach ein bis zwei Stunden erkannt, statt
+                 still in die Grundlinie zu wandern. Der Anker (nur ein Zeitabstand, keine
+                 Position) steht in SQLite und gilt nach einem Neustart von ntp-gui weiter; ändern
+                 sich die GPS-Einstellungen (Offset, Gerät, Name), wird er neu gelernt.
+  * position     Positionssprung > 100 m bei einem stationären Empfänger (und > 3 × eph), ebenfalls
+                 gegen einen Anker, der höchstens 20 m je Stunde wandert (nur im Speicher).
+
+Solange ein Signal anschlägt, sind seine Grundlinien eingefroren: Eine Störung, die einfach
+bleibt, wird nie zur neuen Normalität – sie endet erst, wenn die Werte zurückkommen, oder mit
+„Neu lernen“. Fehlen einem aktiven Signal die Daten (kein 3D-Fix, GPS unerreichbar), erlischt es
+nach der doppelten Haltezeit mit „keine Messwerte mehr“, statt ewig „Störung“ zu zeigen.
 
 Stufen: „Hinweis“ (ein schwaches Signal) → „Warnung“ (zwei schwache) → „Störung“ (ein starkes).
 Hysterese: Ein Signal zählt erst, wenn es mehrmals hintereinander anschlägt, und erlischt erst
 nach 2 min (schwach) bzw. 5 min (stark) ohne Befund. Ereignisse (Art „gps“, Betreff „gnss“):
 Hinweis = info, Warnung = warn, Störung = crit, Ende = info „GNSS wieder unauffällig“.
 Benachrichtigt wird standardmäßig nur bei „Störung“ (Einstellung gnss_notify); darunter
-tragen die Ereignisse data.notify = false und bleiben im Protokoll.
+tragen die Ereignisse data.notify = false und bleiben im Protokoll. Was gnss_notify freigibt,
+trägt data.notify = true – der Verteiler schickt es dann auch unterhalb der Mindeststufe des
+Kanals (sonst bliebe „Hinweis – jeder Befund“ bei Kanälen ab „Warnung“ wirkungslos).
 
 GPS-Sperre (Thema 2)
 --------------------
@@ -36,7 +52,11 @@ Einstellung gnss_guard: „off“ / „report“ (Standard, nur melden) / „loc
 ohnehin auf das Netz. Freigabe nach 30 min ohne jedes Signal, höchstens dreimal hintereinander
 automatisch; die vierte Sperre in Folge bleibt bis zur Freigabe von Hand. Sperren und
 Freigeben gehen auch von Hand (admin). Der Zustand steht in SQLite: Nach einem Neustart von
-chronyd (z. B. Einstellungen gespeichert) oder von ntp-gui wird die Sperre neu gesetzt.
+chronyd (z. B. Einstellungen gespeichert) wählt der Supervisor das GPS sofort wieder ab
+(selectctl: noselect.list), nach einem Neustart von ntp-gui setzt der Prüftakt die Sperre neu.
+Automatisch gesperrt wird nur, wenn mindestens zwei andere erreichbare, auswählbare Netzquellen
+bleiben – sonst liefe die Uhr ohne jede Quelle frei; dann gibt es nur die Meldung „Sperre
+ausgelassen“. Von Hand geht es auch dann, aber nur mit ausdrücklicher Bestätigung (force).
 
 Datenschutz
 -----------
@@ -84,6 +104,12 @@ TIME_BASE_MIN = 20
 TIME_THRESHOLD_MIN = 0.020      # nie enger als 20 ms (NMEA ohne PPS)
 TIME_SPREAD_FACTOR = 5.0        # und mindestens 5 × die gewohnte Streuung (MAD)
 TIME_ABS_LIMIT = 1.0            # ohne Grundlinie zählt nur ein grober Fehler (> 1 s)
+TIME_THRESHOLD_MAX = 0.100      # die Schwelle aus der Streuung wächst nie über 100 ms
+TIME_ANCHOR_RATE = 0.010 / 3600.0   # der Anker folgt der Grundlinie höchstens 10 ms je Stunde
+ANCHOR_STEP_MAX = 60.0          # je Durchgang zählt höchstens 1 min (Datenlücken schieben nicht)
+TIME_ANCHOR_SAVE_EVERY = 600.0
+TIME_ANCHOR_MAX_AGE = 7 * 86400.0   # ein gespeicherter Anker gilt höchstens eine Woche
+FALSETICKER_STRONG_S = 300.0    # Falseticker mit ≥ 2 NTS-Quellen so lange → starkes Signal
 
 # --- Position ----------------------------------------------------------------------------------
 POS_JUMP_M = 100.0
@@ -91,10 +117,14 @@ POS_EPH_FACTOR = 3.0
 POS_REF_MIN = 30                # ~5 min 3D-Fix, bevor die Referenz gilt
 POS_REF_WINDOW = 3600.0
 POS_FRESH = 30.0
+POS_ANCHOR_RATE = 20.0 / 3600.0     # Positionsanker wandert höchstens 20 m je Stunde
 EARTH_M = 6_371_000.0
 
 CONFIRM = {"cn0_drop": 2, "uniform": 3, "falseticker": 3, "time": 3, "position": 2}
 HOLD = {"weak": 120.0, "strong": 300.0}
+STALE_FACTOR = 2.0              # ohne Daten erlischt ein aktives Signal nach 2 × Haltezeit
+AUTO_LOCK_MIN_OTHERS = 2        # automatisch sperren nur, wenn so viele andere Quellen bleiben
+ANCHOR_KEYS = ("gps_offset", "gps_device", "gps_refid")   # ändern sie sich, gilt der Zeitanker nicht mehr
 SIGNALS = {
     "cn0_drop": ("weak", "Gleichzeitiger C/N0-Einbruch"),
     "uniform": ("weak", "Unnatürlich gleichmäßige Signale"),
@@ -183,11 +213,27 @@ class _Signal:
         self.last_true: float | None = None
         self.detail: dict[str, Any] = {}
         self.text = ""
+        self.last_data: float | None = None
+        self.stale = False          # zuletzt erloschen, weil die Daten fehlten
 
     def update(self, cond: bool | None, now: float, detail: dict | None = None, text: str = "") -> str | None:
-        """cond None = keine Daten: Zustand bleibt. Gibt „on“/„off“ beim Wechsel zurück."""
+        """cond None = keine Daten. Gibt „on“/„off“ beim Wechsel zurück.
+
+        Ohne Daten bleibt der Zustand – aber nicht ewig: Ein aktives Signal erlischt nach
+        STALE_FACTOR × Haltezeit ohne Daten („keine Messwerte mehr“). Sonst stünde nach einem
+        Positionssprung und anschließendem Fix-Verlust tagelang „Störung“ da, ohne Ende-Meldung
+        und ohne automatische Freigabe der Sperre."""
         if cond is None:
+            if (self.active and self.last_data is not None
+                    and now - self.last_data >= STALE_FACTOR * self.hold):
+                self.active = False
+                self.since = None
+                self.streak = 0
+                self.stale = True
+                return "off"
             return None
+        self.last_data = now
+        self.stale = False
         if cond:
             self.streak += 1
             self.last_true = now
@@ -232,12 +278,34 @@ class Detector:
         self._cn0_ref: dict[str, float] = {}
         self._diffs: deque = deque()
         self._positions: deque = deque()
+        self.time_anchor: float | None = None      # Zeitabstand GPS − Netz, langsam nachgeführt
+        self._time_anchor_t: float | None = None
+        self._pos_anchor: tuple[float, float] | None = None   # nur im Speicher, nie ausgegeben
+        self._pos_anchor_t: float | None = None
         self.last: dict[str, Any] = {}
+
+    def seed_time_anchor(self, value: float) -> None:
+        """Gespeicherten Zeitanker übernehmen (Neustart von ntp-gui)."""
+        if _num(value) is not None and self.time_anchor is None:
+            self.time_anchor = float(value)
+            self._time_anchor_t = None
+
+    def reset_time(self) -> None:
+        """Nur den Zeitabstand neu lernen (GPS-Einstellungen geändert)."""
+        self._diffs.clear()
+        self.time_anchor = None
+        self._time_anchor_t = None
+        self.signals["time"].update(False, math.inf)
+        self.signals["time"].streak = 0
 
     def reset_baselines(self) -> None:
         """Grundlinien vergessen (Empfänger umgezogen, neue Antenne)."""
         self._diffs.clear()
         self._positions.clear()
+        self.time_anchor = None
+        self._time_anchor_t = None
+        self._pos_anchor = None
+        self._pos_anchor_t = None
         self._cn0.clear()
         self._cn0_ref.clear()
         for signal in self.signals.values():
@@ -319,19 +387,33 @@ class Detector:
         if gps is None or obs.get("gps_state") == "?" or len(refs) < needed:
             return None, {}, ""
         diff = gps - _median(refs)
-        while self._diffs and now - self._diffs[0][0] > TIME_BASE_WINDOW:
-            self._diffs.popleft()
+        sig = self.signals["time"]
+        if not sig.active:
+            # Während einer Störung bleibt die Grundlinie eingefroren: Sie darf nicht einfach
+            # auslaufen, sonst wäre eine Fälschung, die bleibt, nach 30 min „normal“.
+            while self._diffs and now - self._diffs[0][0] > TIME_BASE_WINDOW:
+                self._diffs.popleft()
         base = [d for t, d in self._diffs if now - t > TIME_BASE_EXCLUDE]
         if len(base) >= TIME_BASE_MIN:
-            center = _median(base)
-            mad = _median([abs(d - center) for d in base]) * 1.4826
-            threshold = max(TIME_THRESHOLD_MIN, TIME_SPREAD_FACTOR * mad)
-            baseline = True
+            middle = _median(base)
+            mad = _median([abs(d - middle) for d in base]) * 1.4826
+            threshold = min(TIME_THRESHOLD_MAX, max(TIME_THRESHOLD_MIN, TIME_SPREAD_FACTOR * mad))
+            if self.time_anchor is None:
+                self.time_anchor = middle
+            elif not sig.active:
+                # Der Anker folgt der Grundlinie nur langsam – ein langsames Wegziehen bleibt sichtbar.
+                dt = 0.0 if self._time_anchor_t is None else min(ANCHOR_STEP_MAX, max(0.0, now - self._time_anchor_t))
+                step = TIME_ANCHOR_RATE * dt
+                self.time_anchor += max(-step, min(step, middle - self.time_anchor))
+            self._time_anchor_t = now
+            center, baseline = self.time_anchor, True
+        elif self.time_anchor is not None:
+            # Gespeicherter Anker, aber noch keine frische Grundlinie (Neustart): grobe Schwelle.
+            center, threshold, baseline = self.time_anchor, TIME_THRESHOLD_MAX, True
         else:
             center, threshold, baseline = 0.0, TIME_ABS_LIMIT, False
         deviation = diff - center
         cond = abs(deviation) > threshold
-        sig = self.signals["time"]
         if not cond and not sig.active:
             self._diffs.append((now, diff))   # Grundlinie lernt nur aus unauffälligen Werten
         self.last.update(time_deviation=deviation, time_threshold=threshold, time_baseline=baseline)
@@ -350,15 +432,29 @@ class Detector:
         eph = _num(pos[2]) if len(pos) > 2 else None
         if lat is None or lon is None or not (-90 <= lat <= 90 and -180 <= lon <= 180):
             return None, {}, ""
-        while self._positions and now - self._positions[0][0] > POS_REF_WINDOW:
-            self._positions.popleft()
         sig = self.signals["position"]
-        if len(self._positions) < POS_REF_MIN:
+        if not sig.active:   # während eines Sprungs eingefroren (sonst lernt sie den falschen Ort)
+            while self._positions and now - self._positions[0][0] > POS_REF_WINDOW:
+                self._positions.popleft()
+        if len(self._positions) >= POS_REF_MIN:
+            middle = (_median([p[1] for p in self._positions]), _median([p[2] for p in self._positions]))
+            if self._pos_anchor is None:
+                self._pos_anchor = middle
+            elif not sig.active:
+                dt = 0.0 if self._pos_anchor_t is None else min(ANCHOR_STEP_MAX, max(0.0, now - self._pos_anchor_t))
+                gap = distance_m(middle, self._pos_anchor)
+                step = POS_ANCHOR_RATE * dt
+                if gap > 0:
+                    share = min(1.0, step / gap)
+                    self._pos_anchor = (self._pos_anchor[0] + (middle[0] - self._pos_anchor[0]) * share,
+                                        self._pos_anchor[1] + (middle[1] - self._pos_anchor[1]) * share)
+            self._pos_anchor_t = now
+        if self._pos_anchor is None:
             if not sig.active:
                 self._positions.append((now, lat, lon))
             self.last.update(position_learned=False, position_deviation_m=None)
             return False, {}, ""
-        ref = (_median([p[1] for p in self._positions]), _median([p[2] for p in self._positions]))
+        ref = self._pos_anchor
         deviation = distance_m((lat, lon), ref)
         threshold = max(POS_JUMP_M, POS_EPH_FACTOR * eph if eph else 0.0)
         cond = deviation > threshold
@@ -386,6 +482,14 @@ class Detector:
             change = self.signals[key].update(cond, now, detail, text)
             if change:
                 changes[key] = change
+        # Falseticker: dauerhaft (≥ 5 min) und mit ≥ 2 NTS-Quellen als Gegenstimme → stark.
+        ft = self.signals["falseticker"]
+        strong = (ft.active and ft.since is not None and now - ft.since >= FALSETICKER_STRONG_S
+                  and self.last.get("ref_kind") == "nts")
+        if strong:
+            ft.text = (f"chrony hält das GPS seit {int((now - ft.since) // 60)} min für einen Falseticker "
+                       f"– {self.last.get('references')} NTS-Quellen sind sich einig")
+        ft.strength = "strong" if strong else "weak"
         return {"stage": self.stage(), "changes": changes}
 
     def active(self) -> list[_Signal]:
@@ -508,6 +612,10 @@ class Guard:
         self.last_error: str | None = None
         self.last_tick: float | None = None
         self.enabled = False
+        self.other_sources: int | None = None       # andere auswählbare Netzquellen (letzte Prüfung)
+        self._skip_noted = False                     # „Sperre ausgelassen“ nur einmal je Episode
+        self._anchor_fp: str | None = None           # GPS-Einstellungen, zu denen der Zeitanker gehört
+        self._anchor_saved: float | None = None
 
     # --- Ereignisse --------------------------------------------------------------------------
     def _emit(self, level: str, title: str, data: dict) -> None:
@@ -545,8 +653,32 @@ class Guard:
         """GPS-Refclock und ein PPS, das an ihm hängt (gefälschte Zeit verschiebt auch den Impuls)."""
         return [name for name in (refid, "PPS") if name in select]
 
+    @staticmethod
+    def count_others(select: dict[str, dict] | None, sources: list[dict] | None, exclude: set[str]) -> int:
+        """Erreichbare, auswählbare Netzquellen außer den zu sperrenden – bleibt nach der Sperre
+        etwas, woran sich chrony halten kann?"""
+        count = 0
+        for src in sources or []:
+            if not isinstance(src, dict) or src.get("mode") not in {"^", "="}:
+                continue
+            name = src.get("name")
+            if name in exclude or not src.get("reach") or src.get("state") in {"x", "~"}:
+                continue
+            if select and selectctl.effective_noselect(select.get(name)):
+                continue
+            count += 1
+        return count
+
+    @staticmethod
+    def _fetch_sources() -> list[dict] | None:
+        try:
+            return selectctl.port().sources()
+        except Exception:
+            return None
+
     def do_lock(self, cfg: dict, reason: str, manual: bool, auto_release: bool = False,
-                select: dict[str, dict] | None = None) -> dict[str, Any]:
+                select: dict[str, dict] | None = None, force: bool = False,
+                sources: list[dict] | None = None) -> dict[str, Any]:
         with self.lock:
             state = self._lock_state()
             if state["locked"]:
@@ -559,6 +691,13 @@ class Guard:
             if not targets:
                 raise GuardError(f"chrony kennt keine Quelle „{refid}“ – läuft chronyd, ist das GPS eingesteckt?",
                                  conflict=True)
+            sources = self._fetch_sources() if sources is None else sources
+            if sources is not None:
+                self.other_sources = self.count_others(select, sources, set(targets))
+            if manual and not force and self.other_sources == 0:
+                raise GuardError("Keine andere auswählbare Zeitquelle – ohne GPS liefe die Uhr frei (Holdover) und "
+                                 "driftet mit der Zeit weg. Sperren nur mit ausdrücklicher Bestätigung "
+                                 "(„Trotzdem sperren“).", conflict=True)
             try:
                 selectctl.hold(LOCK_OWNER, targets, select)
             except selectctl.SelectError as exc:
@@ -628,7 +767,7 @@ class Guard:
         state = self._lock_state()
         out = {k: state[k] for k in ("locked", "since", "manual", "auto_release", "reason", "targets")}
         out.update(auto_releases=state["auto_releases"], max_auto_releases=MAX_AUTO_RELEASES,
-                   release_after_s=RELEASE_AFTER)
+                   release_after_s=RELEASE_AFTER, other_sources=self.other_sources)
         if state["locked"] and state["auto_release"] and self.calm_since is not None:
             out["release_in_s"] = max(0, round(RELEASE_AFTER - (self.clock() - self.calm_since)))
         return out
@@ -651,36 +790,95 @@ class Guard:
                     data[f"{signal.key}_{key}"] = value
         self._emit(STAGE_LEVEL[stage], f"{label}: {'; '.join(texts) or SIGNALS[data['signals'][0]][1]}", data)
 
-    def tick(self, cfg: dict, obs: dict | None = None, select: dict[str, dict] | None = None) -> dict[str, Any]:
-        """Ein Durchgang: beobachten, Stufe bestimmen, Ereignisse, Sperre. Wirft nie."""
+    def tick(self, cfg: dict, obs: dict | None = None, select: dict[str, dict] | None = None,
+             sources: list[dict] | None = None) -> dict[str, Any]:
+        """Ein Durchgang: beobachten, Stufe bestimmen, Ereignisse, Sperre. Wirft nie.
+
+        chronyc und gpsd werden **vor** dem Sperren von self.lock abgefragt: Antwortet chronyd
+        langsam (Neustart, bis 5 s je Aufruf), soll /api/status (status()) nicht mitwarten."""
+        mode = str(cfg.get("gnss_guard") or "report")
+        enabled = bool(cfg.get("gps_enable")) and mode != "off"
+        now = self.clock()
+        try:
+            locked = self._lock_state()["locked"]
+            if select is None and (locked or enabled):
+                select = selectctl.by_name(selectctl.port().selectdata())
+            if enabled and obs is None:
+                if sources is None:
+                    sources = selectctl.port().sources()
+                obs = live_observation(cfg, now, select, sources)
+        except Exception as exc:
+            self.last_error = str(exc)
+            return {"error": str(exc)}
         with self.lock:
             try:
-                return self._tick(cfg, obs, select)
+                return self._tick(cfg, obs, select, sources, now)
             except Exception as exc:  # die Erkennung darf nichts anderes stören
                 self.last_error = str(exc)
                 return {"error": str(exc)}
 
-    def _tick(self, cfg: dict, obs: dict | None, select: dict[str, dict] | None) -> dict[str, Any]:
+    def _housekeeping(self, state: dict, select: dict[str, dict]) -> None:
+        """Haltertabelle und Sperrzustand in Einklang halten (nach Abstürzen, Übergaben)."""
+        orphans = selectctl.reconcile(select)
+        if orphans:
+            self._emit("info", f"Übrig gebliebene Abwahl aufgehoben ({', '.join(orphans)}) – keine Sperre aktiv",
+                       {"subject": "gps-sperre", "released": orphans, "resolves": False})
+        if not state["locked"] and selectctl.held(LOCK_OWNER):
+            released, _failed = selectctl.release(LOCK_OWNER, select)
+            if released:
+                self._emit("info", f"Übrig gebliebene GPS-Sperre aufgehoben ({', '.join(released)})",
+                           {"subject": "gps-sperre", "released": released, "resolves": False})
+
+    def _anchor_prepare(self, cfg: dict) -> None:
+        """Zeitanker laden (Neustart) bzw. verwerfen, wenn sich die GPS-Einstellungen geändert haben."""
+        fp = json.dumps([cfg.get(k) for k in ANCHOR_KEYS], sort_keys=True, default=str)
+        if self._anchor_fp is None:
+            self._anchor_fp = fp
+            stored = load("time_anchor")
+            value, saved = _num(stored.get("value")), _num(stored.get("wall"))
+            if (stored.get("fp") == fp and value is not None and saved is not None
+                    and 0.0 <= self.wall() - saved <= TIME_ANCHOR_MAX_AGE):
+                self.detector.seed_time_anchor(value)
+        elif fp != self._anchor_fp:
+            self._anchor_fp = fp
+            self.detector.reset_time()
+            self._store_anchor(None)
+            self._emit("info", "GPS-Einstellungen geändert – der gewohnte Zeitabstand GPS ↔ Netz wird neu gelernt",
+                       {"subject": "gnss-grundlinie", "resolves": False})
+
+    def _store_anchor(self, value: float | None) -> None:
+        self._anchor_saved = None if value is None else self.clock()
+        try:
+            save("time_anchor", {"value": value, "wall": self.wall(), "fp": self._anchor_fp})
+        except Exception as exc:
+            self.last_error = f"Zeitanker nicht gespeichert: {exc}"
+
+    def _tick(self, cfg: dict, obs: dict | None, select: dict[str, dict] | None,
+              sources: list[dict] | None, now: float) -> dict[str, Any]:
         mode = str(cfg.get("gnss_guard") or "report")
-        now = self.clock()
         self.last_tick = now
         state = self._lock_state()
-        if select is None and (state["locked"] or (cfg.get("gps_enable") and mode != "off")):
-            select = selectctl.by_name(selectctl.port().selectdata())
         if select:
+            self._housekeeping(state, select)
             self.maintain(select)
+            if sources is not None:   # für die Oberfläche: Bleibt nach einer Sperre noch eine Quelle?
+                refid = str(cfg.get("gps_refid") or "GPS")
+                self.other_sources = self.count_others(select, sources, set(self.targets(select, refid)))
         self.enabled = bool(cfg.get("gps_enable")) and mode != "off"
         if not self.enabled:
             if self.stage != "ok":
                 self._finish_episode("Störungserkennung ausgeschaltet")
             self.detector = Detector()
+            self._anchor_fp = None          # beim Einschalten den gespeicherten Anker neu laden
             self.calm_since = None
             if state["locked"] and not state["manual"]:
                 self._safe_unlock("die automatische Sperre ist ausgeschaltet", select)
             return {"stage": "ok", "enabled": False}
-        if obs is None:
-            obs = live_observation(cfg, now, select)
-        result = self.detector.update(obs)
+        self._anchor_prepare(cfg)
+        result = self.detector.update(obs if obs is not None else {"t": now})
+        anchor = self.detector.time_anchor
+        if anchor is not None and (self._anchor_saved is None or now - self._anchor_saved >= TIME_ANCHOR_SAVE_EVERY):
+            self._store_anchor(anchor)
         stage = result["stage"]
         if stage_rank(stage) > stage_rank(self.stage):
             if self.episode is None:
@@ -688,13 +886,16 @@ class Guard:
             self.episode["max"] = max(self.episode["max"], stage, key=stage_rank)
             self._stage_event(stage, cfg)
         elif stage == "ok" and self.stage != "ok":
+            stale = [k for k, c in result["changes"].items() if c == "off" and self.detector.signals[k].stale]
             self.stage = stage
-            self._finish_episode("alle Signale seit einigen Minuten unauffällig")
+            self._finish_episode("keine Messwerte mehr (kein 3D-Fix oder GPS-Quelle unerreichbar) – der Befund "
+                                 "lässt sich nicht mehr prüfen" if stale
+                                 else "alle Signale seit einigen Minuten unauffällig")
         self.stage = stage
         self.calm_since = (self.calm_since or now) if stage == "ok" else None
         if stage == "ok":
             state["suppress"] = False
-        self._auto_lock(cfg, mode, select)
+        self._auto_lock(cfg, mode, select, sources)
         return {"stage": stage, "enabled": True, "changes": result["changes"]}
 
     def _finish_episode(self, why: str) -> None:
@@ -705,6 +906,7 @@ class Guard:
                     "resolves": True, "why": why})
         self.episode = None
         self.stage = "ok"
+        self._skip_noted = False
 
     def _safe_unlock(self, reason: str, select: dict | None) -> None:
         try:
@@ -712,20 +914,36 @@ class Guard:
         except GuardError as exc:
             self.last_error = str(exc)
 
-    def _auto_lock(self, cfg: dict, mode: str, select: dict | None) -> None:
+    def _auto_lock(self, cfg: dict, mode: str, select: dict | None, sources: list[dict] | None = None) -> None:
         state = self._lock_state()
         if state["locked"] and not state["manual"] and mode != "lock":
             self._safe_unlock("die automatische Sperre ist ausgeschaltet (Einstellung „nur melden“)", select)
             return
         strong = [s for s in self.detector.active() if s.strength == "strong"]
         if mode == "lock" and strong and not state["locked"] and not state["suppress"]:
+            # Nur sperren, wenn chrony danach noch etwas hat, woran es sich halten kann. Ein
+            # GPS-only-Server (isoliertes Netz) liefe sonst ohne jede Quelle frei – womöglich wegen
+            # eines Fehlalarms der Position bei schwachem Empfang.
+            sources = self._fetch_sources() if sources is None else sources
+            if select:
+                refid = str(cfg.get("gps_refid") or "GPS")
+                self.other_sources = (None if sources is None else
+                                      self.count_others(select, sources, set(self.targets(select, refid))))
+            if self.other_sources is None or self.other_sources < AUTO_LOCK_MIN_OTHERS:
+                if not self._skip_noted:
+                    self._skip_noted = True
+                    have = "unbekannt (chronyd antwortet nicht)" if self.other_sources is None else self.other_sources
+                    self._emit("warn", f"GPS-Sperre ausgelassen: keine andere Zeitquelle – ohne GPS liefe die Uhr frei "
+                                       f"(andere auswählbare Netzquellen: {have}, nötig: {AUTO_LOCK_MIN_OTHERS})",
+                               {"subject": "gps-sperre-ausgelassen", "others": self.other_sources, "resolves": False})
+                return
             if state["series_t"] is not None and self.wall() - state["series_t"] > SERIES_RESET:
                 state.update(repeats=0, auto_releases=0)
             state["repeats"] += 1
             auto_release = state["auto_releases"] < MAX_AUTO_RELEASES
             reason = strong[0].text or strong[0].label
             try:
-                self.do_lock(cfg, reason, manual=False, auto_release=auto_release, select=select)
+                self.do_lock(cfg, reason, manual=False, auto_release=auto_release, select=select, sources=sources)
             except GuardError as exc:
                 state["repeats"] -= 1
                 self.last_error = str(exc)
@@ -764,12 +982,13 @@ class Guard:
         """POST /api/gnss: {"action": "lock"|"unlock"|"relearn"}."""
         action = str((data or {}).get("action") or "")
         if action == "lock":
-            self.do_lock(cfg, "von Hand", manual=True)
+            self.do_lock(cfg, "von Hand", manual=True, force=(data or {}).get("force") is True)
         elif action == "unlock":
             self.do_unlock("von Hand freigegeben", manual=True)
         elif action == "relearn":
             with self.lock:
                 self.detector.reset_baselines()
+                self._store_anchor(None)
                 if self.stage != "ok":
                     self._finish_episode("Grundlinien neu gelernt")
                 self._emit("info", "GNSS-Störungserkennung lernt Position und Zeitabstand neu",
@@ -783,11 +1002,12 @@ class Guard:
 # Live-Betrieb
 # =========================================================================================
 
-def live_observation(cfg: dict, now: float, select: dict[str, dict] | None) -> dict[str, Any]:
+def live_observation(cfg: dict, now: float, select: dict[str, dict] | None,
+                     sources: list[dict] | None = None) -> dict[str, Any]:
     import gps
     status = gps.status() if cfg.get("gps_enable") else {}
     position = gps.private_position(max_age=POS_FRESH)
-    sources = selectctl.port().sources()
+    sources = selectctl.port().sources() if sources is None else sources
     return observation(now, status, sources, select, str(cfg.get("gps_refid") or "GPS"), position)
 
 
@@ -803,9 +1023,12 @@ def run(cfg_fn: Callable[[], dict], stop: threading.Event | None = None, interva
     while True:
         try:
             cfg = cfg_fn()
-            select = selectctl.by_name(selectctl.port().selectdata())
-            holdover.TEST.tick(cfg, select)       # zuerst: erkennt einen Neustart von chronyd
-            GUARD.tick(cfg, select=select)
+            # chronyc einmal je Durchgang, außerhalb der Sperren der beiden Module.
+            port = selectctl.port()
+            select = selectctl.by_name(port.selectdata())
+            sources = port.sources() if select else []
+            holdover.TEST.tick(cfg, select, sources)       # zuerst: erkennt einen Neustart von chronyd
+            GUARD.tick(cfg, select=select, sources=sources)
         except Exception as exc:
             print(f"[web] GNSS-Prüfung fehlgeschlagen: {exc}", flush=True)
         if stop.wait(interval):
@@ -825,8 +1048,11 @@ def insights(status: dict[str, Any]) -> list[dict[str, Any]]:
     lock = status.get("lock") or {}
     if lock.get("locked"):
         how = "von Hand" if lock.get("manual") else "automatisch"
+        others = lock.get("other_sources")
+        rest = ("hält sich an die Netzquellen." if others is None or others > 0
+                else "hat gerade keine andere auswählbare Quelle – die Uhr läuft frei und driftet mit der Zeit.")
         out.append({"level": "warn", "key": "gnss_lock", "action": "gps", "title": f"GPS {how} gesperrt",
-                    "text": "chrony nutzt das GPS gerade nicht (selectopts noselect) und hält sich an die "
-                            "Netzquellen. " + ("Freigabe automatisch nach 30 min ohne Störung."
-                                               if lock.get("auto_release") else "Freigabe auf der GPS-Seite.")})
+                    "text": f"chrony nutzt das GPS gerade nicht (selectopts noselect) und {rest} "
+                            + ("Freigabe automatisch nach 30 min ohne Störung."
+                               if lock.get("auto_release") else "Freigabe auf der GPS-Seite.")})
     return out

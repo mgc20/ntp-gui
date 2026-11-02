@@ -175,15 +175,23 @@ export const HELP_GNSS = {
   gnss_falseticker: {
     title: "Urteil von chrony",
     text: "chrony vergleicht alle Quellen. Liegt das GPS dauerhaft außerhalb dessen, worauf sich die übrigen Quellen "
-      + "einigen, markiert chrony es als **Falseticker** und nutzt es nicht. Das ist ein schwaches Signal: Es kann "
-      + "auch an einer zu kleinen Fehlerschranke liegen.",
+      + "einigen, markiert chrony es als **Falseticker** und nutzt es nicht. Kurzzeitig ist das ein schwaches Signal: Es kann "
+      + "auch an einer zu kleinen Fehlerschranke liegen. Hält es **5 Minuten** an und widersprechen mindestens zwei "
+      + "**NTS-Quellen**, zählt es als starkes Signal (Stufe „Störung“) – so fällt auch eine Fälschung auf, die schon "
+      + "beim Start da war und deshalb nie als „Sprung“ erscheint.",
   },
   gnss_time: {
     title: "GPS-Zeit gegen die Netzquellen",
     text: "Der Abstand der GPS-Zeit zum **Median von mindestens zwei NTS-Quellen** (ohne NTS: drei normale "
       + "Netzquellen). Weil ein GPS ohne PPS einen festen Versatz und Streuung hat, zählt die Abweichung von der "
-      + "**gewohnten** Lage: Grundlinie ist der Median der letzten 30 Minuten, Schwelle das Fünffache der gewohnten "
-      + "Streuung, mindestens 20 ms. Ein Sprung von 50 ms fällt so in unter einer Minute auf. Ein starkes Signal: Es "
+      + "**gewohnten** Lage. Verglichen wird mit einem **Anker**: Er beginnt beim Median der ersten Minuten und folgt "
+      + "der Lage der letzten 30 Minuten höchstens 10 ms pro Stunde. Schwelle ist das Fünffache der gewohnten "
+      + "Streuung, mindestens 20 ms, höchstens 100 ms. Ein Sprung von 50 ms fällt so in unter einer Minute auf; eine "
+      + "Fälschung, die die Zeit langsam wegzieht (0,5–2 ms pro Minute), nach etwa ein bis zwei Stunden – statt "
+      + "unbemerkt in die Grundlinie zu wandern. Solange der Befund anhält, lernt die Erkennung nichts dazu: Eine "
+      + "Fälschung, die bleibt, wird nie zur neuen Normalität. Der Anker (nur ein Zeitabstand, kein Ort) wird "
+      + "gespeichert und gilt nach einem Neustart weiter; änderst du Offset, Gerät oder Namen des GPS, wird er neu "
+      + "gelernt. Ein starkes Signal: Es "
       + "führt zur Stufe „Störung“ und – mit „automatisch sperren“ – zur GPS-Sperre. Eine **Abweichung** wie diese "
       + "kann auch eine falsche NTS-Quelle bedeuten; darum zählt der Median mehrerer.",
   },
@@ -191,7 +199,9 @@ export const HELP_GNSS = {
     title: "Positionssprung",
     text: "Ein Zeitserver steht still. Springt die gemeldete Position um **mehr als 100 m** (und mehr als das Dreifache "
       + "der vom Empfänger geschätzten Ungenauigkeit), ist das ein starkes Zeichen für Spoofing. Gezählt werden nur "
-      + "3D-Fixes. **Datenschutz:** Die Referenzposition liegt nur im Arbeitsspeicher von ntp-gui – sie wird nie "
+      + "3D-Fixes. Die Referenz folgt einem echten Umzug höchstens 20 m pro Stunde und bleibt während eines Sprungs "
+      + "eingefroren – ein langsames Wegziehen fällt so ebenfalls auf. Fehlen nach einem Befund die Daten (kein "
+      + "3D-Fix, GPS unerreichbar), erlischt er nach 10 Minuten mit „keine Messwerte mehr“. **Datenschutz:** Die Referenzposition liegt nur im Arbeitsspeicher von ntp-gui – sie wird nie "
       + "gespeichert, nie angezeigt und nie exportiert. Hier, im Protokoll und in Benachrichtigungen steht nur die "
       + "Abweichung in Metern (auf 10 m gerundet).",
   },
@@ -199,7 +209,9 @@ export const HELP_GNSS = {
     title: "Verhalten bei Störung",
     text: "**Nur melden** (Standard): Ereignis im Protokoll und – ab „Störung“ – Benachrichtigung. **Automatisch "
       + "sperren** (opt-in): bei einem starken Befund wählt ntp-gui das GPS (und PPS) per `chronyc selectopts "
-      + "+noselect` ab. Erst Praxisdaten sammeln, dann einschalten. Einstellbar unter Einstellungen → GPS.",
+      + "+noselect` ab – aber nur, wenn mindestens zwei andere erreichbare Netzquellen auswählbar bleiben. Ohne "
+      + "sie liefe die Uhr ohne jede Quelle frei; dann steht nur „Sperre ausgelassen“ im Protokoll. Erst "
+      + "Praxisdaten sammeln, dann einschalten. Einstellbar unter Einstellungen → GPS.",
   },
   gnss_lock: {
     title: "GPS-Sperre",
@@ -207,7 +219,9 @@ export const HELP_GNSS = {
       + "und hält sich an die Netzquellen. **Automatisch** gesperrt wird nur bei starken Befunden; freigegeben wird "
       + "nach 30 Minuten ohne Befund – höchstens dreimal hintereinander, die vierte Sperre bleibt bis zur Freigabe "
       + "von Hand. **Von Hand** gesperrt bleibt sie, bis du sie aufhebst. Der Schalter überlebt keinen Neustart von "
-      + "chronyd – ntp-gui setzt ihn deshalb nach jedem Neustart (auch nach dem Speichern von Einstellungen) neu. "
+      + "chronyd – deshalb wählt der Supervisor das GPS direkt nach jedem Start von chronyd (auch nach dem Speichern "
+      + "von Einstellungen) wieder ab, bevor die erste GPS-Messung da ist. Von Hand sperren ohne andere auswählbare "
+      + "Quelle geht nur nach einer zweiten Bestätigung: Die Uhr liefe dann frei. "
       + "Jede Sperre und Freigabe steht im Ereignisprotokoll.",
   },
   gnss_lock_reason: {
@@ -218,7 +232,8 @@ export const HELP_GNSS = {
     title: "Neu lernen",
     text: "Vergisst die gelernte Position und den gewohnten Zeitabstand zum Netz. Nötig, wenn du den Empfänger "
       + "umgestellt oder eine andere Antenne angeschlossen hast – sonst hält die Erkennung den Umzug für einen "
-      + "Positionssprung. Das Lernen dauert danach einige Minuten (Position) bzw. eine halbe Stunde (Zeit).",
+      + "Positionssprung. Das Lernen dauert danach einige Minuten. Achtung: Was zum Zeitpunkt des Neulernens "
+      + "empfangen wird, gilt danach als normal – bei einem laufenden Befund also erst die Ursache klären.",
   },
 };
 

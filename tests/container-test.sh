@@ -799,6 +799,7 @@ check "GPS-Refclock in chrony auswählbar" "[[]]" "$(effopts GPS)"
 check "GPS von Hand sperren" 200 "$(post -H 'Content-Type: application/json' -H 'X-NTP-GUI: 1' -d '{"action":"lock"}' http://127.0.0.1:18094/api/gnss)"
 check "chronyc selectdata: GPS noselect" "[['noselect']]" "$(effopts GPS)"
 check "Netzquelle bleibt auswählbar" "[[]]" "$(effopts 172.31.78.11)"
+check "Sperrliste für den Supervisor geschrieben" "GPS" "$(docker exec "${PREFIX}-r" cat /var/lib/chrony/ntp-gui/noselect.list 2>/dev/null)"
 # Einstellungen speichern startet chronyd neu – die Sperre muss danach wieder gesetzt werden.
 curl -s --max-time 10 -X POST -H 'Content-Type: application/json' -H 'X-NTP-GUI: 1' \
   -d '{"changes":{"ntp_minsources":2}}' http://127.0.0.1:18094/api/settings >/dev/null
@@ -809,9 +810,13 @@ done
 if wait_effopts GPS "[['noselect']]" 60; then ok "Sperre übersteht Einstellungs-Speichern (chronyd-Neustart)"; else bad "Sperre nach Neustart weg ($(effopts GPS))"; fi
 EVENTS=$(curl -s --max-time 10 'http://127.0.0.1:18094/api/v1/events?kinds=gps' | utf)
 contains "Ereignis: GPS von Hand gesperrt" "$EVENTS" "GPS von Hand gesperrt"
-contains "Ereignis: Sperre nach Neustart erneuert" "$EVENTS" "GPS-Sperre nach Neustart von chronyd erneuert"
+# Der Supervisor wählt das GPS direkt nach dem Start von chronyd wieder ab (noselect.list) – nicht erst
+# der ~10-s-Prüftakt des Dashboards (dessen Ereignis „erneuert“ kommt dann nur noch als Rückfallebene).
+contains "Supervisor: Sperre direkt nach chronyd-Start erneuert" "$(docker logs "${PREFIX}-r" 2>&1)" \
+  "GPS-Sperre: GPS nach dem Start von chronyd wieder abgewählt"
 check "GPS freigeben" 200 "$(post -H 'Content-Type: application/json' -H 'X-NTP-GUI: 1' -d '{"action":"unlock"}' http://127.0.0.1:18094/api/gnss)"
 check "GPS wieder auswählbar" "[[]]" "$(effopts GPS)"
+check "Sperrliste nach Freigabe entfernt" 1 "$(docker exec "${PREFIX}-r" sh -c 'test -e /var/lib/chrony/ntp-gui/noselect.list; echo $?')"
 # Holdover: alle Quellen abwählen, dann abbrechen → alle wieder auswählbar.
 for ((i = 0; i < 60; i++)); do
   grep -q '"ok": true' <<<"$(curl -s --max-time 10 http://127.0.0.1:18094/api/v1/holdover)" && break

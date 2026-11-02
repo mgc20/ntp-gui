@@ -20,12 +20,25 @@ noch wirkt (`effective_noselect`), und setzen ihn neu bzw. brechen den Test ab.
 Quellnamen kommen ausschließlich aus `chronyc -c selectdata` (Refclock-RefID oder IP-Adresse)
 und werden vor dem Aufruf gegen ein enges Muster geprüft – nichts aus einer Anfrage landet
 ungeprüft auf der Kommandozeile.
+
+Die Haltertabelle (wer hält welche Quelle, was hat ntp-gui selbst abgewählt) steht in SQLite
+(Tabelle select_holds) und wird bei jedem Halten, Freigeben und Übergeben sofort geschrieben.
+So überlebt auch eine Übergabe (Holdover-Test endet, GPS-Sperre übernimmt das GPS) einen
+Neustart von ntp-gui – sonst bliebe eine Quelle abgewählt, obwohl beide Funktionen „frei“
+melden.
+
+Für die GPS-Sperre schreibt dieses Modul zusätzlich DATA_DIR/noselect.list (eine RefID je
+Zeile). Der Supervisor (docker/entrypoint.sh) wählt diese Quellen direkt nach jedem Start von
+chronyd wieder ab – bevor die erste GPS-Messung da ist. Ohne das wäre das gesperrte GPS nach
+dem Speichern von Einstellungen bis zum nächsten Prüftakt (~10 s) wieder auswählbar, und
+chronyd könnte in dieser Zeit sogar die Uhr darauf stellen (makestep beim Start).
 """
 
 from __future__ import annotations
 
 import os
 import re
+import tempfile
 import threading
 from typing import Any, Callable
 
@@ -39,6 +52,17 @@ _LOCK = threading.RLock()
 # stammt, lässt sich dort nicht ablesen, darum merkt sich dieses Modul das selbst.
 _HOLDS: dict[str, dict[str, set[str]]] = {}
 _LOG: list[dict] = []                # letzte Aufrufe (Fehlersuche, Tests)
+_READY: dict[str, Any] = {"for": None, "orphans": set()}
+
+# Halter, deren Quellen der Supervisor nach einem Neustart von chronyd sofort wieder abwählt
+# (noselect.list). Der Holdover-Test gehört bewusst nicht dazu: Er bricht bei einem Neustart ab.
+RESTART_OWNERS = ("gps-lock",)
+RUNTIME_FILE = "noselect.list"
+
+_SCHEMA = [
+    "CREATE TABLE IF NOT EXISTS select_holds (owner TEXT NOT NULL, name TEXT NOT NULL, "
+    "added INTEGER NOT NULL, PRIMARY KEY (owner, name));",
+]
 
 
 class SelectError(RuntimeError):
@@ -112,6 +136,79 @@ def valid_name(name: Any) -> bool:
     return isinstance(name, str) and bool(NAME_RE.match(name))
 
 
+# --- Haltertabelle in SQLite ----------------------------------------------------------------
+
+def _runtime_path() -> str:
+    import store
+    return os.path.join(store.data_dir(), RUNTIME_FILE)
+
+
+def _read_runtime() -> set[str]:
+    try:
+        with open(_runtime_path(), encoding="utf-8", errors="replace") as handle:
+            return {line.strip() for line in handle if valid_name(line.strip())}
+    except OSError:
+        return set()
+
+
+def _write_runtime() -> None:
+    names = sorted({n for owner in RESTART_OWNERS for n in _HOLDS.get(owner, {}).get("names", set())
+                    if valid_name(n)})
+    path = _runtime_path()
+    try:
+        if not names:
+            if os.path.exists(path):
+                os.unlink(path)
+            return
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".noselect-", suffix=".tmp")
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write("".join(f"{n}\n" for n in names))
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+def _load() -> None:
+    """Haltertabelle einmal je Datenbank aus SQLite lesen (Start von ntp-gui, Tests)."""
+    import store
+    key = store.path()
+    if _READY["for"] == key:
+        return
+    _READY["for"] = key
+    try:
+        store.migrate("selectctl", _SCHEMA)
+        rows = store.query("SELECT owner, name, added FROM select_holds")
+    except Exception:
+        return
+    _HOLDS.clear()
+    for owner, name, was_added in rows:
+        if not valid_name(name):
+            continue
+        entry = _entry(str(owner))
+        entry["names"].add(name)
+        if was_added:
+            entry["added"].add(name)
+    # Was der Supervisor laut Datei abwählt, aber niemand mehr hält (Absturz zwischen zwei
+    # Schreibvorgängen): Kandidaten für reconcile().
+    held_now = {n for e in _HOLDS.values() for n in e["names"]}
+    _READY["orphans"] = _read_runtime() - held_now
+    _write_runtime()
+
+
+def _persist() -> None:
+    import store
+    try:
+        _write_runtime()
+        with store.transaction() as conn:
+            conn.execute("DELETE FROM select_holds")
+            conn.executemany("INSERT INTO select_holds(owner, name, added) VALUES(?, ?, ?)",
+                             [(owner, name, 1 if name in entry["added"] else 0)
+                              for owner, entry in _HOLDS.items() for name in sorted(entry["names"])])
+    except Exception:
+        pass   # ohne Datenbank (Tests ohne Datenverzeichnis) gilt der Stand im Speicher
+
+
 def _call(name: str, sign: str) -> None:
     if not valid_name(name):
         raise SelectError(f"ungültiger Quellname: {name!r}")
@@ -127,30 +224,42 @@ def _entry(owner: str) -> dict[str, set[str]]:
 
 def holders(name: str) -> set[str]:
     with _LOCK:
+        _load()
         return {owner for owner, entry in _HOLDS.items() if name in entry["names"]}
 
 
 def held(owner: str) -> set[str]:
     with _LOCK:
+        _load()
         return set(_HOLDS.get(owner, {}).get("names", set()))
 
 
 def added(owner: str) -> set[str]:
     with _LOCK:
+        _load()
         return set(_HOLDS.get(owner, {}).get("added", set()))
 
 
 def register(owner: str, names: list[str] | set[str], added_names: list[str] | set[str] | None = None) -> None:
-    """Halter eintragen, ohne chrony anzufassen (beim Laden des gespeicherten Zustands)."""
+    """Halter eintragen, ohne chrony anzufassen (beim Laden des gespeicherten Zustands).
+
+    Steht der Halter schon in der Haltertabelle (SQLite), gilt die: Sie kennt auch Übergaben,
+    die der gespeicherte Zustand des Moduls nicht kennt."""
     names = {n for n in names if valid_name(n)}
     with _LOCK:
+        _load()
+        if owner in _HOLDS:
+            return
         _HOLDS[owner] = {"names": names,
                          "added": names if added_names is None else {n for n in added_names if n in names}}
+        _persist()
 
 
 def forget(owner: str) -> None:
     with _LOCK:
-        _HOLDS.pop(owner, None)
+        _load()
+        if _HOLDS.pop(owner, None) is not None:
+            _persist()
 
 
 def hold(owner: str, names: list[str], select: dict[str, dict] | None = None) -> list[str]:
@@ -161,6 +270,7 @@ def hold(owner: str, names: list[str], select: dict[str, dict] | None = None) ->
     select = by_name(port().selectdata()) if select is None else select
     changed: list[str] = []
     with _LOCK:
+        _load()
         try:
             for name in names:
                 if not effective_noselect(select.get(name)):
@@ -176,6 +286,7 @@ def hold(owner: str, names: list[str], select: dict[str, dict] | None = None) ->
         entry = _entry(owner)
         entry["names"].update(n for n in names if valid_name(n))
         entry["added"].update(changed)
+        _persist()
     return changed
 
 
@@ -191,8 +302,14 @@ def reapply(owner: str, select: dict[str, dict] | None = None) -> list[str]:
     missing = [n for n in names if n in select and not effective_noselect(select[n])]
     if missing:
         with _LOCK:
+            # Was jetzt noch „noselect“ trägt und laut chrony.conf so konfiguriert ist (Einstellung
+            # „nur beobachten“, während der Sperre gesetzt), gibt ntp-gui später nicht frei. Alles
+            # andere, was ntp-gui selbst abgewählt hat, bleibt in „added“ – auch wenn nur ein Teil
+            # der Quellen fehlt.
+            observe_only = conf_noselect_refids()
             entry = _entry(owner)
-            entry["added"] &= set(missing)
+            entry["added"] -= {n for n in entry["added"] if n not in missing and n in select
+                               and effective_noselect(select[n]) and n in observe_only}
         hold(owner, missing, select)
     return missing
 
@@ -209,6 +326,7 @@ def release(owner: str, select: dict[str, dict] | None = None) -> tuple[list[str
     abgewählt und geht in dessen Verantwortung über (er gibt sie später frei)."""
     select = by_name(port().selectdata()) if select is None else select
     with _LOCK:
+        _load()
         entry = _HOLDS.get(owner) or {"names": set(), "added": set()}
         mine = sorted(entry["added"])
         if mine and not select:
@@ -232,13 +350,46 @@ def release(owner: str, select: dict[str, dict] | None = None) -> tuple[list[str
                 failed.append(name)
         if failed:
             _HOLDS[owner] = {"names": set(failed), "added": set(failed)}   # für den nächsten Versuch
+        _persist()      # auch Übergaben an einen anderen Halter – sie müssen einen Neustart überleben
     return released, failed
 
 
+def reconcile(select: dict[str, dict] | None) -> list[str]:
+    """Sicherheitsnetz nach dem Start von ntp-gui: Quellen, die der Supervisor laut
+    noselect.list nach einem chronyd-Start abgewählt hat, die aber kein Halter mehr hält
+    (Absturz zwischen zwei Schreibvorgängen), wieder auswählbar machen. Gibt die Namen zurück.
+
+    Nur diese Kandidaten – ein „noselect“, das jemand anders gesetzt hat (chronyc von Hand,
+    chrony.conf), fasst ntp-gui nie an."""
+    if not select:
+        return []
+    out = []
+    with _LOCK:
+        _load()
+        candidates = sorted(_READY["orphans"])
+        if not candidates:
+            return []
+        held_now = {n for e in _HOLDS.values() for n in e["names"]}
+        observe_only = conf_noselect_refids()
+        for name in candidates:
+            if name in held_now or name in observe_only or not effective_noselect(select.get(name)):
+                _READY["orphans"].discard(name)
+                continue
+            try:
+                _call(name, "-")
+                out.append(name)
+                _READY["orphans"].discard(name)
+            except SelectError:
+                pass
+    return out
+
+
 def reset_for_tests() -> None:
+    """Speicher leeren – wie ein Neustart von ntp-gui (die Haltertabelle in SQLite bleibt)."""
     with _LOCK:
         _HOLDS.clear()
         _LOG.clear()
+        _READY.update({"for": None, "orphans": set()})
 
 
 def calls() -> list[dict]:

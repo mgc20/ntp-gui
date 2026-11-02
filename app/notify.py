@@ -33,7 +33,8 @@ Regeln je Kanal
   verschickt (keine Schleife zwischen zwei kaputten Kanälen).
 * Ratenlimit je Kanal (Standard 30 je Stunde, gleitend).
 * Ereignisse mit data.notify = false bleiben lokal (1.5: GNSS-Hinweis/-Warnung unterhalb
-  der Einstellung gnss_notify, Holdover-Test).
+  der Einstellung gnss_notify, Holdover-Test). data.notify = true heißt umgekehrt: hinaus, auch
+  unterhalb der Mindeststufe des Kanals (die Art-Auswahl gilt weiter).
 * data.standalone = true: Die Meldung steht für sich (kein offenes Problem, kein „behoben“),
   z. B. „Neues Gerät fragt nach der Zeit“ (1.5, Clients 3).
 
@@ -517,11 +518,11 @@ class ChannelRouter:
     def configure(self, channel: dict) -> None:
         self.channel = channel
 
-    def _matches(self, event: dict) -> bool:
+    def _matches(self, event: dict, ignore_level: bool = False) -> bool:
         kinds = self.channel.get("kinds") or []
         if kinds and event.get("kind") not in kinds:
             return False
-        return _level_rank(event.get("level")) >= _level_rank(self.channel.get("min_level", "warn"))
+        return ignore_level or _level_rank(event.get("level")) >= _level_rank(self.channel.get("min_level", "warn"))
 
     def _window(self) -> float:
         return max(0, int(self.channel.get("debounce_min", DEFAULT_DEBOUNCE_MIN))) * 60.0
@@ -549,7 +550,11 @@ class ChannelRouter:
                                          "resolved_sent": False})
         level = event.get("level") or "info"
         # data.standalone (1.5): eine Meldung, die für sich steht – z. B. „Neues Gerät fragt nach der Zeit“.
-        problem = level in ("warn", "crit") and event.get("kind") not in STANDALONE_KINDS \
+        # data.notify = true (1.5): Die Quelle hat ausdrücklich entschieden, dass das hinausgeht –
+        # z. B. „GNSS-Hinweis“ bei gnss_notify = hinweis. Dann gilt die Mindeststufe des Kanals nicht,
+        # und die Meldung zählt als offenes Problem (damit „wieder unauffällig“ dazu passt).
+        forced = data.get("notify") is True
+        problem = (level in ("warn", "crit") or forced) and event.get("kind") not in STANDALONE_KINDS \
             and data.get("standalone") is not True
         if not problem and st["open_since"] is not None and resolves(event):
             # „behoben“: gehört zum offenen Problem – auch unterhalb der Mindeststufe.
@@ -562,7 +567,7 @@ class ChannelRouter:
                 st["resolved_sent"] = True
             st.update(open_since=None, notified=None, pending=None, suppressed=0)
             return out
-        if not self._matches(event):
+        if not self._matches(event, ignore_level=forced):
             return []
         window = self._window()
         recent = st["last_sent"] is not None and now - st["last_sent"] < window

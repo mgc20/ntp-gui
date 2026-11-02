@@ -65,7 +65,10 @@ export const HELP_UHR = {
   holdover_result: {
     title: "Ergebnis des Holdover-Tests",
     text: "„Die Uhr hält X ms in Y h“: der gemessene Zeitfehler am Ende des Tests. Er gilt für die Bedingungen in der "
-      + "Zeit (Temperatur, Last) – ein zweiter Test zu einer anderen Tageszeit zeigt die Spanne. Gespeichert werden "
+      + "Zeit (Temperatur, Last) – ein zweiter Test zu einer anderen Tageszeit zeigt die Spanne. Gerechnet wird je "
+      + "Netzquelle (jetzt gegen Start) und davon der Median – fällt eine aus, springt der Wert nicht. Ein Test nur "
+      + "ohne GPS/PPS heißt „Ohne GPS/PPS: Abweichung …“, weil das Netz die Uhr weiter regelt (kein Freilauf). "
+      + "„Ungültig“: chrony hat während des Tests eine neue Quelle aufgenommen, die sich nicht abwählen ließ. Gespeichert werden "
       + "die letzten 20 Ergebnisse, nur auf diesem Gerät.",
   },
   temp_freq: {

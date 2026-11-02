@@ -18,6 +18,8 @@ import random
 import shutil
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -278,12 +280,12 @@ class FakeChrony:
         if self.down:
             return []
         # Wie chrony 4.6: abgewählte Quellen stehen mit „?“ da, werden aber weiter gemessen (reach 377).
-        return [{"name": n, "mode": r["mode"], "state": "?" if n in self.effective else "+", "reach": 255,
-                 "offset": r["offset"]} for n, r in self.rows.items()]
+        return [{"name": n, "mode": r["mode"], "state": "?" if n in self.effective else "+",
+                 "reach": r.get("reach", 255), "offset": r["offset"]} for n, r in self.rows.items()]
 
     def selectopts(self, name, sign):
         self.calls.append((name, sign))
-        if self.fail or self.down or name not in self.rows:
+        if self.fail or self.down or name not in self.rows or name in getattr(self, "refuse", ()):
             raise selectctl.SelectError("506 Cannot talk to daemon")
         if sign == "+":
             self.effective.add(name)
@@ -328,7 +330,9 @@ def jump_obs(t, rng, jump=True):
     return outdoor(t, rng, time_shift=0.08 if jump else 0.0)
 
 
-class LockTest(StoreCase):
+class LockCase(StoreCase):
+    """Hilfen: Beobachtungen im 10-s-Takt einspeisen (ohne eigene Tests)."""
+
     def feed(self, guard, seconds, jump, cfg=CFG, rng=None, step=10.0):
         rng = rng or random.Random(5)
         end = self.mono[0] + seconds
@@ -340,6 +344,9 @@ class LockTest(StoreCase):
 
     def baseline(self, guard, cfg=CFG):
         return self.feed(guard, 2400, False, cfg)
+
+
+class LockTest(LockCase):
 
     def test_report_mode_only_reports(self):
         guard = self.baseline(self.guard(), dict(CFG, gnss_guard="report"))
@@ -612,7 +619,11 @@ class HoldoverTest(StoreCase):
         test = self.make()
         test.start({"hours": 1})
         guard = self.guard()
-        guard.action(CFG, {"action": "lock"})
+        # Alle Netzquellen sind im Test abgewählt: Sperren nur mit ausdrücklicher Bestätigung.
+        with self.assertRaises(gnssguard.GuardError) as ctx:
+            guard.action(CFG, {"action": "lock"})
+        self.assertIn("Trotzdem sperren", str(ctx.exception))
+        guard.action(CFG, {"action": "lock", "force": True})
         guard.action(CFG, {"action": "unlock"})
         self.assertIn("GPS", self.chrony.effective)                  # Holdover hält es noch
         test.abort(self.chrony.select())
@@ -715,6 +726,370 @@ class PrivacyAndWiringTest(unittest.TestCase):
         run = {"active": True, "run": {"remaining_s": 3600, "deviation_ms": 1.5}}
         self.assertEqual(holdover.insights(run)[0]["key"], "holdover_running")
         self.assertEqual(holdover.insights({"active": False}), [])
+
+
+# =========================================================================================
+# Prüfbefunde (Review 1.5): feste Anker, eingefrorene Grundlinien, Daten fehlen, Übergaben
+# =========================================================================================
+def ramp(rate_ms_per_min):
+    return lambda dt: {"time_shift": rate_ms_per_min / 1000.0 * dt / 60.0}
+
+
+class AnchorReplayTest(unittest.TestCase):
+    def test_constant_spoof_stays_stoerung_for_3h(self):
+        det, stages, t0 = run_scenario(lambda dt: {"time_shift": 0.080}, after_s=3 * 3600.0)
+        after = [s for t, s in stages if t >= t0 + 60.0]
+        self.assertEqual(set(after), {"stoerung"})       # wird nie zur neuen Normalität
+        self.assertAlmostEqual(det.signals["time"].detail["deviation_ms"], 80.0, delta=5.0)
+
+    def test_slow_ramps_detected(self):
+        # Langsames Wegziehen (carry-off): früher nie erkannt, jetzt gegen den Anker.
+        for rate in (0.5, 1.0, 2.0):
+            with self.subTest(rate=rate):
+                _det, stages, t0 = run_scenario(ramp(rate), after_s=3 * 3600.0)
+                delay = first(stages, t0, "stoerung")
+                self.assertIsNotNone(delay, f"{rate} ms/min nicht erkannt")
+                self.assertLess(delay, 3 * 3600.0)
+                # erkannt, bevor die Zeit 150 ms weggezogen ist
+                self.assertLess(rate * delay / 60.0, 150.0)
+
+    def test_vk162_still_quiet_with_anchor(self):
+        det = gnssguard.Detector()
+        for obs in vk162_observations(4):
+            det.update(obs)
+        self.assertFalse(det.signals["time"].active)
+        self.assertIsNotNone(det.time_anchor)
+
+    def test_position_jump_stays_frozen(self):
+        det, stages, t0 = run_scenario(lambda dt: {"pos_shift": 500.0}, after_s=2 * 3600.0)
+        after = [s for t, s in stages if t >= t0 + 60.0]
+        self.assertEqual(set(after), {"stoerung"})        # Referenz lernt den falschen Ort nicht
+        self.assertTrue(det.signals["position"].active)
+
+    def test_slow_position_drift_detected(self):
+        _det, stages, t0 = run_scenario(lambda dt: {"pos_shift": 300.0 * dt / 3600.0}, after_s=3 * 3600.0)
+        self.assertIsNotNone(first(stages, t0, "stoerung"))
+
+    def test_persistent_falseticker_with_nts_is_strong(self):
+        rng = random.Random(4)
+        det = gnssguard.Detector()
+        for i in range(60):
+            det.update(dict(outdoor(i * 10.0, rng), gps_state="x"))
+        self.assertEqual(det.stage(), "stoerung")
+        self.assertEqual(det.signals["falseticker"].strength, "strong")
+        self.assertIn("NTS-Quellen", det.signals["falseticker"].text)
+        # Ohne NTS bleibt es ein schwaches Signal (Hinweis).
+        det = gnssguard.Detector()
+        for i in range(60):
+            det.update(dict(outdoor(i * 10.0, rng), gps_state="x", ref_kind="ntp"))
+        self.assertEqual(det.stage(), "hinweis")
+        # Kurzzeitig (unter 5 min) auch mit NTS nur Hinweis.
+        det = gnssguard.Detector()
+        for i in range(20):
+            det.update(dict(outdoor(i * 10.0, rng), gps_state="x"))
+        self.assertEqual(det.stage(), "hinweis")
+
+    def test_active_signal_expires_without_data(self):
+        det, _stages, _t0 = run_scenario(lambda dt: {"pos_shift": 500.0}, after_s=60.0)
+        self.assertEqual(det.stage(), "stoerung")
+        t = 2400.0 + 60.0
+        changes = {}
+        while t < 2400.0 + 6 * 3600.0:
+            t += 10.0
+            result = det.update({"t": t, "mode": 2, "sats": None, "gps_state": "?"})
+            changes.update(result["changes"])
+        self.assertEqual(det.stage(), "ok")
+        self.assertEqual(changes.get("position"), "off")
+        self.assertTrue(det.signals["position"].stale)
+
+
+class _SlowSources(FakeChrony):
+    """sources() blockiert, bis der Test es freigibt – wie ein chronyd im Neustart."""
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.entered = threading.Event()
+        self.go = threading.Event()
+
+    def sources(self):
+        self.entered.set()
+        self.go.wait(30.0)
+        return super().sources()
+
+
+class ReviewGuardTest(LockCase):
+    def test_constant_spoof_keeps_lock_for_3h(self):
+        guard = self.baseline(self.guard())
+        self.feed(guard, 3 * 3600, True)
+        self.assertEqual(guard.stage, "stoerung")
+        self.assertIn("GPS", self.chrony.effective)
+        self.assertFalse([e for e in self.events if "GPS-Sperre aufgehoben" in e[2]])
+        self.assertFalse([e for e in self.events if e[2] == "GNSS wieder unauffällig"])
+
+    def test_spoof_present_after_ntp_gui_restart(self):
+        guard = self.baseline(self.guard(), dict(CFG, gnss_guard="report"))
+        self.assertIsNotNone(gnssguard.load("time_anchor").get("value"))
+        # Neustart von ntp-gui – der Spoofer ist schon da, bevor die neue Grundlinie entsteht.
+        fresh = self.guard()
+        self.feed(fresh, 900, True, dict(CFG, gnss_guard="report"))
+        self.assertEqual(fresh.stage, "stoerung")
+        self.assertTrue(fresh.detector.signals["time"].active)
+
+    def test_gps_settings_change_relearns_time(self):
+        guard = self.baseline(self.guard())
+        self.assertIsNotNone(guard.detector.time_anchor)
+        self.feed(guard, 10, False, dict(CFG, gps_offset=0.05))
+        self.assertTrue(any("GPS-Einstellungen geändert" in e[2] for e in self.events))
+        self.assertIsNone(guard.detector.time_anchor)
+        self.assertIsNone(gnssguard.load("time_anchor").get("value"))
+        self.feed(guard, 900, False, dict(CFG, gps_offset=0.05))
+        self.assertEqual(guard.stage, "ok")
+        self.assertIsNotNone(guard.detector.time_anchor)
+
+    def test_relearn_forgets_stored_anchor(self):
+        guard = self.baseline(self.guard())
+        guard.action(CFG, {"action": "relearn"})
+        self.assertIsNone(gnssguard.load("time_anchor").get("value"))
+        self.assertIsNone(guard.detector.time_anchor)
+
+    def test_stale_episode_ends_and_lock_releases(self):
+        guard = self.baseline(self.guard())
+        self.feed(guard, 60, True)
+        self.assertIn("GPS", self.chrony.effective)
+        end = self.mono[0] + 3 * 3600
+        while self.mono[0] < end:                     # danach: kein Fix, GPS unerreichbar
+            self.mono[0] += 10
+            self.wall[0] += 10
+            guard.tick(CFG, obs={"t": self.mono[0], "mode": 2, "gps_state": "?"}, select=self.chrony.select())
+        self.assertEqual(guard.stage, "ok")
+        ends = [e for e in self.events if e[2] == "GNSS wieder unauffällig"]
+        self.assertEqual(len(ends), 1)
+        self.assertIn("keine Messwerte mehr", ends[0][3]["why"])
+        self.assertNotIn("GPS", self.chrony.effective)    # 30 min Ruhe → automatische Freigabe
+
+    def test_status_not_blocked_by_slow_chronyd(self):
+        slow = _SlowSources()
+        selectctl.set_port(slow)
+        guard = self.guard()
+        saved = gnssguard.live_observation
+        gnssguard.live_observation = lambda cfg, now, select, sources=None: {"t": now}
+        self.addCleanup(setattr, gnssguard, "live_observation", saved)
+        worker = threading.Thread(target=guard.tick, args=(CFG,), kwargs={"select": slow.select()}, daemon=True)
+        worker.start()
+        self.assertTrue(slow.entered.wait(10.0))
+        result = {}
+        reader = threading.Thread(target=lambda: result.update(status=guard.status(CFG)), daemon=True)
+        reader.start()
+        reader.join(10.0)
+        try:
+            self.assertFalse(reader.is_alive(), "status() wartet auf chronyc")
+            self.assertIn("stage", result["status"])
+        finally:
+            slow.go.set()
+            worker.join(10.0)
+        self.assertFalse(worker.is_alive())
+
+
+class NoOtherSourceTest(LockCase):
+    fake_args = {"network": 0}
+
+    def test_auto_lock_skipped_without_other_sources(self):
+        guard = self.baseline(self.guard())
+        self.feed(guard, 600, True)
+        self.assertEqual(guard.stage, "stoerung")
+        self.assertNotIn("GPS", self.chrony.effective)
+        self.assertEqual(self.chrony.calls, [])
+        skipped = [e for e in self.events if e[2].startswith("GPS-Sperre ausgelassen")]
+        self.assertEqual(len(skipped), 1)                  # einmal je Episode, nicht jede 10 s
+        self.assertEqual(skipped[0][1], "warn")
+        self.assertEqual(guard.lock_status()["other_sources"], 0)
+
+    def test_manual_lock_needs_force(self):
+        guard = self.guard()
+        with self.assertRaises(gnssguard.GuardError) as ctx:
+            guard.action(CFG, {"action": "lock"})
+        self.assertTrue(ctx.exception.conflict)
+        self.assertNotIn("GPS", self.chrony.effective)
+        status = guard.action(CFG, {"action": "lock", "force": True})
+        self.assertTrue(status["lock"]["locked"])
+        self.assertIn("GPS", self.chrony.effective)
+        items = gnssguard.insights(status)
+        self.assertIn("läuft frei", [i for i in items if i["key"] == "gnss_lock"][0]["text"])
+
+
+class SelectPersistenceTest(StoreCase):
+    fake_args = {"pps": True}
+
+    def make(self):
+        return holdover.HoldoverTest(emit=lambda *a: self.events.append(a), wall=lambda: self.wall[0])
+
+    def test_handover_lock_to_holdover_survives_restart(self):
+        guard = self.guard()
+        guard.action(CFG, {"action": "lock"})
+        test = self.make()
+        test.start({"hours": 1})
+        guard.action(CFG, {"action": "unlock"})            # GPS/PPS gehen an den Holdover-Test über
+        self.assertEqual(self.chrony.effective, set(self.chrony.rows))
+        selectctl.reset_for_tests()                          # Neustart von ntp-gui
+        fresh_test, fresh_guard = self.make(), self.guard()
+        fresh_guard.status(CFG)
+        fresh_test.abort(self.chrony.select())
+        self.assertEqual(self.chrony.effective, set())
+
+    def test_handover_holdover_to_lock_survives_restart(self):
+        test = self.make()
+        test.start({"hours": 1})
+        guard = self.guard()
+        guard.action(CFG, {"action": "lock", "force": True})   # GPS war schon abgewählt: added = []
+        test.abort(self.chrony.select())                         # GPS/PPS gehen an die Sperre über
+        self.assertEqual(self.chrony.effective, {"GPS", "PPS"})
+        selectctl.reset_for_tests()
+        fresh = self.guard()
+        status = fresh.action(CFG, {"action": "unlock"})
+        self.assertFalse(status["lock"]["locked"])
+        self.assertEqual(self.chrony.effective, set())
+
+    def test_runtime_file_lists_locked_sources_only(self):
+        path = os.path.join(settings.DATA_DIR, "noselect.list")
+        guard = self.guard()
+        guard.action(CFG, {"action": "lock"})
+        with open(path, encoding="utf-8") as handle:
+            self.assertEqual(handle.read(), "GPS\nPPS\n")
+        test = self.make()
+        test.start({"hours": 1})
+        with open(path, encoding="utf-8") as handle:
+            self.assertEqual(handle.read(), "GPS\nPPS\n")      # Holdover-Quellen nicht (Test bricht ab)
+        guard.action(CFG, {"action": "unlock"})
+        self.assertFalse(os.path.exists(path))
+        test.abort(self.chrony.select())
+
+    def test_orphan_from_runtime_file_released(self):
+        os.makedirs(settings.DATA_DIR, exist_ok=True)
+        with open(os.path.join(settings.DATA_DIR, "noselect.list"), "w", encoding="utf-8") as handle:
+            handle.write("GPS\n")
+        # Supervisor hat GPS nach dem chronyd-Start abgewählt; jemand anders hat 192.0.2.1 abgewählt.
+        self.chrony.effective = {"GPS", "192.0.2.1"}
+        selectctl.reset_for_tests()
+        guard = self.guard()
+        guard.tick(dict(CFG, gnss_guard="report"), obs={"t": 1.0}, select=self.chrony.select())
+        self.assertEqual(self.chrony.effective, {"192.0.2.1"})
+        self.assertTrue(any("Übrig gebliebene Abwahl" in e[2] for e in self.events))
+
+    def test_stale_hold_without_lock_released(self):
+        selectctl.hold("gps-lock", ["GPS"], self.chrony.select())
+        guard = self.guard()                                  # gespeicherter Zustand: nicht gesperrt
+        guard.tick(dict(CFG, gnss_guard="report"), obs={"t": 1.0}, select=self.chrony.select())
+        self.assertNotIn("GPS", self.chrony.effective)
+
+    def test_reapply_keeps_added_when_only_some_missing(self):
+        selectctl.hold("gps-lock", ["GPS", "PPS"], self.chrony.select())
+        self.chrony.effective.discard("PPS")                 # jemand hat nur PPS wieder freigegeben
+        self.assertEqual(selectctl.reapply("gps-lock", self.chrony.select()), ["PPS"])
+        self.assertEqual(selectctl.added("gps-lock"), {"GPS", "PPS"})
+        selectctl.release("gps-lock", self.chrony.select())
+        self.assertEqual(self.chrony.effective, set())
+
+
+class HoldoverReviewTest(StoreCase):
+    fake_args = {"pps": True}
+
+    def make(self):
+        return holdover.HoldoverTest(emit=lambda *a: self.events.append(a), wall=lambda: self.wall[0])
+
+    def run_for(self, test, seconds, step=10.0):
+        end = self.wall[0] + seconds
+        while self.wall[0] < end:
+            self.wall[0] += step
+            result = test.tick({}, self.chrony.select())
+            if result:
+                return result
+        return None
+
+    def spread_refs(self):
+        for name, offset in zip(sorted(n for n in self.chrony.rows if n.startswith("192.")), (0.0, 0.006, 0.014)):
+            self.chrony.rows[name]["offset"] = offset
+
+    def test_reference_drop_causes_no_jump(self):
+        self.spread_refs()
+        test = self.make()
+        test.start({"hours": 1, "limit_ms": 1})
+        self.assertIsNone(self.run_for(test, 600))
+        self.chrony.rows["192.0.2.3"]["reach"] = 0           # der Ausreißer (14 ms) fällt aus
+        self.assertIsNone(self.run_for(test, 600))
+        self.assertAlmostEqual(test.status()["run"]["deviation_ms"], 0.0, delta=0.001)
+        self.chrony.rows["192.0.2.3"]["reach"] = 255          # und kommt zurück
+        result = self.run_for(test, 3000)
+        self.assertEqual(result["outcome"], "done")
+        self.assertAlmostEqual(result["deviation_ms"], 0.0, delta=0.001)
+
+    def test_too_few_common_references_skip_points(self):
+        self.spread_refs()
+        test = self.make()
+        test.start({"hours": 1, "limit_ms": 1})
+        self.chrony.rows["192.0.2.2"]["reach"] = 0
+        self.chrony.rows["192.0.2.3"]["reach"] = 0
+        self.chrony.rows["192.0.2.1"]["offset"] = 0.5        # nur noch eine Referenz: zählt nicht
+        self.assertIsNone(self.run_for(test, 600))
+        self.assertEqual(test.status()["run"]["measured"], 1)
+        self.assertTrue(test.state()["active"])
+
+    def test_new_source_during_test_is_deselected(self):
+        test = self.make()
+        test.start({"hours": 1})
+        self.chrony.rows["192.0.2.9"] = {"mode": "^", "auth": False, "conf": False, "offset": 0.0}
+        self.assertIsNone(self.run_for(test, 30))
+        self.assertIn("192.0.2.9", self.chrony.effective)
+        self.assertTrue(any("neue Quelle 192.0.2.9" in e[2] for e in self.events))
+        selectctl.reset_for_tests()                          # auch nach Neustart von ntp-gui bekannt
+        result = self.run_for(self.make(), 3700)
+        self.assertEqual(result["outcome"], "done")
+        self.assertEqual(self.chrony.effective, set())
+
+    def test_new_source_not_deselectable_invalidates(self):
+        test = self.make()
+        test.start({"hours": 1})
+        self.chrony.rows["192.0.2.9"] = {"mode": "^", "auth": False, "conf": False, "offset": 0.0}
+        self.chrony.refuse = {"192.0.2.9"}
+        result = self.run_for(test, 30)
+        self.assertEqual(result["outcome"], "invalid")
+        self.assertIn("ungültig", result["sentence"])
+        self.assertEqual(self.chrony.effective, set())
+
+    def test_gps_only_run_is_not_a_holdover_result(self):
+        test = self.make()
+        test.start({"hours": 1, "include_network": False})
+        result = self.run_for(test, 3700)
+        self.assertEqual(result["outcome"], "done")
+        self.assertTrue(result["sentence"].startswith("Ohne GPS/PPS: Abweichung"), result["sentence"])
+        self.assertNotIn("Die Uhr hält", result["sentence"])
+        self.assertNotIn("Die Uhr hält", self.events[-1][2])
+
+
+class NotifyHintTest(unittest.TestCase):
+    def test_hint_reaches_channel_with_warn_minimum(self):
+        router = notify.ChannelRouter({"min_level": "warn", "kinds": [], "debounce_min": 0, "resolved": True},
+                                      clock=lambda: 1.0, wall=lambda: 1.0)
+        # ohne Freigabe (notify fehlt/false) bleibt ein info-Ereignis unter der Mindeststufe
+        self.assertEqual(router.offer({"kind": "gps", "level": "info", "title": "GNSS-Hinweis: x",
+                                       "data": {"subject": "gnss", "notify": False}}), [])
+        self.assertEqual(router.offer({"kind": "gps", "level": "info", "title": "irgendwas",
+                                       "data": {"subject": "anders"}}), [])
+        emitted = []
+        guard = gnssguard.Guard(emit=lambda *a: emitted.append(a), clock=lambda: 0.0, wall=lambda: 0.0)
+        for i in range(5):
+            guard.detector.update({"t": i * 10.0, "sats": {f"GPS:{k}": 45.0 + (k % 3) * 0.2 for k in range(8)}})
+        guard._stage_event("hinweis", {"gnss_notify": "hinweis"})
+        kind, level, title, data = emitted[0]
+        self.assertEqual(level, "info")
+        sent = router.offer({"kind": kind, "level": level, "title": title, "data": data})
+        self.assertEqual(len(sent), 1)
+        done = router.offer({"kind": "gps", "level": "info", "title": "GNSS wieder unauffällig",
+                             "data": {"subject": "gnss", "resolves": True}})
+        self.assertTrue(done and done[0]["resolved"])
+        # Die Art-Auswahl des Kanals gilt weiter.
+        only_ptp = notify.ChannelRouter({"min_level": "warn", "kinds": ["ptp"], "debounce_min": 0},
+                                        clock=lambda: 1.0, wall=lambda: 1.0)
+        self.assertEqual(only_ptp.offer({"kind": kind, "level": level, "title": title, "data": data}), [])
 
 
 if __name__ == "__main__":

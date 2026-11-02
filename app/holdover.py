@@ -5,12 +5,15 @@ Netzquellen per `chronyc selectopts <quelle> +noselect` ab. chrony stellt die Uh
 mehr nach; sie läuft mit der zuletzt gelernten Frequenz frei. Die Netzquellen werden aber
 weiter **gemessen**: Sie dienen als Messreferenz, ohne die Zeit zu beeinflussen. ntp-gui
 speichert jede Minute den Median ihrer Offsets und zieht davon den Wert beim Start ab – das ist
-der Zeitfehler, den die Uhr in der Zeit aufgebaut hat. Nach N Stunden (1–24, Standard 2) werden
+der Zeitfehler, den die Uhr in der Zeit aufgebaut hat. Gerechnet wird je Referenz (Offset jetzt −
+Offset beim Start) und davon der Median über die Referenzen, die gerade erreichbar sind – fällt
+eine aus oder kommt eine zurück, springt der Wert so nicht um die Streuung zwischen den Servern. Nach N Stunden (1–24, Standard 2) werden
 alle Quellen automatisch wieder auswählbar. Ergebnis: „Die Uhr hält 3,2 ms in 2 h“ auf der
 Seite Uhrqualität, mit Drift in ppm.
 
 Ohne Netzquellen-Option wird nur GPS/PPS abgewählt – dann regelt das Netz weiter, und der Test
-zeigt, wie gut es ohne GPS geht (kein Freilauf).
+zeigt, wie gut es ohne GPS geht (kein Freilauf). Sein Ergebnis heißt darum nicht „Die Uhr hält …“,
+sondern „Ohne GPS/PPS: Abweichung … (das Netz regelt weiter)“.
 
 Sicherheit (alles umkehrbar, mit Zeitlimit, Ereignis und Zustand in SQLite):
   * kein Start ohne mindestens zwei erreichbare Messreferenzen (Netzquellen)
@@ -20,6 +23,9 @@ Sicherheit (alles umkehrbar, mit Zeitlimit, Ereignis und Zustand in SQLite):
   * Neustart von ntp-gui: der Zustand mit Endzeit steht in SQLite, beim nächsten Durchgang wird
     weitergemessen bzw. nach Ablauf sofort zurückgestellt
   * eine GPS-Sperre (gnssguard) bleibt beim Zurückstellen bestehen (selectctl: Halter)
+  * nimmt chrony während des Tests eine neue Quelle auf (z. B. Ersatz für ein unerreichbares
+    Pool-Mitglied – die ist auswählbar und würde die Uhr wieder stellen), wird sie sofort mit
+    abgewählt (Ereignis); geht das nicht, endet der Test als „ungültig“
 Clients bekommen während des Tests eine ungenauere Zeit – darauf weist die Oberfläche hin.
 """
 
@@ -248,6 +254,7 @@ class HoldoverTest:
             self._state = {"active": True, "started": now, "deadline": now + hours * 3600.0, "hours": hours,
                            "include_network": include, "limit_ms": limit, "targets": targets, "changed": changed,
                            "refs": sorted(refs), "start_offset": _median(list(refs.values())),
+                           "start_offsets": dict(refs),
                            "last_dev": 0.0, "max_abs": 0.0, "last_point": now}
             _ensure()
             with store.transaction() as conn:
@@ -269,11 +276,19 @@ class HoldoverTest:
         duration = max(0.0, now - float(state.get("started") or now))
         dev = float(state.get("last_dev") or 0.0)
         limit = float(state.get("limit_ms") or LIMIT_DEFAULT_MS) / 1000.0
-        if outcome == "done":
+        network = state.get("include_network") is not False
+        if outcome == "done" and not network:
+            # Nur GPS/PPS abgewählt: Das Netz hat die Uhr weiter gestellt – kein Freilauf, also auch
+            # keine Aussage „die Uhr hält …“.
+            sentence = (f"Ohne GPS/PPS: Abweichung {fmt_ms(dev)} in {fmt_span(duration)} – das Netz hat "
+                        "die Uhr weiter geregelt (kein Freilauf)")
+        elif outcome == "done":
             sentence = f"Die Uhr hält {fmt_ms(dev)} in {fmt_span(duration)}"
         elif outcome == "limit":
             sentence = (f"Grenze von {fmt_ms(limit)} nach {fmt_span(duration)} erreicht – die Uhr hält "
                         f"{fmt_ms(limit)} nur etwa {fmt_span(duration)}")
+        elif outcome == "invalid":
+            sentence = f"Test nach {fmt_span(duration)} ungültig – {why or 'eine neue Quelle ließ sich nicht abwählen'}"
         elif outcome == "restart":
             sentence = f"chronyd wurde neu gestartet – Test nach {fmt_span(duration)} abgebrochen, bis dahin {fmt_ms(dev)}"
         else:
@@ -307,6 +322,7 @@ class HoldoverTest:
         self._save()
         level = "info" if outcome in {"done", "aborted"} else "warn"
         title = {"done": "Holdover-Test beendet", "limit": "Holdover-Test abgebrochen (Grenze)",
+                 "invalid": "Holdover-Test ungültig",
                  "restart": "Holdover-Test abgebrochen (chronyd neu gestartet)",
                  "aborted": "Holdover-Test abgebrochen"}[outcome]
         self._emit(level, f"{title}: {sentence}. Alle Quellen sind wieder auswählbar."
@@ -341,18 +357,38 @@ class HoldoverTest:
                 self._save()
             return None
         if not state.get("active"):
+            if select and selectctl.held(OWNER):
+                # Haltertabelle sagt „hält noch“, der Test läuft aber nicht (Absturz zwischen zwei
+                # Schreibvorgängen): freigeben, sonst bliebe eine Quelle dauerhaft abgewählt.
+                released, _failed = selectctl.release(OWNER, select)
+                if released:
+                    self._emit("info", f"Holdover-Test: übrig gebliebene Abwahl aufgehoben ({', '.join(released)})",
+                               {"released": len(released)})
             return None
         if not select:
             return None   # chronyd antwortet gerade nicht – Neustart erkennt der nächste Durchgang
         if selectctl.lost(OWNER, state.get("changed") or [], select):
             return self._finish("restart", select, "chronyd hat die Abwahl beim Neustart vergessen")
         sources = selectctl.port().sources() if sources is None else sources
+        invalid = self._new_sources(state, select, sources)
+        if invalid:
+            return self._finish("invalid", select, invalid)
         now = self.wall()
-        refs = references(sources, state.get("refs")) or references(sources)
-        state["measured"] = len(refs)
-        start = _num(state.get("start_offset"))
-        if refs and start is not None:
-            dev = _median(list(refs.values())) - start
+        start_offsets = state.get("start_offsets")
+        if isinstance(start_offsets, dict) and start_offsets:
+            # Je Referenz: Offset jetzt − Offset beim Start; davon der Median über die, die gerade
+            # erreichbar sind. Zu wenige gemeinsame Referenzen → dieser Durchgang zählt nicht.
+            now_refs = references(sources)
+            deltas = [off - float(start_offsets[name]) for name, off in now_refs.items()
+                      if _num(start_offsets.get(name)) is not None]
+            state["measured"] = len(deltas)
+            dev = _median(deltas) if len(deltas) >= MIN_REFS else None
+        else:   # Zustand aus einer Vorabversion ohne Werte je Referenz
+            refs = references(sources, state.get("refs")) or references(sources)
+            state["measured"] = len(refs)
+            start = _num(state.get("start_offset"))
+            dev = _median(list(refs.values())) - start if refs and start is not None else None
+        if dev is not None:
             state["last_dev"] = dev
             state["max_abs"] = max(float(state.get("max_abs") or 0.0), abs(dev))
             if now - float(state.get("last_point") or 0.0) >= POINT_EVERY:
@@ -368,6 +404,37 @@ class HoldoverTest:
         if now >= float(state.get("deadline") or 0.0):
             return self._finish("done", select)
         return None
+
+    def _new_sources(self, state: dict, select: dict[str, dict], sources: list[dict] | None) -> str:
+        """Quellen, die chrony erst während des Tests aufgenommen hat, mit abwählen.
+
+        Gibt einen Grund zurück, wenn das nicht geht (Test ungültig), sonst ""."""
+        include = state.get("include_network") is not False
+        targets = list(state.get("targets") or [])
+        new = []
+        for src in sources or []:
+            if not isinstance(src, dict):
+                continue
+            name = src.get("name")
+            if not name or name in targets or name not in select or selectctl.effective_noselect(select[name]):
+                continue
+            if src.get("mode") == "#" or (include and src.get("mode") in {"^", "="}):
+                new.append(str(name))
+        if not new:
+            return ""
+        bad = [n for n in new if not selectctl.valid_name(n)]
+        if bad:
+            return f"neue Quelle mit unerwartetem Namen ({len(bad)}) – nicht abwählbar"
+        try:
+            changed = selectctl.hold(OWNER, new, select)
+        except selectctl.SelectError as exc:
+            return f"neue Quelle {', '.join(new)} ließ sich nicht abwählen ({exc})"
+        state["targets"] = targets + new
+        state["changed"] = list(state.get("changed") or []) + [n for n in changed if n not in (state.get("changed") or [])]
+        self._save()
+        self._emit("info", f"Holdover-Test: neue Quelle {', '.join(new)} mit abgewählt – chrony hat sie während "
+                           "des Tests aufgenommen (z. B. Ersatz für ein Pool-Mitglied)", {"targets": len(new)})
+        return ""
 
     # --- Anzeige ---------------------------------------------------------------------------------
     def results(self) -> list[dict]:

@@ -117,8 +117,13 @@ function lockBlock(ctx, g) {
   } else if (g.gps_enable) {
     const lockBtn = el("button", { type: "button", class: "button", text: "GPS jetzt sperren", disabled });
     lockBtn.addEventListener("click", () => {
-      if (!window.confirm("GPS sperren? chrony nutzt es dann nicht mehr (selectopts noselect) und hält sich an die Netzquellen – bis du es wieder freigibst.")) return;
-      post(ctx, "/api/gnss", { action: "lock" }, lockBtn, "GPS gesperrt", "gnss");
+      // Ohne andere auswählbare Quelle liefe die Uhr frei – dann ausdrücklich bestätigen (force).
+      const alone = lock.other_sources === 0;
+      const question = alone
+        ? "Keine andere auswählbare Zeitquelle! Ohne GPS läuft die Uhr frei (Holdover) und driftet mit der Zeit weg. Trotzdem sperren?"
+        : "GPS sperren? chrony nutzt es dann nicht mehr (selectopts noselect) und hält sich an die Netzquellen – bis du es wieder freigibst.";
+      if (!window.confirm(question)) return;
+      post(ctx, "/api/gnss", alone ? { action: "lock", force: true } : { action: "lock" }, lockBtn, "GPS gesperrt", "gnss");
     });
     buttons.push(lockBtn);
   }
@@ -136,7 +141,9 @@ function lockBlock(ctx, g) {
 }
 
 // --- Uhrqualität: Holdover-Test --------------------------------------------------------------
-const OUTCOME = { done: ["fertig", "good"], limit: ["Grenze erreicht", "warn"], restart: ["chronyd neu gestartet", "warn"], aborted: ["abgebrochen", "muted"] };
+const OUTCOME = { done: ["fertig", "good"], limit: ["Grenze erreicht", "warn"], restart: ["chronyd neu gestartet", "warn"], aborted: ["abgebrochen", "muted"], invalid: ["ungültig", "warn"] };
+// Nur GPS/PPS abgewählt: das Netz regelt weiter – kein Holdover-Ergebnis „die Uhr hält …“.
+const outcomeLabel = (r) => (OUTCOME[r.outcome] || OUTCOME.aborted)[0] + (r.include_network === false ? " (nur ohne GPS/PPS)" : "");
 const HOURS = [1, 2, 6, 12, 24];
 
 function startForm(ctx, data) {
@@ -213,7 +220,7 @@ function resultsBlock(results) {
   const [label, tone] = OUTCOME[last.outcome] || OUTCOME.aborted;
   return el("div", {},
     el("div", { class: "verdict", "data-tone": tone },
-      el("span", { class: "verdict-label" }, `Letzter Test (${when(last.started)}) `, badge(label, tone), " ", info("holdover_result", "Ergebnis")),
+      el("span", { class: "verdict-label" }, `Letzter Test (${when(last.started)}) `, badge(outcomeLabel(last) || label, tone), " ", info("holdover_result", "Ergebnis")),
       el("p", { text: last.sentence || "–" }),
       isNum(last.drift_ppm) ? el("p", { class: "card-sub", text: `Gangabweichung ${fmtNumber(last.drift_ppm, 3)} ppm, größter Betrag ${ms(last.max_abs_ms)}` }) : null),
     results.length > 1 ? el("table", { class: "mini-table" },
@@ -221,7 +228,7 @@ function resultsBlock(results) {
         el("th", { class: "num" }, "Zeitfehler ", info("holdover_deviation", "Zeitfehler")))),
       el("tbody", {}, results.map((r) => el("tr", {},
         el("td", { text: when(r.started) }),
-        el("td", { text: (OUTCOME[r.outcome] || OUTCOME.aborted)[0] }),
+        el("td", { text: outcomeLabel(r) }),
         el("td", { class: "num", text: span(r.duration_s) }),
         el("td", { class: "num", text: ms(r.deviation_ms) }))))) : null);
 }
@@ -233,7 +240,8 @@ export function holdoverCard(ctx) {
   if (!data) return card("Holdover-Test", head, emptyNote("Wird geladen …"));
   ctx.uiState.hoRunning = Boolean(data.active);
   const results = data.results || [];
-  const last = results[0];
+  // Kopfzeile: nur echte Holdover-Läufe (alle Quellen abgewählt) mit Messergebnis (fertig oder Grenze).
+  const last = results.find((r) => r.include_network !== false && (r.outcome === "done" || r.outcome === "limit"));
   const headBadge = data.active ? badge("läuft", "warn") : last ? badge(`${ms(Math.abs(last.deviation_ms))} in ${span(last.duration_s)}`, "muted") : null;
   return card("Holdover-Test", { ...head, badge: headBadge },
     data.active && data.run ? runningBlock(ctx, data.run) : startForm(ctx, data),
