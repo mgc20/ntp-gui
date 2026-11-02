@@ -58,12 +58,21 @@ class FakeDns:
         self.rcode = rcode
         self.udp_count = 0
         self.tcp_count = 0
-        self.udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.udp.bind(("127.0.0.1", 0))
-        self.port = self.udp.getsockname()[1]
-        self.tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.tcp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.tcp.bind(("127.0.0.1", self.port))
+        # UDP-Port zufällig, TCP auf denselben Port; ist der TCP-Port belegt, neuer Versuch.
+        for _ in range(100):
+            self.udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.udp.bind(("127.0.0.1", 0))
+            self.port = self.udp.getsockname()[1]
+            self.tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.tcp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                self.tcp.bind(("127.0.0.1", self.port))
+                break
+            except OSError:
+                self.udp.close()
+                self.tcp.close()
+        else:
+            raise OSError("kein freier Port für UDP und TCP gefunden")
         self.tcp.listen(8)
         self.stop = False
         threading.Thread(target=self._udp, daemon=True).start()
@@ -120,9 +129,22 @@ class FakeDns:
 
 
 def free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+    """Ein Port, der für UDP **und** TCP frei ist (der Weiterleiter bindet beide).
+
+    Nur UDP zu prüfen reichte nicht: Auf dem CI-Runner war derselbe TCP-Port belegt
+    („Address already in use“)."""
+    for _ in range(100):
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp:
+            udp.bind(("127.0.0.1", 0))
+            port = udp.getsockname()[1]
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as tcp:
+                    tcp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                    tcp.bind(("127.0.0.1", port))
+            except OSError:
+                continue
+            return port
+    raise OSError("kein freier Port für UDP und TCP gefunden")
 
 
 def ask_udp(port: int, query: bytes, timeout: float = 6.0) -> bytes:
@@ -640,9 +662,17 @@ class ServerTest(unittest.TestCase):
         fake = FakeDns(big=big)
         self.addCleanup(fake.close)
         fwd = dnsfwd.Forwarder("servers", [dnsfwd.PlainUpstream("127.0.0.1", fake.port)], use_fallback=False)
-        port = free_port()
-        server = dnsfwd.Server(fwd, port, hosts=("127.0.0.1",))
-        self.assertEqual(server.start(), ["127.0.0.1"])
+        for attempt in range(5):  # zwischen Prüfen und Binden kann ein anderer Prozess den Port nehmen
+            port = free_port()
+            server = dnsfwd.Server(fwd, port, hosts=("127.0.0.1",))
+            try:
+                started = server.start()
+                break
+            except OSError:
+                server.stop()
+                if attempt == 4:
+                    raise
+        self.assertEqual(started, ["127.0.0.1"])
         self.addCleanup(server.stop)
         return port, fake
 
