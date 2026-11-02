@@ -197,6 +197,10 @@ jobs:
   attest:
     name: Herkunftsnachweis
     needs: build
+    # GitHub speichert Herkunftsnachweise nur für öffentliche Repositories (bei privaten
+    # Repositories eines Nutzers: „Feature not available“). Privat: Schritt überspringen, der
+    # Release läuft ohne Nachweis weiter – SBOM und Scan gibt es trotzdem.
+    if: ${{ github.event.repository.private == false }}
     runs-on: ubuntu-latest
     # Nur hier gibt es das OIDC-Token – und hier läuft keine andere fremde Action.
     permissions:
@@ -224,6 +228,8 @@ jobs:
   publish:
     name: Tags und GitHub-Release
     needs: [build, attest]
+    # Nur nach erfolgreichem Bau; der Nachweis muss geklappt haben oder (privates Repo) übersprungen sein.
+    if: ${{ !cancelled() && needs.build.result == 'success' && (needs.attest.result == 'success' || needs.attest.result == 'skipped') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write      # Tag und Release anlegen
@@ -232,6 +238,7 @@ jobs:
       VERSION: ${{ inputs.version }}
       IMAGE: ${{ needs.build.outputs.image }}
       DIGEST: ${{ needs.build.outputs.digest }}
+      ATTESTED: ${{ needs.attest.result }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -296,9 +303,13 @@ jobs:
             echo
             echo "Digest: \`${DIGEST}\`"
             echo
-            echo '```bash'
-            echo "gh attestation verify oci://${IMAGE}:${VERSION} -R ${GITHUB_REPOSITORY}"
-            echo '```'
+            if [ "${ATTESTED}" = "success" ]; then
+              echo '```bash'
+              echo "gh attestation verify oci://${IMAGE}:${VERSION} -R ${GITHUB_REPOSITORY}"
+              echo '```'
+            else
+              echo "Ohne Herkunftsnachweis: GitHub bietet ihn nur für öffentliche Repositories an."
+            fi
             echo
             echo "Am Release je Architektur (amd64, arm64) eine SBOM (\`ntp-gui-${VERSION}-<arch>.spdx.json\`)"
             echo "und der Schwachstellen-Bericht von Grype (\`ntp-gui-${VERSION}-<arch>-vulnerabilities.txt\`) –"
