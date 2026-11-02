@@ -398,8 +398,12 @@ class RdnsTest(unittest.TestCase):
         # Eigene private Server mit Rückfall auf einen öffentlichen System-DNS: auch gesperrt
         servers = {"clients_rdns": True, "dns_mode": "servers", "dns_servers": ["192.168.1.1"]}
         self.assertIsNotNone(clientinfo.rdns_allowed("192.168.1.5", servers, lambda: ["8.8.8.8"]))
+        # Ohne Rückfall entscheidet, wohin resolv.conf gerade zeigt: Weiterleiter aktiv (127.0.0.1) → erlaubt;
+        # Weiterleiter ausgefallen und resolv.conf zeigt auf 8.8.8.8 → gesperrt (Befund der Abschlussprüfung 1.4).
         self.assertIsNone(clientinfo.rdns_allowed("192.168.1.5", {**servers, "dns_fallback": False},
-                                                  lambda: ["8.8.8.8"]))
+                                                  lambda: ["127.0.0.1"]))
+        self.assertIsNotNone(clientinfo.rdns_allowed("192.168.1.5", {**servers, "dns_fallback": False},
+                                                     lambda: ["8.8.8.8"]))
         # 6to4-Adresse: kein LAN, keine Frage
         self.assertIsNotNone(clientinfo.rdns_allowed("2002:808:808::1", on, lambda: ["192.168.1.1"]))
 

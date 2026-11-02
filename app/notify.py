@@ -830,7 +830,7 @@ def build_request(channel: dict, clean: dict, version: str = "") -> tuple[str, b
     title = clean.get("title", "")
     if clean.get("test"):
         title = "Testnachricht von ntp-gui"
-    headers = {"Content-Type": "application/json; charset=utf-8", "User-Agent": f"ntp-gui/{version or '1'}"}
+    headers = {"Content-Type": "application/json; charset=utf-8", "User-Agent": "ntp-gui"}  # ohne Version: öffentliche Dienste (ntfy.sh) müssen sie nicht kennen
     url = channel["url"]
     secret = channel.get("secret") or ""
     kind = channel["type"]

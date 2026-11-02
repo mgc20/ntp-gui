@@ -254,8 +254,15 @@ export function render(ctx) {
     sub: "Meldet Probleme dorthin, wo du sie siehst: aufs Handy (ntfy, Gotify), in Home Assistant (Webhook) oder über Apprise per E-Mail, Telegram, Matrix …" },
   el("p", {}, rich("Jede Nachricht läuft durch denselben **Datenschutzfilter** wie das Diagnosepaket: keine Koordinaten, keine öffentlichen IP-Adressen, keine eigenen Hostnamen. "
     + "Gleiche Meldungen werden **entprellt**, und wenn ein Problem vorbei ist, kommt „behoben“ mit der Dauer. Ohne Kanal verlässt nichts den Server."))));
-  if (cfg === undefined) {
+  const failed = cfg === undefined ? ctx.dataError?.("notify", "/api/notify") : null;
+  if (cfg === undefined && !failed) {
     out.push(card("Kanäle", {}, emptyNote("Wird geladen …")));
+    return out;
+  }
+  if (failed) {
+    out.push(card("Kanäle", { class: "card-alert" }, emptyNote(failed.status === 401 || failed.status === 403
+      ? "Die Kanäle sieht nur, wer das Verwaltungsrecht hat (Passwort oder Schlüssel mit „verwalten“)."
+      : `Konnte die Kanäle nicht laden (${failed.message || `HTTP ${failed.status}`}).`)));
     return out;
   }
   if (!cfg) {

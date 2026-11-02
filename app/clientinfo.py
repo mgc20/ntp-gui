@@ -293,9 +293,9 @@ def rdns_allowed(ip: str, cfg: dict, resolvers: Callable[[], list[str] | None] =
         if not hosts or not all(is_lan(h) for h in hosts):
             return ("Unter den eigenen DNS-Servern ist ein öffentlicher – die Frage nach einer "
                     "LAN-Adresse ginge ins Internet, deshalb wird nicht nachgeschlagen.")
-        if not cfg.get("dns_fallback", True):
-            return None
-        # Mit „Rückfall auf den System-DNS“ kann die Frage auch dort landen.
+        # Auch ohne „Rückfall“ prüfen, wohin resolv.conf gerade zeigt: Ist der Weiterleiter nicht aktiv
+        # (abgestürzt, resolv.conf nicht übernommen), ginge die Frage an den ursprünglichen DNS –
+        # bei Docker oft 8.8.8.8. Zeigt resolv.conf auf den Weiterleiter (127.0.0.1), ist das privat.
     return _public_resolver_reason(resolvers())
 
 
