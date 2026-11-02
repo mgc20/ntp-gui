@@ -1,6 +1,7 @@
-import { el, fmtNs, fmtNumber, isNum, rich } from "../util.js";
+import { el, fmtNs, isNum, rich } from "../util.js";
 import { card, tile, kv, info, badge, emptyNote, copyButton } from "../ui.js";
 import { lineChart } from "../charts.js";
+import { axisSeconds } from "./overview.js";
 import { hardwareData, matrixList } from "./hardware.js";
 
 const ACCURACY = { "0x20": "25 ns", "0x21": "100 ns", "0x22": "250 ns", "0x23": "1 µs", "0x24": "2,5 µs",
@@ -175,11 +176,11 @@ export function render(ctx) {
     const delayHost = el("div", { class: "chart-host" });
     ctx.afterRender(() => {
       lineChart(offsetHost, { series: [{ id: "ptp-off", label: "Offset", color: "var(--accent)",
-        points: history.map((s) => [s.t, s.ptp?.offset_ns ?? null]) }], format: (v) => fmtNs(v),
-        axisFormat: (v) => `${fmtNumber(v, 0)} ns`, emptyText: ptp.is_grandmaster ? "Als Grandmaster gibt es keinen Offset zu einem Master" : undefined });
+        points: history.map((s) => [s.t, s.ptp?.offset_ns ?? null]) }], format: (v) => fmtNs(v), range: ctx.range, end: ctx.status.system?.time, ariaLabel: "Offset zum PTP-Master",
+        axisFormat: (v, step, extent) => axisSeconds(v / 1e9, step / 1e9, extent / 1e9), emptyText: ptp.is_grandmaster ? "Als Grandmaster gibt es keinen Offset zu einem Master" : undefined });
       lineChart(delayHost, { series: [{ id: "ptp-delay", label: "Laufzeit", color: "var(--accent)",
-        points: history.map((s) => [s.t, s.ptp?.delay_ns ?? null]) }], format: (v) => fmtNs(v),
-        axisFormat: (v) => `${fmtNumber(v, 0)} ns`, zeroLine: false });
+        points: history.map((s) => [s.t, s.ptp?.delay_ns ?? null]) }], format: (v) => fmtNs(v), range: ctx.range, end: ctx.status.system?.time, ariaLabel: "Laufzeit zum PTP-Master",
+        axisFormat: (v, step, extent) => axisSeconds(v / 1e9, step / 1e9, extent / 1e9), zeroLine: false });
     });
     out.push(el("div", { class: "grid-2" },
       card("Offset zum Master", { help: "offset_from_master" }, offsetHost),

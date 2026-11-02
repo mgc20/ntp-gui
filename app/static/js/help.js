@@ -8,6 +8,59 @@ import { HELP_API, HELP_GROUP_API } from "./help-api.js";
 // Hilfeseite nutzen dieselben Texte. **fett** und `code` werden formatiert.
 
 export const HELP = {
+  // ---------------------------------------------------------------- Übersicht und Diagramme
+  overview_verdict: {
+    title: "Gesamtzustand",
+    text: "Das Urteil oben auf der Übersicht fasst alles zusammen – dieselbe Bewertung zeigt die Kopfzeile "
+      + "rechts oben: **Grün** – die Uhr ist synchron und kein Hinweis verlangt etwas. **Gelb** – die Uhr ist "
+      + "noch nicht synchron, läuft im Inselbetrieb oder ein Hinweis sollte geprüft werden. **Rot** – chronyd "
+      + "antwortet nicht oder es gibt eine Störung, die Clients betrifft. Die Kennzahlen daneben zeigen den "
+      + "aktuellen Wert und als kleine Linie den Verlauf im gewählten Zeitraum; einzelne Spitzen sind dort "
+      + "abgeschnitten. Ist eine Kennzahl auffällig, steht das als Wort darunter („erhöht“, „kritisch“).",
+  },
+  overview_hints: {
+    title: "Hinweise",
+    text: "**Störungen** (rot) stehen mit ganzer Erklärung im Statusband. **Warnungen** (gelb) sind eine "
+      + "Zeile mit Titel und dem Bereich, den sie betreffen – **Details** klappt die Erklärung auf. Derselbe "
+      + "Bereich darunter (z. B. „Systemuhr“) färbt sich gelb bzw. rot und nennt den Hinweis noch einmal. "
+      + "Reine Informationen sind zu einer Zeile zusammengefasst – **anzeigen** klappt sie auf. Die Hinweise "
+      + "entstehen bei jeder Aktualisierung neu aus dem aktuellen Zustand; erledigte verschwinden von selbst.",
+  },
+  overview_best_source: {
+    title: "Ausgewählte Quelle",
+    text: "Die Zeitquelle, der chrony gerade folgt (Zeichen `*`), und in Klammern ihr letzter gemessener "
+      + "Offset. Weitere Quellen mit `+` werden mitgemittelt. Wechselt die Auswahl häufig, steht das im "
+      + "Ereignisprotokoll.",
+  },
+  overview_restarts: {
+    title: "Neustarts der Dienste",
+    text: "„2× neu“ heißt: Der Supervisor hat den Dienst seit dem Containerstart zweimal neu gestartet, "
+      + "weil er sich beendet hatte. Einzelne Neustarts nach dem Ab- und Anstecken eines GPS-Empfängers sind "
+      + "normal; steigt die Zahl ständig, nennt das Log auf der Diagnose-Seite den Grund. Fährt man mit der "
+      + "Maus über einen Dienst, steht dort, seit wann er im jetzigen Zustand ist.",
+  },
+  overview_events: {
+    title: "Letzte Ereignisse",
+    text: "Die fünf neuesten Einträge aus dem Ereignisprotokoll: Quellenwechsel, GPS-Fix verloren oder "
+      + "wieder da, PPS-Ausfälle, Neustarts von Diensten, gespeicherte Einstellungen. Die Diagnose-Seite zeigt "
+      + "alle Ereignisse der letzten 90 Tage mit Filtern.",
+  },
+  chart_stats: {
+    title: "Diagramme lesen",
+    text: "Über jedem Verlauf steht der **aktuelle Wert** (**jetzt** = Live-Wert wie im Statusband, "
+      + "**letzter Wert** = letzter gespeicherter Messpunkt) und dazu **min**, **max** und **Ø** (Mittelwert) im "
+      + "gewählten Zeitraum. Die x-Achse zeigt immer den ganzen gewählten Zeitraum bis jetzt; reicht der "
+      + "Verlauf noch nicht so weit zurück, ist der Anfang grau mit „Verlauf ab …“ markiert. Fährt man mit der "
+      + "Maus über das Diagramm (oder tippt darauf, oder fokussiert es mit Tab und blättert mit den "
+      + "Pfeiltasten), zeigt ein Fadenkreuz Zeitpunkt und genauen Wert. "
+      + "**Ausgeblendete Spitzen**: Ein einzelner Ausreißer – typisch die Einschwingphase nach dem Start von "
+      + "chrony – würde den Alltag zu einer flachen Linie drücken. Dann wird die Skala auf den üblichen "
+      + "Bereich begrenzt, ein ▲ bzw. ▼ am Rand markiert die Spitze, die Kopfzeile nennt ihren Wert, und min, "
+      + "max und Ø zählen sie nicht mit. Die jüngsten Werte werden nie ausgeblendet – ein echter neuer Sprung "
+      + "bleibt sichtbar. **Graue Streifen** sind Zeiten ohne Messwerte (Container aus, Neustart) – dort wird "
+      + "nichts verbunden. Die Einheit der y-Achse steht einmal oben links. Gelb und rot getönte Flächen "
+      + "markieren Bereiche, in denen ein Wert zu groß wird; sie erscheinen nur, wenn der Verlauf dorthin reicht.",
+  },
   // ---------------------------------------------------------------- Grundlagen
   ntp: {
     title: "NTP – Network Time Protocol",
@@ -824,6 +877,8 @@ export const SELECT_STATE_SHORT = {
 };
 
 export const HELP_GROUPS = [
+  { title: "Übersicht und Diagramme", keys: ["overview_verdict", "overview_hints", "overview_best_source",
+    "overview_restarts", "overview_events", "chart_stats"] },
   { title: "Grundlagen", keys: ["ntp", "chronyd", "services", "stratum", "island", "minsources", "dhcp42", "clock_control", "local_orphan",
     "setup_accuracy"] },
   { title: "Werte der Systemuhr", keys: ["reference", "system_offset", "uncertainty", "rms_offset", "frequency",

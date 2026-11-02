@@ -1,4 +1,4 @@
-import { el, apiGet, fmtDuration, fmtNumber, fmtLogInterval, fmtSeconds, isNum, rich } from "../util.js";
+import { el, apiGet, fmtDuration, fmtNumber, fmtRate, fmtLogInterval, fmtSeconds, isNum, rich } from "../util.js";
 import { card, tile, info, badge, rangeButtons, emptyNote, toast, copyButton } from "../ui.js";
 import { lineChart, stepDecimals } from "../charts.js";
 import { requestRate } from "./overview.js";
@@ -268,7 +268,8 @@ export function render(ctx) {
   const chartHost = el("div", { class: "chart-host" });
   ctx.afterRender(() => lineChart(chartHost, {
     series: [{ id: "rate", label: "pro Minute", color: "var(--accent)", points: rate }],
-    format: (v) => `${fmtNumber(v, 1)}/min`, axisFormat: (v, step) => fmtNumber(v, stepDecimals(step)), area: true, min: 0,
+    format: (v) => `${fmtRate(v)}/min`, axisFormat: (v, step) => fmtNumber(v, stepDecimals(step)), area: true, min: 0,
+    range: ctx.range, end: ctx.status.system?.time, ariaLabel: "Beantwortete Anfragen pro Minute",
     emptyText: "Noch keine Anfragen gemessen",
   }));
 
