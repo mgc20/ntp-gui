@@ -1,5 +1,7 @@
 // Benachrichtigungen: Kanäle (Webhook, ntfy, Gotify, Apprise-API) mit Filtern, Test-Knopf und Zustellstand.
-// Tokens kommen vom Server nie zurück – nur „gesetzt“ (secret_set).
+// Tokens kommen vom Server nie zurück – nur „gesetzt“ (secret_set). Adressen mit Pfad/Abfrage nur gekürzt
+// (url_hidden): Dort stecken oft Zugangsdaten (Webhook-ID, ?auth=…). Ändert sich Ziel oder Art, muss das
+// Token neu eingegeben werden – der Server schickt ein gespeichertes Token nie an ein neues Ziel.
 import { el, rich, apiPost, fmtTime } from "../util.js";
 import { card, info, badge, kv, emptyNote, toast, isPopoverOpen } from "../ui.js";
 
@@ -31,16 +33,33 @@ function fmtWhen(unix) {
 
 function blankDraft(cfg) {
   const d = cfg.defaults || {};
-  return { id: null, name: "", type: "ntfy", url: "", topic: "", secret: "", clearSecret: false, secretSet: false,
+  return { id: null, name: "", type: "ntfy", url: "", urlHidden: false, urlShown: "", origType: null, secret: "", clearSecret: false, secretSet: false,
     min_level: d.min_level || "warn", kinds: [], debounce_min: d.debounce_min ?? 15,
     rate_per_hour: d.rate_per_hour ?? 30, resolved: true, enabled: true };
 }
 
 function draftFrom(channel) {
-  return { id: channel.id, name: channel.name, type: channel.type, url: channel.url, topic: channel.topic || "",
+  return { id: channel.id, name: channel.name, type: channel.type, url: channel.url_hidden ? "" : channel.url,
+    urlHidden: Boolean(channel.url_hidden), urlShown: channel.url, origType: channel.type, topic: channel.topic || "",
     secret: "", clearSecret: false, secretSet: channel.secret_set, min_level: channel.min_level,
     kinds: [...channel.kinds], debounce_min: channel.debounce_min, rate_per_hour: channel.rate_per_hour,
     resolved: channel.resolved, enabled: channel.enabled };
+}
+
+// Schema, Host und Port – nur wenn die sich ändern, gilt das gespeicherte Token nicht mehr.
+function origin(text) {
+  try {
+    const u = new URL(text);
+    return `${u.protocol}//${u.host}`;
+  } catch { return null; }
+}
+
+// Token neu nötig? Gleiche Regel wie auf dem Server (validate): Art geändert oder neues Ziel.
+function secretInvalid(d) {
+  if (!d.id || !d.secretSet) return false;
+  if (d.type !== d.origType) return true;
+  if (!d.url) return false; // Adresse leer = bisherige behalten
+  return origin(d.url) !== origin(d.urlShown);
 }
 
 function switchControl(checked, label, onChange, disabled) {
@@ -130,13 +149,22 @@ function editorCard(ctx, cfg, disabled) {
   const type = el("select", { disabled, "aria-label": "Art" }, (cfg.types || []).map((t) =>
     el("option", { value: t.value, selected: t.value === d.type ? true : null, text: t.label })));
   type.addEventListener("change", () => { set({ type: type.value }); ctx.rerender(); });
-  const url = el("input", { type: "text", inputmode: "url", autocomplete: "off", value: d.url, disabled, "aria-label": "Adresse", placeholder: fields.url });
-  url.addEventListener("input", () => set({ url: url.value.trim() }));
+  const url = el("input", { type: "text", inputmode: "url", autocomplete: "off", value: d.url, disabled, "aria-label": "Adresse",
+    placeholder: d.urlHidden ? `${d.urlShown} (leer lassen = gespeicherte Adresse behalten)` : fields.url });
   const topic = fields.topic ? el("input", { type: "text", maxlength: 64, value: d.topic, disabled, "aria-label": fields.topic, placeholder: fields.topicHint }) : null;
   topic?.addEventListener("input", () => set({ topic: topic.value.trim() }));
+  const secretPlaceholder = () => (secretInvalid(d) ? "neues Ziel – Token bitte neu eingeben"
+    : d.secretSet ? "gesetzt – leer lassen, um es zu behalten" : "");
   const secret = el("input", { type: "password", autocomplete: "new-password", value: d.secret, disabled, "aria-label": fields.secret,
-    placeholder: d.secretSet ? "gesetzt – leer lassen, um es zu behalten" : "" });
+    placeholder: secretPlaceholder() });
   secret.addEventListener("input", () => set({ secret: secret.value }));
+  const staleNote = el("p", { class: "field-error", role: "status", hidden: secretInvalid(d) ? null : true,
+    text: "Ziel oder Art geändert: Das gespeicherte Token geht nicht an ein neues Ziel – bitte neu eingeben oder „entfernen“ wählen." });
+  url.addEventListener("input", () => {
+    set({ url: url.value.trim() });
+    secret.placeholder = secretPlaceholder();
+    staleNote.hidden = !secretInvalid(d);
+  });
   const clear = d.secretSet ? el("label", { class: "notify-inline" },
     el("input", { type: "checkbox", checked: d.clearSecret, disabled, onchange: (e) => set({ clearSecret: e.target.checked }) }),
     el("span", { text: "gespeichertes Token entfernen" })) : null;
@@ -162,8 +190,9 @@ function editorCard(ctx, cfg, disabled) {
   const errors = ui.notifyErrors;
 
   const save = async () => {
-    const body = { name: d.name, type: d.type, url: d.url, topic: d.topic, min_level: d.min_level, kinds: d.kinds,
+    const body = { name: d.name, type: d.type, topic: d.topic, min_level: d.min_level, kinds: d.kinds,
       debounce_min: d.debounce_min, rate_per_hour: d.rate_per_hour, resolved: d.resolved, enabled: d.enabled };
+    if (d.url || !d.id) body.url = d.url; // beim Ändern: leer = gespeicherte (gekürzt angezeigte) Adresse behalten
     if (d.id) body.id = d.id;
     if (d.clearSecret) body.secret = "";
     else if (d.secret) body.secret = d.secret;
@@ -187,9 +216,11 @@ function editorCard(ctx, cfg, disabled) {
       fieldBlock("Art", d.type === "webhook" ? "notify_webhook" : d.type === "apprise" ? "notify_apprise" : "notify_types", type, d.type === "apprise"
         ? "Apprise-API läuft als eigener Container neben ntp-gui und leitet an E-Mail, Telegram, Matrix, Signal und über 100 weitere Dienste weiter (Compose-Beispiel in der Hilfe)."
         : null),
-      fieldBlock("Adresse", "notify_target", url, "Nur `http://` oder `https://`. Weiterleitungen werden nicht befolgt – trag die endgültige Adresse ein."),
+      fieldBlock("Adresse", "notify_target", url, d.urlHidden
+        ? "Gespeichert ist eine Adresse mit Pfad – der Pfad wird nicht angezeigt, weil dort oft ein Zugangsschlüssel steckt. Leer lassen behält sie."
+        : "Nur `http://` oder `https://`. Weiterleitungen werden nicht befolgt – trag die endgültige Adresse ein."),
       topic ? fieldBlock(fields.topic, "notify_target", topic, null) : null,
-      fieldBlock(fields.secret, "notify_secret", el("div", { class: "notify-secret" }, secret, clear), fields.secretHelp),
+      fieldBlock(fields.secret, "notify_secret", el("div", { class: "notify-secret" }, secret, clear, staleNote), fields.secretHelp),
       fieldBlock("Ab Stufe", "notify_filter", level, null),
       fieldBlock("Arten", "notify_filter", kinds, d.kinds.length ? "Nur die markierten Arten." : "Keine markiert = **alle** Arten (auch künftige)."),
       fieldBlock("Entprellen", "notify_debounce", number("debounce_min", 0, 1440, "Entprellen in Minuten", "min"),

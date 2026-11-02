@@ -167,14 +167,15 @@ apiv1.endpoint("POST", "/clients/probe", "/api/clients/probe", "admin",
                ["ip", "answered", "offset", "rtt", "stratum", "text"])
 apiv1.endpoint("GET", "/notify", "/api/notify", "admin",
                "Benachrichtigungen: Kanäle mit Filtern und Zustellstand. Tokens nur als „gesetzt“ "
-               "(secret_set), nie im Klartext.", ["channels", "types", "levels", "kinds", "defaults", "limits",
+               "(secret_set), nie im Klartext; Adressen mit Pfad/Abfrage nur gekürzt (url_hidden).", ["channels", "types", "levels", "kinds", "defaults", "limits",
                                                  "dashboard_url", "running"])
 apiv1.endpoint("GET", "/notify/status", "/api/notify/status", "read",
-               "Zustellstand je Benachrichtigungskanal (Name, Art, zuletzt gesendet, letzter Fehler) – "
-               "ohne Adressen und Tokens.", ["channels", "running"])
+               "Zustellstand je Benachrichtigungskanal (Kennung, Art, zuletzt gesendet, letzter Fehler) – "
+               "ohne Namen, Adressen und Tokens.", ["channels", "running"])
 apiv1.endpoint("POST", "/notify/channels", "/api/notify/channels", "admin",
                "Benachrichtigungskanal anlegen (ohne id) oder ändern (mit id). Body: name, type "
-               "(webhook|ntfy|gotify|apprise), url, topic, secret (weglassen = behalten, \"\" = löschen), "
+               "(webhook|ntfy|gotify|apprise), url (beim Ändern weglassen = behalten), topic, secret "
+               "(weglassen = behalten, nur bei gleichem Ziel und gleicher Art; \"\" = löschen), "
                "min_level, kinds, debounce_min, rate_per_hour, resolved, enabled.", ["channel"])
 apiv1.endpoint("POST", "/notify/channels/delete", "/api/notify/channels/delete", "admin",
                "Benachrichtigungskanal löschen. Body: {\"id\": …}.", ["ok"])
@@ -1493,6 +1494,7 @@ def main() -> None:
     def save_and_exit(*_):
         clientmon.stop()
         HISTORY.save(force=True)
+        notify.flush()  # Position der verteilten Ereignisse – sonst kommt Zugestelltes nach dem Neustart doppelt
         raise SystemExit(0)
 
     signal.signal(signal.SIGTERM, save_and_exit)

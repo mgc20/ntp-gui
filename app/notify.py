@@ -20,9 +20,14 @@ Regeln je Kanal
   sonst leer). Gleicher Schlüssel höchstens einmal je N Minuten.
 * Problem (warn/crit) und „behoben“ (ein info-Ereignis mit demselben Schlüssel,
   solange das Problem offen ist) gehören zusammen: „GPS-Fix wieder da – Dauer 40 min“.
+  „Behoben“ sind nur Ereignisse der Arten in RESOLVING_KINDS (echte Paare wie
+  „Fix verloren/wieder da“) oder mit data.resolves = true – ein beliebiges
+  info-Ereignis (z. B. ein neuer Kalibriervorschlag) schließt kein Problem.
   Ein Problem, das wegen Entprellens zurückgehalten wurde, wird nachgeholt, wenn
   es am Ende der Sperrzeit noch besteht – der letzte Stand kommt also immer an.
-  Steigt die Stufe (warn → crit), geht das sofort hinaus.
+  Steigt die Stufe (warn → crit) über das zuletzt Gemeldete, geht das sofort
+  hinaus; ein „crit“ nach einem gemeldeten „behoben“ ebenfalls (sonst stünde beim
+  Empfänger „alles gut“, während ein Pflichtdienst gerade ausfällt).
 * Wiederholung nach 30 s, 2 min, 10 min; danach verworfen und lokal als
   Ereignis (Art „notify“) vermerkt. Ereignisse der Art „notify“ werden nie
   verschickt (keine Schleife zwischen zwei kaputten Kanälen).
@@ -43,6 +48,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import http.client
+import ipaddress
 import json
 import re
 import secrets
@@ -51,6 +57,7 @@ import ssl
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections import deque
 from typing import Any, Callable
@@ -86,6 +93,8 @@ BACKLOG_SECONDS = 300.0            # nach einem Neustart: ältere, noch nicht ve
 DEFAULT_DEBOUNCE_MIN = 15
 DEFAULT_RATE_PER_HOUR = 30
 KNOWN_NAMES_TTL = 600.0
+
+SERVER_EXAMPLES = {"ntfy": "https://ntfy.sh", "gotify": "http://gotify.lan", "apprise": "http://apprise:8000"}
 
 _NAME_RE = re.compile(r"^[^\x00-\x1f\x7f]{1,64}$")
 _TOPIC_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
@@ -177,10 +186,56 @@ def _int_in(value: Any, low: int, high: int, what: str) -> int:
     return number
 
 
+# Namen, die nur im eigenen Netz auflösen – dorthin darf ein Token auch über http:// gehen
+# (typisch: Apprise- oder ntfy-Container daneben). Gleiche Liste wie beim Host-Schutz des Dashboards.
+LOCAL_SUFFIXES = (".localhost", ".local", ".lan", ".home.arpa", ".internal", ".home", ".corp", ".localdomain",
+                  ".intranet", ".private")
+
+
+def _origin(url: str) -> tuple[str, str, int | None]:
+    """(Schema, Host, Port) – wohin eine Anfrage tatsächlich geht."""
+    try:
+        parts = urllib.parse.urlsplit(url)
+        port = parts.port or (443 if parts.scheme == "https" else 80)
+        return parts.scheme.lower(), (parts.hostname or "").lower().rstrip("."), port
+    except ValueError:
+        return "", "", None
+
+
+def local_host(host: str) -> bool:
+    """IP im eigenen Netz (privat, Loopback, link-local) oder ein Name, der nur lokal auflöst."""
+    host = (host or "").strip("[]").lower().rstrip(".")
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return bool(host) and ("." not in host or host.endswith(LOCAL_SUFFIXES) or host == "localhost")
+    return ip.is_private or ip.is_loopback or ip.is_link_local
+
+
+def url_hidden(url: str) -> bool:
+    """Hat die Adresse einen Pfad oder eine Abfrage? Dort stecken bei vielen Zielen Zugangsdaten
+    (Home-Assistant-Webhook-ID, Discord-/Slack-Token, ?auth=…) – in UI/API wird sie dann gekürzt."""
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except ValueError:
+        return True
+    return parts.path not in ("", "/") or bool(parts.query) or bool(parts.fragment)
+
+
+def display_url(url: str) -> str:
+    """Adresse für UI/API: Schema, Host und Port – Pfad und Abfrage nur als „/…“."""
+    if not url_hidden(url):
+        return url
+    parts = urllib.parse.urlsplit(url)
+    return f"{parts.scheme}://{parts.netloc}/…"
+
+
 def validate(data: dict, existing: dict | None = None) -> dict:
     """Eingabe aus dem Dashboard → gespeicherte Felder. Positivliste je Feld, wirft NotifyError.
 
-    secret: fehlt oder None → bisheriges behalten; "" → löschen; sonst ersetzen."""
+    secret: fehlt oder None → bisheriges behalten (nur, solange Art und Ziel – Schema, Host, Port –
+    gleich bleiben); "" → löschen; sonst ersetzen. url: fehlt oder "" bei einem bestehenden Kanal →
+    bisherige behalten (UI/API zeigen Pfade nur gekürzt, siehe display_url)."""
     if not isinstance(data, dict):
         raise NotifyError("JSON-Objekt erwartet")
     base = dict(existing or {})
@@ -193,12 +248,24 @@ def validate(data: dict, existing: dict | None = None) -> dict:
     if kind not in CHANNEL_TYPES:
         raise NotifyError("Art des Kanals: " + ", ".join(CHANNEL_TYPES))
     out["type"] = kind
-    url = str(data.get("url", base.get("url", ""))).strip()
+    url = str(data.get("url") or "").strip() or str(base.get("url", "")).strip()
     if not settings.http_url_ok(url):
         raise NotifyError("Adresse: http:// oder https:// mit Hostname bzw. IP, ohne Leerzeichen und ohne "
                           "Benutzer/Passwort in der Adresse (dafür gibt es das Token-Feld)")
-    out["url"] = url
     topic = str(data.get("topic", base.get("topic", "")) or "").strip()
+    if kind in ("ntfy", "gotify", "apprise"):
+        parts = urllib.parse.urlsplit(url)
+        if parts.query or parts.fragment or "#" in url:
+            raise NotifyError(f"Adresse ({TYPE_LABELS[kind]}): nur die Server-Adresse ohne ?… und #…, "
+                              f"z. B. {SERVER_EXAMPLES[kind]}")
+        if kind == "ntfy":
+            # Gewohnte Form „https://ntfy.sh/<thema>“: Thema herausnehmen – JSON geht an die Wurzel.
+            segments = parts.path.rstrip("/").split("/")
+            last = segments[-1] if len(segments) > 1 else ""
+            if last and (last == topic or (not topic and _TOPIC_RE.match(last))):
+                topic = last
+                url = urllib.parse.urlunsplit((parts.scheme, parts.netloc, "/".join(segments[:-1]) or "", "", ""))
+    out["url"] = url
     if kind == "ntfy" and not _TOPIC_RE.match(topic):
         raise NotifyError("Thema (ntfy): 1 bis 64 Zeichen aus Buchstaben, Ziffern, _ und -")
     if kind == "apprise" and topic and not _TOPIC_RE.match(topic):
@@ -208,11 +275,22 @@ def validate(data: dict, existing: dict | None = None) -> dict:
         secret = str(data["secret"]).strip()
     else:
         secret = str(base.get("secret") or "")
+        if secret and (kind != base.get("type") or _origin(url) != _origin(str(base.get("url") or ""))):
+            # Sonst könnte jemand mit Schreibrecht das Ziel auf den eigenen Server umbiegen und bekäme
+            # das „maskierte“ Token (oder die Apprise-URLs mit Mail-Passwort) zugeschickt.
+            raise NotifyError("Ziel oder Art geändert – das gespeicherte Token geht nicht an ein neues Ziel. "
+                              "Bitte Token neu eingeben (oder „entfernen“ wählen).")
     if secret:
         pattern = _APPRISE_URLS_RE if kind == "apprise" else _SECRET_RE
         if not pattern.match(secret):
             raise NotifyError("Token: druckbare Zeichen ohne Leerzeichen, höchstens 512"
                               if kind != "apprise" else "Apprise-URLs: höchstens 2000 druckbare Zeichen")
+    if secret:
+        scheme, host, _port = _origin(url)
+        if scheme != "https" and not local_host(host):
+            raise NotifyError("Token nur über https:// – oder an eine Adresse im eigenen Netz (z. B. "
+                              "http://ntfy.lan, http://apprise:8000, http://192.168.1.5). Über http:// ginge es "
+                              "im Klartext durchs Internet.")
     if kind == "gotify" and not secret:
         raise NotifyError("Gotify braucht das App-Token")
     if kind == "apprise" and not topic and not secret:
@@ -249,11 +327,12 @@ def validate(data: dict, existing: dict | None = None) -> dict:
 
 
 def public(channel: dict, queued: int = 0) -> dict:
-    """Kanal für UI/API: Geheimnis nur als „gesetzt“."""
+    """Kanal für UI/API: Geheimnis nur als „gesetzt“, Adresse ohne Pfad/Abfrage (url_hidden)."""
     return {
         "id": channel["id"], "name": channel["name"], "type": channel["type"],
         "type_label": TYPE_LABELS.get(channel["type"], channel["type"]),
-        "enabled": channel["enabled"], "url": channel["url"], "topic": channel["topic"],
+        "enabled": channel["enabled"], "url": display_url(channel["url"]),
+        "url_hidden": url_hidden(channel["url"]), "topic": channel["topic"],
         "secret_set": bool(channel.get("secret")), "min_level": channel["min_level"],
         "kinds": list(channel["kinds"]), "debounce_min": channel["debounce_min"],
         "rate_per_hour": channel["rate_per_hour"], "resolved": channel["resolved"],
@@ -367,11 +446,26 @@ def _record(channel_id: str, ok: bool, error: str | None = None, dropped: int = 
 # Regeln: Filter, Entprellen, Problem/behoben
 # ---------------------------------------------------------------------------
 
+# Arten, deren info-Ereignisse wirklich ein vorheriges Problem beenden („wieder da“, „läuft wieder“,
+# „erneuert“, „wieder im Rahmen“ …). Andere Arten (Kalibrierung, Einstellungen, Sonstiges) haben keine
+# solchen Paare. Neue Quellen können data.resolves = true/false setzen, ohne hier etwas zu ändern.
+RESOLVING_KINDS = ("gps", "pps", "service", "source", "reload", "cert", "clients", "dns")
+
+
+def resolves(event: dict) -> bool:
+    """Beendet dieses (info-)Ereignis ein offenes Problem mit demselben Schlüssel?"""
+    data = event.get("data") if isinstance(event.get("data"), dict) else {}
+    flag = data.get("resolves")
+    if isinstance(flag, bool):
+        return flag
+    return (event.get("kind") or "other") in RESOLVING_KINDS
+
+
 def subject_key(event: dict) -> str:
     """Art + Betreff. Betreff aus den Ereignisdaten (Dienst, Gerät, Client …), sonst leer."""
     data = event.get("data") if isinstance(event.get("data"), dict) else {}
     subject = ""
-    for key in ("subject", "service", "device", "client"):
+    for key in ("subject", "service", "device", "client", "address"):
         value = data.get(key)
         if isinstance(value, (str, int)) and str(value):
             subject = str(value)[:80]
@@ -430,10 +524,11 @@ class ChannelRouter:
         now = self.clock()
         key = subject_key(event)
         st = self.state.setdefault(key, {"open_since": None, "notified": None, "last_sent": None,
-                                         "pending": None, "suppressed": 0})
+                                         "pending": None, "suppressed": 0, "sent_level": None,
+                                         "resolved_sent": False})
         level = event.get("level") or "info"
         problem = level in ("warn", "crit")
-        if not problem and st["open_since"] is not None:
+        if not problem and st["open_since"] is not None and resolves(event):
             # „behoben“: gehört zum offenen Problem – auch unterhalb der Mindeststufe.
             out = []
             if st["notified"] and self.channel.get("resolved", True):
@@ -441,6 +536,7 @@ class ChannelRouter:
                 title = f"{event.get('title') or 'Behoben'} – Dauer {fmt_duration(duration)}"
                 out.append(self._message(event, title, resolved=True, level="info", duration_s=int(duration),
                                          suppressed=st["suppressed"]))
+                st["resolved_sent"] = True
             st.update(open_since=None, notified=None, pending=None, suppressed=0)
             return out
         if not self._matches(event):
@@ -452,21 +548,36 @@ class ChannelRouter:
                 st["open_since"] = event.get("t") or now
             elif st["notified"]:
                 if _level_rank(level) > _level_rank(st["notified"]):
-                    st["notified"], st["last_sent"] = level, now  # Stufe steigt: sofort
+                    st.update(notified=level, last_sent=now, sent_level=level, resolved_sent=False)  # sofort
                     return [self._message(event, event.get("title") or "", suppressed=st["suppressed"])]
                 st["suppressed"] += 1
                 return []
-            if recent:
+            if recent and not self._urgent(st, level):
                 st["pending"] = event
                 st["suppressed"] += 1
                 return []
-            st["notified"], st["last_sent"], st["pending"] = level, now, None
-            return [self._message(event, event.get("title") or "")]
+            suppressed = st["suppressed"] if recent else 0
+            st.update(notified=level, last_sent=now, pending=None, sent_level=level, resolved_sent=False,
+                      suppressed=0)
+            return [self._message(event, event.get("title") or "", suppressed=suppressed)]
         if recent:
             st["suppressed"] += 1
             return []
         st["last_sent"] = now
         return [self._message(event, event.get("title") or "")]
+
+    @staticmethod
+    def _urgent(st: dict, level: str) -> bool:
+        """Darf ein Problem trotz Sperrzeit sofort hinaus?
+
+        Ja, wenn seine Stufe über dem zuletzt Gemeldeten und dem Zurückgehaltenen liegt (warn → crit),
+        oder wenn es „crit“ ist und zuletzt „behoben“ gemeldet wurde. Ein crit wartet also nie hinter
+        einer Warnung – sonst ginge „Pflichtdienst ausgefallen“ unter, weil der Container danach endet."""
+        pending = st["pending"].get("level") if st["pending"] else None
+        ref = max(_level_rank(st["sent_level"]), _level_rank(pending))
+        if _level_rank(level) > ref:
+            return True
+        return level == "crit" and st["resolved_sent"]
 
     def tick(self) -> list[dict]:
         """Zurückgehaltene Probleme nachholen, deren Sperrzeit abgelaufen ist und die noch bestehen."""
@@ -482,7 +593,9 @@ class ChannelRouter:
             since = fmt_duration(now - st["open_since"])
             out.append(self._message(pending, f"{pending.get('title') or ''} (besteht seit {since})",
                                      suppressed=st["suppressed"]))
-            st.update(pending=None, notified=pending.get("level") or "warn", last_sent=now, suppressed=0)
+            level = pending.get("level") or "warn"
+            st.update(pending=None, notified=level, last_sent=now, suppressed=0, sent_level=level,
+                      resolved_sent=False)
         # Aufräumen: geschlossene Schlüssel ohne Sperrzeit vergessen (Speicher bleibt klein).
         for key in [k for k, s in self.state.items() if s["open_since"] is None and s["pending"] is None
                     and (s["last_sent"] is None or now - s["last_sent"] >= window)]:
@@ -522,23 +635,29 @@ def _body(msg: dict) -> str:
     return text
 
 
-_KNOWN: dict[str, Any] = {"t": 0.0, "names": [], "values": {}}
+_KNOWN: dict[str, Any] = {"t": 0.0, "names": [], "values": {}, "ok": False}
 
 
 def _known() -> tuple[list, dict]:
-    """Eigene Namen/Titel für den Filter (wie im Diagnosepaket), 10 min zwischengespeichert."""
+    """Eigene Namen/Titel für den Filter (wie im Diagnosepaket), 10 min zwischengespeichert.
+
+    Schlägt das Ermitteln fehl, gilt die letzte gelungene Liste weiter (und es wird beim nächsten
+    Mal neu versucht). Gab es noch nie eine, wirft es egress.NotifyLeak: lieber nicht senden als
+    ohne den Schutz für eigene Namen (einteilige Hostnamen fängt sonst keine andere Regel)."""
     now = time.monotonic()
-    if now - _KNOWN["t"] > KNOWN_NAMES_TTL:
+    if not _KNOWN["ok"] or now - _KNOWN["t"] > KNOWN_NAMES_TTL:
         try:
             import diagnostics  # spät: schwer, und nur hier gebraucht
             cfg = settings.values()
-            _KNOWN["names"] = diagnostics._known_names(cfg)
+            names = diagnostics._known_names(cfg)
             title = str(cfg.get("web_title") or "").strip()
-            _KNOWN["values"] = {"titel": [title] if title and title not in egress.DEFAULT_TITLES else [],
-                                "name": diagnostics._client_names()}
+            values = {"titel": [title] if title and title not in egress.DEFAULT_TITLES else [],
+                      "name": diagnostics._client_names()}
         except Exception:
-            _KNOWN["names"], _KNOWN["values"] = [], {}
-        _KNOWN["t"] = now
+            if not _KNOWN["ok"]:
+                raise egress.NotifyLeak([{"kind": "eigene_namen_unbekannt"}]) from None
+        else:
+            _KNOWN.update(names=names, values=values, t=now, ok=True)
     return _KNOWN["names"], _KNOWN["values"]
 
 
@@ -569,9 +688,116 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         raise DeliveryError(f"Weiterleitung abgelehnt (HTTP {code}) – trag die Zieladresse direkt ein")
 
 
-def _opener() -> urllib.request.OpenerDirector:
+class _Deadline:
+    """Gesamtfrist einer Zustellung: Namensauflösung, Verbindung, TLS, Senden und Antwort zusammen
+    höchstens `seconds`. Der Socket-Timeout allein gilt nur je Lese-/Schreibvorgang – ein Ziel, das
+    jede Sekunde ein Byte schickt, hielte den Sender sonst stundenlang fest. Läuft die Frist ab,
+    schaltet ein Timer die Verbindung ab (shutdown über ein Duplikat des Sockets – wirkt auch auf
+    die TLS-Hülle) und der blockierte Aufruf kehrt sofort zurück."""
+
+    def __init__(self, seconds: float) -> None:
+        self.end = time.monotonic() + seconds
+        self.fired = False
+        self._lock = threading.Lock()
+        self._socks: list[socket.socket] = []
+        self._timer = threading.Timer(seconds, self.fire)
+        self._timer.daemon = True
+        self._timer.start()
+
+    def remaining(self) -> float:
+        return self.end - time.monotonic()
+
+    def fire(self) -> None:
+        with self._lock:
+            self.fired = True
+            socks = list(self._socks)
+        for sock in socks:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+    def close(self) -> None:
+        self._timer.cancel()
+        with self._lock:
+            socks, self._socks = self._socks, []
+        for sock in socks:
+            try:
+                sock.close()
+            except OSError:
+                pass
+
+    def _resolve(self, host: str, port: int) -> list:
+        """getaddrinfo hat kein eigenes Zeitlimit – darum in einem Hilfs-Thread mit Frist."""
+        result: dict[str, Any] = {}
+
+        def run() -> None:
+            try:
+                result["infos"] = socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM)
+            except Exception as exc:  # noqa: BLE001
+                result["error"] = exc
+
+        worker = threading.Thread(target=run, daemon=True, name="notify-dns")
+        worker.start()
+        worker.join(max(0.0, self.remaining()))
+        if worker.is_alive() or self.fired:
+            raise TimeoutError("Namensauflösung")
+        if "error" in result:
+            raise result["error"]
+        return result.get("infos") or []
+
+    def connect(self, address, timeout=None, source_address=None, *args, **kwargs) -> socket.socket:
+        """Ersatz für socket.create_connection (http.client._create_connection)."""
+        host, port = address[0], address[1]
+        error: BaseException | None = None
+        for family, kind, proto, _name, sockaddr in self._resolve(host, port):
+            left = self.remaining()
+            if left <= 0 or self.fired:
+                raise TimeoutError("Frist")
+            sock = socket.socket(family, kind, proto)
+            try:
+                sock.settimeout(max(0.05, min(TIMEOUT, left)))
+                with self._lock:
+                    self._socks.append(sock.dup())
+                sock.connect(sockaddr)
+                return sock
+            except OSError as exc:
+                sock.close()
+                error = exc
+        raise error or OSError("keine Adresse")
+
+
+def _deadline_factory(cls, deadline: _Deadline | None):
+    def make(host, **kwargs):
+        conn = cls(host, **kwargs)
+        if deadline is not None:
+            conn._create_connection = deadline.connect  # Auflösung + Verbindung mit Gesamtfrist
+        return conn
+    return make
+
+
+class _HTTPHandler(urllib.request.HTTPHandler):
+    def __init__(self, deadline: _Deadline | None = None) -> None:
+        super().__init__()
+        self.deadline = deadline
+
+    def http_open(self, req):
+        return self.do_open(_deadline_factory(http.client.HTTPConnection, self.deadline), req)
+
+
+class _HTTPSHandler(urllib.request.HTTPSHandler):
+    def __init__(self, deadline: _Deadline | None = None) -> None:
+        super().__init__(context=ssl.create_default_context())
+        self.deadline = deadline
+
+    def https_open(self, req):
+        return self.do_open(_deadline_factory(http.client.HTTPSConnection, self.deadline), req,
+                            context=self._context)
+
+
+def _opener(deadline: _Deadline | None = None) -> urllib.request.OpenerDirector:
     opener = urllib.request.OpenerDirector()
-    for handler in (urllib.request.HTTPHandler(), urllib.request.HTTPSHandler(context=ssl.create_default_context()),
+    for handler in (_HTTPHandler(deadline), _HTTPSHandler(deadline),
                     _NoRedirect(), urllib.request.HTTPDefaultErrorHandler(), urllib.request.HTTPErrorProcessor()):
         opener.add_handler(handler)
     return opener  # ohne ProxyHandler, FileHandler, FTPHandler, DataHandler
@@ -586,6 +812,12 @@ NTFY_TAGS = {"info": ["information_source"], "warn": ["warning"], "crit": ["rota
 def signature(secret: str, body: bytes) -> str:
     """Webhook-Signatur: "sha256=" + HMAC-SHA256(secret, body) als Hex."""
     return "sha256=" + hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+
+
+def _join(url: str, suffix: str) -> str:
+    """Pfad an eine Server-Adresse hängen – Abfrage (?…) bleibt hinten, Fragment (#…) fällt weg."""
+    parts = urllib.parse.urlsplit(url)
+    return urllib.parse.urlunsplit((parts.scheme, parts.netloc, parts.path.rstrip("/") + suffix, parts.query, ""))
 
 
 def build_request(channel: dict, clean: dict, version: str = "") -> tuple[str, bytes, dict]:
@@ -613,23 +845,21 @@ def build_request(channel: dict, clean: dict, version: str = "") -> tuple[str, b
             payload["click"] = clean["link"]
         if secret:
             headers["Authorization"] = f"Bearer {secret}"
-        return url.rstrip("/"), json.dumps(payload, ensure_ascii=False).encode("utf-8"), headers
+        return _join(url, "/"), json.dumps(payload, ensure_ascii=False).encode("utf-8"), headers
     if kind == "gotify":
         payload = {"title": title, "message": clean.get("text", ""), "priority": PRIORITY_GOTIFY.get(level, 2)}
         if clean.get("link"):
             payload["extras"] = {"client::notification": {"click": {"url": clean["link"]}}}
         headers["X-Gotify-Key"] = secret
-        return url.rstrip("/") + "/message", json.dumps(payload, ensure_ascii=False).encode("utf-8"), headers
+        return _join(url, "/message"), json.dumps(payload, ensure_ascii=False).encode("utf-8"), headers
     if kind == "apprise":
         text = clean.get("text", "")
         if clean.get("link"):
             text += "\n" + clean["link"]
         payload = {"title": title, "body": text,
                    "type": "success" if clean.get("resolved") else APPRISE_TYPES.get(level, "info")}
-        target = url.rstrip("/") + "/notify/"
-        if channel.get("topic"):
-            target += channel["topic"]
-        elif secret:
+        target = _join(url, "/notify/" + (channel.get("topic") or ""))
+        if not channel.get("topic") and secret:
             payload["urls"] = secret
         return target, json.dumps(payload, ensure_ascii=False).encode("utf-8"), headers
     raise DeliveryError("Unbekannte Kanalart")
@@ -645,8 +875,8 @@ def _describe(exc: BaseException) -> str:
             return f"Ziel lehnt ab (HTTP {exc.code}) – Token prüfen"
         return f"Ziel antwortet mit HTTP {exc.code}"
     reason = getattr(exc, "reason", exc)
-    if isinstance(reason, (socket.timeout, TimeoutError)):
-        return f"Zeitüberschreitung ({int(TIMEOUT)} s)"
+    if isinstance(reason, (socket.timeout, TimeoutError)) or isinstance(exc, (socket.timeout, TimeoutError)):
+        return _timeout_text()
     if isinstance(reason, ssl.SSLError) or isinstance(exc, ssl.SSLError):
         return "TLS-Fehler (Zertifikat ungültig oder nicht vertrauenswürdig)"
     if isinstance(reason, ConnectionRefusedError):
@@ -660,20 +890,34 @@ def _describe(exc: BaseException) -> str:
     return "Zustellung fehlgeschlagen"
 
 
-def deliver(channel: dict, clean: dict, version: str = "", opener=None) -> None:
-    """Eine Meldung zustellen. Wirft DeliveryError mit kurzem deutschem Text."""
+def _timeout_text() -> str:
+    return f"Zeitüberschreitung ({TIMEOUT:g} s)"
+
+
+def deliver(channel: dict, clean: dict, version: str = "") -> None:
+    """Eine Meldung zustellen – alles zusammen höchstens TIMEOUT s. Wirft DeliveryError (kurz, deutsch)."""
     url, body, headers = build_request(channel, clean, version)
     if not settings.http_url_ok(url, max_len=400):
         raise DeliveryError("Adresse ungültig")
     request = urllib.request.Request(url, data=body, headers=headers, method="POST")
+    deadline = _Deadline(TIMEOUT)
     try:
-        with (opener or _opener()).open(request, timeout=TIMEOUT) as response:
-            response.read(MAX_RESPONSE)  # begrenzt lesen, Inhalt wird nicht gebraucht
+        with _opener(deadline).open(request, timeout=TIMEOUT) as response:
             code = getattr(response, "status", 200)
+            got = 0
+            while got < MAX_RESPONSE and not deadline.fired:  # begrenzt lesen, Inhalt wird nicht gebraucht
+                chunk = response.read(min(4096, MAX_RESPONSE - got))
+                if not chunk:
+                    break
+                got += len(chunk)
+        if deadline.fired:
+            raise DeliveryError(_timeout_text())
     except DeliveryError:
         raise
     except Exception as exc:  # noqa: BLE001 – alles wird zu einer kurzen Meldung
-        raise DeliveryError(_describe(exc)) from None
+        raise DeliveryError(_timeout_text() if deadline.fired else _describe(exc)) from None
+    finally:
+        deadline.close()
     if not 200 <= code < 300:
         raise DeliveryError(f"Ziel antwortet mit HTTP {code}")
 
@@ -812,12 +1056,17 @@ class Notifier:
         self.wake_event.set()
 
     def stop(self) -> None:
-        """Router und Sender beenden (Tests, Herunterfahren)."""
+        """Router und Sender beenden (Tests, Herunterfahren). Merkt sich vorher die Position."""
         self.stopped = True
         self.wake_event.set()
+        self.flush()
         with self.lock:
             for sender in self.senders.values():
                 sender.stop()
+
+    def flush(self) -> None:
+        """Position sofort speichern (SIGTERM): sonst schickt ein Neustart schon Zugestelltes noch einmal."""
+        self._save_position(force=True)
 
     def reload(self) -> None:
         self._dirty = True
@@ -870,6 +1119,7 @@ class Notifier:
         if self.last_id == self.saved_id or (not force and time.monotonic() - self.saved_at < 10):
             return
         try:
+            _ensure()
             store.execute("INSERT INTO notify_meta(key, value) VALUES('last_id', ?) ON CONFLICT(key) "
                           "DO UPDATE SET value=excluded.value", (str(self.last_id),))
             self.saved_id, self.saved_at = self.last_id, time.monotonic()
@@ -899,7 +1149,9 @@ class Notifier:
             for msg in router.tick():
                 self.senders[cid].put(msg)
                 count += 1
-        self._save_position()
+        # Hat der Durchgang Meldungen erzeugt, Position sofort sichern (eine UPSERT-Zeile) – sonst
+        # verschickt ein Neustart innerhalb der nächsten Sekunden dieselben Meldungen noch einmal.
+        self._save_position(force=count > 0)
         return count
 
     def _run(self) -> None:
@@ -922,6 +1174,11 @@ NOTIFIER = Notifier()
 
 def start(version: str = "") -> None:
     NOTIFIER.start(version)
+
+
+def flush() -> None:
+    """Beim Herunterfahren (SIGTERM): Position der verteilten Ereignisse sichern."""
+    NOTIFIER.flush()
 
 
 def send_test(channel_id: str) -> dict:
@@ -961,14 +1218,15 @@ def api_config() -> dict:
 
 
 def api_status() -> dict:
-    """GET /api/notify/status (Leserecht): nur Name, Art und Zustellstand – keine Adressen, keine Tokens."""
+    """GET /api/notify/status (Leserecht): nur Kennung, Art und Zustellstand – keine Adressen, keine Tokens
+    und auch nicht der frei gewählte Name (kann „Handy von Max“ heißen; Lese-Schlüssel stecken in Widgets)."""
     out = []
     try:
         rows = _load_all()
     except Exception:
         rows = []
     for channel in rows:
-        out.append({"id": channel["id"], "name": channel["name"], "type": channel["type"],
+        out.append({"id": channel["id"], "type": channel["type"],
                     "enabled": channel["enabled"], "status": status_of(channel, NOTIFIER.queued(channel["id"]))})
     return {"channels": out, "running": NOTIFIER.running()}
 
@@ -980,4 +1238,4 @@ def _reset_for_tests() -> None:
     events._LISTENERS[:] = [cb for cb in events._LISTENERS if cb != NOTIFIER.wake]
     NOTIFIER = Notifier()
     _READY["db"] = None
-    _KNOWN["t"] = 0.0
+    _KNOWN.update(t=0.0, ok=False, names=[], values={})

@@ -2290,6 +2290,49 @@ class NotifyLeak(ValueError):
         self.findings = findings
 
 
+def _written_pair_ok(a: str, b: str) -> bool:
+    """Wie _coord_pair_ok, aber mit GESCHRIEBENEN Nachkommastellen (mindestens 2, Nullen am Ende zählen)."""
+    x, y = _to_float(a), _to_float(b)
+    if x is None or y is None or _decimals(a.lstrip("+-")) < 2 or _decimals(b.lstrip("+-")) < 2:
+        return False
+    if not ((-90 <= x <= 90 and -180 <= y <= 180) or (-90 <= y <= 90 and -180 <= x <= 180)):
+        return False
+    return abs(x) >= 1 or abs(y) >= 1
+
+
+def notify_coord_spans(line: str) -> list[tuple[int, int]]:
+    """Koordinatenpaare im kurzen Freitext einer Benachrichtigung – strenger als coord_pair_spans.
+
+    Dort zählen signifikante Stellen (für Zahlenreihen aus chronyc gedacht), so dass „52.5200, 13.4050“
+    (≈ 10 m genau geschrieben) als zwei Stellen durchginge. Ein Ereignistitel ist keine Messreihe: Hier
+    reichen zwei geschriebene Nachkommastellen je Zahl (≈ 1 km) – ein falscher Treffer kostet nur eine Zahl."""
+    tokens = [m for m in _COORD_TOKEN_RE.finditer(line) if m.group(2)]
+    spans = []
+    i = 0
+    while i < len(tokens) - 1:
+        a, b = tokens[i], tokens[i + 1]
+        if _COORD_GAP_RE.fullmatch(line, a.end(), b.start()) and _written_pair_ok(a.group(2), b.group(2)):
+            spans.append((a.start(), b.end()))
+            i += 2
+        else:
+            i += 1
+    return spans
+
+
+def _notify_coords(text: str, sanitizer: "Sanitizer") -> str:
+    spans = notify_coord_spans(text)
+    if not spans:
+        return text
+    out, last = [], 0
+    for start, end in spans:
+        out.append(text[last:start])
+        out.append("<koordinaten>")
+        sanitizer.count("position")
+        last = end
+    out.append(text[last:])
+    return "".join(out)
+
+
 def notify_message(message: dict, known_names=(), known: dict | None = None) -> dict:
     """Meldung → was hinausgehen darf: nur NOTIFY_FIELDS, Texte gefiltert, Schranken geprüft.
 
@@ -2309,7 +2352,7 @@ def notify_message(message: dict, known_names=(), known: dict | None = None) -> 
             elif key == "kind":
                 text = text if _NOTIFY_KIND_RE.match(text) else "other"
             else:
-                text = sanitizer.text(text)
+                text = _notify_coords(sanitizer.text(text), sanitizer)
             out[key] = text
         elif kind is bool:
             out[key] = bool(value)

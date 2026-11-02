@@ -32,14 +32,20 @@ export const HELP_NOTIFY = {
       + "das Token-Feld, das maskiert wird). ntp-gui folgt **keiner Weiterleitung**: Antwortet das Ziel mit 301/302, gilt das "
       + "als Fehler. Sonst könnte ein Ziel die Nachricht unbemerkt woandershin umlenken. Proxys aus der Umgebung werden nicht "
       + "benutzt. Bei ntfy kommt das **Thema** dazu (auf ntfy.sh ist der Themenname wie ein Passwort: schwer zu raten wählen), "
-      + "bei Apprise der **Schlüssel** einer in der Apprise-API gespeicherten Konfiguration.",
+      + "bei Apprise der **Schlüssel** einer in der Apprise-API gespeicherten Konfiguration. Für ntfy, Gotify und Apprise nur "
+      + "die **Server-Adresse** ohne `?…` – „https://ntfy.sh/mein-thema“ geht auch, das Thema wird dann herausgelöst (ntfy "
+      + "nimmt JSON nur an der Wurzel an). Steckt in der Adresse selbst ein Schlüssel (Home-Assistant-Webhook-ID, Discord- oder "
+      + "Slack-Token im Pfad), zeigen Dashboard und API den Pfad nur gekürzt als „/…“; beim Bearbeiten leer lassen behält ihn.",
   },
   notify_secret: {
     title: "Token",
     text: "Zugangsdaten des Ziels: ntfy-Token, Gotify-App-Token, der Schlüssel für die Webhook-Signatur oder Apprise-URLs. "
       + "Gespeichert in der Datenbank im Volume (nur für den Dienst lesbar). Das Dashboard und die API zeigen es **nie** wieder "
       + "an, nur „gesetzt“ – Feld leer lassen behält es, „entfernen“ löscht es. Es steht nie im Ereignisprotokoll und nie im "
-      + "Diagnosepaket.",
+      + "Diagnosepaket. **Änderst du Art oder Ziel** (Schema, Host, Port), musst du das Token neu eingeben: Sonst könnte jemand "
+      + "mit Schreibrecht die Adresse auf seinen eigenen Server umbiegen und bekäme das gespeicherte Token zugeschickt. "
+      + "Ein Token geht nur über `https://` hinaus – oder über `http://` an eine Adresse im eigenen Netz (private IP, "
+      + "`*.lan`, `*.local`, `*.home.arpa`, ein Name ohne Punkt wie `apprise`), sonst läge es im Klartext im Internet.",
   },
   notify_filter: {
     title: "Filter: Stufe und Arten",
@@ -54,7 +60,9 @@ export const HELP_NOTIFY = {
       + "geht dieselbe Meldung (gleiche Art und gleicher Betreff, also gleiches Gerät oder gleicher Dienst) höchstens einmal je "
       + "eingestellter Zeit hinaus. Was dazwischen passiert, wird gezählt („5 gleiche Meldungen zusammengefasst“). Besteht ein "
       + "zurückgehaltenes Problem am Ende der Sperrzeit noch, kommt es nach („besteht seit 15 min“) – der letzte Stand kommt "
-      + "also immer an. Wird ein Problem schlimmer (Warnung → Kritisch), geht das sofort hinaus.",
+      + "also immer an. Wird ein Problem schlimmer (Warnung → Kritisch), geht das sofort hinaus; ein **Kritisch** wartet nie "
+      + "hinter einer Warnung und auch nicht, wenn zuletzt „behoben“ gemeldet wurde – sonst stünde bei dir „alles gut“, während "
+      + "gerade ein Pflichtdienst ausfällt und der Container endet.",
   },
   notify_rate: {
     title: "Höchstens je Stunde",
@@ -65,8 +73,10 @@ export const HELP_NOTIFY = {
   notify_resolved: {
     title: "„Behoben“ melden",
     text: "Wenn ein gemeldetes Problem vorbei ist, kommt eine zweite Nachricht mit der Dauer, z. B. „GPS-Fix wieder da – Dauer "
-      + "40 min“. So weißt du, ob du noch etwas tun musst, und siehst, wie lange der Server ohne GPS lief. Ausschalten, wenn "
-      + "dich nur der Anfang interessiert.",
+      + "40 min“. So weißt du, ob du noch etwas tun musst, und siehst, wie lange der Server ohne GPS lief. Als „behoben“ zählen "
+      + "nur echte Gegenstücke (GPS-Fix wieder da, PPS wieder da, Dienst läuft wieder, Zertifikat erneuert, Client-Uhr wieder "
+      + "im Rahmen …) – ein beliebiges Info-Ereignis derselben Art, etwa ein neuer Kalibriervorschlag, schließt kein Problem. "
+      + "Ausschalten, wenn dich nur der Anfang interessiert.",
   },
   notify_enabled: {
     title: "Aktiv",
@@ -77,12 +87,15 @@ export const HELP_NOTIFY = {
     title: "Zustellstand",
     text: "**zugestellt**: Die letzte Nachricht hat das Ziel mit 2xx angenommen. **Fehler**: Der letzte Versuch ist gescheitert – "
       + "der Grund steht darunter. **noch nichts gesendet**: Kanal neu oder bisher kein passendes Ereignis – schick eine "
-      + "Testnachricht. Der Zustand ohne Adresse und Token ist auch für Lese-Schlüssel abrufbar: `GET /api/v1/notify/status`.",
+      + "Testnachricht. Der Zustand ist auch für Lese-Schlüssel abrufbar (`GET /api/v1/notify/status`) – dort nur mit Kennung "
+      + "und Art, ohne Namen, Adresse und Token: Lese-Schlüssel stecken oft in Widgets, und ein Name wie „Handy von Max“ hat "
+      + "dort nichts verloren.",
   },
   notify_error: {
     title: "Letzter Fehler",
     text: "Kurz und ohne Adresse: **Verbindung abgelehnt** (Dienst läuft nicht, Port falsch), **Name nicht auflösbar** (Tippfehler, "
-      + "DNS), **Zeitüberschreitung** (nach 10 s), **HTTP 401/403** (Token falsch), **Weiterleitung abgelehnt** (Adresse zeigt auf "
+      + "DNS), **Zeitüberschreitung** (alles zusammen – Namensauflösung, Verbindung, Antwort – höchstens 10 s; auch ein Ziel, "
+      + "das die Antwort nur tröpfchenweise schickt, hält den Versand nicht länger auf), **HTTP 401/403** (Token falsch), **Weiterleitung abgelehnt** (Adresse zeigt auf "
       + "eine Umleitung – trag das endgültige Ziel ein, oft fehlt nur `https://` oder ein `/` am Ende), **TLS-Fehler** "
       + "(Zertifikat abgelaufen oder selbst signiert).",
   },

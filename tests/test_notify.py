@@ -552,5 +552,311 @@ class ScopeTest(unittest.TestCase):
         self.assertEqual(apiv1.resolve("/api/v1/notify/status"), "/api/notify/status")
 
 
+# --------------------------------------------------------------------------- Prüfbefunde (1.4)
+class RouterFindingsTest(unittest.TestCase):
+    def setUp(self):
+        self.now = [0.0]
+        self.router = notify.ChannelRouter(channel(), clock=lambda: self.now[0])
+
+    def at(self, t, kind, level, title, data=None):
+        self.now[0] = t
+        return [m["title"] for m in self.router.offer(ev(kind, level, title, t, data))]
+
+    def test_crit_never_waits_behind_pending_warn(self):
+        gpsd = {"service": "gpsd"}
+        self.assertEqual(self.at(0, "service", "warn", "Dienst gpsd beendet", gpsd), ["Dienst gpsd beendet"])
+        self.assertEqual(self.at(10, "service", "info", "Dienst gpsd läuft wieder", gpsd),
+                         ["Dienst gpsd läuft wieder – Dauer 10 s"])
+        self.assertEqual(self.at(40, "service", "warn", "Dienst gpsd beendet", gpsd), [])      # entprellt
+        self.assertEqual(self.at(50, "service", "info", "Dienst gpsd läuft wieder", gpsd), [])
+        self.assertEqual(self.at(80, "service", "warn", "Dienst gpsd beendet", gpsd), [])      # wartet
+        self.assertEqual(self.at(90, "service", "crit", "Pflichtdienst gpsd ausgefallen", gpsd),
+                         ["Pflichtdienst gpsd ausgefallen"])
+
+    def test_crit_after_resolved_goes_out_at_once(self):
+        self.assertEqual(len(self.at(0, "gps", "warn", "GPS-Fix verloren")), 1)
+        self.assertEqual(len(self.at(5, "gps", "info", "GPS-Fix wieder da")), 1)
+        self.assertEqual(self.at(10, "gps", "crit", "GPS ausgefallen"), ["GPS ausgefallen"])
+        # danach greift das Entprellen wieder: gleiches crit noch einmal → nichts Neues
+        self.assertEqual(self.at(20, "gps", "crit", "GPS ausgefallen"), [])
+
+    def test_warn_flapping_still_debounced(self):
+        self.at(0, "gps", "warn", "GPS-Fix verloren")
+        self.at(5, "gps", "info", "GPS-Fix wieder da")
+        self.assertEqual(self.at(10, "gps", "warn", "GPS-Fix verloren"), [])
+
+    def test_unrelated_info_does_not_resolve(self):
+        self.assertEqual(len(self.at(0, "calibration", "warn", "GPS-Kalibrierung zurückgenommen: 0.1 s → 0.0 s")), 1)
+        self.assertEqual(self.at(7200, "calibration", "info", "GPS-Kalibrierung: neuer Vorschlag 0.12 s"), [])
+        self.assertIsNotNone(self.router.state["calibration:"]["open_since"])
+
+    def test_resolves_flag_and_kinds(self):
+        self.assertTrue(notify.resolves(ev("gps", "info", "x", 0)))
+        self.assertFalse(notify.resolves(ev("calibration", "info", "x", 0)))
+        self.assertTrue(notify.resolves(ev("client_clock", "info", "x", 0, {"resolves": True})))
+        self.assertFalse(notify.resolves(ev("gps", "info", "x", 0, {"resolves": False})))
+        self.at(0, "client_clock", "warn", "Uhr weicht ab")
+        self.assertEqual(self.at(60, "client_clock", "info", "Uhr wieder im Rahmen", {"resolves": True}),
+                         ["Uhr wieder im Rahmen – Dauer 1 min"])
+
+    def test_client_alarms_are_separate_subjects(self):
+        a, b = {"address": "192.168.1.20"}, {"address": "192.168.1.21"}
+        self.assertEqual(len(self.at(0, "clients", "warn", "Uhr von A weicht ab", a)), 1)
+        self.assertEqual(len(self.at(1, "clients", "warn", "Uhr von B weicht ab", b)), 1)
+        self.assertEqual(self.at(60, "clients", "info", "Uhr von B wieder im Rahmen", b),
+                         ["Uhr von B wieder im Rahmen – Dauer 59 s"])
+        self.assertIsNotNone(self.router.state["clients:192.168.1.20"]["open_since"])
+
+
+class Dripper:
+    """Ziel, das Kopfzeilen und dann den Body byteweise langsam schickt (oder schon die Kopfzeilen)."""
+
+    def __init__(self, headers_too=False, step=0.1):
+        import socket as _socket
+        self.sock = _socket.socket()
+        self.sock.bind(("127.0.0.1", 0))
+        self.sock.listen(4)
+        self.url = f"http://127.0.0.1:{self.sock.getsockname()[1]}/"
+        self.headers_too, self.step, self.stop = headers_too, step, False
+        threading.Thread(target=self.run, daemon=True).start()
+
+    def run(self):
+        while not self.stop:
+            try:
+                conn, _ = self.sock.accept()
+            except OSError:
+                return
+            threading.Thread(target=self.serve, args=(conn,), daemon=True).start()
+
+    def serve(self, conn):
+        try:
+            conn.recv(65536)
+            head = b"HTTP/1.1 200 OK\r\nContent-Length: 100000\r\n\r\n"
+            data = head + b"x" * 1000 if self.headers_too else b"x" * 1000
+            if not self.headers_too:
+                conn.sendall(head)
+            for i in range(len(data)):
+                if self.stop:
+                    break
+                conn.sendall(data[i:i + 1])
+                time.sleep(self.step)
+        except OSError:
+            pass
+        finally:
+            conn.close()
+
+    def close(self):
+        self.stop = True
+        self.sock.close()
+
+
+class DeadlineTest(unittest.TestCase):
+    clean = {"title": "x", "text": "y", "level": "warn", "kind": "gps", "time": 1.5e9}
+
+    def check(self, target):
+        start = time.monotonic()
+        with mock.patch.object(notify, "TIMEOUT", 0.6), \
+                self.assertRaisesRegex(notify.DeliveryError, "Zeitüberschreitung"):
+            notify.deliver(channel(url=target.url), self.clean)
+        self.assertLess(time.monotonic() - start, 2.0)
+
+    def test_dripping_body_hits_total_deadline(self):
+        target = Dripper()
+        try:
+            self.check(target)
+        finally:
+            target.close()
+
+    def test_dripping_headers_hit_total_deadline(self):
+        target = Dripper(headers_too=True)
+        try:
+            self.check(target)
+        finally:
+            target.close()
+
+    def test_slow_name_resolution_hits_deadline(self):
+        def slow(*args, **kwargs):
+            time.sleep(3)
+            raise OSError("zu spät")
+        start = time.monotonic()
+        with mock.patch.object(notify.socket, "getaddrinfo", slow), mock.patch.object(notify, "TIMEOUT", 0.4), \
+                self.assertRaisesRegex(notify.DeliveryError, "Zeitüberschreitung"):
+            notify.deliver(channel(url="http://ziel.lan/"), self.clean)
+        self.assertLess(time.monotonic() - start, 1.5)
+
+    def test_send_test_bounded(self):
+        target = Dripper()
+        tmp = tempfile.mkdtemp()
+        saved = settings.DATA_DIR
+        try:
+            settings.DATA_DIR = os.path.join(tmp, "data")
+            notify._reset_for_tests()
+            with mock.patch.object(notify, "_known", return_value=([], {})):
+                cid = notify.save_channel({"name": "x", "type": "webhook", "url": target.url})["id"]
+                start = time.monotonic()
+                with mock.patch.object(notify, "TIMEOUT", 0.6):
+                    result = notify.send_test(cid)
+            self.assertFalse(result["ok"])
+            self.assertIn("Zeitüberschreitung", result["error"])
+            self.assertLess(time.monotonic() - start, 2.0)
+        finally:
+            target.close()
+            notify._reset_for_tests()
+            events._LISTENERS.clear()
+            store.close_all()
+            settings.DATA_DIR = saved
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
+class UrlFormsTest(unittest.TestCase):
+    def test_ntfy_topic_in_url_is_moved_out(self):
+        clean = notify.validate({"name": "x", "type": "ntfy", "url": "https://ntfy.sh/zeitserver-8f3k",
+                                 "topic": "zeitserver-8f3k"})
+        self.assertEqual((clean["url"], clean["topic"]), ("https://ntfy.sh", "zeitserver-8f3k"))
+        clean = notify.validate({"name": "x", "type": "ntfy", "url": "https://ntfy.sh/zeitserver-8f3k/"})
+        self.assertEqual((clean["url"], clean["topic"]), ("https://ntfy.sh", "zeitserver-8f3k"))
+        url, _body, _h = notify.build_request(dict(channel(type="ntfy"), **clean), {"title": "t"})
+        self.assertEqual(url, "https://ntfy.sh/")
+
+    def test_query_rejected_for_server_types(self):
+        for kind, extra in (("gotify", {"secret": "tok"}), ("ntfy", {"topic": "t"}), ("apprise", {"topic": "k"})):
+            with self.subTest(kind=kind), self.assertRaisesRegex(notify.NotifyError, "ohne"):
+                notify.validate(dict({"name": "x", "type": kind, "url": "http://srv.lan/?x=1"}, **extra))
+        # Webhooks dürfen eine Abfrage haben
+        notify.validate({"name": "x", "type": "webhook", "url": "http://srv.lan/hook?x=1"})
+
+    def test_paths_joined_properly(self):
+        url, _b, _h = notify.build_request(channel(type="gotify", url="http://g.lan/sub/?x=1", secret="t"), {})
+        self.assertEqual(url, "http://g.lan/sub/message?x=1")
+        url, _b, _h = notify.build_request(channel(type="apprise", url="http://apprise:8000/", topic="ntp"), {})
+        self.assertEqual(url, "http://apprise:8000/notify/ntp")
+
+
+class SecretGuardTest(TempData):
+    def test_secret_not_reused_for_new_target(self):
+        cid = notify.save_channel({"name": "G", "type": "gotify", "url": "http://gotify.lan",
+                                   "secret": "AppTokenSECRET123"})["id"]
+        for change in ({"url": "http://127.0.0.1:9999"}, {"url": "https://gotify.lan"},
+                       {"url": "http://gotify.lan:8080"}, {"type": "ntfy", "topic": "zeit"}):
+            with self.subTest(change=change), self.assertRaisesRegex(notify.NotifyError, "Token neu"):
+                notify.save_channel(dict({"id": cid}, **change))
+        self.assertEqual(notify.get_channel(cid)["url"], "http://gotify.lan")
+        notify.save_channel({"id": cid, "url": "http://gotify.lan/"})           # gleiches Ziel: bleibt
+        self.assertEqual(notify.get_channel(cid)["secret"], "AppTokenSECRET123")
+        notify.save_channel({"id": cid, "url": "http://neu.lan", "secret": "NeuesToken"})
+        self.assertEqual(notify.get_channel(cid)["secret"], "NeuesToken")
+        cid2 = notify.save_channel({"name": "A", "type": "apprise", "url": "http://apprise:8000",
+                                    "secret": "mailto://user:MailPass@mail.lan"})["id"]
+        with self.assertRaises(notify.NotifyError):
+            notify.save_channel({"id": cid2, "url": "http://boese.lan"})
+        notify.save_channel({"id": cid2, "url": "http://boese.lan", "secret": "", "topic": "ntp"})  # ausdrücklich entfernt
+        self.assertEqual(notify.get_channel(cid2)["secret"], "")
+
+    def test_url_path_masked_and_kept(self):
+        saved = notify.save_channel({"name": "HA", "type": "webhook",
+                                     "url": "http://homeassistant.lan:8123/api/webhook/geheime-id-42"})
+        self.assertEqual(saved["url"], "http://homeassistant.lan:8123/…")
+        self.assertTrue(saved["url_hidden"])
+        self.assertNotIn("geheime-id-42", json.dumps(notify.api_config()) + json.dumps(notify.api_status()))
+        notify.save_channel({"id": saved["id"], "name": "HA 2", "url": ""})     # leer = behalten
+        self.assertEqual(notify.get_channel(saved["id"])["url"],
+                         "http://homeassistant.lan:8123/api/webhook/geheime-id-42")
+        plain = notify.save_channel({"name": "N", "type": "ntfy", "url": "https://ntfy.sh", "topic": "t"})
+        self.assertEqual((plain["url"], plain["url_hidden"]), ("https://ntfy.sh", False))
+
+    def test_status_for_read_keys_has_no_name(self):
+        notify.save_channel({"name": "Handy von Max", "type": "webhook", "url": "https://x.lan"})
+        status = notify.api_status()
+        self.assertNotIn("Handy von Max", json.dumps(status))
+        self.assertEqual(set(status["channels"][0]), {"id", "type", "enabled", "status"})
+
+    def test_token_over_plain_http_only_locally(self):
+        base = {"name": "n", "type": "ntfy", "topic": "zeit", "secret": "tk_x"}
+        for url in ("http://ntfy.sh", "http://9.9.9.9", "http://push.example.org"):
+            with self.subTest(url=url), self.assertRaisesRegex(notify.NotifyError, "https"):
+                notify.validate(dict(base, url=url))
+        for url in ("https://ntfy.sh", "http://ntfy.lan", "http://192.168.1.5:8080", "http://apprise:8000",
+                    "http://[fd00::1]", "http://box.home.arpa", "http://127.0.0.1:9"):
+            with self.subTest(url=url):
+                notify.validate(dict(base, url=url))
+        notify.validate({"name": "n", "type": "webhook", "url": "http://hooks.example.org/x"})  # ohne Token
+
+
+class PositionTest(TempData):
+    def test_restart_does_not_resend(self):
+        target = Target()
+        try:
+            notify.save_channel({"name": "Hook", "type": "webhook", "url": target.url + "/hook"})
+            notify.start("test")
+            time.sleep(0.3)
+            events.emit("gps", "warn", "GPS-Fix verloren")
+            events.emit("service", "crit", "Pflichtdienst gpsd ausgefallen", {"service": "gpsd"})
+            self.assertTrue(target.wait(2))
+            time.sleep(0.3)
+            rows = store.query("SELECT value FROM notify_meta WHERE key='last_id'")
+            self.assertEqual(int(rows[0][0]), events.max_id())                # sofort gesichert, nicht erst nach 10 s
+            notify._reset_for_tests()                                         # „Neustart“
+            notify.start("test")
+            time.sleep(0.8)
+            events.emit("settings", "info", "weckt den Verteiler")
+            time.sleep(0.6)
+            self.assertEqual(len(target.requests), 2)
+        finally:
+            target.close()
+
+    def test_stop_flushes_position(self):
+        notify._ensure()
+        n = notify.Notifier()
+        n.last_id, n.saved_id, n.saved_at = 42, 0, time.monotonic()
+        n._save_position()                                                    # gedrosselt: nichts
+        self.assertEqual(store.query("SELECT value FROM notify_meta WHERE key='last_id'"), [])
+        n.stop()
+        self.assertEqual(store.query("SELECT value FROM notify_meta WHERE key='last_id'")[0][0], "42")
+
+
+class KnownNamesTest(unittest.TestCase):
+    def setUp(self):
+        notify._KNOWN.update(t=0.0, ok=False, names=[], values={})
+
+    def tearDown(self):
+        notify._KNOWN.update(t=0.0, ok=False, names=[], values={})
+
+    def test_fails_closed_without_previous_list(self):
+        import diagnostics
+        with mock.patch.object(diagnostics, "_known_names", side_effect=RuntimeError("kaputt")):
+            with self.assertRaises(egress.NotifyLeak):
+                notify._known()
+            with self.assertRaises(egress.NotifyLeak):
+                notify.outgoing({"title": "x", "level": "warn", "kind": "gps"})
+
+    def test_keeps_previous_list_on_failure(self):
+        import diagnostics
+        with mock.patch.object(diagnostics, "_known_names", return_value=["zeitserver"]), \
+                mock.patch.object(diagnostics, "_client_names", return_value=[]):
+            self.assertEqual(notify._known()[0], ["zeitserver"])
+        notify._KNOWN["t"] = -1e9  # abgelaufen
+        with mock.patch.object(diagnostics, "_known_names", side_effect=RuntimeError("kaputt")):
+            self.assertEqual(notify._known()[0], ["zeitserver"])
+            out = notify.outgoing({"title": "Dienst auf zeitserver neu gestartet", "level": "warn", "kind": "service"})
+        self.assertNotIn("zeitserver", out["title"])
+
+
+class NotifyCoordTest(unittest.TestCase):
+    def test_written_zeros_count(self):
+        for title in ("GPS-Position 52.5200, 13.4050 erreicht", "52.52,13.40", "Ort 52.52 13.40", "48,14; 11,58",
+                      "Position -33.87, 151.21", "52.5200 N, 13.4050 E"):
+            with self.subTest(title=title):
+                out = egress.notify_message({"title": title, "level": "warn"})
+                self.assertIn("<koordinaten>", out["title"])
+                for part in ("52.52", "13.40", "48,14", "151.21", "13.4050"):
+                    self.assertNotIn(part, out["title"])
+
+    def test_harmless_numbers_stay(self):
+        for title in ("GPS-Kalibrierung zurückgenommen: 0.1 s → 0.0 s", "Uhr von PC weicht um +12.34 ms ab",
+                      "Version 1.4.0 verfügbar", "Schaltsekunde am 31.12.2026", "Frequenz 0.25, 0.75 ppm"):
+            with self.subTest(title=title):
+                self.assertEqual(egress.notify_message({"title": title})["title"], title)
+
+
 if __name__ == "__main__":
     unittest.main()
