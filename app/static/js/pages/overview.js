@@ -129,7 +129,7 @@ const CLOCK_KEYS = new Set(["chrony_down", "no_clock_control", "island", "syncin
 export function panelOf(item) {
   const key = String(item.key || "");
   if (CLOCK_KEYS.has(key)) return "clock";
-  if (key === "dns_loop" || key === "dns_loop_risk") return "sources";
+  if (key === "dns_loop" || key === "dns_loop_risk" || key.startsWith("loop_")) return "sources";
   if (key.startsWith("service_") || key === "storage" || key.startsWith("dns_")) return "services";
   if (key.startsWith("hw_gps") || key.startsWith("gps") || item.action === "gps") return "gps";
   if (key.startsWith("hw_ptp") || key.startsWith("ptp") || item.action === "ptp") return "ptp";
@@ -143,7 +143,7 @@ const ISSUE_BADGE = {
   no_clock_control: "nicht geregelt", island: "Inselbetrieb", syncing: "synchronisiert …", chrony_down: "keine Antwort",
   gpsd_down: "gpsd offline", gps_nofix: "kein Fix", gps_falseticker: "Falseticker", hw_gps_usb: "Empfänger fehlt",
   hw_gps_pps: "PPS fehlt", ptp_down: "ptp4l aus", minsources: "zu wenige", storage: "kein Volume",
-  nts_server_files: "NTS-Zertifikat",
+  nts_server_files: "NTS-Zertifikat", dns_loop: "Schleife", loop_nat: "Schleife", loop_self: "Schleife",
 };
 
 function issuesFor(insights, id) {

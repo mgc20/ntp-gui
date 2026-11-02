@@ -146,7 +146,28 @@ const VERDICT_LABEL = {
   dns_rewrite: "umgeschrieben", answered_by_us: "antwortet wie dieser Server", dns_partial: "teilweise",
   not_redirected: "nicht umgeschrieben", no_reply: "keine Antwort", dns_error: "DNS-Fehler",
   direct: "erreicht echten Server", loop: "Schleife",
+  foreign: "fremder Server", self_reply: "Schleife", self_address: "Schleife",
 };
+
+// Kette „Name → Resolver → Adresse → Antwort“ für eine eigene Quelle (1.5).
+function chainRow(item) {
+  const reply = item.reply;
+  const answer = reply ? `Stratum ${reply.stratum ?? "?"} · ${reply.ref_label || reply.ref_id || "?"}` : "keine Antwort";
+  const steps = [
+    item.by === "name" ? item.host : `${item.host} (feste IP)`,
+    item.by === "name" ? (item.resolver || "System-DNS") : null,
+    item.address || (item.by === "name" ? "keine Adresse" : null),
+    answer,
+  ].filter(Boolean);
+  const chain = el("ol", { class: "enforce-chain", "aria-label": "Name, Resolver, Adresse, Antwort" },
+    steps.map((step) => el("li", { class: "mono", text: step })));
+  return el("li", { class: "enforce-row", "data-level": item.level },
+    el("div", { class: "enforce-row-head" },
+      el("span", { class: "mono", text: item.host + (item.nts ? " · NTS" : "") }),
+      badge(VERDICT_LABEL[item.state] || item.state || "–", item.level === "info" ? "muted" : item.level)),
+    chain,
+    el("p", { text: item.verdict || "" }));
+}
 
 function checkView(result) {
   if (!result) return null;
@@ -155,12 +176,18 @@ function checkView(result) {
       el("span", { class: "mono", text: label }),
       badge(VERDICT_LABEL[item.state] || item.state || "–", item.level === "info" ? "muted" : item.level)),
     el("p", { text: item.verdict || "" }));
+  const chained = new Set((result.upstream || []).map((u) => u.host));
   return el("div", { class: "enforce-result" },
     el("div", { class: "verdict", "data-tone": result.level === "info" ? null : result.level },
       el("div", { class: "verdict-label" }, el("span", { text: "Ergebnis" }), info("enforce_verdict")),
       el("p", { text: result.summary || "" })),
-    (result.loops || []).length ? el("ul", { class: "enforce-list" },
-      result.loops.map((l) => row(l.host, { ...l, state: "loop" }))) : null,
+    // Schleifen, die unten in der Kette der eigenen Quellen stehen, nicht doppelt zeigen.
+    (result.loops || []).some((l) => !chained.has(l.host)) ? el("ul", { class: "enforce-list" },
+      result.loops.filter((l) => !chained.has(l.host)).map((l) => row(l.host, { ...l, state: "loop" }))) : null,
+    (result.upstream || []).length ? el("h3", { class: "mini-head" },
+      el("span", { text: "Eigene Quellen: Name → Resolver → Adresse → Antwort" }), info("enforce_upstream")) : null,
+    (result.upstream || []).length ? el("ul", { class: "enforce-list" }, result.upstream.map(chainRow)) : null,
+    result.resolver && result.resolver.note ? emptyNote(result.resolver.note) : null,
     el("h3", { class: "mini-head", text: "Namen (über den DNS-Server dieses Containers)" }),
     el("ul", { class: "enforce-list" }, (result.hosts || []).map((h) => row(h.host, h))),
     el("h3", { class: "mini-head", text: "ntp-gui selbst → öffentliche Server" }),

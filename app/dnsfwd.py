@@ -89,6 +89,8 @@ CACHE_MAX_TTL = 300
 CACHE_NEG_TTL = 30
 STATUS_EVERY = 10.0
 EVENT_REPEAT = 300.0       # gleicher Zustandswechsel höchstens alle 5 min als Ereignis
+HEALTH_FIRST = 20.0        # erste Erreichbarkeitsprobe aller eigenen Server nach dem Start
+HEALTH_EVERY = 900.0       # danach alle 15 min (eine A-Anfrage je Server)
 BOOTSTRAP_MIN_TTL = 60
 BOOTSTRAP_MAX_TTL = 3600
 
@@ -447,6 +449,7 @@ class Upstream:
         self.rtt_ms: float | None = None
         self.down_until = 0.0  # time.monotonic(): ein Sprung der Uhr verlängert keinen Ausfall
         self.streak = 0  # Fehlschläge in Folge
+        self.reported_down = False  # „nicht erreichbar“ schon gemeldet (Ereignis je Server)
 
     def exchange(self, query: bytes, deadline: float) -> bytes:  # pragma: no cover - abstrakt
         raise NotImplementedError
@@ -873,8 +876,10 @@ class Forwarder:
                  use_fallback: bool = True, cache: bool = True,
                  on_change: Callable[[str, str, dict], None] | None = None,
                  inflight: Inflight | None = None,
-                 clock: Callable[[], float] = time.time) -> None:
+                 clock: Callable[[], float] = time.time,
+                 on_upstream: Callable[[str, str, str], None] | None = None) -> None:
         self.mode = mode
+        self.on_upstream = on_upstream
         self.upstreams = upstreams
         self.fallback = fallback or (lambda: [])
         self.use_fallback = use_fallback
@@ -1009,29 +1014,11 @@ class Forwarder:
             left = deadline - time.monotonic() - (FALLBACK_MIN if self.use_fallback else 0)
             if left <= 0.2:
                 break
-            started = time.monotonic()
-            try:
-                data = up.exchange(upstream_query, started + min(UPSTREAM_TIMEOUT, left))
-                if rcode_of(data) == RCODE_REFUSED:
-                    raise UpstreamError("Anfrage abgelehnt (REFUSED)")
-            except (OSError, ssl.SSLError, DnsError, http.client.HTTPException, ValueError) as exc:
-                text = " ".join(str(exc).split())[:160] or exc.__class__.__name__
-                with self._lock:
-                    up.fail += 1
-                    up.streak += 1
-                    up.last_error, up.last_error_t = text, self.clock()
-                    # Eine einzelne Zeitüberschreitung kann an einem langsamen Namen liegen –
-                    # erst mehrere in Folge (oder ein harter Fehler) gelten als Ausfall.
-                    if hard_failure(exc) or up.streak >= DOWN_AFTER:
-                        up.down_until = time.monotonic() + DOWN_SECONDS
+            data, text = self._ask_one(up, upstream_query, time.monotonic() + min(UPSTREAM_TIMEOUT, left))
+            if data is None:
                 errors.append(f"{up.label}: {text}")
                 continue
             with self._lock:
-                up.ok += 1
-                up.streak = 0
-                up.last_ok = self.clock()
-                up.rtt_ms = round((time.monotonic() - started) * 1000, 1)
-                up.down_until = 0.0
                 self.stats["answered"] += 1
             self._cache_put(query[2:], data)
             self._set_state("ok", {"upstream": up.label})
@@ -1055,6 +1042,68 @@ class Forwarder:
         if self._all_down():
             self._set_state("failing", {"errors": errors[:4]})
         return None
+
+    def _ask_one(self, up: Upstream, query: bytes, deadline: float) -> tuple[bytes | None, str]:
+        """Ein Upstream, eine Anfrage: Statistik und Ausfallzustand pflegen.
+        Wechselt der Server zwischen „nicht erreichbar“ und „antwortet wieder“, meldet
+        on_upstream das (Ereignis je Server, 1.5) – bisher gab es nur den Gesamtzustand."""
+        started = time.monotonic()
+        try:
+            data = up.exchange(query, deadline)
+            if rcode_of(data) == RCODE_REFUSED:
+                raise UpstreamError("Anfrage abgelehnt (REFUSED)")
+        except (OSError, ssl.SSLError, DnsError, http.client.HTTPException, ValueError) as exc:
+            text = " ".join(str(exc).split())[:160] or exc.__class__.__name__
+            went_down = False
+            with self._lock:
+                up.fail += 1
+                up.streak += 1
+                up.last_error, up.last_error_t = text, self.clock()
+                # Eine einzelne Zeitüberschreitung kann an einem langsamen Namen liegen –
+                # erst mehrere in Folge (oder ein harter Fehler) gelten als Ausfall.
+                if hard_failure(exc) or up.streak >= DOWN_AFTER:
+                    up.down_until = time.monotonic() + DOWN_SECONDS
+                    if not up.reported_down:
+                        up.reported_down = went_down = True
+            if went_down:
+                self._upstream_changed(up, "down", text)
+            return None, text
+        with self._lock:
+            up.ok += 1
+            up.streak = 0
+            up.last_ok = self.clock()
+            up.rtt_ms = round((time.monotonic() - started) * 1000, 1)
+            up.down_until = 0.0
+            came_back, up.reported_down = up.reported_down, False
+        if came_back:
+            self._upstream_changed(up, "up", "")
+        return data, ""
+
+    def _upstream_changed(self, up: Upstream, state: str, error: str) -> None:
+        if self.on_upstream:
+            try:
+                self.on_upstream(up.label, state, error)
+            except Exception:  # Ereignis darf nie eine Antwort verhindern
+                pass
+
+    def health_check(self, name: str, deadline_each: float = UPSTREAM_TIMEOUT) -> dict:
+        """Fragt JEDEN eigenen Server einmal nach name (A-Eintrag), unabhängig vom Cache.
+
+        chronyd löst seine Namen selten auf (beim Start, nach Ausfällen) – ohne diese Probe
+        wüsste niemand, ob der zweite Server überhaupt antwortet, bis er gebraucht wird.
+        Nur im Modus servers/dot/doh (die Server hat der Nutzer selbst eingetragen)."""
+        query = build_query(name, TYPE_A)
+        results = {}
+        for up in self.upstreams:
+            data, text = self._ask_one(up, query, time.monotonic() + deadline_each)
+            results[up.label] = {"ok": data is not None, "error": text or None}
+        with self._lock:
+            self.stats["health_last"] = self.clock()
+            self.stats["health_ok"] = sum(1 for r in results.values() if r["ok"])
+            self.stats["health_total"] = len(results)
+        if results and any(r["ok"] for r in results.values()):
+            self._set_state("ok", {"upstream": next(l for l, r in results.items() if r["ok"])})
+        return results
 
     def _ask_system(self, query: bytes, deadline: float) -> bytes | None:
         """System-DNS der Reihe nach; SERVFAIL/REFUSED zählt als Fehlschlag (nächster Server)."""
@@ -1289,6 +1338,59 @@ class EventGate:
         self.emit(level, title, data)
 
 
+class UpstreamGate:
+    """Ereignis je eigenem Server (1.5): „nicht erreichbar – <Fehler>“ und „antwortet wieder“.
+    Gleicher Wechsel desselben Servers höchstens alle EVENT_REPEAT Sekunden."""
+
+    def __init__(self, emit: Callable[..., None] = emit_event, clock: Callable[[], float] = time.monotonic) -> None:
+        self.emit = emit
+        self.clock = clock
+        self._last: dict[tuple[str, str], float] = {}
+
+    def __call__(self, label: str, state: str, error: str) -> None:
+        now = self.clock()
+        key = (label, state)
+        if now - self._last.get(key, float("-inf")) < EVENT_REPEAT:
+            return
+        self._last[key] = now
+        if state == "down":
+            self.emit("warn", f"DNS für ntp-gui: {label} nicht erreichbar",
+                      {"upstream": label, "state": "down", "error": (error or "")[:300]})
+        else:
+            self.emit("info", f"DNS für ntp-gui: {label} antwortet wieder", {"upstream": label, "state": "up"})
+
+
+def health_name(cfg: dict) -> str | None:
+    """Name für die Erreichbarkeitsprobe: die erste eigene Zeitquelle mit Namen (die fragt
+    chronyd ohnehin bei diesen Servern an) – keine Quelle mit Namen → keine Probe."""
+    for entry in cfg.get("ntp_sources") or []:
+        host = str((entry or {}).get("host") or "").strip().rstrip(".")
+        if not host:
+            continue
+        try:
+            ipaddress.ip_address(host.strip("[]"))
+            continue
+        except ValueError:
+            pass
+        labels = host.split(".")
+        if all(label and len(label) <= 63 and label.replace("-", "").isalnum() and label.isascii()
+               for label in labels):
+            return host.lower()
+    return None
+
+
+def nts_note(cfg: dict, upstream_count: int) -> str | None:
+    """NTS-Quellen brauchen ihren Namen (Zertifikat) – eine „letzte gute IP“ hilft dort nicht."""
+    nts = [str(e.get("host")) for e in cfg.get("ntp_sources") or [] if isinstance(e, dict) and e.get("nts")]
+    if not nts or effective_mode(cfg) == "system" or upstream_count >= 2:
+        return None
+    return (f"NTS-Quelle{'n' if len(nts) > 1 else ''} {', '.join(nts[:4])} "
+            f"{'brauchen' if len(nts) > 1 else 'braucht'} ihren Namen: Das Zertifikat wird gegen den Namen "
+            "geprüft, eine zuletzt bekannte IP-Adresse hilft hier nicht. Mit nur einem eigenen DNS-Server "
+            "hängt NTS an diesem einen – trag einen zweiten, unabhängigen ein (z. B. dns.quad9.net und "
+            "one.one.one.one).")
+
+
 def read_status(run_dir: str | None = None) -> dict | None:
     try:
         with open(status_path(run_dir), encoding="utf-8") as handle:
@@ -1334,6 +1436,13 @@ def api_status(cfg: dict, run_dir: str | None = None) -> dict:
         out["state"] = "system"
     elif not running:
         out["state"] = "down"
+    ups = (out.get("upstreams") or []) if effective != "system" else []
+    oks = [u.get("last_ok") for u in ups if isinstance(u.get("last_ok"), (int, float))]
+    out["last_success"] = max(oks) if oks else None
+    out["reachable"] = sum(1 for u in ups if u.get("ok") and not u.get("down_until")
+                           and (not u.get("last_error_t") or (u.get("last_ok") or 0) >= u["last_error_t"]))
+    out["upstream_count"] = len(_mode_list(cfg, effective)) if effective != "system" else 0
+    out["nts_note"] = nts_note(cfg, out["upstream_count"])
     return out
 
 
@@ -1378,8 +1487,10 @@ def serve(cfg: dict | None = None, *, port: int | None = None, run_dir: str | No
             pass
 
     gate = EventGate(lambda level, title, data: emit_event(level, title, data, run_dir))
+    upgate = UpstreamGate(lambda level, title, data: emit_event(level, title, data, run_dir))
     forwarder = Forwarder(mode, upstreams, fallback, use_fallback=bool(cfg.get("dns_fallback", True)),
-                          on_change=on_change, inflight=inflight)
+                          on_change=on_change, inflight=inflight, on_upstream=upgate)
+    probe_name = health_name(cfg)
     server = Server(forwarder, port)
     try:
         listening = server.start()
@@ -1422,7 +1533,15 @@ def serve(cfg: dict | None = None, *, port: int | None = None, run_dir: str | No
         signal.signal(signal.SIGTERM, finish)
         signal.signal(signal.SIGINT, finish)
     last = float("-inf")  # monotonic() zählt ab Systemstart
+    next_health = time.monotonic() + HEALTH_FIRST
     while not stop.is_set():
+        if probe_name and time.monotonic() >= next_health:
+            next_health = time.monotonic() + HEALTH_EVERY
+            try:
+                forwarder.health_check(probe_name)
+            except Exception as exc:  # die Probe darf den Weiterleiter nie beenden
+                _log(f"Erreichbarkeitsprobe gescheitert: {exc}")
+            last = float("-inf")  # Ergebnis gleich in dns.json
         if time.monotonic() - last >= STATUS_EVERY:
             last = time.monotonic()
             try:

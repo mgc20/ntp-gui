@@ -14,6 +14,7 @@
 # Ereignisprotokoll, API-Schlüssel (read/admin), /api/v1, Übernahme des alten
 # Verlaufs (history.json.gz → SQLite) und passive Client-Messung im Bridge-Netz.
 # Ab 1.4: DNS für ntp-gui (Weiterleiter auf 127.0.0.1, resolv.conf, Absturz, Zurückschalten).
+# Ab 1.5: Schleifen-Erkennung bei DNS-Umschreibung ohne Ausnahme (Ereignis, Kette, Abhilfe).
 set -uo pipefail
 
 IMAGE="${1:-ntp-gui:test}"
@@ -27,7 +28,8 @@ FAIL=0
 cleanup() {
   docker rm -f "${PREFIX}-a" "${PREFIX}-b" "${PREFIX}-c" "${PREFIX}-d" "${PREFIX}-e" "${PREFIX}-f" \
     "${PREFIX}-g" "${PREFIX}-h" "${PREFIX}-i" "${PREFIX}-j" >/dev/null 2>&1
-  docker rm -f "${PREFIX}-k" "${PREFIX}-l" "${PREFIX}-m" >/dev/null 2>&1
+  docker rm -f "${PREFIX}-k" "${PREFIX}-l" "${PREFIX}-m" "${PREFIX}-n" "${PREFIX}-o" >/dev/null 2>&1
+  docker network rm "${PREFIX}-net" >/dev/null 2>&1
   docker volume rm "${PREFIX}-data" "${PREFIX}-hist" >/dev/null 2>&1
   rm -rf "$CFG_DIR" "$NTS_DIR" "$DIAG_DIR"
 }
@@ -676,6 +678,64 @@ check "Keine Schleife im Kreis (höchstens wenige Anfragen)" True \
   "$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['stats']['queries'] < 20)" "$DNSJ" 2>/dev/null)"
 contains "Hinweis „Feste Adressen“ unter den Hinweisen" "$(curl -s --max-time 20 http://127.0.0.1:18092/api/status)" "dns_pin_needed"
 docker rm -f "${PREFIX}-m" >/dev/null 2>&1
+
+echo
+echo "12e) Schleifen-Erkennung: DNS-Umschreibung ohne Ausnahme für ntp-gui (1.5)"
+# Wie R1: Der DNS im LAN (hier ein Fake-Resolver statt AdGuard) schreibt den Quellnamen auf
+# ntp-gui selbst um, und ntp-gui fragt genau diesen DNS. Erwartet: Ereignis „source/crit“ mit
+# dem richtigen Satz in ≤ 2 Poll-Intervallen (minpoll 4 = 16 s), danach mit eigenem DNS-Server
+# für ntp-gui (Modus servers, ehrliche Antwort) „Schleife behoben“.
+LOOPNET="${PREFIX}-net"
+docker network create --subnet 172.31.77.0/24 "$LOOPNET" >/dev/null
+docker run -d --name "${PREFIX}-n" --network "$LOOPNET" --ip 172.31.77.53 --entrypoint python3 "$IMAGE" -c '
+import socket, struct, threading
+def serve(port, target):
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.bind(("0.0.0.0", port))
+    while True:
+        q, a = s.recvfrom(4096)
+        i, labels = 12, []
+        while q[i]:
+            labels.append(q[i + 1:i + 1 + q[i]].decode()); i += q[i] + 1
+        qtype, end = struct.unpack("!H", q[i + 1:i + 3])[0], i + 5
+        name = ".".join(labels).lower()
+        hit = name == "loop.lab.test" and qtype == 1
+        flags = 0x8180 | (0 if name == "loop.lab.test" else 3)
+        body = q[12:end] + (b"\xc0\x0c" + struct.pack("!HHIH", 1, 1, 5, 4) + socket.inet_aton(target) if hit else b"")
+        s.sendto(q[:2] + struct.pack("!HHHHH", flags, 1, 1 if hit else 0, 0, 0) + body, a)
+threading.Thread(target=serve, args=(5353, "172.31.77.53"), daemon=True).start()
+serve(53, "172.31.77.10")' >/dev/null
+docker run -d --name "${PREFIX}-o" --network "$LOOPNET" --ip 172.31.77.10 --dns 172.31.77.53 -p 18093:8080 \
+  -e NTP_POOLS="" -e NTP_SERVERS="loop.lab.test" -e NTP_SERVER_OPTIONS="iburst minpoll 4 maxpoll 4" "$IMAGE" >/dev/null
+wait_for_health http://127.0.0.1:18093/healthz 90 || true
+STARTED=$(date +%s)
+LOOPS=""
+for ((i = 0; i < 60; i++)); do
+  LOOPS=$(curl -s --max-time 10 http://127.0.0.1:18093/api/v1/loops)
+  grep -q '"cause": "dns"' <<<"$LOOPS" && break
+  sleep 1
+done
+WAITED=$(( $(date +%s) - STARTED ))
+contains "Schleife erkannt (Ursache DNS-Umschreibung)" "$LOOPS" '"cause": "dns"'
+if (( WAITED <= 40 )); then ok "Erkannt nach ${WAITED} s (≤ 2 Poll-Intervalle à 16 s + Start)"; else bad "Erkennung zu langsam (${WAITED} s)"; fi
+# JSON mit Umlauten/Gedankenstrich lesbar machen (der Server schreibt \uXXXX).
+utf() { python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin), ensure_ascii=False))' 2>/dev/null; }
+EVENTS=$(curl -s --max-time 10 'http://127.0.0.1:18093/api/v1/events?kinds=source' | utf)
+contains "Ereignis mit dem richtigen Satz" "$EVENTS" "loop.lab.test zeigt auf dich selbst – vermutlich DNS-Umschreibung ohne Ausnahme für ntp-gui"
+contains "Hinweis „Schleife durch DNS-Umschreibung“ in der Übersicht" "$(curl -s --max-time 20 http://127.0.0.1:18093/api/status)" '"key": "dns_loop"'
+CHAIN=$(curl -s --max-time 20 http://127.0.0.1:18093/api/v1/enforce/check)
+contains "Upstream-Kette im Selbsttest zeigt die Schleife" "$CHAIN" '"state": "self_address"'
+# Abhilfe: eigener DNS für ntp-gui, der den Namen nicht umschreibt.
+curl -s --max-time 10 -X POST -H 'Content-Type: application/json' -H 'X-NTP-GUI: 1' \
+  -d '{"changes":{"dns_mode":"servers","dns_servers":["172.31.77.53:5353"]}}' http://127.0.0.1:18093/api/settings >/dev/null
+for ((i = 0; i < 90; i++)); do
+  grep -q "Schleife behoben: loop.lab.test" <<<"$(curl -s --max-time 10 'http://127.0.0.1:18093/api/v1/events?kinds=source' | utf)" && break
+  sleep 1
+done
+contains "Mit eigenem DNS: „Schleife behoben“" "$(curl -s --max-time 10 'http://127.0.0.1:18093/api/v1/events?kinds=source' | utf)" \
+  "Schleife behoben: loop.lab.test erreicht wieder einen fremden Server"
+check "Keine Schleife mehr" '[]' "$(curl -s --max-time 10 http://127.0.0.1:18093/api/v1/loops | python3 -c 'import json,sys; print(json.load(sys.stdin)["loops"])' 2>/dev/null)"
+docker rm -f "${PREFIX}-n" "${PREFIX}-o" >/dev/null 2>&1
+docker network rm "$LOOPNET" >/dev/null 2>&1
 
 echo
 echo "13) Sauberes Stoppen"

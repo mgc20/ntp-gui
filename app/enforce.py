@@ -240,6 +240,15 @@ def snip_adguard(ip: str | None, hosts: list[str], port: int = 123) -> dict:
     client = f",client=~{ip}" if ip else ""
     rules = "\n".join(f"||{zone}^$dnsrewrite={target}{client}" for zone in zones)
     rewrites = "\n".join(f"{zone}  →  {target}" for zone in zones)
+    ntp_ip = ip or IP_PLACEHOLDER
+    # Ausnahme für ntp-gui als eigene Regel – passt zu jeder Umschreibung, auch der Liste
+    # „DNS-Umschreibungen“ (die selbst keine Ausnahme kennt) und Regeln aus anderen Listen.
+    exception = "\n".join(f"@@||{zone}^$dnsrewrite,client={ntp_ip}" for zone in zones)
+    cname_zone = "time.lan"
+    cname = ("! Variante „ein Ziel“: alle Zeitserver-Namen zeigen auf einen eigenen Namen …\n"
+             + "\n".join(f"||{zone}^$dnsrewrite={cname_zone}{client}" for zone in zones)
+             + f"\n! … und nur dieser Name hat die Adresse (Filter → DNS-Umschreibungen):\n"
+             + f"! {cname_zone}  →  {target}")
     notes = [
         "Die Regeln mit `||name^` gelten auch für alle Subdomains – `||pool.ntp.org^` erfasst "
         "0.pool.ntp.org, de.pool.ntp.org und alle Hersteller-Zonen.",
@@ -252,6 +261,24 @@ def snip_adguard(ip: str | None, hosts: list[str], port: int = 123) -> dict:
     else:
         notes.append("Trage die Adresse von ntp-gui ein und ergänze `,client=~<IP-des-Servers>`, damit "
                      "ntp-gui selbst die echten Server erreicht.")
+    notes += [
+        "**Ausnahme für ntp-gui, zwei Wege:** (1) die Ausnahmeregeln `@@…$dnsrewrite,client=<IP>` – sie "
+        "heben die `$dnsrewrite`-Regeln für diese eine Adresse auf, auch solche aus anderen Listen; "
+        "(2) „Client-spezifische Regel“: ntp-gui unter Einstellungen → Client-Einstellungen als eigenen "
+        "Client anlegen (Kennung: seine IP) und dort die Filterung für ihn ausschalten – das nimmt ihn je "
+        "nach Version auch von den Einträgen unter „DNS-Umschreibungen“ aus. Ob es greift, zeigt die "
+        "Prüfung unten. Am einfachsten ist DoT/DoH unter „DNS für ntp-gui“: Dann fragt ntp-gui AdGuard gar nicht.",
+        "**Variante „ein Ziel“ (CNAME-Stil):** `||time.amazon.com^$dnsrewrite=time.lan` plus eine "
+        "Umschreibung `time.lan → <IP>`. Vorteil: Ändert sich die Adresse von ntp-gui, passt du nur einen "
+        "Eintrag an. Grenzen: NTS-Namen nie so umschreiben (das Zertifikat passt dann nicht, das Gerät "
+        "bekommt gar keine Zeit); Geräte mit „Privatem DNS“/DNS-over-HTTPS fragen AdGuard nicht und "
+        "umgehen jede Umschreibung; für IPv6 entweder einen AAAA-Eintrag für time.lan anlegen oder "
+        "prüfen, dass AAAA-Anfragen leer bleiben – sonst weichen Geräte über IPv6 zum echten Server aus. "
+        "Die Ausnahme für ntp-gui gilt auch hier.",
+        "**Ob die Ausnahme greift**, zeigt die Prüfung unten: Bei „Eigene Quellen“ darf keine Zeile "
+        "„Schleife“ stehen. Fehlt die Ausnahme, schreibt ntp-gui zusätzlich das Ereignis „… zeigt auf "
+        "dich selbst – vermutlich DNS-Umschreibung ohne Ausnahme für ntp-gui“.",
+    ]
     if port != 123:
         notes.append(f"Achtung: ntp-gui lauscht auf Port {port}. DNS kann nur die Adresse umbiegen, nicht "
                      "den Port – Geräte fragen weiter Port 123. Nutze dann die Firewall-Umleitung.")
@@ -259,9 +286,12 @@ def snip_adguard(ip: str | None, hosts: list[str], port: int = 123) -> dict:
         "kind": "dns",
         "intro": "AdGuard Home → Filter → Benutzerdefinierte Filterregeln: Regeln einfügen und "
                  "„Anwenden“. Die Liste unter Filter → DNS-Umschreibungen ist die Alternative per "
-                 "Klick, kennt aber keine Ausnahme für ntp-gui selbst.",
+                 "Klick, kennt aber selbst keine Ausnahme für ntp-gui – dafür gibt es die Ausnahmeregeln "
+                 "(oder einen eigenen Client für ntp-gui).",
         "blocks": [_block("Benutzerdefinierte Filterregeln", rules),
-                   _block("Alternative: DNS-Umschreibungen (je Zeile ein Eintrag)", rewrites)],
+                   _block("Ausnahme für ntp-gui (zusätzlich, für $dnsrewrite-Regeln)", exception),
+                   _block("Alternative: DNS-Umschreibungen (je Zeile ein Eintrag)", rewrites),
+                   _block("Variante „ein Ziel“: CNAME-Stil über time.lan", cname)],
         "notes": notes,
     }
 
@@ -533,6 +563,13 @@ def snip_unifi(ip: str | None, hosts: list[str], port: int = 123) -> dict:
         "blocks": [_block("UniFi Network – Schritte", steps)],
         "notes": [
             EXCLUDE,
+            "**Ob die Ausnahme greift**, zeigt die Prüfung unten: „ntp-gui selbst → öffentliche Server“ muss "
+            "„erreicht echten Server“ zeigen, und bei „Eigene Quellen“ darf keine Schleife stehen. Fehlt "
+            "die Ausnahme, schreibt ntp-gui außerdem laufend das Ereignis „… zeigt auf dich selbst – "
+            "vermutlich NAT-Umleitung ohne Ausnahme für ntp-gui“.",
+            "Mit AdGuard **und** UniFi-Umleitung (beides zusammen ist üblich) braucht ntp-gui **zwei** "
+            "Ausnahmen: im DNS (oder DoT/DoH unter „DNS für ntp-gui“) und in der NAT-Regel. Fehlt eine, "
+            "nennt das Ereignis, welche.",
             "Bietet deine Version keine Ausnahme für die Quelle, lege ntp-gui in ein eigenes Netz (VLAN) "
             "und wende die Regel nur auf die Client-Netze an – dann kann ntp-gui sich nicht selbst treffen, "
             "und das Hairpin-Problem entfällt.",
@@ -882,12 +919,16 @@ def check(server_ips: list[str], hostnames: list[str] | None = None, ntp_port: i
           *, force: bool = False, now: Callable[[], float] = time.time,
           clock: Callable[[], float] = time.monotonic,
           resolver: Callable[..., dict] | None = None,
-          prober: Callable[..., dict] | None = None) -> dict:
+          prober: Callable[..., dict] | None = None,
+          sources: list[dict] | None = None, resolver_info: dict | None = None) -> dict:
     """Prüft, ob DNS-Umschreibung und Firewall-Umleitung wirken (höchstens alle 30 s).
 
     server_ips: Adressen, unter denen ntp-gui erreichbar ist (eigene Interfaces + Browser-Adresse).
     tracking:   Ergebnis von chrony.tracking() als Vergleich.
     source_hosts: Namen der eigenen Zeitquellen (Schleifen-Erkennung).
+    sources:    eigene Quellen als [{"host", "nts"}] (Name oder feste IP) für die Kette
+                „Name → Resolver → Adresse → Antwort“ (1.5); ohne: aus source_hosts.
+    resolver_info: welcher Resolver ntp-gui gerade auflöst (resolver_label()).
     now liefert die angezeigte Uhrzeit, clock (monotonic) misst den Abstand – ein Sprung der
     Systemuhr (Pi ohne RTC, chrony stellt die Uhr) verlängert die Sperre nicht.
     """
@@ -900,7 +941,7 @@ def check(server_ips: list[str], hostnames: list[str] | None = None, ntp_port: i
             cached["retry_after"] = round(MIN_INTERVAL - (mono - _LAST["mono"]), 1)
             return cached
         result = _run_check(server_ips, hostnames, _port(ntp_port), tracking, source_hosts or [],
-                            resolver or _resolve, prober or probe_many)
+                            resolver or _resolve, prober or probe_many, sources, resolver_info)
         result["time"] = t
         result["cached"] = False
         _LAST.update(time=t, mono=mono, result=result)
@@ -912,7 +953,8 @@ def _reset_rate_limit() -> None:
         _LAST.update(time=0.0, mono=0.0, result=None)
 
 
-def _run_check(server_ips, hostnames, port, tracking, source_hosts, resolver, prober) -> dict:
+def _run_check(server_ips, hostnames, port, tracking, source_hosts, resolver, prober,
+               own_sources=None, resolver_info=None) -> dict:
     started = time.monotonic()
     ours_ips = set()
     for ip in server_ips or []:
@@ -932,6 +974,10 @@ def _run_check(server_ips, hostnames, port, tracking, source_hosts, resolver, pr
         if host and _HOST_RE.match(host) and host not in sources:
             sources.append(host)
     sources = sources[:8]
+    chain_entries = _chain_entries(own_sources, sources)
+    for entry in chain_entries:
+        if entry["by"] == "name" and entry["host"] not in sources:
+            sources.append(entry["host"])
 
     resolved = resolver(list(dict.fromkeys(tests + sources)), 1.2)
 
@@ -943,6 +989,12 @@ def _run_check(server_ips, hostnames, port, tracking, source_hosts, resolver, pr
             first = next((a for a in addrs if ":" not in a), addrs[0])
             targets.append((first, port if first in ours_ips else 123))
     targets += [(ip, 123) for ip, _label in PUBLIC_PROBES]
+    chain_targets = {}
+    for entry in chain_entries:
+        addr = _chain_address(entry, resolved)
+        if addr:
+            chain_targets[entry["host"]] = addr
+            targets.append((addr, 123))
     remaining = max(0.3, min(1.2, 2.8 - (time.monotonic() - started)))
     replies = prober(targets, remaining)
 
@@ -1016,12 +1068,21 @@ def _run_check(server_ips, hostnames, port, tracking, source_hosts, resolver, pr
     for host in sources:
         addrs = resolved.get(host)
         if isinstance(addrs, list) and any(a in ours_ips for a in addrs):
-            loops.append({"host": host, "level": "crit",
+            loops.append({"host": host, "level": "crit", "cause": "dns",
                           "verdict": f"Die eigene Zeitquelle {host} zeigt per DNS auf ntp-gui selbst. "
                                      "chronyd fragt dann sich selbst. Nimm den ntp-gui-Host von der "
                                      "DNS-Umschreibung aus oder nutze andere Quellen (z. B. ptbtime1.ptb.de)."})
+    upstream = [_chain_row(entry, resolved, chain_targets.get(entry["host"]), replies, ours, ours_ips,
+                           resolver_info) for entry in chain_entries]
+    looped = {l["host"] for l in loops}
+    for row in upstream:
+        if row["state"] in ("self_reply", "self_address") and row["host"] not in looped:
+            loops.append({"host": row["host"], "level": "crit", "cause": row.get("cause"),
+                          "verdict": row["verdict"]})
+            looped.add(row["host"])
 
-    levels = [r["level"] for r in rows] + [p["level"] for p in public] + [l["level"] for l in loops]
+    levels = ([r["level"] for r in rows] + [p["level"] for p in public] + [l["level"] for l in loops]
+              + [u["level"] for u in upstream])
     if "crit" in levels:
         overall, summary = "crit", "Es gibt eine Schleife – ntp-gui erreicht seine eigenen Quellen nicht."
     elif any(r["state"] in ("dns_rewrite", "answered_by_us") for r in rows):
@@ -1034,12 +1095,106 @@ def _run_check(server_ips, hostnames, port, tracking, source_hosts, resolver, pr
                    "zeigt der Selbsttest auf einem Gerät oder die Client-Liste.")
     return {
         "level": overall, "summary": summary, "hosts": rows, "public": public, "loops": loops,
+        "upstream": upstream, "resolver": resolver_info or {"label": "System-DNS des Containers"},
         "ours": _slim(ours), "ours_note": ours_note, "server_ips": sorted(ours_ips),
         "resolver_note": "Geprüft mit dem DNS-Server, den dieser Container nutzt. Nutzen deine Geräte "
                          "einen anderen (z. B. Pi-hole per DHCP, ntp-gui aber den Router), kann das "
                          "Ergebnis abweichen.",
         "duration": round(time.monotonic() - started, 2),
     }
+
+
+def _chain_entries(own_sources: list[dict] | None, names: list[str]) -> list[dict]:
+    """Eigene Quellen für die Upstream-Kette: [{"host", "by": name|ip, "nts"}], höchstens 8."""
+    out: list[dict] = []
+    seen: set[str] = set()
+    raw = own_sources if own_sources is not None else [{"host": h} for h in names]
+    for entry in raw or []:
+        if not isinstance(entry, dict):
+            continue
+        host = str(entry.get("host") or "").strip().lower().rstrip(".")
+        if not host or host in seen:
+            continue
+        try:
+            ip = ipaddress.ip_address(host.strip("[]"))
+            host, by = str(ip), "ip"
+        except ValueError:
+            if not _HOST_RE.match(host):
+                continue
+            by = "name"
+        seen.add(host)
+        out.append({"host": host, "by": by, "nts": bool(entry.get("nts"))})
+    return out[:8]
+
+
+def _chain_address(entry: dict, resolved: dict) -> str | None:
+    if entry["by"] == "ip":
+        return entry["host"]
+    addrs = resolved.get(entry["host"])
+    if isinstance(addrs, list) and addrs:
+        return next((a for a in addrs if ":" not in a), addrs[0])
+    return None
+
+
+def resolver_label(dns: dict | None) -> dict:
+    """Welcher Resolver ntp-gui gerade Namen auflöst – für die Kette im Selbsttest.
+    Keine Pfade von DoH-Adressen (Konto-Kennungen): die Upstream-Labels sind schon gekürzt."""
+    dns = dns or {}
+    effective = dns.get("effective_mode") or "system"
+    if effective == "system":
+        return {"mode": "system", "label": "System-DNS des Containers",
+                "note": "Schreibt dieser DNS Zeitserver-Namen um, landet ntp-gui bei sich selbst."}
+    labels = [str(u.get("label")) for u in dns.get("upstreams") or [] if u.get("label")]
+    text = f"{dns.get('effective_label') or effective}" + (f": {', '.join(labels[:4])}" if labels else "")
+    note = None
+    if dns.get("state") == "fallback":
+        note = "Gerade Rückfall auf den System-DNS – die eigenen Server antworten nicht."
+    elif dns.get("state") in ("down", "failing"):
+        note = "Der Weiterleiter läuft nicht oder bekommt keine Antwort."
+    return {"mode": effective, "label": text, "state": dns.get("state"), "note": note}
+
+
+def _chain_row(entry, resolved, addr, replies, ours, ours_ips, resolver_info) -> dict:
+    """Eine Zeile „Name → Resolver → Adresse → Antwort“ mit Urteil."""
+    import loopguard
+    host = entry["host"]
+    row: dict[str, Any] = {"host": host, "by": entry["by"], "nts": entry["nts"],
+                           "resolver": (resolver_info or {}).get("label") if entry["by"] == "name" else None,
+                           "addresses": [], "address": addr, "reply": None}
+    if entry["by"] == "name":
+        addrs = resolved.get(host)
+        if not isinstance(addrs, list) or not addrs:
+            row.update(level="warn", state="dns_error",
+                       verdict=(str(addrs) if isinstance(addrs, str) else "Keine Adresse erhalten.")
+                       + " chronyd kann diese Quelle dann nicht nutzen.")
+            return row
+        row["addresses"] = addrs
+    reply = replies.get((addr, 123)) if addr else None
+    row["reply"] = _slim(reply)
+    ip = loopguard._ip(addr)
+    if addr in ours_ips or (ip is not None and ip.is_loopback):
+        cause = "dns" if entry["by"] == "name" else "self_ip"
+        row.update(level="crit", state="self_address", cause=cause,
+                   verdict=loopguard.sentence(host if entry["by"] == "name" else None, addr, cause) + ".")
+        return row
+    if reply is not None and ours and loopguard.fingerprint_match(reply, ours):
+        cause = ("dns" if entry["by"] == "name" and ip is not None and (ip.is_private or ip.is_link_local)
+                 else "nat")
+        row.update(level="crit", state="self_reply", cause=cause,
+                   verdict=loopguard.sentence(host if entry["by"] == "name" else None, addr, cause)
+                   + (". Die Adresse ist richtig, aber die Antwort kommt von diesem Server." if cause == "nat"
+                      else ". Die Adresse liegt im LAN und wird zu diesem Server weitergeleitet."))
+        return row
+    if reply is None:
+        row.update(level="warn", state="no_reply",
+                   verdict="Keine Antwort von dieser Adresse. Sperrt die Firewall NTP nach außen, oder ist der "
+                           "Server weg? chronyd bekommt von dieser Quelle dann auch nichts.")
+        return row
+    label = reply.get("ref_label") or reply.get("ref_id") or "?"
+    row.update(level="good", state="foreign",
+               verdict=f"Ein fremder Server antwortet (Stratum {reply.get('stratum')}, Referenz {label}) – "
+                       "keine Schleife.")
+    return row
 
 
 def _slim(reply: dict | None) -> dict | None:
@@ -1096,11 +1251,13 @@ def api_snippets(query: dict, cfg: dict) -> dict:
                     cfg.get("ntp_port", 123), query.get("dns_ip"))
 
 
-def api_check(query: dict, cfg: dict, own_addresses: list[str], tracking: dict | None) -> dict:
+def api_check(query: dict, cfg: dict, own_addresses: list[str], tracking: dict | None,
+              dns: dict | None = None) -> dict:
     """GET /api/enforce/check – query: ip (Adresse aus Sicht des Browsers)."""
     ips = list(own_addresses or [])
     extra = clean_server_ip(query.get("ip"))
     if extra:
         ips.append(extra)
     return check(ips, cfg.get("enforce_hostnames") or [], cfg.get("ntp_port", 123), tracking,
-                 source_hosts_from(cfg))
+                 source_hosts_from(cfg), sources=[e for e in cfg.get("ntp_sources") or [] if isinstance(e, dict)],
+                 resolver_info=resolver_label(dns))

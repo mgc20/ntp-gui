@@ -220,11 +220,16 @@ function dnsStatus(dns) {
       : (dns.fallback_servers || []).length ? `an (${dns.fallback_servers.join(", ")})` : "an – kein System-DNS bekannt", "dns_fallback"] : null,
     dns.running ? ["Anfragen", `${stats.queries ?? 0} · Cache ${stats.cache_hits ?? 0} · Rückfall ${stats.fallback ?? 0}`
       + ` · ohne Antwort ${stats.servfail ?? 0}`, "dns_counts"] : null,
+    dns.effective_mode !== "system" && dns.running ? ["Letzte erfolgreiche Auflösung",
+      typeof dns.last_success === "number" ? fmtAgo(dns.last_success) : "noch keine", "dns_last_ok"] : null,
+    dns.effective_mode !== "system" && dns.running ? ["Erreichbar", `${dns.reachable ?? 0} von ${ups.length} Servern`
+      + (typeof stats.health_last === "number" ? ` · zuletzt geprüft ${fmtAgo(stats.health_last)}` : ""), "dns_reachable"] : null,
   ];
   return el("div", { class: "dns-status" },
     kv(rows),
     dns.error ? el("p", { class: "field-error", role: "alert", text: dns.error }) : null,
     (dns.warnings || []).map((w) => el("p", { class: "field-error", text: w })),
+    dns.nts_note ? el("p", { class: "card-sub" }, el("span", { text: dns.nts_note }), info("dns_nts", "NTS und DNS")) : null,
     ups.length ? el("div", {},
       el("h3", { class: "mini-head" }, "Eigene Server ", info("dns_upstreams", "Eigene Server")),
       el("ul", { class: "svc-list" }, ups.map((u) => {

@@ -49,6 +49,7 @@ import apikeys
 import apiv1
 import autocal
 import gpsquality
+import loopguard
 import chrony
 import clientinfo
 import clientmon
@@ -142,13 +143,16 @@ apiv1.endpoint("GET", "/enforce/snippets", "/api/enforce/snippets", "read",
                 "ip": "Adresse dieses Servers aus Sicht der Clients",
                 "dns_ip": "Adresse von AdGuard Home/Pi-hole für die optionale DNS-Umleitung per Firewall"})
 apiv1.endpoint("GET", "/enforce/check", "/api/enforce/check", "read",
-               "Prüft, ob die Umleitung wirkt (höchstens alle 30 s).", ["level", "summary", "hosts"],
+               "Prüft, ob die Umleitung wirkt (höchstens alle 30 s). „upstream“ zeigt für jede eigene Quelle die "
+               "Kette Name → Resolver → Adresse → Antwort und erkennt Schleifen (DNS-Umschreibung, NAT-Umleitung).",
+               ["level", "summary", "hosts", "public", "loops", "upstream", "resolver"],
                {"ip": "Adresse dieses Servers aus Sicht der Clients"})
 apiv1.endpoint("GET", "/dns", "/api/dns", "read",
                "DNS für ntp-gui: eingestellter Modus, Zustand des Weiterleiters auf 127.0.0.1, eigene "
                "Server mit letzter Antwort bzw. letztem Fehler, Rückfall auf den System-DNS, resolv.conf. "
                "DoH-Adressen nur mit Servername (der Pfad kann eine Konto-Kennung enthalten).",
-               ["mode", "effective_mode", "running", "state", "upstreams", "resolv", "stats"])
+               ["mode", "effective_mode", "running", "state", "upstreams", "resolv", "stats", "last_success",
+                "reachable", "upstream_count", "nts_note"])
 apiv1.endpoint("GET", "/clients/offsets", "/api/clients/offsets", "read",
                "Passiv gemessene Abweichung der Client-Uhren, dazu eigene Namen der Geräte (names).",
                ["available", "running", "reason", "clients", "names"])
@@ -193,6 +197,11 @@ apiv1.endpoint("POST", "/gps/autocal/rollback", "/api/gps/autocal/rollback", "ad
                "Letzte automatische Änderung(en) zurücknehmen. Body: {\"steps\": 1}.",
                ["ok", "restored_offset", "restored_delay", "reload_triggered", "change"])
 
+apiv1.endpoint("GET", "/loops", "/api/loops", "read",
+               "Schleifen-Erkennung je Zeitquelle: Quellen, über die chronyd sich selbst fragt (DNS-Umschreibung "
+               "oder NAT-Umleitung ohne Ausnahme für ntp-gui), mit Ursache, Belegen und Abhilfe. Geprüft im Takt "
+               "des halben kleinsten Poll-Intervalls, bestätigt nach zwei Prüfungen.",
+               ["loops", "checked", "interval_s", "confirm", "level"])
 apiv1.endpoint("GET", "/gps/quality", "/api/gps/quality", "read",
                "GPS ohne PPS und schwacher Empfang: Empfangsbewertung über 24 h (Ampel, Satz, Gründe, Fix-Anteil, "
                "Fix-Wechsel je Stunde, Median-C/N0 der vier stärksten Satelliten, genutzte Satelliten), Zustand "
@@ -320,6 +329,7 @@ def collector() -> None:
             HISTORY.save()
             STATE_WATCH.sample(sample)
             client_alarms()
+            loop_check()
             autocal.maybe_tick()   # höchstens einmal pro Stunde, wirft nie
             gpsquality.maybe_tick(settings.values)  # Fehlerschranke GPS ohne PPS, stündlich, wirft nie
         except Exception as exc:  # ein Messfehler darf den Thread nie beenden
@@ -334,6 +344,33 @@ def collector() -> None:
         except Exception:
             interval = 10.0
         time.sleep(max(2.0, interval))
+
+
+# 1.5: Schleifen-Erkennung je Quelle (DNS-Umschreibung / NAT-Umleitung ohne Ausnahme für ntp-gui).
+LOOP_GUARD = loopguard.LoopGuard(events.emit, prober=enforce.probe_many)
+
+
+def host_addresses() -> list[str]:
+    """Eigene Adressen: alle Interfaces (/proc/net, je Namensraum) plus die Adressen des Hostnamens."""
+    out: list[str] = loopguard.interface_addresses()
+    try:
+        for _family, _, _, _, sockaddr in socket.getaddrinfo(socket.gethostname(), None):
+            if sockaddr[0] not in out:
+                out.append(sockaddr[0])
+    except (socket.gaierror, UnicodeError):
+        pass
+    return out
+
+
+def loop_check() -> None:
+    """Schleifen-Prüfung im Takt des halben kleinsten Poll-Intervalls (wirft nie)."""
+    try:
+        if not LOOP_GUARD.due():
+            return
+        cfg = settings.values()
+        LOOP_GUARD.check(chrony.detailed_sources(), chrony.tracking(), host_addresses(), cfg.get("ntp_port", 123))
+    except Exception as exc:  # die Prüfung darf die Messung nie aufhalten
+        print(f"[web] Schleifen-Prüfung fehlgeschlagen: {exc}", flush=True)
 
 
 def client_alarms() -> None:
@@ -640,6 +677,7 @@ def build_status() -> dict:
     status["leap"] = _leap_summary(leap_info)
     status["notify"] = _notify_summary()
     status["insights"] = combine_insights(insights.build(status, cfg),
+                                          loopguard.insights(LOOP_GUARD.loops()),
                                           insights.dns_insights(status["dns"], cfg, status["sources"],
                                                                 status["system"].get("addresses") or [],
                                                                 enforce.last_loops(),
@@ -1356,7 +1394,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(enforce.api_snippets(query, settings.values()))
         elif path == "/api/enforce/check":
             cfg = settings.values()
-            self._send_json(enforce.api_check(query, cfg, system_info(cfg)["addresses"], chrony.tracking()))
+            self._send_json(enforce.api_check(query, cfg, system_info(cfg)["addresses"], chrony.tracking(),
+                                              dnsfwd.api_status(cfg)))
+        elif path == "/api/loops":
+            self._send_json(LOOP_GUARD.status())
         elif path == "/api/dns":
             self._send_json(dnsfwd.api_status(settings.values()))
         elif path == "/api/clients/offsets":

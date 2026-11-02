@@ -250,6 +250,18 @@ export const HELP_CLIENTS = {
       + "nach außen ist gesperrt. **Schleife**: Anfragen von ntp-gui selbst landen bei ntp-gui – "
       + "dringend die Ausnahme eintragen.",
   },
+  enforce_upstream: {
+    title: "Eigene Quellen: Name → Resolver → Adresse → Antwort",
+    text: "Für jede Quelle aus „Zeitquellen“ zeigt die Prüfung die ganze Kette: welcher **Resolver** den Namen "
+      + "aufgelöst hat (System-DNS des Containers oder deine eigenen Server unter „DNS für ntp-gui“), welche "
+      + "**Adresse** dabei herauskam und wer dort **antwortet**. Antwortet ein fremder Server, ist alles gut. "
+      + "Ist die Adresse eine eigene, schreibt der DNS den Namen auf ntp-gui um (**DNS-Umschreibung ohne "
+      + "Ausnahme**). Ist die Adresse richtig, aber die Antwort trägt Stratum, Referenz-ID und Referenzzeit "
+      + "dieses Servers, leitet der Router das Paket auf ntp-gui zurück (**NAT-Umleitung ohne Ausnahme**). "
+      + "Quellen mit fester IP-Adresse fragen keinen Resolver – bei ihnen kann nur die NAT-Umleitung "
+      + "eine Schleife bauen. Unabhängig von dieser Prüfung beobachtet ntp-gui seine Quellen laufend "
+      + "und schreibt bei einer Schleife ein Ereignis „Zeitquelle“ (kritisch).",
+  },
   enforce_selftest: {
     title: "Selbsttest auf einem Gerät",
     text: "Auf einem Gerät im LAN einen **öffentlichen** Zeitserver abfragen und Stratum und "
@@ -270,6 +282,6 @@ export const HELP_GROUP_CLIENTS = {
     "client_detail", "client_offset_chart", "client_interval_chart", "client_typical_interval", "client_version",
     "client_seen", "client_rdns", "client_mac", "client_vlan", "client_software", "client_meta", "client_probe",
     "enforce", "enforce_dns", "enforce_nat", "enforce_hairpin", "enforce_nts", "enforce_not_ntp",
-    "enforce_hostnames", "enforce_check", "enforce_verdict", "enforce_selftest",
+    "enforce_hostnames", "enforce_check", "enforce_verdict", "enforce_upstream", "enforce_selftest",
   ],
 };
