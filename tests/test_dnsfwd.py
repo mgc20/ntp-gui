@@ -622,7 +622,9 @@ class ForwarderTest(unittest.TestCase):
         query = dnsfwd.build_query("pool.ntp.org", 1)
         fwd.resolve(query)
         expires, stored, _data = fwd._cache[query[2:]]
-        self.assertLessEqual(expires - stored, dnsfwd.FALLBACK_CACHE_TTL)
+        # Toleranz: Bei großen monotonic()-Werten (lange laufender Rechner) bleibt beim Abziehen ein
+        # Rundungsrest (5.000000000000007 auf dem CI-Runner).
+        self.assertLessEqual(expires - stored, dnsfwd.FALLBACK_CACHE_TTL + 1e-6)
 
     def test_rejects_non_queries(self):
         fwd = dnsfwd.Forwarder("servers", [], use_fallback=False)
