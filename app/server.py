@@ -38,6 +38,7 @@ import os
 import re
 import signal
 import socket
+import sys
 import threading
 import time
 from http import HTTPStatus
@@ -1812,6 +1813,18 @@ def env_like(raw, default: float) -> float:
         return default
 
 
+class QuietHTTPServer(ThreadingHTTPServer):
+    """Browser, die eine Verbindung mittendrin abbrechen (Tab zu, Reload, Handy im Standby),
+    sind Alltag und kein Fehler. Ohne das hier schreibt socketserver für jeden Abbruch einen
+    vollständigen Traceback ins Log – mehrere Threads gleichzeitig und ineinander verschränkt."""
+
+    def handle_error(self, request, client_address):
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (ConnectionResetError, BrokenPipeError, ConnectionAbortedError, TimeoutError)):
+            return
+        super().handle_error(request, client_address)
+
+
 def main() -> None:
     port = env_number("WEB_PORT", 8080, int, minimum=1)
     bind = os.environ.get("WEB_BIND", "0.0.0.0")
@@ -1842,7 +1855,7 @@ def main() -> None:
     signal.signal(signal.SIGTERM, save_and_exit)
 
     try:
-        server = ThreadingHTTPServer((bind, port), Handler)
+        server = QuietHTTPServer((bind, port), Handler)
     except OSError as exc:
         raise SystemExit(f"[web] Port {bind}:{port} nicht verfügbar ({exc}). "
                          f"WEB_PORT anpassen oder den belegenden Dienst beenden.")

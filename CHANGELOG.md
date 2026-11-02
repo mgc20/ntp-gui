@@ -13,6 +13,10 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 - Die Verlaufs-Kennzahlen im Diagnosepaket enthalten die Temperatur und ein Stundenprofil
   Temperatur ↔ Frequenz (Mittel je Stunde) – Grundlage für den Temperaturausgleich.
 
+### Behoben
+- Bricht ein Browser eine Verbindung ab (Tab zu, Neuladen, Handy im Standby), steht im Log kein
+  Python-Traceback mehr. Bisher landeten dort mehrere ineinander verschränkte Fehlermeldungen.
+
 ## [1.4.0] – 2026-11-02
 
 ### Hinzugefügt
