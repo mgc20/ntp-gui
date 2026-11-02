@@ -108,6 +108,14 @@ TIMEJ=$(curl -s --max-time 10 http://127.0.0.1:18080/api/v1/time)
 check "/api/v1/time: t1 ≤ t2" True "$(python3 -c "import json,sys; d=json.loads(sys.argv[1]); print(0 < d['t1'] <= d['t2'])" "$TIMEJ" 2>/dev/null)"
 check "Temperatur-API antwortet (auch ohne Sensor)" 200 "$(http http://127.0.0.1:18080/api/v1/temperature)"
 contains "Metrik TAI−UTC vorhanden" "$(curl -s http://127.0.0.1:18080/metrics)" "ntpgui_tai_utc_offset_seconds 37"
+# 1.4: Update-Hinweis ist ab Werk aus – und dann fragt der Container niemanden.
+UPDJ=$(curl -s --max-time 10 http://127.0.0.1:18080/api/v1/update)
+check "Update-Hinweis ab Werk aus" "False None" "$(python3 -c "import json,sys; d=json.loads(sys.argv[1]); print(d['enabled'], d['next_check'])" "$UPDJ" 2>/dev/null)"
+check "Update-Hinweis aus: nie geprüft" "None" "$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['last_attempt'])" "$UPDJ" 2>/dev/null)"
+METRICS_A=$(curl -s http://127.0.0.1:18080/metrics)
+contains "Metrik ntpgui_info mit Version" "$METRICS_A" 'ntpgui_info{version="'
+contains "Metrik ntpgui_sources_usable vorhanden" "$METRICS_A" "ntpgui_sources_usable"
+check "Ohne Update-Hinweis keine Update-Metrik" 0 "$(grep -c '^ntpgui_update_available' <<<"$METRICS_A")"
 
 echo
 echo "1b) Log, Ereignisse, Diagnosepaket, Client-Messung (1.3)"

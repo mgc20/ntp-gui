@@ -4,6 +4,20 @@ name: Release
 # Reihenfolge mit Absicht: erst alles testen, dann das Image veröffentlichen,
 # erst danach Tag und GitHub-Release anlegen. Scheitert ein Schritt, bleibt
 # kein halber Release (Tag ohne Image) zurück.
+#
+# Lieferkette (ab 1.4):
+#   * SBOM (SPDX-JSON, syft über anchore/sbom-action) hängt am GitHub-Release.
+#   * Schwachstellen-Scan mit Grype (anchore/scan-action). Regel: Der Release bricht nur ab,
+#     wenn das Image eine KRITISCHE Lücke enthält, für die es schon eine Korrektur gibt
+#     (Debian hat ein gepatchtes Paket – dann ist nur das Image veraltet; neu bauen bzw. das
+#     Basis-Image per Dependabot anheben behebt es). Lücken ohne Korrektur („unfixed“ in
+#     Debian) und alles unterhalb von kritisch stehen nur im Bericht (Job-Zusammenfassung
+#     und Datei am Release) – sonst ließe sich praktisch nie ein Release bauen.
+#   * Herkunftsnachweis (SLSA Build Provenance) per actions/attest-build-provenance für den
+#     Digest des veröffentlichten Images, in der Registry abgelegt und direkt danach mit
+#     „gh attestation verify“ geprüft.
+#   * Fremde Actions der Lieferkette sind auf Commit-SHAs festgenagelt; Dependabot
+#     (.github/dependabot.yml) schlägt Updates wöchentlich vor.
 on:
   workflow_dispatch:
     inputs:
@@ -13,8 +27,10 @@ on:
         default: "1.0.0"
 
 permissions:
-  contents: write   # Tag und Release anlegen
-  packages: write   # Image nach ghcr.io pushen
+  contents: write      # Tag und Release anlegen
+  packages: write      # Image nach ghcr.io pushen
+  id-token: write      # OIDC-Token für die Signatur des Herkunftsnachweises (Sigstore)
+  attestations: write  # Herkunftsnachweis speichern
 
 concurrency:
   group: release
@@ -78,6 +94,48 @@ jobs:
           sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends chrony || true
           ./tests/container-test.sh ntp-gui:release-test
 
+      # --- Lieferkette: SBOM und Schwachstellen (am getesteten amd64-Image; arm64 enthält
+      # dieselben Debian-Pakete in derselben Version) -----------------------------------
+      - name: SBOM erzeugen (SPDX)
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        with:
+          image: ntp-gui:release-test
+          format: spdx-json
+          output-file: ntp-gui-${{ inputs.version }}.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Schwachstellen-Bericht (Grype, nur Bericht)
+        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
+        with:
+          image: ntp-gui:release-test
+          fail-build: false
+          output-format: table
+          output-file: ntp-gui-${{ inputs.version }}-vulnerabilities.txt
+
+      - name: Bericht in die Job-Zusammenfassung
+        run: |
+          set -euo pipefail
+          {
+            echo "## Schwachstellen im Image (Grype)"
+            echo
+            echo "Regel: Abbruch nur bei kritischen Lücken mit verfügbarer Korrektur – siehe nächster Schritt."
+            echo
+            echo '```'
+            head -n 300 "ntp-gui-${VERSION}-vulnerabilities.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Schwachstellen-Sperre (kritisch und behebbar)
+        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
+        with:
+          image: ntp-gui:release-test
+          only-fixed: true
+          severity-cutoff: critical
+          fail-build: true
+          output-format: table
+          output-file: grype-gate.txt
+
       - name: In die GitHub Container Registry einloggen
         uses: docker/login-action@v3
         with:
@@ -96,6 +154,7 @@ jobs:
             type=raw,value=latest
 
       - name: Image bauen und veröffentlichen (amd64 + arm64)
+        id: push
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -105,6 +164,26 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Image-Namen klein schreiben
+        id: image
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Herkunftsnachweis (Build Provenance) anlegen
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ steps.image.outputs.name }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+      - name: Herkunftsnachweis prüfen
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE: ${{ steps.image.outputs.name }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          set -euo pipefail
+          gh attestation verify "oci://${IMAGE}@${DIGEST}" -R "${GITHUB_REPOSITORY}"
 
       - name: Tag anlegen
         run: |
@@ -118,6 +197,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAGS: ${{ steps.meta.outputs.tags }}
+          IMAGE: ${{ steps.image.outputs.name }}
+          DIGEST: ${{ steps.push.outputs.digest }}
         run: |
           set -euo pipefail
           {
@@ -134,6 +215,19 @@ jobs:
             echo '```bash'
             echo "docker run -d -p 123:123/udp -p 8080:8080 --cap-add SYS_TIME $(echo "$TAGS" | head -n1)"
             echo '```'
+            echo
+            echo "## Herkunft prüfen"
+            echo
+            echo "Digest: \`${DIGEST}\`"
+            echo
+            echo '```bash'
+            echo "gh attestation verify oci://${IMAGE}:${VERSION} -R ${GITHUB_REPOSITORY}"
+            echo '```'
+            echo
+            echo "Am Release: SBOM (\`ntp-gui-${VERSION}.spdx.json\`) und Schwachstellen-Bericht von Grype"
+            echo "(\`ntp-gui-${VERSION}-vulnerabilities.txt\`). Der Release bricht nur bei kritischen Lücken mit"
+            echo "verfügbarer Korrektur ab; offene Debian-Lücken ohne Korrektur stehen nur im Bericht."
           } > release-notes.md
           gh release create "v${VERSION}" --title "ntp-gui ${VERSION}" \
-            --notes-file release-notes.md --generate-notes
+            --notes-file release-notes.md --generate-notes \
+            "ntp-gui-${VERSION}.spdx.json" "ntp-gui-${VERSION}-vulnerabilities.txt"

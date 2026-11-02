@@ -50,7 +50,7 @@ endpoint("GET", "/status", "/api/status", "read",
          "Gesamtzustand: Systemuhr, Quellen, Clients, GPS, PTP, Dienste und Hinweise – "
          "dieselben Daten wie die Übersicht im Dashboard.",
          ["system", "tracking", "sources", "activity", "serverstats", "clients", "client_count",
-          "ptp", "gps", "nts_server", "services", "chrony_running", "config", "ui", "insights"])
+          "ptp", "gps", "nts_server", "services", "chrony_running", "update", "config", "ui", "insights"])
 endpoint("GET", "/history", "/api/history", "read",
          "Verlauf der Messwerte für Diagramme, auf höchstens „points“ Punkte verdichtet.",
          ["samples", "interval"],

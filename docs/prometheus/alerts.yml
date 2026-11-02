@@ -1,0 +1,130 @@
+# Alarmregeln für ntp-gui (Prometheus / Alertmanager, auch für Grafana-Alerting importierbar).
+#
+# Einbinden in prometheus.yml:
+#   rule_files:
+#     - /etc/prometheus/rules/ntp-gui-alerts.yml
+#
+# Scrape-Job (/metrics braucht bei gesetztem Passwort einen API-Schlüssel mit Recht „read“):
+#   scrape_configs:
+#     - job_name: ntp-gui
+#       metrics_path: /metrics
+#       authorization:
+#         credentials_file: /etc/prometheus/ntp-gui.key   # Inhalt: ntpg_…
+#       static_configs:
+#         - targets: ["zeitserver.lan:8080"]
+#
+# Schwellen sind Vorschläge für ein Heimnetz mit GPS bzw. guten NTP-Quellen. Wer nur über das
+# Internet synchronisiert, setzt die Offset-Schwelle eher auf 50 ms. Jede Metrik hier steht im
+# Output von /metrics (geprüft von tests/test_integrations.py).
+
+groups:
+  - name: ntp-gui
+    rules:
+      - alert: NtpGuiChronyDown
+        expr: ntpgui_up == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "chronyd antwortet nicht ({{ $labels.instance }})"
+          description: "Das Dashboard läuft, aber chronyd gibt keine Auskunft. Ohne chronyd verteilt der Server keine Zeit. Container-Log prüfen."
+
+      - alert: NtpGuiUnsynchronised
+        expr: ntpgui_synchronised == 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Zeitserver nicht synchron ({{ $labels.instance }})"
+          description: "chrony ist seit 10 Minuten mit keiner Quelle synchron (oder läuft im Inselbetrieb). Clients bekommen ungeprüfte Zeit oder gar keine Antwort."
+
+      - alert: NtpGuiNoSources
+        expr: ntpgui_sources_usable == 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Keine nutzbare Zeitquelle ({{ $labels.instance }})"
+          description: "chrony nutzt seit 10 Minuten keine Quelle (alle unerreichbar, Falseticker oder zu unruhig). Seite „Quellen“ zeigt den Grund je Quelle."
+
+      - alert: NtpGuiOffsetHigh
+        # 10 ms: für GPS/PPS oder gute LAN-Quellen schon viel. Nur über Internet-NTP: 0.05 nehmen.
+        expr: abs(ntpgui_system_time_offset_seconds) > 0.01
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Systemuhr weicht um {{ $value | humanizeDuration }} ab ({{ $labels.instance }})"
+          description: "Die Abweichung der Systemuhr liegt seit 15 Minuten über 10 ms. Häufige Ursachen: Quelle gewechselt, GPS ohne PPS, Netz mit asymmetrischer Laufzeit."
+
+      - alert: NtpGuiMaxErrorHigh
+        expr: ntpgui_max_error_seconds > 0.1
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Fehlerschranke über 100 ms ({{ $labels.instance }})"
+          description: "|Offset| + Root Dispersion + Root Delay/2 liegt über 100 ms – die Zeit dieses Servers ist nur noch grob verlässlich."
+
+      - alert: NtpGuiGpsFixLost
+        expr: ntpgui_gps_fix_mode < 2 or ntpgui_gps_running == 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "GPS ohne Fix seit mehr als 10 Minuten ({{ $labels.instance }})"
+          description: "Der GPS-Empfänger liefert keinen 2D/3D-Fix (oder gpsd antwortet nicht). chrony greift auf andere Quellen zurück, falls vorhanden. Antenne und Sicht zum Himmel prüfen."
+
+      - alert: NtpGuiPpsLost
+        expr: ntpgui_pps_live == 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Keine PPS-Pulse auf {{ $labels.device }} ({{ $labels.instance }})"
+          description: "Am PPS-Gerät kommen seit 10 Minuten keine Pulse an. Ohne PPS ist GPS-Zeit nur auf Millisekunden genau."
+
+      - alert: NtpGuiServiceDown
+        expr: ntpgui_service_up == 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Dienst {{ $labels.service }} läuft nicht ({{ $labels.instance }})"
+          description: "Der Supervisor meldet {{ $labels.service }} seit 10 Minuten als nicht laufend. Seite „Hardware“ und Container-Log prüfen."
+
+      - alert: NtpGuiNtsCertExpiring
+        expr: ntpgui_nts_server_cert_days_left < 14
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "NTS-Zertifikat läuft in {{ $value | printf \"%.0f\" }} Tagen ab ({{ $labels.instance }})"
+          description: "Nach Ablauf lehnen NTS-Clients den Schlüsselaustausch ab. Neues Zertifikat nach /config legen – ntp-gui bemerkt die Datei von selbst."
+
+      - alert: NtpGuiNtsCertExpired
+        expr: ntpgui_nts_server_cert_days_left < 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "NTS-Zertifikat abgelaufen ({{ $labels.instance }})"
+          description: "NTS-Clients bekommen keine abgesicherte Zeit mehr."
+
+      - alert: NtpGuiLeapListExpiring
+        expr: ntpgui_leapseconds_list_days_left < 60
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "Schaltsekunden-Liste läuft in {{ $value | printf \"%.0f\" }} Tagen ab ({{ $labels.instance }})"
+          description: "Die leap-seconds.list im Image ist bald veraltet. Ein aktuelles ntp-gui-Image bringt eine neue Liste mit (tzdata)."
+
+      - alert: NtpGuiUpdateAvailable
+        expr: ntpgui_update_available == 1
+        for: 1h
+        labels:
+          severity: info
+        annotations:
+          summary: "Neue ntp-gui-Version verfügbar ({{ $labels.instance }})"
+          description: "Nur mit eingeschaltetem Update-Hinweis. Release-Notizen lesen, dann Image ziehen und Container neu erstellen."

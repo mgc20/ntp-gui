@@ -1,6 +1,6 @@
 // Einstieg: Navigation, Aktualisierung, Datencache, Neustart-Anzeige.
 import { el, apiGet, storageGet, storageSet, fmtTime } from "./util.js";
-import { toast, isPopoverOpen } from "./ui.js";
+import { toast, isPopoverOpen, info, badge } from "./ui.js";
 import { resetChartState } from "./charts.js";
 import * as overview from "./pages/overview.js";
 import * as sources from "./pages/sources.js";
@@ -172,8 +172,40 @@ function renderHeader() {
   // Übersicht zählt alle Probleme, „Hardware“ nur die aus dem Hardware-Check.
   setBadge("", serious.length);
   setBadge("hardware", serious.filter((i) => i.action === "hardware").length);
+  renderUpdateBanner(status.update);
   document.getElementById("footer-note").textContent =
     `ntp-gui ${sys.version || ""} · aktualisiert ${fmtTime(sys.time)} · alle ${sys.refresh_seconds} s`;
+}
+
+// --- Update-Hinweis (opt-in) ---------------------------------------------------
+// Nur ein Link nach github.com/ConGp20/ntp-gui – der Server baut ihn aus der geprüften Versionsnummer.
+const RELEASE_LINK = /^https:\/\/github\.com\/ConGp20\/ntp-gui\/releases(\/tag\/v[0-9A-Za-z.-]+)?$/;
+
+function renderUpdateBanner(update) {
+  const banner = document.getElementById("update-banner");
+  if (!banner) return;
+  const latest = update?.latest;
+  const dismissed = storageGet("ntp-gui-update-dismissed", "");
+  if (!update?.available || !latest?.version || dismissed === latest.version) {
+    banner.hidden = true;
+    banner.replaceChildren();
+    return;
+  }
+  if (banner.dataset.version === `${latest.version}:${update.attention}` && !banner.hidden) return; // offenes ⓘ nicht wegreißen
+  banner.dataset.version = `${latest.version}:${update.attention}`;
+  banner.dataset.state = update.attention ? "warn" : "info";
+  const link = RELEASE_LINK.test(latest.url || "") ? latest.url : null;
+  banner.replaceChildren(
+    el("span", { class: "update-text" },
+      el("strong", { text: `Neue Version ${latest.version} verfügbar` }),
+      latest.title ? el("span", { text: ` – ${latest.title}` }) : null),
+    update.attention ? el("span", { class: "update-attention" }, badge("Achtung beim Update", "warn"),
+      info("update_attention", "Achtung beim Update")) : null,
+    link ? el("a", { href: link, target: "_blank", rel: "noopener noreferrer", text: "Release-Notizen →" }) : null,
+    info("update_banner", "Neue Version verfügbar"),
+    el("button", { type: "button", class: "icon-button update-close", "aria-label": `Hinweis auf Version ${latest.version} ausblenden`,
+      text: "✕", onclick: () => { storageSet("ntp-gui-update-dismissed", latest.version); renderUpdateBanner(update); } }));
+  banner.hidden = false;
 }
 
 function setBadge(pageId, count) {

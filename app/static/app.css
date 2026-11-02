@@ -107,6 +107,13 @@ code { font-size: 0.88em; background: var(--surface-3); padding: 1px 5px; border
 .reload-banner[data-state="running"] { background: var(--info-soft); color: var(--info); }
 .reload-banner[data-state="done"] { background: var(--good-soft); color: var(--good); }
 .reload-banner[data-state="error"] { background: var(--crit-soft); color: var(--crit); }
+.update-banner { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 6px 12px;
+  font-size: 13.5px; padding: 6px 16px; background: var(--info-soft); color: var(--ink); }
+.update-banner[data-state="warn"] { background: var(--warn-soft); }
+.update-banner[hidden] { display: none; }
+.update-banner a { font-weight: 600; }
+.update-banner .update-attention { display: inline-flex; align-items: center; gap: 4px; }
+.update-banner .update-close { width: 26px; height: 26px; font-size: 13px; }
 
 main { max-width: var(--page-max); margin: 0 auto; padding: clamp(14px, 2.5vw, 26px) clamp(14px, 3vw, 32px) 90px;
   display: flex; flex-direction: column; gap: 16px; }

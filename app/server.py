@@ -65,6 +65,7 @@ import ptp
 import settings
 import statewatch
 import thermal
+import updatecheck
 
 STATIC_DIR = Path(__file__).with_name("static")
 CHRONY_CONF = os.environ.get("CHRONY_CONF", "/etc/chrony/chrony.conf")
@@ -204,6 +205,13 @@ apiv1.endpoint("GET", "/time", None, "read",
                "Mit „Vollbild-Uhr ohne Anmeldung“ (clock_public) ohne Login erreichbar – dann ohne Quellennamen.",
                ["t1", "t2", "synchronised", "level", "accuracy", "stratum", "leap", "source_kind", "source",
                 "public"])
+
+apiv1.endpoint("GET", "/update", "/api/update", "read",
+               "Update-Hinweis (opt-in, Einstellung update_check): installierte und neueste Version auf GitHub, "
+               "ob ein Update da ist, Markierung „Achtung beim Update“, Zeitpunkt der letzten und nächsten "
+               "Prüfung. Ausgeschaltet ohne jede Anfrage nach außen.",
+               ["enabled", "current", "current_valid", "latest", "available", "attention", "last_attempt",
+                "last_success", "error", "next_check", "releases_url", "changelog_url", "automation"])
 
 # Ohne Anmeldung erreichbar, wenn „Vollbild-Uhr ohne Anmeldung“ an ist: nur die Uhrseite, ihre
 # statischen Dateien (kein Inhalt aus der Konfiguration) und /api/v1/time.
@@ -572,6 +580,7 @@ def build_status() -> dict:
         "services": services_status(),
         "dns": dnsfwd.api_status(cfg),
         "chrony_running": bool(tracking),
+        "update": _update_status(),
         "config": {key: cfg[key] for key in (
             "gps_enable", "gps_device", "gps_offset", "gps_delay", "gps_select", "gps_refid",
             "gps_pps_device", "ptp_enable", "ptp_interface", "ptp_mode", "ptp_time_stamping",
@@ -592,8 +601,17 @@ def build_status() -> dict:
                                                                 or enforce.check_ran()),
                                           service_insights(status["services"]),
                                           hardware.cached_insights(cfg),
-                                          leap.insights(leap.status(cfg, tracking)))
+                                          leap.insights(leap.status(cfg, tracking)),
+                                          updatecheck.insights(status["update"]))
     return status
+
+
+def _update_status() -> dict:
+    """Update-Hinweis (wirft nie; ausgeschaltet nur {"enabled": False, …} ohne Netz)."""
+    try:
+        return updatecheck.checker(VERSION).status()
+    except Exception:
+        return {"enabled": False, "available": False}
 
 
 # ---------------------------------------------------------------------------
@@ -683,8 +701,17 @@ def build_metrics() -> str:
     _metric(lines, "ntpgui_root_delay_seconds", tracking.get("root_delay"), "Root delay")
     _metric(lines, "ntpgui_root_dispersion_seconds", tracking.get("root_dispersion"), "Root dispersion")
     _metric(lines, "ntpgui_synchronised", 1 if tracking.get("synchronised") else 0, "1 when the clock is synchronised")
+    _metric(lines, "ntpgui_max_error_seconds", clock_status(tracking)["accuracy"] if tracking else None,
+            "Maximum error bound of the system clock: |offset| + root dispersion + root delay / 2")
+    lines.append("# HELP ntpgui_info Build information (value is always 1)")
+    lines.append("# TYPE ntpgui_info gauge")
+    lines.append('ntpgui_info{version="%s"} 1' % _escape_label(VERSION))
 
-    for source in chrony.detailed_sources():
+    sources = chrony.detailed_sources()
+    _metric(lines, "ntpgui_sources", len(sources), "Configured time sources known to chronyd")
+    _metric(lines, "ntpgui_sources_usable", sum(1 for s in sources if s.get("state") in {"*", "+"}),
+            "Sources currently used by chronyd (selected or combined)")
+    for source in sources:
         labels = '{source="%s",mode="%s"}' % (
             _escape_label(source.get("name", "")), _escape_label(source.get("mode_label", "")))
         _metric(lines, "ntpgui_source_offset_seconds", source.get("offset"), "Offset per source", labels=labels)
@@ -740,6 +767,13 @@ def build_metrics() -> str:
         _metric(lines, "ntpgui_leapseconds_list_days_left", leap_info.get("days_left"),
                 "Days until leap-seconds.list expires (negative = expired)")
         _metric(lines, "ntpgui_tai_utc_offset_seconds", leap_info.get("tai_utc"), "TAI-UTC from leap-seconds.list")
+
+    upd = _update_status()
+    if upd.get("enabled") and upd.get("last_success"):
+        _metric(lines, "ntpgui_update_available", 1 if upd.get("available") else 0,
+                "1 when GitHub lists a newer ntp-gui release (opt-in update check)")
+        _metric(lines, "ntpgui_update_check_last_success_timestamp_seconds", upd.get("last_success"),
+                "Unix time of the last successful update check")
 
     _hardware_metrics(lines)
     return "\n".join(lines) + "\n"
@@ -1220,6 +1254,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"keys": apikeys.list(), "auth_enabled": auth_info()["enabled"]})
         elif path == "/api/v1/instance":
             self._send_json(instance.info())
+        elif path == "/api/update":
+            self._send_json(updatecheck.checker(VERSION).status())
         elif path == "/metrics":
             self._send(HTTPStatus.OK, build_metrics().encode(), "text/plain; version=0.0.4; charset=utf-8")
         else:
@@ -1450,6 +1486,7 @@ def main() -> None:
     threading.Thread(target=hardware_refresher, daemon=True, name="hardware").start()
     threading.Thread(target=events_ingester, daemon=True, name="events").start()
     notify.start(VERSION)  # eigener Thread je Kanal; ohne angelegte Kanäle geht nichts hinaus
+    updatecheck.start(VERSION)  # opt-in; ausgeschaltet keine Anfrage nach außen
     # Folgt clientmon_enable/ntp_port ohne Neustart.
     threading.Thread(target=clientmon.watch, args=(settings.values,), daemon=True, name="clientmon-watch").start()
 

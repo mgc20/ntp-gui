@@ -1,5 +1,5 @@
 import { el, fmtSeconds, fmtNs, fmtNumber, fmtFixed, fmtRate, fmtDuration, isNum, sourceLabel } from "../util.js";
-import { card, tile, kv, badge, insightList, rangeButtons, info, emptyNote, ACTION_LABEL } from "../ui.js";
+import { card, tile, kv, badge, insightList, insightLink, rangeButtons, info, emptyNote, ACTION_LABEL } from "../ui.js";
 import { lineChart, sparkline, stepDecimals } from "../charts.js";
 
 export const ROUTES = { gps: "gps", sources: "quellen", settings: "einstellungen", clients: "clients", ptp: "ptp", hardware: "hardware" };
@@ -172,6 +172,7 @@ function hintRow(ctx, item) {
         "aria-label": `${open ? "Details ausblenden" : "Details anzeigen"}: ${item.title}`,
         onclick: () => { if (open) openSet.delete(key); else openSet.add(key); ctx.rerender(); },
       }, open ? "weniger" : "Details"),
+      insightLink(item),
       item.action ? el("a", { href: `#/${ROUTES[item.action] || item.action}`, class: "insight-action",
         text: ACTION_LABEL[item.action] || "Ansehen →" }) : null));
 }

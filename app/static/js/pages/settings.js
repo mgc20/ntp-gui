@@ -30,7 +30,7 @@ export const FIELD_HELP = {
   clientmon_enable: "clientmon", clients_alarm_ms: "clients_alarm", clients_rdns: "client_rdns",
   web_title: "web_title", web_refresh_seconds: "web_refresh", history_interval: "history_interval",
   notify_dashboard_url: "notify_link",
-  temp_sensor: "temp_sensor", clock_public: "clock_public",
+  temp_sensor: "temp_sensor", clock_public: "clock_public", update_check: "update_check",
   dns_mode: "dns_modes", dns_servers: "dns_upstreams", dns_dot: "dns_modes", dns_doh: "dns_modes",
   dns_pin: "dns_pin", dns_fallback: "dns_fallback",
   gps_device: "hw_device_path", allow_networks: "allow_networks", gps_show_position: "gps_show_position",
@@ -178,6 +178,31 @@ function fmtAgo(unix) {
   return age < 90 ? `vor ${Math.round(age)} s` : age < 5400 ? `vor ${Math.round(age / 60)} min` : fmtDate(unix);
 }
 
+// Update-Hinweis: nur Zustand anzeigen; ein-/ausschalten über das Feld „update_check“ darunter.
+const RELEASE_LINK = /^https:\/\/github\.com\/ConGp20\/ntp-gui\/releases(\/tag\/v[0-9A-Za-z.-]+)?$/;
+
+function updateStatus(upd) {
+  if (!upd || !upd.enabled) return null;
+  const latest = upd.latest || null;
+  const link = latest && RELEASE_LINK.test(latest.url || "") ? latest.url : null;
+  const latestValue = !latest ? "noch nicht geprüft"
+    : el("span", {},
+      `${latest.version}${latest.title ? ` – ${latest.title}` : ""} `,
+      upd.available ? badge(upd.attention ? "neuer · Achtung beim Update" : "neuer", upd.attention ? "warn" : "info")
+        : badge("aktuell", "good"),
+      link ? el("a", { href: link, target: "_blank", rel: "noopener noreferrer", class: "update-link", text: " Release-Notizen →" }) : null);
+  const rows = [
+    ["Installiert", upd.current_valid ? upd.current : `${upd.current || "unbekannt"} (keine Versionsnummer)`, "update_current"],
+    ["Neueste auf GitHub", latestValue, "update_latest"],
+    ["Letzte Prüfung", upd.last_attempt ? `${fmtAgo(upd.last_attempt)}${upd.error ? "" : " · ok"}` : "noch keine", "update_last"],
+    ["Nächste Prüfung", typeof upd.next_check === "number" ? fmtDate(upd.next_check) : "–", "update_next"],
+  ];
+  return el("div", { class: "update-status" },
+    el("h3", { class: "mini-head" }, "Update-Hinweis ", info("update_check", "Update-Hinweis")),
+    kv(rows),
+    upd.error ? el("p", { class: "field-error", role: "alert", text: `Letzte Prüfung gescheitert: ${upd.error}` }) : null);
+}
+
 function dnsStatus(dns) {
   if (dns === undefined) return emptyNote("Zustand wird geladen …");
   if (!dns) return emptyNote("Zustand nicht verfügbar.");
@@ -222,6 +247,7 @@ export function render(ctx) {
   const schema = ctx.data("settings", "/api/settings", 0);
   const devices = ctx.data("devices", "/api/devices", 60);
   const dns = ctx.data("dns", "/api/dns", 0);
+  const update = ctx.data("update", "/api/update", 60);
   if (!schema) return [card("Einstellungen", {}, emptyNote("Wird geladen …"))];
   const ui = ctx.uiState;
   ui.draft = ui.draft || {};
@@ -420,6 +446,7 @@ export function render(ctx) {
     const helpKey = { ntp: "minsources", lan: "island", nts: "nts", dns: "dns", gps: "gps_value", ptp: "ptp_requirements", web: "settings_source" }[section.key];
     out.push(card(section.label, { id: `s-${section.key}`, help: helpKey, sub: section.description, actions: toggle },
       section.key === "dns" ? dnsStatus(dns) : null,
+      section.key === "web" ? updateStatus(update) : null,
       el("div", { class: "fields" }, visible.map(fieldRow))));
   }
 

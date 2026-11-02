@@ -1002,6 +1002,15 @@ SCHEMA: list[dict] = [
                 "Wandmonitor oder ein altes Tablet. Sichtbar werden nur Uhrzeit, Ampel, Genauigkeit "
                 "und die Art der Quelle (GPS, NTP …), keine Einstellungen, Namen oder Adressen. "
                 "Aus = die Uhr ist wie das Dashboard geschützt. Wirkt ohne Neustart."),
+    _field("update_check", "web", "Update-Hinweis (fragt GitHub)", "bool", False, _as_bool,
+           env="UPDATE_CHECK", restart=RESTART_NONE,
+           help="Fragt einmal am Tag zu einer zufälligen Uhrzeit bei GitHub nach der neuesten "
+                "ntp-gui-Version und zeigt „Neue Version x.y.z verfügbar“ samt Link zu den "
+                "Release-Notizen. Gesendet wird nur eine feste Anfrage mit dem User-Agent „ntp-gui“ – "
+                "ohne Version, ohne Kennung, ohne Daten dieser Instanz. Ehrlich gesagt: GitHub sieht "
+                "dabei einmal am Tag deine öffentliche IP-Adresse (grob ortbar) und dass hier "
+                "vermutlich ntp-gui läuft. Darum ist der Hinweis aus, bis du ihn einschaltest. Kein "
+                "Download, kein automatisches Update. Wirkt ohne Neustart."),
 ]
 
 

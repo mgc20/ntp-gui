@@ -50,7 +50,9 @@ from typing import Any
 
 # Zwecke: wofür etwas die Instanz verlässt. "notify" (Benachrichtigungen, 1.4) hat zusätzlich eine
 # eigene Feldliste (NOTIFY_FIELDS) – nur diese Felder einer Meldung gehen überhaupt hinaus.
-PURPOSES = ("diagnostics", "recording", "community", "notify")
+# "update_check" (Update-Hinweis, 1.4) schickt gar keine Daten: eine feste GET-Anfrage mit festen
+# Kopfzeilen (update_check_request) – ohne Version, ohne Kennung.
+PURPOSES = ("diagnostics", "recording", "community", "notify", "update_check")
 
 PUBLIC_IP = "<öffentliche-IP>"
 REMOVED = "<entfernt>"
@@ -2330,3 +2332,39 @@ def notify_message(message: dict, known_names=(), known: dict | None = None) -> 
     if findings:
         raise NotifyLeak(findings)
     return out
+
+
+# --- Update-Hinweis (Zweck "update_check") -------------------------------------------
+
+# Die einzige Anfrage des Update-Hinweises: fest verdrahtet, ohne Daten der Instanz. Der
+# User-Agent nennt bewusst weder Version noch Kennung – GitHub sieht so nur „irgendein
+# ntp-gui“ und die öffentliche IP-Adresse (die lässt sich technisch nicht verbergen).
+UPDATE_CHECK_URL = "https://api.github.com/repos/ConGp20/ntp-gui/releases/latest"
+UPDATE_CHECK_HEADERS: dict[str, str] = {
+    "User-Agent": "ntp-gui",
+    "Accept": "application/vnd.github+json",
+}
+_UPDATE_CHECK_VALUE_RE = re.compile(r"^[a-z][a-z./+-]{0,40}$")
+
+
+class UpdateCheckRejected(ValueError):
+    """Die Update-Anfrage weicht von der festen Form ab – nicht senden."""
+
+
+def update_check_request(url: str = UPDATE_CHECK_URL, headers: dict | None = None) -> tuple[str, dict]:
+    """(URL, Kopfzeilen) für den Update-Hinweis – nur die feste Form geht hinaus.
+
+    Wer später eine Version, eine Instanz-ID oder einen anderen Host ergänzt, bekommt hier
+    UpdateCheckRejected statt einer Anfrage: keine Ziffern in Kopfzeilen, nur bekannte
+    Kopfzeilen, nur die eine URL, keine Abfrageparameter."""
+    headers = dict(UPDATE_CHECK_HEADERS if headers is None else headers)
+    if url != UPDATE_CHECK_URL:
+        raise UpdateCheckRejected("Update-Hinweis: nur die feste GitHub-Adresse ist erlaubt")
+    if set(headers) - set(UPDATE_CHECK_HEADERS):
+        raise UpdateCheckRejected("Update-Hinweis: unbekannte Kopfzeile")
+    for value in headers.values():
+        if not isinstance(value, str) or not _UPDATE_CHECK_VALUE_RE.match(value):
+            raise UpdateCheckRejected("Update-Hinweis: Kopfzeile enthält mehr als einen festen Namen")
+    if headers.get("User-Agent") != "ntp-gui":
+        raise UpdateCheckRejected("Update-Hinweis: User-Agent muss „ntp-gui“ ohne Version sein")
+    return url, headers
