@@ -13,7 +13,7 @@ const LOG_LINES = 500;
 const EVENT_KINDS = {
   service: "Dienst", reload: "Neuladen", settings: "Einstellungen", source: "Quelle", gps: "GPS",
   pps: "PPS", calibration: "Kalibrierung", cert: "Zertifikat", leap: "Schaltsekunde", startup: "Start",
-  clients: "Clients", api: "API", notify: "Benachrichtigung", other: "Sonstiges",
+  clients: "Clients", api: "API", notify: "Benachrichtigung", dns: "DNS", other: "Sonstiges",
 };
 // Filter „Stufe“: die API liefert ab der gewählten Stufe aufwärts (warn → warn + crit).
 const LEVEL_FILTERS = [["", "alle Stufen"], ["warn", "ab Warnung"], ["crit", "nur Kritisch"]];

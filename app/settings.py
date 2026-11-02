@@ -39,6 +39,8 @@ SECTIONS = [
     ("ntp", "Zeitquellen (NTP)", "Woher dieser Server selbst seine Zeit bezieht."),
     ("lan", "Zeitserver für das LAN", "Wer diesen Server fragen darf und wie er antwortet."),
     ("nts", "NTS (Network Time Security)", "Kryptografisch abgesicherte Zeit – als Client und optional als Server."),
+    ("dns", "DNS für ntp-gui", "Über welche DNS-Server ntp-gui selbst die Namen seiner Zeitquellen auflöst – "
+            "gegen Schleifen, wenn der DNS im LAN Zeitserver-Namen auf ntp-gui umschreibt."),
     ("gps", "GPS / GNSS", "Ein GPS-Empfänger als eigene Referenzuhr (Stratum 0)."),
     ("ptp", "PTP (IEEE 1588)", "Präzisionszeit über das Netzwerk – braucht passende Hardware."),
     ("web", "Dashboard", "Darstellung, Verlauf und Zugriffsschutz."),
@@ -282,6 +284,118 @@ def _as_host_list(value: Any) -> list[str]:
     if len(names) > MAX_HOSTNAMES:
         raise ValidationError(f"Höchstens {MAX_HOSTNAMES} Namen")
     return names
+
+
+MAX_DNS_SERVERS = 8
+_DNS_PORT_RE = re.compile(r"^\d{1,5}$")
+
+
+def _list_items(value: Any) -> list[str]:
+    items = value if isinstance(value, list) else re.split(r"[,\s]+", str(value or ""))
+    return [str(item if item is not None else "").strip() for item in items if str(item or "").strip()]
+
+
+def _dns_port(text: str) -> int:
+    if not _DNS_PORT_RE.match(text) or not 0 < int(text) < 65536:
+        raise ValidationError(f"„{text}“ ist kein gültiger Port")
+    return int(text)
+
+
+def _as_dns_servers(value: Any) -> list[str]:
+    """DNS-Server als IP-Adresse, optional mit Port: 9.9.9.9, 9.9.9.9:5353, [2620:fe::fe]:53."""
+    out: list[str] = []
+    for item in _list_items(value):
+        text, port = item, 53
+        if item.startswith("["):
+            host, _, rest = item[1:].partition("]")
+            if rest and not rest.startswith(":"):
+                raise ValidationError(f"„{item}“: IPv6 mit Port als [Adresse]:Port schreiben")
+            text, port = host, (_dns_port(rest[1:]) if rest else 53)
+        elif item.count(":") == 1:
+            text, _, raw_port = item.partition(":")
+            port = _dns_port(raw_port)
+        try:
+            addr = ipaddress.ip_address(text)
+        except ValueError:
+            raise ValidationError(f"„{item}“ ist keine IP-Adresse – hier nur Adressen, z. B. 9.9.9.9 "
+                                  "(Namen bräuchten selbst wieder DNS)") from None
+        if addr.is_unspecified or addr.is_multicast:
+            raise ValidationError(f"„{item}“ ist keine Unicast-Adresse")
+        if str(addr) in ("127.0.0.1", "::1") and port == 53:
+            raise ValidationError(f"„{item}“ ist der Weiterleiter von ntp-gui selbst – das wäre eine Schleife")
+        norm = str(addr) if port == 53 else (f"[{addr}]:{port}" if addr.version == 6 else f"{addr}:{port}")
+        if norm not in out:
+            out.append(norm)
+    if len(out) > MAX_DNS_SERVERS:
+        raise ValidationError(f"Höchstens {MAX_DNS_SERVERS} Server")
+    return out
+
+
+def _as_dot_servers(value: Any) -> list[str]:
+    """DNS-over-TLS-Server als Name[:Port], z. B. dns.quad9.net oder one.one.one.one:853."""
+    out: list[str] = []
+    for item in _list_items(value):
+        host, port = item.lower().rstrip("."), None
+        if host.startswith("["):
+            inner, _, rest = host[1:].partition("]")
+            host, port = inner, (_dns_port(rest[1:]) if rest.startswith(":") else None)
+        elif host.count(":") == 1:
+            host, _, raw_port = host.partition(":")
+            port = _dns_port(raw_port)
+        try:
+            addr = ipaddress.ip_address(host)
+        except ValueError:
+            if not _HOST_RE.match(host) or "." not in host:
+                raise ValidationError(f"„{item}“ ist kein gültiger Servername, z. B. dns.quad9.net") from None
+            norm = host
+        else:
+            norm = f"[{addr}]" if addr.version == 6 else str(addr)
+        if port and port != 853:
+            norm = f"{norm}:{port}"
+        if norm not in out:
+            out.append(norm)
+    if len(out) > MAX_DNS_SERVERS:
+        raise ValidationError(f"Höchstens {MAX_DNS_SERVERS} Server")
+    return out
+
+
+def _as_doh_urls(value: Any) -> list[str]:
+    """DNS-over-HTTPS-Adressen (RFC 8484), nur https://, z. B. https://dns.quad9.net/dns-query."""
+    out: list[str] = []
+    for item in _list_items(value):
+        text = item[:-len("{?dns}")] if item.endswith("{?dns}") else item
+        if not text.lower().startswith("https://") or not http_url_ok(text):
+            raise ValidationError(f"„{item}“: https:// mit Servername und Pfad erwartet, ohne Benutzer/Passwort, "
+                                  "z. B. https://dns.quad9.net/dns-query")
+        if "#" in text:
+            raise ValidationError(f"„{item}“: kein #-Anteil erlaubt")
+        if text not in out:
+            out.append(text)
+    if len(out) > MAX_DNS_SERVERS:
+        raise ValidationError(f"Höchstens {MAX_DNS_SERVERS} Server")
+    return out
+
+
+def _as_dns_pins(value: Any) -> list[str]:
+    """Feste Adressen für DoT/DoH-Server: name=IP, z. B. dns.quad9.net=9.9.9.9."""
+    out: list[str] = []
+    for item in _list_items(value):
+        name, sep, ip = item.partition("=")
+        name = name.strip().lower().rstrip(".")
+        if not sep or not _HOST_RE.match(name) or "." not in name:
+            raise ValidationError(f"„{item}“: Format Name=IP, z. B. dns.quad9.net=9.9.9.9")
+        try:
+            addr = ipaddress.ip_address(ip.strip().strip("[]"))
+        except ValueError:
+            raise ValidationError(f"„{item}“: „{ip}“ ist keine IP-Adresse") from None
+        if addr.is_unspecified or addr.is_multicast or addr.is_loopback:
+            raise ValidationError(f"„{item}“: keine brauchbare Adresse")
+        norm = f"{name}={addr}"
+        if norm not in out:
+            out.append(norm)
+    if len(out) > 2 * MAX_DNS_SERVERS:
+        raise ValidationError(f"Höchstens {2 * MAX_DNS_SERVERS} Einträge")
+    return out
 
 
 def _as_network_list(value: Any) -> list[str]:
@@ -592,6 +706,50 @@ SCHEMA: list[dict] = [
            help="Auf diesem TCP-Port nimmt chrony den TLS-Schlüsselaustausch (NTS-KE) an. "
                 "Standard ist 4460 – Clients erwarten ihn dort. Nur ändern, wenn ein Reverse "
                 "Proxy außen 4460 annimmt und intern an einen anderen Port weiterreicht."),
+
+    # --- DNS für ntp-gui ----------------------------------------------------
+    _field("dns_mode", "dns", "DNS für ntp-gui", "select", "system",
+           _as_choice("system", "servers", "dot", "doh"), env="DNS_MODE",
+           options=[("system", "System-DNS des Containers (Standard)"),
+                    ("servers", "Eigene DNS-Server (klassisches DNS)"),
+                    ("dot", "DNS-over-TLS (DoT)"), ("doh", "DNS-over-HTTPS (DoH)")],
+           help="Woher ntp-gui selbst Namen wie pool.ntp.org auflöst. „System-DNS“ ändert nichts. "
+                "Die anderen Modi starten einen kleinen Weiterleiter auf 127.0.0.1 im Container und "
+                "stellen /etc/resolv.conf darauf um – chronyd, NTS und die Prüfung „Zeitserver erzwingen“ "
+                "fragen dann deine Server statt des DNS im LAN. Wichtig, wenn AdGuard Home oder Pi-hole "
+                "Zeitserver-Namen auf ntp-gui umschreibt: Sonst fragt chronyd sich selbst. DoT und DoH "
+                "laufen verschlüsselt über 853/tcp bzw. 443/tcp und sind damit auch von einer "
+                "DNS-Umleitung per Firewall (Port 53) nicht betroffen."),
+    _field("dns_servers", "dns", "DNS-Server (IP-Adressen)", "hostlist", [], _as_dns_servers,
+           env="DNS_SERVERS", placeholder="z. B. 9.9.9.9 oder 1.1.1.1",
+           help="Für den Modus „Eigene DNS-Server“: IP-Adressen, optional mit Port (9.9.9.9:53, "
+                "[2620:fe::fe]:53). Nur Adressen, keine Namen – die bräuchten selbst wieder DNS. "
+                "Der Reihe nach gefragt; antwortet einer nicht, kommt der nächste dran. Achtung: "
+                "Leitet die Firewall Port 53 auf AdGuard/Pi-hole um, braucht ntp-gui dort eine Ausnahme "
+                "– oder du nimmst DoT/DoH."),
+    _field("dns_dot", "dns", "DNS-over-TLS-Server", "hostlist", [], _as_dot_servers,
+           env="DNS_DOT", placeholder="z. B. dns.quad9.net",
+           help="Für den Modus DoT: Servername, optional mit Port (Standard 853), z. B. dns.quad9.net, "
+                "one.one.one.one oder dns.digitale-gesellschaft.ch. Das Zertifikat wird gegen die "
+                "Zertifizierungsstellen des Systems und den Namen geprüft. Die Adresse des Servers "
+                "ermittelt ntp-gui über den System-DNS – oder du trägst sie unten fest ein."),
+    _field("dns_doh", "dns", "DNS-over-HTTPS-Adressen", "hostlist", [], _as_doh_urls,
+           env="DNS_DOH", placeholder="z. B. https://dns.quad9.net/dns-query",
+           help="Für den Modus DoH: vollständige https-Adresse nach RFC 8484, z. B. "
+                "https://dns.quad9.net/dns-query oder https://cloudflare-dns.com/dns-query. ntp-gui "
+                "schickt die Anfrage per POST, folgt keiner Weiterleitung und nutzt keinen Proxy. Steht "
+                "im Pfad eine Konto-Kennung (z. B. NextDNS), zeigen Status und Ereignisse nur den Servernamen."),
+    _field("dns_pin", "dns", "Feste Adressen für DoT/DoH", "hostlist", [], _as_dns_pins,
+           env="DNS_PIN", advanced=True, placeholder="z. B. dns.quad9.net=9.9.9.9",
+           help="Optional, je Zeile Name=IP, z. B. dns.quad9.net=9.9.9.9. Dann fragt ntp-gui für den "
+                "Verbindungsaufbau keinen System-DNS – sinnvoll, wenn der DNS im LAN unzuverlässig ist "
+                "oder selbst umgeleitet wird. Das Zertifikat wird weiter gegen den Namen geprüft."),
+    _field("dns_fallback", "dns", "Rückfall auf den System-DNS", "bool", True, _as_bool,
+           env="DNS_FALLBACK", advanced=True,
+           help="Antwortet keiner deiner Server, fragt ntp-gui den ursprünglichen DNS des Containers "
+                "und meldet das als Ereignis – lieber eine Antwort mit Schleifenrisiko als gar keine "
+                "Zeitquelle. Aus: Dann bleibt die Anfrage unbeantwortet, und nichts geht unverschlüsselt "
+                "hinaus – sinnvoll, wenn DoT/DoH aus Datenschutzgründen gewählt ist."),
 
     # --- GPS ---------------------------------------------------------------
     _field("gps_enable", "gps", "GPS verwenden", "bool", False, _as_bool, env="GPS_ENABLE",

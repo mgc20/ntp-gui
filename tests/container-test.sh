@@ -13,6 +13,7 @@
 # sauberes Stoppen. Ab 1.3: Log-Seite, Diagnosepaket ohne Standort-/Kennungsdaten,
 # Ereignisprotokoll, API-Schlüssel (read/admin), /api/v1, Übernahme des alten
 # Verlaufs (history.json.gz → SQLite) und passive Client-Messung im Bridge-Netz.
+# Ab 1.4: DNS für ntp-gui (Weiterleiter auf 127.0.0.1, resolv.conf, Absturz, Zurückschalten).
 set -uo pipefail
 
 IMAGE="${1:-ntp-gui:test}"
@@ -26,7 +27,7 @@ FAIL=0
 cleanup() {
   docker rm -f "${PREFIX}-a" "${PREFIX}-b" "${PREFIX}-c" "${PREFIX}-d" "${PREFIX}-e" "${PREFIX}-f" \
     "${PREFIX}-g" "${PREFIX}-h" "${PREFIX}-i" "${PREFIX}-j" >/dev/null 2>&1
-  docker rm -f "${PREFIX}-k" >/dev/null 2>&1
+  docker rm -f "${PREFIX}-k" "${PREFIX}-l" >/dev/null 2>&1
   docker volume rm "${PREFIX}-data" "${PREFIX}-hist" >/dev/null 2>&1
   rm -rf "$CFG_DIR" "$NTS_DIR" "$DIAG_DIR"
 }
@@ -520,6 +521,48 @@ FILES=$(docker exec "${PREFIX}-k" ls /var/lib/chrony/ntp-gui)
 contains "Alte Datei als .migrated aufbewahrt" "$FILES" "history.json.gz.migrated"
 contains "SQLite-Datenbank angelegt" "$FILES" "ntp-gui.db"
 docker rm -f "${PREFIX}-k" >/dev/null 2>&1
+
+echo
+echo "12c) DNS für ntp-gui (Modus servers, Upstream im Container – kein Internet nötig)"
+docker run -d --name "${PREFIX}-l" -p 18091:8080 -e NTP_PORT=10135 -e NTP_POOLS="" -e NTP_SERVERS="" \
+  -e DNS_MODE=servers -e DNS_SERVERS=127.0.0.1:5354 -e DNS_FALLBACK=false "$IMAGE" >/dev/null
+wait_for_health http://127.0.0.1:18091/healthz 90 || true
+# Fake-Upstream: beantwortet jede Frage mit 192.0.2.53 (A).
+docker exec -d "${PREFIX}-l" python3 -c '
+import socket, struct
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.bind(("127.0.0.1", 5354))
+while True:
+    q, a = s.recvfrom(4096)
+    i = 12
+    while q[i]: i += q[i] + 1
+    end = i + 5
+    s.sendto(q[:2] + b"\x81\x80" + q[4:6] + b"\x00\x01\x00\x00\x00\x00" + q[12:end]
+             + b"\xc0\x0c\x00\x01\x00\x01\x00\x00\x00\x3c\x00\x04" + bytes([192, 0, 2, 53]), a)'
+sleep 1
+RESOLV=$(docker exec "${PREFIX}-l" cat /etc/resolv.conf)
+contains "resolv.conf zeigt auf 127.0.0.1" "$RESOLV" "nameserver 127.0.0.1"
+contains "resolv.conf trägt die ntp-gui-Markierung" "$RESOLV" "# ntp-gui: dnsfwd"
+check "dnsfwd läuft (services.json)" running "$(svc "${PREFIX}-l" dnsfwd state)"
+check "Name wird über den Weiterleiter aufgelöst" 192.0.2.53 \
+  "$(docker exec "${PREFIX}-l" getent ahostsv4 ntpgui-test.example 2>/dev/null | awk 'NR==1 {print $1}')"
+DNSJ=$(curl -s --max-time 10 http://127.0.0.1:18091/api/v1/dns)
+check "/api/v1/dns meldet ok" ok "$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('state'))" "$DNSJ" 2>/dev/null)"
+contains "Weiterleiter lauscht auf 127.0.0.1:53" "$(docker exec "${PREFIX}-l" cat /proc/net/udp)" "0100007F:0035"
+check "Weiterleiter nur auf Loopback" "" "$(docker exec "${PREFIX}-l" sh -c "cat /proc/net/udp /proc/net/tcp | awk '\$2 ~ /:0035\$/ {print \$2}' | grep -v '^0100007F:'")"
+# Absturz: resolv.conf muss sofort zurück auf den System-DNS, dann Neustart mit Backoff.
+docker exec "${PREFIX}-l" pkill -KILL -f 'dnsfwd.py serve' >/dev/null 2>&1
+if wait_svc "${PREFIX}-l" dnsfwd state restarting 10; then ok "Absturz erkannt, Neustart geplant"; else bad "Absturz nicht erkannt"; fi
+check "Nach Absturz: Original-resolv.conf zurück" 0 "$(docker exec "${PREFIX}-l" grep -c 'ntp-gui: dnsfwd' /etc/resolv.conf)"
+if wait_svc "${PREFIX}-l" dnsfwd state running 20; then ok "dnsfwd läuft wieder"; else bad "dnsfwd startet nicht neu"; fi
+sleep 1
+contains "resolv.conf zeigt wieder auf 127.0.0.1" "$(docker exec "${PREFIX}-l" cat /etc/resolv.conf)" "# ntp-gui: dnsfwd"
+# Zurück auf „system“: Weiterleiter aus, Original-resolv.conf zurück.
+curl -s --max-time 10 -X POST -H 'Content-Type: application/json' -H 'X-NTP-GUI: 1' \
+  -d '{"changes":{"dns_mode":"system"}}' http://127.0.0.1:18091/api/settings >/dev/null
+if wait_svc "${PREFIX}-l" dnsfwd state stopped 30; then ok "Modus system: dnsfwd gestoppt"; else bad "dnsfwd läuft weiter"; fi
+check "Modus system: resolv.conf ohne Markierung" 0 "$(docker exec "${PREFIX}-l" grep -c 'ntp-gui: dnsfwd' /etc/resolv.conf)"
+contains "Modus system: Original-Resolver wieder eingetragen" "$(docker exec "${PREFIX}-l" cat /etc/resolv.conf)" "nameserver"
+docker rm -f "${PREFIX}-l" >/dev/null 2>&1
 
 echo
 echo "13) Sauberes Stoppen"

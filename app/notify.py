@@ -67,12 +67,13 @@ LEVEL_LABELS = {"info": "Info", "warn": "Warnung", "crit": "Kritisch"}
 KIND_LABELS = {
     "service": "Dienste", "reload": "Neuladen", "settings": "Einstellungen", "source": "Zeitquellen",
     "gps": "GPS", "pps": "PPS", "calibration": "Kalibrierung", "cert": "Zertifikat",
-    "leap": "Schaltsekunde", "startup": "Start", "clients": "Clients", "api": "API", "other": "Sonstiges",
+    "leap": "Schaltsekunde", "startup": "Start", "clients": "Clients", "api": "API", "dns": "DNS für ntp-gui",
+    "other": "Sonstiges",
 }
 # Seite im Dashboard, auf die der Link einer Meldung zeigt.
 KIND_PAGES = {"gps": "gps", "pps": "gps", "calibration": "gps", "source": "quellen", "clients": "clients",
               "service": "diagnose", "reload": "diagnose", "cert": "einstellungen", "settings": "einstellungen",
-              "leap": "quellen"}
+              "leap": "quellen", "dns": "einstellungen"}
 
 MAX_CHANNELS = 10
 QUEUE_MAX = 50                     # Meldungen je Kanal; bei Überlauf fällt die älteste weg

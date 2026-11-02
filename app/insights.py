@@ -132,6 +132,102 @@ def ptp_role_insights(cfg: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
+DNS_MODE_HINT = ("Stell unter Einstellungen → „DNS für ntp-gui“ eigene Server ein – am robustesten "
+                 "DNS-over-TLS oder DNS-over-HTTPS, weil die auch eine Umleitung von Port 53 nicht "
+                 "trifft. Alternativ nimmst du ntp-gui im DNS-Server von der Umschreibung aus.")
+
+
+def _own_loop_sources(sources: list[dict], own: list[str]) -> list[str]:
+    """Quellen mit Namen, deren Adresse eine eigene ist (chrony fragt sich selbst)."""
+    import ipaddress
+    mine = set()
+    for addr in own or []:
+        try:
+            mine.add(ipaddress.ip_address(str(addr).split("%")[0]))
+        except ValueError:
+            continue
+    out = []
+    for source in sources or []:
+        if source.get("mode") not in {"^", "="} or not source.get("hostname"):
+            continue
+        try:
+            ip = ipaddress.ip_address(str(source.get("name") or ""))
+        except ValueError:
+            continue
+        if ip in mine or ip.is_loopback:
+            out.append(str(source["hostname"]))
+    return out
+
+
+def dns_insights(dns: dict[str, Any], cfg: dict[str, Any], sources: list[dict] | None = None,
+                 own_addresses: list[str] | None = None, enforce_loops: list[dict] | None = None,
+                 enforce_used: bool = False) -> list[dict[str, Any]]:
+    """DNS für ntp-gui: Zustand des Weiterleiters und Schleifen durch DNS-Umschreibung."""
+    out: list[dict[str, Any]] = []
+
+    def add(level, title, text, key):
+        out.append({"level": level, "title": title, "text": text, "action": "settings", "key": key})
+
+    dns = dns or {}
+    mode = dns.get("mode") or cfg.get("dns_mode") or "system"
+    if mode == "system":
+        loops = list(dict.fromkeys(_own_loop_sources(sources or [], own_addresses or [])
+                                   + [str(l.get("host")) for l in enforce_loops or [] if l.get("host")]))
+        if loops:
+            add("warn", "Schleife durch DNS-Umschreibung",
+                f"{', '.join(loops)} zeigt per DNS auf ntp-gui selbst – chronyd fragt dann sich selbst und "
+                "hat keine echte Quelle. Ursache ist fast immer eine DNS-Umschreibung (AdGuard Home, "
+                "Pi-hole, dnsmasq) ohne Ausnahme für ntp-gui. " + DNS_MODE_HINT, "dns_loop")
+        elif enforce_used:
+            import enforce
+            hosts = [str(s.get("host")) for s in cfg.get("ntp_sources") or [] if s.get("host")]
+            risky = enforce.rewritten_sources(hosts, cfg.get("enforce_hostnames") or [])
+            if risky:
+                add("info", "Schleifengefahr durch DNS-Umschreibung",
+                    f"Deine Quelle{'n' if len(risky) > 1 else ''} {', '.join(risky)} "
+                    f"{'stehen' if len(risky) > 1 else 'steht'} auch in der Liste „Zeitserver erzwingen“. "
+                    "Schreibt dein DNS-Server diese Namen auf ntp-gui um und nutzt ntp-gui denselben DNS, "
+                    "fragt chronyd sich selbst. " + DNS_MODE_HINT, "dns_loop_risk")
+        return out
+
+    if dns.get("effective_mode") == "system":
+        add("warn", "DNS-Modus ohne Server",
+            f"Eingestellt ist „{dns.get('mode_label') or mode}“, aber es ist kein Server eingetragen. "
+            "ntp-gui nutzt deshalb weiter den System-DNS. Trag unter Einstellungen → „DNS für ntp-gui“ "
+            "mindestens einen Server ein.", "dns_no_servers")
+        return out
+    if dns.get("error"):
+        add("warn", "DNS-Weiterleiter startet nicht",
+            f"{dns['error']}. ntp-gui nutzt so lange den System-DNS.", "dns_error")
+    resolv = dns.get("resolv") or {}
+    if resolv.get("state") == "readonly":
+        add("warn", "resolv.conf ist schreibgeschützt",
+            "Der DNS-Weiterleiter läuft, aber /etc/resolv.conf lässt sich nicht auf ihn umstellen "
+            "(z. B. „read_only: true“). chronyd fragt deshalb weiter den System-DNS. Abhilfe: in der "
+            "Compose-Datei beim Dienst „dns: 127.0.0.1“ eintragen – dann zeigt Docker selbst auf den "
+            "Weiterleiter.", "dns_resolv_readonly")
+    elif resolv.get("state") == "error" or (resolv.get("state") == "local" and resolv.get("message")):
+        add("warn", "resolv.conf-Problem", f"{resolv.get('message')}.", "dns_resolv_error")
+    state = dns.get("state")
+    if state == "fallback":
+        add("warn", "Eigene DNS-Server nicht erreichbar",
+            "Keiner der eingetragenen DNS-Server hat zuletzt geantwortet. ntp-gui fragt deshalb den "
+            "ursprünglichen DNS des Containers – schreibt der Zeitserver-Namen um, droht wieder eine "
+            "Schleife. Prüfe Adressen, Firewall (853/tcp für DoT, 443/tcp für DoH) und die Uhrzeit "
+            "(TLS-Zertifikate).", "dns_fallback")
+    elif state == "failing":
+        add("crit", "Keine Namensauflösung",
+            "Weder die eigenen DNS-Server noch der System-DNS antworten. chronyd kann Namen wie "
+            "pool.ntp.org nicht auflösen; Quellen mit fester IP-Adresse laufen weiter.", "dns_failing")
+    if ((dns.get("stats") or {}).get("loops") or 0) > 0:
+        add("warn", "System-DNS fragt ntp-gui zurück",
+            "Anfragen, die ntp-gui an den System-DNS weitergab, kamen bei ntp-gui selbst wieder an "
+            "(z. B. Docker-DNS mit „dns: 127.0.0.1“). Sie werden abgebrochen statt zu kreisen. Der "
+            "Rückfall auf den System-DNS hilft hier nicht – sorge dafür, dass die eigenen Server "
+            "erreichbar sind.", "dns_loop_fallback")
+    return out
+
+
 def build(status: dict[str, Any], cfg: dict[str, Any]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
 

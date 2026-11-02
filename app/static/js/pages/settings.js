@@ -30,6 +30,8 @@ export const FIELD_HELP = {
   clientmon_enable: "clientmon",
   web_title: "web_title", web_refresh_seconds: "web_refresh", history_interval: "history_interval",
   notify_dashboard_url: "notify_link",
+  dns_mode: "dns_modes", dns_servers: "dns_upstreams", dns_dot: "dns_modes", dns_doh: "dns_modes",
+  dns_pin: "dns_pin", dns_fallback: "dns_fallback",
   gps_device: "hw_device_path", allow_networks: "allow_networks", gps_show_position: "gps_show_position",
 };
 
@@ -153,12 +155,72 @@ function apiCard(ctx, readonly, auth) {
   body, el("h3", { class: "subhead", text: "Instanz" }), instanceRow);
 }
 
+// DNS für ntp-gui: Zustand des Weiterleiters (Stand beim Laden der Seite).
+const DNS_STATE = {
+  system: ["System-DNS – kein eigener Weiterleiter", "muted"],
+  starting: ["läuft – wartet auf erste Anfrage", "info"],
+  ok: ["läuft – eigene Server antworten", "good"],
+  fallback: ["Rückfall auf System-DNS", "warn"],
+  failing: ["keine Auflösung", "crit"],
+  down: ["nicht gestartet", "crit"],
+};
+const RESOLV_STATE = {
+  local: ["zeigt auf 127.0.0.1", "good"],
+  system: ["System-DNS", "muted"],
+  readonly: ["schreibgeschützt", "warn"],
+  error: ["Fehler", "crit"],
+};
+
+function fmtAgo(unix) {
+  if (typeof unix !== "number" || !Number.isFinite(unix)) return "nie";
+  const age = Math.max(0, Date.now() / 1000 - unix);
+  return age < 90 ? `vor ${Math.round(age)} s` : age < 5400 ? `vor ${Math.round(age / 60)} min` : fmtDate(unix);
+}
+
+function dnsStatus(dns) {
+  if (dns === undefined) return emptyNote("Zustand wird geladen …");
+  if (!dns) return emptyNote("Zustand nicht verfügbar.");
+  const [stateText, stateTone] = DNS_STATE[dns.state] || ["unklar", "warn"];
+  const resolv = dns.resolv || {};
+  const [resolvText, resolvTone] = RESOLV_STATE[resolv.state] || [dns.effective_mode === "system" ? "System-DNS" : "unbekannt", "muted"];
+  const stats = dns.stats || {};
+  const ups = Array.isArray(dns.upstreams) ? dns.upstreams : [];
+  const rows = [
+    ["Aktiver Modus", dns.effective_label || dns.effective_mode || "–", "dns_modes"],
+    ["Zustand", badge(stateText, stateTone), "dns_state"],
+    dns.effective_mode !== "system" ? ["resolv.conf", el("span", {}, badge(resolvText, resolvTone),
+      resolv.message ? el("span", { class: "muted", text: ` ${resolv.message}` }) : null), "dns_resolv"] : null,
+    dns.effective_mode !== "system" ? ["Rückfall auf System-DNS", !dns.fallback_enabled ? "aus"
+      : (dns.fallback_servers || []).length ? `an (${dns.fallback_servers.join(", ")})` : "an – kein System-DNS bekannt", "dns_fallback"] : null,
+    dns.running ? ["Anfragen", `${stats.queries ?? 0} · Cache ${stats.cache_hits ?? 0} · Rückfall ${stats.fallback ?? 0}`
+      + ` · ohne Antwort ${stats.servfail ?? 0}`, "dns_counts"] : null,
+  ];
+  return el("div", { class: "dns-status" },
+    kv(rows),
+    dns.error ? el("p", { class: "field-error", role: "alert", text: dns.error }) : null,
+    (dns.warnings || []).map((w) => el("p", { class: "field-error", text: w })),
+    ups.length ? el("div", {},
+      el("h3", { class: "mini-head" }, "Eigene Server ", info("dns_upstreams", "Eigene Server")),
+      el("ul", { class: "svc-list" }, ups.map((u) => {
+        const down = typeof u.down_until === "number" && u.down_until * 1000 > Date.now();
+        const tone = down ? "warn" : u.ok ? "good" : u.fail ? "warn" : "muted";
+        return el("li", { class: "svc", "data-tone": tone },
+          el("span", { class: "svc-dot", "aria-hidden": "true" }),
+          el("span", { class: "svc-name mono", text: u.label }),
+          badge(down ? "übersprungen" : u.ok ? "antwortet" : u.fail ? "Fehler" : "noch nicht gefragt", tone),
+          el("span", { class: "svc-message", text: `${u.ok} ok · ${u.fail} Fehler · zuletzt ok ${fmtAgo(u.last_ok)}`
+            + (typeof u.rtt_ms === "number" ? ` · ${u.rtt_ms} ms` : "")
+            + (u.last_error ? ` · letzter Fehler (${fmtAgo(u.last_error_t)}): ${u.last_error}` : "") }));
+      }))) : null);
+}
+
 function clone(value) { return JSON.parse(JSON.stringify(value)); }
 function same(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
 
 export function render(ctx) {
   const schema = ctx.data("settings", "/api/settings", 0);
   const devices = ctx.data("devices", "/api/devices", 60);
+  const dns = ctx.data("dns", "/api/dns", 0);
   if (!schema) return [card("Einstellungen", {}, emptyNote("Wird geladen …"))];
   const ui = ctx.uiState;
   ui.draft = ui.draft || {};
@@ -354,8 +416,9 @@ export function render(ctx) {
     const visible = sectionFields.filter((f) => !f.advanced || showAdv || f.source === "gui" || f.source === "env");
     const toggle = advancedCount ? el("button", { type: "button", class: "link", text: showAdv ? "Weniger anzeigen" : `Erweitert (${advancedCount})`,
       "aria-expanded": showAdv ? "true" : "false", onclick: () => { ui.showAdvanced[section.key] = !showAdv; ctx.rerender(); } }) : null;
-    const helpKey = { ntp: "minsources", lan: "island", nts: "nts", gps: "gps_value", ptp: "ptp_requirements", web: "settings_source" }[section.key];
+    const helpKey = { ntp: "minsources", lan: "island", nts: "nts", dns: "dns", gps: "gps_value", ptp: "ptp_requirements", web: "settings_source" }[section.key];
     out.push(card(section.label, { id: `s-${section.key}`, help: helpKey, sub: section.description, actions: toggle },
+      section.key === "dns" ? dnsStatus(dns) : null,
       el("div", { class: "fields" }, visible.map(fieldRow))));
   }
 

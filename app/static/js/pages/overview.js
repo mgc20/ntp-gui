@@ -67,8 +67,8 @@ const SERVICE_STATE = {
   failed: ["ausgefallen", "crit"],
   stopped: ["aus", "muted"],
 };
-const SERVICE_ORDER = ["chronyd", "gpsd", "ptp4l", "phc2sys", "web"];
-const SERVICE_INFO = { chronyd: "chronyd", ptp4l: "ptp_requirements", phc2sys: "phc2sys" };
+const SERVICE_ORDER = ["chronyd", "gpsd", "ptp4l", "phc2sys", "dnsfwd", "web"];
+const SERVICE_INFO = { chronyd: "chronyd", ptp4l: "ptp_requirements", phc2sys: "phc2sys", dnsfwd: "dns" };
 
 function serviceSince(svc) {
   if (!isNum(svc.since)) return "–";
@@ -129,7 +129,8 @@ const CLOCK_KEYS = new Set(["chrony_down", "no_clock_control", "island", "syncin
 export function panelOf(item) {
   const key = String(item.key || "");
   if (CLOCK_KEYS.has(key)) return "clock";
-  if (key.startsWith("service_") || key === "storage") return "services";
+  if (key === "dns_loop" || key === "dns_loop_risk") return "sources";
+  if (key.startsWith("service_") || key === "storage" || key.startsWith("dns_")) return "services";
   if (key.startsWith("hw_gps") || key.startsWith("gps") || item.action === "gps") return "gps";
   if (key.startsWith("hw_ptp") || key.startsWith("ptp") || item.action === "ptp") return "ptp";
   if (key.startsWith("nts_server") || key === "hw_nts" || item.action === "clients") return "clients";
@@ -395,7 +396,7 @@ function servicesPanel(services, issues) {
 }
 
 // Kurze Namen für die Dienste-Kachel; der volle Name steht im Tooltip.
-const SERVICE_SHORT = { chronyd: "chronyd", gpsd: "gpsd", ptp4l: "ptp4l", phc2sys: "phc2sys", web: "Dashboard" };
+const SERVICE_SHORT = { chronyd: "chronyd", gpsd: "gpsd", ptp4l: "ptp4l", phc2sys: "phc2sys", dnsfwd: "DNS", web: "Dashboard" };
 
 const EVENT_LABEL = { info: "Info", warn: "Warnung", crit: "Kritisch" };
 

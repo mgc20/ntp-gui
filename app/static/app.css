@@ -826,3 +826,8 @@ details.enforce-names { margin-top: 10px; }
 .notify-secret { display: grid; gap: 6px; }
 .notify-inline { display: inline-flex; gap: 8px; align-items: center; font-size: 13px; color: var(--ink-muted); }
 .notify-foot { margin-top: 4px; }
+
+/* DNS für ntp-gui: Zustand über den Feldern (Einstellungen) */
+.dns-status { margin: 4px 0 16px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+.dns-status .mini-head { margin-top: 12px; }
+.dns-status .svc-name { overflow-wrap: anywhere; }

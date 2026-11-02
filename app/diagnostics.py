@@ -384,6 +384,10 @@ def _collect_settings(cfg: dict, options: dict) -> dict:
     for key in list(values):
         if re.search(r"(?i)pass|hash|secret|token|auth", key):
             values.pop(key)
+    if isinstance(values.get("dns_doh"), list):
+        # Der Pfad einer DoH-Adresse kann eine Konto-Kennung sein (z. B. NextDNS) – nur der Server.
+        import dnsfwd
+        values["dns_doh"] = [dnsfwd.doh_label(str(url)) for url in values["dns_doh"]]
     return {"values": values, "herkunft": sources}
 
 

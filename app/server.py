@@ -49,6 +49,7 @@ import chrony
 import clientmon
 import devices
 import diagnostics
+import dnsfwd
 import enforce
 import events
 import gps
@@ -130,10 +131,16 @@ apiv1.endpoint("GET", "/enforce/snippets", "/api/enforce/snippets", "read",
                "Anleitungen, um Zeitserver per DNS oder Firewall auf diesen Server umzuleiten.",
                ["server_ip", "systems", "hostnames", "snippets"],
                {"system": "adguard, pihole, dnsmasq, unbound, opnsense, mikrotik, openwrt, nftables, unifi oder all",
-                "ip": "Adresse dieses Servers aus Sicht der Clients"})
+                "ip": "Adresse dieses Servers aus Sicht der Clients",
+                "dns_ip": "Adresse von AdGuard Home/Pi-hole für die optionale DNS-Umleitung per Firewall"})
 apiv1.endpoint("GET", "/enforce/check", "/api/enforce/check", "read",
                "Prüft, ob die Umleitung wirkt (höchstens alle 30 s).", ["level", "summary", "hosts"],
                {"ip": "Adresse dieses Servers aus Sicht der Clients"})
+apiv1.endpoint("GET", "/dns", "/api/dns", "read",
+               "DNS für ntp-gui: eingestellter Modus, Zustand des Weiterleiters auf 127.0.0.1, eigene "
+               "Server mit letzter Antwort bzw. letztem Fehler, Rückfall auf den System-DNS, resolv.conf. "
+               "DoH-Adressen nur mit Servername (der Pfad kann eine Konto-Kennung enthalten).",
+               ["mode", "effective_mode", "running", "state", "upstreams", "resolv", "stats"])
 apiv1.endpoint("GET", "/clients/offsets", "/api/clients/offsets", "read",
                "Passiv gemessene Abweichung der Client-Uhren.", ["available", "running", "reason", "clients"])
 apiv1.endpoint("GET", "/notify", "/api/notify", "admin",
@@ -342,7 +349,8 @@ def reload_status() -> dict:
 
 
 SERVICE_LABELS = {"chronyd": "chronyd (NTP)", "gpsd": "gpsd (GPS)", "ptp4l": "ptp4l (PTP)",
-                  "phc2sys": "phc2sys (PTP-Uhr ↔ Systemuhr)", "web": "Dashboard"}
+                  "phc2sys": "phc2sys (PTP-Uhr ↔ Systemuhr)", "dnsfwd": "dnsfwd (DNS für ntp-gui)",
+                  "web": "Dashboard"}
 SERVICE_STATES = {"running", "restarting", "failed", "stopped"}
 
 
@@ -412,6 +420,17 @@ def service_insights(services: dict, now: float | None = None) -> list[dict]:
         label = svc.get("label") or name
         note = f" Letzte Meldung: {svc['message']}" if svc.get("message") else ""
         exit_text = f" (Exit-Code {svc['last_exit']})" if svc.get("last_exit") is not None else ""
+        if name == "dnsfwd" and svc.get("state") in ("restarting", "failed"):
+            out.append({
+                "level": "warn", "key": f"service_{name}",
+                "title": f"{label} ist ausgefallen" + (" und wird neu gestartet" if svc.get("state") == "restarting" else ""),
+                "text": f"Der DNS-Weiterleiter hat sich beendet{exit_text}.{note} Bis er wieder läuft, zeigt "
+                        "/etc/resolv.conf auf den ursprünglichen DNS des Containers – Namen lösen sich weiter "
+                        "auf, aber ohne deine eigenen Server. Das Container-Log nennt den Grund (z. B. Port 53 "
+                        "belegt).",
+                "action": "settings",
+            })
+            continue
         if svc.get("state") == "restarting":
             attempt = (svc.get("restarts") or 0) + 1  # restarts = bisherige Neustarts, dieser ist der nächste
             retry = svc.get("next_retry")
@@ -474,6 +493,7 @@ def build_status() -> dict:
         "gps": gps.status(),
         "nts_server": chrony.nts_server_status(cfg),
         "services": services_status(),
+        "dns": dnsfwd.api_status(cfg),
         "chrony_running": bool(tracking),
         "config": {key: cfg[key] for key in (
             "gps_enable", "gps_device", "gps_offset", "gps_delay", "gps_select", "gps_refid",
@@ -488,6 +508,11 @@ def build_status() -> dict:
         },
     }
     status["insights"] = combine_insights(insights.build(status, cfg),
+                                          insights.dns_insights(status["dns"], cfg, status["sources"],
+                                                                status["system"].get("addresses") or [],
+                                                                enforce.last_loops(),
+                                                                bool(cfg.get("enforce_hostnames"))
+                                                                or enforce.check_ran()),
                                           service_insights(status["services"]),
                                           hardware.cached_insights(cfg))
     return status
@@ -994,6 +1019,8 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/enforce/check":
             cfg = settings.values()
             self._send_json(enforce.api_check(query, cfg, system_info(cfg)["addresses"], chrony.tracking()))
+        elif path == "/api/dns":
+            self._send_json(dnsfwd.api_status(settings.values()))
         elif path == "/api/clients/offsets":
             self._send_json(clientmon.status())
         elif path == "/api/notify":
