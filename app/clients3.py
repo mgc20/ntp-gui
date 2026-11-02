@@ -47,6 +47,7 @@ HOURLY_PER_TICK = 24              # höchstens so viele Stunden je Durchlauf nac
 HOURLY_SETTLE = 120.0             # eine Stunde erst so lange nach ihrem Ende zusammenfassen
 INVENTORY_MAX = 20000
 INVENTORY_LEARN = 86400.0         # die ersten 24 h nur lernen
+PLAUSIBLE_WALL = 1_704_067_200.0  # 2024-01-01: davor ist die Systemzeit sicher noch nicht gestellt
 NEW_DEVICE_PER_HOUR = 5
 
 
@@ -333,10 +334,13 @@ def clock_quality(entry: dict, points: list | None = None) -> dict:
     Gangabweichung: Ein Gerät, das bei jeder Abfrage nachstellt, läuft zwischen zwei Abfragen um
     drift × Intervall weg – genau das misst die Anfrage (Sägezahn): drift ≈ Median(Abweichung) / Intervall.
     Läuft die Uhr dagegen frei (Abweichung wächst gleichmäßig), ist die Steigung die Gangabweichung.
+    Gemessen (drift_ppm) wird der Gang nur, wenn er sich vom festen Versatz trennen lässt: frei laufend
+    oder bei schwankenden Abständen (Regression über den Abstand). Bei gleichmäßigen Abständen gibt es
+    nur eine Obergrenze (drift_bound_ppm = Median / Intervall, method „versatz_oder_gang“).
     Positiv = die Uhr des Geräts läuft zu schnell."""
     state = entry.get("state")
     out: dict[str, Any] = {"score": None, "components": [], "drift_ppm": None, "drift_err_ppm": None,
-                           "method": None, "interval": None, "jitter": None, "median": None, "n": 0}
+                           "drift_bound_ppm": None, "method": None, "interval": None, "jitter": None, "median": None, "n": 0}
     intervals = regular_intervals(entry.get("intervals") or [])
     interval = clientmon.typical_interval(entry.get("intervals") or []) or clientinfo.expected_interval(entry)
     out["interval"] = interval
@@ -391,10 +395,12 @@ def clock_quality(entry: dict, points: list | None = None) -> dict:
             bias, drift, err = saw
             out.update(method="saegezahn", drift_ppm=drift * 1e6, drift_err_ppm=err * 1e6, bias=bias)
         elif interval:
+            # Gleichmäßige Abstände: Abweichung = Versatz + Gang × Intervall – beides ist nicht zu
+            # trennen. Median / Intervall ist nur eine OBERGRENZE des Gangs (fester Versatz 0), keine
+            # Messung: 5 ms fester Versatz bei 64 s sähen sonst wie „+78 ppm“ aus.
             drift = med / interval
             if abs(drift) <= MAX_PLAUSIBLE_DRIFT:
-                out.update(method="saegezahn", drift_ppm=drift * 1e6,
-                           drift_err_ppm=jitter_raw / interval * 1e6 / math.sqrt(len(pts)))
+                out.update(method="versatz_oder_gang", drift_bound_ppm=drift * 1e6)
             else:
                 out["method"] = "versatz"   # gleichbleibende Abweichung: eher fester Versatz als Gang
     out["median"] = med
@@ -428,6 +434,11 @@ def clock_quality(entry: dict, points: list | None = None) -> dict:
         how = ("die Abweichung wächst gleichmäßig – die Uhr läuft frei" if free
                else "aus dem Sägezahn zwischen zwei Abfragen")
         out["text"] = f"Gangabweichung ≈ {out['drift_ppm']:+.1f} ppm ({how})".replace(".", ",")
+    elif out["method"] == "versatz_oder_gang":
+        bound = f"{abs(out['drift_bound_ppm']):.1f}".replace(".", ",")
+        out["text"] = (f"Gangabweichung höchstens ≈ {bound} ppm – fester Versatz und Gang lassen sich hier nicht "
+                       f"trennen (dafür müssten die Abstände der Anfragen stärker schwanken). Abweichung "
+                       f"{clientinfo.fmt_offset(med)} je {clientinfo._fmt_seconds(interval)}.")
     elif out["method"] == "versatz":
         out["text"] = (f"Die Abweichung bleibt bei etwa {clientinfo.fmt_offset(med)} – eher ein fester Versatz "
                        "(z. B. Laufzeit über WLAN/VPN oder ein Zeitdienst, der nur grob stellt) als eine weglaufende Uhr.")
@@ -438,8 +449,9 @@ def clock_quality(entry: dict, points: list | None = None) -> dict:
 
 MAX_PLAUSIBLE_DRIFT = 200e-6     # mehr Gang hat kaum ein Quarz (typisch < 100 ppm) – dann eher fester Versatz
 SAW_MIN_POINTS = 8
-SAW_MIN_SPREAD = 0.25            # Abstände müssen um mindestens 25 % schwanken, sonst sind Versatz und Gang
-                                 # nicht zu trennen (dann: Median / Intervall)
+SAW_MIN_SPREAD = 0.08            # Abstände müssen um mindestens 8 % schwanken (Standardabweichung/Mittel),
+                                 # sonst sind Versatz und Gang nicht zu trennen (dann nur eine Obergrenze)
+SAW_MAX_ERR = 10e-6              # und die Steigung muss auf ±10 ppm bestimmt sein – sonst ebenfalls nur Obergrenze
 
 
 def _sawtooth(pts: list[tuple[float, float]]) -> tuple[float, float, float] | None:
@@ -465,23 +477,76 @@ def _sawtooth(pts: list[tuple[float, float]]) -> tuple[float, float, float] | No
     bias = my - slope * mean
     resid = [o - (bias + slope * g) for g, o in pairs]
     sigma = math.sqrt(sum(r * r for r in resid) / max(1, len(pairs) - 2))
-    if abs(slope) > MAX_PLAUSIBLE_DRIFT:
+    err = sigma / math.sqrt(sxx)
+    if abs(slope) > MAX_PLAUSIBLE_DRIFT or err > SAW_MAX_ERR:
         return None
-    return bias, slope, sigma / math.sqrt(sxx)
+    return bias, slope, err
 
 
 _QUALITY_CACHE: dict[str, Any] = {"t": None, "data": None}
 QUALITY_TTL = 15.0
 
 
-def quality_all(snapshot: dict[str, dict] | None = None, fresh: bool = False) -> dict[str, dict]:
+# Gespeicherte Messpunkte (24 h) für Geräte, deren Ring „recent“ noch zu kurz ist – z. B. direkt nach dem
+# Update von 1.4 (der Ring ist neu und leer) oder bei seltenen Anfragen. Je Gerät einmal gelesen, danach
+# mit dem Ring zusammengeführt; so zeigen Liste und Detailseite dieselbe Uhrgüte.
+_BACKFILL: dict[str, list] = {}
+BACKFILL_PER_CALL = 200          # höchstens so viele Geräte je Aufruf aus SQLite nachladen
+
+
+def _stored_points(ips: list[str], since: float) -> dict[str, list]:
+    out: dict[str, list] = {ip: [] for ip in ips}
+    if not ips:
+        return out
+    try:
+        import store
+        clientmon._migrate(store)
+        monitor = clientmon._MONITOR
+        if monitor is not None:
+            monitor.flush_samples(prune=False)
+        marks = ",".join("?" for _ in ips)
+        rows = store.query(f"SELECT ip, t, offset FROM clientmon_samples WHERE ip IN ({marks}) AND t >= ? "
+                           "AND offset IS NOT NULL ORDER BY t", (*ips, since))
+    except Exception:  # noqa: BLE001 – Uhrgüte ist ein Zusatz
+        return out
+    for ip, t, offset in rows:
+        if _num(t) is not None and _num(offset) is not None:
+            out.setdefault(ip, []).append([t, offset])
+    return out
+
+
+def _with_backfill(snap: dict[str, dict], wall: float) -> dict[str, list]:
+    """{ip: Messpunkte} für Geräte mit zu kurzem Ring – Ring plus gespeicherte Punkte der letzten 24 h."""
+    short = [ip for ip, e in snap.items() if isinstance(e, dict) and len(e.get("recent") or []) < QUALITY_MIN_POINTS
+             and e.get("state") in (clientmon.OK, clientmon.WRONG_CLOCK)]
+    missing = [ip for ip in short if ip not in _BACKFILL][:BACKFILL_PER_CALL]
+    if missing:
+        _BACKFILL.update(_stored_points(missing, wall - 86400))
+    for ip in [ip for ip in _BACKFILL if ip not in snap]:
+        del _BACKFILL[ip]
+    out = {}
+    for ip in short:
+        stored = _BACKFILL.get(ip)
+        if not stored:
+            continue
+        merged = {float(p[0]): p for p in stored if p[0] >= wall - 86400}
+        for p in snap[ip].get("recent") or []:
+            if isinstance(p, (list, tuple)) and len(p) >= 2 and _num(p[0]) is not None:
+                merged[float(p[0])] = p
+        out[ip] = [list(merged[t]) for t in sorted(merged)][-clientmon.RECENT_KEPT:]
+    return out
+
+
+def quality_all(snapshot: dict[str, dict] | None = None, fresh: bool = False,
+                wall: float | None = None) -> dict[str, dict]:
     """{ip: Uhrgüte} für alle Geräte – 15 s zwischengespeichert (2000 Geräte ≈ wenige ms)."""
     now = time.monotonic()
     if snapshot is None and not fresh and _QUALITY_CACHE["data"] is not None and _QUALITY_CACHE["t"] is not None \
             and now - _QUALITY_CACHE["t"] < QUALITY_TTL:
         return _QUALITY_CACHE["data"]
     snap = clientmon.private_snapshot() if snapshot is None else snapshot
-    data = {ip: clock_quality(entry) for ip, entry in snap.items() if isinstance(entry, dict)}
+    extra = _with_backfill(snap, time.time() if wall is None else wall) if snapshot is None else {}
+    data = {ip: clock_quality(entry, extra.get(ip)) for ip, entry in snap.items() if isinstance(entry, dict)}
     if snapshot is None:
         _QUALITY_CACHE.update(t=now, data=data)
     return data
@@ -494,11 +559,12 @@ def quality_overview(qualities: dict[str, dict], meta: dict | None = None, limit
     rated = []
     for ip, q in qualities.items():
         scores[ip] = {"score": q.get("score"), "grade": q.get("grade"), "tone": q.get("tone"),
-                      "drift_ppm": q.get("drift_ppm")}
+                      "drift_ppm": q.get("drift_ppm"), "drift_bound_ppm": q.get("drift_bound_ppm")}
         if q.get("score") is not None:
             rated.append({"address": ip, "name": (meta.get(ip) or {}).get("name") or None,
                           "score": q["score"], "grade": q.get("grade"), "tone": q.get("tone"),
-                          "drift_ppm": q.get("drift_ppm"), "text": q.get("text")})
+                          "drift_ppm": q.get("drift_ppm"), "drift_bound_ppm": q.get("drift_bound_ppm"),
+                          "text": q.get("text")})
     rated.sort(key=lambda r: (r["score"], r["address"]))
     return {"scores": scores, "worst": rated[:limit], "rated": len(rated), "total": len(qualities)}
 
@@ -533,8 +599,10 @@ def software_key(ip: str, entry: dict, rule: dict | None, meta: dict | None = No
     if expect in SOFTWARE_LABELS:
         return expect, "erwartet"
     if guess is None:
+        # Wie clientinfo.detail: privater Eintrag (bare, stratum) plus Hersteller aus der MAC –
+        # sonst wiche die Gruppen-Ansicht „nach Software“ von der Detailseite ab.
         name = ((meta or {}).get(ip) or {}).get("name") or ""
-        guess = clientinfo.guess_software(entry, None, [name])
+        guess = clientinfo.guess_software(entry, clientinfo.mac_info(entry.get("mac")), [name])
     candidates = guess.get("candidates") or []
     if candidates:
         return candidates[0]["key"], "vermutet"
@@ -597,7 +665,7 @@ def nts_for(ip: str, entry: dict, key: str | None, cfg: dict, usage: dict | None
 
 VIEW_BYS = ("group", "vlan", "software")
 ACTIVE_WINDOW = 86400.0
-EMPTY_GROUP_AFTER = 3600.0        # Hinweis „fragt kein Gerät“ erst, wenn die Messung so lange läuft
+EMPTY_GROUP_AFTER = 3600.0        # Hinweis für eine Gruppe ohne jedes Gerät erst, wenn die Messung so lange läuft
 
 
 def _bucket(key: str, label: str, **extra) -> dict:
@@ -666,10 +734,18 @@ def view(clients: dict[str, dict], by: str = "group", meta: dict | None = None, 
             b["score_median"] = _median(scores[key])
         b["members"].sort(key=lambda ip: (((meta.get(ip) or {}).get("name") or "~").lower(), ip))
         b["hint"] = None
-        if (by == "group" and key != "none" and b["active"] == 0 and running
-                and monitor_since is not None and now - monitor_since >= EMPTY_GROUP_AFTER):
-            b["hint"] = (f"In „{b['label']}“ ({b.get('network')}) fragt seit 24 h kein Gerät bei dir – fehlt dort die "
-                         "Umleitung oder die DHCP-Option 42? Siehe „Zeitserver erzwingen“.")
+        listened = (now - monitor_since) if isinstance(monitor_since, (int, float)) else None
+        if by == "group" and key != "none" and b["active"] == 0 and running and listened is not None:
+            # Gezählt wird nur, solange ntp-gui mithört: Nach 2 Tagen Pause sind alle gespeicherten
+            # „zuletzt gesehen“ älter als 24 h – das heißt noch nicht, dass dort niemand fragt.
+            hint = None
+            if listened >= ACTIVE_WINDOW:
+                hint = "fragt seit 24 h kein Gerät bei dir"
+            elif b["total"] == 0 and listened >= EMPTY_GROUP_AFTER:
+                hint = f"hat noch kein Gerät bei dir gefragt, seit ntp-gui mithört ({_fmt_hours(listened)})"
+            if hint:
+                b["hint"] = (f"In „{b['label']}“ ({b.get('network')}) {hint} – fehlt dort die "
+                             "Umleitung oder die DHCP-Option 42? Siehe „Zeitserver erzwingen“.")
     ordered = sorted(buckets.values(), key=lambda b: (b["key"] == "none", -b["total"], b["label"].lower()))
     out = {"by": by, "groups": ordered, "total": len(clients),
            "defined": items if by == "group" else None}
@@ -747,7 +823,10 @@ def public_rule(rule: dict | None) -> dict:
             "silent_alarm": bool(st.get("silent")), "offset_alarm": bool(st.get("offset"))}
 
 
-def save_rule(ip: Any, data: Any) -> dict:
+def save_rule(ip: Any, data: Any, emit: Callable[..., Any] | None = None) -> dict:
+    """Regel speichern (leere Regel = löschen). Schließt dabei offene Alarme der geänderten Regel mit
+    einem stillen „info“-Ereignis (emit, Standard events.emit) – sonst bliebe der Betreff in den
+    Benachrichtigungen offen und jeder spätere Alarm für das Gerät gälte als „schon gemeldet“."""
     addr = clientinfo.clean_ip(ip)
     if addr is None:
         raise Clients3Error("Ungültige IP-Adresse.")
@@ -756,12 +835,16 @@ def save_rule(ip: Any, data: Any) -> dict:
     rule = clean_rule(data)
     current = rules(fresh=True).get(addr) or {}
     state = dict(current.get("state") or {})
-    # Geänderte Regel: ihren Alarmzustand vergessen (sonst bliebe „still“ nach dem Löschen offen).
+    # Geänderte Regel: ihren Alarmzustand vergessen (sonst bliebe „still“ nach dem Löschen offen) –
+    # und einen offenen Alarm ausdrücklich schließen.
+    closing = []
     if rule["silent_h"] != current.get("silent_h"):
-        state.pop("silent", None)
+        if state.pop("silent", None):
+            closing.append(("still", "silent", f"Regel „fragt nicht mehr“ für {addr} geändert – Alarm beendet"))
         state.pop("silent_last", None)
     if rule["offset_ms"] != current.get("offset_ms") or rule["offset_min"] != current.get("offset_min"):
-        state.pop("offset", None)
+        if state.pop("offset", None):
+            closing.append(("abw", "offset", f"Eigene Schwelle für {addr} geändert – Alarm beendet"))
     store = _store()
     empty = rule["silent_h"] is None and rule["offset_ms"] is None and not rule["mute"] and not rule["expect"]
     with store.transaction() as conn:
@@ -780,6 +863,16 @@ def save_rule(ip: Any, data: Any) -> dict:
                           rule["expect"], json.dumps(state), time.time()))
     _drop_rule_cache()
     WATCH.forget(addr)
+    if closing:
+        if emit is None:
+            import events
+            emit = events.emit
+        for suffix, kind, title in closing:
+            try:
+                emit("clients", "info", title, {"address": addr, "subject": f"{addr}#{suffix}", "rule": kind,
+                                                "resolves": True, "notify": False})
+            except Exception:  # noqa: BLE001 – Ereignisse sind nie kritisch
+                pass
     return {"ip": addr, **public_rule({**rule, "state": state})}
 
 
@@ -803,6 +896,12 @@ def global_alarm_filter(clients: dict[str, dict], rule_map: dict | None = None) 
     return {ip: e for ip, e in clients.items() if (rule_map.get(ip) or {}).get("offset_ms") is None}
 
 
+def own_threshold_ips(rule_map: dict | None = None) -> set[str]:
+    """Geräte, deren Abweichung eine eigene Schwelle prüft (Übergabe vom allgemeinen Alarm)."""
+    rule_map = rules() if rule_map is None else rule_map
+    return {ip for ip, r in rule_map.items() if (r or {}).get("offset_ms") is not None}
+
+
 def _fmt_hours(seconds: float) -> str:
     return clientinfo._fmt_seconds(max(0.0, seconds))
 
@@ -812,7 +911,12 @@ class RuleWatch:
 
     Alarmzustände („still“, „über der Schwelle“) stehen in client_rules.state – nach einem Neustart
     wird nichts doppelt gemeldet, und „wieder da“ kommt trotzdem. Flüchtig (nur im Speicher): seit
-    wann eine Abweichung über der Schwelle liegt und der letzte gezählte Messzähler."""
+    wann eine Abweichung über der Schwelle liegt und der letzte gezählte Messzähler.
+
+    Stille misst die monotone Uhr (mono): Ein Pi ohne Echtzeituhr, dessen Systemzeit chrony nach dem
+    Start stellt, darf nicht „fragt seit 3 h nicht mehr“ melden, nur weil die Wanduhr gesprungen ist.
+    „Fragt wieder“ heißt: eine neue Anfrage seit dem Alarm (Zähler oder last_seen geändert) – nicht
+    „last_seen größer als damals“, das bliebe nach einem Rücksprung der Uhr hängen."""
 
     CONFIRM = 2
 
@@ -826,7 +930,12 @@ class RuleWatch:
 
     def evaluate(self, clients: dict[str, dict], rule_map: dict[str, dict], now: float,
                  emit: Callable[..., Any], monitor_since: float | None, running: bool,
-                 save: Callable[[str, dict], None] = _save_state) -> None:
+                 save: Callable[[str, dict], None] = _save_state, mono: float | None = None,
+                 listening: float | None = None) -> None:
+        """now: Wanduhr (nur für Texte und als erste Schätzung); mono: monotone Uhr (Standard: now –
+        für Tests); listening: wie lange die Messung schon mithört, monoton gemessen (Obergrenze der
+        ersten Schätzung „still seit“)."""
+        mono = now if mono is None else mono
         if not running:
             return  # ohne laufende Messung wissen wir nicht, ob ein Gerät still ist
         with self._lock:
@@ -839,37 +948,56 @@ class RuleWatch:
                 state = dict(rule.get("state") or {})
                 before = dict(state)
                 extra = {"notify": False} if rule.get("mute") else {}
-                self._silent(ip, rule, entry, state, now, emit, monitor_since, extra)
-                self._offset(ip, rule, entry, state, now, emit, extra)
+                self._silent(ip, rule, entry, state, now, mono, listening, emit, monitor_since, extra)
+                self._offset(ip, rule, entry, state, now, mono, emit, extra)
                 if state != before:
                     save(ip, state)
 
-    @staticmethod
-    def _silent(ip, rule, entry, state, now, emit, monitor_since, extra) -> None:
+    def _silent(self, ip, rule, entry, state, now, mono, listening, emit, monitor_since, extra) -> None:
         hours = rule.get("silent_h")
         last = entry.get("last_seen")
         if not hours or not isinstance(last, (int, float)):
             return
+        live = self._live.setdefault(ip, {"count": None, "over_since": None, "streak": 0})
+        marker = (entry.get("requests"), last)
+        asked = False
+        if live.get("seen") is None:
+            # Erste Sicht (Start, Regel neu): Stille aus der Wanduhr schätzen, aber nur die Zeit, in der
+            # ntp-gui auch mitgehört hat (nach einem Neustart nicht sofort „seit 10 h still“, nur weil der
+            # Container 10 h aus war) – und höchstens so lange, wie die Messung monoton läuft.
+            start = max(last, monitor_since) if isinstance(monitor_since, (int, float)) else last
+            guess = max(0.0, now - start)
+            if isinstance(listening, (int, float)):
+                guess = min(guess, max(0.0, listening))
+            live.update(seen=marker, quiet_since=mono - guess)
+        elif marker != live["seen"]:
+            live.update(seen=marker, quiet_since=mono)
+            asked = True
+        quiet = mono - live["quiet_since"]
         if state.get("silent"):
-            if last > (state.get("silent_last") or 0):
-                quiet = last - (state.get("silent_last") or last)
-                emit("clients", "info", f"{ip} fragt wieder nach der Zeit (war {_fmt_hours(quiet)} still)",
+            silent_last = state.get("silent_last")
+            # Neue Anfrage seit dem Alarm: in diesem Lauf gesehen, oder (nach einem Neustart) last_seen
+            # anders als beim Alarm – „anders“, nicht „größer“: nach einem Rücksprung der Uhr ist es kleiner.
+            if asked or (isinstance(silent_last, (int, float)) and last != silent_last):
+                was = live.get("alarm_mono")   # nur im Speicher: monoton gilt nur bis zum nächsten Neustart
+                quiet_was = (mono - was) if was is not None else max(0.0, last - (silent_last or last))
+                emit("clients", "info", f"{ip} fragt wieder nach der Zeit (war {_fmt_hours(quiet_was)} still)",
                      {"address": ip, "subject": f"{ip}#still", "rule": "silent", **extra})
                 state.pop("silent", None)
                 state.pop("silent_last", None)
+                live.pop("alarm_mono", None)
             return
-        # Gezählt wird nur die Zeit, in der ntp-gui auch mitgehört hat (nach einem Neustart nicht
-        # sofort „seit 10 h still“, nur weil der Container 10 h aus war).
-        start = max(last, monitor_since) if isinstance(monitor_since, (int, float)) else last
-        quiet = now - start
         if quiet > hours * 3600:
-            emit("clients", "warn", f"{ip} fragt seit {_fmt_hours(now - last)} nicht mehr nach der Zeit",
+            # Anzeige: Wanduhr, wenn sie plausibel ist (≥ gemessene Stille), sonst die gemessene Stille.
+            shown = now - last if now - last >= quiet else quiet
+            emit("clients", "warn", f"{ip} fragt seit {_fmt_hours(shown)} nicht mehr nach der Zeit",
                  {"address": ip, "subject": f"{ip}#still", "rule": "silent", "silent_h": hours,
                   "last_seen": last, **extra})
             state["silent"] = True
             state["silent_last"] = last
+            live["alarm_mono"] = live["quiet_since"]
 
-    def _offset(self, ip, rule, entry, state, now, emit, extra) -> None:
+    def _offset(self, ip, rule, entry, state, now, mono, emit, extra) -> None:
         threshold_ms = rule.get("offset_ms")
         if not threshold_ms or not entry.get("measurable"):
             return
@@ -888,9 +1016,9 @@ class RuleWatch:
             if abs(value) > threshold:
                 live["streak"] += 1
                 if live["over_since"] is None:
-                    live["over_since"] = now
-                if live["streak"] >= self.CONFIRM and now - live["over_since"] >= minutes * 60:
-                    lasting = f" seit {_fmt_hours(now - live['over_since'])}" if minutes else ""
+                    live["over_since"] = mono
+                if live["streak"] >= self.CONFIRM and mono - live["over_since"] >= minutes * 60:
+                    lasting = f" seit {_fmt_hours(mono - live['over_since'])}" if minutes else ""
                     emit("clients", "warn", f"Uhr von {ip} weicht um {fmt(value)} ab{lasting} (eigene Schwelle)",
                          {"address": ip, "subject": f"{ip}#abw", "rule": "offset", "offset": value,
                           "threshold_ms": threshold_ms, "minutes": minutes, **extra})
@@ -953,7 +1081,16 @@ class Inventory:
             self._since = float(since) if since is not None else None
         except ValueError:
             self._since = None
-        if self._since is None:
+        self._check_since(now)
+
+    def _check_since(self, now: float) -> None:
+        """Beginn der Lernzeit festlegen bzw. berichtigen. Liegt er in der Zukunft (Uhr stand vorher
+        falsch) oder vor 2024 (Uhr noch nicht gestellt), beginnt die Lernzeit jetzt – sonst würde sie
+        übersprungen oder endlos verlängert. Solange die eigene Uhr unplausibel ist: weiter lernen."""
+        if now < PLAUSIBLE_WALL:
+            self._since = None
+            return
+        if self._since is None or self._since > now + 3600 or self._since < PLAUSIBLE_WALL:
             self._since = now
             _meta_set("inventory_since", repr(now))
 
@@ -962,6 +1099,8 @@ class Inventory:
         with self._lock:
             if self._known is None:
                 self._load(now)
+            else:
+                self._check_since(now)
             new = []
             for ip, entry in snapshot.items():
                 if not isinstance(entry, dict) or not (entry.get("requests") or 0):
@@ -1037,6 +1176,11 @@ def aggregate_hours(now: float | None = None, store_mod=None) -> int:
         done = int(rows[0][0]) if rows else None
     except (ValueError, TypeError):
         done = None
+    if done is not None and done > current:
+        # Die Uhr stand einmal in der Zukunft (Pi ohne Echtzeituhr vor dem ersten Stellen): sonst
+        # stünde die Zusammenfassung still, bis diese Zeit wieder erreicht ist. Neu nachrechnen
+        # (INSERT OR REPLACE) ist harmlos.
+        done = None
     start = current - HOURLY_BACKFILL_H if done is None else max(done + 1, current - HOURLY_BACKFILL_H)
     end = min(current, start + HOURLY_PER_TICK)
     hours = 0
@@ -1086,7 +1230,8 @@ def tick(cfg: dict, emit: Callable[..., Any], now: float | None = None) -> None:
         status = clientmon.status()
         running = bool(status.get("running"))
         if running:
-            WATCH.evaluate(status.get("clients") or {}, rules(), now, emit, status.get("since"), running)
+            WATCH.evaluate(status.get("clients") or {}, rules(), now, emit, status.get("since"), running,
+                           mono=time.monotonic(), listening=clientmon.listening_seconds())
             if cfg.get("clientmon_enable", True):
                 INVENTORY.check(clientmon.private_snapshot(), now, bool(cfg.get("clients_new_device_alarm")), emit)
     except Exception as exc:  # noqa: BLE001
@@ -1255,8 +1400,14 @@ def _fmt_ago(seconds: float | None) -> str:
     return f"vor {clientinfo._fmt_seconds(max(0.0, seconds))}"
 
 
-def pass_text(data: dict, now: float | None = None) -> str:
-    """Gerätepass als Text (Grundlage der gefilterten Kopie). Ohne Notiz, ohne MAC."""
+NAME_PLACEHOLDER = "<name>"
+
+
+def pass_text(data: dict, now: float | None = None, share: bool = False) -> str:
+    """Gerätepass als Text (Grundlage der gefilterten Kopie). Ohne Notiz, ohne MAC.
+
+    share=True: eigene Geräte- und Gruppennamen stehen gar nicht erst drin (fester Platzhalter) –
+    der Namensabgleich des Filters überspringt kurze Namen („Bob“, „Li“), die Struktur nicht."""
     now = time.time() if now is None else now
     entry = data.get("entry") or {}
     q = data.get("quality") or {}
@@ -1265,17 +1416,26 @@ def pass_text(data: dict, now: float | None = None) -> str:
 
     def off(v):
         return fmt(v) if _num(v) is not None else "–"
+    name = data.get("name") or ""
+    group = (data.get("group") or {}).get("name") or ""
+    if share:
+        name = NAME_PLACEHOLDER if name else ""
+        group = NAME_PLACEHOLDER if group else ""
+    q_drift = (f"Gangabweichung: {q['drift_ppm']:+.1f} ppm".replace(".", ",")
+               if _num(q.get("drift_ppm")) is not None
+               else f"Gangabweichung: höchstens {abs(q['drift_bound_ppm']):.1f} ppm (Versatz und Gang nicht "
+                    "trennbar)".replace(".", ",") if _num(q.get("drift_bound_ppm")) is not None
+               else "Gangabweichung: –")
     lines = [
         "Gerätepass (ntp-gui)",
-        f"Gerät: {data.get('address')}" + (f" – {data['name']}" if data.get("name") else ""),
-        f"Gruppe: {(data.get('group') or {}).get('name') or 'ohne Gruppe'}",
+        f"Gerät: {data.get('address')}" + (f" – {name}" if name else ""),
+        f"Gruppe: {group or 'ohne Gruppe'}",
         f"Software: {data['software']['label']} ({data['software']['origin']})",
         f"Typischer Abstand der Anfragen: {clientinfo._fmt_seconds(entry['interval']) if _num(entry.get('interval')) else '–'}",
         f"Zustand: {entry.get('state_text') or '–'}",
         f"Abweichung 7 Tage: Median {off(week.get('median'))}, P95 |Abw.| {off(week.get('p95')).lstrip('+')} ({week.get('n', 0)} Messungen)",
         f"Uhrgüte: {q.get('score') if q.get('score') is not None else '–'} ({q.get('grade') or '–'})",
-        f"Gangabweichung: {q['drift_ppm']:+.1f} ppm".replace(".", ",") if _num(q.get("drift_ppm")) is not None
-        else "Gangabweichung: –",
+        q_drift,
         f"NTS: {'nutzt NTS' if (data.get('nts') or {}).get('uses') else 'nein'}",
         f"Letzte Anfrage: {_fmt_ago(now - entry['last_seen']) if _num(entry.get('last_seen')) else '–'}",
         "Empfehlung:",
@@ -1298,7 +1458,7 @@ def shared_pass(data: dict, cfg: dict) -> dict:
     names = diagnostics._known_names(cfg)
     known = {"name": sorted(set(clientinfo.export_names()) | set(group_names()))}
     sanitizer = egress.Sanitizer("diagnostics", names, known)
-    clean = sanitizer.text(pass_text(data))
+    clean = sanitizer.text(pass_text(data, share=True))
     findings = egress.check_no_leaks(clean)
     if not findings:
         findings = egress.backstop({"geraetepass.txt": clean.encode("utf-8")}, sanitizer.backstop_known())

@@ -156,6 +156,18 @@ export function fmtPpm(value) {
   return `${value >= 0 ? "+" : "−"}${fmtNumber(Math.abs(value), Math.abs(value) < 10 ? 1 : 0)} ppm`;
 }
 
+// Gangabweichung aus der Uhrgüte: gemessen (drift_ppm) oder – bei gleichmäßigen Abständen – nur eine
+// Obergrenze (drift_bound_ppm), weil fester Versatz und Gang dann nicht zu trennen sind.
+export function fmtDrift(q) {
+  if (!q) return "–";
+  if (isNum(q.drift_ppm)) return fmtPpm(q.drift_ppm);
+  if (isNum(q.drift_bound_ppm)) {
+    const v = Math.abs(q.drift_bound_ppm);
+    return `höchstens ${fmtNumber(v, v < 10 ? 1 : 0)} ppm`;
+  }
+  return "–";
+}
+
 function qualityCard(detail) {
   const q = detail.quality;
   if (!q) return null;
@@ -163,7 +175,7 @@ function qualityCard(detail) {
   return card("Uhrgüte", { help: "client_quality", badge: qualityBadge(q),
     sub: q.text || null },
   kv([
-    ["Gangabweichung", isNum(q.drift_ppm) ? `${fmtPpm(q.drift_ppm)}${isNum(q.drift_err_ppm) ? ` (± ${fmtNumber(q.drift_err_ppm, 1)})` : ""}` : "–", "client_drift"],
+    ["Gangabweichung", isNum(q.drift_ppm) ? `${fmtPpm(q.drift_ppm)}${isNum(q.drift_err_ppm) ? ` (± ${fmtNumber(q.drift_err_ppm, 1)})` : ""}` : fmtDrift(q), "client_drift"],
     ["Abfrage-Intervall", fmtInterval(q.interval), "client_typical_interval"],
     ["Streuung", isNum(q.jitter) ? `± ${fmtOffset(q.jitter).replace(/^[+−]/, "")}` : "–", "client_quality_parts"],
     ["Messungen ausgewertet", fmtNumber(q.n || 0), "client_quality"],
@@ -346,7 +358,8 @@ export function renderDetail(ctx, ip) {
         tone: "muted", note: `${fmtNumber(entry.requests || 0)} Anfragen` }),
       tile({ label: "Uhrgüte", help: "client_quality", value: isNum(detail.quality?.score) ? String(detail.quality.score) : "–",
         unit: isNum(detail.quality?.score) ? "/100" : null, tone: detail.quality?.tone || "muted",
-        note: isNum(detail.quality?.drift_ppm) ? `${detail.quality.grade} · ${fmtPpm(detail.quality.drift_ppm)}` : (detail.quality?.grade || "–") })),
+        note: isNum(detail.quality?.drift_ppm) || isNum(detail.quality?.drift_bound_ppm)
+          ? `${detail.quality.grade} · ${fmtDrift(detail.quality)}` : (detail.quality?.grade || "–") })),
     card("Abweichung über die Zeit", { help: "client_offset_chart", actions: rangeGroup(range, setRange),
       sub: `Jede gespeicherte Anfrage ein Punkt (höchstens alle 2 min einer), ${fmtNumber(detail.retention_days || 7)} Tage lang.` },
     offsetHost),

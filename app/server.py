@@ -446,7 +446,8 @@ def client_alarms() -> None:
         rule_map = clients3.rules()
         STATE_WATCH.clients(clients3.global_alarm_filter(clientmon.status()["clients"], rule_map), threshold,
                             fmt=clientinfo.fmt_offset,
-                            data_for=lambda ip: {"notify": False} if (rule_map.get(ip) or {}).get("mute") else {})
+                            data_for=lambda ip: {"notify": False} if (rule_map.get(ip) or {}).get("mute") else {},
+                            handover=clients3.own_threshold_ips(rule_map))
     except Exception as exc:  # ein Alarm darf die Messung nie aufhalten
         print(f"[web] Alarm für Client-Uhren nicht geprüft: {exc}", flush=True)
 
@@ -1520,8 +1521,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(result)
         elif path == "/api/clients/groups":
             status = clientmon.status()
-            # Wie Detailseite und Uhrgüte: ohne laufende Messung der gespeicherte Stand.
-            snap = status["clients"] if status.get("running") else clientmon.private_snapshot()
+            # Wie Detailseite und Uhrgüte: private Einträge (MAC, Kopffelder) – sonst fiele die
+            # Software-Vermutung schwächer aus als auf der Detailseite. Ohne Messung: gespeicherter Stand.
+            snap = clientmon.private_snapshot()
             self._send_json(clients3.view(snap, str(query.get("by") or "group"), clientinfo.all_meta(),
                                           clients3.rules(), clients3.quality_all(), now=time.time(),
                                           monitor_since=status.get("since"), running=bool(status.get("running"))))
@@ -1759,7 +1761,7 @@ class Handler(BaseHTTPRequestHandler):
                         return
                     self._send_json({"ok": True})
                 else:
-                    self._send_json(clients3.save_rule(data.get("ip"), data))
+                    self._send_json(clients3.save_rule(data.get("ip"), data, emit=events.emit))
             except clients3.Clients3Error as exc:
                 self._error(HTTPStatus.UNPROCESSABLE_ENTITY, str(exc))
         elif path == "/api/notify/channels":

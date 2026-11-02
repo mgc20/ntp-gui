@@ -205,8 +205,10 @@ export const HELP_CLIENTS = {
       + "sieht ntp-gui in der Anfrage (**Sägezahn**): 3,2 ms bei 64 s heißen 50 ppm. Wächst die Abweichung "
       + "gleichmäßig, läuft die Uhr **frei** (sie wird nicht gestellt) – dann ist die Steigung die "
       + "Gangabweichung. Schwanken die Abstände der Anfragen genug, trennt ntp-gui dabei einen **festen Versatz** "
-      + "(z. B. Laufzeit über WLAN) vom Gang. Bei streng regelmäßigen Abständen geht das nicht; ergäbe sich dann "
-      + "mehr als 200 ppm (das schafft kaum ein Quarz), zeigt ntp-gui „fester Versatz“ statt einer Zahl. "
+      + "(z. B. Laufzeit über WLAN) vom Gang. Bei gleichmäßigen Abständen geht das nicht: Dann zeigt ntp-gui nur "
+      + "„**höchstens** … ppm“ – so viel wäre es, wenn die ganze Abweichung Gang wäre; ein fester Versatz von "
+      + "5 ms sähe bei 64 s sonst wie 78 ppm aus. Ergäbe sich mehr als 200 ppm (das schafft kaum ein Quarz), "
+      + "zeigt ntp-gui „fester Versatz“ statt einer Zahl. "
       + "Positiv: die Uhr läuft zu schnell. Ein Gerät mit gutem Zeitdienst (chrony, ntpd) "
       + "gleicht seine Frequenz selbst aus – dann bleibt nur ein kleiner Rest. Das ± ist die Unsicherheit "
       + "aus der Streuung.",

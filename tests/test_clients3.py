@@ -53,6 +53,7 @@ def reset_caches():
     clients3._NTS_CACHE.update(t=None, data={})
     clients3.INVENTORY.reset()
     clients3.WATCH._live.clear()
+    clients3._BACKFILL.clear()
 
 
 class TempData(unittest.TestCase):
@@ -88,16 +89,70 @@ class EventSink:
 
 class QualityTest(unittest.TestCase):
     def test_sawtooth_50ppm_64s(self):
-        """Abnahme: Gerät stellt bei jeder Abfrage nach – Messung zeigt 50 ppm × 64 s = 3,2 ms."""
+        """Abnahme: Gerät stellt bei jeder Abfrage nach – Messung zeigt 50 ppm × 64 s = 3,2 ms.
+
+        Streng regelmäßige 64 s: Versatz und Gang sind nicht zu trennen – die Obergrenze passt zu 50 ppm
+        („vereinbar mit“), behauptet wird aber kein gemessener Gang."""
         rng = random.Random(7)
         recent = [[T0 + i * 64 + rng.uniform(-0.3, 0.3), 50e-6 * 64 + rng.gauss(0, 0.0002)] for i in range(32)]
         intervals = [64 + rng.uniform(-0.3, 0.3) for _ in range(16)]
         q = clients3.clock_quality(entry_with(recent, intervals))
-        self.assertEqual(q["method"], "saegezahn")
-        self.assertAlmostEqual(q["drift_ppm"], 50, delta=5)
+        self.assertEqual(q["method"], "versatz_oder_gang")
+        self.assertIsNone(q["drift_ppm"])
+        self.assertAlmostEqual(q["drift_bound_ppm"], 50, delta=5)
         self.assertAlmostEqual(q["interval"], 64, delta=1)
         self.assertIsNotNone(q["score"])
-        self.assertIn("ppm", q["text"])
+        self.assertIn("höchstens", q["text"])
+
+    def test_sawtooth_50ppm_64s_jittered_gaps(self):
+        """Abnahme mit üblicher Streuung der Abstände (64 s ± 30 %): der Gang wird gemessen, 50 ± 5 ppm."""
+        rng = random.Random(7)
+        t, recent, intervals = T0, [], []
+        for _ in range(32):
+            gap = 64 * rng.uniform(0.7, 1.3)
+            t += gap
+            intervals.append(gap)
+            recent.append([t, 50e-6 * gap + rng.gauss(0, 0.0002)])
+        q = clients3.clock_quality(entry_with(recent, intervals[-16:]))
+        self.assertEqual(q["method"], "saegezahn")
+        self.assertAlmostEqual(q["drift_ppm"], 50, delta=5)
+        self.assertLessEqual(abs(q["drift_ppm"] - 50), 3 * max(q["drift_err_ppm"], 1))
+        self.assertAlmostEqual(q["interval"], 64, delta=8)
+
+    def test_constant_bias_with_regular_gaps_is_no_drift_claim(self):
+        """Prüfbefund: 5 ms fester Versatz bei 64 s war „+79,9 ppm“ mit winzigem Fehlerbalken."""
+        rng = random.Random(5)
+        for bias, interval in ((0.005, 64), (0.012, 64), (0.030, 1024)):
+            t, recent = T0, []
+            for _ in range(32):
+                t += interval * rng.uniform(0.98, 1.02)
+                recent.append([t, bias + rng.gauss(0, 0.0003)])
+            q = clients3.clock_quality(entry_with(recent, [interval * rng.uniform(0.98, 1.02) for _ in range(16)]))
+            self.assertIsNone(q["drift_ppm"], (bias, interval, q["text"]))
+            self.assertIsNone(q["drift_err_ppm"])
+            recs = clients3.recommendations("windows", {}, q, {}, None)
+            self.assertFalse([r for r in recs if r["title"] == "Öfter fragen lassen"])
+
+    def test_random_clients_drift_within_error(self):
+        """Behauptete Gangabweichungen liegen fast immer innerhalb 3 × Unsicherheit am wahren Wert."""
+        rng = random.Random(1)
+        claimed = outside = 0
+        for interval in (32, 64, 1024):
+            for _ in range(50):
+                drift, bias = rng.uniform(-80e-6, 80e-6), rng.uniform(-0.02, 0.02)
+                t, recent, gaps = T0, [], []
+                for _k in range(32):
+                    gap = interval * rng.uniform(0.7, 1.3)
+                    t += gap
+                    gaps.append(gap)
+                    recent.append([t, bias + drift * gap + rng.gauss(0, 0.0005)])
+                q = clients3.clock_quality(entry_with(recent, gaps[-16:]))
+                if q["drift_ppm"] is not None:
+                    claimed += 1
+                    if abs(q["drift_ppm"] - drift * 1e6) > 3 * max(q["drift_err_ppm"], 1):
+                        outside += 1
+        self.assertGreater(claimed, 50)
+        self.assertLessEqual(outside, 0.05 * claimed)
 
     def test_sawtooth_separates_bias_when_intervals_vary(self):
         rng = random.Random(9)
@@ -163,7 +218,7 @@ class QualityTest(unittest.TestCase):
         bad = clientmon._clean_recent([[1, float("nan")], ["x", 1], [1, 2, 3], [5.0, 0.1], True])
         self.assertEqual(bad, [[5.0, 0.1]])
         q = clients3.clock_quality(again)
-        self.assertAlmostEqual(q["drift_ppm"], 50, delta=1)
+        self.assertAlmostEqual(q["drift_bound_ppm"], 50, delta=1)   # regelmäßig: nur Obergrenze
 
     def test_overview_worst_first(self):
         quals = {"a": {"score": 90, "grade": "sehr gut"}, "b": {"score": 30, "grade": "schlecht"},
@@ -261,8 +316,11 @@ class GroupViewTest(TempData):
         self.assertEqual(by["IoT"]["total"], 5)
         self.assertEqual(by["ohne Gruppe"]["total"], 3)   # die IPv6-Geräte
         self.assertEqual(by["Gäste"]["total"], 0)
-        self.assertIn("fragt seit 24 h kein Gerät", by["Gäste"]["hint"])
+        self.assertIn("hat noch kein Gerät bei dir gefragt, seit ntp-gui mithört (2 h", by["Gäste"]["hint"])
         self.assertIsNone(by["LAN"]["hint"])
+        later = clients3.view(clients, "group", {}, {}, quals, items, now=now, monitor_since=now - 90000,
+                              running=True)
+        self.assertIn("fragt seit 24 h kein Gerät", next(g for g in later["groups"] if g["label"] == "Gäste")["hint"])
         lan = by["LAN"]
         self.assertEqual(lan["measured"], 7)                # zwei chrony-Geräte verschleiern
         self.assertAlmostEqual(lan["good_share"], 5 / 7)    # Windows-Geräte liegen bei ~120 ms
@@ -272,6 +330,35 @@ class GroupViewTest(TempData):
         # Ohne laufende Messung kein Hinweis „fragt kein Gerät“
         quiet = clients3.view(clients, "group", {}, {}, quals, items, now=now, monitor_since=None, running=False)
         self.assertIsNone(next(g for g in quiet["groups"] if g["label"] == "Gäste")["hint"])
+
+    def test_empty_hint_only_after_listening_24h(self):
+        """Prüfbefund: Container 2 Tage aus – gespeicherte last_seen sind alt; nach 1 h Mithören kein
+        „fragt seit 24 h kein Gerät“ für eine Gruppe mit (selten fragenden) Geräten."""
+        table = clientmon.ClientTable()
+        table.update("10.0.30.5", {"xmit": 1, "version": 4, "poll": 12}, 0.002, T0 - 2 * 86400)
+        items = [{"id": 2, "name": "IoT", "network": "10.0.30.0/24"}]
+        out = clients3.view(table.snapshot(), "group", {}, {}, {}, items, now=T0, monitor_since=T0 - 3700,
+                            running=True)
+        iot = next(g for g in out["groups"] if g["label"] == "IoT")
+        self.assertEqual(iot["active"], 0)
+        self.assertIsNone(iot["hint"])
+        out = clients3.view(table.snapshot(), "group", {}, {}, {}, items, now=T0, monitor_since=T0 - 86400,
+                            running=True)
+        self.assertIn("seit 24 h", next(g for g in out["groups"] if g["label"] == "IoT")["hint"])
+
+    def test_software_view_matches_detail_guess(self):
+        """Prüfbefund: „nach Software“ nutzt dieselben Merkmale wie die Detailseite (bare, stratum, MAC)."""
+        table = clientmon.ClientTable()
+        for i in range(6):
+            table.update("192.168.1.30", {"xmit": 1, "version": 4, "poll": 11, "bare": True, "stratum": 0},
+                         0.001, T0 + i * 2048)
+        private = table.snapshot(private=True)
+        entry = private["192.168.1.30"]
+        detail_guess = clientinfo.guess_software(entry, clientinfo.mac_info(entry.get("mac")), ["", ""])
+        expected = detail_guess["candidates"][0]["key"] if detail_guess["candidates"] else None
+        self.assertIsNotNone(expected)
+        out = clients3.view(private, "software", {}, {}, {}, [], now=T0 + 6 * 2048)
+        self.assertEqual([g["key"] for g in out["groups"]], [expected])
 
     def test_view_by_vlan_and_software(self):
         table = clientmon.ClientTable()
@@ -856,6 +943,328 @@ class HttpTest(unittest.TestCase):
         headers.pop("X-NTP-GUI")
         self.assertEqual(self.request("POST", "/api/clients/rules", {"ip": "192.168.1.40", "silent_h": 1},
                                       headers)[0], 403)
+
+
+# ---------------------------------------------------------------------------
+# Prüfbefunde: Alarme schließen, Uhrsprünge, Nachladen, gefilterte Kopie
+# ---------------------------------------------------------------------------
+
+class RouterFeed:
+    """Ereignisse wie events.emit sammeln und durch einen echten notify.ChannelRouter schicken."""
+
+    def __init__(self):
+        self.events = []
+        self.router = notify.ChannelRouter(channel(min_level="warn", debounce_min=10),
+                                           clock=lambda: self.clock, wall=lambda: self.clock)
+        self.clock = 1000.0
+        self.seen = 0
+
+    def __call__(self, kind, level, title, data=None, **_kw):
+        self.events.append({"id": len(self.events) + 1, "t": self.clock, "kind": kind, "level": level,
+                            "title": title, "data": dict(data or {})})
+
+    def deliver(self, advance=0.0):
+        self.clock += advance
+        out = []
+        for ev in self.events[self.seen:]:
+            out += self.router.offer(ev)
+        self.seen = len(self.events)
+        return out
+
+
+class AlarmClosingTest(TempData):
+    def setUp(self):
+        super().setUp()
+        self.feed = RouterFeed()
+        self.count = 0
+
+    def own_step(self, watch, ip, value, t):
+        self.count += 1
+        watch.evaluate({ip: {"measurable": True, "offset": value, "count": self.count, "last_seen": t}},
+                       clients3.rules(), t, self.feed, T0 - 3600, True)
+
+    def test_router_closes_on_muted_resolve(self):
+        feed = self.feed
+        ip = "192.168.1.5"
+        feed("clients", "warn", f"Uhr von {ip} weicht ab", {"address": ip})
+        self.assertEqual(len(feed.deliver()), 1)
+        feed("clients", "info", f"Uhr von {ip} wieder im Rahmen", {"address": ip, "notify": False})
+        self.assertEqual(feed.deliver(60), [])                     # stumm: keine „behoben“-Meldung
+        self.assertIsNone(feed.router.state[f"clients:{ip}"]["open_since"])
+        feed("clients", "warn", f"Uhr von {ip} weicht ab", {"address": ip})
+        self.assertEqual(len(feed.deliver(86400)), 1)            # nach dem Entstummen wieder gemeldet
+        # Ein stummes warn bleibt weiterhin lokal und öffnet nichts
+        feed("clients", "warn", "Uhr von 192.168.1.6 weicht ab", {"address": "192.168.1.6", "notify": False})
+        self.assertEqual(feed.deliver(), [])
+        self.assertNotIn("clients:192.168.1.6", feed.router.state)
+
+    def test_mute_recover_unmute_realarm_global(self):
+        feed = self.feed
+        ip = "192.168.1.61"
+        watch = statewatch.StateWatcher(feed)
+        muted = [False]
+        count = [0]
+
+        def step(value):
+            count[0] += 1
+            watch.clients({ip: {"measurable": True, "offset": value, "count": count[0]}}, 100,
+                          data_for=lambda _ip: {"notify": False} if muted[0] else {})
+        step(0.5)
+        step(0.5)
+        self.assertEqual(len(feed.deliver()), 1)
+        muted[0] = True
+        step(0.0)
+        step(0.0)
+        self.assertEqual(feed.deliver(60), [])
+        muted[0] = False
+        step(0.5)
+        step(0.5)
+        out = feed.deliver(86400)
+        self.assertEqual(len(out), 1)
+        self.assertIn("weicht um", out[0]["title"])
+
+    def test_rule_change_closes_open_offset_alarm(self):
+        ip = "192.168.1.60"
+        clients3.save_rule(ip, {"offset_ms": 100}, emit=self.feed)
+        watch = clients3.RuleWatch()
+        self.own_step(watch, ip, 0.3, T0)
+        self.own_step(watch, ip, 0.3, T0 + 60)
+        self.assertEqual(len(self.feed.deliver()), 1)
+        clients3.save_rule(ip, {"offset_ms": 200}, emit=self.feed)
+        closing = self.feed.events[-1]
+        self.assertEqual(closing["level"], "info")
+        self.assertEqual(closing["data"]["subject"], f"{ip}#abw")
+        self.assertIs(closing["data"]["resolves"], True)
+        self.assertIs(closing["data"]["notify"], False)
+        self.assertIn("geändert", closing["title"])
+        self.assertEqual(self.feed.deliver(60), [])
+        for i in range(3):
+            self.own_step(watch, ip, 0.5, T0 + 120 + i * 60)
+        out = self.feed.deliver(86400)
+        self.assertEqual(len(out), 1)
+        self.assertIn("eigene Schwelle", out[0]["title"])
+
+    def test_rule_delete_closes_open_offset_and_silent_alarms(self):
+        ip = "192.168.1.63"
+        clients3.save_rule(ip, {"offset_ms": 100, "silent_h": 1}, emit=self.feed)
+        watch = clients3.RuleWatch()
+        self.own_step(watch, ip, 0.3, T0)
+        self.own_step(watch, ip, 0.3, T0 + 60)
+        entry = {"last_seen": T0 + 60, "measurable": False}   # dieselbe Anfrage wie zuletzt: keine neue
+        watch.evaluate({ip: entry}, clients3.rules(), T0 + 3 * 3600, self.feed, T0 - 3600, True)
+        self.assertEqual([e["level"] for e in self.feed.events], ["warn", "warn"])
+        self.assertEqual(len(self.feed.deliver()), 2)
+        clients3.save_rule(ip, {}, emit=self.feed)
+        subjects = sorted(e["data"]["subject"] for e in self.feed.events[2:])
+        self.assertEqual(subjects, [f"{ip}#abw", f"{ip}#still"])
+        self.feed.deliver(60)
+        for key in (f"clients:{ip}#abw", f"clients:{ip}#still"):
+            self.assertIsNone(self.feed.router.state[key]["open_since"])
+        # Regel neu angelegt → neuer Alarm geht wieder hinaus
+        clients3.save_rule(ip, {"offset_ms": 100}, emit=self.feed)
+        watch2 = clients3.RuleWatch()
+        self.own_step(watch2, ip, 0.4, T0 + 9000)
+        self.own_step(watch2, ip, 0.4, T0 + 9060)
+        self.assertEqual(len(self.feed.deliver(86400)), 1)
+
+    def test_unchanged_rule_emits_nothing(self):
+        ip = "192.168.1.64"
+        clients3.save_rule(ip, {"offset_ms": 100}, emit=self.feed)
+        clients3.save_rule(ip, {"offset_ms": 100, "mute": True}, emit=self.feed)
+        self.assertEqual(self.feed.events, [])
+
+    def test_handover_to_own_threshold_closes_global_alarm(self):
+        feed = self.feed
+        ip = "192.168.1.62"
+        watch = statewatch.StateWatcher(feed)
+        count = [0]
+
+        def step(value, rule_map):
+            count[0] += 1
+            clients = clients3.global_alarm_filter({ip: {"measurable": True, "offset": value, "count": count[0]}},
+                                                   rule_map)
+            watch.clients(clients, 100, handover=clients3.own_threshold_ips(rule_map))
+        step(0.5, {})
+        step(0.5, {})
+        self.assertEqual(len(feed.deliver()), 1)
+        rule_map = {ip: {"offset_ms": 1000}}
+        step(0.0, rule_map)
+        closing = feed.events[-1]
+        self.assertEqual(closing["level"], "info")
+        self.assertIn("eigene Schwelle übernimmt", closing["title"])
+        self.assertIs(closing["data"]["notify"], False)
+        self.assertEqual(feed.deliver(60), [])
+        self.assertIsNone(feed.router.state[f"clients:{ip}"]["open_since"])
+        step(0.5, {})
+        step(0.5, {})
+        self.assertEqual(len(feed.deliver(86400)), 1)
+        # Schwelle ausgeschaltet: offener Alarm wird ebenfalls geschlossen
+        before = len(feed.events)
+        watch.clients({ip: {"measurable": True, "offset": 0.5, "count": 99}}, 0)
+        self.assertEqual(feed.events[before]["level"], "info")
+        self.assertIn("ausgeschaltet", feed.events[before]["title"])
+        feed.deliver(60)
+        self.assertIsNone(feed.router.state[f"clients:{ip}"]["open_since"])
+
+
+class ClockStepTest(TempData):
+    """Wanduhr springt (Pi ohne Echtzeituhr, chrony stellt nach dem Start) – die monotone Uhr nicht."""
+
+    def test_forward_step_no_false_silent_alarm(self):
+        ip = "192.168.1.5"
+        clients3.save_rule(ip, {"silent_h": 1})
+        sink = EventSink()
+        watch = clients3.RuleWatch()
+        entry = {"last_seen": 4990.0 + T0, "requests": 7}
+        watch.evaluate({ip: entry}, clients3.rules(), T0 + 5000, sink, T0 + 1000, True, mono=100.0, listening=60.0)
+        # Wanduhr springt um 3 h vor, monoton sind nur 10 s vergangen
+        watch.evaluate({ip: entry}, clients3.rules(), T0 + 5010 + 3 * 3600, sink, T0 + 1000, True, mono=110.0,
+                       listening=70.0)
+        self.assertEqual(sink.events, [])
+        # Erst nach einer echten Stunde Stille
+        watch.evaluate({ip: entry}, clients3.rules(), T0 + 5010 + 4 * 3600 + 10, sink, T0 + 1000, True,
+                       mono=100.0 + 3600 + 30, listening=3700.0)
+        self.assertEqual([e["level"] for e in sink.events], ["warn"])
+
+    def test_first_look_bounded_by_listening_time(self):
+        ip = "192.168.1.6"
+        clients3.save_rule(ip, {"silent_h": 1})
+        sink = EventSink()
+        watch = clients3.RuleWatch()
+        # Wanduhr nach dem Start um 5 h vorgestellt: now − monitor_since wäre 5 h, gehört wurde 2 min
+        watch.evaluate({ip: {"last_seen": T0 - 600, "requests": 3}}, clients3.rules(), T0 + 5 * 3600, sink, T0,
+                       True, mono=500.0, listening=120.0)
+        self.assertEqual(sink.events, [])
+
+    def test_backward_step_reports_back(self):
+        ip = "192.168.1.7"
+        clients3.save_rule(ip, {"silent_h": 1})
+        sink = EventSink()
+        watch = clients3.RuleWatch()
+        entry = {"last_seen": T0 + 4990, "requests": 7}
+        watch.evaluate({ip: entry}, clients3.rules(), T0 + 5000, sink, T0, True, mono=1000.0, listening=5000.0)
+        watch.evaluate({ip: entry}, clients3.rules(), T0 + 5000 + 7200, sink, T0, True, mono=8200.0,
+                       listening=12200.0)
+        self.assertEqual([e["level"] for e in sink.events], ["warn"])
+        self.assertTrue(clients3.rules(fresh=True)[ip]["state"]["silent"])
+        # Uhr springt zurück; das Gerät fragt wieder – last_seen KLEINER als beim Alarm
+        back = {"last_seen": T0 + 4000, "requests": 8}
+        watch.evaluate({ip: back}, clients3.rules(), T0 + 4001, sink, T0, True, mono=8300.0, listening=12300.0)
+        self.assertEqual([e["level"] for e in sink.events], ["warn", "info"])
+        self.assertIn("fragt wieder", sink.events[-1]["title"])
+        self.assertIn("2 h", sink.events[-1]["title"])
+        self.assertNotIn("silent", clients3.rules(fresh=True)[ip]["state"])
+
+    def test_restart_detects_request_while_down(self):
+        ip = "192.168.1.8"
+        clients3.save_rule(ip, {"silent_h": 1})
+        sink = EventSink()
+        watch = clients3.RuleWatch()
+        entry = {"last_seen": T0, "requests": 2}
+        watch.evaluate({ip: entry}, clients3.rules(), T0 + 7200, sink, T0 - 600, True, mono=7800.0, listening=7800.0)
+        self.assertEqual(len(sink.events), 1)
+        reset_caches()
+        watch2 = clients3.RuleWatch()
+        watch2.evaluate({ip: {"last_seen": T0 + 9000, "requests": 3}}, clients3.rules(), T0 + 9100, sink,
+                        T0 + 8800, True, mono=50.0, listening=10.0)
+        self.assertEqual([e["level"] for e in sink.events], ["warn", "info"])
+
+    def test_offset_minutes_use_monotonic_clock(self):
+        ip = "192.168.1.9"
+        clients3.save_rule(ip, {"offset_ms": 100, "offset_min": 10})
+        sink = EventSink()
+        watch = clients3.RuleWatch()
+        for i in range(3):   # Wanduhr springt um 1 h, monoton vergehen nur 2 min
+            watch.evaluate({ip: {"measurable": True, "offset": 0.3, "count": i + 1}}, clients3.rules(),
+                           T0 + i * 3600, sink, T0 - 60, True, mono=100.0 + i * 60, listening=200.0)
+        self.assertEqual(sink.events, [])
+
+    def test_hourly_done_in_future_is_reset(self):
+        clientmon._migrate(store)
+        clients3._migrate(store)
+        hour = int(T0 // 3600)
+        with store.transaction() as conn:
+            conn.execute("INSERT INTO clientmon_samples(ip, t, offset, poll, version, interval) "
+                         "VALUES('192.168.1.5', ?, 0.002, 6, 4, NULL)", ((hour - 2) * 3600 + 30,))
+        store.execute("INSERT INTO clients3_meta(key, value) VALUES('hourly_done', ?)", (str(hour + 5000),))
+        now = hour * 3600 + clients3.HOURLY_SETTLE + 1
+        self.assertGreater(clients3.aggregate_hours(now), 0)
+        for _ in range(20):                       # je Durchlauf höchstens HOURLY_PER_TICK Stunden
+            if not clients3.aggregate_hours(now):
+                break
+        self.assertTrue(store.query("SELECT 1 FROM client_hourly WHERE ip='192.168.1.5' AND hour=?", (hour - 2,)))
+        done = int(store.query("SELECT value FROM clients3_meta WHERE key='hourly_done'")[0][0])
+        self.assertLess(done, hour)
+
+    def test_inventory_since_future_or_implausible(self):
+        snap = {"192.168.1.2": {"requests": 1}}
+        clients3._migrate(store)
+        clients3._meta_set("inventory_since", repr(T0 + 30 * 86400))     # Uhr stand vorher in der Zukunft
+        inv = clients3.Inventory()
+        inv.check(snap, T0, True, EventSink())
+        self.assertEqual(inv.status(T0)["since"], T0)
+        self.assertTrue(inv.status(T0)["learning"])
+        # Uhr noch nicht gestellt (1970): weiter lernen, nichts festschreiben, nichts melden
+        reset_caches()
+        clients3._meta_set("inventory_since", repr(1000.0))
+        inv = clients3.Inventory()
+        sink = EventSink()
+        inv.check(snap, 5000.0, True, sink)
+        self.assertTrue(inv.status(5000.0)["learning"])
+        inv.check({"192.168.1.3": {"requests": 1}}, 200000.0, True, sink)
+        self.assertEqual(sink.events, [])
+        inv.check({"192.168.1.4": {"requests": 1}}, T0, True, sink)        # Uhr gestellt: Lernzeit beginnt jetzt
+        self.assertEqual(sink.events, [])
+        self.assertEqual(inv.status(T0)["since"], T0)
+
+
+class BackfillTest(TempData):
+    def test_list_quality_uses_stored_samples_after_update(self):
+        """Prüfbefund: nach dem Update von 1.4 ist der Ring leer – Liste wie Detailseite aus SQLite."""
+        now = time.time()
+        clientmon._migrate(store)
+        ip = "192.168.1.70"
+        rows = [(ip, now - 3600 * 6 + i * 3600, 0.002 + i * 1e-5, 12, 4, 3600.0) for i in range(6)]
+        with store.transaction() as conn:
+            conn.executemany("INSERT INTO clientmon_samples(ip, t, offset, poll, version, interval) "
+                             "VALUES(?, ?, ?, ?, ?, ?)", rows)
+        entry = {"state": clientmon.OK, "requests": 6, "count": 6, "intervals": [3600.0] * 5, "recent": [],
+                 "measurable": True, "ewma": 0.002}
+        with mock.patch.object(clientmon, "private_snapshot", return_value={ip: entry}):
+            q = clients3.quality_all(fresh=True)[ip]
+        self.assertIsNotNone(q["score"])
+        self.assertEqual(q["n"], 6)
+        direct = clients3.clock_quality(entry, clients3._recent_from_samples(ip, now))
+        self.assertEqual(q["score"], direct["score"])
+        # Geräte, die nicht messbar sind, lösen keine Abfrage aus
+        self.assertNotIn("192.168.1.71", clients3._BACKFILL)
+
+
+class SharedPassNamesTest(TempData):
+    def test_short_names_not_in_shared_copy(self):
+        """Prüfbefund: kurze Namen („Bob“, „Li“) überspringt der Namensabgleich – die Kopie enthält sie nie."""
+        now = time.time()
+        monitor = clientmon.Monitor(123)
+        for i in range(6):
+            monitor.table.update("192.168.1.40", {"xmit": 1, "version": 4, "poll": 6}, 0.001, now - 600 + i * 64)
+        monitor._persist()
+        clientinfo.set_meta("192.168.1.40", name="Bob")
+        clients3.save_group({"name": "Li", "network": "192.168.1.0/24"})
+        import diagnostics
+        with mock.patch.object(diagnostics, "_known_names", return_value=[]):
+            data = clients3.device_pass("192.168.1.40", {})
+            self.assertEqual(data["name"], "Bob")
+            text = clients3.shared_pass(data, {})["text"]
+        self.assertNotRegex(text, r"\bBob\b")
+        self.assertNotRegex(text, r"\bLi\b")
+        self.assertIn("Gerät: client-01 – <name>", text)
+        self.assertIn("Gruppe: <name>", text)
+        local = clients3.pass_text(data)
+        self.assertIn("– Bob", local)
+        self.assertIn("Gruppe: Li", local)
+        bare = clients3.pass_text({**data, "name": "", "group": None}, share=True)
+        self.assertIn("Gruppe: ohne Gruppe", bare)
+        self.assertNotIn("<name>", bare)
 
 
 class SettingsTest(unittest.TestCase):

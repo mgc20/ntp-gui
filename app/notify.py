@@ -541,14 +541,23 @@ class ChannelRouter:
         if event.get("kind") == "notify":
             return []
         data = event.get("data") if isinstance(event.get("data"), dict) else {}
+        level = event.get("level") or "info"
         if data.get("notify") is False:
-            return []  # bleibt im Protokoll, geht nicht hinaus (z. B. GNSS-„Hinweis“, Holdover-Test)
+            # Bleibt im Protokoll, geht nicht hinaus (z. B. GNSS-„Hinweis“, Holdover-Test, stummes Gerät).
+            # Beendet es aber ein offenes Problem (stummgeschaltet, Regel geändert), wird dieses still
+            # geschlossen – sonst bliebe der Betreff für immer offen und jeder spätere Alarm galt als
+            # „schon gemeldet“.
+            key = subject_key(event)
+            st = self.state.get(key)
+            if st is not None and st["open_since"] is not None and level not in ("warn", "crit") \
+                    and resolves(event):
+                st.update(open_since=None, notified=None, pending=None, suppressed=0)
+            return []
         now = self.clock()
         key = subject_key(event)
         st = self.state.setdefault(key, {"open_since": None, "notified": None, "last_sent": None,
                                          "pending": None, "suppressed": 0, "sent_level": None,
                                          "resolved_sent": False})
-        level = event.get("level") or "info"
         # data.standalone (1.5): eine Meldung, die für sich steht – z. B. „Neues Gerät fragt nach der Zeit“.
         # data.notify = true (1.5): Die Quelle hat ausdrücklich entschieden, dass das hinausgeht –
         # z. B. „GNSS-Hinweis“ bei gnss_notify = hinweis. Dann gilt die Mindeststufe des Kanals nicht,

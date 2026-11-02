@@ -6,7 +6,7 @@ import { el, apiGet, fmtNumber, isNum } from "../util.js";
 import { card, info, badge, kv, emptyNote, toast, copyButton } from "../ui.js";
 import { lineChart } from "../charts.js";
 import { axisSeconds } from "./overview.js";
-import { fmtOffset, fmtInterval, fmtDate, clientHref, qualityBadge, fmtPpm } from "./clientdetail.js";
+import { fmtOffset, fmtInterval, fmtDate, clientHref, qualityBadge, fmtDrift } from "./clientdetail.js";
 
 const ORIGIN = { erwartet: "erwartet (deine Angabe)", vermutet: "vermutlich", unbekannt: "unbekannt" };
 
@@ -107,7 +107,7 @@ export function renderPass(ctx, ip, serverIp) {
           ["Median (7 Tage)", fmtOffset(week.median), "client_pass_values"],
           ["P95 |Abweichung| (7 Tage)", isNum(week.p95) ? fmtOffset(week.p95).replace(/^\+/, "") : "–", "client_pass_values"],
           ["Median (30 Tage)", fmtOffset(month.median), "client_pass_values"],
-          ["Gangabweichung", fmtPpm(q.drift_ppm), "client_drift"],
+          ["Gangabweichung", fmtDrift(q), "client_drift"],
           ["Uhrgüte", isNum(q.score) ? `${q.score}/100 – ${q.grade}` : (q.grade || "–"), "client_quality"],
           ["Messungen (7 Tage)", fmtNumber(week.n || 0), "client_pass_values"],
         ]), q.text ? el("p", { class: "field-help", text: q.text }) : null)),

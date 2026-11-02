@@ -2,7 +2,7 @@ import { el, apiGet, apiPost, fmtDuration, fmtNumber, fmtRate, fmtLogInterval, i
 import { card, tile, info, badge, rangeButtons, emptyNote, toast, copyButton } from "../ui.js";
 import { lineChart, stepDecimals } from "../charts.js";
 import { requestRate } from "./overview.js";
-import { renderDetail, fmtOffset, offsetTone, fmtInterval, clientHref, STATE_TONE, STATE_SHORT, qualityBadge, fmtPpm } from "./clientdetail.js";
+import { renderDetail, fmtOffset, offsetTone, fmtInterval, clientHref, STATE_TONE, STATE_SHORT, qualityBadge, fmtDrift } from "./clientdetail.js";
 import { renderPass } from "./clientpass.js";
 
 // Platzhalter, wenn die LAN-Adresse nicht bekannt ist – in den Beispielen gut sichtbar.
@@ -136,7 +136,8 @@ function worstClocks(ctx) {
   const items = (data && data.worst) || [];
   return miniList("Schlechteste Uhren im Haus", "clients_worst_clocks", items, data?.rated || 0,
     (item) => el("span", { class: "worst-clock" }, qualityBadge(item),
-      isNum(item.drift_ppm) ? el("span", { class: "field-help", text: ` ${fmtPpm(item.drift_ppm)}` }) : null),
+      isNum(item.drift_ppm) || isNum(item.drift_bound_ppm)
+        ? el("span", { class: "field-help", text: ` ${fmtDrift(item)}` }) : null),
     data === undefined ? "Lade Uhrgüte …" : "Noch kein Gerät bewertbar (es braucht mindestens 4 Messungen).");
 }
 

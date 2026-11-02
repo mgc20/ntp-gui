@@ -171,6 +171,15 @@ class StateWatcher:
         except Exception:  # Ereignisse sind nie kritisch
             pass
 
+    def _close_client(self, ip: str, why: str) -> None:
+        """Offenen Client-Alarm still schließen (nur Protokoll; notify-Router schließt den Betreff)."""
+        state = self._clients.get(ip)
+        if not state or not state.get("alarm"):
+            return
+        state["alarm"] = False
+        self._send("clients", "info", f"Alarm für {ip} beendet – {why}",
+                   {"address": ip, "resolves": True, "notify": False, "reason": why})
+
     # --- Messpunkt -----------------------------------------------------------
     def sample(self, sample: dict) -> None:
         if not isinstance(sample, dict):
@@ -303,7 +312,7 @@ class StateWatcher:
 
     # --- Client-Uhren (Alarm-Schwelle aus den Einstellungen) -------------------
     def clients(self, clients: Any, threshold_ms: Any, fmt: Callable[[float], str] | None = None,
-                data_for: Callable[[str], dict] | None = None) -> None:
+                data_for: Callable[[str], dict] | None = None, handover: Any = None) -> None:
         """Meldet Client-Uhren, die um mehr als threshold_ms abweichen.
 
         Hysterese wie bei den übrigen Zuständen: Ein Alarm entsteht erst, wenn ZWEI neue
@@ -316,6 +325,11 @@ class StateWatcher:
 
         data_for(ip) (1.5): zusätzliche Ereignisdaten je Gerät, z. B. {"notify": False} für
         stummgeschaltete Geräte (Clients 3) – das Ereignis bleibt dann im Protokoll.
+
+        Fällt ein Gerät mit offenem Alarm heraus (eigene Schwelle übernimmt – handover –, Gerät nicht
+        mehr in der Liste oder Schwelle ausgeschaltet), schließt ein stilles „info“-Ereignis den Alarm.
+        Sonst bliebe er im Protokoll und in den Benachrichtigungen offen, und der nächste Alarm für
+        dieses Gerät gälte als „schon gemeldet“.
         """
         try:
             threshold = float(threshold_ms or 0) / 1000.0
@@ -324,8 +338,11 @@ class StateWatcher:
         if not isinstance(clients, dict):
             return
         fmt = fmt or (lambda v: f"{v * 1000:+.1f} ms")
+        handover = set(handover or ())
         with self._lock:
             if threshold <= 0:
+                for ip in list(self._clients):
+                    self._close_client(ip, "Alarm-Schwelle ausgeschaltet")
                 self._clients.clear()
                 self._clients_threshold = None
                 return
@@ -335,6 +352,8 @@ class StateWatcher:
                     state["streak"] = 0
                 self._clients_threshold = threshold
             for ip in [ip for ip in self._clients if ip not in clients]:
+                self._close_client(ip, "eigene Schwelle übernimmt" if ip in handover
+                                   else "nicht mehr in der Liste")
                 del self._clients[ip]
             for ip, entry in clients.items():
                 if not isinstance(entry, dict) or not entry.get("measurable"):

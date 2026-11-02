@@ -520,6 +520,7 @@ class Monitor:
         self.packets = 0
         self.ignored = 0
         self.since = time.time()
+        self.since_mono = time.monotonic()   # für Dauer-Entscheidungen (Wanduhr kann springen)
         self.kernel_drops = 0
         self._seen: deque = deque(maxlen=DEDUP)
         self._seen_set: set = set()
@@ -1019,6 +1020,15 @@ def status() -> dict:
         "port": monitor.port,
         "since": monitor.since,
     }
+
+
+def listening_seconds() -> float | None:
+    """Wie lange die Messung schon mithört – monoton gemessen (None ohne laufende Messung)."""
+    monitor = _MONITOR
+    start = getattr(monitor, "since_mono", None)
+    if monitor is None or start is None or not _alive(monitor):
+        return None
+    return max(0.0, time.monotonic() - start)
 
 
 def private_snapshot() -> dict[str, dict]:
