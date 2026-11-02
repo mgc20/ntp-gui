@@ -25,9 +25,11 @@ Sicherheit, bewusst einfach gehalten:
   * höchstens MAX_WORKERS gleichzeitige Anfragen, MAX_TCP gleichzeitige TCP-Verbindungen;
   * kleiner Cache, der die TTL respektiert (höchstens 5 min, negative Antworten 30 s);
   * fallen alle eigenen Server aus, fragt er die ursprünglichen System-Resolver
-    (abschaltbar) und meldet das als Ereignis (Art „dns“). Eine Anfrage, die über den
-    System-DNS wieder bei ihm landet (z. B. Docker-DNS → 127.0.0.1), erkennt er und
-    beantwortet sie mit SERVFAIL statt endlos zu kreisen.
+    (abschaltbar) und meldet das als Ereignis (Art „dns“); diese unverschlüsselten
+    Antworten cacht er nur wenige Sekunden. Eine Anfrage, die über einen Upstream oder
+    den System-DNS wieder bei ihm landet (z. B. Docker-DNS → 127.0.0.1, gleiche ID und
+    Frage), erkennt er und beantwortet sie mit SERVFAIL statt endlos zu kreisen;
+    gleichzeitige gleiche Fragen gehen nur einmal hinaus.
 
 Nur Standardbibliothek; Import ohne Seiteneffekte (confgen und server.py nutzen die
 reinen Funktionen).
@@ -74,6 +76,9 @@ UPSTREAM_TIMEOUT = 2.0     # je Upstream-Versuch
 QUERY_DEADLINE = 4.5       # gesamte Anfrage (glibc wartet 5 s, bevor es neu fragt)
 FALLBACK_MIN = 1.5         # so viel Zeit bekommt der System-DNS mindestens
 DOWN_SECONDS = 30.0        # ein ausgefallener Upstream wird so lange übersprungen
+DOWN_AFTER = 3             # so viele Zeitüberschreitungen in Folge, bis er als ausgefallen gilt
+FALLBACK_CACHE_TTL = 5     # Antworten des System-DNS (Rückfall) nur kurz cachen
+LOOP_RECENT = 600.0        # so lange gilt eine erkannte Schleife als „aktuell“
 MAX_WORKERS = 64
 MAX_TCP = 16
 TCP_IDLE = 10.0
@@ -88,7 +93,7 @@ BOOTSTRAP_MAX_TTL = 3600
 
 TYPE_A, TYPE_AAAA, TYPE_OPT = 1, 28, 41
 FLAG_QR, FLAG_TC = 0x8000, 0x0200
-RCODE_SERVFAIL, RCODE_NOTIMP, RCODE_FORMERR = 2, 4, 1
+RCODE_SERVFAIL, RCODE_NOTIMP, RCODE_FORMERR, RCODE_REFUSED = 2, 4, 1, 5
 
 
 def _log(message: str) -> None:
@@ -317,6 +322,22 @@ class UpstreamError(OSError):
     """Upstream hat nicht (brauchbar) geantwortet."""
 
 
+class BootstrapError(UpstreamError):
+    """Die Adresse eines DoT-/DoH-Servers ließ sich nicht ermitteln."""
+
+
+def hard_failure(exc: BaseException) -> bool:
+    """Fehler, der den ganzen Server betrifft (abgelehnt, unerreichbar, TLS, Adresse unbekannt) –
+    anders als eine Zeitüberschreitung, die auch nur an einem langsamen Namen liegen kann."""
+    if isinstance(exc, (BootstrapError, ConnectionError, ssl.SSLError)):
+        return True
+    return getattr(exc, "errno", None) in (errno.ECONNREFUSED, errno.ENETUNREACH, errno.EHOSTUNREACH)
+
+
+def rcode_of(msg: bytes) -> int:
+    return header(msg)[1] & 0xF
+
+
 def _remaining(deadline: float) -> float:
     left = deadline - time.monotonic()
     if left <= 0:
@@ -424,6 +445,7 @@ class Upstream:
         self.last_error_t: float | None = None
         self.rtt_ms: float | None = None
         self.down_until = 0.0
+        self.streak = 0  # Fehlschläge in Folge
 
     def exchange(self, query: bytes, deadline: float) -> bytes:  # pragma: no cover - abstrakt
         raise NotImplementedError
@@ -431,7 +453,7 @@ class Upstream:
     def public(self) -> dict:
         return {"label": self.label, "proto": self.proto, "ok": self.ok, "fail": self.fail,
                 "last_ok": self.last_ok, "last_error": self.last_error, "last_error_t": self.last_error_t,
-                "rtt_ms": self.rtt_ms, "down_until": self.down_until or None}
+                "rtt_ms": self.rtt_ms, "down_until": self.down_until or None, "streak": self.streak}
 
 
 class PlainUpstream(Upstream):
@@ -455,6 +477,15 @@ class _NamedUpstream(Upstream):
         self.host, self.port, self.pins = host, port, list(pins)
         self.bootstrap = bootstrap
         self.context = context or tls_context()
+        self.bootstrap_failed = False
+
+    def is_pinned(self) -> bool:
+        """Adresse steht fest (IP statt Name oder dns_pin) – kein System-DNS nötig."""
+        try:
+            ipaddress.ip_address(self.host)
+            return True
+        except ValueError:
+            return bool(self.pins)
 
     def targets(self, deadline: float) -> list[str]:
         try:
@@ -465,9 +496,16 @@ class _NamedUpstream(Upstream):
         if self.pins:
             return self.pins[:2]
         ips = self.bootstrap.resolve(self.host, deadline)
+        self.bootstrap_failed = not ips
         if not ips:
-            raise UpstreamError(f"Adresse von {self.host} unbekannt (System-DNS antwortet nicht)")
+            raise BootstrapError(f"Adresse von {self.host} unbekannt (System-DNS liefert sie nicht – "
+                                 "unter „Feste Adressen für DoT/DoH“ eintragen)")
         return ips[:2]
+
+    def public(self) -> dict:
+        data = super().public()
+        data.update(host=self.host, pinned=self.is_pinned(), bootstrap_failed=self.bootstrap_failed)
+        return data
 
 
 class DotUpstream(_NamedUpstream):
@@ -499,10 +537,20 @@ class DohUpstream(_NamedUpstream):
         error: Exception | None = None
         for ip in self.targets(deadline):
             conn = _PinnedHTTPS(self.host, self.port, ip, self.context, _remaining(deadline))
+            # Harte Frist für die ganze Anfrage: Ein Server, der Kopf oder Antwort Byte für Byte
+            # tröpfeln lässt, hielte sonst einen Worker beliebig lange (der Socket-Timeout gilt nur
+            # je recv). Bei Fristende wird die Verbindung von außen beendet.
+            guard: list[socket.socket] = []
+            timer = threading.Timer(max(0.0, deadline - time.monotonic()), _abort_connection, args=(guard,))
+            timer.daemon = True
+            timer.start()
             try:
                 conn.request("POST", self.path, body=query, headers={
                     "Content-Type": "application/dns-message", "Accept": "application/dns-message"})
                 conn.sock.settimeout(_remaining(deadline))
+                # Eigenes Duplikat des Sockets: getresponse() gibt conn.sock bei „Connection: close“
+                # ab, und der Deskriptor darf nicht neu vergeben sein, wenn die Frist abläuft.
+                guard.append(socket.socket(fileno=os.dup(conn.sock.fileno())))
                 resp = conn.getresponse()
                 if resp.status != 200:  # auch keine Weiterleitungen (3xx)
                     raise UpstreamError(f"HTTP {resp.status}")
@@ -512,41 +560,103 @@ class DohUpstream(_NamedUpstream):
                 length = resp.getheader("Content-Length")
                 if length and (not length.isdigit() or int(length) > MAX_MSG):
                     raise UpstreamError("Antwort zu groß")
-                data = resp.read(MAX_MSG + 1)
-                if len(data) > MAX_MSG:
-                    raise UpstreamError("Antwort zu groß")
+                data = _read_body(resp, deadline)
                 if not valid_response(query, data):
                     raise UpstreamError("Antwort passt nicht zur Anfrage")
                 return data
             except (OSError, ssl.SSLError, http.client.HTTPException, DnsError) as exc:
                 error = exc
             finally:
+                timer.cancel()
+                timer.join()
+                for dup in guard:
+                    dup.close()
                 conn.close()
+            if time.monotonic() >= deadline:
+                raise UpstreamError("Zeitüberschreitung")
         raise UpstreamError(str(error) or "keine Verbindung")
 
 
-class Inflight:
-    """Fragen, die gerade beim System-DNS liegen. Kommt dieselbe Frage währenddessen bei
-    uns an, fragt der System-DNS (z. B. Docker-DNS mit „dns: 127.0.0.1“) diesen
-    Weiterleiter – eine Schleife, die sofort mit SERVFAIL endet statt zu kreisen."""
+def _abort_connection(guard: list[socket.socket]) -> None:
+    """Frist abgelaufen: Verbindung beenden – ein hängendes recv kehrt sofort zurück.
+    Über ein eigenes Duplikat, damit der TLS-Zustand nicht aus diesem Thread berührt wird."""
+    for sock in guard:
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+
+
+def _read_body(resp: http.client.HTTPResponse, deadline: float) -> bytes:
+    """Antwortkörper in kleinen Stücken, vor jedem Stück die Frist prüfen."""
+    buf = bytearray()
+    while True:
+        _remaining(deadline)
+        chunk = resp.read1(16384)
+        if not chunk:
+            return bytes(buf)
+        buf += chunk
+        if len(buf) > MAX_MSG:
+            raise UpstreamError("Antwort zu groß")
+
+
+class Flight:
+    """Eine Frage, die gerade hinausgeht; gleiche Fragen warten auf ihre Antwort."""
+
+    __slots__ = ("done", "data")
 
     def __init__(self) -> None:
-        self._items: dict[bytes, int] = {}
+        self.done = threading.Event()
+        self.data: bytes | None = None
+
+
+class Inflight:
+    """Was dieser Weiterleiter gerade selbst fragt – zwei Dinge:
+
+    * Schleifen: (zufällige ID, Frage) jeder Anfrage, die gerade an einen Upstream, den
+      System-DNS oder den Bootstrap geht. Kommt genau diese Anfrage hier wieder an, hat der
+      Gefragte (z. B. Docker-DNS mit „dns: 127.0.0.1“, behält die ID beim Weiterreichen)
+      diesen Weiterleiter gefragt – eine Schleife, die sofort mit SERVFAIL endet.
+    * Bündeln: Fragen mehrere Clients gleichzeitig dasselbe, geht die Frage nur einmal
+      hinaus; die anderen warten auf diese Antwort. So gibt es weder Fehlalarme („Schleife“
+      bei zwei gleichen Anfragen) noch ein Auffächern, falls ein Gefragter die ID ändert."""
+
+    def __init__(self) -> None:
+        self._ids: dict[tuple[int, bytes], int] = {}
+        self._flights: dict[bytes, Flight] = {}
         self._lock = threading.Lock()
 
-    def __contains__(self, key: bytes) -> bool:
+    def is_loop(self, ident: int, key: bytes) -> bool:
         with self._lock:
-            return bool(self._items.get(key))
+            return bool(self._ids.get((ident, key)))
 
-    def add(self, key: bytes) -> None:
+    def track(self, ident: int, key: bytes) -> None:
         with self._lock:
-            self._items[key] = self._items.get(key, 0) + 1
+            self._ids[(ident, key)] = self._ids.get((ident, key), 0) + 1
 
-    def remove(self, key: bytes) -> None:
+    def untrack(self, ident: int, key: bytes) -> None:
         with self._lock:
-            self._items[key] = self._items.get(key, 1) - 1
-            if self._items[key] <= 0:
-                del self._items[key]
+            left = self._ids.get((ident, key), 1) - 1
+            if left <= 0:
+                self._ids.pop((ident, key), None)
+            else:
+                self._ids[(ident, key)] = left
+
+    def join(self, key: bytes) -> tuple[Flight, bool]:
+        """(Flug, True) für den Ersten, der fragt; (laufender Flug, False) für alle weiteren."""
+        with self._lock:
+            flight = self._flights.get(key)
+            if flight is not None:
+                return flight, False
+            flight = self._flights[key] = Flight()
+            return flight, True
+
+    def land(self, key: bytes, flight: Flight, data: bytes | None) -> None:
+        with self._lock:
+            if self._flights.get(key) is flight:
+                del self._flights[key]
+        flight.data = data
+        flight.done.set()
 
 
 class Bootstrap:
@@ -573,15 +683,17 @@ class Bootstrap:
                     query = build_query(host, qtype)
                 except (UnicodeError, ValueError):
                     return []
-                key = question(query)
-                self.inflight.add(key)
+                key, ident = question(query), header(query)[0]
+                self.inflight.track(ident, key)
                 try:
                     data = plain_exchange(ip, port, query, min(deadline, time.monotonic() + 1.5))
+                    if rcode_of(data) in (RCODE_SERVFAIL, RCODE_REFUSED):
+                        continue
                     ips, rr_ttl = addresses(data, qtype)
                 except (OSError, DnsError):
                     continue
                 finally:
-                    self.inflight.remove(key)
+                    self.inflight.untrack(ident, key)
                 found += [a for a in ips if a not in found]
                 ttl = min(ttl, rr_ttl)
                 break
@@ -749,7 +861,8 @@ class Forwarder:
         self.state = "starting"
         self.state_since = clock()
         self.stats = {"queries": 0, "answered": 0, "servfail": 0, "cache_hits": 0,
-                      "fallback": 0, "fallback_last": None, "loops": 0, "dropped": 0}
+                      "fallback": 0, "fallback_last": None, "loops": 0, "loop_last": None,
+                      "coalesced": 0, "dropped": 0}
         self._cache: dict[bytes, tuple[float, float, bytes]] = {}
         self.inflight = inflight or Inflight()
         self._lock = threading.Lock()
@@ -785,10 +898,10 @@ class Forwarder:
         except DnsError:
             return None
 
-    def _cache_put(self, key: bytes, data: bytes) -> None:
+    def _cache_put(self, key: bytes, data: bytes, max_ttl: int = CACHE_MAX_TTL) -> None:
         if not self.cache_on:
             return
-        ttl = cache_ttl(data)
+        ttl = min(cache_ttl(data), max_ttl)
         if ttl <= 0:
             return
         now = time.monotonic()
@@ -822,16 +935,48 @@ class Forwarder:
             with self._lock:
                 self.stats["answered"] += 1
             return cached
-        if qkey in self.inflight:
-            # Dieselbe Frage läuft gerade über den System-DNS – und kommt hier wieder an:
-            # Der System-DNS fragt (z. B. über Docker-DNS) diesen Weiterleiter. Schleife.
+        if self.inflight.is_loop(ident, qkey):
+            # Genau diese Anfrage (gleiche ID, gleiche Frage) hat dieser Weiterleiter gerade
+            # selbst gestellt – der Gefragte reicht sie hierher zurück. Schleife.
             with self._lock:
                 self.stats["loops"] += 1
+                self.stats["loop_last"] = self.clock()
                 self.stats["servfail"] += 1
-                return reply_code(query, RCODE_SERVFAIL)
+            return reply_code(query, RCODE_SERVFAIL)
+        flight, leader = self.inflight.join(qkey)
+        if not leader:
+            # Dieselbe Frage ist schon unterwegs: auf deren Antwort warten statt erneut fragen.
+            flight.done.wait(QUERY_DEADLINE)
+            with self._lock:
+                self.stats["coalesced"] += 1
+                self.stats["answered" if flight.data is not None else "servfail"] += 1
+            return with_id(flight.data, ident) if flight.data is not None else reply_code(query, RCODE_SERVFAIL)
+        data: bytes | None = None
+        try:
+            data = self._resolve_out(query, qkey)
+        finally:
+            self.inflight.land(qkey, flight, data)
+        if data is None:
+            return reply_code(query, RCODE_SERVFAIL)
+        return with_id(data, ident)
 
+    def _all_down(self) -> bool:
+        now = self.clock()
+        return all(u.down_until > now for u in self.upstreams)
+
+    def _resolve_out(self, query: bytes, qkey: bytes) -> bytes | None:
+        """Fragt die eigenen Server, dann (falls erlaubt) den System-DNS. Antwort mit der
+        zufälligen Upstream-ID oder None (→ SERVFAIL)."""
         deadline = time.monotonic() + QUERY_DEADLINE
-        upstream_query = with_id(query, secrets.randbits(16))
+        upstream_id = secrets.randbits(16)
+        upstream_query = with_id(query, upstream_id)
+        self.inflight.track(upstream_id, qkey)
+        try:
+            return self._resolve_tracked(query, upstream_query, deadline)
+        finally:
+            self.inflight.untrack(upstream_id, qkey)
+
+    def _resolve_tracked(self, query: bytes, upstream_query: bytes, deadline: float) -> bytes | None:
         errors: list[str] = []
         now = self.clock()
         candidates = [u for u in self.upstreams if u.down_until <= now]
@@ -844,54 +989,63 @@ class Forwarder:
             started = time.monotonic()
             try:
                 data = up.exchange(upstream_query, started + min(UPSTREAM_TIMEOUT, left))
+                if rcode_of(data) == RCODE_REFUSED:
+                    raise UpstreamError("Anfrage abgelehnt (REFUSED)")
             except (OSError, ssl.SSLError, DnsError, http.client.HTTPException, ValueError) as exc:
                 text = " ".join(str(exc).split())[:160] or exc.__class__.__name__
                 with self._lock:
                     up.fail += 1
+                    up.streak += 1
                     up.last_error, up.last_error_t = text, self.clock()
-                    up.down_until = self.clock() + DOWN_SECONDS
+                    # Eine einzelne Zeitüberschreitung kann an einem langsamen Namen liegen –
+                    # erst mehrere in Folge (oder ein harter Fehler) gelten als Ausfall.
+                    if hard_failure(exc) or up.streak >= DOWN_AFTER:
+                        up.down_until = self.clock() + DOWN_SECONDS
                 errors.append(f"{up.label}: {text}")
                 continue
             with self._lock:
                 up.ok += 1
+                up.streak = 0
                 up.last_ok = self.clock()
                 up.rtt_ms = round((time.monotonic() - started) * 1000, 1)
                 up.down_until = 0.0
                 self.stats["answered"] += 1
             self._cache_put(query[2:], data)
             self._set_state("ok", {"upstream": up.label})
-            return with_id(data, ident)
+            return data
 
         if self.use_fallback:
-            data = self._ask_system(upstream_query, qkey, deadline)
+            data = self._ask_system(upstream_query, deadline)
             if data is not None:
                 with self._lock:
                     self.stats["answered"] += 1
                     self.stats["fallback"] += 1
                     self.stats["fallback_last"] = self.clock()
-                self._cache_put(query[2:], data)
-                self._set_state("fallback", {"errors": errors[:4]})
-                return with_id(data, ident)
+                # Unverschlüsselt und evtl. umgeschrieben: nur kurz cachen, damit nach der
+                # Rückkehr der eigenen Server sofort wieder sie gefragt werden.
+                self._cache_put(query[2:], data, FALLBACK_CACHE_TTL)
+                if self._all_down():
+                    self._set_state("fallback", {"errors": errors[:4]})
+                return data
         with self._lock:
             self.stats["servfail"] += 1
-        self._set_state("failing", {"errors": errors[:4]})
-        return reply_code(query, RCODE_SERVFAIL)
+        if self._all_down():
+            self._set_state("failing", {"errors": errors[:4]})
+        return None
 
-    def _ask_system(self, query: bytes, qkey: bytes, deadline: float) -> bytes | None:
+    def _ask_system(self, query: bytes, deadline: float) -> bytes | None:
+        """System-DNS der Reihe nach; SERVFAIL/REFUSED zählt als Fehlschlag (nächster Server)."""
         servers = self.fallback()
-        if not servers:
-            return None
-        self.inflight.add(qkey)
-        try:
-            end = max(deadline, time.monotonic() + FALLBACK_MIN)
-            for ip, port in servers:
-                try:
-                    return plain_exchange(ip, port, query, min(end, time.monotonic() + FALLBACK_MIN))
-                except (OSError, DnsError):
+        end = max(deadline, time.monotonic() + FALLBACK_MIN)
+        for ip, port in servers:
+            try:
+                data = plain_exchange(ip, port, query, min(end, time.monotonic() + FALLBACK_MIN))
+                if rcode_of(data) in (RCODE_SERVFAIL, RCODE_REFUSED):
                     continue
-            return None
-        finally:
-            self.inflight.remove(qkey)
+                return data
+            except (OSError, DnsError):
+                continue
+        return None
 
     def public(self) -> dict:
         with self._lock:

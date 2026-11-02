@@ -995,6 +995,11 @@ class Handler(BaseHTTPRequestHandler):
                        {"Cache-Control": "no-store"})
         return False
 
+    def _read_only_key(self) -> bool:
+        """Anfrage mit einem API-Schlüssel ohne Admin-Recht (sieht z. B. den DoH-Pfad nur gekürzt)."""
+        ident = getattr(self, "_ident", None) or {}
+        return ident.get("kind") == "key" and ident.get("scope") != "admin"
+
     def _scope_ok(self, ident: dict, method: str, path: str) -> bool:
         """Darf diese Identität die Methode auf dem Pfad nutzen (apiv1.required_scope)?"""
         if ident["kind"] != "key":
@@ -1106,6 +1111,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self._scope_ok(ident, "GET", path):
             self._deny_scope(ident, "GET", path)
             return
+        self._ident = ident
         try:
             if index:
                 self._send_json(apiv1.describe())
@@ -1159,7 +1165,7 @@ class Handler(BaseHTTPRequestHandler):
             primary = files[0] if files else {"path": CHRONY_CONF, "content": f"# {CHRONY_CONF} nicht lesbar"}
             self._send_json({"path": primary["path"], "content": primary["content"], "files": files})
         elif path == "/api/settings":
-            schema = settings.public_schema()
+            schema = settings.public_schema(masked=self._read_only_key())
             schema["readonly"] = env_flag("WEB_READONLY")
             schema["auth"] = auth_info()
             schema["reload"] = reload_status()
@@ -1169,7 +1175,8 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/settings/notes":
             self._send_json({"schema": settings.schema_version(), "notes": settings.migration_notes()})
         elif path == "/api/settings/export":
-            body = json.dumps(settings.export_values(), indent=2, ensure_ascii=False).encode()
+            body = json.dumps(settings.export_values(masked=self._read_only_key()), indent=2,
+                              ensure_ascii=False).encode()
             self._send(HTTPStatus.OK, body, "application/json; charset=utf-8",
                        {"Content-Disposition": 'attachment; filename="ntp-gui-einstellungen.json"',
                         "Cache-Control": "no-store"})
@@ -1380,6 +1387,10 @@ class Handler(BaseHTTPRequestHandler):
             values = data.get("values")
             if not isinstance(values, dict):
                 raise settings.ValidationError("Datei enthält keine Einstellungen")
+            # Export mit Leserecht: gekürzte Werte (z. B. DoH-Pfad) nicht über die echten schreiben.
+            masked = data.get("masked")
+            values = {k: v for k, v in values.items()
+                      if not (isinstance(masked, list) and k in masked)}
             # Auch Sicherungen älterer Versionen: erst auf das aktuelle Schema bringen.
             values, notes = settings.migrate_import({"schema": data.get("schema", 1), "values": values})
             result = settings.save(values) if values else {"changed": [], "restart": False}

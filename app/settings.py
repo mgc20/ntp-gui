@@ -319,10 +319,13 @@ def _as_dns_servers(value: Any) -> list[str]:
         except ValueError:
             raise ValidationError(f"„{item}“ ist keine IP-Adresse – hier nur Adressen, z. B. 9.9.9.9 "
                                   "(Namen bräuchten selbst wieder DNS)") from None
+        if addr.version == 6 and addr.ipv4_mapped:
+            addr = addr.ipv4_mapped  # ::ffff:127.0.0.1 ist 127.0.0.1
         if addr.is_unspecified or addr.is_multicast:
             raise ValidationError(f"„{item}“ ist keine Unicast-Adresse")
-        if str(addr) in ("127.0.0.1", "::1") and port == 53:
-            raise ValidationError(f"„{item}“ ist der Weiterleiter von ntp-gui selbst – das wäre eine Schleife")
+        if addr.is_loopback and port == 53:
+            raise ValidationError(f"„{item}“ zeigt auf den Weiterleiter von ntp-gui selbst (Loopback, Port 53) "
+                                  "– das wäre eine Schleife")
         norm = str(addr) if port == 53 else (f"[{addr}]:{port}" if addr.version == 6 else f"{addr}:{port}")
         if norm not in out:
             out.append(norm)
@@ -748,7 +751,9 @@ SCHEMA: list[dict] = [
                 "fragen dann deine Server statt des DNS im LAN. Wichtig, wenn AdGuard Home oder Pi-hole "
                 "Zeitserver-Namen auf ntp-gui umschreibt: Sonst fragt chronyd sich selbst. DoT und DoH "
                 "laufen verschlüsselt über 853/tcp bzw. 443/tcp und sind damit auch von einer "
-                "DNS-Umleitung per Firewall (Port 53) nicht betroffen."),
+                "DNS-Umleitung per Firewall (Port 53) nicht betroffen. Steht in der Compose-Datei "
+                "„dns: 127.0.0.1“, gibt es keinen System-DNS mehr: Dann bei DoT/DoH die Server unter "
+                "„Feste Adressen“ eintragen oder „Eigene DNS-Server“ mit IP-Adressen nehmen."),
     _field("dns_servers", "dns", "DNS-Server (IP-Adressen)", "hostlist", [], _as_dns_servers,
            env="DNS_SERVERS", placeholder="z. B. 9.9.9.9 oder 1.1.1.1",
            help="Für den Modus „Eigene DNS-Server“: IP-Adressen, optional mit Port (9.9.9.9:53, "
@@ -761,13 +766,18 @@ SCHEMA: list[dict] = [
            help="Für den Modus DoT: Servername, optional mit Port (Standard 853), z. B. dns.quad9.net, "
                 "one.one.one.one oder dns.digitale-gesellschaft.ch. Das Zertifikat wird gegen die "
                 "Zertifizierungsstellen des Systems und den Namen geprüft. Die Adresse des Servers "
-                "ermittelt ntp-gui über den System-DNS – oder du trägst sie unten fest ein."),
+                "ermittelt ntp-gui über den System-DNS – oder du trägst sie unter „Feste Adressen“ "
+                "ein. Pflicht bei „dns: 127.0.0.1“ in der Compose-Datei: Dann fragte der System-DNS "
+                "wieder ntp-gui selbst, und der Name bliebe unauflösbar."),
     _field("dns_doh", "dns", "DNS-over-HTTPS-Adressen", "hostlist", [], _as_doh_urls,
            env="DNS_DOH", placeholder="z. B. https://dns.quad9.net/dns-query",
            help="Für den Modus DoH: vollständige https-Adresse nach RFC 8484, z. B. "
                 "https://dns.quad9.net/dns-query oder https://cloudflare-dns.com/dns-query. ntp-gui "
                 "schickt die Anfrage per POST, folgt keiner Weiterleitung und nutzt keinen Proxy. Steht "
-                "im Pfad eine Konto-Kennung (z. B. NextDNS), zeigen Status und Ereignisse nur den Servernamen."),
+                "im Pfad eine Konto-Kennung (z. B. NextDNS), zeigen Status, Ereignisse, Diagnose und "
+                "API-Schlüssel mit Leserecht nur den Servernamen. Bei „dns: 127.0.0.1“ in der "
+                "Compose-Datei den Servernamen unter „Feste Adressen“ eintragen – sonst ist er "
+                "nicht auflösbar."),
     _field("dns_pin", "dns", "Feste Adressen für DoT/DoH", "hostlist", [], _as_dns_pins,
            env="DNS_PIN", advanced=True, placeholder="z. B. dns.quad9.net=9.9.9.9",
            help="Optional, je Zeile Name=IP, z. B. dns.quad9.net=9.9.9.9. Dann fragt ntp-gui für den "
@@ -1275,12 +1285,29 @@ def reset(keys: list[str]) -> dict[str, Any]:
     return {"changed": changed, "restart": restart}
 
 
-def public_schema() -> dict:
-    """Schema + aktuelle Werte für das Dashboard (ohne Funktionen und Geheimnisse)."""
+# Werte, die keine Geheimnisse sind, aber Konto-Kennungen enthalten können (NextDNS-ID im
+# DoH-Pfad): API-Schlüssel mit Leserecht sehen sie nur gekürzt.
+MASKED_FOR_READ = ("dns_doh",)
+
+
+def _mask_value(key: str, value: Any) -> Any:
+    if key == "dns_doh" and isinstance(value, list):
+        import dnsfwd
+        return [dnsfwd.doh_label(str(item)) for item in value]
+    return value
+
+
+def public_schema(masked: bool = False) -> dict:
+    """Schema + aktuelle Werte für das Dashboard (ohne Funktionen und Geheimnisse).
+    masked=True (API-Schlüssel mit Leserecht): MASKED_FOR_READ nur gekürzt."""
     eff = effective()
     fields = []
     for field in SCHEMA:
         entry = eff[field["key"]]
+        if masked and field["key"] in MASKED_FOR_READ:
+            entry = dict(entry, value=_mask_value(field["key"], entry["value"]),
+                         env=_mask_value(field["key"], entry["env"]) if entry["env"] is not None else None,
+                         error="Wert ungültig (Einzelheiten nur mit Admin-Recht)" if entry["error"] else None)
         fields.append({
             "key": field["key"], "section": field["section"], "label": field["label"],
             "type": field["type"], "help": field["help"], "advanced": field["advanced"],
@@ -1373,10 +1400,19 @@ def set_credentials(user: str, password: str | None) -> None:
         _write_file(data)
 
 
-def export_values() -> dict:
-    """Die im Dashboard gespeicherten Werte (ohne Passwort) – zum Sichern."""
+def export_values(masked: bool = False) -> dict:
+    """Die im Dashboard gespeicherten Werte (ohne Passwort) – zum Sichern. masked=True (API-Schlüssel
+    mit Leserecht): MASKED_FOR_READ gekürzt und unter „masked“ vermerkt – beim Import übersprungen."""
     with _LOCK:
-        return {"schema": SCHEMA_VERSION, "values": dict(_load_file().get("values", {}))}
+        values = dict(_load_file().get("values", {}))
+    out: dict[str, Any] = {"schema": SCHEMA_VERSION, "values": values}
+    if masked:
+        hidden = [key for key in MASKED_FOR_READ if key in values]
+        for key in hidden:
+            values[key] = _mask_value(key, values[key])
+        if hidden:
+            out["masked"] = hidden
+    return out
 
 
 # ---------------------------------------------------------------------------

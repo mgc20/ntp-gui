@@ -34,28 +34,37 @@ export const HELP_DNS = {
       + "Docker. In den anderen Modi trägt ntp-gui dort 127.0.0.1 ein (das Original wird gesichert und beim "
       + "Zurückschalten, beim Beenden und nach einem Absturz des Weiterleiters zurückgeschrieben). Ist die Datei "
       + "schreibgeschützt (z. B. `read_only: true`), trag in der Compose-Datei beim Dienst `dns: 127.0.0.1` ein – "
-      + "dann zeigt Docker selbst auf den Weiterleiter.",
+      + "dann zeigt Docker selbst auf den Weiterleiter. Dann gibt es aber keinen System-DNS mehr, der die Namen "
+      + "von DoT/DoH-Servern auflösen könnte: Trag sie unter „Feste Adressen“ ein (z. B. dns.quad9.net=9.9.9.9) "
+      + "oder nimm „Eigene DNS-Server“ mit IP-Adressen.",
   },
   dns_upstreams: {
     title: "Eigene Server",
     text: "Die eingetragenen Server in ihrer Reihenfolge: wie oft sie geantwortet haben, wann zuletzt, die letzte "
-      + "Antwortzeit und – falls es einen gab – der letzte Fehler. Antwortet ein Server nicht, überspringt ntp-gui "
-      + "ihn 30 Sekunden lang und fragt den nächsten. Bei DNS-over-HTTPS steht nur der Servername da, weil der Pfad "
+      + "Antwortzeit und – falls es einen gab – der letzte Fehler. Ist ein Server nicht erreichbar (abgelehnt, "
+      + "TLS-Fehler, Adresse unbekannt) oder läuft er dreimal in Folge in eine Zeitüberschreitung, überspringt "
+      + "ntp-gui ihn 30 Sekunden lang und fragt den nächsten. Eine einzelne langsame Antwort zählt nicht als "
+      + "Ausfall – dafür gibt es Namen mit trägen Nameservern zu oft. Bei DNS-over-HTTPS steht nur der Servername da, weil der Pfad "
       + "eine Konto-Kennung enthalten kann (z. B. bei NextDNS).",
   },
   dns_fallback: {
     title: "Rückfall auf den System-DNS",
     text: "Antwortet keiner der eigenen Server, fragt ntp-gui den DNS, den der Container ursprünglich hatte, und "
       + "schreibt ein Ereignis. Das hält die Zeitquellen auflösbar, bringt aber das Schleifenrisiko zurück, falls "
-      + "dieser DNS Zeitserver-Namen umschreibt. Kommt eine weitergegebene Frage bei ntp-gui selbst wieder an "
-      + "(etwa Docker-DNS mit `dns: 127.0.0.1`), bricht ntp-gui sie sofort ab, statt sie kreisen zu lassen. Wer "
-      + "DoT/DoH aus Datenschutzgründen nutzt, kann den Rückfall abschalten.",
+      + "dieser DNS Zeitserver-Namen umschreibt – und die Frage geht unverschlüsselt hinaus. Deshalb bleiben solche "
+      + "Antworten nur 5 Sekunden im Cache: Sind die eigenen Server zurück, werden sofort wieder sie gefragt. "
+      + "Antwortet der System-DNS mit einem Fehler (SERVFAIL, REFUSED), gilt das nicht als Antwort. Kommt eine "
+      + "weitergegebene Anfrage bei ntp-gui selbst wieder an (etwa Docker-DNS mit `dns: 127.0.0.1`), bricht "
+      + "ntp-gui sie sofort ab, statt sie kreisen zu lassen. Wer DoT/DoH aus Datenschutzgründen nutzt, kann den "
+      + "Rückfall abschalten.",
   },
   dns_pin: {
     title: "Feste Adressen",
     text: "DoT- und DoH-Server haben Namen. Deren Adresse muss ntp-gui zuerst erfahren – über den System-DNS. Mit "
       + "einem festen Eintrag (dns.quad9.net=9.9.9.9) entfällt diese Abfrage. Das Zertifikat wird trotzdem gegen "
-      + "den Namen geprüft, ein falscher Eintrag führt also zu einem Fehler, nicht zu einem fremden Server.",
+      + "den Namen geprüft, ein falscher Eintrag führt also zu einem Fehler, nicht zu einem fremden Server. "
+      + "Pflicht, wenn in der Compose-Datei `dns: 127.0.0.1` steht: Dann wäre der System-DNS wieder ntp-gui selbst, "
+      + "und der Name bliebe unauflösbar.",
   },
   dns_counts: {
     title: "Anfragen",

@@ -205,27 +205,52 @@ def dns_insights(dns: dict[str, Any], cfg: dict[str, Any], sources: list[dict] |
             "Der DNS-Weiterleiter läuft, aber /etc/resolv.conf lässt sich nicht auf ihn umstellen "
             "(z. B. „read_only: true“). chronyd fragt deshalb weiter den System-DNS. Abhilfe: in der "
             "Compose-Datei beim Dienst „dns: 127.0.0.1“ eintragen – dann zeigt Docker selbst auf den "
-            "Weiterleiter.", "dns_resolv_readonly")
+            "Weiterleiter. Wichtig dabei: Dann gibt es keinen System-DNS mehr, der die Namen der "
+            "DoT/DoH-Server auflösen könnte. Trag sie unter „Feste Adressen für DoT/DoH“ ein "
+            "(z. B. dns.quad9.net=9.9.9.9) oder nimm den Modus „Eigene DNS-Server“ mit IP-Adressen.",
+            "dns_resolv_readonly")
     elif resolv.get("state") == "error" or (resolv.get("state") == "local" and resolv.get("message")):
         add("warn", "resolv.conf-Problem", f"{resolv.get('message')}.", "dns_resolv_error")
+    stats = dns.get("stats") or {}
+    loop_recent = _recent(stats.get("loop_last"), dns.get("time"))
+    unpinned = [str(u.get("host")) for u in dns.get("upstreams") or []
+                if u.get("host") and u.get("pinned") is False
+                and (u.get("bootstrap_failed") or loop_recent)]
+    if mode in ("dot", "doh") and unpinned:
+        add("warn", "Adresse des DoT/DoH-Servers nicht ermittelbar",
+            f"ntp-gui kann die Adresse von {', '.join(dict.fromkeys(unpinned))} nicht über den "
+            "System-DNS herausfinden – typisch bei „dns: 127.0.0.1“ in der Compose-Datei, weil der "
+            "System-DNS dann wieder ntp-gui selbst ist. Trag die Adresse unter Einstellungen → "
+            "„DNS für ntp-gui“ → „Feste Adressen für DoT/DoH“ ein, z. B. dns.quad9.net=9.9.9.9. "
+            "Das Zertifikat wird weiter gegen den Namen geprüft.", "dns_pin_needed")
     state = dns.get("state")
     if state == "fallback":
         add("warn", "Eigene DNS-Server nicht erreichbar",
             "Keiner der eingetragenen DNS-Server hat zuletzt geantwortet. ntp-gui fragt deshalb den "
-            "ursprünglichen DNS des Containers – schreibt der Zeitserver-Namen um, droht wieder eine "
-            "Schleife. Prüfe Adressen, Firewall (853/tcp für DoT, 443/tcp für DoH) und die Uhrzeit "
-            "(TLS-Zertifikate).", "dns_fallback")
+            "ursprünglichen DNS des Containers"
+            + (" – unverschlüsselt" if mode in ("dot", "doh") else "")
+            + ". Schreibt der Zeitserver-Namen um, droht wieder eine Schleife. Prüfe Adressen, "
+            "Firewall (853/tcp für DoT, 443/tcp für DoH) und die Uhrzeit (TLS-Zertifikate).", "dns_fallback")
     elif state == "failing":
         add("crit", "Keine Namensauflösung",
             "Weder die eigenen DNS-Server noch der System-DNS antworten. chronyd kann Namen wie "
             "pool.ntp.org nicht auflösen; Quellen mit fester IP-Adresse laufen weiter.", "dns_failing")
-    if ((dns.get("stats") or {}).get("loops") or 0) > 0:
+    if loop_recent:
         add("warn", "System-DNS fragt ntp-gui zurück",
-            "Anfragen, die ntp-gui an den System-DNS weitergab, kamen bei ntp-gui selbst wieder an "
-            "(z. B. Docker-DNS mit „dns: 127.0.0.1“). Sie werden abgebrochen statt zu kreisen. Der "
+            "Anfragen, die ntp-gui weitergab, kamen in den letzten 10 Minuten bei ntp-gui selbst wieder "
+            "an (z. B. Docker-DNS mit „dns: 127.0.0.1“). Sie werden abgebrochen statt zu kreisen. Der "
             "Rückfall auf den System-DNS hilft hier nicht – sorge dafür, dass die eigenen Server "
-            "erreichbar sind.", "dns_loop_fallback")
+            "erreichbar sind, und trag bei DoT/DoH feste Adressen ein.", "dns_loop_fallback")
     return out
+
+
+def _recent(when: Any, now: Any = None, window: float = 600.0) -> bool:
+    """Liegt der Zeitpunkt (Unix-Sekunden) höchstens window Sekunden zurück?"""
+    import time
+    if not isinstance(when, (int, float)) or isinstance(when, bool):
+        return False
+    ref = now if isinstance(now, (int, float)) and not isinstance(now, bool) else time.time()
+    return ref - when <= window
 
 
 def build(status: dict[str, Any], cfg: dict[str, Any]) -> list[dict[str, Any]]:

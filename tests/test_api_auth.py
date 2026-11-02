@@ -142,6 +142,34 @@ class ApiAuthTest(unittest.TestCase):
         self.assertEqual(payload["schema_version"], settings.SCHEMA_VERSION)
         self.assertIsInstance(payload["notes"], list)
 
+    def test_doh_path_masked_for_read_key(self):
+        """DNS-SEC-4: Konto-Kennung im DoH-Pfad (NextDNS) nur für Admin/Passwort sichtbar."""
+        url = "https://dns.nextdns.io/abc123"
+        settings.save({"dns_doh": [url]})
+        self.addCleanup(settings.save, {"dns_doh": []})
+
+        def doh(payload):
+            return next(f for f in payload["fields"] if f["key"] == "dns_doh")["value"]
+
+        for path in ("/api/settings", "/api/v1/settings"):
+            status, payload = self.request("GET", path, headers=self.bearer(self.read_key))
+            self.assertEqual(status, 200)
+            self.assertEqual(doh(payload), ["https://dns.nextdns.io/…"], path)
+        status, payload = self.request("GET", "/api/v1/settings/export", headers=self.bearer(self.read_key))
+        self.assertEqual(payload["values"]["dns_doh"], ["https://dns.nextdns.io/…"])
+        self.assertEqual(payload["masked"], ["dns_doh"])
+        self.assertNotIn("abc123", json.dumps(payload))
+        # Admin-Schlüssel und Passwort sehen den vollen Wert (Bearbeiten im Dashboard)
+        self.assertEqual(doh(self.request("GET", "/api/v1/settings", headers=self.bearer(self.admin_key))[1]), [url])
+        self.assertEqual(doh(self.request("GET", "/api/settings", headers=self.basic())[1]), [url])
+        status, full = self.request("GET", "/api/settings/export", headers=self.basic())
+        self.assertEqual(full["values"]["dns_doh"], [url])
+        self.assertNotIn("masked", full)
+        # Import einer gekürzten Sicherung überschreibt den echten Wert nicht
+        status, _ = self.request("POST", "/api/v1/settings/import", payload, self.bearer(self.admin_key))
+        self.assertEqual(status, 200)
+        self.assertEqual(settings.values()["dns_doh"], [url])
+
 
 class HostCheckTest(unittest.TestCase):
     """DNS-Rebinding: ohne Passwort nur bekannte bzw. lokale Host-Namen."""

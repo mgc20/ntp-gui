@@ -51,8 +51,11 @@ class FakeDns:
     """UDP+TCP-DNS auf 127.0.0.1 mit zufälligem Port. big=True → Antwort > 512 Byte;
     tc=True → per UDP nur TC-Bit (der Client muss per TCP nachfragen)."""
 
-    def __init__(self, ip: str = ANSWER_IP, big: bool = False, tc: bool = False, ttl: int = 120) -> None:
+    def __init__(self, ip: str = ANSWER_IP, big: bool = False, tc: bool = False, ttl: int = 120,
+                 delay: dict | None = None, rcode: int = 0) -> None:
         self.ip, self.big, self.tc, self.ttl = ip, big, tc, ttl
+        self.delay = delay or {}  # Name → Sekunden bis zur Antwort
+        self.rcode = rcode
         self.udp_count = 0
         self.tcp_count = 0
         self.udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -67,7 +70,7 @@ class FakeDns:
         threading.Thread(target=self._tcp, daemon=True).start()
 
     def answer(self, query: bytes) -> bytes:
-        return make_answer(query, self.ip, self.ttl, 40 if self.big else 1)
+        return make_answer(query, self.ip, self.ttl, 40 if self.big else 1, self.rcode)
 
     def _udp(self) -> None:
         while not self.stop:
@@ -76,10 +79,20 @@ class FakeDns:
             except OSError:
                 return
             self.udp_count += 1
-            reply = self.answer(data)
-            if self.tc:
-                reply = dnsfwd.truncated(reply)
+            threading.Thread(target=self._udp_one, args=(data, addr), daemon=True).start()
+
+    def _udp_one(self, data: bytes, addr) -> None:
+        name = data[13:13 + data[12]].decode("ascii", "replace") if len(data) > 13 else ""
+        wait = self.delay.get(name)
+        if wait:
+            time.sleep(wait)
+        reply = self.answer(data)
+        if self.tc:
+            reply = dnsfwd.truncated(reply)
+        try:
             self.udp.sendto(reply, addr)
+        except OSError:
+            pass
 
     def _tcp(self) -> None:
         while not self.stop:
@@ -343,6 +356,54 @@ class DohTest(TlsBase):
                 up.exchange(dnsfwd.build_query("a.example", 1), time.monotonic() + 3)
             self.assertEqual(len(calls), 1, mode)  # keiner Weiterleitung gefolgt
 
+    def start_drip(self, phase):
+        """TLS-Server, der Kopf oder Antwort Byte für Byte tröpfeln lässt (DNS-SEC-1)."""
+        lsock = socket.socket()
+        lsock.bind(("127.0.0.1", 0))
+        lsock.listen(4)
+        stop = threading.Event()
+        self.addCleanup(stop.set)
+        self.addCleanup(lsock.close)
+
+        def serve(conn):
+            tls = None
+            try:
+                tls = self.server_ctx.wrap_socket(conn, server_side=True)
+                tls.recv(65535)
+                head = (b"HTTP/1.1 200 OK\r\nContent-Type: application/dns-message\r\n"
+                        b"Content-Length: 60000\r\n\r\n")
+                if phase == "body":
+                    tls.sendall(head)
+                    head = b"x" * 60000
+                for byte in head:
+                    if stop.wait(0.2):
+                        break
+                    tls.sendall(bytes([byte]))
+            except (OSError, ssl.SSLError):
+                pass
+            finally:
+                (tls or conn).close()
+
+        def loop():
+            while True:
+                try:
+                    conn, _ = lsock.accept()
+                except OSError:
+                    return
+                threading.Thread(target=serve, args=(conn,), daemon=True).start()
+        threading.Thread(target=loop, daemon=True).start()
+        return lsock.getsockname()[1]
+
+    def test_doh_slow_drip_respects_deadline(self):
+        for phase in ("head", "body"):
+            port = self.start_drip(phase)
+            up = dnsfwd.DohUpstream(f"https://dns.test:{port}/dns-query", ["127.0.0.1"], self.bootstrap(),
+                                    self.client_ctx)
+            started = time.monotonic()
+            with self.assertRaises(OSError, msg=phase):
+                up.exchange(dnsfwd.build_query("a.example", 1), time.monotonic() + 1.0)
+            self.assertLess(time.monotonic() - started, 2.0, phase)
+
     def test_doh_label_hides_path(self):
         self.assertEqual(dnsfwd.doh_label("https://dns.nextdns.io/abc123"), "https://dns.nextdns.io/…")
         self.assertEqual(dnsfwd.doh_label("https://dns.quad9.net/dns-query"), "https://dns.quad9.net/dns-query")
@@ -430,10 +491,138 @@ class ForwarderTest(unittest.TestCase):
     def test_loop_guard(self):
         fwd = dnsfwd.Forwarder("servers", [], use_fallback=True)
         query = dnsfwd.build_query("pool.ntp.org", 1)
-        fwd.inflight.add(dnsfwd.question(query))
+        ident, key = struct.unpack("!H", query[:2])[0], dnsfwd.question(query)
+        fwd.inflight.track(ident, key)  # genau diese Anfrage hat der Weiterleiter selbst gestellt
         reply = fwd.resolve(query)
         self.assertEqual(struct.unpack("!H", reply[2:4])[0] & 0xF, dnsfwd.RCODE_SERVFAIL)
         self.assertEqual(fwd.stats["loops"], 1)
+        self.assertIsNotNone(fwd.stats["loop_last"])
+        fwd.inflight.untrack(ident, key)
+        self.assertFalse(fwd.inflight.is_loop(ident, key))
+
+    def test_concurrent_same_question_is_no_loop(self):
+        """DNS-2: zwei gleiche Anfragen gleichzeitig im Rückfall – beide bekommen die Antwort,
+        die Frage geht nur einmal hinaus, und es gibt keinen Schleifenalarm."""
+        system = FakeDns(ip="198.51.100.7", delay={"same": 0.3})
+        self.addCleanup(system.close)
+        dead = dnsfwd.PlainUpstream("127.0.0.1", self.dead_port())
+        dead.down_until = time.time() + 60
+        fwd = dnsfwd.Forwarder("servers", [dead], lambda: [("127.0.0.1", system.port)])
+        query = dnsfwd.build_query("same.example", 1)
+        results = []
+        threads = [threading.Thread(target=lambda q=q: results.append(fwd.resolve(q)))
+                   for q in (query, dnsfwd.with_id(query, 4711))]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(10)
+        self.assertEqual(len(results), 2)
+        for reply in results:
+            self.assertEqual(dnsfwd.rcode_of(reply), 0)
+            self.assertEqual(dnsfwd.addresses(reply, 1)[0], ["198.51.100.7"])
+        self.assertEqual(sorted(struct.unpack("!H", r[:2])[0] for r in results),
+                         sorted([struct.unpack("!H", query[:2])[0], 4711]))
+        self.assertEqual(fwd.stats["loops"], 0)
+        self.assertEqual(fwd.stats["coalesced"], 1)
+        self.assertEqual(system.udp_count, 1)
+
+    def test_bootstrap_name_query_is_no_loop(self):
+        """DNS-2: Fragt ein Client nach dem DoT-Namen, während der Bootstrap ihn auflöst, ist das
+        keine Schleife (andere ID)."""
+        fwd = dnsfwd.Forwarder("servers", [], use_fallback=False)
+        boot_query = dnsfwd.build_query("dns.quad9.net", 1)
+        fwd.inflight.track(struct.unpack("!H", boot_query[:2])[0], dnsfwd.question(boot_query))
+        client = dnsfwd.with_id(boot_query, (struct.unpack("!H", boot_query[:2])[0] + 1) & 0xFFFF)
+        fwd.resolve(client)
+        self.assertEqual(fwd.stats["loops"], 0)
+
+    def test_self_loop_via_upstream_ends_at_once(self):
+        """DNS-SEC-2: zeigt ein Upstream auf den Weiterleiter selbst, endet die Anfrage nach einem
+        Umlauf mit SERVFAIL statt alle Worker zu belegen."""
+        port = free_port()
+        fwd = dnsfwd.Forwarder("servers", [dnsfwd.PlainUpstream("127.0.0.1", port)], use_fallback=False)
+        server = dnsfwd.Server(fwd, port, hosts=("127.0.0.1",))
+        server.start()
+        self.addCleanup(server.stop)
+        started = time.monotonic()
+        reply = ask_udp(port, dnsfwd.build_query("pool.ntp.org", 1))
+        self.assertLess(time.monotonic() - started, 1.0)
+        self.assertEqual(dnsfwd.rcode_of(reply), dnsfwd.RCODE_SERVFAIL)
+        self.assertEqual(fwd.stats["queries"], 2)
+        self.assertEqual(fwd.stats["loops"], 1)
+
+    def test_one_slow_name_does_not_take_upstream_down(self):
+        """DNS-3: eine Zeitüberschreitung bei einem Namen ist kein Ausfall des Servers."""
+        fake = FakeDns(delay={"slow": 3})
+        system = FakeDns(ip="198.51.100.7")
+        self.addCleanup(fake.close)
+        self.addCleanup(system.close)
+        up = dnsfwd.PlainUpstream("127.0.0.1", fake.port)
+        fwd = dnsfwd.Forwarder("servers", [up], lambda: [("127.0.0.1", system.port)], on_change=self.gate)
+        self.assertEqual(dnsfwd.addresses(fwd.resolve(dnsfwd.build_query("fast1.example", 1)), 1)[0], [ANSWER_IP])
+        slow = fwd.resolve(dnsfwd.build_query("slow.example", 1))
+        self.assertEqual(dnsfwd.addresses(slow, 1)[0], ["198.51.100.7"])  # nur diese Anfrage im Rückfall
+        self.assertEqual((up.streak, up.down_until), (1, 0.0))
+        self.assertEqual(fwd.state, "ok")
+        self.assertEqual(self.events, [])
+        fast2 = fwd.resolve(dnsfwd.build_query("fast2.example", 1))
+        self.assertEqual(dnsfwd.addresses(fast2, 1)[0], [ANSWER_IP])
+        self.assertEqual(up.streak, 0)
+
+    def test_repeated_timeouts_take_upstream_down(self):
+        silent = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        silent.bind(("127.0.0.1", 0))
+        self.addCleanup(silent.close)
+        up = dnsfwd.PlainUpstream("127.0.0.1", silent.getsockname()[1])
+        fwd = dnsfwd.Forwarder("servers", [up], use_fallback=False, on_change=self.gate)
+        with mock.patch.object(dnsfwd, "UPSTREAM_TIMEOUT", 0.3):
+            for i in range(dnsfwd.DOWN_AFTER):
+                self.assertEqual(up.down_until, 0.0)
+                fwd.resolve(dnsfwd.build_query(f"n{i}.example", 1))
+        self.assertGreater(up.down_until, time.time())
+        self.assertEqual(fwd.state, "failing")
+
+    def test_system_servfail_is_no_fallback_answer(self):
+        """DNS-4: SERVFAIL/REFUSED vom System-DNS → nächster System-Server; sonst „failing“."""
+        broken = FakeDns(rcode=dnsfwd.RCODE_SERVFAIL)
+        refused = FakeDns(rcode=dnsfwd.RCODE_REFUSED)
+        good = FakeDns(ip="198.51.100.7")
+        for f in (broken, refused, good):
+            self.addCleanup(f.close)
+        dead = dnsfwd.PlainUpstream("127.0.0.1", self.dead_port())
+        system = [("127.0.0.1", broken.port), ("127.0.0.1", refused.port), ("127.0.0.1", good.port)]
+        fwd = dnsfwd.Forwarder("servers", [dead], lambda: system, on_change=self.gate)
+        reply = fwd.resolve(dnsfwd.build_query("pool.ntp.org", 1))
+        self.assertEqual(dnsfwd.addresses(reply, 1)[0], ["198.51.100.7"])
+        self.assertEqual(fwd.state, "fallback")
+        # Nur kaputte System-Server: keine „Rückfall“-Antwort, sondern „failing“
+        dead2 = dnsfwd.PlainUpstream("127.0.0.1", self.dead_port())
+        fwd = dnsfwd.Forwarder("servers", [dead2], lambda: system[:2], on_change=self.gate)
+        reply = fwd.resolve(dnsfwd.build_query("pool.ntp.org", 1))
+        self.assertEqual(dnsfwd.rcode_of(reply), dnsfwd.RCODE_SERVFAIL)
+        self.assertEqual(fwd.state, "failing")
+        self.assertEqual((fwd.stats["fallback"], fwd.stats["answered"]), (0, 0))
+
+    def test_upstream_refused_tries_next(self):
+        refused = FakeDns(rcode=dnsfwd.RCODE_REFUSED)
+        good = FakeDns()
+        self.addCleanup(refused.close)
+        self.addCleanup(good.close)
+        a, b = dnsfwd.PlainUpstream("127.0.0.1", refused.port), dnsfwd.PlainUpstream("127.0.0.1", good.port)
+        fwd = dnsfwd.Forwarder("servers", [a, b], use_fallback=False)
+        self.assertEqual(dnsfwd.addresses(fwd.resolve(dnsfwd.build_query("x.example", 1)), 1)[0], [ANSWER_IP])
+        self.assertEqual((a.fail, b.ok), (1, 1))
+
+    def test_fallback_answers_cached_briefly(self):
+        """DNS-SEC-3: Antworten aus dem Rückfall höchstens FALLBACK_CACHE_TTL Sekunden im Cache."""
+        system = FakeDns(ip="198.51.100.7", ttl=3600)
+        self.addCleanup(system.close)
+        dead = dnsfwd.PlainUpstream("127.0.0.1", self.dead_port())
+        fwd = dnsfwd.Forwarder("servers", [dead], lambda: [("127.0.0.1", system.port)])
+        query = dnsfwd.build_query("pool.ntp.org", 1)
+        fwd.resolve(query)
+        expires, stored, _data = fwd._cache[query[2:]]
+        self.assertLessEqual(expires - stored, dnsfwd.FALLBACK_CACHE_TTL)
 
     def test_rejects_non_queries(self):
         fwd = dnsfwd.Forwarder("servers", [], use_fallback=False)
@@ -531,6 +720,38 @@ class ResolvTest(unittest.TestCase):
                          [("9.9.9.9", 53)])
 
 
+class BootstrapLoopbackTest(unittest.TestCase):
+    """DNS-1: Mit „dns: 127.0.0.1“ enthält die gesicherte resolv.conf nur den Weiterleiter selbst."""
+
+    def test_backup_only_self(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        resolv, backup = tmp / "resolv.conf", tmp / "resolv.conf.system"
+        resolv.write_text("nameserver 127.0.0.1\n")
+        self.assertEqual(dnsfwd.point_local(str(resolv), str(backup))["state"], "local")
+        self.assertEqual(backup.read_text(), "nameserver 127.0.0.1\n")
+        self.assertEqual(dnsfwd.system_servers(str(resolv), str(backup)), [])
+        boot = dnsfwd.Bootstrap(lambda: dnsfwd.system_servers(str(resolv), str(backup)))
+        up = dnsfwd.DotUpstream("dns.quad9.net", "dns.quad9.net", 853, [], boot, None)
+        with self.assertRaises(dnsfwd.BootstrapError) as ctx:
+            up.exchange(dnsfwd.build_query("pool.ntp.org", 1), time.monotonic() + 1)
+        self.assertIn("Feste Adressen", str(ctx.exception))
+        self.assertTrue(dnsfwd.hard_failure(ctx.exception))
+        info = up.public()
+        self.assertEqual((info["host"], info["pinned"], info["bootstrap_failed"]), ("dns.quad9.net", False, True))
+        # Über den Forwarder: Ausfall sofort erkannt, Hinweis auf feste Adressen
+        fwd = dnsfwd.Forwarder("dot", [up], lambda: dnsfwd.system_servers(str(resolv), str(backup)))
+        reply = fwd.resolve(dnsfwd.build_query("pool.ntp.org", 1))
+        self.assertEqual(dnsfwd.rcode_of(reply), dnsfwd.RCODE_SERVFAIL)
+        status = dict(fwd.public(), mode="dot", effective_mode="dot", time=time.time())
+        self.assertEqual(status["state"], "failing")
+        self.assertIn("dns_pin_needed", [i["key"] for i in insights.dns_insights(status, {})])
+        # Mit fester Adresse braucht es keinen System-DNS
+        pinned = dnsfwd.DotUpstream("dns.quad9.net", "dns.quad9.net", 853, ["9.9.9.9"], boot, None)
+        self.assertEqual(pinned.targets(time.monotonic() + 1), ["9.9.9.9"])
+        self.assertTrue(pinned.public()["pinned"])
+
+
 class SettingsTest(unittest.TestCase):
     def test_valid(self):
         clean = settings.validate({
@@ -541,6 +762,9 @@ class SettingsTest(unittest.TestCase):
         self.assertEqual(clean["dns_dot"], ["dns.quad9.net", "one.one.one.one", "1.1.1.1"])
         self.assertEqual(clean["dns_doh"], ["https://dns.quad9.net/dns-query"])
         self.assertFalse(clean["dns_fallback"])
+        # IPv4-gemappte Adressen werden zu IPv4; Loopback mit anderem Port bleibt erlaubt
+        self.assertEqual(settings.validate({"dns_servers": "::ffff:9.9.9.9 127.0.0.1:5353"})["dns_servers"],
+                         ["9.9.9.9", "127.0.0.1:5353"])
 
     def test_invalid(self):
         for key, value in (("dns_mode", "dnscrypt"), ("dns_servers", "127.0.0.1"), ("dns_servers", "dns.google"),
@@ -548,6 +772,9 @@ class SettingsTest(unittest.TestCase):
                            ("dns_dot", "evil\nhost"), ("dns_dot", "-x.example"), ("dns_doh", "http://dns.example/q"),
                            ("dns_doh", "https://user:pw@dns.example/q"), ("dns_doh", "https://dns.example/q x"),
                            ("dns_pin", "dns.quad9.net"), ("dns_pin", "dns.quad9.net=127.0.0.1"),
+                           # DNS-SEC-2: jede Loopback-Adresse auf Port 53, auch IPv4-gemappt
+                           ("dns_servers", "::ffff:127.0.0.1"), ("dns_servers", "[::ffff:127.0.0.1]:53"),
+                           ("dns_servers", "127.0.0.53"), ("dns_servers", "[::1]:53"),
                            ("dns_servers", " ".join(f"9.9.9.{i}" for i in range(9)))):
             with self.assertRaises(settings.ValidationError, msg=f"{key}={value!r}"):
                 settings.validate({key: value})
@@ -644,8 +871,32 @@ class InsightsTest(unittest.TestCase):
         self.assertIn("dns: 127.0.0.1", insights.dns_insights(dict(base, resolv={"state": "readonly"}), {})[0]["text"])
         self.assertEqual(self.keys(insights.dns_insights({"mode": "dot", "effective_mode": "system"}, {})),
                          ["dns_no_servers"])
-        self.assertEqual(self.keys(insights.dns_insights(dict(base, state="ok", stats={"loops": 2}), {})),
-                         ["dns_loop_fallback"])
+        now = time.time()
+        self.assertEqual(self.keys(insights.dns_insights(
+            dict(base, state="ok", time=now, stats={"loops": 2, "loop_last": now - 60}), {})), ["dns_loop_fallback"])
+        # DNS-2: eine alte Schleife (Zähler seit Start) warnt nicht dauerhaft
+        self.assertEqual(insights.dns_insights(
+            dict(base, state="ok", time=now, stats={"loops": 2, "loop_last": now - 3600}), {}), [])
+        self.assertEqual(insights.dns_insights(dict(base, state="ok", stats={"loops": 2}), {}), [])
+
+    def test_pin_needed(self):
+        """DNS-1: DoT/DoH-Name ohne feste Adresse, den der System-DNS nicht liefert."""
+        base = {"mode": "dot", "effective_mode": "dot", "state": "failing", "fallback_servers": []}
+        ups = [{"label": "dns.quad9.net", "host": "dns.quad9.net", "pinned": False, "bootstrap_failed": True}]
+        out = insights.dns_insights(dict(base, upstreams=ups), {})
+        self.assertEqual(self.keys(out), ["dns_pin_needed", "dns_failing"])
+        self.assertIn("dns.quad9.net=9.9.9.9", out[0]["text"])
+        self.assertIn("Feste Adressen", out[0]["text"])
+        pinned = [dict(ups[0], pinned=True, bootstrap_failed=False)]
+        self.assertNotIn("dns_pin_needed", self.keys(insights.dns_insights(dict(base, upstreams=pinned), {})))
+        # Schleife über Docker-DNS (Backup 127.0.0.11) bei ungepinntem Namen
+        now = time.time()
+        looped = dict(base, state="fallback", time=now, stats={"loops": 3, "loop_last": now},
+                      upstreams=[dict(ups[0], bootstrap_failed=False)])
+        self.assertIn("dns_pin_needed", self.keys(insights.dns_insights(looped, {})))
+        # Readonly-Hinweis nennt die festen Adressen
+        text = insights.dns_insights(dict(base, state="ok", resolv={"state": "readonly"}), {})[0]["text"]
+        self.assertIn("Feste Adressen", text)
 
 
 class EnforceTest(unittest.TestCase):

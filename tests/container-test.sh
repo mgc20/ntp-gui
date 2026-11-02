@@ -27,7 +27,7 @@ FAIL=0
 cleanup() {
   docker rm -f "${PREFIX}-a" "${PREFIX}-b" "${PREFIX}-c" "${PREFIX}-d" "${PREFIX}-e" "${PREFIX}-f" \
     "${PREFIX}-g" "${PREFIX}-h" "${PREFIX}-i" "${PREFIX}-j" >/dev/null 2>&1
-  docker rm -f "${PREFIX}-k" "${PREFIX}-l" >/dev/null 2>&1
+  docker rm -f "${PREFIX}-k" "${PREFIX}-l" "${PREFIX}-m" >/dev/null 2>&1
   docker volume rm "${PREFIX}-data" "${PREFIX}-hist" >/dev/null 2>&1
   rm -rf "$CFG_DIR" "$NTS_DIR" "$DIAG_DIR"
 }
@@ -617,6 +617,24 @@ if wait_svc "${PREFIX}-l" dnsfwd state stopped 30; then ok "Modus system: dnsfwd
 check "Modus system: resolv.conf ohne Markierung" 0 "$(docker exec "${PREFIX}-l" grep -c 'ntp-gui: dnsfwd' /etc/resolv.conf)"
 contains "Modus system: Original-Resolver wieder eingetragen" "$(docker exec "${PREFIX}-l" cat /etc/resolv.conf)" "nameserver"
 docker rm -f "${PREFIX}-l" >/dev/null 2>&1
+
+echo
+echo "12d) DNS für ntp-gui mit „dns: 127.0.0.1“ und DoT-Namen ohne feste Adresse"
+# Der System-DNS ist dann der Weiterleiter selbst: Die Adresse von dns.quad9.net ist nicht
+# ermittelbar. Erwartet: schneller Fehler statt Schleife und der Hinweis auf „Feste Adressen“.
+docker run -d --name "${PREFIX}-m" -p 18092:8080 --dns 127.0.0.1 -e NTP_PORT=10136 -e NTP_POOLS="" \
+  -e NTP_SERVERS="" -e DNS_MODE=dot -e DNS_DOT=dns.quad9.net "$IMAGE" >/dev/null
+wait_for_health http://127.0.0.1:18092/healthz 90 || true
+if wait_svc "${PREFIX}-m" dnsfwd state running 20; then ok "dnsfwd läuft"; else bad "dnsfwd startet nicht"; fi
+docker exec "${PREFIX}-m" getent hosts ntpgui-test.example >/dev/null 2>&1
+sleep 1
+DNSJ=$(curl -s --max-time 10 http://127.0.0.1:18092/api/v1/dns)
+check "Upstream meldet: Adresse nicht ermittelbar" True \
+  "$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['upstreams'][0].get('bootstrap_failed'))" "$DNSJ" 2>/dev/null)"
+check "Keine Schleife im Kreis (höchstens wenige Anfragen)" True \
+  "$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['stats']['queries'] < 20)" "$DNSJ" 2>/dev/null)"
+contains "Hinweis „Feste Adressen“ unter den Hinweisen" "$(curl -s --max-time 20 http://127.0.0.1:18092/api/status)" "dns_pin_needed"
+docker rm -f "${PREFIX}-m" >/dev/null 2>&1
 
 echo
 echo "13) Sauberes Stoppen"
