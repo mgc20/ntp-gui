@@ -233,6 +233,13 @@ export function render(ctx) {
   const measured = Object.values(offsets).filter((c) => c.measurable && isNum(c.ewma));
   const worst = measured.reduce((acc, c) => (acc === null || Math.abs(c.ewma) > Math.abs(acc) ? c.ewma : acc), null);
 
+  // chrony leert seine Client-Liste bei jedem Neustart (z. B. nach dem Speichern von Einstellungen);
+  // die eigene Messung kennt die Geräte weiter. Fehlt chronys Wert, gilt ihrer (mit * markiert).
+  const lastAge = (c) => {
+    if (isNum(c.ntp_last_rx)) return c.ntp_last_rx;
+    const seen = offsets[c.address]?.last_seen;
+    return isNum(seen) ? Math.max(0, Date.now() / 1000 - seen) : null;
+  };
   // Geräte aus chronyd, ergänzt um solche, die nur die passive Messung kennt.
   const known = new Set(clients.map((c) => c.address));
   const rows = clients.concat(Object.keys(offsets).filter((a) => !known.has(a)).map((address) => ({ address })));
@@ -240,13 +247,16 @@ export function render(ctx) {
   const input = el("input", { type: "search", placeholder: "Filtern …", value: ctx.uiState.clientFilter || "",
     "aria-label": "Clients filtern" });
   const bodyRows = (needle) => rows.filter((c) => !needle || (c.address || "").toLowerCase().includes(needle))
-    .sort((a, b) => (a.ntp_last_rx ?? 1e12) - (b.ntp_last_rx ?? 1e12))
+    .sort((a, b) => (lastAge(a) ?? 1e12) - (lastAge(b) ?? 1e12))
     .map((c) => el("tr", {},
       el("td", { class: "mono", text: c.address }),
-      el("td", { class: "num", text: fmtNumber(c.ntp_packets) }),
+      el("td", { class: "num", text: isNum(c.ntp_packets) ? fmtNumber(c.ntp_packets)
+        : isNum(offsets[c.address]?.requests) ? `${fmtNumber(offsets[c.address].requests)}*` : "–",
+        title: isNum(c.ntp_packets) ? "" : "* aus der eigenen Messung – chrony kennt das Gerät seit seinem letzten Neustart nicht" }),
       el("td", { class: "num", text: fmtNumber(c.ntp_dropped) }),
       el("td", { class: "num", text: fmtLogInterval(c.ntp_interval) }),
-      el("td", { class: "num", text: isNum(c.ntp_last_rx) ? `vor ${fmtDuration(c.ntp_last_rx)}` : "–" }),
+      el("td", { class: "num", text: isNum(lastAge(c)) ? `vor ${fmtDuration(lastAge(c))}${isNum(c.ntp_last_rx) ? "" : "*"}` : "–",
+        title: isNum(c.ntp_last_rx) ? "" : "* aus der eigenen Messung – chrony kennt das Gerät seit seinem letzten Neustart nicht" }),
       ...offsetCells(offsets[c.address])));
   const tbody = el("tbody", {}, bodyRows(filter));
   // Nur die Zeilen tauschen – ein Neuaufbau der Seite würde dem Feld den Fokus nehmen.

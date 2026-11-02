@@ -779,7 +779,9 @@ export const HELP = {
   },
   client_packets: {
     title: "Anfragen",
-    text: "Wie viele NTP-Anfragen dieses Gerät gestellt hat, seit chrony läuft.",
+    text: "Wie viele NTP-Anfragen dieses Gerät gestellt hat, seit chrony läuft. chrony beginnt bei jedem "
+      + "Neustart (z. B. nach dem Speichern von Einstellungen) von vorn. Kennt chrony ein Gerät noch nicht "
+      + "wieder, zeigt ntp-gui den Wert der eigenen Messung, markiert mit *.",
   },
   client_dropped: {
     title: "Verworfen",
@@ -793,7 +795,9 @@ export const HELP = {
   },
   client_last: {
     title: "Letzte Anfrage",
-    text: "Wann das Gerät zuletzt gefragt hat.",
+    text: "Wann das Gerät zuletzt gefragt hat. Mit * stammt der Wert aus der eigenen Messung von ntp-gui, "
+      + "weil chrony seine Liste beim letzten Neustart geleert hat. Ohne Messung und ohne chrony-Eintrag "
+      + "steht „–“.",
   },
   served_rate: {
     title: "Beantwortete Anfragen",
