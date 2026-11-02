@@ -379,7 +379,6 @@ def collector() -> None:
             STATE_WATCH.sample(sample)
             client_alarms()
             clients3.tick(settings.values(), events.emit)  # Regeln je Gerät, Inventar, Stundenwerte; wirft nie
-            loop_check()
             autocal.maybe_tick()   # höchstens einmal pro Stunde, wirft nie
             gpsquality.maybe_tick(settings.values)  # Fehlerschranke GPS ohne PPS, stündlich, wirft nie
         except Exception as exc:  # ein Messfehler darf den Thread nie beenden
@@ -397,7 +396,7 @@ def collector() -> None:
 
 
 # 1.5: Schleifen-Erkennung je Quelle (DNS-Umschreibung / NAT-Umleitung ohne Ausnahme für ntp-gui).
-LOOP_GUARD = loopguard.LoopGuard(events.emit, prober=enforce.probe_many)
+LOOP_GUARD = loopguard.LoopGuard(events.emit, prober=enforce.probe_many, tracker=chrony.tracking)
 
 
 def host_addresses() -> list[str]:
@@ -421,6 +420,15 @@ def loop_check() -> None:
         LOOP_GUARD.check(chrony.detailed_sources(), chrony.tracking(), host_addresses(), cfg.get("ntp_port", 123))
     except Exception as exc:  # die Prüfung darf die Messung nie aufhalten
         print(f"[web] Schleifen-Prüfung fehlgeschlagen: {exc}", flush=True)
+
+
+def loop_guard_runner(stop: threading.Event | None = None) -> None:
+    """Eigener Takt für die Schleifen-Prüfung (halbes kleinstes Poll-Intervall, 10–60 s) –
+    unabhängig vom Verlaufs-Takt (history_interval bis 600 s), damit „≤ 2 Poll-Intervalle“ gilt."""
+    stop = stop or threading.Event()
+    while not stop.is_set():
+        loop_check()
+        stop.wait(min(loopguard.MAX_INTERVAL, max(1.0, LOOP_GUARD.seconds_until_due())))
 
 
 def client_alarms() -> None:
@@ -1814,6 +1822,7 @@ def main() -> None:
     autocal.configure(history=HISTORY, trigger_reload=trigger_reload)
     gpsquality.configure(history=HISTORY, trigger_reload=trigger_reload)
     threading.Thread(target=collector, daemon=True, name="collector").start()
+    threading.Thread(target=loop_guard_runner, daemon=True, name="loopguard").start()
     threading.Thread(target=hardware_refresher, daemon=True, name="hardware").start()
     # 1.5: GNSS-Störungen, GPS-Sperre und Holdover-Test im festen 10-s-Takt (eigener Thread).
     threading.Thread(target=gnssguard.run, args=(settings.values,), daemon=True, name="gnssguard").start()

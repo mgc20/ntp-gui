@@ -76,6 +76,25 @@ class ChainTest(unittest.TestCase):
         self.assertEqual(result["level"], "crit")
         self.assertEqual({l["host"] for l in result["loops"]}, {"de.pool.ntp.org", "ptbtime3.ptb.de", "192.53.103.104"})
 
+    def test_only_aaaa_rewritten_chain_agrees_with_loops(self):
+        # Prüfbefund F5: AdGuard schreibt nur AAAA auf ntp-gui um, A bleibt echt. Kette und
+        # Schleifen-Liste müssen dasselbe sagen.
+        sources = [{"host": "ptbtime1.ptb.de", "nts": True}]
+        replies = {"127.0.0.1": OURS, "192.53.103.108": PTB, "216.239.35.0": PTB, "162.159.200.1": PTB}
+
+        def resolver(hosts, timeout):
+            return {h: (["192.53.103.108", "fd00::5"] if h == "ptbtime1.ptb.de" else ["1.2.3.4"]) for h in hosts}
+
+        result = enforce.check([IP, "fd00::5"], [], 123, None, ["ptbtime1.ptb.de"], force=True,
+                               resolver=resolver, prober=lambda t, to: {x: replies.get(x[0]) for x in t},
+                               sources=sources)
+        row = result["upstream"][0]
+        self.assertEqual((row["state"], row["cause"], row["level"]), ("self_address", "dns", "crit"))
+        self.assertIn("IPv6-Antwort", row["verdict"])
+        self.assertIn("IPv4-Antwort zeigt auf einen fremden Server", row["verdict"])
+        self.assertEqual(result["level"], "crit")
+        self.assertEqual([l["host"] for l in result["loops"]], ["ptbtime1.ptb.de"])
+
     def test_rewrite_to_host_ip_counts_as_dns(self):
         sources = [{"host": "pool.ntp.org"}]
         replies = {"127.0.0.1": OURS, "192.168.178.2": dict(OURS)}
@@ -130,7 +149,9 @@ class SnippetTest(unittest.TestCase):
 class UpstreamEventTest(unittest.TestCase):
     def test_down_and_up_events_per_server(self):
         events = []
-        gate = dnsfwd.UpstreamGate(lambda level, title, data: events.append((level, title, data)))
+        clock = [1000.0]
+        gate = dnsfwd.UpstreamGate(lambda level, title, data: events.append((level, title, data)),
+                                   clock=lambda: clock[0])
         up = dnsfwd.PlainUpstream("127.0.0.1", dnsfx.refusing_udp_port(self))
         fwd = dnsfwd.Forwarder("servers", [up], use_fallback=False, on_upstream=gate)
         fwd.resolve(dnsfwd.build_query("pool.ntp.org", 1))
@@ -147,6 +168,9 @@ class UpstreamEventTest(unittest.TestCase):
         up.port = fake.port
         up.down_until = 0
         fwd.resolve(dnsfwd.build_query("other.example", 1))
+        self.assertEqual(len(events), 1)  # im 5-min-Fenster: wartet, geht aber nicht verloren
+        clock[0] += dnsfwd.EVENT_REPEAT
+        gate.flush()
         self.assertEqual(events[-1][0], "info")
         self.assertIn("antwortet wieder", events[-1][1])
 
@@ -155,12 +179,81 @@ class UpstreamEventTest(unittest.TestCase):
         events = []
         gate = dnsfwd.UpstreamGate(lambda *a: events.append(a), clock=lambda: clock[0])
         gate("a", "down", "x")
-        gate("a", "down", "x")
-        gate("b", "down", "x")
+        gate("a", "down", "x")   # schon gemeldet
+        gate("b", "down", "x")   # anderer Server: eigenes Fenster
+        self.assertEqual(len(events), 2)
+        clock[0] += 60
+        gate("a", "up", "")      # im Fenster: wartet
+        self.assertEqual(len(events), 2)
+        self.assertEqual(gate.pending(), {"a": "up"})
+        clock[0] += dnsfwd.EVENT_REPEAT
+        gate.flush()
+        self.assertEqual(len(events), 3)
+        self.assertEqual((events[-1][0], events[-1][1]), ("info", "DNS für ntp-gui: a antwortet wieder"))
+        self.assertEqual(gate.pending(), {})
+
+    def test_gate_down_up_down_ends_down(self):
+        # Prüfbefund F3: down → up → down innerhalb von 5 min darf nicht mit „antwortet wieder“ enden.
+        clock = [1000.0]
+        events = []
+        gate = dnsfwd.UpstreamGate(lambda level, title, data: events.append((level, title)), clock=lambda: clock[0])
+        gate("dns.quad9.net", "down", "refused")
+        clock[0] += 60
+        gate("dns.quad9.net", "up", "")
+        clock[0] += 60
+        gate("dns.quad9.net", "down", "refused")
+        for _ in range(40):
+            clock[0] += 60
+            gate.flush()
+        self.assertEqual(events, [("warn", "DNS für ntp-gui: dns.quad9.net nicht erreichbar")])
+
+    def test_gate_suppressed_down_is_sent_later(self):
+        # up → down im Fenster nach „antwortet wieder“: das zweite „nicht erreichbar“ kommt nach.
+        clock = [1000.0]
+        events = []
+        gate = dnsfwd.UpstreamGate(lambda level, title, data: events.append((level, title)), clock=lambda: clock[0])
+        gate("s", "down", "x")
+        clock[0] += dnsfwd.EVENT_REPEAT
+        gate("s", "up", "")
+        clock[0] += 30
+        gate("s", "down", "timeout")
         self.assertEqual(len(events), 2)
         clock[0] += dnsfwd.EVENT_REPEAT
-        gate("a", "down", "x")
-        self.assertEqual(len(events), 3)
+        gate.flush()
+        self.assertEqual([e[0] for e in events], ["warn", "info", "warn"])
+
+    def test_forwarder_down_up_down_within_window(self):
+        # wie repro4: echter Forwarder, Fake-Upstream, Uhr gesteuert
+        class Fake(dnsfwd.Upstream):
+            def __init__(self):
+                super().__init__("dns.quad9.net")
+                self.fail_now = False
+
+            def exchange(self, query, deadline):
+                if self.fail_now:
+                    raise ConnectionRefusedError("refused")
+                return bytes(query[:2]) + b"\x81\x80" + query[4:]
+
+        clock = [1000.0]
+        events = []
+        gate = dnsfwd.UpstreamGate(lambda level, title, data: events.append((level, title)), clock=lambda: clock[0])
+        up = Fake()
+        fwd = dnsfwd.Forwarder("servers", [up], use_fallback=False, on_upstream=gate, cache=False)
+
+        def step(fail, dt, name):
+            clock[0] += dt
+            up.fail_now = fail
+            up.down_until = 0
+            fwd.resolve(dnsfwd.build_query(name, 1))
+            gate.flush()
+
+        step(True, 0, "a.example")
+        step(False, 60, "b.example")
+        step(True, 60, "c.example")
+        for i in range(30):
+            step(True, 60, f"d{i}.example")
+        self.assertEqual(events[-1][0], "warn")
+        self.assertNotIn(("info", "DNS für ntp-gui: dns.quad9.net antwortet wieder"), events)
 
     def test_health_check_asks_every_server(self):
         fake = dnsfx.FakeDns()
@@ -275,6 +368,28 @@ class LoopsEndpointTest(unittest.TestCase):
         with mock.patch.object(self.server.chrony, "detailed_sources", side_effect=RuntimeError("weg")):
             self.server.LOOP_GUARD._last_mono = None
             self.server.loop_check()  # wirft nicht
+
+    def test_loop_guard_runs_on_its_own_timer(self):
+        # F6: Die Schleifen-Prüfung hängt nicht am Verlaufs-Takt (history_interval bis 600 s).
+        self.assertNotIn("loop_check()", __import__("inspect").getsource(self.server.collector))
+        stop = threading.Event()
+        calls = []
+        waits = []
+
+        def fake_check():
+            calls.append(1)
+            if len(calls) >= 3:
+                stop.set()
+        real_wait = stop.wait
+        with mock.patch.object(self.server, "loop_check", side_effect=fake_check), \
+                mock.patch.object(self.server.LOOP_GUARD, "seconds_until_due", return_value=16.0), \
+                mock.patch.object(stop, "wait", side_effect=lambda t: (waits.append(t), real_wait(0))[1]):
+            runner = threading.Thread(target=self.server.loop_guard_runner, args=(stop,), daemon=True)
+            runner.start()
+            runner.join(30)
+        self.assertFalse(runner.is_alive())
+        self.assertEqual(len(calls), 3)
+        self.assertTrue(waits and all(w == 16.0 for w in waits), waits)
 
 
 if __name__ == "__main__":

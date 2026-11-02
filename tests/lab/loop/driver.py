@@ -36,7 +36,7 @@ events = []
 start = time.monotonic()
 guard = loopguard.LoopGuard(lambda kind, level, title, data=None, source="web": events.append(
     {"t": round(time.monotonic() - start, 1), "kind": kind, "level": level, "title": title, "data": data}),
-    prober=enforce.probe_many)
+    prober=enforce.probe_many, tracker=lambda: chrony.parse_tracking(c("-c", "tracking")))
 while time.monotonic() - start < LIMIT and not events:
     if guard.due():
         guard.check(detailed(), chrony.parse_tracking(c("-c", "tracking")), loopguard.interface_addresses(), 123)

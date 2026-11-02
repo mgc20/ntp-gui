@@ -302,7 +302,10 @@ function checkView(result) {
       el("span", { class: "mono", text: label }),
       badge(VERDICT_LABEL[item.state] || item.state || "–", item.level === "info" ? "muted" : item.level)),
     el("p", { text: item.verdict || "" }));
-  const chained = new Set((result.upstream || []).map((u) => u.host));
+  // Nur Schleifen ausblenden, die die Kette selbst schon als Schleife zeigt – sonst bliebe eine
+  // Schleife unsichtbar, deren Kettenzeile (z. B. nur IPv4 geprüft) „fremder Server“ sagt.
+  const chained = new Set((result.upstream || [])
+    .filter((u) => u.state === "self_address" || u.state === "self_reply").map((u) => u.host));
   return el("div", { class: "enforce-result" },
     el("div", { class: "verdict", "data-tone": result.level === "info" ? null : result.level },
       el("div", { class: "verdict-label" }, el("span", { text: "Ergebnis" }), info("enforce_verdict")),

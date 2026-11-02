@@ -704,7 +704,8 @@ echo "12e) Schleifen-Erkennung: DNS-Umschreibung ohne Ausnahme für ntp-gui (1.5
 # Wie R1: Der DNS im LAN (hier ein Fake-Resolver statt AdGuard) schreibt den Quellnamen auf
 # ntp-gui selbst um, und ntp-gui fragt genau diesen DNS. Erwartet: Ereignis „source/crit“ mit
 # dem richtigen Satz in ≤ 2 Poll-Intervallen (minpoll 4 = 16 s), danach mit eigenem DNS-Server
-# für ntp-gui (Modus servers, ehrliche Antwort) „Schleife behoben“.
+# für ntp-gui (Modus servers, ehrliche Antwort → 172.31.77.20, dort läuft ein echter
+# Zeitserver) „Schleife behoben … erreicht wieder einen fremden Server“.
 LOOPNET="${PREFIX}-net"
 docker network create --subnet 172.31.77.0/24 "$LOOPNET" >/dev/null
 docker run -d --name "${PREFIX}-n" --network "$LOOPNET" --ip 172.31.77.53 --entrypoint python3 "$IMAGE" -c '
@@ -722,8 +723,10 @@ def serve(port, target):
         flags = 0x8180 | (0 if name == "loop.lab.test" else 3)
         body = q[12:end] + (b"\xc0\x0c" + struct.pack("!HHIH", 1, 1, 5, 4) + socket.inet_aton(target) if hit else b"")
         s.sendto(q[:2] + struct.pack("!HHHHH", flags, 1, 1 if hit else 0, 0, 0) + body, a)
-threading.Thread(target=serve, args=(5353, "172.31.77.53"), daemon=True).start()
+threading.Thread(target=serve, args=(5353, "172.31.77.20"), daemon=True).start()
 serve(53, "172.31.77.10")' >/dev/null
+# fremder Zeitserver für die „ehrliche“ Antwort: ntp-gui im Inselbetrieb (local stratum)
+docker run -d --name "${PREFIX}-t" --network "$LOOPNET" --ip 172.31.77.20 -e NTP_POOLS="" -e NTP_SERVERS="" "$IMAGE" >/dev/null
 docker run -d --name "${PREFIX}-o" --network "$LOOPNET" --ip 172.31.77.10 --dns 172.31.77.53 -p 18093:8080 \
   -e NTP_POOLS="" -e NTP_SERVERS="loop.lab.test" -e NTP_SERVER_OPTIONS="iburst minpoll 4 maxpoll 4" "$IMAGE" >/dev/null
 wait_for_health http://127.0.0.1:18093/healthz 90 || true
@@ -754,7 +757,7 @@ done
 contains "Mit eigenem DNS: „Schleife behoben“" "$(curl -s --max-time 10 'http://127.0.0.1:18093/api/v1/events?kinds=source' | utf)" \
   "Schleife behoben: loop.lab.test erreicht wieder einen fremden Server"
 check "Keine Schleife mehr" '[]' "$(curl -s --max-time 10 http://127.0.0.1:18093/api/v1/loops | python3 -c 'import json,sys; print(json.load(sys.stdin)["loops"])' 2>/dev/null)"
-docker rm -f "${PREFIX}-n" "${PREFIX}-o" >/dev/null 2>&1
+docker rm -f "${PREFIX}-n" "${PREFIX}-o" "${PREFIX}-t" >/dev/null 2>&1
 docker network rm "$LOOPNET" >/dev/null 2>&1
 
 echo

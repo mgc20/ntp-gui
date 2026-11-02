@@ -236,7 +236,7 @@ class IntervalTest(unittest.TestCase):
         self.assertEqual(loopguard.check_interval([{"mode": "#", "poll": 2}]), 30.0)
 
 
-class GuardTest(unittest.TestCase):
+class _GuardBase(unittest.TestCase):
     def setUp(self):
         self.clock = [100.0]
         self.wall = [1_793_607_900.0]
@@ -261,6 +261,8 @@ class GuardTest(unittest.TestCase):
         echo_own(find(sources, "ptbtime3.ptb.de"), tracking())
         return sources
 
+
+class GuardTest(_GuardBase):
     def test_correct_setup_never_emits(self):
         for _ in range(5):
             self.assertEqual(self.run_check(detailed()), [])
@@ -293,9 +295,11 @@ class GuardTest(unittest.TestCase):
         self.replies = {"127.0.0.1": OURS_REPLY, "192.53.103.103": dict(OURS_REPLY)}
         self.run_check(self.nat_sources())
         self.run_check(self.nat_sources())
-        self.run_check(detailed())
+        fixed = detailed()
+        find(fixed, "ptbtime3.ptb.de")["ntp"]["total_valid_rx"] += 1   # neue fremde Antwort
+        self.run_check(copy.deepcopy(fixed))
         self.assertEqual(len(self.rec.events), 1)  # ein Messpunkt reicht nicht
-        self.run_check(detailed())
+        self.run_check(copy.deepcopy(fixed))
         self.assertEqual(len(self.rec.events), 2)
         self.assertEqual(self.rec.events[1]["level"], "info")
         self.assertEqual(self.rec.events[1]["title"],
@@ -354,6 +358,250 @@ class GuardTest(unittest.TestCase):
         find(sources, "de.pool.ntp.org")["name"] = LOCAL
         guard.check(sources, tracking(), [], 123)
         self.assertEqual(len(guard.check(sources, tracking(), [], 123)), 1)
+
+
+class FindingsTest(_GuardBase):
+    """Prüfbefunde zu 1.5 dns-nat (F1/LG-1, LG-2, F2, F4)."""
+
+    def silent_local_prober(self, source_reply):
+        """Standard-chronyd: 127.0.0.1 und LAN-Adressen ohne passende Freigabe → keine Antwort."""
+        def prober(targets, timeout):
+            self.probes.append(list(targets))
+            return {t: (None if t[0] in ("127.0.0.1", LOCAL) else dict(source_reply)) for t in targets}
+        return prober
+
+    def guard_with(self, prober, tracker=None):
+        self.guard = loopguard.LoopGuard(self.rec, prober=prober, tracker=tracker, clock=lambda: self.clock[0],
+                                         wall=lambda: self.wall[0])
+
+    def nat_echo(self, echoed_tracking):
+        sources = detailed()
+        echo_own(find(sources, "ptbtime3.ptb.de"), echoed_tracking)
+        return sources
+
+    def test_nat_found_without_localhost_answer(self):
+        # F1: GPS-Referenz 16 s neuer als die Antwort in ntpdata („partial“), 127.0.0.1 stumm.
+        self.guard_with(self.silent_local_prober(OURS_REPLY), tracker=tracking)
+        older = dict(tracking(), ref_time=tracking()["ref_time"] - 16)
+        self.run_check(self.nat_echo(older))
+        self.assertEqual(self.rec.events, [])
+        self.run_check(self.nat_echo(older))
+        self.assertEqual(len(self.rec.events), 1)
+        self.assertIn("NAT-Umleitung ohne Ausnahme", self.rec.events[0]["title"])
+        self.assertEqual(self.rec.events[0]["data"]["evidence"], ["probe"])
+        # gefragt wurden 127.0.0.1 und die eigene LAN-Adresse am NTP-Port
+        self.assertIn(("127.0.0.1", 123), self.probes[0])
+        self.assertIn((LOCAL, 123), self.probes[0])
+
+    def test_tracking_after_probe_counts(self):
+        # Referenzzeit wechselt zwischen tracking und Probe: tracking danach passt.
+        calls = []
+
+        def tracker():
+            calls.append(1)
+            track = tracking()
+            return track if len(calls) % 2 == 0 else dict(track, ref_time=track["ref_time"] - 16)
+        self.guard_with(self.silent_local_prober(OURS_REPLY), tracker=tracker)
+        self.run_check(self.nat_echo(tracking()))
+        self.run_check(self.nat_echo(tracking()))
+        self.assertEqual(len(self.rec.events), 1)
+
+    def test_foreign_pool_server_with_same_upstream_is_no_loop(self):
+        # LG-1: fremder Stratum-2-Server an derselben PTB-Quelle, Referenzzeit 0,4 s anders;
+        # ntpdata passt auf die Sekunde („match“). 127.0.0.1 stumm → Vergleich mit tracking.
+        foreign = dict(OURS_REPLY, ref_time=OURS_REPLY["ref_time"] + 0.4, root_delay=0.031)
+        self.guard_with(self.silent_local_prober(foreign), tracker=tracking)
+        sources = detailed()
+        src = find(sources, "de.pool.ntp.org")
+        echo_own(src, tracking())
+        self.assertEqual(loopguard.reply_pattern(src["ntp"], tracking()), "match")
+        for _ in range(4):
+            self.assertEqual(self.run_check(copy.deepcopy(sources)), [])
+        self.assertEqual(self.rec.events, [])
+
+    def test_inconclusive_probe_public_match_not_confirmed(self):
+        # LG-1: Gegenprobe nicht vergleichbar (Adresse antwortet der Probe nicht) → die passive
+        # Übereinstimmung allein bestätigt bei öffentlichen Adressen keine Schleife.
+        def prober(targets, timeout):
+            self.probes.append(list(targets))
+            return {}
+        self.guard_with(prober, tracker=tracking)
+        sources = detailed()
+        echo_own(find(sources, "de.pool.ntp.org"), tracking())
+        for _ in range(4):
+            self.assertEqual(self.run_check(copy.deepcopy(sources)), [])
+        self.assertEqual(self.rec.events, [])
+        # ohne Prober (keine Gegenprobe möglich) zählt die passive Übereinstimmung weiter
+        self.guard_with(None)
+        self.run_check(copy.deepcopy(sources))
+        self.assertEqual(len(self.run_check(copy.deepcopy(sources))), 1)
+
+    def test_probe_rate_when_localhost_never_answers(self):
+        # LG-2: höchstens eine Gegenprobe je Adresse und PROBE_EVERY, auch ohne 127.0.0.1.
+        foreign = dict(FOREIGN_REPLY, stratum=2, ref_id="C0356768")
+        self.guard_with(self.silent_local_prober(foreign), tracker=tracking)
+        older = dict(tracking(), ref_time=tracking()["ref_time"] - 40)   # „partial“ → verdächtig
+        for _ in range(10):   # 10 × 60 s
+            self.run_check(self.nat_echo(older))
+        asked = [t for batch in self.probes for t in batch if t[0] == "192.53.103.103"]
+        self.assertLessEqual(len(asked), 2)
+        self.assertEqual(self.rec.events, [])
+
+    def test_inconclusive_probe_backs_off(self):
+        # Adresse antwortet der Probe nicht: einmal nach 60 s, danach nur alle 5 min.
+        def prober(targets, timeout):
+            self.probes.append(list(targets))
+            return {}
+        self.guard_with(prober, tracker=tracking)
+        older = dict(tracking(), ref_time=tracking()["ref_time"] - 40)
+        for _ in range(11):   # 0 … 600 s
+            self.run_check(self.nat_echo(older))
+        self.assertEqual(len(self.probes), 3)   # t=60, 120, 420
+
+    def test_unsynced_loop_via_own_lan_address(self):
+        # 127.0.0.1 stumm, eigene LAN-Adresse antwortet (Standard-Freigaben) → unsynchron erkennbar.
+        unsynced = dict(tracking(), stratum=0, ref_id="00000000", ref_time=0.0)
+        echo = {"leap": 3, "stratum": 0, "ref_id": "00000000", "precision": -20, "root_delay": 0.0,
+                "root_dispersion": 1.2, "ref_time": None}
+        sources = [s for s in detailed() if s.get("hostname") == "ptbtime2.ptb.de"]
+        sources[0]["ntp"].update(stratum=0, reference_id="00000000")
+        self.replies = {LOCAL: echo, "192.53.103.104": dict(echo)}
+        self.run_check(copy.deepcopy(sources), unsynced)
+        self.run_check(copy.deepcopy(sources), unsynced)
+        self.assertEqual(len(self.rec.events), 1)
+        self.assertIn("NAT-Umleitung", self.rec.events[0]["title"])
+
+    def test_hostname_hiccup_keeps_state(self):
+        # F2: chronyc sourcename fällt zweimal aus → kein „beendet“/„neu“-Paar, Ursache bleibt.
+        self.replies = {"127.0.0.1": OURS_REPLY, "192.53.103.103": dict(OURS_REPLY)}
+        for ok in (True, True, False, False, True, True):
+            sources = self.nat_sources()
+            if not ok:
+                find(sources, "ptbtime3.ptb.de")["hostname"] = None
+            self.run_check(sources)
+        self.assertEqual(len(self.rec.events), 1)
+        self.assertTrue(self.rec.events[0]["title"].startswith("ptbtime3.ptb.de zeigt auf dich selbst"))
+        self.assertEqual(self.guard.loops()[0]["host"], "ptbtime3.ptb.de")
+
+    def test_dns_loop_cause_survives_missing_name(self):
+        # F2: eigene Adresse per Name (dns) darf ohne Namen nicht zu „self_ip“ werden.
+        sources = detailed()
+        find(sources, "de.pool.ntp.org")["name"] = LOCAL
+        self.run_check(copy.deepcopy(sources))
+        self.run_check(copy.deepcopy(sources))
+        nameless = copy.deepcopy(sources)
+        next(s for s in nameless if s["name"] == LOCAL)["hostname"] = None
+        for _ in range(3):
+            loops = self.run_check(copy.deepcopy(nameless))
+        self.assertEqual(loops[0]["cause"], "dns")
+        self.assertEqual(len(self.rec.events), 1)
+
+    def test_first_name_after_address_moves_state(self):
+        # Name fehlte schon bei der ersten Prüfung: Zustand wandert zur Namens-Quelle, kein Paar.
+        self.replies = {"127.0.0.1": OURS_REPLY, "192.53.103.103": dict(OURS_REPLY)}
+        sources = self.nat_sources()
+        find(sources, "ptbtime3.ptb.de")["hostname"] = None
+        self.run_check(copy.deepcopy(sources))
+        self.run_check(copy.deepcopy(sources))
+        self.assertEqual(len(self.rec.events), 1)
+        for _ in range(3):
+            self.run_check(self.nat_sources())
+        self.assertEqual(len(self.rec.events), 1)
+
+    def test_resolved_without_reply_is_not_called_foreign(self):
+        # F4: Quelle zeigt jetzt auf eine Adresse ohne NTP-Server → keine Behauptung „fremder Server“.
+        sources = detailed()
+        find(sources, "de.pool.ntp.org")["name"] = LOCAL
+        find(sources, "de.pool.ntp.org")["ntp"]["remote"] = LOCAL
+        self.run_check(copy.deepcopy(sources))
+        self.run_check(copy.deepcopy(sources))
+        moved = detailed()
+        src = find(moved, "de.pool.ntp.org")
+        src["name"] = src["ntp"]["remote"] = "172.31.77.53"
+        src["ntp"].update(total_valid_rx=0, stratum=0, reference_id="00000000")
+        self.run_check(copy.deepcopy(moved))
+        self.run_check(copy.deepcopy(moved))
+        self.assertEqual(self.rec.events[-1]["title"],
+                         "Schleife bei de.pool.ntp.org beendet – die Quelle antwortet derzeit nicht")
+        self.assertEqual(self.rec.events[-1]["data"]["how"], "silent")
+
+    def test_resolved_new_address_with_foreign_reply(self):
+        sources = detailed()
+        find(sources, "de.pool.ntp.org")["name"] = LOCAL
+        self.run_check(copy.deepcopy(sources))
+        self.run_check(copy.deepcopy(sources))
+        self.run_check(detailed())   # echte Adresse, gültige fremde Antworten (Stratum 3)
+        self.run_check(detailed())
+        self.assertEqual(self.rec.events[-1]["title"],
+                         "Schleife behoben: de.pool.ntp.org erreicht wieder einen fremden Server")
+
+    def test_same_address_without_new_reply_is_silent(self):
+        self.replies = {"127.0.0.1": OURS_REPLY, "192.53.103.103": dict(OURS_REPLY)}
+        self.run_check(self.nat_sources())
+        self.run_check(self.nat_sources())
+        self.replies = {"127.0.0.1": OURS_REPLY, "192.53.103.103": FOREIGN_REPLY}
+        self.clock[0] += loopguard.PROBE_EVERY
+        self.run_check(detailed())   # gleicher Zähler wie in der Schleife: keine neue Antwort
+        self.run_check(detailed())
+        self.assertIn("antwortet derzeit nicht", self.rec.events[-1]["title"])
+
+    def test_server_syncing_from_us_is_not_foreign(self):
+        src = {"name": "192.53.103.103", "ntp": {"stratum": 3, "reference_id": "C0A80128", "total_valid_rx": 5}}
+        self.assertFalse(loopguard.foreign_reply(src, {LOCAL}, None, False))
+        src["ntp"]["reference_id"] = "50544200"
+        self.assertTrue(loopguard.foreign_reply(src, {LOCAL}, None, False))
+        self.assertFalse(loopguard.foreign_reply(src, {LOCAL}, 5, True))
+        self.assertTrue(loopguard.foreign_reply(src, {LOCAL}, 4, True))
+
+    def test_seconds_until_due(self):
+        self.assertEqual(self.guard.seconds_until_due(), 0.0)
+        self.guard.check(detailed(), tracking(), [], 123)
+        self.assertEqual(self.guard.seconds_until_due(), loopguard.MAX_INTERVAL)
+        self.clock[0] += 50
+        self.assertAlmostEqual(self.guard.seconds_until_due(), 10.0)
+
+
+class SourceNameTest(unittest.TestCase):
+    """F2: chronyc sourcename-Aussetzer werden nicht 10 min gecacht."""
+
+    def setUp(self):
+        chrony._NAME_CACHE.clear()
+        self.addCleanup(chrony._NAME_CACHE.clear)
+
+    def test_failure_keeps_previous_name_and_retries_soon(self):
+        from unittest import mock
+        now = [1000.0]
+        answers = ["ptbtime3.ptb.de", chrony.ChronyError("Zeitüberschreitung"), "ptbtime3.ptb.de"]
+
+        def run(*args, **kwargs):
+            item = answers.pop(0)
+            if isinstance(item, Exception):
+                raise item
+            return item + "\n"
+        with mock.patch.object(chrony, "run", side_effect=run), \
+                mock.patch.object(chrony.time, "monotonic", side_effect=lambda: now[0]):
+            self.assertEqual(chrony.source_name("192.53.103.103"), "ptbtime3.ptb.de")
+            now[0] += chrony.NAME_TTL
+            self.assertEqual(chrony.source_name("192.53.103.103"), "ptbtime3.ptb.de")  # Fehler: alter Name
+            now[0] += chrony.NAME_RETRY
+            self.assertEqual(chrony.source_name("192.53.103.103"), "ptbtime3.ptb.de")
+            self.assertEqual(answers, [])
+
+    def test_failure_without_name_is_not_cached_long(self):
+        from unittest import mock
+        now = [1000.0]
+        answers = [chrony.ChronyError("weg"), "pool.ntp.org"]
+
+        def run(*args, **kwargs):
+            item = answers.pop(0)
+            if isinstance(item, Exception):
+                raise item
+            return item
+        with mock.patch.object(chrony, "run", side_effect=run), \
+                mock.patch.object(chrony.time, "monotonic", side_effect=lambda: now[0]):
+            self.assertIsNone(chrony.source_name("1.2.3.4"))
+            now[0] += chrony.NAME_RETRY
+            self.assertEqual(chrony.source_name("1.2.3.4"), "pool.ntp.org")
 
 
 class InsightTest(unittest.TestCase):

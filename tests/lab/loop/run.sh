@@ -53,8 +53,10 @@ table ip lab {
 }
 N
     fi
-    # wie ntp-gui: Inselbetrieb als Rückfall (local stratum), Quellen darüber
-    printf '%s\nlocal stratum 8\nallow all\nbindcmdaddress %s/gui.sock\npidfile %s/gui.cpid\n' "$SRC" "$W" "$W" > "$W/gui.conf"
+    # wie ntp-gui: Inselbetrieb als Rückfall (local stratum), Quellen darüber; Freigaben wie die
+    # Voreinstellung (settings.PRIVATE_NETWORKS) – ohne 127/8, 127.0.0.1 bekommt also keine Antwort.
+    ALLOW=$(printf 'allow %s\n' 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16 fc00::/7 fe80::/10)
+    printf '%s\nlocal stratum 8\n%s\nbindcmdaddress %s/gui.sock\npidfile %s/gui.cpid\n' "$SRC" "$ALLOW" "$W" "$W" > "$W/gui.conf"
     sleep 0.5
     ip netns exec lab_gui chronyd -x -d -u root -f "$W/gui.conf" >"$W/gui.log" 2>&1 & echo $! > "$W/gui.pid"
     for _ in $(seq 50); do ip netns exec lab_gui chronyc -h "$W/gui.sock" tracking >/dev/null 2>&1 && break; sleep 0.1; done

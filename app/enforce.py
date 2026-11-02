@@ -1172,10 +1172,24 @@ def _chain_row(entry, resolved, addr, replies, ours, ours_ips, resolver_info) ->
     reply = replies.get((addr, 123)) if addr else None
     row["reply"] = _slim(reply)
     ip = loopguard._ip(addr)
-    if addr in ours_ips or (ip is not None and ip.is_loopback):
+
+    def own(text: str | None) -> bool:
+        cand = loopguard._ip(text)
+        return bool(text) and (text in ours_ips or (cand is not None and (str(cand) in ours_ips or cand.is_loopback)))
+    # Alle Adressen des Namens prüfen (wie die Schleifen-Liste): AdGuard kann nur AAAA auf
+    # ntp-gui umschreiben, während A echt bleibt – chronyd nimmt dann je nach Netz die eigene.
+    own_hits = [a for a in (row["addresses"] or [addr]) if own(a)]
+    if own(addr) or own_hits:
         cause = "dns" if entry["by"] == "name" else "self_ip"
-        row.update(level="crit", state="self_address", cause=cause,
-                   verdict=loopguard.sentence(host if entry["by"] == "name" else None, addr, cause) + ".")
+        verdict = loopguard.sentence(host if entry["by"] == "name" else None, addr, cause) + "."
+        if own_hits and not own(addr):
+            fam = lambda a: "IPv6" if ":" in a else "IPv4"  # noqa: E731
+            hit_fams = sorted({fam(a) for a in own_hits})
+            other = sorted({fam(a) for a in row["addresses"] if not own(a)})
+            verdict += (f" Betroffen ist die {'/'.join(hit_fams)}-Antwort des Namens"
+                        + (f"; die {'/'.join(other)}-Antwort zeigt auf einen fremden Server" if other else "")
+                        + " – chronyd kann je nach Netz die eigene Adresse nehmen.")
+        row.update(level="crit", state="self_address", cause=cause, verdict=verdict)
         return row
     if reply is not None and ours and loopguard.fingerprint_match(reply, ours):
         cause = ("dns" if entry["by"] == "name" and ip is not None and (ip.is_private or ip.is_link_local)

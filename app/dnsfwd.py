@@ -1340,24 +1340,54 @@ class EventGate:
 
 class UpstreamGate:
     """Ereignis je eigenem Server (1.5): „nicht erreichbar – <Fehler>“ und „antwortet wieder“.
-    Gleicher Wechsel desselben Servers höchstens alle EVENT_REPEAT Sekunden."""
+
+    Höchstens ein Ereignis je Server und EVENT_REPEAT Sekunden. Ein Wechsel innerhalb dieses
+    Fensters geht nicht verloren: Er wartet und wird mit flush() nachgereicht, sobald das Fenster
+    vorbei ist – außer der Server ist bis dahin wieder im zuletzt gemeldeten Zustand. So endet
+    das Protokoll nie mit „antwortet wieder“, während der Server tatsächlich ausgefallen ist."""
 
     def __init__(self, emit: Callable[..., None] = emit_event, clock: Callable[[], float] = time.monotonic) -> None:
         self.emit = emit
         self.clock = clock
-        self._last: dict[tuple[str, str], float] = {}
+        self._lock = threading.Lock()
+        self._last: dict[str, float] = {}             # Server -> Zeitpunkt des letzten Ereignisses
+        self._emitted: dict[str, str] = {}            # Server -> zuletzt gemeldeter Zustand
+        self._pending: dict[str, tuple[str, str]] = {}  # Server -> (Zustand, Fehler), wartet aufs Fenster
 
     def __call__(self, label: str, state: str, error: str) -> None:
+        with self._lock:
+            self._pending[label] = (state, error)
+        self.flush()
+
+    def pending(self) -> dict[str, str]:
+        with self._lock:
+            return {label: item[0] for label, item in self._pending.items()}
+
+    def flush(self) -> None:
+        """Wartende Wechsel melden, deren Fenster vorbei ist (aus der Hauptschleife jede Sekunde)."""
         now = self.clock()
-        key = (label, state)
-        if now - self._last.get(key, float("-inf")) < EVENT_REPEAT:
-            return
-        self._last[key] = now
-        if state == "down":
-            self.emit("warn", f"DNS für ntp-gui: {label} nicht erreichbar",
-                      {"upstream": label, "state": "down", "error": (error or "")[:300]})
-        else:
-            self.emit("info", f"DNS für ntp-gui: {label} antwortet wieder", {"upstream": label, "state": "up"})
+        out = []
+        with self._lock:
+            for label, (state, error) in list(self._pending.items()):
+                if self._emitted.get(label, "up") == state:
+                    del self._pending[label]   # zurück im gemeldeten Zustand: nichts zu melden
+                    continue
+                if now - self._last.get(label, float("-inf")) < EVENT_REPEAT:
+                    continue
+                del self._pending[label]
+                self._last[label] = now
+                self._emitted[label] = state
+                out.append((label, state, error))
+        for label, state, error in out:
+            try:
+                if state == "down":
+                    self.emit("warn", f"DNS für ntp-gui: {label} nicht erreichbar",
+                              {"upstream": label, "state": "down", "error": (error or "")[:300]})
+                else:
+                    self.emit("info", f"DNS für ntp-gui: {label} antwortet wieder",
+                              {"upstream": label, "state": "up"})
+            except Exception:  # Ereignisse sind nie kritisch
+                pass
 
 
 def health_name(cfg: dict) -> str | None:
@@ -1548,6 +1578,7 @@ def serve(cfg: dict | None = None, *, port: int | None = None, run_dir: str | No
                 write_json(status_path(run_dir), snapshot())
             except OSError:
                 pass
+        upgate.flush()  # im 5-min-Fenster zurückgehaltene Server-Wechsel nachreichen
         stop.wait(1.0)
     server.stop()
     if manage_resolv and port == DNS_PORT:
