@@ -1692,14 +1692,16 @@ die Version eintragen (z. B. `1.2.0`) und starten. Der Workflow
 4. erzeugt für beide Architekturen eine SBOM (SPDX, syft) und einen Schwachstellen-Bericht
    (Grype) aus dem hochgeladenen Digest und bricht bei einer **kritischen Lücke mit verfügbarer
    Korrektur** ab (Lücken ohne Korrektur stehen nur im Bericht),
-5. legt einen Herkunftsnachweis (SLSA Build Provenance) in der Registry ab und prüft ihn,
+5. legt einen Herkunftsnachweis (SLSA Build Provenance) in der Registry ab und prüft ihn –
+   nur bei einem **öffentlichen** Repository; GitHub bietet das für private Repositories
+   eines Nutzers nicht an, dann läuft der Release ohne Nachweis weiter,
 6. setzt erst danach die Image-Tags, den Git-Tag `v1.0.0` und das GitHub-Release an – mit
    `ntp-gui-<version>-<arch>.spdx.json` und `ntp-gui-<version>-<arch>-vulnerabilities.txt`.
 
 Alle Actions sind per Commit-SHA festgenagelt, das Basis-Image per Digest; Dependabot schlägt
 Updates vor. Ein Release-Build läuft ohne Cache, zieht also immer aktuelle Debian-Pakete.
 
-**Herkunft prüfen** (GitHub-CLI):
+**Herkunft prüfen** (GitHub-CLI, sobald das Repository öffentlich ist):
 
 ```bash
 gh attestation verify oci://ghcr.io/congp20/ntp-gui:1.4.0 -R ConGp20/ntp-gui

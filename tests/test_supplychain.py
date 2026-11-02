@@ -70,6 +70,9 @@ class SupplyChainTest(unittest.TestCase):
         self.assertNotIn("ntp-gui:release-test\n          format", text)
         # Image-Tags erst nach Scan und Nachweis
         self.assertIn("needs: [build, attest]", text)
+        # Privates Repository: Nachweis wird übersprungen, der Release läuft trotzdem (1.4.0-Release-Lauf)
+        self.assertIn("github.event.repository.private == false", text)
+        self.assertIn("needs.attest.result == 'skipped'", text)
 
     def test_base_image_pinned_by_digest(self):
         froms = [line for line in (ROOT / "Dockerfile").read_text(encoding="utf-8").splitlines()
