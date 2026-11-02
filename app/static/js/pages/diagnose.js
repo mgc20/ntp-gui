@@ -157,7 +157,7 @@ function eventRow(event) {
     badge(LEVEL_LABEL[event.level] || event.level || "Info", event.level === "crit" ? "crit"
       : event.level === "warn" ? "warn" : "info"),
     el("span", { class: "diag-event-kind", text: EVENT_KINDS[event.kind] || event.kind || "–" }),
-    el("span", { class: "diag-event-title", text: event.title || "" }),
+    el("span", { class: "diag-event-title", text: event.display_title || event.title || "" }),
     data.length ? el("span", { class: "diag-event-data mono",
       text: data.map(([k, v]) => `${k}=${typeof v === "object" ? JSON.stringify(v) : v}`).join(" · ") }) : null);
 }

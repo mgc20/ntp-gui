@@ -62,18 +62,35 @@ function currentPage() {
 function data(key, url, ttlSeconds) {
   const entry = state.cache.get(key);
   const now = Date.now();
-  const fresh = entry && entry.url === url && entry.data !== undefined
-    && (ttlSeconds === 0 || now - entry.time < ttlSeconds * 1000);
+  // Ein Fehler gilt ttlSeconds lang (bei 0: 5 s) – sonst fragte die Seite nach einem 404 bei jedem
+  // Neuzeichnen neu.
+  const fresh = entry && entry.url === url && (entry.data !== undefined
+    ? ttlSeconds === 0 || now - entry.time < ttlSeconds * 1000
+    : Boolean(entry.error) && now - entry.time < (ttlSeconds || 5) * 1000);
   if (!fresh && !(entry && entry.pending && entry.url === url)) {
-    const record = { url, pending: true, time: entry?.time || 0, data: entry?.url === url ? entry.data : undefined };
+    const same = entry?.url === url;
+    const record = { url, pending: true, time: entry?.time || 0, data: same ? entry.data : undefined,
+      error: same ? entry.error || null : null };
     state.cache.set(key, record);
     apiGet(url).then((result) => {
-      Object.assign(record, { data: result, time: Date.now(), pending: false });
+      Object.assign(record, { data: result, time: Date.now(), pending: false, error: null });
       render();
-    }).catch(() => { record.pending = false; record.time = Date.now(); });
+    }).catch((error) => {
+      const known = record.error;
+      Object.assign(record, { pending: false, time: Date.now(), error: { status: error.status || 0, message: error.message } });
+      // Nur neu zeichnen, wenn der Fehler neu ist – sonst hinge die Seite in einer Schleife.
+      if (!known || known.status !== record.error.status) render();
+    });
   }
   const current = state.cache.get(key);
   return current && current.url === url ? current.data : undefined;
+}
+
+// Letzter Fehler einer Abfrage ({status, message}) – z. B. 404, damit eine Seite „keine Daten“
+// statt endlos „Lade …“ zeigen kann. null, solange die letzte Abfrage geklappt hat.
+function dataError(key, url) {
+  const entry = state.cache.get(key);
+  return entry && entry.url === url && entry.data === undefined ? entry.error || null : null;
 }
 
 function invalidate(key) { state.cache.delete(key); }
@@ -135,7 +152,7 @@ function render() {
     setRange: (seconds) => { state.range = seconds; storageSet("ntp-gui-range", seconds); refresh(); },
     rerender: () => render(),
     afterRender: (fn) => pendingAfter.push(fn),
-    data, invalidate,
+    data, dataError, invalidate,
     watchReload,
     refresh: () => refresh(),
   };

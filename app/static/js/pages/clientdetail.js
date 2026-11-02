@@ -114,7 +114,7 @@ function probeCard(ctx, ip, detail) {
     body = emptyNote(detail.probe_allowed
       ? "Schickt **eine** NTP-Anfrage an das Gerät (Port 123, 2 s Zeitlimit). Router, NAS und manche Kameras "
         + "laufen selbst als Zeitserver und antworten – dann siehst du ihre Uhr auch, wenn sie ihre Sendezeit verschleiern."
-      : "Nachmessen geht nur bei Geräten mit privater Adresse, die diesen Server schon gefragt haben.");
+      : detail.probe_blocked || "Nachmessen geht nur bei Geräten mit privater Adresse, die diesen Server schon gefragt haben.");
   } else if (!result.answered || !isNum(result.offset)) {
     body = el("p", { class: "card-sub" }, el("strong", { text: `${fmtTime(result.t)}: ` }), el("span", { text: result.text }));
   } else {
@@ -149,7 +149,16 @@ export function renderDetail(ctx, ip) {
   const url = `/api/clients/detail?ip=${encodeURIComponent(ip)}&range=${range}`;
   const detail = ctx.data(`clientdetail:${ip}`, url, 15);
   const back = el("p", { class: "client-back" }, el("a", { href: "#/clients", text: "← Alle Clients" }));
-  if (detail === undefined) return [back, emptyNote("Lade Daten des Geräts …")];
+  const failed = detail === undefined ? ctx.dataError?.(`clientdetail:${ip}`, url) : null;
+  if (failed && failed.status === 400) {
+    return [back, card(ip, { help: "client_detail" },
+      emptyNote("Ungültige Adresse – im Link steht keine IPv4- oder IPv6-Adresse. Wähle das Gerät in der Client-Liste aus."))];
+  }
+  if (failed && failed.status !== 404) {
+    return [back, card(ip, { help: "client_detail" },
+      emptyNote(`Die Daten des Geräts ließen sich nicht laden (${failed.message}). Ich versuche es gleich noch einmal.`))];
+  }
+  if (detail === undefined && !failed) return [back, emptyNote("Lade Daten des Geräts …")];
   if (!detail || !detail.address) {
     return [back, card(ip, { help: "client_detail" },
       emptyNote("Zu diesem Gerät liegen keine Daten vor – es hat diesen Server nicht gefragt, seit die Messung läuft, "

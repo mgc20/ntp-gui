@@ -683,13 +683,17 @@ SCHEMA: list[dict] = [
                 "Messungen hintereinander darüber liegen; „wieder im Rahmen“ meldet es erst unter "
                 "der Hälfte der Schwelle, damit ein Gerät an der Grenze nicht ständig hin und her "
                 "meldet. 0 = aus. Sinnvoll sind etwa 1000 ms (Uhr geht eine Sekunde falsch)."),
-    _field("clients_rdns", "lan", "Namen der Clients per DNS nachschlagen", "bool", True, _as_bool,
+    _field("clients_rdns", "lan", "Namen der Clients per DNS nachschlagen", "bool", False, _as_bool,
            env="CLIENTS_RDNS", restart=RESTART_NONE, advanced=True,
            help="Zeigt auf der Detailseite eines Geräts seinen Namen aus dem DNS (Reverse-DNS, "
-                "z. B. „nas.fritz.box“). Gefragt wird nur nach privaten LAN-Adressen, nur beim "
-                "Öffnen der Detailseite und nur über den System-DNS bzw. eigene DNS-Server mit "
-                "privater Adresse – nie über DoT/DoH oder öffentliche Server, denn dann ginge die "
-                "Frage nach deinen Geräteadressen ins Internet. Der Name bleibt auf dieser Instanz."),
+                "z. B. „nas.fritz.box“). Standard: aus – die Frage verrät die Adresse deines Geräts "
+                "an den DNS-Server. Eingeschaltet fragt ntp-gui nur nach privaten LAN-Adressen, nur "
+                "beim Öffnen der Detailseite und nur, wenn jeder DNS-Server, über den die Frage gehen "
+                "kann, selbst eine private Adresse hat (System-DNS aus /etc/resolv.conf bzw. eigene "
+                "Server samt Rückfall). Bei DoT/DoH oder einem öffentlichen Server (Docker trägt z. B. "
+                "8.8.8.8 ein) wird nicht gefragt. Ein lokaler Zwischen-Resolver (127.0.0.53, "
+                "127.0.0.11) zählt als privat – wohin er weiterfragt, kann ntp-gui nicht sehen. "
+                "Der Name bleibt auf dieser Instanz."),
     _field("enforce_hostnames", "lan", "Weitere Namen für „Zeitserver erzwingen“", "hostlist",
            [], _as_host_list, env="ENFORCE_HOSTNAMES", restart=RESTART_NONE, advanced=True,
            placeholder="z. B. time.example.com",

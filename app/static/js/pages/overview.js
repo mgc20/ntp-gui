@@ -416,7 +416,7 @@ function eventsPanel(ctx) {
         return el("li", { class: "event", "data-level": level },
           el("time", { class: "event-time", datetime: d.toISOString(), title: `vor ${fmtDuration(Date.now() / 1000 - (event.t || 0))}`, text: time }),
           el("span", { class: "event-level", text: EVENT_LABEL[level] }),
-          el("span", { class: "event-title", text: event.title || "" }));
+          el("span", { class: "event-title", text: event.display_title || event.title || "" }));
       }));
   return panel({ title: "Letzte Ereignisse", help: "overview_events", tone: "muted", body,
     href: "#/diagnose", linkLabel: "Alle Ereignisse" });

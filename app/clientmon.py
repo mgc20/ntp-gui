@@ -279,8 +279,10 @@ def _attach_filter(sock: socket.socket, port: int) -> bool:
 # Statistik je Client
 # ---------------------------------------------------------------------------
 
-INTERVALS_KEPT = 8        # so viele Abstände zwischen Anfragen je Client (Median = typisches Intervall)
+INTERVALS_KEPT = 16       # so viele Abstände zwischen Anfragen je Client (Median = typisches Intervall)
 MIN_INTERVAL = 0.2        # kürzere Abstände sind Wiederholungen/Bursts, kein Intervall
+BURST_GAP = 4.0           # kürzere Abstände gehören zu einem Burst (ntpd iburst: 2 s, ntpdate/sntp-Serien)
+BURST_MIN_GAPS = 12       # erst so viele kurze Abstände OHNE längeren dazwischen = wirklich so oft
 
 # Verlauf je Client in SQLite (Tabelle clientmon_samples)
 SAMPLE_RETENTION = 7 * 86400
@@ -288,7 +290,14 @@ SAMPLE_SPACING = 120.0     # höchstens ein gespeicherter Messpunkt je Client in
 MAX_SAMPLES_PER_CLIENT = 5000   # 7 Tage bei SAMPLE_SPACING passen hinein
 SAMPLE_FLUSH = 30.0        # gesammelte Messpunkte so oft in die Datenbank schreiben
 SAMPLE_PRUNE = 3600.0
-MAX_PENDING = 20_000       # Puffer, falls die Datenbank klemmt
+MAX_PENDING = 2000         # höchstens so viele Messpunkte je Schreibrunde (SAMPLE_FLUSH)
+MAX_NEW_PER_FLUSH = 200    # … davon höchstens so viele von Adressen mit erst EINER Anfrage
+MAX_SAMPLES_TOTAL = 2_000_000   # Obergrenze der ganzen Tabelle (≈ 150 MB), älteste fliegen zuerst
+ORPHAN_GRACE = 3600.0      # Punkte von Adressen ohne gespeicherten Client nach 1 h löschen
+MAX_STORED_CLIENTS = 4 * MAX_CLIENTS  # Zeilen in clientmon_clients (neueste bleiben)
+# Warum so knapp: Wer Absenderadressen wechselt (gefälschte Absender im LAN, jede IPv6-Adresse
+# aus einem /64, offener Port 123), erzeugt sonst mit jedem Paket eine neue Zeile – die LRU-Tabelle
+# vergisst verdrängte Adressen samt Sperrabstand. Ohne Grenzen wären das zig GB auf /data.
 
 
 def _new_entry(now: float | None) -> dict:
@@ -298,9 +307,20 @@ def _new_entry(now: float | None) -> dict:
 
 
 def typical_interval(intervals: list) -> float | None:
-    """Median der letzten Abstände – robust gegen iburst und einzelne verlorene Anfragen."""
-    values = sorted(v for v in intervals or [] if isinstance(v, (int, float)) and v > 0)
+    """Median der letzten Abstände – robust gegen Bursts und einzelne verlorene Anfragen.
+
+    Abstände unter BURST_GAP gehören zu einem Burst (ntpd mit iburst schickt 8 Anfragen im
+    Abstand von 2 s, ntpdate/sntp-Läufe mehrere hintereinander) und zählen nicht, sobald es
+    längere Abstände gibt. Gibt es NUR kurze, ist das Intervall erst nach BURST_MIN_GAPS
+    Abständen bekannt – vorher kann es ebenso gut ein einzelner Start-Burst gewesen sein.
+    """
+    values = sorted(v for v in intervals or [] if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0)
     if not values:
+        return None
+    longer = [v for v in values if v >= BURST_GAP]
+    if longer:
+        values = longer
+    elif len(values) < BURST_MIN_GAPS:
         return None
     mid = len(values) // 2
     return values[mid] if len(values) % 2 else (values[mid - 1] + values[mid]) / 2
@@ -319,6 +339,8 @@ class ClientTable:
         self.lock = threading.Lock()
         self.pending: list[tuple] = []
         self._stored: dict[str, float] = {}
+        self._new_pending = 0
+        self.dropped = 0   # wegen der Grenzen nicht gespeicherte Messpunkte (seit Start)
 
     def update(self, ip: str, req: dict, offset: float | None, now: float) -> dict:
         with self.lock:
@@ -366,25 +388,36 @@ class ClientTable:
                 entry["min"] = offset if entry["min"] is None else min(entry["min"], offset)
                 entry["max"] = offset if entry["max"] is None else max(entry["max"], offset)
             entry["state"] = state
-            self._queue_sample(ip, now, offset if state in (OK, WRONG_CLOCK) else None, req, interval)
+            self._queue_sample(ip, now, offset if state in (OK, WRONG_CLOCK) else None, req, interval,
+                               first=entry["requests"] <= 1)
             return entry
 
     def _queue_sample(self, ip: str, now: float, offset: float | None, req: dict,
-                      interval: float | None) -> None:
+                      interval: float | None, first: bool = False) -> None:
         """Messpunkt für den Verlauf vormerken (unter self.lock). Auch nicht messbare Anfragen –
-        ohne Abweichung, aber mit Poll und Abstand, damit das Intervall-Diagramm etwas zeigt."""
+        ohne Abweichung, aber mit Poll und Abstand, damit das Intervall-Diagramm etwas zeigt.
+
+        Je Schreibrunde höchstens MAX_PENDING Punkte, davon MAX_NEW_PER_FLUSH von Adressen mit
+        erst einer Anfrage – was darüber liegt, fällt weg (die Tabelle im Speicher misst weiter)."""
         last = self._stored.get(ip)
         if last is not None and now - last < SAMPLE_SPACING:
             return
-        self._stored[ip] = now
         if len(self.pending) >= MAX_PENDING:
-            del self.pending[: len(self.pending) - MAX_PENDING + 1]
+            self.dropped += 1
+            return
+        if first:
+            if self._new_pending >= MAX_NEW_PER_FLUSH:
+                self.dropped += 1
+                return
+            self._new_pending += 1
+        self._stored[ip] = now
         self.pending.append((ip, now, offset, req.get("poll"), req.get("version"),
                              round(interval, 3) if interval is not None else None))
 
     def take_pending(self) -> list[tuple]:
         with self.lock:
             rows, self.pending = self.pending, []
+            self._new_pending = 0
         return rows
 
     def get(self, ip: str) -> dict | None:
@@ -649,6 +682,10 @@ class Monitor:
                     "ON CONFLICT(ip) DO UPDATE SET data=excluded.data, updated=excluded.updated",
                     [(ip, json.dumps(entry), now) for ip, entry in snap.items()])
                 conn.execute("DELETE FROM clientmon_clients WHERE updated < ?", (now - CLIENT_RETENTION,))
+                # Verdrängte Adressen bleiben 30 Tage stehen – bei wechselnden Absendern wären das
+                # beliebig viele Zeilen. Die neuesten MAX_STORED_CLIENTS genügen.
+                conn.execute("DELETE FROM clientmon_clients WHERE ip IN (SELECT ip FROM clientmon_clients "
+                             "ORDER BY updated DESC LIMIT -1 OFFSET ?)", (MAX_STORED_CLIENTS,))
         except Exception:  # noqa: BLE001 – Speichern ist nur ein Zusatz
             pass
 
@@ -703,11 +740,18 @@ def stored_clients(ip: str | None = None) -> dict[str, dict]:
     return out
 
 
-def prune_samples(store_mod, now: float | None = None, keep: int = MAX_SAMPLES_PER_CLIENT) -> None:
-    """Älter als 7 Tage weg; je Client höchstens `keep` Punkte (die neuesten bleiben)."""
+def prune_samples(store_mod, now: float | None = None, keep: int = MAX_SAMPLES_PER_CLIENT,
+                  total: int = MAX_SAMPLES_TOTAL) -> None:
+    """Älter als 7 Tage weg; Punkte von Adressen, die nicht (mehr) in clientmon_clients stehen,
+    nach ORPHAN_GRACE weg; insgesamt höchstens `total` Punkte (die neuesten bleiben); je Client
+    höchstens `keep` Punkte."""
     now = time.time() if now is None else now
     with store_mod.transaction() as conn:
         conn.execute("DELETE FROM clientmon_samples WHERE t < ?", (now - SAMPLE_RETENTION,))
+        conn.execute("DELETE FROM clientmon_samples WHERE t < ? AND ip NOT IN (SELECT ip FROM clientmon_clients)",
+                     (now - ORPHAN_GRACE,))
+        conn.execute("DELETE FROM clientmon_samples WHERE rowid IN (SELECT rowid FROM clientmon_samples "
+                     "ORDER BY t DESC LIMIT -1 OFFSET ?)", (max(1, int(total)),))
         crowded = conn.execute("SELECT ip FROM clientmon_samples GROUP BY ip HAVING COUNT(*) > ?",
                                (keep,)).fetchall()
         for (addr,) in crowded:

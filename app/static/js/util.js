@@ -116,7 +116,13 @@ export function sourceLabel(source) {
 
 export async function apiGet(path) {
   const response = await fetch(path, { cache: "no-store", headers: { Accept: "application/json" } });
-  if (!response.ok) throw new Error(`${path}: HTTP ${response.status}`);
+  if (!response.ok) {
+    let message = "";
+    try { message = (await response.json()).error || ""; } catch (error) { /* keine JSON-Antwort */ }
+    const failure = new Error(message || `${path}: HTTP ${response.status}`);
+    failure.status = response.status;
+    throw failure;
+  }
   return response.json();
 }
 

@@ -5,8 +5,8 @@ Baut auf clientmon.py auf (passive Messung, Verlauf in SQLite) und ergänzt:
   * eigene Namen und Notizen je Client-Adresse (SQLite, Tabelle clientmon_meta) –
     nur lokal; im Diagnosepaket und in Benachrichtigungen ersetzt egress die Namen
     (diagnostics._known_values, Kategorie „name“);
-  * Reverse-DNS über den System-Resolver (1 s Zeitlimit, zwischengespeichert), nur für
-    private Adressen und nie über DoT/DoH oder öffentliche DNS-Server;
+  * Reverse-DNS über den System-Resolver (nur eingeschaltet, 1 s Zeitlimit, zwischengespeichert),
+    nur für private Adressen und nie über DoT/DoH oder öffentliche DNS-Server;
   * Hersteller zur MAC-Adresse, wenn eine OUI-Liste im Image liegt (kein Paket nötig);
   * eine VERMUTUNG, welche Client-Software fragt – aus NTP-Version, Poll-Feld,
     Kopffeldern, Abstand der Anfragen, Hersteller und Namen;
@@ -28,6 +28,7 @@ import struct
 import sys
 import threading
 import time
+import unicodedata
 from typing import Any, Callable, Iterable
 
 import clientmon
@@ -53,15 +54,32 @@ def clean_ip(value: Any) -> str | None:
         return None
 
 
+# Explizite Liste statt „nicht global“: 6to4 (2002::/16), Teredo (2001::/32), NAT64 und andere
+# IANA-Sonderbereiche gelten bei ipaddress als „nicht global“, werden aber über das Internet
+# geroutet (6to4/Teredo tragen sogar eine öffentliche IPv4-Adresse in sich).
+LAN_NETWORKS = tuple(ipaddress.ip_network(n) for n in (
+    "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "169.254.0.0/16", "127.0.0.0/8",
+    "fc00::/7", "fe80::/10", "::1/128"))
+
+
 def is_lan(ip: str) -> bool:
-    """Private, Link-lokale, ULA-, CGNAT- oder Loopback-Adresse (nicht im Internet routbar)."""
+    """Private (RFC 1918), CGNAT-, Link-lokale, ULA- oder Loopback-Adresse – nur diese."""
     try:
         addr = ipaddress.ip_address(ip)
     except ValueError:
         return False
-    if addr.is_multicast or addr.is_unspecified or addr.is_reserved:
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
+        addr = addr.ipv4_mapped
+    return any(addr.version == net.version and addr in net for net in LAN_NETWORKS)
+
+
+def is_link_local(ip: str) -> bool:
+    """IPv6-Link-lokal (fe80::/10): ohne Schnittstelle (Scope-ID) nicht ansprechbar."""
+    try:
+        addr = ipaddress.ip_address(ip)
+        return addr.version == 6 and addr.is_link_local
+    except ValueError:
         return False
-    return not addr.is_global
 
 
 # ---------------------------------------------------------------------------
@@ -72,12 +90,19 @@ class MetaError(ValueError):
     """Ungültiger Name oder ungültige Notiz (Text für die Oberfläche)."""
 
 
-_CONTROL = re.compile(r"[\x00-\x1f\x7f  ‪-‮⁦-⁩]")
+_CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
+
+
+def _has_control(text: str) -> bool:
+    """Steuer- und unsichtbare Formatzeichen: Unicode-Kategorien Cc und Cf (Bidi-Steuerung wie
+    U+202E/U+2066, LRM/RLM/ALM, Nullbreite-Zeichen, BOM) sowie Zeilen-/Absatztrenner. Sie
+    könnten Text in Liste, Ereignissen und Meldungen umsortieren oder Namen unsichtbar verändern."""
+    return bool(_CONTROL.search(text)) or any(unicodedata.category(ch) in ("Cc", "Cf", "Zl", "Zp") for ch in text)
 
 
 def clean_name(value: Any) -> str:
     text = " ".join(str(value or "").split())
-    if _CONTROL.search(text):
+    if _has_control(text):
         raise MetaError("Der Name darf keine Steuerzeichen enthalten.")
     if len(text) > MAX_NAME:
         raise MetaError(f"Der Name darf höchstens {MAX_NAME} Zeichen lang sein.")
@@ -86,7 +111,7 @@ def clean_name(value: Any) -> str:
 
 def clean_note(value: Any) -> str:
     text = str(value or "").replace("\r\n", "\n").replace("\t", " ").strip()
-    if _CONTROL.search(text.replace("\n", " ")):
+    if _has_control(text.replace("\n", " ")):
         raise MetaError("Die Notiz darf keine Steuerzeichen enthalten.")
     if len(text) > MAX_NOTE:
         raise MetaError(f"Die Notiz darf höchstens {MAX_NOTE} Zeichen lang sein.")
@@ -155,10 +180,57 @@ def set_meta(ip: Any, name: Any = None, note: Any = None) -> dict:
 
 
 def label(ip: str, meta: dict | None = None) -> str:
-    """Bezeichnung für Ereignisse: eigener Name (ab 4 Zeichen, sonst filtert egress ihn nicht
-    zuverlässig) oder die Adresse – die egress beim Export pseudonymisiert."""
+    """Bezeichnung für die lokale Anzeige: eigener Name oder die Adresse.
+
+    Nie in gespeicherte Texte (Ereignistitel) schreiben – dort steht nur die Adresse, die egress
+    beim Export pseudonymisiert. Ein Name im Titel bliebe nach Umbenennen/Löschen stehen, und der
+    Filter kennt nur die aktuellen Namen."""
     name = ((meta if meta is not None else all_meta()).get(ip) or {}).get("name") or ""
-    return name if len(name) >= 4 else ip
+    return name or ip
+
+
+def client_event_title(row: dict) -> str | None:
+    """Titel eines „clients“-Ereignisses neu aus den Daten gebaut (nur Adresse, kein Name) –
+    für Export und Diagnosepaket. None, wenn das Ereignis keine gültige Adresse trägt."""
+    data = row.get("data") if isinstance(row.get("data"), dict) else {}
+    addr = clean_ip(data.get("address"))
+    if addr is None:
+        return None
+    offset = data.get("offset")
+    value = fmt_offset(offset) if isinstance(offset, (int, float)) and not isinstance(offset, bool) else None
+    if row.get("level") == "info":
+        return f"Uhr von {addr} wieder im Rahmen ({value})" if value else f"Uhr von {addr} wieder im Rahmen"
+    return f"Uhr von {addr} weicht um {value} ab" if value else f"Uhr von {addr} weicht ab"
+
+
+def without_client_name(row: Any) -> Any:
+    """Ereignis für den Export: Titel eines „clients“-Ereignisses ohne frei gewählten Namen
+    (Entwicklungsstände von 1.4 schrieben ihn noch hinein)."""
+    if not isinstance(row, dict) or row.get("kind") != "clients":
+        return row
+    title = client_event_title(row)
+    if title is None:
+        title = "Uhr eines Clients weicht ab" if row.get("level") != "info" else "Uhr eines Clients wieder im Rahmen"
+    return {**row, "title": title}
+
+
+def with_display_titles(rows: list, meta: dict | None = None) -> list:
+    """Für die lokale Anzeige: „clients“-Ereignisse bekommen display_title mit dem AKTUELLEN
+    eigenen Namen (der gespeicherte Titel enthält nur die Adresse)."""
+    out = []
+    current: dict | None = meta
+    for row in rows:
+        if isinstance(row, dict) and row.get("kind") == "clients":
+            title = client_event_title(row)
+            if title is not None:
+                if current is None:
+                    current = all_meta()
+                addr = clean_ip((row.get("data") or {}).get("address"))
+                name = (current.get(addr) or {}).get("name") or ""
+                row = {**row, "display_title": title.replace(f"Uhr von {addr} ", f"Uhr von {name} ", 1)
+                       if name else title}
+        out.append(row)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -175,9 +247,35 @@ _RDNS_SLOTS = threading.BoundedSemaphore(RDNS_PARALLEL)
 _HOSTNAME = re.compile(r"^(?=.{1,253}$)[A-Za-z0-9_](?:[A-Za-z0-9_-]{0,62})(?:\.[A-Za-z0-9_](?:[A-Za-z0-9_-]{0,62}))*\.?$")
 
 
-def rdns_allowed(ip: str, cfg: dict) -> str | None:
-    """None, wenn nachgeschlagen werden darf – sonst der Grund (für die Oberfläche)."""
-    if not cfg.get("clients_rdns", True):
+def _system_resolvers() -> list[str] | None:
+    """Adressen der System-Resolver (resolv.conf bzw. ihre Sicherung) – None, wenn unlesbar."""
+    try:
+        import dnsfwd
+        return [host for host, _port in dnsfwd.system_servers()]
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _public_resolver_reason(resolvers: list[str] | None) -> str | None:
+    if not resolvers:
+        return ("Der System-DNS ist unbekannt (/etc/resolv.conf ohne lesbare nameserver-Zeile) – "
+                "deshalb wird nicht nachgeschlagen.")
+    public = [r for r in resolvers if not is_lan(r)]
+    if public:
+        return (f"Der System-DNS enthält einen öffentlichen Server ({public[0]}) – die Frage nach einer "
+                "LAN-Adresse ginge ins Internet, deshalb wird nicht nachgeschlagen. Docker trägt z. B. "
+                "8.8.8.8 ein, wenn der Host nur 127.0.0.53 kennt.")
+    return None
+
+
+def rdns_allowed(ip: str, cfg: dict, resolvers: Callable[[], list[str] | None] = _system_resolvers) -> str | None:
+    """None, wenn nachgeschlagen werden darf – sonst der Grund (für die Oberfläche).
+
+    Nur, wenn eingeschaltet (Standard: aus), nur für private Adressen und nur, wenn JEDER
+    Resolver, über den die Frage gehen kann, selbst eine private Adresse hat. Ein lokaler
+    Stub (127.0.0.53, Dockers 127.0.0.11) zählt als privat – wohin er weiterfragt, sieht
+    ntp-gui nicht; das hast du mit dem Einschalten bewusst in Kauf genommen (Hilfe-Text)."""
+    if not cfg.get("clients_rdns", False):
         return "In den Einstellungen ausgeschaltet („Namen der Clients per DNS nachschlagen“)."
     if not is_lan(ip):
         return "Keine private Adresse – die Frage ginge an öffentliche DNS-Server."
@@ -195,7 +293,10 @@ def rdns_allowed(ip: str, cfg: dict) -> str | None:
         if not hosts or not all(is_lan(h) for h in hosts):
             return ("Unter den eigenen DNS-Servern ist ein öffentlicher – die Frage nach einer "
                     "LAN-Adresse ginge ins Internet, deshalb wird nicht nachgeschlagen.")
-    return None
+        if not cfg.get("dns_fallback", True):
+            return None
+        # Mit „Rückfall auf den System-DNS“ kann die Frage auch dort landen.
+    return _public_resolver_reason(resolvers())
 
 
 def reverse_name(ip: str, resolver: Callable[[str], Any] = socket.gethostbyaddr,
@@ -260,7 +361,7 @@ def parse_oui(lines: Iterable[str]) -> dict[str, str]:
             continue
         key = (m.group(1) + m.group(2) + m.group(3)).upper()
         vendor = " ".join(m.group(4).split())[:80]
-        if vendor and key not in table and not _CONTROL.search(vendor):
+        if vendor and key not in table and not _has_control(vendor):
             table[key] = vendor
     return table
 
@@ -564,6 +665,10 @@ _PROBE_LAST: dict[str, float] = {}
 _PROBE_RECENT: list[float] = []
 
 
+LINK_LOCAL_PROBE = ("Link-lokale Adresse – Nachmessen nicht möglich: Für fe80::-Adressen bräuchte die Anfrage "
+                    "die Netzwerkschnittstelle, und die merkt sich die passive Messung nicht.")
+
+
 class ProbeLimited(Exception):
     def __init__(self, text: str, retry_after: float) -> None:
         super().__init__(text)
@@ -661,6 +766,8 @@ def probe(ip: Any, known: Callable[[str], bool], query: Callable[..., dict | Non
         raise MetaError("Ungültige IP-Adresse.")
     if not is_lan(addr):
         raise MetaError("Nachmessen geht nur bei privaten Adressen im LAN.")
+    if is_link_local(addr):
+        raise MetaError(LINK_LOCAL_PROBE)
     if not known(addr):
         raise MetaError("Dieses Gerät hat diesen Server bisher nicht gefragt – nachgemessen werden nur bekannte Clients.")
     _reserve(addr, time.monotonic() if now is None else now)
@@ -714,7 +821,8 @@ def detail(ip: Any, cfg: dict, since: float | None = None,
         "measurable_reason": measurable_reason(entry),
         "software": software,
         "silent": silent_reason(entry, time.time()) if entry else None,
-        "probe_allowed": is_lan(addr) and bool(entry),
+        "probe_allowed": is_lan(addr) and not is_link_local(addr) and bool(entry),
+        "probe_blocked": LINK_LOCAL_PROBE if is_link_local(addr) else None,
         "retention_days": clientmon.SAMPLE_RETENTION // 86400,
     }
     return out

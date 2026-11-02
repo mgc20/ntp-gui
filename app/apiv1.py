@@ -83,7 +83,8 @@ endpoint("GET", "/gps/calibration", "/api/gps/calibration", "read",
           "bias", "spread", "suggested_offset", "suggested_delay", "series"],
          {"window": "nur die letzten so vielen Sekunden auswerten"})
 endpoint("GET", "/events", "/api/events", "read",
-         "Ereignisprotokoll (Quellenwechsel, Fix verloren, Neustarts, Änderungen), neueste zuerst.",
+         "Ereignisprotokoll (Quellenwechsel, Fix verloren, Neustarts, Änderungen), neueste zuerst. "
+         "Client-Alarme tragen im Titel nur die Adresse; display_title nennt den aktuellen eigenen Namen.",
          ["events"],
          {"since": "ab Unix-Zeit", "until": "bis Unix-Zeit", "kinds": "Arten, mit Komma getrennt",
           "level": "Mindeststufe: info, warn oder crit", "limit": "höchstens so viele (1–5000)"})

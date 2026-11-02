@@ -191,6 +191,8 @@ check "Clients: Name für ungültige Adresse abgelehnt" 422 "$(http "${CJ[@]}" -
 check "Clients: Name gespeichert" 200 "$(http "${CJ[@]}" -d '{"ip":"127.0.0.1","name":"Container Selbsttest"}' http://127.0.0.1:18080/api/clients/meta)"
 contains "Clients: Name erscheint in der Liste" "$(curl -s --max-time 10 http://127.0.0.1:18080/api/clients/offsets)" 'Container Selbsttest'
 check "Clients: Nachmessen öffentlicher Adressen abgelehnt" 422 "$(http "${CJ[@]}" -d '{"ip":"8.8.8.8"}' http://127.0.0.1:18080/api/clients/probe)"
+check "Clients: Nachmessen über 6to4 (öffentliche IPv4 darin) abgelehnt" 422 "$(http "${CJ[@]}" -d '{"ip":"2002:808:808::1"}' http://127.0.0.1:18080/api/clients/probe)"
+check "Clients: Nachmessen link-lokaler IPv6 abgelehnt" 422 "$(http "${CJ[@]}" -d '{"ip":"fe80::1"}' http://127.0.0.1:18080/api/clients/probe)"
 check "Clients: Detail einer unbekannten Adresse -> 404" 404 "$(http 'http://127.0.0.1:18080/api/clients/detail?ip=192.0.2.77')"
 docker exec "${PREFIX}-a" python3 -c '
 import socket, struct, time
@@ -209,6 +211,7 @@ for _ in 1 2 3 4 5 6; do
 done
 if grep -q '"available": true' <<<"$CM" || grep -q '"available":true' <<<"$CM"; then
   contains "Clients: Detailseite eines gemessenen Geräts mit Vermutung zur Software" "$DETAIL" '"software"'
+  contains "Clients: Reverse-DNS ab Werk aus" "$DETAIL" 'In den Einstellungen ausgeschaltet'
 else
   ok "Clients: Detailseite übersprungen (Messung im Container nicht verfügbar)"
 fi

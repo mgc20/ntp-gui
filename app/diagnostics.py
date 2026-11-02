@@ -345,7 +345,13 @@ def _collect_events(cfg: dict, options: dict) -> Any:
     except ImportError:
         return {"hinweis": "Ereignisprotokoll nicht verfügbar"}
     rows = events.query(since=time.time() - EVENT_DAYS * 86400, limit=2000)
-    return [_without_key_name(row) for row in rows]
+    try:
+        import clientinfo
+        strip_client = clientinfo.without_client_name
+    except ImportError:  # pragma: no cover
+        def strip_client(row: Any) -> Any:
+            return row
+    return [strip_client(_without_key_name(row)) for row in rows]
 
 
 def _without_key_name(row: Any) -> Any:

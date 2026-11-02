@@ -68,8 +68,10 @@ export const HELP_CLIENTS = {
   },
   client_typical_interval: {
     title: "Typischer Abstand",
-    text: "Der Median der letzten acht Abstände zwischen zwei Anfragen. Der Median übergeht den kurzen "
-      + "Schwall beim Start (iburst: vier Anfragen im Abstand von 2 s) und einzelne verlorene Pakete. "
+    text: "Der Median der letzten 16 Abstände zwischen zwei Anfragen. Abstände unter **4 s** gelten als "
+      + "Schwall (Burst) und zählen nicht, sobald es längere gibt – ntpd mit iburst schickt beim Start acht "
+      + "Anfragen im Abstand von 2 s, ntpdate/sntp mehrere hintereinander. Kommen **nur** kurze Abstände, "
+      + "steht hier erst nach zwölf davon ein Wert; vorher war es vielleicht nur ein Start-Schwall. "
       + "Unter **8 s** fragt ein Gerät auffällig oft – meist ein Fehler in der Firmware oder ein Client, "
       + "der keine Antwort bekommt und es immer wieder versucht.",
   },
@@ -88,11 +90,13 @@ export const HELP_CLIENTS = {
   },
   client_rdns: {
     title: "Name aus dem DNS",
-    text: "ntp-gui fragt den DNS nach dem Namen zur Adresse (Reverse-DNS, z. B. „nas.fritz.box“) – "
-      + "höchstens 1 s lang, das Ergebnis wird eine Stunde gemerkt. Gefragt wird nur bei privaten "
-      + "Adressen und nie über DoT/DoH oder öffentliche DNS-Server: Die Frage verrät die Adresse deines "
-      + "Geräts, und die geht niemanden außerhalb deines Netzes etwas an. Abschalten: Einstellungen → "
-      + "„Namen der Clients per DNS nachschlagen“.",
+    text: "Ist „Namen der Clients per DNS nachschlagen“ eingeschaltet (Standard: aus), fragt ntp-gui den "
+      + "DNS nach dem Namen zur Adresse (Reverse-DNS, z. B. „nas.fritz.box“) – höchstens 1 s lang, das "
+      + "Ergebnis wird eine Stunde gemerkt. Gefragt wird nur bei privaten Adressen und nur, wenn jeder "
+      + "DNS-Server, über den die Frage gehen kann, selbst eine private Adresse hat – nie über DoT/DoH "
+      + "oder einen öffentlichen Server (Docker trägt z. B. 8.8.8.8 ein, wenn der Host nur 127.0.0.53 "
+      + "kennt). Denn die Frage verrät die Adresse deines Geräts, und die geht niemanden außerhalb "
+      + "deines Netzes etwas an. Warum nicht gefragt wurde, steht unter der Gerätetabelle.",
   },
   client_mac: {
     title: "MAC-Adresse und Hersteller",
@@ -122,10 +126,10 @@ export const HELP_CLIENTS = {
     title: "Eigener Name und Notiz",
     text: "Gib Geräten einen Namen, den du wiedererkennst („Drucker Büro“), und eine Notiz. Beides steht "
       + "in der Datenbank dieser Instanz und erscheint in der Liste, im Netzüberblick und in Ereignissen. "
-      + "Im **Diagnosepaket** und in **Benachrichtigungen** ersetzt der Datenschutzfilter den Namen durch "
-      + "`<name>` – Namen ab 4 Zeichen; kürzere stehen in Ereignissen deshalb gar nicht, dort steht die "
-      + "Adresse (die beim Export zu client-01 usw. wird). Notizen werden nie exportiert. Ändern dürfen "
-      + "nur Admins.",
+      + "Gespeicherte Ereignisse enthalten nur die **Adresse** – den Namen setzt erst die Anzeige ein. So "
+      + "bleibt ein alter Name nach Umbenennen oder Löschen nirgends stehen, und im **Diagnosepaket** und "
+      + "in **Benachrichtigungen** wird die Adresse zu client-01 usw. Sonst ersetzt der Datenschutzfilter "
+      + "einen Namen durch `<name>`. Notizen werden nie exportiert. Ändern dürfen nur Admins.",
   },
   client_probe: {
     title: "Aktiv nachmessen",
@@ -134,7 +138,8 @@ export const HELP_CLIENTS = {
       + "Zeitserver und antworten; dann siehst du ihre Uhr samt Laufzeit, auch wenn sie ihre Sendezeit "
       + "verschleiern. Die meisten Geräte antworten **nicht** – das ist normal und kein Fehler. Nur für "
       + "Geräte mit privater Adresse, die diesen Server schon gefragt haben; je Gerät höchstens alle "
-      + "30 s, insgesamt 10 Messungen pro Minute.",
+      + "30 s, insgesamt 10 Messungen pro Minute. Nicht bei IPv6-Adressen mit **fe80::**: Die sind nur "
+      + "zusammen mit der Netzwerkschnittstelle eindeutig, und die merkt sich die passive Messung nicht.",
   },
   clients_overview: {
     title: "Netzüberblick",

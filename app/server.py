@@ -318,9 +318,10 @@ def client_alarms() -> None:
         if not threshold:
             STATE_WATCH.clients({}, 0)
             return
-        meta = clientinfo.all_meta()
-        STATE_WATCH.clients(clientmon.status()["clients"], threshold,
-                            label=lambda ip: clientinfo.label(ip, meta), fmt=clientinfo.fmt_offset)
+        # Titel nur mit der Adresse (egress pseudonymisiert sie): Ein eigener Name im gespeicherten
+        # Titel bliebe nach Umbenennen/Löschen 90 Tage stehen und ginge dann ungefiltert hinaus.
+        # Den Namen setzt erst die Anzeige ein (/api/events → display_title).
+        STATE_WATCH.clients(clientmon.status()["clients"], threshold, fmt=clientinfo.fmt_offset)
     except Exception as exc:  # ein Alarm darf die Messung nie aufhalten
         print(f"[web] Alarm für Client-Uhren nicht geprüft: {exc}", flush=True)
 
@@ -1201,8 +1202,9 @@ class Handler(BaseHTTPRequestHandler):
             since = env_like(query.get("since"), 0.0) or None
             until = env_like(query.get("until"), 0.0) or None
             level = query.get("level") if query.get("level") in events.LEVELS else None
-            self._send_json({"events": events.query(since=since, until=until, kinds=query.get("kinds") or None,
-                                                    level=level, limit=max(1, min(limit, 5000)))})
+            rows = events.query(since=since, until=until, kinds=query.get("kinds") or None,
+                                level=level, limit=max(1, min(limit, 5000)))
+            self._send_json({"events": clientinfo.with_display_titles(rows)})
         elif path == "/api/logs":
             level = query.get("level") if query.get("level") in {"warn", "crit"} else ""
             self._send_json(diagnostics.logs(int(env_like(query.get("lines"), 500)),

@@ -195,14 +195,16 @@ class StateWatcher:
                     del self._pps[dev]
 
     # --- Client-Uhren (Alarm-Schwelle aus den Einstellungen) -------------------
-    def clients(self, clients: Any, threshold_ms: Any, label: Callable[[str], str] = str,
-                fmt: Callable[[float], str] | None = None) -> None:
+    def clients(self, clients: Any, threshold_ms: Any, fmt: Callable[[float], str] | None = None) -> None:
         """Meldet Client-Uhren, die um mehr als threshold_ms abweichen.
 
         Hysterese wie bei den übrigen Zuständen: Ein Alarm entsteht erst, wenn ZWEI neue
         Messungen hintereinander über der Schwelle liegen; „wieder im Rahmen“ erst, wenn zwei
         Messungen unter der HÄLFTE liegen. So pendelt ein Gerät an der Grenze nicht. Gezählt
         wird nur, wenn das Gerät wirklich neu gemessen wurde (Zähler „count“ gestiegen).
+
+        Der Titel nennt nur die Adresse, nie den eigenen Namen: Gespeicherte Titel bleiben 90 Tage
+        stehen, der Datenschutzfilter kennt aber nur die aktuellen Namen (Umbenennen/Löschen).
         """
         try:
             threshold = float(threshold_ms or 0) / 1000.0
@@ -239,14 +241,14 @@ class StateWatcher:
                     state["streak"] = state["streak"] + 1 if over else 0
                     if state["streak"] >= CONFIRM:
                         state.update(alarm=True, streak=0)
-                        self._send("clients", "warn", f"Uhr von {label(ip)} weicht um {fmt(value)} ab",
+                        self._send("clients", "warn", f"Uhr von {ip} weicht um {fmt(value)} ab",
                                    {"address": ip, "offset": value, "threshold_ms": threshold * 1000})
                 else:
                     back = abs(value) < threshold / 2
                     state["streak"] = state["streak"] + 1 if back else 0
                     if state["streak"] >= CONFIRM:
                         state.update(alarm=False, streak=0)
-                        self._send("clients", "info", f"Uhr von {label(ip)} wieder im Rahmen ({fmt(value)})",
+                        self._send("clients", "info", f"Uhr von {ip} wieder im Rahmen ({fmt(value)})",
                                    {"address": ip, "offset": value, "threshold_ms": threshold * 1000})
             if len(self._clients) > 5000:
                 for ip in list(self._clients)[:len(self._clients) - 5000]:

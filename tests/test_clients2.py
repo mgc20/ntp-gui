@@ -83,7 +83,35 @@ class TableTest(unittest.TestCase):
         entry = table.snapshot()["192.168.1.5"]
         self.assertEqual(entry["interval"], 64)
         self.assertEqual(clientmon.typical_interval([]), None)
-        self.assertEqual(clientmon.typical_interval([2, 4]), 3)
+        self.assertEqual(clientmon.typical_interval([2, 4]), 4)
+        self.assertEqual(clientmon.typical_interval([5, 7]), 6)
+
+    def test_burst_alone_is_not_an_interval(self):
+        # ntpd mit iburst: 8 Anfragen im Abstand von 2 s, danach erst 64 s (Befund C2-3)
+        table = clientmon.ClientTable()
+        t = 1_700_000_000.0
+        for _ in range(8):
+            t += 2
+            table.update("192.168.1.6", {"xmit": 1, "version": 4, "poll": 6}, 0.001, t)
+        entry = table.snapshot()["192.168.1.6"]
+        self.assertIsNone(entry["interval"])
+        out = clientinfo.overview({"192.168.1.6": entry}, {}, t + 130)
+        self.assertEqual(out["chatty"], [])
+        self.assertEqual(out["silent"], [])   # Ersatz 2^6 = 64 s → still erst nach 192 s
+        # nach dem ersten echten Poll zählt der lange Abstand
+        table.update("192.168.1.6", {"xmit": 1, "version": 4, "poll": 6}, 0.001, t + 64)
+        self.assertEqual(table.snapshot()["192.168.1.6"]["interval"], 64)
+        # wer dauerhaft alle 2 s fragt, ist wirklich auffällig
+        for _ in range(13):
+            t += 2
+            table.update("192.168.1.7", {"xmit": 1, "version": 4, "poll": 6}, 0.001, t)
+        entry = table.snapshot()["192.168.1.7"]
+        self.assertEqual(entry["interval"], 2)
+        out = clientinfo.overview({"192.168.1.7": entry}, {}, t + 1)
+        self.assertEqual([c["address"] for c in out["chatty"]], ["192.168.1.7"])
+
+    def test_cron_multi_sample_then_hourly(self):
+        self.assertEqual(clientmon.typical_interval([2, 2, 2, 3600, 2, 2, 2]), 3600)
 
     def test_samples_are_spaced_and_keep_unmeasurable(self):
         table = clientmon.ClientTable()
@@ -166,6 +194,46 @@ class StorageTest(TempDataMixin, unittest.TestCase):
             self.assertEqual(clientmon.client("192.168.1.40")["version"], 3)
             self.assertIsNone(clientmon.client("192.168.1.99"))
 
+    def test_rotating_sources_are_bounded(self):
+        # CL2-SEC-2: wechselnde Absender erzeugen nicht je Paket eine Zeile
+        table = clientmon.ClientTable()
+        t = 1_700_000_000.0
+        for i in range(9000):
+            table.update(f"fd00::{i:x}", {"xmit": 1, "version": 4, "poll": 6}, 0.001, t + i * 0.001)
+        self.assertEqual(len(table.clients), 2000)
+        self.assertEqual(len(table.pending), clientmon.MAX_NEW_PER_FLUSH)
+        self.assertGreater(table.dropped, 0)
+        table.take_pending()
+        # Bekannte Clients (zweite Anfrage) bekommen ihren Punkt weiter, aber höchstens MAX_PENDING
+        for i in range(8999, 8999 - 2000, -1):
+            table.update(f"fd00::{i:x}", {"xmit": 1, "version": 4, "poll": 6}, 0.001, t + 500)
+        self.assertLessEqual(len(table.pending), clientmon.MAX_PENDING)
+        self.assertGreater(len(table.pending), clientmon.MAX_NEW_PER_FLUSH)
+
+    def test_prune_total_cap_and_orphans(self):
+        clientmon._migrate(store)
+        now = time.time()
+        with store.transaction() as conn:
+            conn.execute("INSERT INTO clientmon_clients(ip, data, updated) VALUES('192.168.1.2', '{}', ?)", (now,))
+            conn.executemany("INSERT INTO clientmon_samples(ip, t, offset, poll, version, interval) "
+                             "VALUES(?, ?, ?, ?, ?, ?)",
+                             [("192.168.1.2", now - i, 0.1, 6, 4, None) for i in range(30)]
+                             + [("fd00::99", now - 7200, 0.1, 6, 4, None), ("fd00::98", now - 10, 0.1, 6, 4, None)])
+        clientmon.prune_samples(store, now, keep=100, total=20)
+        left = dict(store.query("SELECT ip, COUNT(*) FROM clientmon_samples GROUP BY ip"))
+        self.assertNotIn("fd00::99", left)        # verwaist und älter als 1 h
+        self.assertEqual(sum(left.values()), 20)  # Gesamtgrenze, neueste bleiben
+        self.assertIn("fd00::98", left)
+
+    def test_stored_clients_bounded(self):
+        monitor = clientmon.Monitor(123)
+        with mock.patch.object(clientmon, "MAX_STORED_CLIENTS", 5):
+            now = time.time()
+            for i in range(8):
+                monitor.table.update(f"192.168.5.{i}", {"xmit": 1, "version": 4, "poll": 6}, 0.001, now)
+            monitor._persist()
+        self.assertEqual(store.query("SELECT COUNT(*) FROM clientmon_clients")[0][0], 5)
+
     def test_prune_retention_and_cap(self):
         clientmon._migrate(store)
         now = time.time()
@@ -200,6 +268,16 @@ class AddressTest(unittest.TestCase):
         for ip in ("8.8.8.8", "2001:4860:4860::8888", "224.0.0.1", "0.0.0.0"):
             self.assertFalse(clientinfo.is_lan(ip), ip)
 
+    def test_is_lan_rejects_tunnel_and_special_ranges(self):
+        # CL2-SEC-4: 6to4 (trägt 8.8.8.8), Teredo, NAT64 und IANA-Sonderbereiche sind kein LAN
+        for ip in ("2002:808:808::1", "2001::1", "64:ff9b::808:808", "64:ff9b:1::1",
+                   "192.0.0.170", "198.18.0.1", "192.0.2.1", "2001:db8::1"):
+            self.assertFalse(clientinfo.is_lan(ip), ip)
+        self.assertTrue(clientinfo.is_lan("::ffff:192.168.1.5"))
+        self.assertTrue(clientinfo.is_lan("169.254.1.1"))
+        self.assertTrue(clientinfo.is_link_local("fe80::1"))
+        self.assertFalse(clientinfo.is_link_local("169.254.1.1"))   # IPv4 braucht keinen Scope
+
 
 class MetaTest(TempDataMixin, unittest.TestCase):
     def test_set_get_delete(self):
@@ -223,9 +301,22 @@ class MetaTest(TempDataMixin, unittest.TestCase):
         self.assertEqual(clientinfo.set_meta("192.168.1.5", "  NAS\n  Keller ", "Zeile 1\nZeile 2")["name"],
                          "NAS Keller")
 
-    def test_short_names_are_not_used_in_events(self):
-        clientinfo.set_meta("192.168.1.7", "TV")
+    def test_invisible_and_bidi_characters_rejected(self):
+        # CL2-SEC-5: alle Cc/Cf-Zeichen (LRM, RLM, ALM, Nullbreite, BOM, C1) sowie Zl/Zp
+        for ch in ("\u200e", "\u200f", "\u061c", "\u200b", "\u200c", "\u200d", "\ufeff", "\u2066",
+                   "\u202e", "\u0085", "\u009b", "\u2028", "\u2029", "\u00ad"):
+            with self.assertRaises(clientinfo.MetaError, msg=repr(ch)):
+                clientinfo.clean_name(f"ab{ch}cd") if ch not in ("\u0085", "\u2028", "\u2029") \
+                    else clientinfo.clean_note(f"ab{ch}cd")
+            with self.assertRaises(clientinfo.MetaError, msg=repr(ch)):
+                clientinfo.clean_note(f"ab{ch}cd")
+        self.assertEqual(clientinfo.clean_note("Zeile 1\nZeile 2"), "Zeile 1\nZeile 2")
+        self.assertEqual(clientinfo.clean_name("Küche – Ø 3 € ✓"), "Küche – Ø 3 € ✓")
+
+    def test_label_falls_back_to_address(self):
         self.assertEqual(clientinfo.label("192.168.1.7"), "192.168.1.7")
+        clientinfo.set_meta("192.168.1.7", "TV")
+        self.assertEqual(clientinfo.label("192.168.1.7"), "TV")
 
     def test_names_are_pseudonymised_on_export(self):
         clientinfo.set_meta("192.168.1.5", "Kinderzimmer Laptop")
@@ -235,6 +326,36 @@ class MetaTest(TempDataMixin, unittest.TestCase):
         out = sanitizer.text("Uhr von Kinderzimmer Laptop weicht um +2,00 s ab (192.168.1.5)")
         self.assertNotIn("Kinderzimmer", out)
         self.assertNotIn("192.168.1.5", out)
+
+    def test_renamed_name_never_leaves_via_events(self):
+        # C2-2/CL2-SEC-1: Titel enthält nur die Adresse; alte Titel (Entwicklungsstand) werden
+        # beim Export aus den Daten neu gebaut; die Anzeige setzt den aktuellen Namen ein.
+        import events
+        watch = statewatch.StateWatcher(events.emit)
+        clientinfo.set_meta("192.168.1.5", "Wohnzimmer-PC")
+        for count in (1, 2):
+            watch.clients({"192.168.1.5": {"measurable": True, "offset": 3.0, "count": count}}, 1000,
+                          fmt=clientinfo.fmt_offset)
+        events.emit("clients", "warn", "Uhr von Kinderzimmer Lisa weicht um +2,00 s ab",
+                    {"address": "192.168.1.6", "offset": 2.0, "threshold_ms": 1000})
+        rows = [r for r in events.query(limit=50) if r.get("kind") == "clients"]
+        self.assertEqual(len(rows), 2)
+        self.assertTrue(any(r["title"] == "Uhr von 192.168.1.5 weicht um +3,00 s ab" for r in rows))
+        shown = clientinfo.with_display_titles(rows)
+        self.assertIn("Uhr von Wohnzimmer-PC weicht um +3,00 s ab", [r.get("display_title") for r in shown])
+        clientinfo.set_meta("192.168.1.5", "", "")
+        exported = json.dumps(diagnostics._collect_events({}, {}), ensure_ascii=False)
+        self.assertNotIn("Wohnzimmer", exported)
+        self.assertNotIn("Kinderzimmer", exported)
+        self.assertIn("Uhr von 192.168.1.6 weicht um +2,00 s ab", exported)
+        shown = clientinfo.with_display_titles(rows)
+        self.assertNotIn("Wohnzimmer", json.dumps([r.get("display_title") for r in shown], ensure_ascii=False))
+
+    def test_client_event_title_without_address(self):
+        row = {"kind": "clients", "level": "info", "title": "Uhr von Geheim wieder im Rahmen", "data": {}}
+        self.assertEqual(clientinfo.without_client_name(row)["title"], "Uhr eines Clients wieder im Rahmen")
+        other = {"kind": "gps", "title": "GPS-Fix verloren"}
+        self.assertIs(clientinfo.without_client_name(other), other)
 
     def test_notify_cache_invalidated(self):
         import notify
@@ -249,15 +370,52 @@ class RdnsTest(unittest.TestCase):
         clientinfo._RDNS.clear()
 
     def test_allowed(self):
-        self.assertIsNone(clientinfo.rdns_allowed("192.168.1.5", {"clients_rdns": True, "dns_mode": "system"}))
-        self.assertIn("Einstellungen", clientinfo.rdns_allowed("192.168.1.5", {"clients_rdns": False}))
-        self.assertIn("öffentliche", clientinfo.rdns_allowed("8.8.8.8", {}))
-        self.assertIn("TLS", clientinfo.rdns_allowed("192.168.1.5", {"dns_mode": "doh",
-                                                                     "dns_doh": ["https://dns.example/dns-query"]}))
-        self.assertIn("öffentlicher", clientinfo.rdns_allowed("192.168.1.5", {"dns_mode": "servers",
-                                                                              "dns_servers": ["1.1.1.1"]}))
-        self.assertIsNone(clientinfo.rdns_allowed("192.168.1.5", {"dns_mode": "servers",
-                                                                  "dns_servers": ["192.168.1.1"]}))
+        lan = lambda: ["192.168.1.1"]  # noqa: E731
+        on = {"clients_rdns": True}
+        self.assertIsNone(clientinfo.rdns_allowed("192.168.1.5", {**on, "dns_mode": "system"}, lan))
+        self.assertIn("Einstellungen", clientinfo.rdns_allowed("192.168.1.5", {"clients_rdns": False}, lan))
+        self.assertIn("öffentliche", clientinfo.rdns_allowed("8.8.8.8", on, lan))
+        self.assertIn("TLS", clientinfo.rdns_allowed("192.168.1.5", {**on, "dns_mode": "doh",
+                                                                     "dns_doh": ["https://dns.example/dns-query"]}, lan))
+        self.assertIn("öffentlicher", clientinfo.rdns_allowed("192.168.1.5", {**on, "dns_mode": "servers",
+                                                                              "dns_servers": ["1.1.1.1"]}, lan))
+        self.assertIsNone(clientinfo.rdns_allowed("192.168.1.5", {**on, "dns_mode": "servers",
+                                                                  "dns_servers": ["192.168.1.1"]}, lan))
+
+    def test_off_by_default(self):
+        # CL2-SEC-3: neuer Weg nach außen → Standard aus
+        self.assertFalse(next(f for f in settings.SCHEMA if f["key"] == "clients_rdns")["default"])
+        self.assertIn("Einstellungen", clientinfo.rdns_allowed("192.168.1.5", {}, lambda: ["192.168.1.1"]))
+
+    def test_public_system_resolver_blocks(self):
+        on = {"clients_rdns": True, "dns_mode": "system"}
+        reason = clientinfo.rdns_allowed("192.168.1.5", on, lambda: ["8.8.8.8", "8.8.4.4"])
+        self.assertIn("8.8.8.8", reason)
+        self.assertIn("System-DNS", clientinfo.rdns_allowed("192.168.1.5", on, lambda: ["192.168.1.1", "1.1.1.1"]))
+        self.assertIn("unbekannt", clientinfo.rdns_allowed("192.168.1.5", on, lambda: []))
+        self.assertIn("unbekannt", clientinfo.rdns_allowed("192.168.1.5", on, lambda: None))
+        self.assertIsNone(clientinfo.rdns_allowed("192.168.1.5", on, lambda: ["127.0.0.11"]))   # lokaler Stub
+        # Eigene private Server mit Rückfall auf einen öffentlichen System-DNS: auch gesperrt
+        servers = {"clients_rdns": True, "dns_mode": "servers", "dns_servers": ["192.168.1.1"]}
+        self.assertIsNotNone(clientinfo.rdns_allowed("192.168.1.5", servers, lambda: ["8.8.8.8"]))
+        self.assertIsNone(clientinfo.rdns_allowed("192.168.1.5", {**servers, "dns_fallback": False},
+                                                  lambda: ["8.8.8.8"]))
+        # 6to4-Adresse: kein LAN, keine Frage
+        self.assertIsNotNone(clientinfo.rdns_allowed("2002:808:808::1", on, lambda: ["192.168.1.1"]))
+
+    def test_system_resolvers_read_resolv_conf(self):
+        tmp = tempfile.mkdtemp()
+        try:
+            path = os.path.join(tmp, "resolv.conf")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write("# Docker\nnameserver 8.8.8.8\nnameserver 8.8.4.4\nsearch lan\n")
+            import dnsfwd
+            with mock.patch.object(dnsfwd, "RESOLV_CONF", path), \
+                    mock.patch.object(dnsfwd.system_servers, "__defaults__", (path, os.path.join(tmp, "b"))):
+                self.assertEqual(clientinfo._system_resolvers(), ["8.8.8.8", "8.8.4.4"])
+                self.assertIn("8.8.8.8", clientinfo.rdns_allowed("192.168.1.5", {"clients_rdns": True}))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
 
     def test_lookup_cached_and_validated(self):
         calls = []
@@ -413,6 +571,18 @@ class ProbeTest(unittest.TestCase):
         self.assertFalse(result["answered"])
         self.assertIn("normal", result["text"])
 
+    def test_link_local_and_tunnel_not_probed(self):
+        # C2-4: fe80:: ohne Scope-ID nicht erreichbar → klar ablehnen statt „antwortet nicht“
+        calls = []
+        with self.assertRaises(clientinfo.MetaError) as ctx:
+            clientinfo.probe("fe80::1", lambda ip: True, lambda ip: calls.append(ip))
+        self.assertIn("Link-lokal", str(ctx.exception))
+        # CL2-SEC-4: 6to4/Teredo gehen über das Internet
+        for ip in ("2002:808:808::1", "2001::1"):
+            with self.assertRaises(clientinfo.MetaError):
+                clientinfo.probe(ip, lambda ip: True, lambda ip: calls.append(ip))
+        self.assertEqual(calls, [])
+
     def test_rate_limits(self):
         calls = []
         query = lambda ip: calls.append(ip) or {"offset": 0.01, "rtt": 0.001, "stratum": 2}  # noqa: E731
@@ -499,7 +669,7 @@ class AlarmTest(unittest.TestCase):
 
     def feed(self, offset, count, threshold=1000, measurable=True):
         self.watch.clients({"192.168.1.5": {"measurable": measurable, "offset": offset, "count": count}},
-                           threshold, label=lambda ip: "Kamera Hof", fmt=clientinfo.fmt_offset)
+                           threshold, fmt=clientinfo.fmt_offset)
 
     def test_hysteresis(self):
         self.feed(2.0, 1)
@@ -510,7 +680,7 @@ class AlarmTest(unittest.TestCase):
         self.assertEqual(len(self.events), 1)
         kind, level, title, data = self.events[0]
         self.assertEqual((kind, level), ("clients", "warn"))
-        self.assertEqual(title, "Uhr von Kamera Hof weicht um +2,10 s ab")
+        self.assertEqual(title, "Uhr von 192.168.1.5 weicht um +2,10 s ab")
         self.assertEqual(data["address"], "192.168.1.5")
         self.feed(0.7, 3)      # unter Schwelle, aber über der Hälfte: noch kein „wieder im Rahmen“
         self.feed(0.7, 4)
