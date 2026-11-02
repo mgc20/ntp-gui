@@ -39,7 +39,11 @@ PTP4L_CONF = os.environ.get("PTP4L_CONF", "/etc/linuxptp/ptp4l.conf")
 
 DEADLINE = 2.5               # Sekunden für alle Sammler zusammen
 SECTION_CAP = 512 * 1024     # Bytes je Abschnitt (nach dem Filtern)
-RECORDING_CAP = 4 * 1024 * 1024
+# Eine Aufzeichnung von 1 h ist bei typischem Betrieb 6–10 MB groß. 4 MB schnitten sie auf die
+# letzte halbe Stunde (Rückmeldung mit 1.3.2). Gefiltert wird seit 1.3.2 in einem eigenen Prozess
+# mit niedriger Priorität – auf dem Pi dauert ein großes Paket länger, das Dashboard bleibt aber
+# bedienbar.
+RECORDING_CAP = 12 * 1024 * 1024
 LOG_LINES = 2000
 LOG_READ_BYTES = 1024 * 1024
 EVENT_DAYS = 7

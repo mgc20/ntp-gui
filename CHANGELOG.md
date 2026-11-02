@@ -4,6 +4,13 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), die Versionen folgen
 [Semantic Versioning](https://semver.org/lang/de/).
 
+## [Unveröffentlicht]
+
+### Geändert
+- **Diagnosepaket nimmt bis zu 12 MB Aufzeichnung mit** (bisher 4 MB). Eine einstündige
+  Aufzeichnung wurde sonst auf die letzte halbe Stunde gekürzt. Auf dem Raspberry Pi dauert das
+  Paket damit länger; das Dashboard bleibt währenddessen bedienbar.
+
 ## [1.4.0] – 2026-11-02
 
 ### Hinzugefügt

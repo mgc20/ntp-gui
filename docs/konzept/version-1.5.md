@@ -426,10 +426,10 @@ in der Deploy-Pipeline: Caddyfile ohne `log`).
 
 | # | Frage | Empfehlung |
 |---|---|---|
-| F1 | **Schnitt 1.5:** schlankes 1.5.0 (≈ 8–10 Wochen) + 1.5.x, oder alles in einem Release (≈ 5–7 Monate)? | schlank, wie E3 |
+| F1 | **Schnitt 1.5:** schlankes 1.5.0 (≈ 8–10 Wochen) + 1.5.x, oder alles in einem Release (≈ 5–7 Monate)? | schlank, wie E3 **→ entschieden: E15** |
 | F2 | **`python3-gps` aufnehmen** (≈ 0,6 MB, für `ubxtool`) oder eigener UBX-Poll mit `struct`? | `python3-gps`: Debian-Paket, bewährt, für 1.6 (schreiben) ohnehin nötig |
 | F3 | **GPS-Sperre:** Standard „nur melden“ und automatische Sperre opt-in? | ja – erst Praxisdaten, dann ggf. Standard ändern |
-| F4 | **VK-162 & Co.:** Soll ntp-gui GPS ohne PPS bei guten NTS-Quellen standardmäßig nur als Plausibilitätsquelle führen (`noselect`)? | als **Vorschlag** im Hardware-Check, nicht automatisch – manche Nutzer wollen bewusst „Zeit ohne Internet“ |
+| F4 | **VK-162 & Co.:** Soll ntp-gui GPS ohne PPS bei guten NTS-Quellen standardmäßig nur als Plausibilitätsquelle führen (`noselect`)? | als **Vorschlag** im Hardware-Check, nicht automatisch – manche Nutzer wollen bewusst „Zeit ohne Internet“ **→ entschieden: E16 – Rückfallebene statt „nur beobachten“** |
 | F5 | **Client-Daten in Benachrichtigungen:** IP/MAC erlauben? | nur eigener Gerätename; Schalter „LAN-Adressen in Nachrichten“, Standard aus |
 | F6 | **Implementierung erkennen** (Heuristik „vermutlich Windows/chrony/…“) anzeigen? | ja, lokal, immer „vermutlich“, nie exportieren |
 | F7 | **i18n:** Gerüst schon in 1.5.0 (jeder neue Text als Schlüssel) und Weblate gehostet? | ja; Englisch darf hinterherhinken, Deutsch bleibt Referenz |
@@ -437,8 +437,8 @@ in der Deploy-Pipeline: Caddyfile ohne `log`).
 | F9 | **YAML:** durch TOML-Import (`tomllib`, stdlib) ersetzen – oder Thema streichen? | TOML, klein; streichen ist auch vertretbar (Compose-Variablen reichen vielen) |
 | F10 | **MQTT-Schwelle:** Ab wann wird gebaut (E4)? | ab 5 unabhängigen Nachfragen (Issues/👍) oder einem fertigen PR aus der Community |
 | F11 | **Verbund über Standorte** (Heim + VPS): eigenes Relay oder Doku für WireGuard/Tailscale? | Doku, kein Relay |
-| F12 | **Community Schritt B:** Domainname, wie viele VPS/Standorte, bei welchen Anbietern? | mit **einem** VPS starten, zweiter Standort (anderes Land/Anbieter) erst nach 4 Wochen Betrieb |
+| F12 | **Community Schritt B:** Domainname, wie viele VPS/Standorte, bei welchen Anbietern? | mit **einem** VPS starten, zweiter Standort (anderes Land/Anbieter) erst nach 4 Wochen Betrieb **→ entschieden: E17 – ein VPS** |
 | F13 | **Impressum:** Privatanschrift, Anschriftsdienst oder Verein? | Anschriftsdienst für den Start; Verein erst, wenn Mitstreiter da sind |
 | F14 | **Server-Test zuerst auf der Website oder zuerst als Knopf in ntp-gui?** | zuerst Website (kein ntp-gui-Release nötig, sofort für alle nützlich), Knopf in 1.6 |
 | F15 | **Pool-Server (Schritt C):** VPS dauerhaft in den NTP Pool eintragen? Das ist ein Dauerversprechen. | ja, mit ntp-gui selbst, nach 4 Wochen stabilem Probebetrieb |
-| F16 | **Abstimmung mit ntp-tester.eu:** Kontakt aufnehmen, bevor eigener Test gebaut wird? | ja – ergänzen statt doppeln spart Wochen |
+| F16 | **Abstimmung mit ntp-tester.eu:** Kontakt aufnehmen, bevor eigener Test gebaut wird? | ja – ergänzen statt doppeln spart Wochen **→ entschieden: E18 – eigene Lösung** |
