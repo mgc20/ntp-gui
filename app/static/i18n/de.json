@@ -1,0 +1,135 @@
+{
+  "app": {
+    "skip_link": "Zum Inhalt springen",
+    "connecting": "verbinde …",
+    "connecting_server": "Verbinde mit dem Server …",
+    "no_connection": "keine Verbindung",
+    "render_error": "Darstellungsfehler: {message}",
+    "footer": "ntp-gui {version} · aktualisiert {time} · alle {seconds} s",
+    "clock_link_title": "Vollbild-Uhr (Wandmonitor, Tablet)",
+    "clock_link_label": "Vollbild-Uhr öffnen",
+    "theme_title": "Hell / Dunkel",
+    "theme_label": "Hell oder dunkel umschalten",
+    "language_title": "Sprache: Deutsch / English",
+    "language_label": "Sprache wechseln (Language)"
+  },
+  "nav": {
+    "label": "Bereiche",
+    "overview": "Übersicht",
+    "sources": "Zeitquellen",
+    "gps": "GPS",
+    "ptp": "PTP",
+    "clockquality": "Uhrqualität",
+    "hardware": "Hardware",
+    "clients": "Clients",
+    "diagnose": "Diagnose",
+    "notify": "Benachrichtigungen",
+    "settings": "Einstellungen",
+    "help": "Hilfe"
+  },
+  "overview": {
+    "band_label": "Gesamtzustand",
+    "verdict": {
+      "check_count_one": "{count} Punkt unten prüfen",
+      "check_count_other": "{count} Punkte unten prüfen",
+      "no_issues": "keine offenen Hinweise",
+      "stratum": "Stratum {n}",
+      "warn_count_one": "{count} Hinweis",
+      "warn_count_other": "{count} Hinweise",
+      "down_title": "Zeitdienst antwortet nicht",
+      "down_text": "chronyd läuft nicht – Geräte im LAN bekommen gerade keine Zeit.",
+      "down_pill": "chronyd offline",
+      "down_pill_short": "offline",
+      "crit_title_one": "{count} Störung",
+      "crit_title_other": "{count} Störungen",
+      "crit_pill": "Störung",
+      "island_title": "Inselbetrieb",
+      "island_text": "Keine Zeitquelle erreichbar – die Uhr läuft frei weiter",
+      "island_pill_short": "Insel",
+      "syncing_title": "Synchronisiert …",
+      "syncing_text": "chrony sucht noch eine verlässliche Quelle",
+      "syncing_pill_short": "sync …",
+      "warn_title": "Synchron – mit Hinweisen",
+      "synced": "Synchron",
+      "good_title": "Alles in Ordnung",
+      "good_text": "Die Uhr ist synchron, alle Teile laufen."
+    },
+    "facts": {
+      "via": "über {source}",
+      "local_clock": "lokale Uhr",
+      "sources_used": "{used} von {total} Quellen genutzt",
+      "clients_one": "{n} Client",
+      "clients_other": "{n} Clients"
+    },
+    "kpi": {
+      "offset": "Abweichung",
+      "max_error": "Max. Fehler",
+      "max_error_note": "Fehlerschranke zu UTC",
+      "frequency": "Frequenz",
+      "requests": "Anfragen",
+      "requests_note_one": "{n} Client im LAN",
+      "requests_note_other": "{n} Clients im LAN",
+      "tone_warn": "erhöht",
+      "tone_crit": "kritisch"
+    },
+    "area": {
+      "clock": "Systemuhr",
+      "sources": "Zeitquellen",
+      "gps": "GPS",
+      "ptp": "PTP",
+      "clients": "Clients",
+      "services": "Dienste"
+    },
+    "hints": {
+      "serious_label": "Warnungen und Störungen",
+      "info_count_one": "{count} Information",
+      "info_count_other": "{count} Informationen",
+      "show": "anzeigen",
+      "hide": "ausblenden",
+      "details": "Details",
+      "less": "weniger",
+      "details_show": "Details anzeigen: {title}",
+      "details_hide": "Details ausblenden: {title}",
+      "label": "Hinweise"
+    }
+  },
+  "settings": {
+    "section": {
+      "ntp": {
+        "title": "Zeitquellen (NTP)",
+        "description": "Woher dieser Server selbst seine Zeit bezieht."
+      },
+      "lan": {
+        "title": "Zeitserver für das LAN",
+        "description": "Wer diesen Server fragen darf und wie er antwortet."
+      },
+      "nts": {
+        "title": "NTS (Network Time Security)",
+        "description": "Kryptografisch abgesicherte Zeit – als Client und optional als Server."
+      },
+      "dns": {
+        "title": "DNS für ntp-gui",
+        "description": "Über welche DNS-Server ntp-gui selbst die Namen seiner Zeitquellen auflöst – gegen Schleifen, wenn der DNS im LAN Zeitserver-Namen auf ntp-gui umschreibt."
+      },
+      "gps": {
+        "title": "GPS / GNSS",
+        "description": "Ein GPS-Empfänger als eigene Referenzuhr (Stratum 0)."
+      },
+      "ptp": {
+        "title": "PTP (IEEE 1588)",
+        "description": "Präzisionszeit über das Netzwerk – braucht passende Hardware."
+      },
+      "web": {
+        "title": "Dashboard",
+        "description": "Darstellung, Verlauf und Zugriffsschutz."
+      }
+    },
+    "language": {
+      "label": "Sprache des Dashboards",
+      "note": "Gilt nur in diesem Browser; ohne Wahl gilt die Sprache des Browsers. Übersetzt sind bisher Navigation, Kopfzeile, das Statusband der Übersicht und die Abschnitte hier – der Rest, die ⓘ-Erklärungen und Meldungen vom Server sind vorerst deutsch."
+    }
+  },
+  "help": {
+    "german_only": "Die Erklärungen auf dieser Seite gibt es vorerst nur auf Deutsch. Übersetzungen sind willkommen – siehe CONTRIBUTING.md."
+  }
+}

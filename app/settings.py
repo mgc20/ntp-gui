@@ -418,6 +418,29 @@ def _as_network_list(value: Any) -> list[str]:
     return networks
 
 
+MAX_TRUSTED_PROXIES = 16
+
+
+def _as_proxy_list(value: Any) -> list[str]:
+    """Vertrauenswürdige Reverse Proxys: Adressen oder kleine Netze – nie „alle“."""
+    networks = []
+    for item in _list_items(value):
+        if item.lower() == "all":
+            raise ValidationError("„all“ geht hier nicht – dann könnte jeder seine Adresse fälschen. "
+                                  "Nur die Adresse des Proxys eintragen, z. B. 127.0.0.1/32")
+        try:
+            net = ipaddress.ip_network(item, strict=False)
+        except ValueError:
+            raise ValidationError(f"„{item}“ ist keine Adresse und kein Netz, z. B. 127.0.0.1/32") from None
+        if net.prefixlen == 0:
+            raise ValidationError(f"„{item}“ umfasst alle Adressen – nur die Adresse des Proxys eintragen")
+        if str(net) not in networks:
+            networks.append(str(net))
+    if len(networks) > MAX_TRUSTED_PROXIES:
+        raise ValidationError(f"höchstens {MAX_TRUSTED_PROXIES} Einträge")
+    return networks
+
+
 def _check_options(text: str, allowed: dict[str, int], what: str) -> str:
     tokens = str(text or "").split()
     index = 0
@@ -1070,6 +1093,15 @@ SCHEMA: list[dict] = [
                 "und die Art der Quelle (GPS, NTP …), keine Einstellungen, Namen oder Adressen. "
                 "Aus = die Uhr ist wie das Dashboard geschützt. Ohne Anmeldung gilt der Schutz vor "
                 "DNS-Rebinding: nur IP-Adressen, lokale Namen und WEB_ALLOWED_HOSTS. Wirkt ohne Neustart."),
+    _field("trusted_proxies", "web", "Vertrauenswürdige Proxys", "networks", [], _as_proxy_list,
+           env="TRUSTED_PROXIES", restart=RESTART_NONE, advanced=True, placeholder="leer = niemandem trauen",
+           help="Adressen deiner Reverse Proxys (Caddy, Nginx Proxy Manager, Zoraxy, Traefik), z. B. "
+                "127.0.0.1/32 für Caddy auf demselben Host. Nur von diesen Adressen glaubt ntp-gui die "
+                "Köpfe X-Forwarded-For und X-Forwarded-Proto: Dann nennt das Zugriffsprotokoll die echte "
+                "Adresse des Browsers statt des Proxys, und der HTTPS-Hinweis erkennt, ob der Browser "
+                "verschlüsselt verbunden ist. Leer (Standard) = niemandem trauen – sonst könnte jeder "
+                "Browser eine falsche Adresse vorgeben. Über Anmeldung und Zugriff entscheiden die Köpfe "
+                "nie. Wirkt ohne Neustart."),
     _field("update_check", "web", "Update-Hinweis (fragt GitHub)", "bool", False, _as_bool,
            env="UPDATE_CHECK", restart=RESTART_NONE,
            help="Fragt einmal am Tag zu einer zufälligen Uhrzeit bei GitHub nach der neuesten "

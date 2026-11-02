@@ -16,6 +16,7 @@
 # Ab 1.4: DNS für ntp-gui (Weiterleiter auf 127.0.0.1, resolv.conf, Absturz, Zurückschalten).
 # Ab 1.5: Schleifen-Erkennung bei DNS-Umschreibung ohne Ausnahme (Ereignis, Kette, Abhilfe);
 # GPS-Sperre und Holdover-Test per chronyc selectopts (setzen, Neustart von chronyd, zurückstellen).
+# HTTPS per Caddy-Vorlage: gültiges Compose, Dashboard nur noch über HTTPS, X-Forwarded-For vom Proxy.
 set -uo pipefail
 
 IMAGE="${1:-ntp-gui:test}"
@@ -30,7 +31,7 @@ cleanup() {
   docker rm -f "${PREFIX}-a" "${PREFIX}-b" "${PREFIX}-c" "${PREFIX}-d" "${PREFIX}-e" "${PREFIX}-f" \
     "${PREFIX}-g" "${PREFIX}-h" "${PREFIX}-i" "${PREFIX}-j" >/dev/null 2>&1
   docker rm -f "${PREFIX}-k" "${PREFIX}-l" "${PREFIX}-m" "${PREFIX}-n" "${PREFIX}-o" >/dev/null 2>&1
-  docker rm -f "${PREFIX}-p" "${PREFIX}-q" "${PREFIX}-r" >/dev/null 2>&1
+  docker rm -f "${PREFIX}-p" "${PREFIX}-q" "${PREFIX}-r" "${PREFIX}-s" "${PREFIX}-t" >/dev/null 2>&1
   docker network rm "${PREFIX}-net" "${PREFIX}-net2" >/dev/null 2>&1
   docker volume rm "${PREFIX}-data" "${PREFIX}-hist" >/dev/null 2>&1
   rm -rf "$CFG_DIR" "$NTS_DIR" "$DIAG_DIR"
@@ -844,6 +845,74 @@ check "Nach dem Abbruch: GPS auswählbar" "[[]]" "$(effopts GPS)"
 contains "Ergebnis-Satz gespeichert" "$HOJSON" "chronyd wurde neu gestartet – Test nach"
 docker rm -f "${PREFIX}-p" "${PREFIX}-q" "${PREFIX}-r" >/dev/null 2>&1
 docker network rm "$HONET" >/dev/null 2>&1
+
+echo
+echo "12g) HTTPS per Caddy-Vorlage: Dashboard nur über HTTPS (1.5)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TPL_DIR="$(mktemp -d)"
+# Die Kommentar-Regel der Datei: „#  “ hinter der Einrückung löschen = alles einkommentiert.
+sed -E 's/^( +)#  /\1/' "$REPO_ROOT/docker-compose.all-in-one.yml" > "$TPL_DIR/docker-compose.yml"
+if docker compose version >/dev/null 2>&1; then
+  if docker compose -f "$REPO_ROOT/docker-compose.all-in-one.yml" config -q 2>/dev/null; then
+    ok "Vorlage wie ausgeliefert ist gültiges Compose"
+  else bad "Vorlage wie ausgeliefert ist kein gültiges Compose"; fi
+  if TPL_CFG=$(docker compose -f "$TPL_DIR/docker-compose.yml" config 2>&1); then
+    ok "Vorlage mit allen Optionen (inkl. Caddy) ist gültiges Compose"
+    contains "Caddy-Dienst in der Vorlage" "$TPL_CFG" "--internal-certs"
+    contains "TRUSTED_PROXIES in der Vorlage" "$TPL_CFG" "TRUSTED_PROXIES: 127.0.0.1/32,::1/128"
+  else bad "Vorlage mit allen Optionen ist kein gültiges Compose: $TPL_CFG"; fi
+else
+  echo "  – docker compose fehlt, Compose-Prüfung übersprungen"
+fi
+CADDY_IMAGE="${CADDY_IMAGE:-$(sed -nE 's/^ *#  +image: (caddy:[0-9.]+)$/\1/p' "$REPO_ROOT/docker-compose.all-in-one.yml" | head -1)}"
+if ! docker image inspect "$CADDY_IMAGE" >/dev/null 2>&1; then
+  docker pull -q "$CADDY_IMAGE" >/dev/null 2>&1 \
+    || { docker pull -q "mirror.gcr.io/library/$CADDY_IMAGE" >/dev/null 2>&1 \
+         && docker tag "mirror.gcr.io/library/$CADDY_IMAGE" "$CADDY_IMAGE"; }
+fi
+if docker image inspect "$CADDY_IMAGE" >/dev/null 2>&1; then
+  # Wie die Vorlage: Caddy im selben Netz-Namensraum wie ntp-gui (dort: Host-Netzwerk), ntp-gui nur an 127.0.0.1.
+  docker run -d --name "${PREFIX}-s" -p 18095:443 -p 18096:8080 \
+    -e WEB_BIND=127.0.0.1 -e TRUSTED_PROXIES="127.0.0.1/32,::1/128" -e WEB_ACCESS_LOG=true \
+    -e WEB_USER=admin -e WEB_PASSWORD=geheim123 \
+    -e NTP_PORT=10140 -e NTP_POOLS="" -e NTP_SERVERS="" "$IMAGE" >/dev/null
+  docker run -d --name "${PREFIX}-t" --network "container:${PREFIX}-s" "$CADDY_IMAGE" \
+    caddy reverse-proxy --from https://zeitserver.lan --to 127.0.0.1:8080 --internal-certs >/dev/null
+  # --noproxy: ein gesetztes HTTPS_PROXY schickte zeitserver.lan sonst über den Proxy.
+  RESOLVE=(--noproxy '*' --resolve zeitserver.lan:18095:127.0.0.1)
+  HTTPS_UP=0
+  for ((i = 0; i < 90; i++)); do
+    [[ "$(http -k "${RESOLVE[@]}" https://zeitserver.lan:18095/healthz)" == "200" ]] && { HTTPS_UP=1; break; }
+    sleep 1
+  done
+  if [[ "$HTTPS_UP" == 1 ]]; then ok "Dashboard über HTTPS (Caddy) erreichbar"; else bad "Dashboard über HTTPS nicht erreichbar"; fi
+  docker cp "${PREFIX}-t:/data/caddy/pki/authorities/local/root.crt" "$TPL_DIR/root.crt" >/dev/null 2>&1
+  check "Zertifikat prüft gegen Caddys Root-Zertifikat" 200 \
+    "$(http --cacert "$TPL_DIR/root.crt" "${RESOLVE[@]}" https://zeitserver.lan:18095/healthz)"
+  check "Direkt per HTTP nicht erreichbar (WEB_BIND=127.0.0.1)" 000 "$(http http://127.0.0.1:18096/healthz)"
+  check "Ohne Passwort auch über HTTPS 401" 401 "$(http --cacert "$TPL_DIR/root.crt" "${RESOLVE[@]}" https://zeitserver.lan:18095/api/v1)"
+  check "Mit Passwort über HTTPS 200" 200 \
+    "$(http --cacert "$TPL_DIR/root.crt" "${RESOLVE[@]}" -u admin:geheim123 -H 'X-Forwarded-For: 6.6.6.6' https://zeitserver.lan:18095/api/v1)"
+  # Speichern über den Proxy: Origin passt zum (unveränderten) Host – sonst lehnte der CSRF-Schutz ab.
+  check "Speichern über den Proxy klappt (Host bleibt erhalten)" 200 \
+    "$(http --cacert "$TPL_DIR/root.crt" "${RESOLVE[@]}" -u admin:geheim123 -X POST -H 'Content-Type: application/json' \
+        -H 'X-NTP-GUI: 1' -H 'Origin: https://zeitserver.lan:18095' -d '{"changes":{"web_title":"HTTPS-Test"}}' \
+        https://zeitserver.lan:18095/api/settings)"
+  STATUS_JSON=$(curl -s --max-time 10 --cacert "$TPL_DIR/root.crt" "${RESOLVE[@]}" -u admin:geheim123 \
+    https://zeitserver.lan:18095/api/status)
+  contains "Status über HTTPS lesbar" "$STATUS_JSON" '"insights"'
+  if grep -q '"web_plain_http"\|"web_proxy_untrusted"' <<<"$STATUS_JSON"; then
+    bad "HTTPS über eingetragenen Proxy löst trotzdem einen HTTPS-Hinweis aus"
+  else ok "Kein HTTPS-Hinweis bei HTTPS über eingetragenen Proxy"; fi
+  ACCESS=$(docker logs "${PREFIX}-s" 2>&1 | grep '"GET /api/v1 HTTP' || true)
+  if [[ -n "$ACCESS" ]] && ! grep -q '^127\.0\.0\.1 \|^6\.6\.6\.6 ' <<<"$ACCESS"; then
+    ok "Zugriffsprotokoll nennt den Browser, nicht den Proxy und keine gefälschte Adresse"
+  else bad "Zugriffsprotokoll: $(head -2 <<<"$ACCESS")"; fi
+  docker rm -f "${PREFIX}-s" "${PREFIX}-t" >/dev/null 2>&1
+else
+  echo "  – Caddy-Image ($CADDY_IMAGE) nicht verfügbar, HTTPS-Start übersprungen"
+fi
+rm -rf "$TPL_DIR"
 
 echo
 echo "13) Sauberes Stoppen"

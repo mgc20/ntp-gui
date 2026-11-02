@@ -1,0 +1,135 @@
+{
+  "app": {
+    "skip_link": "Skip to content",
+    "connecting": "connecting …",
+    "connecting_server": "Connecting to the server …",
+    "no_connection": "no connection",
+    "render_error": "Display error: {message}",
+    "footer": "ntp-gui {version} · updated {time} · every {seconds} s",
+    "clock_link_title": "Full-screen clock (wall monitor, tablet)",
+    "clock_link_label": "Open full-screen clock",
+    "theme_title": "Light / dark",
+    "theme_label": "Switch between light and dark",
+    "language_title": "Language: Deutsch / English",
+    "language_label": "Change language (Sprache)"
+  },
+  "nav": {
+    "label": "Sections",
+    "overview": "Overview",
+    "sources": "Time sources",
+    "gps": "GPS",
+    "ptp": "PTP",
+    "clockquality": "Clock quality",
+    "hardware": "Hardware",
+    "clients": "Clients",
+    "diagnose": "Diagnostics",
+    "notify": "Notifications",
+    "settings": "Settings",
+    "help": "Help"
+  },
+  "overview": {
+    "band_label": "Overall status",
+    "verdict": {
+      "check_count_one": "check {count} item below",
+      "check_count_other": "check {count} items below",
+      "no_issues": "no open notes",
+      "stratum": "Stratum {n}",
+      "warn_count_one": "{count} note",
+      "warn_count_other": "{count} notes",
+      "down_title": "Time service not responding",
+      "down_text": "chronyd is not running – devices on the LAN are not getting time right now.",
+      "down_pill": "chronyd offline",
+      "down_pill_short": "offline",
+      "crit_title_one": "{count} fault",
+      "crit_title_other": "{count} faults",
+      "crit_pill": "Fault",
+      "island_title": "Island mode",
+      "island_text": "No time source reachable – the clock is free-running",
+      "island_pill_short": "Island",
+      "syncing_title": "Synchronising …",
+      "syncing_text": "chrony is still looking for a reliable source",
+      "syncing_pill_short": "sync …",
+      "warn_title": "Synchronised – with notes",
+      "synced": "Synchronised",
+      "good_title": "All good",
+      "good_text": "The clock is synchronised and every part is running."
+    },
+    "facts": {
+      "via": "via {source}",
+      "local_clock": "local clock",
+      "sources_used": "{used} of {total} sources in use",
+      "clients_one": "{n} client",
+      "clients_other": "{n} clients"
+    },
+    "kpi": {
+      "offset": "Offset",
+      "max_error": "Max. error",
+      "max_error_note": "error bound to UTC",
+      "frequency": "Frequency",
+      "requests": "Requests",
+      "requests_note_one": "{n} client on the LAN",
+      "requests_note_other": "{n} clients on the LAN",
+      "tone_warn": "elevated",
+      "tone_crit": "critical"
+    },
+    "area": {
+      "clock": "System clock",
+      "sources": "Time sources",
+      "gps": "GPS",
+      "ptp": "PTP",
+      "clients": "Clients",
+      "services": "Services"
+    },
+    "hints": {
+      "serious_label": "Warnings and faults",
+      "info_count_one": "{count} info item",
+      "info_count_other": "{count} info items",
+      "show": "show",
+      "hide": "hide",
+      "details": "Details",
+      "less": "less",
+      "details_show": "Show details: {title}",
+      "details_hide": "Hide details: {title}",
+      "label": "Notes"
+    }
+  },
+  "settings": {
+    "section": {
+      "ntp": {
+        "title": "Time sources (NTP)",
+        "description": "Where this server itself gets its time from."
+      },
+      "lan": {
+        "title": "Time server for the LAN",
+        "description": "Who may ask this server and how it answers."
+      },
+      "nts": {
+        "title": "NTS (Network Time Security)",
+        "description": "Cryptographically secured time – as a client and optionally as a server."
+      },
+      "dns": {
+        "title": "DNS for ntp-gui",
+        "description": "Which DNS servers ntp-gui itself uses to resolve the names of its time sources – against loops when the LAN DNS rewrites time server names to ntp-gui."
+      },
+      "gps": {
+        "title": "GPS / GNSS",
+        "description": "A GPS receiver as a reference clock of its own (stratum 0)."
+      },
+      "ptp": {
+        "title": "PTP (IEEE 1588)",
+        "description": "Precision time over the network – needs suitable hardware."
+      },
+      "web": {
+        "title": "Dashboard",
+        "description": "Display, history and access protection."
+      }
+    },
+    "language": {
+      "label": "Dashboard language",
+      "note": "Applies to this browser only; without a choice the browser language is used. So far the navigation, the header, the status band on the overview and the sections here are translated – everything else, the ⓘ explanations and messages from the server are German for now."
+    }
+  },
+  "help": {
+    "german_only": "The explanations on this page are only available in German for now. Translations are welcome – see CONTRIBUTING.md."
+  }
+}

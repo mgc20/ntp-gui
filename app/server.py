@@ -74,6 +74,7 @@ import settings
 import statewatch
 import thermal
 import updatecheck
+import webtransport
 
 STATIC_DIR = Path(__file__).with_name("static")
 CHRONY_CONF = os.environ.get("CHRONY_CONF", "/etc/chrony/chrony.conf")
@@ -306,6 +307,7 @@ CONTENT_TYPES = {
     ".svg": "image/svg+xml",
     ".ico": "image/x-icon",
     ".png": "image/png",
+    ".json": "application/json; charset=utf-8",  # Sprachkataloge (static/i18n)
 }
 
 
@@ -740,7 +742,8 @@ def build_status() -> dict:
                                           leap.insights(leap_info),
                                           updatecheck.insights(status["update"]),
                                           gnssguard.insights(gnssguard.GUARD.status(cfg)),
-                                          holdover.insights(holdover.TEST.status()))
+                                          holdover.insights(holdover.TEST.status()),
+                                          webtransport.WATCH.insights())
     return status
 
 
@@ -1127,6 +1130,27 @@ class Handler(BaseHTTPRequestHandler):
         if env_flag("WEB_ACCESS_LOG"):
             super().log_message(fmt, *args)
 
+    def _transport(self) -> dict:
+        """Echte Gegenstelle und Protokoll – Proxy-Köpfe nur von TRUSTED_PROXIES (webtransport)."""
+        try:
+            trusted = webtransport.parse_networks(settings.values().get("trusted_proxies"))
+        except Exception:
+            trusted = []
+        return webtransport.resolve(self.client_address[0] if self.client_address else "", self.headers, trusted)
+
+    def address_string(self) -> str:
+        # Zugriffsprotokoll: hinter einem eingetragenen Proxy die Adresse des Browsers.
+        try:
+            return self._transport()["client"]
+        except Exception:
+            return super().address_string()
+
+    def _note_transport(self, ident: dict) -> None:
+        try:
+            webtransport.WATCH.note(self._transport(), ident.get("kind"))
+        except Exception:
+            pass  # nur für einen Hinweis – nie eine Anfrage daran scheitern lassen
+
     def _send(self, status: HTTPStatus, body: bytes, content_type: str, extra_headers: dict | None = None) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
@@ -1320,6 +1344,7 @@ class Handler(BaseHTTPRequestHandler):
             self._deny_scope(ident, "GET", path)
             return
         self._ident = ident
+        self._note_transport(ident)
         try:
             if index:
                 self._send_json(apiv1.describe())
@@ -1573,6 +1598,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if not self._host_ok(ident):
             return
+        self._note_transport(ident)
         if index:
             self._error(HTTPStatus.METHOD_NOT_ALLOWED, "GET /api/v1 beschreibt die API; hier gibt es nichts zu senden")
             return

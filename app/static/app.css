@@ -367,6 +367,7 @@ body.is-stale main { opacity: .55; transition: opacity .2s; }
 .button.primary:hover { filter: brightness(1.08); }
 .button:disabled, .chip:disabled, .icon-button:disabled { opacity: .5; cursor: not-allowed; }
 .icon-button { padding: 7px 9px; color: var(--ink-2); }
+.lang-toggle { font-size: 12px; font-weight: 600; letter-spacing: .04em; min-width: 36px; }
 .chip { padding: 4px 10px; border-radius: 999px; font-size: 12.5px; }
 .link { background: none; border: 0; padding: 0; color: var(--accent); font: inherit; font-size: 13px; cursor: pointer; }
 .link:hover { text-decoration: underline; }

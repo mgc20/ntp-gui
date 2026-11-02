@@ -1,5 +1,6 @@
 import { el, rich, apiPost, apiGet } from "../util.js";
 import { card, info, badge, kv, emptyNote, toast, copyButton, isPopoverOpen } from "../ui.js";
+import { t, has, language, setLanguage, LANGUAGES } from "../i18n.js";
 
 export const live = false; // nicht bei jedem Refresh neu aufbauen – Eingaben bleiben stehen
 
@@ -32,10 +33,25 @@ export const FIELD_HELP = {
   web_title: "web_title", web_refresh_seconds: "web_refresh", history_interval: "history_interval",
   notify_dashboard_url: "notify_link",
   temp_sensor: "temp_sensor", clock_public: "clock_public", update_check: "update_check",
+  trusted_proxies: "trusted_proxies",
   dns_mode: "dns_modes", dns_servers: "dns_upstreams", dns_dot: "dns_modes", dns_doh: "dns_modes",
   dns_pin: "dns_pin", dns_fallback: "dns_fallback",
   gps_device: "hw_device_path", allow_networks: "allow_networks", gps_show_position: "gps_show_position",
 };
+
+// Sprache des Dashboards: keine Server-Einstellung, sondern je Browser (i18n.js, localStorage).
+function languageRow() {
+  const select = el("select", { id: "f-ui-language" }, LANGUAGES.map((l) =>
+    el("option", { value: l.code, selected: l.code === language() ? true : null, text: l.label })));
+  select.addEventListener("change", () => { setLanguage(select.value); });
+  return el("div", { class: "fields" }, el("div", { class: "field", id: "row-ui-language" },
+    el("div", { class: "field-head" },
+      el("span", { class: "field-label" }, el("label", { for: "f-ui-language", text: t("settings.language.label") }), " ",
+        info("ui_language", t("settings.language.label"))),
+      el("span", { class: "field-meta" }, badge("Browser", "muted"))),
+    select,
+    el("p", { class: "field-help", text: t("settings.language.note") })));
+}
 
 function fmtDate(unix) {
   return typeof unix === "number" && Number.isFinite(unix)
@@ -450,9 +466,14 @@ export function render(ctx) {
     const toggle = advancedCount ? el("button", { type: "button", class: "link", text: showAdv ? "Weniger anzeigen" : `Erweitert (${advancedCount})`,
       "aria-expanded": showAdv ? "true" : "false", onclick: () => { ui.showAdvanced[section.key] = !showAdv; ctx.rerender(); } }) : null;
     const helpKey = { ntp: "minsources", lan: "island", nts: "nts", dns: "dns", gps: "gps_value", ptp: "ptp_requirements", web: "settings_source" }[section.key];
-    out.push(card(section.label, { id: `s-${section.key}`, help: helpKey, sub: section.description, actions: toggle },
+    // Titel und Beschreibung aus dem Sprachkatalog; unbekannte Abschnitte behalten den Servertext.
+    const titleKey = `settings.section.${section.key}.title`;
+    const descKey = `settings.section.${section.key}.description`;
+    out.push(card(has(titleKey) ? t(titleKey) : section.label, { id: `s-${section.key}`, help: helpKey,
+      sub: has(descKey) ? t(descKey) : section.description, actions: toggle },
       section.key === "dns" ? dnsStatus(dns) : null,
       section.key === "web" ? updateStatus(update) : null,
+      section.key === "web" ? languageRow() : null,
       el("div", { class: "fields" }, visible.map(fieldRow))));
   }
 

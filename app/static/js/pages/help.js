@@ -1,6 +1,7 @@
 import { el, rich } from "../util.js";
 import { card, info } from "../ui.js";
 import { HELP, HELP_GROUPS } from "../help.js";
+import { t, language, REFERENCE } from "../i18n.js";
 
 export const live = false;
 
@@ -35,6 +36,8 @@ export function render(ctx) {
   if (focus) ctx.afterRender(() => document.getElementById(`h-${focus}`)?.scrollIntoView({ behavior: "smooth", block: "center" }));
 
   return [
+    // Die Erklärungen sind vorerst nur deutsch (i18n-Gerüst 1.5.0) – das sagen wir offen.
+    language() !== REFERENCE ? el("p", { class: "empty-note", lang: language(), text: t("help.german_only") }) : null,
     card("Welcher Aufbau passt zu mir?", { class: "explain", sub: "Jede Stufe baut auf der vorigen auf. Für die meisten Heimnetze reicht die zweite Zeile." },
       el("div", { class: "table-scroll" }, el("table", { class: "setup-table" },
         el("thead", {}, el("tr", {}, [["Aufbau", null], ["Genauigkeit", "setup_accuracy"], ["Hardware", "hw_check"],
