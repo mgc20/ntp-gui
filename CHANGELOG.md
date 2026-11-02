@@ -4,6 +4,52 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), die Versionen folgen
 [Semantic Versioning](https://semver.org/lang/de/).
 
+## [1.3.2] – 2026-11-02
+
+### Geändert
+- **Übersicht neu als „Single Pane of Glass“:** Statusband mit Gesamturteil und vier
+  Kennzahlen samt Verlaufslinie; Hinweise einzeilig (Details aufklappbar) und dem passenden
+  Bereich zugeordnet, der ihre Farbe übernimmt; Kacheln für Systemuhr, Zeitquellen, GPS, PTP,
+  Clients, Dienste und die letzten Ereignisse.
+- **Klarere Diagramme** auf allen Seiten: Kopfzeile mit jetzt/min/max/Mittel, einzelne
+  Ausreißer (z. B. beim Start) werden ausgeblendet und markiert statt die Skala zu sprengen,
+  Lücken sichtbar, Fadenkreuz mit Tooltip (Maus, Touch, Tastatur), Zeitachse in Ortszeit, eine
+  Einheit je Achse, Zahlen einheitlich mit Dezimalkomma; bessere Kontraste und Texte für
+  Bildschirmleser.
+- **GPS-Fix-Ereignisse erst nach 60 s:** Bei schwachem Empfang kam und ging der Fix im
+  Minutentakt und füllte das Protokoll mit „verloren/wieder da“-Paaren.
+- **Selbsttest „Zeitserver erzwingen“** prüft DNS-Umschreibung (per Name) und
+  Firewall-Umleitung (per IP-Adresse, `216.239.35.0`) getrennt – per Name greift schon der DNS.
+  Dazu ein Hinweis, wie man das Hairpin-Problem erkennt.
+- **Diagnosepaket mit Aufzeichnung deutlich schneller:** Filter und Schlussprüfungen merken
+  sich gleiche Zeilen, Vorschau und Paket entstehen in einem Durchgang. Mit einer echten
+  10-Minuten-Aufzeichnung (2347 Einträge, 1,5 MB) brauchten Vorschau und Download bisher
+  zusammen 78 s (33 s + 45 s), jetzt 9 s (gemessen auf x86; auf einem Raspberry Pi entsprechend
+  länger). Das Ergebnis ist byteweise dasselbe wie vorher.
+- **Das Dashboard bleibt währenddessen bedienbar**, auch in anderen Tabs: Gefiltert wird in
+  einem eigenen Prozess mit niedriger Priorität (`nice 10`), nicht mehr im Dashboard-Prozess.
+- **Download nach der Vorschau sofort und identisch:** Steht eine Vorschau auf der Seite
+  (gleiche Schalter, höchstens 10 Minuten alt, Aufzeichnung unverändert), liefert
+  „Herunterladen“ genau dieses Paket, ohne neu zu bauen. Dateiname, Ordner und MANIFEST tragen
+  den Zeitpunkt des Pakets.
+- Mehrfach geklickt oder Seite neu geladen: Wartende Anfragen bekommen das Ergebnis des gerade
+  laufenden Baus, statt jede für sich neu zu bauen.
+
+### Behoben
+- **Clients:** „Zuletzt“ und „Anfragen“ zeigten bei manchen Geräten „–“. chrony leert seine
+  Client-Liste bei jedem Neustart (etwa nach dem Speichern von Einstellungen); ntp-gui nimmt
+  dann die Werte der eigenen Messung (mit * markiert).
+- Der Download lieferte nach einer fehlgeschlagenen Vorschau oder nach einer neuen Aufzeichnung
+  ein älteres Paket. Er nimmt jetzt nur die Vorschau, die gerade angezeigt wird; nach dem
+  Umschalten von „Client-Liste“ oder „Aufzeichnung einschließen“ verschwindet die alte Vorschau.
+- Wird der Diagnose-Prozess beendet (z. B. vom OOM-Killer), nennt die Meldung das Signal
+  („beendet durch SIGKILL (9) – vermutlich zu wenig Arbeitsspeicher“) und steht auch im
+  Container-Log.
+- Zwischenspeicher der Prüfungen sind nach Speicher begrenzt und werden nach jedem Paket
+  geleert – kein langsam wachsender Speicherverbrauch im Dashboard-Prozess.
+- Hinweis während des Bauens: Mit Aufzeichnung dauert es auf einem Raspberry Pi „eine bis
+  mehrere Minuten“ (bisher „etwa eine Minute“).
+
 ## [1.3.1] – 2026-11-01
 
 ### Geändert
@@ -294,6 +340,7 @@ Erste Veröffentlichung.
 - CI mit Unittests und Integrationstest gegen das gebaute Image; Release-Workflow,
   der das Image für amd64 und arm64 nach ghcr.io veröffentlicht.
 
+[1.3.2]: https://github.com/ConGp20/ntp-gui/compare/v1.3.1...v1.3.2
 [1.3.1]: https://github.com/ConGp20/ntp-gui/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/ConGp20/ntp-gui/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/ConGp20/ntp-gui/compare/v1.1.0...v1.2.0

@@ -67,7 +67,7 @@ PTP4L_CONF = os.environ.get("PTP4L_CONF", "/etc/linuxptp/ptp4l.conf")
 RUN_DIR = os.environ.get("NTPGUI_RUN_DIR", "/run/ntp-gui")
 START_TIME = time.time()
 MAX_BODY = 64 * 1024
-VERSION = os.environ.get("NTPGUI_VERSION", "1.3.1")
+VERSION = os.environ.get("NTPGUI_VERSION", "1.3.2")
 EVENTS_INTERVAL = 5.0          # so oft liest der Server die Supervisor-Ereignisse ein
 CALIBRATION_DEFAULT_WINDOW = 86400.0  # /api/gps/calibration ohne window: letzte 24 h
 
@@ -112,12 +112,14 @@ apiv1.endpoint("GET", "/logs", "/api/logs", "read",
                 "level": "warn oder crit: nur Warnungen/Fehler"})
 apiv1.endpoint("GET", "/diagnostics/preview", "/api/diagnostics/preview", "read",
                "Vorschau des Diagnosepakets – genau das, was beim Herunterladen drinstünde, gefiltert.",
-               ["ok", "generated", "filename", "sections", "removed", "content"],
+               ["ok", "generated", "filename", "sections", "removed", "content", "reuse"],
                {"clients": "1 = Client-Liste einschließen (pseudonymisiert)",
                 "recording": "1 = letzte Aufzeichnung einschließen (gefiltert)"})
 apiv1.endpoint("GET", "/diagnostics/bundle", "/api/diagnostics/bundle", "read",
                "Diagnosepaket als tar.gz (gefiltert, mit MANIFEST.txt). Wird nie hochgeladen.", [],
-               {"clients": "wie bei der Vorschau", "recording": "wie bei der Vorschau"})
+               {"clients": "wie bei der Vorschau", "recording": "wie bei der Vorschau",
+                "reuse": "Merker „reuse“ einer Vorschau: genau dieses Paket sofort (gleiche Schalter, "
+                         "höchstens 10 min alt, Aufzeichnung unverändert); sonst neu gebaut"})
 apiv1.endpoint("GET", "/recording", "/api/recording", "read",
                "Zustand der Aufzeichnung der Datenquellen.", ["active", "ends", "entries", "size", "available"])
 apiv1.endpoint("POST", "/recording", "/api/recording", "admin",
@@ -959,12 +961,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._leak_error(exc)
         elif path == "/api/diagnostics/bundle":
             try:
-                body = diagnostics.bundle_locked(settings.values(), self._diag_options(query))
+                body, filename = diagnostics.bundle_locked(settings.values(), self._diag_options(query),
+                                                           reuse=str(query.get("reuse") or "") or None)
             except (diagnostics.LeakError, RuntimeError) as exc:
                 self._leak_error(exc)
                 return
+            # Name aus dem Zeitpunkt des Pakets (wie Ordner und MANIFEST darin), nicht des Downloads.
             self._send(HTTPStatus.OK, body, "application/gzip",
-                       {"Content-Disposition": f'attachment; filename="{diagnostics.filename_for()}"',
+                       {"Content-Disposition": f'attachment; filename="{filename}"',
                         "Cache-Control": "no-store"})
         elif path == "/api/recording":
             self._send_json(recording_status())

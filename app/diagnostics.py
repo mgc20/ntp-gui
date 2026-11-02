@@ -627,6 +627,17 @@ def _build(cfg: dict, sections: list[str] | None, options: dict) -> tuple[dict, 
     return _process(_gather(cfg, sections, options))
 
 
+def _backstop_memo(sanitizer: Any) -> "egress.BackstopMemo":
+    """Ein Zwischenspeicher für egress.backstop je Exportlauf: Dieselben Zeilen laufen in
+    drop_leaky_lines, in _process und in _bundle_of durch die Prüfung. Gilt nur für die bekannten
+    Werte dieses Laufs (backstop prüft das) und verschwindet mit dem Sanitizer."""
+    memo = getattr(sanitizer, "_diag_backstop_memo", None)
+    if memo is None:
+        memo = egress.BackstopMemo(sanitizer.backstop_known())
+        sanitizer._diag_backstop_memo = memo
+    return memo
+
+
 def _process(job: dict) -> tuple[dict, Any, dict]:
     """Filtern und beide Schlussprüfungen – reine Funktion der eingesammelten Rohdaten."""
     names, raw = job["names"], job["raw"]
@@ -669,7 +680,8 @@ def _process(job: dict) -> tuple[dict, Any, dict]:
             # auch Zahlenpaare in Listen und Objekten.
             compact[f"{filename} (kompakt)"] = json.dumps(value, separators=(",", ":"), ensure_ascii=False,
                                                           default=str).encode("utf-8")
-    findings = egress.backstop(rendered, sanitizer.backstop_known()) + egress.backstop_compact_json(compact)
+    findings = (egress.backstop(rendered, sanitizer.backstop_known(), _backstop_memo(sanitizer))
+                + egress.backstop_compact_json(compact))
     if findings:
         raise LeakError(findings)
     return content, sanitizer, truncated
@@ -691,7 +703,8 @@ def drop_leaky_lines(text: str, sanitizer: "egress.Sanitizer") -> str:
         match = re.search(r"Zeile (\d+)", str(finding.get("path", "")))
         if match:
             bad.add(int(match.group(1)))
-    for finding in egress.backstop({"abschnitt": text.encode("utf-8")}, sanitizer.backstop_known()):
+    for finding in egress.backstop({"abschnitt": text.encode("utf-8")}, sanitizer.backstop_known(),
+                                   _backstop_memo(sanitizer)):
         match = re.search(r"Zeile (\d+)", str(finding.get("path", "")))
         if match:
             bad.add(int(match.group(1)))
@@ -707,7 +720,10 @@ def drop_leaky_lines(text: str, sanitizer: "egress.Sanitizer") -> str:
 
 def build(cfg: dict, sections: list[str] | None = None, options: dict | None = None) -> dict:
     """Gefilterte Abschnitte {name: inhalt}. Wirft LeakError, wenn die Schlussprüfung anschlägt."""
-    content, _sanitizer, _cut = _build(cfg, sections, options or {})
+    try:
+        content, _sanitizer, _cut = _build(cfg, sections, options or {})
+    finally:
+        egress.clear_check_caches()
     return content
 
 
@@ -719,7 +735,10 @@ def _report_with_labels(report: dict) -> dict:
 
 def preview(cfg: dict, options: dict | None = None) -> dict:
     """Für GET /api/diagnostics/preview: genau das, was im Paket stünde."""
-    return _preview_of(*_build(cfg, None, options or {}))
+    try:
+        return _preview_of(*_build(cfg, None, options or {}))
+    finally:
+        egress.clear_check_caches()
 
 
 def _preview_of(content: dict, sanitizer: Any, truncated: dict) -> dict:
@@ -786,7 +805,10 @@ def manifest(sections: list[dict], report: dict, generated: float) -> str:
 
 def bundle(cfg: dict, options: dict | None = None) -> bytes:
     """Für GET /api/diagnostics/bundle: tar.gz mit einer Datei je Abschnitt + MANIFEST.txt."""
-    return _bundle_of(*_build(cfg, None, options or {}))
+    try:
+        return _bundle_of(*_build(cfg, None, options or {}))
+    finally:
+        egress.clear_check_caches()
 
 
 def _bundle_of(content: dict, sanitizer: Any, truncated: dict, generated: float | None = None) -> bytes:
@@ -809,7 +831,7 @@ def _bundle_of(content: dict, sanitizer: Any, truncated: dict, generated: float 
         if findings:
             raise LeakError([dict(f, path=f"{filename}: {f['path']}") for f in findings])
     findings = egress.backstop(dict(files + [("MANIFEST.txt", manifest_text.encode("utf-8"))]),
-                               sanitizer.backstop_known())
+                               sanitizer.backstop_known(), _backstop_memo(sanitizer))
     if findings:
         raise LeakError(findings)
     buffer = io.BytesIO()
@@ -835,17 +857,39 @@ def _bundle_of(content: dict, sanitizer: Any, truncated: dict, generated: float 
 _lock = threading.Lock()  # nie zwei Pakete gleichzeitig bauen (CPU auf dem Pi schonen)
 WORKER_TIMEOUT = 900.0
 REUSE_SECONDS = 600.0      # so lange gilt eine Vorschau für den Download
-_last: dict[str, Any] = {}  # {"key", "t", "preview", "bundle"}
+# {"key", "t", "done", "token", "preview", "bundle", "filename"} – nur unter _lock lesen/schreiben.
+_last: dict[str, Any] = {}
 
 
 def _package(job: dict) -> dict:
     """Vorschau und Paket aus einem Filterlauf. LeakError steigt auf."""
-    content, sanitizer, truncated = _process(job)
-    generated = time.time()
-    view = _preview_of(content, sanitizer, truncated)
-    view["generated"] = int(generated)
-    view["filename"] = filename_for(generated)
-    return {"preview": view, "bundle": _bundle_of(content, sanitizer, truncated, generated)}
+    try:
+        content, sanitizer, truncated = _process(job)
+        generated = time.time()
+        view = _preview_of(content, sanitizer, truncated)
+        view["generated"] = int(generated)
+        view["filename"] = filename_for(generated)
+        return {"preview": view, "bundle": _bundle_of(content, sanitizer, truncated, generated)}
+    finally:
+        egress.clear_check_caches()
+
+
+def _worker_failed(returncode: int, stderr: bytes) -> str:
+    """Fehlermeldung, wenn der Kindprozess kein Ergebnis geliefert hat – mit Signal/Rückgabewert,
+    damit sich ein OOM-Kill (Signal 9) von einem Absturz unterscheiden lässt."""
+    import signal
+    if returncode < 0:
+        try:
+            name = signal.Signals(-returncode).name
+        except ValueError:
+            name = f"Signal {-returncode}"
+        why = f"beendet durch {name} ({-returncode})"
+        if returncode == -9:
+            why += " – vermutlich zu wenig Arbeitsspeicher"
+    else:
+        why = f"Rückgabewert {returncode}"
+    tail = stderr.decode("utf-8", errors="replace").strip().splitlines()[-1:]
+    return f"Diagnose-Prozess fehlgeschlagen ({why})" + (f": {tail[0]}" if tail else "")
 
 
 def _run_worker(job: dict) -> dict:
@@ -861,12 +905,15 @@ def _run_worker(job: dict) -> dict:
     except (OSError, ValueError):
         return _package(job)
     except subprocess.TimeoutExpired:
-        raise RuntimeError(f"Das Diagnosepaket wurde nach {WORKER_TIMEOUT:g} s nicht fertig.") from None
+        message = f"Das Diagnosepaket wurde nach {WORKER_TIMEOUT:g} s nicht fertig."
+        print(f"diagnostics: {message}", file=sys.stderr, flush=True)
+        raise RuntimeError(message) from None
     try:
         result = json.loads(proc.stdout.decode("utf-8"))
     except ValueError:
-        tail = proc.stderr.decode("utf-8", errors="replace").strip().splitlines()[-1:]
-        raise RuntimeError("Diagnose-Prozess fehlgeschlagen" + (f": {tail[0]}" if tail else "")) from None
+        message = _worker_failed(proc.returncode, proc.stderr)
+        print(f"diagnostics: {message}", file=sys.stderr, flush=True)  # landet im Container-Log
+        raise RuntimeError(message) from None
     if not result.get("ok"):
         if result.get("findings") is not None:
             raise LeakError(result["findings"])
@@ -874,32 +921,76 @@ def _run_worker(job: dict) -> dict:
     return {"preview": result["preview"], "bundle": base64.b64decode(result["bundle"])}
 
 
+def _recording_identity() -> Any:
+    """Welche Aufzeichnung gerade gilt (Pfad, Größe, Änderungszeit) – eine neue oder weiter
+    wachsende Aufzeichnung darf kein altes Ergebnis wiederverwenden."""
+    try:
+        import providers
+        status = providers.status() if hasattr(providers, "status") else {}
+    except Exception:  # noqa: BLE001 – dann eben keine Wiederverwendung über diesen Schlüssel hinaus
+        return ["unbekannt", time.time()]
+    path = (status or {}).get("path") or (status or {}).get("file")
+    try:
+        st = os.stat(path) if path else None
+    except OSError:
+        st = None
+    return [path, bool((status or {}).get("active")),
+            [st.st_ino, st.st_size, st.st_mtime_ns] if st else None]
+
+
 def _key(cfg: dict, options: dict) -> str:
-    """Was die Auswahl bestimmt – nicht Laufzeit oder Verlauf, die sich jede Sekunde ändern."""
+    """Was die Auswahl bestimmt – nicht Laufzeit oder Verlauf, die sich jede Sekunde ändern.
+    Mit Aufzeichnung auch, welche Aufzeichnung (Datei, Größe, Zeit) gerade gilt."""
     chosen = {k: options.get(k) for k in ("include_clients", "include_recording", "sections")}
-    return json.dumps([cfg, chosen], sort_keys=True, ensure_ascii=False, default=str)
+    names = _sections(options, None)
+    data = _recording_identity() if "recording" in names else None
+    return json.dumps([cfg, chosen, data], sort_keys=True, ensure_ascii=False, default=str)
 
 
 def _produce(cfg: dict, options: dict) -> dict:
-    result = _run_worker(_gather(cfg, None, options))
+    """Neu bauen (unter _lock). Vorher das alte Ergebnis verwerfen: Schlägt der Lauf fehl, darf
+    ein späterer Download nicht stillschweigend ein älteres Paket liefern."""
+    import secrets
     _last.clear()
-    _last.update(key=_key(cfg, options), t=time.monotonic(), **result)
+    key = _key(cfg, options)  # vor dem Einsammeln: wächst die Aufzeichnung inzwischen, passt er nicht mehr
+    result = _run_worker(_gather(cfg, None, options))
+    token = secrets.token_hex(8)
+    result["preview"]["reuse"] = token
+    _last.update(key=key, t=time.monotonic(), token=token, filename=result["preview"].get("filename"),
+                 **result)
     return result
+
+
+def _fresh_for(arrived: float, key: str) -> bool:
+    """Ein Lauf mit gleichem Schlüssel ist fertig geworden, während diese Anfrage gewartet hat –
+    sein Ergebnis ist so frisch wie ein neuer Lauf (mehrfach geklickt, Seite neu geladen)."""
+    return bool(_last) and _last.get("key") == key and _last.get("t", 0.0) >= arrived
 
 
 def preview_locked(cfg: dict, options: dict | None = None) -> dict:
     options = options or {}
+    arrived = time.monotonic()
     with _lock:
+        if _fresh_for(arrived, _key(cfg, options)):
+            return _last["preview"]
         return _produce(cfg, options)["preview"]
 
 
-def bundle_locked(cfg: dict, options: dict | None = None) -> bytes:
+def bundle_locked(cfg: dict, options: dict | None = None, reuse: str | None = None) -> tuple[bytes, str]:
+    """(tar.gz, Dateiname). Das Ergebnis der Vorschau gilt nur mit ihrem Merker (``reuse``, kommt
+    von der Seite, wenn genau diese Vorschau angezeigt wird), mit gleichen Schaltern, gleicher
+    Aufzeichnung und höchstens REUSE_SECONDS alt – sonst wird neu gebaut."""
     options = options or {}
+    arrived = time.monotonic()
     with _lock:
-        if (_last.get("key") == _key(cfg, options)
-                and time.monotonic() - _last.get("t", 0.0) < REUSE_SECONDS):
-            return _last["bundle"]
-        return _produce(cfg, options)["bundle"]
+        key = _key(cfg, options)
+        if _last and _last.get("key") == key and (
+                _last.get("t", 0.0) >= arrived
+                or (reuse and reuse == _last.get("token")
+                    and time.monotonic() - _last.get("t", 0.0) < REUSE_SECONDS)):
+            return _last["bundle"], _last.get("filename") or filename_for()
+        result = _produce(cfg, options)
+        return result["bundle"], result["preview"].get("filename") or filename_for()
 
 
 def _worker_main() -> int:

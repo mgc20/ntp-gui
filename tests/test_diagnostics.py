@@ -375,20 +375,120 @@ class WorkerTest(unittest.TestCase):
 
     def test_download_reuses_preview(self):
         view = diagnostics.preview_locked(self.cfg, dict(self.options, uptime_seconds=1))
+        time.sleep(1.1)  # der Dateiname muss vom Paket kommen, nicht vom Zeitpunkt des Downloads
         with mock.patch.object(diagnostics, "_run_worker", side_effect=AssertionError("neu gebaut")):
-            body = diagnostics.bundle_locked(self.cfg, dict(self.options, uptime_seconds=99))
+            body, filename = diagnostics.bundle_locked(self.cfg, dict(self.options, uptime_seconds=99),
+                                                       reuse=view["reuse"])
         with tarfile.open(fileobj=io.BytesIO(body), mode="r:gz") as tar:
             names = {Path(m.name).name for m in tar.getmembers()}
+            folders = {m.name.split("/", 1)[0] for m in tar.getmembers()}
             recording = next(m for m in tar.getmembers() if m.name.endswith("recording.jsonl"))
             data = tar.extractfile(recording).read().decode("utf-8")
         self.assertIn("recording.jsonl", names)
         self.assertEqual(data, view["content"]["recording"].rstrip("\n") + "\n")
+        self.assertEqual(filename, view["filename"])
+        self.assertEqual(folders, {filename[:-len(".tar.gz")]})
+
+    def test_download_without_matching_token_rebuilds(self):
+        view = diagnostics.preview_locked(self.cfg, dict(self.options))
+        for reuse in (None, "", "falsch"):
+            with mock.patch.object(diagnostics, "_run_worker", wraps=diagnostics._run_worker) as run:
+                diagnostics.bundle_locked(self.cfg, dict(self.options), reuse=reuse)
+            self.assertEqual(run.call_count, 1, reuse)
+        self.assertNotEqual(diagnostics._last["token"], view["reuse"])  # jeder Lauf ein neuer Merker
+
+    def test_failed_preview_leaves_nothing_to_reuse(self):
+        view = diagnostics.preview_locked(self.cfg, dict(self.options))
+        with mock.patch.object(diagnostics, "_run_worker", side_effect=RuntimeError("Zeitüberschreitung")):
+            with self.assertRaises(RuntimeError):
+                diagnostics.preview_locked(self.cfg, dict(self.options))
+        self.assertEqual(diagnostics._last, {})
+        with mock.patch.object(diagnostics, "_run_worker", wraps=diagnostics._run_worker) as run:
+            diagnostics.bundle_locked(self.cfg, dict(self.options), reuse=view["reuse"])
+        self.assertEqual(run.call_count, 1)
+
+    def test_new_recording_rebuilds(self):
+        import providers
+        rec = self.tmp / "recording-1.jsonl"
+        rec.write_text('{"t":1}\n', encoding="utf-8")
+        status = {"active": False, "path": str(rec)}
+        with mock.patch.object(providers, "status", lambda: dict(status)):
+            view = diagnostics.preview_locked(self.cfg, dict(self.options))
+            with mock.patch.object(diagnostics, "_run_worker", side_effect=AssertionError("neu gebaut")):
+                diagnostics.bundle_locked(self.cfg, dict(self.options), reuse=view["reuse"])  # unverändert
+            newer = self.tmp / "recording-2.jsonl"  # neue Aufzeichnung seit der Vorschau
+            newer.write_text('{"t":2}\n', encoding="utf-8")
+            status["path"] = str(newer)
+            with mock.patch.object(diagnostics, "_run_worker", wraps=diagnostics._run_worker) as run:
+                diagnostics.bundle_locked(self.cfg, dict(self.options), reuse=view["reuse"])
+            self.assertEqual(run.call_count, 1)
+            view = diagnostics.preview_locked(self.cfg, dict(self.options))
+            with newer.open("a", encoding="utf-8") as handle:  # Aufzeichnung wächst weiter
+                handle.write('{"t":3}\n')
+            with mock.patch.object(diagnostics, "_run_worker", wraps=diagnostics._run_worker) as run:
+                diagnostics.bundle_locked(self.cfg, dict(self.options), reuse=view["reuse"])
+            self.assertEqual(run.call_count, 1)
+
+    def test_waiting_requests_share_one_build(self):
+        # Mehrfach geklickt / Seite neu geladen: Wer wartet, bekommt das Ergebnis des laufenden Baus.
+        import threading
+        real = diagnostics._run_worker
+        started = threading.Event()
+        calls = []
+
+        def slow(job):
+            calls.append(1)
+            started.set()
+            time.sleep(0.5)
+            return real(job)
+
+        results = []
+        with mock.patch.object(diagnostics, "_run_worker", side_effect=slow):
+            first = threading.Thread(target=lambda: results.append(
+                diagnostics.preview_locked(self.cfg, dict(self.options))))
+            first.start()
+            started.wait(5)
+            others = [threading.Thread(target=lambda: results.append(
+                diagnostics.preview_locked(self.cfg, dict(self.options)))) for _ in range(3)]
+            others.append(threading.Thread(target=lambda: results.append(
+                diagnostics.bundle_locked(self.cfg, dict(self.options)))))
+            for t in others:
+                t.start()
+            for t in [first] + others:
+                t.join(30)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(results), 5)
+        self.assertEqual(len({r["reuse"] for r in results if isinstance(r, dict)}), 1)
+        # Eine spätere Vorschau baut wieder neu (aktueller Stand).
+        with mock.patch.object(diagnostics, "_run_worker", wraps=diagnostics._run_worker) as run:
+            diagnostics.preview_locked(self.cfg, dict(self.options))
+        self.assertEqual(run.call_count, 1)
 
     def test_other_options_rebuild(self):
-        diagnostics.preview_locked(self.cfg, dict(self.options))
+        view = diagnostics.preview_locked(self.cfg, dict(self.options))
         with mock.patch.object(diagnostics, "_run_worker", wraps=diagnostics._run_worker) as run:
-            diagnostics.bundle_locked(self.cfg, dict(self.options, include_clients=False))
+            diagnostics.bundle_locked(self.cfg, dict(self.options, include_clients=False), reuse=view["reuse"])
         self.assertEqual(run.call_count, 1)
+
+    def test_killed_worker_names_the_signal(self):
+        import subprocess
+        killed = subprocess.CompletedProcess([], -9, stdout=b"", stderr=b"")
+        with mock.patch("subprocess.run", return_value=killed), \
+                mock.patch("sys.stderr", new_callable=io.StringIO) as err:
+            with self.assertRaises(RuntimeError) as ctx:
+                diagnostics._run_worker({"names": [], "raw": {}, "known_names": [], "known_values": {}})
+        self.assertIn("SIGKILL", str(ctx.exception))
+        self.assertIn("Arbeitsspeicher", str(ctx.exception))
+        self.assertIn("SIGKILL", err.getvalue())  # auch im Container-Log
+        self.assertIn("Rückgabewert 3", diagnostics._worker_failed(3, b"Traceback\nMemoryError\n"))
+        self.assertIn("MemoryError", diagnostics._worker_failed(3, b"Traceback\nMemoryError\n"))
+
+    def test_check_caches_emptied_after_each_package(self):
+        diagnostics.preview_locked(self.cfg, dict(self.options))
+        with mock.patch.object(diagnostics, "_run_worker", side_effect=diagnostics._package):  # im selben Prozess
+            diagnostics.preview_locked(self.cfg, dict(self.options, include_clients=False))
+        self.assertEqual(len(egress._TEXT_MEMO), 0)
+        self.assertEqual(len(egress._JSON_MEMO), 0)
 
     def test_worker_filters_and_reports_errors(self):
         job = {"names": ["logs"], "raw": {"logs": "Position lat=48.1371543 lon=11.5761249"},
@@ -398,6 +498,37 @@ class WorkerTest(unittest.TestCase):
         self.assertTrue(result["bundle"].startswith(b"\x1f\x8b"))  # gzip
         with self.assertRaises(RuntimeError):
             diagnostics._run_worker({"names": ["logs"]})  # kaputter Auftrag → Fehlermeldung, kein Absturz
+
+    def test_fast_path_respects_known_values(self):
+        # Eine rein numerische Seriennummer, ein Titel „2048“ oder ein Hostname „4711“ sehen aus wie
+        # Zahlen – der Schnellweg darf sie nicht durchlassen.
+        known = {"seriennummer": ["00012345678", "4711081500"], "titel": ["2048"], "name": ["52.520008"]}
+        names = ["4711", "123456"]
+        samples = ["00012345678", "4711081500", "+4711081500", "2048", "52.520008", "4711", "123456",
+                   "-123456", "0", "48.1371543", "2026-11-01T22:51:12Z", "20481", "4711.5"]
+        for value in samples:
+            fast = egress.Sanitizer("diagnostics", names, known)
+            slow = egress.Sanitizer("diagnostics", names, known)
+            self.assertEqual(fast._plain(value), slow._plain_uncached(value), value)
+            self.assertEqual(fast.report(), slow.report(), value)
+        probe = egress.Sanitizer("diagnostics", names, known)
+        self.assertEqual(probe.text("00012345678"), "<seriennr>")
+        self.assertEqual(probe.text("2048"), "<titel>")
+        self.assertEqual(probe.text("4711"), "<hostname-1>")
+        self.assertEqual(probe.obj({"id": "4711081500", "n": 2048}), {"id": "<seriennr>", "n": 2048})
+
+    def test_numeric_serial_exports_scrubbed(self):
+        # Vorher (Schnellweg ohne bekannte Werte): LeakError statt gefiltertem Export.
+        collectors = dict(diagnostics.COLLECTORS,
+                          hardware=lambda cfg, o: {"usb": {"product": "u-blox GNSS", "id": "00012345678"}},
+                          gps=lambda cfg, o: {"status": {"device": "123456"}})
+        with mock.patch.dict(diagnostics.COLLECTORS, collectors), \
+                mock.patch.object(diagnostics, "_known_values",
+                                  lambda cfg: {"seriennummer": {"00012345678"}}), \
+                mock.patch.object(diagnostics, "_known_names", lambda cfg: {"123456"}):
+            content = diagnostics.build({}, ["hardware", "gps"])
+        self.assertEqual(content["hardware"]["usb"]["id"], "<seriennr>")
+        self.assertEqual(content["gps"]["status"]["device"], "<hostname-1>")
 
     def test_fast_path_never_skips_a_change(self):
         # Was der Schnellweg durchlässt, darf der volle Filter auch nicht ändern.
@@ -410,6 +541,44 @@ class WorkerTest(unittest.TestCase):
             self.assertEqual(probe._plain_uncached(value), value, value)
         for value in ("123456789012", "192.168.1.5", "48.137,11.576", "48.137 11.576", "2001:db8::1"):
             self.assertIsNone(egress._PLAIN_SAFE_RE.fullmatch(value), value)
+
+    def test_check_parses_huge_json_lines(self):
+        # check_no_leaks auf Text parst jede JSON-Zeile, auch ab 1 MB (der Filter behandelt solche
+        # Zeilen als Text und lässt Schlüssel wie "serial" stehen – die Prüfung muss sie finden).
+        pad = "x" * 1_000_100
+        sats = json.dumps({"sky": [[5, 120.0, 33.0, 40], [7, 200.0, 45.0, 38]], "pad": pad})
+        serial = json.dumps({"serial": "ABCD1234", "pad": pad})
+        for _ in range(2):  # zweiter Lauf: kein Zwischenspeicher darf das ändern
+            self.assertIn(("satellitenwinkel", "Zeile 2.sky"),
+                          [(f["kind"], f["path"]) for f in egress.check_no_leaks("{}\n" + sats)])
+            self.assertIn(("seriennummer", "Zeile 1.serial"),
+                          [(f["kind"], f["path"]) for f in egress.check_no_leaks(serial)])
+        self.assertNotIn(serial.strip(), egress._JSON_MEMO._data)  # lange Zeilen nicht gemerkt
+
+    def test_check_memo_bounded(self):
+        memo = egress.LineMemo(10_000)
+        for i in range(1000):
+            memo.put(f"Zeile {i:04d} " + "y" * 50, ("x",))
+        self.assertLessEqual(memo.bytes, 10_000)
+        self.assertLess(len(memo), 1000)
+        memo.put("ä" * 20_000, ())  # zu lang: nie gemerkt
+        self.assertIsNone(memo.get("ä" * 20_000))
+        memo.clear()
+        self.assertEqual((len(memo), memo.bytes), (0, 0))
+
+    def test_backstop_memo_same_findings(self):
+        known = {"names": ["zeit.mueller-family.de"], "tokens": ["A50285BI"]}
+        text = "\n".join(["ok", "Position 48.1371543, 11.5761249", "Host zeit.mueller-family.de",
+                          "Seriennummer A50285BI", "ok"] * 3).encode("utf-8")
+        plain = egress.backstop({"a": text, "b": text}, known)
+        memo = egress.BackstopMemo(known)
+        self.assertTrue(plain)
+        self.assertEqual(egress.backstop({"a": text, "b": text}, known, memo), plain)
+        self.assertEqual(egress.backstop({"a": text, "b": text}, known, memo), plain)
+        # Anderer Satz bekannter Werte: der Speicher gilt nicht und wird nicht benutzt.
+        other = egress.backstop({"a": text}, {"names": [], "tokens": []}, memo)
+        self.assertEqual(other, egress.backstop({"a": text}, {"names": [], "tokens": []}))
+        self.assertFalse(any(f["kind"] in ("bekannter_name", "bekannter_wert") for f in other))
 
     def test_cache_keeps_counts(self):
         text = "\n".join(["Remote address  : 192.53.103.108 (C035676C)", "Leap status : Normal"] * 50)
