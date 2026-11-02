@@ -37,6 +37,10 @@ GPS_FIX_HOLD = 60.0
 GPS_FLAP_WINDOW = 1800.0
 GPS_FLAP_ENTER = 6
 GPS_FLAP_CALM = 3600.0
+# Während „unstet“: Bleibt der Fix so lange am Stück weg, ist er verloren – das meldet ein
+# Abschlussereignis sofort und nicht erst nach GPS_FLAP_CALM (sonst käme die Warnung samt
+# Benachrichtigung eine Stunde zu spät).
+GPS_UNSTET_LOST = 10 * GPS_FIX_HOLD
 
 
 def _fmt_span(seconds: float) -> str:
@@ -129,7 +133,8 @@ class StateWatcher:
     def __init__(self, emit: Callable[..., None], confirm: int = CONFIRM,
                  gps_fix_hold: float | None = None, clock: Callable[[], float] = time.monotonic,
                  flap_window: float | None = None, flap_enter: int | None = None,
-                 flap_calm: float | None = None, wall: Callable[[], float] = time.time) -> None:
+                 flap_calm: float | None = None, wall: Callable[[], float] = time.time,
+                 unstet_lost: float | None = None) -> None:
         self._emit = emit
         self._confirm = confirm
         self._lock = threading.Lock()
@@ -142,6 +147,7 @@ class StateWatcher:
         self._flap_window = GPS_FLAP_WINDOW if flap_window is None else flap_window
         self._flap_enter = GPS_FLAP_ENTER if flap_enter is None else max(2, int(flap_enter))
         self._flap_calm = GPS_FLAP_CALM if flap_calm is None else flap_calm
+        self._unstet_lost = GPS_UNSTET_LOST if unstet_lost is None else unstet_lost
         self._flap_reset()
         self._pps: dict[str, _Tracker] = {}
         self._clients: dict[str, dict] = {}
@@ -199,6 +205,10 @@ class StateWatcher:
         fix = _fix(sample)
         if fix is None:
             # GPS ausgeschaltet: Zustand vergessen, damit Wiedereinschalten kein Ereignis ist.
+            if self._unstet:  # die offene Episode „unstet“ sauber beenden
+                self._send("gps", "info",
+                           f"GPS ausgeschaltet – Empfang war unstet ({self._unstet_changes} Fix-Wechsel)",
+                           {"state": "aus", "changes": self._unstet_changes})
             self._fix = self._fix_tracker()
             self._flap_reset()
             return
@@ -233,16 +243,21 @@ class StateWatcher:
                            f"GPS-Empfang unstet: Fix kam und ging {len(self._flaps)}-mal in {minutes} min",
                            dict(data, state="unstet", changes=len(self._flaps), window_s=self._flap_window))
             return
-        if self._last_flap is not None and now - self._last_flap >= self._flap_calm:
+        calm = self._last_flap is not None and now - self._last_flap >= self._flap_calm
+        lost = (self._last_flap is not None and self._fix_fast.state is False
+                and now - self._last_flap >= self._unstet_lost)
+        if calm or lost:
             duration = max(0.0, (self._last_flap - self._unstet_since) if self._unstet_since is not None else 0.0)
             count = self._unstet_changes
-            info = dict(data, state="stetig", changes=count, duration_s=round(duration), fix=fix)
+            has_fix = bool(self._fix_fast.state)  # bestätigter Zustand, kein einzelner Messpunkt
+            info = dict(data, state="stetig", changes=count, duration_s=round(duration), fix=has_fix)
             span = _fmt_span(duration)
-            if fix:
+            if has_fix:
                 self._send("gps", "info", f"GPS-Empfang wieder stetig – {count} Fix-Wechsel in {span}", info)
             else:
+                quiet = _fmt_span(now - self._last_flap) if self._last_flap is not None else "längerem"
                 self._send("gps", "warn", f"GPS-Fix verloren – nach {count} Fix-Wechseln in {span} "
-                                          "seit einer Stunde ohne Fix", info)
+                                          f"seit {quiet} ohne Fix", info)
             self._unstet = False
             self._unstet_since = self._unstet_since_wall = None
             self._unstet_changes = 0

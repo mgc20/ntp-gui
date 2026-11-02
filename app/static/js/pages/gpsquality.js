@@ -31,7 +31,12 @@ function stabilityRow(stability) {
     const since = isNum(stability.unstet_since) ? ` seit ${when(stability.unstet_since)}` : "";
     return el("span", {}, badge("unstet", "warn"), ` Fix kam und ging ${fmtNumber(stability.unstet_changes || 0)}-mal${since}`);
   }
-  if (state === "stetig") return el("span", {}, badge("stetig", "good"), " kein Flattern in der letzten halben Stunde");
+  if (state === "stetig") {
+    const n = isNum(stability.changes_window) ? stability.changes_window : 0;
+    const minutes = isNum(stability.window_s) ? Math.max(1, Math.round(stability.window_s / 60)) : 30;
+    const span = minutes === 30 ? "in der letzten halben Stunde" : `in den letzten ${fmtNumber(minutes)} min`;
+    return el("span", {}, badge("stetig", "good"), n > 0 ? ` ${fmtNumber(n)} Fix-Wechsel ${span}` : ` kein Fix-Wechsel ${span}`);
+  }
   return el("span", {}, badge("unbekannt", "muted"), " noch keine GPS-Werte seit dem Start");
 }
 

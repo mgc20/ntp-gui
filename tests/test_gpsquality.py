@@ -32,6 +32,17 @@ import statewatch  # noqa: E402
 import store  # noqa: E402
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "gps_vk162_indoor.jsonl"
+_PPS_DIR = tempfile.mkdtemp(prefix="gpsq-pps-")
+PPS_DEV = os.path.join(_PPS_DIR, "pps0")          # vorhandenes „PPS-Gerät“ (leere Datei)
+PPS_MISSING = os.path.join(_PPS_DIR, "pps-fehlt")  # eingestellt, aber nicht vorhanden
+
+
+def setUpModule():
+    Path(PPS_DEV).touch()
+
+
+def tearDownModule():
+    shutil.rmtree(_PPS_DIR, ignore_errors=True)
 T0 = 1_800_000_000.0
 H = 3600.0
 
@@ -222,6 +233,49 @@ class SpreadTest(unittest.TestCase):
         self.assertGreaterEqual(result["delay"], gpsquality.DELAY_MIN)
         self.assertLess(result["delay"], gpsquality.DEFAULT_DELAY)
 
+    @staticmethod
+    def falseticker_samples(n=2000, gps_state_bad="x", net_states=("*", "+")):
+        """90 % brav (± 3 ms, „-“), 10 % bei +60 ms – von chrony als Falschgeber („x“) markiert."""
+        import random
+        rng = random.Random(16)
+        out = []
+        for i in range(n):
+            bad = i % 10 == 0
+            offset = 0.06 if bad else rng.gauss(0.0, 0.003)
+            out.append({"t": T0 + i * 10.0, "sources": {
+                "GPS": {"o": offset, "s": gps_state_bad if bad else "-", "k": "#", "r": 255},
+                "a": {"o": 0.0, "s": net_states[0], "k": "^"},
+                "b": {"o": 0.0, "s": net_states[1], "k": "^"}}})
+        return out
+
+    def test_falseticker_excursions_raise_bound(self):
+        # Befund: „x“/„~“ fielen heraus → Schranke schrumpfte auf ± 10 ms, echtes p95 ~ 60 ms.
+        for bad_state in ("x", "~"):
+            samples = self.falseticker_samples(gps_state_bad=bad_state)
+            result = gpsquality.measure(samples, "GPS", now=samples[-1]["t"] + 1)
+            self.assertEqual(result["status"], "measured")
+            self.assertGreaterEqual(result["bound"], 0.06, bad_state)
+            self.assertGreaterEqual(result["delay"], 0.12, bad_state)
+        # Ohne Daten („?“, Reach 0) zählt weiterhin nicht.
+        samples = self.falseticker_samples(gps_state_bad="?")
+        self.assertLess(gpsquality.measure(samples, "GPS", now=samples[-1]["t"] + 1)["delay"], 0.05)
+
+    def test_bound_does_not_freeze_when_gps_wins(self):
+        # Befund: GPS „*“, Netzquellen „-“ → keine Vergleichswerte → Schranke eingefroren.
+        samples = self.falseticker_samples(net_states=("-", "-"))
+        for sample in samples:
+            if sample["sources"]["GPS"]["s"] == "-":
+                sample["sources"]["GPS"]["s"] = "*"
+        result = gpsquality.measure(samples, "GPS", now=samples[-1]["t"] + 1)
+        self.assertEqual(result["status"], "measured")
+        self.assertGreaterEqual(result["delay"], 0.12)
+        # Der Kalibrier-Offset bleibt bei den genutzten Netzquellen („*“/„+“).
+        self.assertEqual(history.gps_differences(samples, "GPS"), ([], []))
+        # Genutzte Netzquellen haben Vorrang vor „-“.
+        mixed = [{"t": T0, "sources": {"GPS": {"o": 0.01, "s": "-", "k": "#"}, "a": {"o": 0.0, "s": "*", "k": "^"},
+                                       "z": {"o": 0.5, "s": "-", "k": "^"}}}]
+        self.assertEqual(history.gps_differences(mixed, "GPS", for_bound=True)[0], [0.01])
+
     def test_measure_needs_enough_data(self):
         samples = vk162_samples()[:30]
         self.assertEqual(gpsquality.measure(samples, "GPS", now=samples[-1]["t"])["status"], "insufficient")
@@ -236,6 +290,12 @@ class CalibrationDelayTest(unittest.TestCase):
         p95_dev = gpsquality._quantile([abs(d - median) for d in diffs], 0.95)
         self.assertGreaterEqual(result["suggested_delay"] / 2, p95_dev - 1e-9)
         self.assertGreaterEqual(result["suggested_delay"], gpsquality.DELAY_MIN)
+
+    def test_falseticker_outliers_raise_suggested_delay(self):
+        samples = SpreadTest.falseticker_samples()
+        result = history.calibrate(samples, "GPS", 0.0, 0.2)
+        self.assertGreaterEqual(result["suggested_delay"], 0.12)
+        self.assertLess(abs(result["bias"]), 0.002)  # Offset weiter nur aus den brauchbaren Werten
 
     def test_outliers_raise_suggested_delay(self):
         base = [{"t": T0 + i * 10, "sources": {"GPS": {"o": 0.05 + (0.06 if i % 10 == 0 else 0.0), "s": "-", "k": "#"},
@@ -263,12 +323,47 @@ class RefclockValuesTest(unittest.TestCase):
     def test_manual_and_pps_use_settings(self):
         applied = {"delay": 0.12, "precision": 0.01}
         self.assertEqual(gpsquality.refclock_values(cfg(gps_bound_mode="manual"), applied)["delay"], 0.03)
-        values = gpsquality.refclock_values(cfg(gps_pps_device="/dev/pps0"), applied)
+        values = gpsquality.refclock_values(cfg(gps_pps_device=PPS_DEV), applied)
         self.assertEqual((values["delay"], values["source"]), (0.03, "pps"))
         self.assertEqual(gpsquality.refclock_values(cfg(gps_pps_shm=True), applied)["source"], "pps")
         self.assertFalse(gpsquality.managed(cfg(gps_pps_shm=True)))
         self.assertFalse(gpsquality.managed(cfg(gps_enable=False)))
         self.assertTrue(gpsquality.managed(cfg()))
+
+
+class MissingPpsTest(StoreCase):
+    """Befund: GPS_PPS_DEVICE eingestellt, Gerät fehlt → confgen lässt PPS weg (NMEA allein),
+    gpsquality hielt das GPS trotzdem für „mit PPS“ (kleiner Delay, Rolle „Referenz“)."""
+
+    def test_has_pps_matches_confgen(self):
+        self.assertTrue(gpsquality.has_pps(cfg(gps_pps_device=PPS_DEV)))
+        self.assertFalse(gpsquality.has_pps(cfg(gps_pps_device=PPS_MISSING)))
+        self.assertTrue(gpsquality.has_pps(cfg(gps_pps_shm=True)))
+        # confgen: Gerät eingestellt, aber fehlt → auch kein SHM-PPS (elif-Kette)
+        self.assertFalse(gpsquality.has_pps(cfg(gps_pps_device=PPS_MISSING, gps_pps_shm=True)))
+
+    def test_missing_device_gets_honest_bound_and_fallback_role(self):
+        c = cfg(gps_pps_device=PPS_MISSING, gps_delay=0.03)
+        self.assertTrue(gpsquality.managed(c))
+        values = gpsquality.refclock_values(c, None)
+        self.assertEqual((values["delay"], values["source"]), (0.2, "default"))
+        role = gpsquality.role(c, None, {})
+        self.assertEqual(role["role"], "fallback")
+        self.assertNotEqual(role["label"], "Referenz")
+        self.assertTrue(gpsquality.status_hint(c)["managed"])
+        self.assertFalse(gpsquality.status_hint(c)["pps"])
+
+    def test_confgen_and_gpsquality_agree(self):
+        dev = os.path.join(self.tmp, "ttyACM0")
+        Path(dev).touch()
+        for pps, expect_pps in ((PPS_MISSING, False), (PPS_DEV, True)):
+            full = settings.values({})
+            full.update(gps_enable=True, gps_device=dev, gps_pps_device=pps, gps_delay=0.03)
+            text = confgen.render_chrony(full, {}, warn=lambda *a: None)
+            self.assertEqual("refclock PPS" in text, expect_pps, pps)
+            self.assertEqual(gpsquality.has_pps(full), expect_pps, pps)
+            line = next(l for l in text.splitlines() if l.startswith("refclock SHM"))
+            self.assertIn("delay 0.03 " if expect_pps else "delay 0.2 ", line)
 
 
 class DecideTest(unittest.TestCase):
@@ -278,9 +373,40 @@ class DecideTest(unittest.TestCase):
     def test_first_measurement_replaces_default(self):
         self.assertTrue(gpsquality.decide(self.measured(0.12), None, T0)["apply"])
 
-    def test_small_change_is_ignored(self):
+    def test_small_shrink_is_ignored(self):
         applied = {"delay": 0.12, "precision": 0.01, "t": T0}
-        self.assertFalse(gpsquality.decide(self.measured(0.15), applied, T0 + 48 * H)["apply"])
+        self.assertFalse(gpsquality.decide(self.measured(0.10), applied, T0 + 48 * H)["apply"])
+        self.assertFalse(gpsquality.decide(self.measured(0.12), applied, T0 + 48 * H)["apply"])
+
+    def test_any_grow_is_applied(self):
+        # Befund: ± 29 ms gemessen, ± 19,5 ms in chrony – das darf nicht so bleiben.
+        applied = {"delay": 0.039, "precision": 0.003, "t": T0}
+        d = gpsquality.decide(self.measured(0.058), applied, T0 + 2 * H)
+        self.assertTrue(d["apply"], d)
+        self.assertGreaterEqual(d["delay"], 0.058)
+        # Mit Reserve: kleines Kriechen startet chronyd nicht jede Stunde neu.
+        d = gpsquality.decide(self.measured(0.122), {"delay": 0.12, "precision": 0.01, "t": T0}, T0 + 2 * H)
+        self.assertTrue(d["apply"])
+        self.assertEqual(d["delay"], 0.15)
+
+    def test_grow_above_default(self):
+        # Befund: ± 145 ms gemessen, der Standard ± 100 ms blieb für immer.
+        d = gpsquality.decide(self.measured(0.29), None, T0)
+        self.assertTrue(d["apply"], d)
+        self.assertEqual(d["delay"], 0.29)
+        self.assertEqual(gpsquality.decide(self.measured(1.0), {"delay": 0.9, "precision": 0.01, "t": T0},
+                                           T0 + 2 * H)["delay"], gpsquality.DELAY_MAX)
+
+    def test_clock_jumped_back(self):
+        # t liegt in der Zukunft: größer erlaubt (sichere Richtung), kleiner gesperrt.
+        applied = {"delay": 0.08, "precision": 0.01, "t": T0 + 100 * 24 * H}
+        self.assertTrue(gpsquality.decide(self.measured(0.2), applied, T0)["apply"])
+        self.assertFalse(gpsquality.decide(self.measured(0.03), applied, T0)["apply"])
+
+    def test_no_shrink_after_reset(self):
+        self.assertFalse(gpsquality.decide(self.measured(0.04), None, T0 + H, reset_at=T0)["apply"])
+        self.assertTrue(gpsquality.decide(self.measured(0.3), None, T0 + H, reset_at=T0)["apply"])
+        self.assertTrue(gpsquality.decide(self.measured(0.04), None, T0 + 13 * H, reset_at=T0)["apply"])
 
     def test_grow_after_one_hour_shrink_after_twelve(self):
         applied = {"delay": 0.08, "precision": 0.01, "t": T0}
@@ -333,9 +459,32 @@ class TickTest(StoreCase):
         with self.assertRaises(gpsquality.QualityError):
             gpsquality.reset(cfg())
 
+    def test_reset_is_not_undone_by_next_tick(self):
+        # Befund: reset() setzte applied=None, die nächste Prüfung setzte sofort dieselbe kleine Schranke.
+        samples = vk162_samples(loops=5)
+        now = samples[-1]["t"] + 1
+        self.assertTrue(gpsquality.tick(cfg(), now, samples)["apply"])
+        gpsquality.reset(cfg(), now=now + 60)
+        reloads = len(self.reloads)
+        decision = gpsquality.tick(cfg(), now + H, samples)
+        self.assertFalse(decision["apply"], decision)
+        self.assertIsNone(gpsquality.read_applied())
+        self.assertEqual(len(self.reloads), reloads)
+        later = [dict(x, t=x["t"] + 13 * H) for x in samples]  # dieselben Messwerte, 13 h später
+        self.assertTrue(gpsquality.tick(cfg(), now + 13 * H, later)["apply"])
+
+    def test_future_timestamp_is_clamped(self):
+        samples = vk162_samples(loops=5)
+        now = samples[-1]["t"] + 1
+        gpsquality.save_state({"applied": {"delay": 0.19, "precision": 0.01, "t": now + 365 * 24 * H}})
+        self.assertFalse(gpsquality.tick(cfg(), now, samples)["apply"])  # kleiner: 12 h ab jetzt gesperrt
+        self.assertEqual(gpsquality.load_state()["applied"]["t"], now)
+        later = [dict(x, t=x["t"] + 13 * H) for x in samples]
+        self.assertTrue(gpsquality.tick(cfg(), now + 13 * H, later)["apply"])
+
     def test_not_managed_does_nothing(self):
         samples = vk162_samples(loops=5)
-        d = gpsquality.tick(cfg(gps_pps_device="/dev/pps0"), samples[-1]["t"] + 1, samples)
+        d = gpsquality.tick(cfg(gps_pps_device=PPS_DEV), samples[-1]["t"] + 1, samples)
         self.assertFalse(d["apply"])
         self.assertEqual(self.reloads, [])
         self.assertFalse(os.path.exists(store.path()))
@@ -395,7 +544,7 @@ class RoleTest(unittest.TestCase):
         self.assertIsNone(role["active"])
 
     def test_reference(self):
-        self.assertEqual(gpsquality.role(cfg(gps_pps_device="/dev/pps0"), None, self.STATE)["label"], "Referenz")
+        self.assertEqual(gpsquality.role(cfg(gps_pps_device=PPS_DEV), None, self.STATE)["label"], "Referenz")
         role = gpsquality.role(cfg(gps_select="prefer"), None, self.STATE)
         self.assertEqual(role["role"], "reference")
         self.assertEqual(role["tone"], "warn")
@@ -406,6 +555,27 @@ class RoleTest(unittest.TestCase):
         self.assertEqual(len(role["warnings"]), 2)
         self.assertIn("kleiner als die gemessene Streuung", role["warnings"][0])
         self.assertIn("Mindestzahl Quellen", role["warnings"][1])
+
+    def test_measured_above_effective_is_flagged(self):
+        state = {"measured": {"status": "measured", "delay": 0.29}}
+        role = gpsquality.role(cfg(), None, state)
+        self.assertNotIn("nach einigen Stunden", role["text"])
+        self.assertEqual(len(role["warnings"]), 1)
+        self.assertIn("größer als die Schranke in chrony", role["warnings"][0])
+        state = {"applied": {"delay": 0.039, "precision": 0.003}, "measured": {"status": "measured", "delay": 0.058}}
+        self.assertEqual(len(gpsquality.role(cfg(), None, state)["warnings"]), 1)
+        # Gemessen knapp unter dem Standard: bleibt beim Standard, ehrlich gesagt.
+        role = gpsquality.role(cfg(), None, {"measured": {"status": "measured", "delay": 0.15}})
+        self.assertIn("bleibt darum beim Standard", role["text"])
+        self.assertEqual(role["warnings"], [])
+
+    def test_annotate_calibration(self):
+        result = gpsquality.annotate_calibration({"current_delay": 0.03}, cfg(gps_delay=0.03), None)
+        self.assertEqual((result["current_delay"], result["delay_managed"], result["delay_source"]), (0.2, True, "default"))
+        result = gpsquality.annotate_calibration({"current_delay": 0.03}, cfg(), {"delay": 0.12, "precision": 0.01})
+        self.assertEqual((result["current_delay"], result["delay_source"]), (0.12, "measured"))
+        result = gpsquality.annotate_calibration({"current_delay": 0.03}, cfg(gps_bound_mode="manual"), None)
+        self.assertEqual((result["current_delay"], result["delay_managed"]), (0.03, False))
 
     def test_off(self):
         self.assertEqual(gpsquality.role(cfg(gps_enable=False))["role"], "off")
@@ -454,17 +624,43 @@ class FlapReplayTest(unittest.TestCase):
         self.assertEqual(watch.gps_stability()["state"], "stetig")
         self.assertEqual(sum(1 for e in events if "unstet" in e[2]), 1)
 
-    def test_calm_without_fix_is_a_warning(self):
+    def test_lost_fix_while_unstet_is_reported_early(self):
+        # Befund: im Zustand „unstet“ kam „GPS-Fix verloren“ erst nach einer Stunde.
+        events, now = [], [0.0]
+        watch = statewatch.StateWatcher(lambda *a, **k: events.append(a + (now[0],)), clock=lambda: now[0])
+        for mode in ([3, 3, 1, 1] * 6):
+            watch.sample({"gps": {"mode": mode}})
+            now[0] += 10
+        self.assertEqual(watch.gps_stability()["state"], "unstet")
+        lost_at = now[0]
+        for _ in range(400):
+            watch.sample({"gps": {"mode": 1}})
+            now[0] += 10
+        gps_events = [e for e in events if e[0] == "gps"]
+        self.assertEqual(gps_events[-1][1], "warn")
+        self.assertRegex(gps_events[-1][2], r"^GPS-Fix verloren – nach \d+ Fix-Wechseln .* seit 10 min ohne Fix$")
+        self.assertFalse(gps_events[-1][3]["fix"])
+        self.assertLessEqual(gps_events[-1][4] - lost_at, statewatch.GPS_UNSTET_LOST + 60)
+        self.assertEqual(sum(1 for e in gps_events if "verloren" in e[2]), 1)  # kein zweites Ereignis
+        self.assertEqual(watch.gps_stability()["state"], "stetig")
+        # Fix kommt zurück → normales Ereignis (Haltezeit 60 s).
+        for _ in range(10):
+            watch.sample({"gps": {"mode": 3}})
+            now[0] += 10
+        self.assertEqual([e[2] for e in events if e[0] == "gps"][-1], "GPS-Fix wieder da")
+
+    def test_gps_off_closes_episode_events(self):
         events, now = [], [0.0]
         watch = statewatch.StateWatcher(lambda *a, **k: events.append(a), clock=lambda: now[0])
         for mode in ([3, 3, 1, 1] * 6):
             watch.sample({"gps": {"mode": mode}})
             now[0] += 10
-        for _ in range(400):
-            watch.sample({"gps": {"mode": 1}})
-            now[0] += 10
-        self.assertEqual(events[-1][1], "warn")
-        self.assertIn("seit einer Stunde ohne Fix", events[-1][2])
+        self.assertEqual(watch.gps_stability()["state"], "unstet")
+        watch.sample({"offset": 0.0})
+        self.assertEqual(events[-1][1], "info")
+        self.assertIn("GPS ausgeschaltet", events[-1][2])
+        self.assertEqual(events[-1][3]["state"], "aus")
+        self.assertEqual(watch.gps_stability()["state"], "unbekannt")
 
     def test_gps_off_resets(self):
         _, watch = self.run_replay(1)
@@ -516,15 +712,25 @@ class AntennaTest(StoreCase):
             polls.append(1)
             return self.status()
 
-        test = gpsquality.AntennaTest(poll, gpsquality.save_antenna)
-        test.start("Fensterbank", seconds=0.3, interval=0.01)
-        test.join(timeout=30)
+        # Eigene Uhr, die je Abfrage eine Sekunde weiterläuft: genau 5 Abfragen, egal wie
+        # ausgelastet der Rechner ist.
+        clock = [1000.0]
+
+        def poll():
+            polls.append(1)
+            clock[0] += 1.0
+            return self.status()
+
+        test = gpsquality.AntennaTest(poll, gpsquality.save_antenna, mono=lambda: clock[0])
+        test.start("Fensterbank", seconds=5, interval=0.01)
+        test.join(timeout=60)
         self.assertFalse(test.running())
         results = gpsquality.antenna_results()
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["label"], "Fensterbank")
         self.assertTrue(results[0]["complete"])
-        self.assertGreaterEqual(results[0]["samples"], 3)
+        self.assertEqual(results[0]["samples"], 5)
+        self.assertEqual(len(polls), 5)
         with sqlite3.connect(store.path()) as conn:
             raw = " ".join(r[0] for r in conn.execute("SELECT json FROM antenna_tests"))
         self.assertNotIn("elevation", raw)

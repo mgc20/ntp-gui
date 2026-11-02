@@ -19,11 +19,13 @@ Bausteine:
   * role(cfg, sources)         welche Rolle das GPS gerade spielt (für GPS-Seite, Hardware)
   * Antennen-Test              5 Minuten messen, umstellen, erneut messen, vergleichen
 
-Sicherheit und Umkehrbarkeit: Eine neue Schranke wird nur übernommen, wenn sie sich
-deutlich (Faktor 1,5) ändert, höchstens alle 12 h kleiner (ein Mal je Stunde größer – das
-GPS ist dann schlechter als angenommen), immer mit Ereignis im Protokoll. Abschalten:
-Einstellung gps_bound_mode = „manual“ (dann gelten gps_delay/gps_precision wie bisher),
-Zurücksetzen auf den vorsichtigen Standard über POST /api/gps/bound {"action": "reset"}.
+Sicherheit und Umkehrbarkeit: Größer wird die Schranke, sobald die gemessene Streuung die
+eingestellte übersteigt (höchstens ein Mal je Stunde, mit etwas Reserve – das GPS ist dann
+schlechter als angenommen; eine zu kleine Schranke wäre unehrlich). Kleiner wird sie nur
+bei deutlicher Änderung (Faktor 1,5) und höchstens alle 12 h, auch nicht in den 12 h nach
+einem Zurücksetzen. Immer mit Ereignis im Protokoll. Abschalten: Einstellung
+gps_bound_mode = „manual“ (dann gelten gps_delay/gps_precision wie bisher), Zurücksetzen
+auf den vorsichtigen Standard über POST /api/gps/bound {"action": "reset"}.
 
 Datenschutz: Hier wird nichts gespeichert, was den Standort verrät – keine Position, keine
 Satellitenwinkel. Der Antennen-Test merkt sich nur Signalstärken, Satellitenzahlen und den
@@ -61,7 +63,8 @@ DEFAULT_DELAY = 0.2           # unbekannte Streuung: vorsichtig (± 100 ms)
 DELAY_MIN = 0.02              # NMEA ohne PPS: nie enger als ± 10 ms ansetzen
 DELAY_MAX = 1.0               # Obergrenze wie die Einstellung gps_delay
 PRECISION_MIN, PRECISION_MAX = 0.001, 0.1
-CHANGE_FACTOR = 1.5           # erst ab dieser Änderung wird chrony neu gestartet
+CHANGE_FACTOR = 1.5           # kleiner erst ab dieser Änderung (sonst Neustart ohne Nutzen)
+GROW_HEADROOM = 1.25          # größer: mindestens um diesen Faktor – weniger Neustarts bei Kriechen
 GROW_INTERVAL = 3600.0        # größer (GPS schlechter als angenommen): frühestens nach 1 h
 SHRINK_INTERVAL = 12 * 3600.0  # kleiner: frühestens nach 12 h
 TICK_INTERVAL = 3600.0
@@ -348,7 +351,7 @@ def measure(samples: list[dict], gps_name: str, now: float | None = None,
     now = time.time() if now is None else now
     since = now - hours * 3600.0
     window = [s for s in samples or [] if isinstance(s, dict) and (_num(s.get("t")) or 0) >= since]
-    diffs, times = history.gps_differences(window, gps_name)
+    diffs, times = history.gps_differences(window, gps_name, for_bound=True)
     duration = (times[-1] - times[0]) if times else 0.0
     result: dict[str, Any] = {"t": now, "hours": hours, "samples": len(diffs), "duration_seconds": duration}
     if len(diffs) < BOUND_MIN_SAMPLES or duration < BOUND_MIN_SECONDS:
@@ -421,8 +424,18 @@ def _valid_applied(applied: Any) -> dict[str, Any] | None:
     return dict(applied, delay=delay, precision=precision)
 
 
-def has_pps(cfg: dict) -> bool:
-    return bool(str(cfg.get("gps_pps_device") or "").strip() or cfg.get("gps_pps_shm"))
+def has_pps(cfg: dict, exists: Callable[[str], bool] = os.path.exists) -> bool:
+    """Hat chrony wirklich einen PPS-Refclock? Dieselbe Entscheidung wie confgen.render_chrony:
+    PPS-Gerät eingestellt UND vorhanden – oder (ohne Gerät) „PPS über gpsd“. Ein eingestelltes,
+    aber fehlendes Gerät (z. B. pps-gpio-Overlay nicht geladen) überspringt confgen mit Warnung;
+    dann läuft das GPS als reine NMEA-Quelle und braucht die ehrliche Schranke wie ohne PPS."""
+    device = str(cfg.get("gps_pps_device") or "").strip()
+    if device:
+        try:
+            return bool(exists(device))
+        except (OSError, ValueError):
+            return False
+    return bool(cfg.get("gps_pps_shm"))
 
 
 def managed(cfg: dict) -> bool:
@@ -451,6 +464,32 @@ def refclock_values(cfg: dict, applied: dict | None | bool = False) -> dict[str,
     if applied:
         return {"delay": applied["delay"], "precision": applied["precision"], "source": "measured"}
     return {"delay": max(delay, DEFAULT_DELAY), "precision": precision, "source": "default"}
+
+
+def annotate_calibration(result: dict[str, Any], cfg: dict, applied: dict | None | bool = False) -> dict[str, Any]:
+    """Kalibrier-Ergebnis um den Delay ergänzen, den chrony wirklich nutzt.
+
+    Im Modus „gemessen“ (ohne PPS) gilt nicht die Einstellung gps_delay, sondern die gemessene
+    Schranke bzw. der vorsichtige Standard. Dann zeigt „aktuell“ diesen Wert, und der
+    Assistent übernimmt nur den Offset (delay_managed=True)."""
+    values = refclock_values(cfg, applied)
+    is_managed = managed(cfg)
+    result["delay_managed"] = is_managed
+    result["delay_source"] = values["source"]
+    if is_managed:
+        result["current_delay"] = values["delay"]
+    return result
+
+
+def status_hint(cfg: dict) -> dict[str, Any]:
+    """Kurzfassung für /api/status (GPS-Seite): PPS wirklich aktiv? Welcher Delay gilt?"""
+    if not cfg.get("gps_enable"):
+        return {"pps": False, "managed": False, "delay": None, "source": None}
+    try:
+        values = refclock_values(cfg)
+    except Exception:
+        values = {"delay": float(cfg.get("gps_delay") or DEFAULT_DELAY), "source": "manual"}
+    return {"pps": has_pps(cfg), "managed": managed(cfg), "delay": values["delay"], "source": values["source"]}
 
 
 # =========================================================================================
@@ -482,23 +521,48 @@ def _emit(kind: str, level: str, title: str, data: dict) -> None:
         pass
 
 
-def decide(measured: dict, applied: dict | None, now: float) -> dict[str, Any]:
-    """Reine Entscheidung: neue Schranke anwenden oder nicht (mit Grund)."""
+def _since(t: Any, now: float) -> float | None:
+    """Sekunden seit t; None = unbekannt (kein t oder t liegt in der Zukunft – Uhr sprang zurück)."""
+    value = _num(t)
+    if value is None:
+        return None
+    since = now - value
+    return since if since >= 0 else None
+
+
+def decide(measured: dict, applied: dict | None, now: float, reset_at: float | None = None) -> dict[str, Any]:
+    """Reine Entscheidung: neue Schranke anwenden oder nicht (mit Grund).
+
+    Größer (das GPS streut stärker als die eingestellte Schranke): sofort, sobald die Messung
+    darüber liegt – höchstens einmal je Stunde. Neue Schranke dann mindestens GROW_HEADROOM ×
+    die alte, damit langsames Kriechen nicht stündlich chronyd neu startet. Kleiner: nur bei
+    deutlicher Änderung (Faktor 1,5) und frühestens 12 h nach der letzten Änderung bzw. dem
+    letzten Zurücksetzen. Sprang die Uhr zurück (Zeitpunkt in der Zukunft), gilt „unbekannt“:
+    größer erlaubt (die sichere Richtung), kleiner gesperrt.
+    Ergebnis bei apply: delay = die neue Schranke (Delay in Sekunden)."""
     if measured.get("status") != "measured":
         return {"apply": False, "reason": "Noch zu wenig gemeinsame Messungen von GPS und Netzquellen."}
     current = applied["delay"] if applied else DEFAULT_DELAY
     new = float(measured["delay"])
-    since = now - float(applied.get("t") or 0.0) if applied else math.inf
-    if new >= current * CHANGE_FACTOR:
-        if since < GROW_INTERVAL:
-            return {"apply": False, "reason": "Die Streuung ist gewachsen – die nächste Anpassung ist "
-                                              "frühestens eine Stunde nach der letzten möglich."}
-        return {"apply": True, "reason": "Das GPS streut stärker als angenommen – die Schranke wird größer."}
+    if applied:
+        since = _since(applied.get("t"), now)
+    elif reset_at is not None:
+        since = _since(reset_at, now)
+    else:
+        since = math.inf
+    if new > current + 1e-9:
+        if since is not None and since < GROW_INTERVAL:
+            return {"apply": False, "reason": "Die Streuung ist größer als die eingestellte Schranke – die nächste "
+                                              "Anpassung ist frühestens eine Stunde nach der letzten möglich."}
+        target = min(DELAY_MAX, max(new, _ceil_ms(current * GROW_HEADROOM)))
+        return {"apply": True, "delay": target,
+                "reason": "Das GPS streut stärker als angenommen – die Schranke wird größer."}
     if new <= current / CHANGE_FACTOR:
-        if since < SHRINK_INTERVAL:
+        if since is None or since < SHRINK_INTERVAL:
             return {"apply": False, "reason": "Die Streuung ist kleiner geworden – kleiner wird die "
-                                              "Schranke höchstens alle 12 Stunden."}
-        return {"apply": True, "reason": "Das GPS streut weniger als angenommen – die Schranke wird kleiner."}
+                                              "Schranke höchstens alle 12 Stunden (auch nach einem Zurücksetzen)."}
+        return {"apply": True, "delay": new,
+                "reason": "Das GPS streut weniger als angenommen – die Schranke wird kleiner."}
     return {"apply": False, "reason": "Die gemessene Streuung passt zur eingestellten Schranke."}
 
 
@@ -516,12 +580,21 @@ def tick(cfg: dict, now: float | None = None, samples: list[dict] | None = None)
                 samples = hist.snapshot(now - BOUND_HOURS * 3600.0) if hist is not None else []
             measured = measure(samples, str(cfg.get("gps_refid") or "GPS"), now)
             applied = _valid_applied(state.get("applied"))
-            decision = decide(measured, applied, now)
+            # Zeitpunkte in der Zukunft (Uhr lief vor und wurde korrigiert): auf jetzt kürzen,
+            # sonst bliebe das Verkleinern bis dahin gesperrt.
+            if applied and (_num(applied.get("t")) or 0.0) > now:
+                applied["t"] = now
+                state["applied"] = dict(state["applied"], t=now)
+            reset_at = _num(state.get("reset_at"))
+            if reset_at is not None and reset_at > now:
+                reset_at = state["reset_at"] = now
+            decision = decide(measured, applied, now, reset_at)
             state["measured"] = measured
             state["decision"] = dict(decision, t=now)
             if decision["apply"]:
                 old = applied["delay"] if applied else DEFAULT_DELAY
-                state["applied"] = {"delay": measured["delay"], "precision": measured["precision"],
+                new_delay = float(decision.get("delay", measured["delay"]))
+                state["applied"] = {"delay": new_delay, "precision": measured["precision"],
                                     "bound": measured["bound"], "samples": measured["samples"],
                                     "hours": measured["hours"], "t": now}
                 save_state(state)
@@ -529,8 +602,8 @@ def tick(cfg: dict, now: float | None = None, samples: list[dict] | None = None)
                 reloaded = bool(trigger()) if trigger else False
                 decision["reload_triggered"] = reloaded
                 _emit("gps", "info",
-                      f"GPS-Fehlerschranke angepasst: ± {fmt_ms(old / 2)} → ± {fmt_ms(measured['delay'] / 2)}",
-                      {"old_delay": old, "new_delay": measured["delay"],
+                      f"GPS-Fehlerschranke angepasst: ± {fmt_ms(old / 2)} → ± {fmt_ms(new_delay / 2)}",
+                      {"old_delay": old, "new_delay": new_delay, "measured_delay": measured["delay"],
                        "new_precision": measured["precision"], "spread_ms": round(measured["bound"] * 1000, 1),
                        "samples": measured["samples"], "hours": measured["hours"],
                        "reason": decision["reason"], "reload_triggered": reloaded})
@@ -563,7 +636,12 @@ def reset(cfg: dict, now: float | None = None) -> dict[str, Any]:
         if not applied:
             raise QualityError("Es ist keine gemessene Fehlerschranke aktiv.", conflict=True)
         state["applied"] = None
-        state["decision"] = {"apply": False, "t": now, "reason": "Von Hand auf den Standard zurückgesetzt."}
+        # Ohne Sperre würde die nächste stündliche Prüfung dieselbe kleine Schranke sofort wieder
+        # setzen: Verkleinern erst wieder 12 h nach dem Zurücksetzen (Vergrößern jederzeit).
+        state["reset_at"] = now
+        state["decision"] = {"apply": False, "t": now,
+                             "reason": "Von Hand auf den Standard zurückgesetzt – kleiner wird die Schranke "
+                                       "frühestens in 12 Stunden wieder."}
         save_state(state)
         trigger = _DEPS.get("trigger_reload")
         reloaded = bool(trigger()) if trigger else False
@@ -625,15 +703,24 @@ def role(cfg: dict, sources: Any = None, state: dict | None = None) -> dict[str,
     result.update(role="fallback", label="Rückfallebene", tone="good" if values["source"] == "measured" else "info",
                   text=f"chrony nimmt die Netzquellen, solange sie besser sind. Wird das Internet schlecht oder "
                        f"fällt es aus, übernimmt das GPS von selbst – mit ehrlicher Fehlerschranke ± {bound}.")
-    if values["source"] == "default":
+    honest = measured.get("delay") if measured and measured.get("status") == "measured" else None
+    if values["source"] == "default" and honest is None:
         result["text"] += (" Die Schranke ist noch der vorsichtige Standard; nach einigen Stunden gemeinsamer "
                            "Messung mit den Netzquellen setzt ntp-gui sie auf die gemessene Streuung.")
-    honest = measured.get("delay") if measured and measured.get("status") == "measured" else None
-    if values["source"] == "manual" and honest is not None and values["delay"] < honest:
-        result["warnings"].append(
-            f"Deine Schranke (Delay {values['delay']} s = ± {bound}) ist kleiner als die gemessene Streuung "
-            f"(± {fmt_ms(honest / 2)}). chrony könnte das GPS dann guten Netzquellen vorziehen. Modus "
-            "„gemessen“ oder ein größerer Delay behebt das.")
+    elif values["source"] == "default" and honest <= values["delay"]:
+        result["text"] += (f" Die gemessene Streuung (± {fmt_ms(honest / 2)}) liegt nah am vorsichtigen Standard – "
+                           "die Schranke bleibt darum beim Standard.")
+    if honest is not None and values["delay"] < honest:
+        if values["source"] == "manual":
+            result["warnings"].append(
+                f"Deine Schranke (Delay {values['delay']} s = ± {bound}) ist kleiner als die gemessene Streuung "
+                f"(± {fmt_ms(honest / 2)}). chrony könnte das GPS dann guten Netzquellen vorziehen. Modus "
+                "„gemessen“ oder ein größerer Delay behebt das.")
+        else:
+            result["warnings"].append(
+                f"Die gemessene Streuung (± {fmt_ms(honest / 2)}) ist größer als die Schranke in chrony "
+                f"(± {bound}). ntp-gui vergrößert sie bei der nächsten stündlichen Prüfung – höchstens "
+                "einmal je Stunde.")
     try:
         minsources = int(cfg.get("ntp_minsources") or 1)
     except (TypeError, ValueError):

@@ -42,7 +42,9 @@ export const HELP_GNSS = {
       + "Dann gibt es **ein** Ereignis „GPS-Empfang unstet“ mit Zählung statt Dutzender Paare „verloren/wieder "
       + "da“. Die Folge für chrony: Das GPS ist oft unbrauchbar, chrony stellt die Uhr dann nach den "
       + "Netzwerkquellen – **das ist richtig so**. Nach einer Stunde ohne Wechsel kommt ein Abschlussereignis "
-      + "mit der Zahl der Wechsel.",
+      + "mit der Zahl der Wechsel; bleibt der Fix **10 Minuten am Stück weg**, meldet ein Abschlussereignis "
+      + "„GPS-Fix verloren“ das sofort. Bei **stetig** steht dahinter, wie viele Fix-Wechsel es in der letzten "
+      + "halben Stunde trotzdem gab (unter sechs).",
   },
   gpsq_basis: {
     title: "Datenbasis",
@@ -80,23 +82,29 @@ export const HELP_GNSS = {
   gpsq_bound_mode: {
     title: "Herkunft der Fehlerschranke",
     text: "**Gemessen**: aus der Streuung des GPS gegen deine genutzten Netzwerkquellen über die letzten "
-      + "6 Stunden (95 % der Abweichungen liegen innerhalb, mindestens ± 10 ms). **Vorsichtiger Standard**: "
+      + "6 Stunden (95 % der Abweichungen liegen innerhalb, mindestens ± 10 ms). Auch Werte, die chrony als "
+      + "Falschgeber („x“) verworfen hat, zählen mit – gerade sie zeigen, wie weit das GPS danebenliegen kann. "
+      + "Hat chrony das GPS gewählt, dienen die übrigen erreichbaren Netzquellen als Vergleich. **Vorsichtiger Standard**: "
       + "± 100 ms, bis genug gemessen ist. **Von Hand**: Delay und Auflösung aus den Einstellungen. **Mit "
-      + "PPS** zählt der Impuls, die NMEA-Zeit nummeriert nur die Sekunden. Umstellen: Einstellungen → GPS → "
+      + "PPS** zählt der Impuls, die NMEA-Zeit nummeriert nur die Sekunden – aber nur, wenn das PPS-Gerät "
+      + "wirklich da ist; fehlt es, gilt das GPS als „ohne PPS“. Umstellen: Einstellungen → GPS → "
       + "„Fehlerschranke ohne PPS“.",
   },
   gpsq_spread: {
     title: "Gemessene Streuung",
     text: "Wie weit das GPS von den genutzten Netzwerkquellen abweicht: das 95-%-Quantil der Abweichungen, "
       + "mindestens der Median plus dreimal die robuste Streuung (MAD). Ein noch nicht kalibrierter Versatz "
-      + "zählt mit – er ist genauso ein Fehler wie Rauschen. Gemessen wird stündlich; chrony bekommt eine neue "
-      + "Schranke erst bei einer deutlichen Änderung (Faktor 1,5), größer frühestens nach 1 h, kleiner "
-      + "frühestens nach 12 h. Jede Änderung steht im Ereignisprotokoll und startet chronyd kurz neu.",
+      + "zählt mit – er ist genauso ein Fehler wie Rauschen. Gemessen wird stündlich. **Größer** wird die "
+      + "Schranke, sobald die Streuung sie übersteigt (höchstens einmal je Stunde, mit etwas Reserve, damit "
+      + "chronyd nicht ständig neu startet) – eine zu kleine Schranke wäre unehrlich. **Kleiner** nur bei einer "
+      + "deutlichen Änderung (Faktor 1,5) und frühestens nach 12 h. Jede Änderung steht im Ereignisprotokoll "
+      + "und startet chronyd kurz neu.",
   },
   gpsq_bound_check: {
     title: "Letzte Prüfung",
     text: "Wann die Streuung zuletzt geprüft wurde und was daraus folgte. „Auf Standard zurücksetzen“ setzt "
-      + "die Schranke auf ± 100 ms zurück (mit Ereignis); nach der nächsten Messung passt ntp-gui sie wieder an. "
+      + "die Schranke auf ± 100 ms zurück (mit Ereignis). Größer kann sie danach jederzeit werden, kleiner "
+      + "frühestens nach 12 Stunden – sonst setzte die nächste stündliche Prüfung sofort wieder die alte. "
       + "Dauerhaft abschalten: „Fehlerschranke ohne PPS: von Hand“.",
   },
   gpsq_antenna: {

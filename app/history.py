@@ -614,23 +614,57 @@ def gps_measured(gps: Any) -> bool:
     return True
 
 
-def gps_differences(samples: list[dict], gps_name: str) -> tuple[list[float], list[float]]:
+def _gps_has_data(gps: Any) -> bool:
+    """Weicher als gps_measured(): nur „keine Daten“ („?“, Reach 0) fällt heraus.
+
+    Für die Fehlerschranke zählen auch „x“ (Falschgeber) und „~“ (zu unruhig) – das sind
+    genau die Momente, in denen die NMEA-Zeit weiter danebenliegt als ihre Schranke. Ließe
+    man sie weg, sähe die Messung nur die braven Werte, und jede kleinere Schranke machte
+    noch mehr Ausreißer zu „x“ – die Schranke schrumpfte sich selbst klein."""
+    if not isinstance(gps, dict):
+        return False
+    offset = gps.get("o")
+    if isinstance(offset, bool) or not isinstance(offset, (int, float)) or not math.isfinite(offset):
+        return False
+    if gps.get("s") == "?":
+        return False
+    reach = gps.get("r", gps.get("reach"))
+    if isinstance(reach, (int, float)) and not isinstance(reach, bool) and reach == 0:
+        return False
+    return True
+
+
+def _net_offsets(sources: dict, gps_name: str, states: set[str]) -> list[float]:
+    return [v.get("o") for name, v in sources.items()
+            if name != gps_name and isinstance(v, dict) and v.get("s") in states
+            and v.get("k") != "#"
+            and isinstance(v.get("o"), (int, float)) and not isinstance(v.get("o"), bool)
+            and math.isfinite(v.get("o"))]
+
+
+def gps_differences(samples: list[dict], gps_name: str, for_bound: bool = False) -> tuple[list[float], list[float]]:
     """Differenzen GPS − Mittel der genutzten Netzwerkquellen („*“/„+“) je Messpunkt.
 
     Grundlage für den Kalibrier-Assistenten (Median = Verspätung) und für die ehrliche
-    Fehlerschranke des GPS ohne PPS (gpsquality.measure, Streuung)."""
+    Fehlerschranke des GPS ohne PPS (gpsquality.measure, Streuung).
+
+    for_bound=True (Fehlerschranke, Delay-Vorschlag): GPS-Werte mit „x“/„~“ zählen mit
+    (siehe _gps_has_data). Gibt es keine genutzte Netzquelle – etwa weil chrony gerade das
+    GPS gewählt hat und die Netzquellen darum als „-“ führt –, dienen die übrigen
+    erreichbaren Netzquellen („-“) als Vergleich. Sonst fiele die Messung genau dann aus,
+    wenn das GPS gewinnt, und die (kleine) Schranke bliebe eingefroren."""
     diffs, times = [], []
+    valid = _gps_has_data if for_bound else gps_measured
     for sample in samples:
         if not isinstance(sample, dict):
             continue
         sources = sample.get("sources") or {}
         gps = sources.get(gps_name)
-        if not gps_measured(gps):
+        if not valid(gps):
             continue  # GPS ohne Daten („?“, Reach 0 …) – sonst zählte 0 − Netz als Verspätung
-        reference = [v.get("o") for name, v in sources.items()
-                     if name != gps_name and isinstance(v, dict) and v.get("s") in {"*", "+"}
-                     and v.get("k") != "#"
-                     and isinstance(v.get("o"), (int, float))]
+        reference = _net_offsets(sources, gps_name, {"*", "+"})
+        if not reference and for_bound:
+            reference = _net_offsets(sources, gps_name, {"-"})
         if not reference:
             continue
         diffs.append(gps["o"] - sum(reference) / len(reference))
@@ -667,7 +701,10 @@ def calibrate(samples: list[dict], gps_name: str, current_offset: float,
     # (nach dem Übernehmen des Offsets liegt das GPS dort), mit 95-%-Quantil statt nur MAD –
     # sonst übersieht ein kleiner MAD die Ausreißer von ± 60 ms, und chrony hielte das GPS
     # für genauer als gute NTS-Quellen.
-    honest = gpsquality.spread([d - median for d in diffs]) or {}
+    # Für die Streuung zählen auch die Werte, die chrony als „x“/„~“ verworfen hat (siehe
+    # gps_differences(for_bound=True)) – sonst wäre der Vorschlag zu klein.
+    all_diffs, _ = gps_differences(samples, gps_name, for_bound=True)
+    honest = gpsquality.spread([d - median for d in (all_diffs or diffs)]) or {}
     result.update(
         bias=median, spread=mad, spread_p95=honest.get("p95_abs"),
         suggested_offset=round(current_offset + median, 4),

@@ -727,6 +727,8 @@ def build_status() -> dict:
             "reload": reload_status(),
         },
     }
+    # GPS-Seite: wirklich aktiver PPS-Refclock und der Delay, den chrony nutzt (gemessen/Standard).
+    status["config"]["gps_bound"] = gpsquality.status_hint(cfg)
     leap_info = leap.status(cfg, tracking)
     status["leap"] = _leap_summary(leap_info)
     status["notify"] = _notify_summary()
@@ -1425,8 +1427,10 @@ class Handler(BaseHTTPRequestHandler):
             # Ohne window die letzten 24 h: über 30 Tage SQLite-Verlauf dauert es sonst Sekunden.
             window = env_like(query.get("window", query.get("seconds")), CALIBRATION_DEFAULT_WINDOW)
             since = time.time() - window if window > 0 else None
-            self._send_json(historymod.calibrate(HISTORY.snapshot(since), cfg["gps_refid"],
-                                                 float(cfg["gps_offset"]), float(cfg["gps_delay"])))
+            result = historymod.calibrate(HISTORY.snapshot(since), cfg["gps_refid"],
+                                          float(cfg["gps_offset"]), float(cfg["gps_delay"]))
+            # Im Modus „gemessen“ gilt nicht gps_delay, sondern die gemessene Schranke.
+            self._send_json(gpsquality.annotate_calibration(result, cfg))
         elif path == "/api/gps/autocal":
             self._send_json(autocal.api_status(settings.values(), fresh=query.get("fresh") != "0"))
         elif path == "/api/gps/quality":

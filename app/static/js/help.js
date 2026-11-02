@@ -579,7 +579,8 @@ export const HELP = {
       + "nie kleiner: Ein Delay von 0,03 s bei ± 60 ms Streuung ließ chrony das GPS guten "
       + "NTS-Quellen vorziehen. Ohne PPS setzt ntp-gui ihn deshalb ab 1.5 selbst aus der "
       + "gemessenen Streuung („Fehlerschranke ohne PPS: gemessen“), der Kalibrier-Assistent "
-      + "schlägt nie weniger vor.",
+      + "schlägt nie weniger vor. In diesem Modus zeigt „Delay in chrony“ den gemessenen Wert "
+      + "(bzw. den Standard), und „Vorschlag übernehmen“ setzt nur den Offset.",
   },
   gps_recalibrate: {
     title: "Wann neu kalibrieren?",
