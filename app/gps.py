@@ -202,6 +202,11 @@ def parse_reports(reports: dict[str, Any]) -> dict[str, Any]:
     if snrs:
         state["snr_avg"] = round(sum(snrs) / len(snrs), 1)
         state["snr_max"] = max(snrs)
+    # 1.5: Median der vier stärksten empfangenen Satelliten – Grundlage der Empfangsbewertung.
+    import gpsquality  # spät: gps.py bleibt ohne Datenbank testbar
+    top4 = gpsquality.cn0_top4(satellites)
+    if top4 is not None:
+        state["cn0_top4"] = top4
     return state
 
 

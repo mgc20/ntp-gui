@@ -61,6 +61,7 @@ try:
 except ImportError:  # pragma: no cover – Python ohne sqlite3
     sqlite3 = None  # type: ignore[assignment]
 
+import gpsquality
 import store
 
 _NUMERIC_TOP = ("offset", "rms", "freq", "skew", "root_delay", "root_dispersion",
@@ -613,18 +614,15 @@ def gps_measured(gps: Any) -> bool:
     return True
 
 
-def calibrate(samples: list[dict], gps_name: str, current_offset: float,
-              current_delay: float) -> dict[str, Any]:
-    """Vergleicht den GPS-Offset mit den aktiven Netzwerkquellen.
+def gps_differences(samples: list[dict], gps_name: str) -> tuple[list[float], list[float]]:
+    """Differenzen GPS − Mittel der genutzten Netzwerkquellen („*“/„+“) je Messpunkt.
 
-    Alle Offsets sind relativ zur Systemuhr. Die Differenz GPS − Netz ist
-    deshalb unabhängig davon, welche Quelle die Uhr gerade regelt, genau die
-    Verspätung des GPS. Die Refclock-Option „offset“ verschiebt die GPS-Zeit
-    um ihren Wert nach vorn: neuer Offset = aktueller Offset + gemessene
-    Differenz.
-    """
+    Grundlage für den Kalibrier-Assistenten (Median = Verspätung) und für die ehrliche
+    Fehlerschranke des GPS ohne PPS (gpsquality.measure, Streuung)."""
     diffs, times = [], []
     for sample in samples:
+        if not isinstance(sample, dict):
+            continue
         sources = sample.get("sources") or {}
         gps = sources.get(gps_name)
         if not gps_measured(gps):
@@ -637,6 +635,20 @@ def calibrate(samples: list[dict], gps_name: str, current_offset: float,
             continue
         diffs.append(gps["o"] - sum(reference) / len(reference))
         times.append(sample["t"])
+    return diffs, times
+
+
+def calibrate(samples: list[dict], gps_name: str, current_offset: float,
+              current_delay: float) -> dict[str, Any]:
+    """Vergleicht den GPS-Offset mit den aktiven Netzwerkquellen.
+
+    Alle Offsets sind relativ zur Systemuhr. Die Differenz GPS − Netz ist
+    deshalb unabhängig davon, welche Quelle die Uhr gerade regelt, genau die
+    Verspätung des GPS. Die Refclock-Option „offset“ verschiebt die GPS-Zeit
+    um ihren Wert nach vorn: neuer Offset = aktueller Offset + gemessene
+    Differenz.
+    """
+    diffs, times = gps_differences(samples, gps_name)
 
     result: dict[str, Any] = {
         "samples": len(diffs), "current_offset": current_offset,
@@ -651,12 +663,15 @@ def calibrate(samples: list[dict], gps_name: str, current_offset: float,
     median = _median(diffs)
     # Robuste Streuung: MAD skaliert auf die Standardabweichung einer Normalverteilung.
     mad = _median([abs(d - median) for d in diffs]) * 1.4826
+    # Delay ab 1.5 (E16): nie kleiner als die gemessene Streuung. Gerechnet um den Median
+    # (nach dem Übernehmen des Offsets liegt das GPS dort), mit 95-%-Quantil statt nur MAD –
+    # sonst übersieht ein kleiner MAD die Ausreißer von ± 60 ms, und chrony hielte das GPS
+    # für genauer als gute NTS-Quellen.
+    honest = gpsquality.spread([d - median for d in diffs]) or {}
     result.update(
-        bias=median, spread=mad,
+        bias=median, spread=mad, spread_p95=honest.get("p95_abs"),
         suggested_offset=round(current_offset + median, 4),
-        # Delay ≈ doppelte Spanne, in der 99 % der Werte liegen, mit Untergrenze für
-        # USB-Jitter und Obergrenze beim vorsichtigen Standard.
-        suggested_delay=round(min(0.2, max(0.005, 6 * mad)), 3),
+        suggested_delay=honest.get("delay", gpsquality.DEFAULT_DELAY),
         series=[{"t": t, "d": d} for t, d in zip(times[-600:], diffs[-600:])],
     )
     if result["duration_seconds"] < 1800:

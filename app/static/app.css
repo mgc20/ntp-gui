@@ -873,3 +873,8 @@ details.enforce-names { margin-top: 10px; }
 /* ---------- Uhrqualität (1.4) ---------- */
 .uq-subchart { margin-top: 12px; }
 .uq-subchart .mini-head { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+
+/* Antennen-Test (1.5): Auswahl der beiden Messungen über der Vergleichstabelle. */
+.antenna-pick { margin-bottom: 8px; }
+.antenna-pick .inline-field { min-width: 0; flex: 1 1 220px; }
+.antenna-pick select { max-width: 100%; }

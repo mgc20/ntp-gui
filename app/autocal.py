@@ -728,6 +728,11 @@ def _apply(cfg: dict, decision: dict, state: dict, deps: dict, now: float) -> di
     old_offset = _cfg_float(cfg, "gps_offset", 0.0)
     old_delay = _cfg_float(cfg, "gps_delay", 0.2)
     changes = {"gps_offset": decision["new_offset"]}
+    # Ohne PPS mit „Fehlerschranke: gemessen“ setzt gpsquality den wirksamen Delay (E16) –
+    # gps_delay bliebe dort ohne Wirkung, eine Änderung wäre nur verwirrend.
+    import gpsquality
+    if gpsquality.managed(cfg):
+        decision["new_delay"] = None
     if decision.get("new_delay") is not None and abs(decision["new_delay"] - old_delay) > 1e-9:
         changes["gps_delay"] = decision["new_delay"]
     try:

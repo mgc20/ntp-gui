@@ -7,6 +7,7 @@ import { HELP_NOTIFY, HELP_GROUP_NOTIFY } from "./help-notify.js";
 import { HELP_DNS, HELP_GROUP_DNS } from "./help-dns.js";
 import { HELP_UHR, HELP_GROUP_UHR } from "./help-uhr.js";
 import { HELP_UPDATE, HELP_GROUP_UPDATE } from "./help-update.js";
+import { HELP_GNSS, HELP_GROUP_GNSS } from "./help-gnss.js";
 
 // Alle Erklärungen an einer Stelle. Die ⓘ-Knöpfe im Dashboard und die
 // Hilfeseite nutzen dieselben Texte. **fett** und `code` werden formatiert.
@@ -573,8 +574,11 @@ export const HELP = {
     title: "Angenommene Unsicherheit (Delay)",
     text: "Wie sehr chrony der GPS-Zeit misstraut. Der Standard **0,2 s** ist vorsichtig – damit "
       + "wird ein unkalibriertes GPS nie zum Problem, aber auch nie genutzt, solange gute "
-      + "Internet-Server da sind (Zustand „D“). Nach der Kalibrierung passt ein Wert, der die "
-      + "echte Streuung abdeckt (typisch 0,005–0,02 s).",
+      + "Internet-Server da sind (Zustand „D“). Der Wert muss die **echte Streuung** abdecken – "
+      + "nie kleiner: Ein Delay von 0,03 s bei ± 60 ms Streuung ließ chrony das GPS guten "
+      + "NTS-Quellen vorziehen. Ohne PPS setzt ntp-gui ihn deshalb ab 1.5 selbst aus der "
+      + "gemessenen Streuung („Fehlerschranke ohne PPS: gemessen“), der Kalibrier-Assistent "
+      + "schlägt nie weniger vor.",
   },
   gps_recalibrate: {
     title: "Wann neu kalibrieren?",
@@ -636,9 +640,11 @@ export const HELP = {
   },
   gps_role: {
     title: "Rolle des GPS bei der Auswahl",
-    text: "**Automatisch**: chrony vergleicht GPS und Internet-Server und nimmt das Beste. "
-      + "**Bevorzugen**: GPS ist erste Wahl, solange es plausibel ist – sinnvoll bei schlechter "
-      + "oder fehlender Internetleitung. **Nur beobachten**: wird gemessen, nie genutzt.",
+    text: "**Automatisch**: chrony vergleicht GPS und Internet-Server und nimmt das Beste – ohne "
+      + "PPS ist das GPS damit die **Rückfallebene**, die einspringt, wenn das Internet schlecht wird "
+      + "oder ausfällt. **Bevorzugen**: GPS ist erste Wahl, solange es plausibel ist – sinnvoll bei "
+      + "schlechter oder fehlender Internetleitung. **Nur beobachten**: wird gemessen, nie genutzt – "
+      + "auch nicht bei einem Internetausfall; eine bewusste Wahl, nie Standard.",
   },
 
   // ---------------------------------------------------------------- PTP
@@ -905,6 +911,7 @@ export const HELP_GROUPS = [
     "nts_ke_server", "nts_auth_packets"] },
   { title: "GPS", keys: ["gps", "gps_value", "gps_offset", "gps_delay", "gps_role", "gps_recalibrate", "pps",
     "fix", "satellites", "dop", "snr", "skyplot", "gnss", "time_error", "cold_start"] },
+  HELP_GROUP_GNSS,
   HELP_GROUP_AUTOCAL,
   { title: "PTP", keys: ["ptp", "ptp_vs_ntp", "ptp_requirements", "grandmaster", "port_state",
     "offset_from_master", "mean_path_delay", "steps_removed", "clock_class", "clock_accuracy", "ptp_domain",
@@ -931,3 +938,4 @@ Object.assign(HELP, HELP_NOTIFY);
 Object.assign(HELP, HELP_DNS);
 Object.assign(HELP, HELP_UHR);
 Object.assign(HELP, HELP_UPDATE);
+Object.assign(HELP, HELP_GNSS);

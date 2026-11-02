@@ -811,14 +811,30 @@ SCHEMA: list[dict] = [
            _as_number(float, 0.0001, 1.0), env="GPS_DELAY", unit="s",
            help="Wie stark chrony dem GPS misstraut. 0,2 s ist vorsichtig für unkalibrierte "
                 "Empfänger. Je kleiner, desto eher wird das GPS gegenüber Internet-Servern "
-                "gewählt. Nach der Kalibrierung schlägt der Assistent einen passenden Wert vor."),
+                "gewählt. Nach der Kalibrierung schlägt der Assistent einen passenden Wert vor. "
+                "Ohne PPS und mit „Fehlerschranke: gemessen“ setzt ntp-gui den Wert selbst aus der "
+                "gemessenen Streuung – dann gilt dieser hier nur mit PPS oder im Modus „von Hand“."),
+    _field("gps_bound_mode", "gps", "Fehlerschranke ohne PPS", "select", "measured",
+           _as_choice("measured", "manual"), env="GPS_BOUND_MODE",
+           options=[("measured", "gemessen – aus der Streuung gegen die Netzquellen (empfohlen)"),
+                    ("manual", "von Hand – Delay und Auflösung wie eingestellt")],
+           help="Ein GPS ohne PPS (z. B. VK-162) liefert die Zeit nur auf einige bis einige zehn "
+                "Millisekunden genau. „Gemessen“ gibt chrony eine ehrliche Fehlerschranke aus der "
+                "Streuung der letzten Stunden: chrony nimmt dann die guten Netzquellen und das GPS "
+                "von selbst, wenn das Internet schlecht wird oder ausfällt (Rückfallebene). Bis "
+                "genug gemessen ist, gilt vorsichtig ± 100 ms. Jede Anpassung steht im "
+                "Ereignisprotokoll und startet chronyd kurz neu. Mit PPS wirkt diese Einstellung "
+                "nicht – dort zählt der Impuls."),
     _field("gps_select", "gps", "Rolle bei der Quellenauswahl", "select", "auto",
            _as_choice("auto", "prefer", "noselect"), env="GPS_SELECT",
-           options=[("auto", "automatisch – chrony entscheidet"),
+           options=[("auto", "automatisch – chrony entscheidet (ohne PPS: Rückfallebene)"),
                     ("prefer", "bevorzugen – GPS ist erste Wahl"),
                     ("noselect", "nur beobachten – nie zur Synchronisation")],
-           help="„Bevorzugen“ macht das GPS zur Hauptquelle, solange es plausibel ist. "
-                "„Nur beobachten“ ist praktisch zum Kalibrieren."),
+           help="„Automatisch“: chrony nimmt die genaueste Quelle – ohne PPS ist das GPS damit die "
+                "Rückfallebene, wenn das Internet schlecht wird oder ausfällt. „Bevorzugen“ macht "
+                "das GPS zur Hauptquelle, solange es plausibel ist (sinnvoll bei Mobilfunk oder "
+                "ohne Internet). „Nur beobachten“ misst nur und nutzt das GPS nie – auch nicht bei "
+                "einem Internetausfall; praktisch zum Kalibrieren."),
     _field("gps_pps_device", "gps", "PPS-Gerät", "device", "", _as_device(optional=True),
            env="GPS_PPS_DEVICE", placeholder="kein PPS",
            help="Ein echter Sekundenimpuls (z. B. /dev/pps0 über GPIO am Raspberry Pi). "

@@ -467,6 +467,28 @@ check "gpsd wartet auf das Gerät" stopped "$(svc "${PREFIX}-h" gpsd state)"
 docker exec "${PREFIX}-h" touch /dev/shm/gps
 if wait_svc "${PREFIX}-h" gpsd state running 60; then ok "gpsd startet nach dem Einstecken"; else bad "Hotplug nicht erkannt"; fi
 check "GPS-Refclock nach Hotplug eingetragen" 1 "$(docker exec "${PREFIX}-h" sh -c 'grep -c "refclock SHM" /etc/chrony/chrony.conf')"
+# 1.5 (E16): GPS ohne PPS ist Rückfallebene – ohne Messung mit vorsichtiger Schranke (delay 0.2).
+contains "GPS ohne PPS: Standard-Fehlerschranke" "$(docker exec "${PREFIX}-h" grep '^refclock SHM' /etc/chrony/chrony.conf)" "delay 0.2 "
+ROLE=$(curl -s --max-time 10 http://127.0.0.1:18086/api/v1/gps/quality \
+  | python3 -c "import json,sys; print(json.load(sys.stdin)['role']['label'])" 2>/dev/null)
+check "Rolle des GPS ohne PPS" "Rückfallebene" "$ROLE"
+# Gemessene Schranke (wie nach einigen Stunden Messung) eintragen und neu laden: chronyd 4.6 startet damit.
+docker exec "${PREFIX}-h" python3 -c "
+import sys; sys.path.insert(0, '/app')
+import gpsquality
+gpsquality.save_state({'applied': {'delay': 0.117, 'precision': 0.006, 'bound': 0.058, 't': 1}})
+" >/dev/null 2>&1
+BEFORE=$(svc "${PREFIX}-h" chronyd restarts); BEFORE=${BEFORE:-0}
+docker exec "${PREFIX}-h" sh -c 'date +%s > /run/ntp-gui/reload.request'
+MEASURED=0
+for _ in $(seq 1 60); do
+  if docker exec "${PREFIX}-h" grep -q '^refclock SHM .*delay 0.117 precision 0.006' /etc/chrony/chrony.conf 2>/dev/null; then MEASURED=1; break; fi
+  sleep 1
+done
+if (( MEASURED )); then ok "Gemessene Fehlerschranke steht in chrony.conf"; else bad "Gemessene Fehlerschranke fehlt in chrony.conf"; fi
+check "chronyd akzeptiert die Konfiguration mit gemessener Schranke" 0 "$(docker exec "${PREFIX}-h" sh -c 'chronyd -p -f /etc/chrony/chrony.conf >/dev/null 2>&1; echo $?')"
+if wait_svc "${PREFIX}-h" chronyd state running 60; then ok "chronyd läuft mit gemessener Schranke"; else bad "chronyd läuft nicht (state: $(svc "${PREFIX}-h" chronyd state))"; fi
+contains "chronyd 4.6" "$(docker exec "${PREFIX}-h" chronyd --version 2>&1)" "chronyd (chrony) version 4.6"
 docker rm -f "${PREFIX}-h" >/dev/null 2>&1
 
 echo

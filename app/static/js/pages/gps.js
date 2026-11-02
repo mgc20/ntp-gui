@@ -4,6 +4,7 @@ import { lineChart, skyPlot, snrBars } from "../charts.js";
 import { stateBadge, reasonCell } from "./sources.js";
 import { axisSeconds } from "./overview.js";
 import { hardwareData, pickReceiver, accuracyLadder, PPS_PATH } from "./hardware.js";
+import { receptionCard, roleCard, antennaCard } from "./gpsquality.js";
 
 const WINDOWS = [[0, "gesamter Verlauf"], [3600, "letzte Stunde"], [21600, "letzte 6 h"], [86400, "letzte 24 h"]];
 
@@ -260,7 +261,13 @@ function calibrationCard(ctx, gpsSource) {
       format: (v) => fmtSeconds(v, 3, true), axisFormat: axisSeconds, height: 200, zeroLine: true,
     }));
   }
-  if (gpsSource && gpsSource.select_state === "large_distance") {
+  const fallback = !cfg.gps_pps_device && (cfg.gps_bound_mode || "measured") === "measured" && cfg.gps_select !== "prefer";
+  if (gpsSource && gpsSource.select_state === "large_distance" && fallback) {
+    body.push(el("div", { class: "callout" }, rich("**Darum steht das GPS auf „Unsicherheit zu groß“:** Das ist so gewollt. "
+      + "Ohne PPS ist das GPS die **Rückfallebene** mit ehrlicher Fehlerschranke (siehe „Rolle des GPS“): Solange die "
+      + "Netzwerkquellen genauer sind, nimmt chrony sie; wird das Internet schlecht oder fällt aus, übernimmt das GPS von selbst."),
+      " ", info("gpsq_role", "Rolle des GPS")));
+  } else if (gpsSource && gpsSource.select_state === "large_distance") {
     body.push(el("div", { class: "callout" }, rich("**Darum steht das GPS auf „Unsicherheit zu groß“:** Mit Delay "
       + `${cfg.gps_delay} s nimmt chrony an, die GPS-Zeit könne bis zu ${fmtSeconds(cfg.gps_delay / 2)} daneben liegen – die Netzwerkquellen sind viel genauer. `
       + "Der vorgeschlagene kleinere Delay macht das GPS konkurrenzfähig.")));
@@ -339,9 +346,11 @@ export function render(ctx) {
   return [
     receiverCard(ctx, report),
     tiles,
+    el("div", { class: "grid-2" }, receptionCard(ctx), roleCard(ctx)),
     el("div", { class: "grid-2" }, chronyCard, facts),
     calibrationCard(ctx, gpsSource),
     satCard,
+    antennaCard(ctx),
     card("Satelliten im Verlauf", { help: "satellites", sub: "Bricht die Zahl regelmäßig ein, verdeckt zu bestimmten Zeiten etwas die Sicht." }, satHost),
     card("Was bringt GPS hier?", { class: "explain", help: "gps_value" }, el("p", {}, rich(
       "Ohne PPS bleibt die Genauigkeit im Millisekundenbereich – so gut wie die PTB über eine gute Festnetzleitung. "

@@ -239,7 +239,7 @@ class ConfgenTests(SettingsTestCase):
     def test_gps_refclock(self):
         device = "/dev/null"  # exists everywhere and passes the /dev/ check
         text, _ = self.render(gps_enable=True, gps_device=device, gps_offset=0.057,
-                              gps_delay=0.01, gps_select="prefer")
+                              gps_delay=0.01, gps_select="prefer", gps_bound_mode="manual")
         line = next(l for l in text.splitlines() if l.startswith("refclock SHM"))
         self.assertIn("offset 0.057", line)
         self.assertIn("delay 0.01", line)

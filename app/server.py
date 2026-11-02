@@ -48,6 +48,7 @@ from urllib.parse import parse_qs, urlparse
 import apikeys
 import apiv1
 import autocal
+import gpsquality
 import chrony
 import clientinfo
 import clientmon
@@ -192,6 +193,26 @@ apiv1.endpoint("POST", "/gps/autocal/rollback", "/api/gps/autocal/rollback", "ad
                "Letzte automatische Änderung(en) zurücknehmen. Body: {\"steps\": 1}.",
                ["ok", "restored_offset", "restored_delay", "reload_triggered", "change"])
 
+apiv1.endpoint("GET", "/gps/quality", "/api/gps/quality", "read",
+               "GPS ohne PPS und schwacher Empfang: Empfangsbewertung über 24 h (Ampel, Satz, Gründe, Fix-Anteil, "
+               "Fix-Wechsel je Stunde, Median-C/N0 der vier stärksten Satelliten, genutzte Satelliten), Zustand "
+               "des Fix (stetig/unstet), Rolle des GPS (Rückfallebene, Referenz, nur beobachten) und die "
+               "Fehlerschranke, die chrony für das GPS verwendet. Ohne Position und Satellitenwinkel.",
+               ["enabled", "available", "assessment", "stability", "role", "bound"])
+apiv1.endpoint("POST", "/gps/bound", "/api/gps/bound", "admin",
+               "Gemessene Fehlerschranke des GPS auf den vorsichtigen Standard (± 100 ms) zurücksetzen. "
+               "Body: {\"action\": \"reset\"}. Startet die Zeitdienste neu, Eintrag im Ereignisprotokoll.",
+               ["ok", "reload_triggered", "delay"])
+apiv1.endpoint("GET", "/gps/antenna", "/api/gps/antenna", "read",
+               "Antennen-Test: laufende Messung, gespeicherte Messungen (Fix-Anteil, C/N0 der vier stärksten, "
+               "Satelliten) und der Vergleich zweier Messungen. Bleibt lokal, ohne Satellitenwinkel.",
+               ["test", "results", "comparison", "default_seconds"],
+               {"a": "id der ersten Messung (Standard: vorletzte)", "b": "id der zweiten (Standard: letzte)"})
+apiv1.endpoint("POST", "/gps/antenna", "/api/gps/antenna", "admin",
+               "Antennen-Test steuern. Body: {\"action\": \"start\", \"label\": \"Fensterbank\", \"seconds\": 300} "
+               "(60–900 s), {\"action\": \"stop\"} oder {\"action\": \"delete\", \"id\": …}.",
+               ["test", "results", "comparison", "default_seconds"])
+
 apiv1.endpoint("GET", "/temperature", "/api/temperature", "read",
                "Temperatur und Frequenz: gewählter Sensor, gefundene Sensoren, Paare (Zeit, °C, ppm) aus dem "
                "Verlauf und Kennzahlen (Dauer, Spanne, Korrelation). 1.4 misst nur – kein Temperaturausgleich.",
@@ -271,7 +292,7 @@ def collect_sample() -> dict:
         g = gps.status()
         sample["gps"] = {"used": _num(g.get("satellites_used")), "seen": _num(g.get("satellites_seen")),
                          "hdop": _num(g.get("hdop")), "snr": _num(g.get("snr_avg")),
-                         "mode": _num(g.get("mode"))}
+                         "mode": _num(g.get("mode")), "cn4": _num(g.get("cn0_top4"))}
     if ptp.enabled():
         p = ptp.status()
         metrics = p.get("log_metrics") or {}
@@ -300,6 +321,7 @@ def collector() -> None:
             STATE_WATCH.sample(sample)
             client_alarms()
             autocal.maybe_tick()   # höchstens einmal pro Stunde, wirft nie
+            gpsquality.maybe_tick(settings.values)  # Fehlerschranke GPS ohne PPS, stündlich, wirft nie
         except Exception as exc:  # ein Messfehler darf den Thread nie beenden
             print(f"[web] Messung fehlgeschlagen: {exc}", flush=True)
         try:
@@ -603,7 +625,7 @@ def build_status() -> dict:
         "chrony_running": bool(tracking),
         "update": _update_status(),
         "config": {key: cfg[key] for key in (
-            "gps_enable", "gps_device", "gps_offset", "gps_delay", "gps_select", "gps_refid",
+            "gps_enable", "gps_device", "gps_offset", "gps_delay", "gps_select", "gps_refid", "gps_bound_mode",
             "gps_pps_device", "ptp_enable", "ptp_interface", "ptp_mode", "ptp_time_stamping",
             "ntp_minsources", "serve_unsynced", "allow_networks", "ntp_port", "phc2sys_enable",
             "phc_refclock")},
@@ -1290,6 +1312,12 @@ class Handler(BaseHTTPRequestHandler):
                                                  float(cfg["gps_offset"]), float(cfg["gps_delay"])))
         elif path == "/api/gps/autocal":
             self._send_json(autocal.api_status(settings.values(), fresh=query.get("fresh") != "0"))
+        elif path == "/api/gps/quality":
+            cfg = settings.values()
+            sources = chrony.detailed_sources() if cfg.get("gps_enable") else None
+            self._send_json(gpsquality.api_status(cfg, HISTORY, sources, STATE_WATCH.gps_stability()))
+        elif path == "/api/gps/antenna":
+            self._send_json(gpsquality.antenna_status(query.get("a"), query.get("b")))
         elif path == "/api/events":
             limit = int(env_like(query.get("limit"), 500))
             since = env_like(query.get("since"), 0.0) or None
@@ -1500,6 +1528,16 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(autocal.rollback(data.get("steps", 1), cfg=settings.values()))
             except autocal.AutocalError as exc:
                 self._error(HTTPStatus.CONFLICT, str(exc))
+        elif path in {"/api/gps/antenna", "/api/gps/bound"}:
+            try:
+                if path == "/api/gps/antenna":
+                    self._send_json(gpsquality.antenna_action(data))
+                elif data.get("action") == "reset":
+                    self._send_json(gpsquality.reset(settings.values()))
+                else:
+                    self._error(HTTPStatus.BAD_REQUEST, "action muss „reset“ sein")
+            except gpsquality.QualityError as exc:
+                self._error(HTTPStatus.CONFLICT if exc.conflict else HTTPStatus.BAD_REQUEST, str(exc))
         elif path == "/api/recording":
             action = "stop" if data.get("stop") else str(data.get("action", "start"))
             if action == "stop":
@@ -1589,6 +1627,7 @@ def main() -> None:
               "das Dashboard läuft ohne Authentifizierung.", flush=True)
 
     autocal.configure(history=HISTORY, trigger_reload=trigger_reload)
+    gpsquality.configure(history=HISTORY, trigger_reload=trigger_reload)
     threading.Thread(target=collector, daemon=True, name="collector").start()
     threading.Thread(target=hardware_refresher, daemon=True, name="hardware").start()
     threading.Thread(target=events_ingester, daemon=True, name="events").start()

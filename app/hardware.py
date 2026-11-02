@@ -1077,10 +1077,15 @@ def build_matrix(cfg: dict, rep: dict, ctx: dict) -> tuple[list[dict], list[str]
                              "Host?). Am Host: sudo systemctl disable --now gpsd.socket gpsd ModemManager",
                              active=True))
         else:
+            role = rep["gps"].get("role") or {}
+            role_text = f" Rolle: {role['label']}." if role.get("label") and role.get("role") != "off" else ""
+            if role.get("role") == "fallback":
+                role_text = (f" Rolle: Rückfallebene – chrony nimmt gute Netzquellen und das GPS, wenn das "
+                             f"Internet schlecht wird oder ausfällt (Fehlerschranke ± {role['bound'] * 1000:.0f} ms).")
             rows.append(_row("gps_usb", title_usb, "ok",
                              f"Empfänger {label} ({main['interface']}) liefert Zeit über NMEA – "
-                             "Genauigkeit 1–10 ms nach Kalibrierung (GPS-Seite → „GPS kalibrieren“).",
-                             accuracy="1–10 ms", active=True))
+                             "Genauigkeit 1–10 ms nach Kalibrierung (GPS-Seite → „GPS kalibrieren“)."
+                             + role_text, accuracy="1–10 ms", active=True))
 
     # --- GPS + PPS -----------------------------------------------------------
     title_pps = "GPS + PPS (Mikrosekunden)"
@@ -1456,6 +1461,15 @@ def _temperature(cfg: dict) -> dict[str, Any]:
         return {"available": False, "reason": "error", "error": str(exc), "candidates": []}
 
 
+def _gps_role(cfg: dict) -> dict[str, Any] | None:
+    """Rolle des GPS (Rückfallebene, Referenz, nur beobachten) – ohne PPS ehrlich als Rückfallebene."""
+    try:
+        import gpsquality
+        return gpsquality.role(cfg)
+    except Exception:  # der Hardware-Check darf daran nie scheitern
+        return None
+
+
 def build_report(cfg: dict, ctx: dict) -> dict[str, Any]:
     """Baut den Bericht. ctx: gps_status, tracking, chronyd, gpsd_probe (oder None)."""
     perms = permissions_info()
@@ -1483,6 +1497,7 @@ def build_report(cfg: dict, ctx: dict) -> dict[str, Any]:
         "temperature": _temperature(cfg),
         "majors": {"pps": majors.get("pps"), "ptp": majors.get("ptp")},
     }
+    rep["gps"]["role"] = _gps_role(cfg)
     rep["matrix"], rep["warnings"] = build_matrix(cfg, rep, ctx)
     for group in (rep["gps"]["receivers"], rep["pps"], rep["ptp"]["clocks"]):
         for item in group:
