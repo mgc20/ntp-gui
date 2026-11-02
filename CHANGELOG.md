@@ -141,6 +141,8 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
   USB-Empfänger kommt dort aber nie ein Impuls. Der Empfänger bleibt jetzt „kein PPS“, der Check
   erklärt, woher `/dev/pps0` stammt, und rät nicht mehr zum Einbinden. Allgemein: Ein PPS-Gerät,
   das am Host noch nie einen Impuls gezählt hat, wird nicht mehr zum Einbinden vorgeschlagen.
+- Hardware-Check auf dem Pi: Neben einem erkannten USB-Empfänger erscheint die leere Mini-UART
+  `ttyS0` nicht mehr als zweite „Empfänger“-Karte mit „PPS über GPIO möglich“.
 - Benachrichtigungen: Das Ereignis „gedrosselt“ blieb in der ersten Stunde nach dem Systemstart aus.
 
 ### Sicherheit

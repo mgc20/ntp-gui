@@ -602,6 +602,12 @@ def receivers_info(cfg: dict, platform_: dict, perms: dict, pps_list: list[dict]
         for rec in result:
             if rec["tty"] == configured_tty:
                 rec["configured"] = True
+    if any(r["_gps_like"] for r in result):
+        # Gibt es einen erkannten GPS-Empfänger, verwirrt eine leere Pi-UART (ttyS0 = Mini-UART für
+        # Bluetooth/Konsole) als zweite „Empfänger“-Karte nur („PPS über GPIO möglich“). Gelistet bleibt
+        # sie, wenn sie eingetragen ist, gpsd sie kennt oder nach GPS aussieht – und ohne anderen
+        # Empfänger weiterhin als Hinweis für HAT-Besitzer.
+        result = [r for r in result if r["_gps_like"] or r["configured"] or r["gpsd"]]
     order = {"ttyACM": 0, "ttyUSB": 1}
     result.sort(key=lambda r: (not r["configured"], not r["_gps_like"],
                                order.get(r["tty"][:6], 2), r["tty"]))

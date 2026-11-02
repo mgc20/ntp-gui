@@ -940,6 +940,12 @@ class TestGpsdLdiscOnTtyAcm(HardwareTestCase):
         self.assertIn("gpsd selbst", row["text"])
         self.assertIn("nicht unter „devices:“", row["text"])
 
+    def test_empty_pi_uart_hidden_next_to_usb_receiver(self):
+        # Screenshot des Nutzers: zweite Karte „Gerät an ttyS0 … PPS über GPIO möglich“ ohne Gerät dran.
+        self.host.uart_tty("ttyS0", "port")
+        rep = self.run_report(base_cfg(gps_enable=True, gps_device="/dev/ttyACM0"))
+        self.assertEqual([r["tty"] for r in rep["gps"]["receivers"]], ["ttyACM0"])
+
     def test_gpio_pps_without_pulses_not_suggested(self):
         # Allgemein: Ein PPS-Gerät, das am Host nie einen Impuls gezählt hat, soll nicht eingebunden werden.
         self.host.pps(1, "pps@12.-1", assert_="0.000000000#0", node=False)
