@@ -112,6 +112,10 @@ contains "Metrik TAI−UTC vorhanden" "$(curl -s http://127.0.0.1:18080/metrics)
 UPDJ=$(curl -s --max-time 10 http://127.0.0.1:18080/api/v1/update)
 check "Update-Hinweis ab Werk aus" "False None" "$(python3 -c "import json,sys; d=json.loads(sys.argv[1]); print(d['enabled'], d['next_check'])" "$UPDJ" 2>/dev/null)"
 check "Update-Hinweis aus: nie geprüft" "None" "$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['last_attempt'])" "$UPDJ" 2>/dev/null)"
+# 1.4: Übersicht bekommt Kurzfassungen für Schaltsekunden-Liste und Benachrichtigungen.
+STATJ=$(curl -s --max-time 10 http://127.0.0.1:18080/api/v1/status)
+check "Status: Schaltsekunden-Kurzfassung (TAI−UTC)" 37 "$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['leap']['tai_utc'])" "$STATJ" 2>/dev/null)"
+check "Status: ohne Kanal keine Benachrichtigung" "0 0" "$(python3 -c "import json,sys; n=json.loads(sys.argv[1])['notify']; print(n['channels'], n['enabled'])" "$STATJ" 2>/dev/null)"
 METRICS_A=$(curl -s http://127.0.0.1:18080/metrics)
 contains "Metrik ntpgui_info mit Version" "$METRICS_A" 'ntpgui_info{version="'
 contains "Metrik ntpgui_sources_usable vorhanden" "$METRICS_A" "ntpgui_sources_usable"

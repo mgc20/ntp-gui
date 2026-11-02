@@ -76,7 +76,7 @@ PTP4L_CONF = os.environ.get("PTP4L_CONF", "/etc/linuxptp/ptp4l.conf")
 RUN_DIR = os.environ.get("NTPGUI_RUN_DIR", "/run/ntp-gui")
 START_TIME = time.time()
 MAX_BODY = 64 * 1024
-VERSION = os.environ.get("NTPGUI_VERSION", "1.3.2")
+VERSION = os.environ.get("NTPGUI_VERSION", "1.4.0")
 EVENTS_INTERVAL = 5.0          # so oft liest der Server die Supervisor-Ereignisse ein
 CALIBRATION_DEFAULT_WINDOW = 86400.0  # /api/gps/calibration ohne window: letzte 24 h
 
@@ -601,6 +601,9 @@ def build_status() -> dict:
             "reload": reload_status(),
         },
     }
+    leap_info = leap.status(cfg, tracking)
+    status["leap"] = _leap_summary(leap_info)
+    status["notify"] = _notify_summary()
     status["insights"] = combine_insights(insights.build(status, cfg),
                                           insights.dns_insights(status["dns"], cfg, status["sources"],
                                                                 status["system"].get("addresses") or [],
@@ -609,9 +612,26 @@ def build_status() -> dict:
                                                                 or enforce.check_ran()),
                                           service_insights(status["services"]),
                                           hardware.cached_insights(cfg),
-                                          leap.insights(leap.status(cfg, tracking)),
+                                          leap.insights(leap_info),
                                           updatecheck.insights(status["update"]))
     return status
+
+
+def _leap_summary(info: dict) -> dict:
+    """Kurzfassung der Schaltsekunden-Liste für die Übersicht (volle Angaben: /api/leap)."""
+    return {key: info.get(key) for key in ("available", "source", "level", "reason", "days_left", "expired",
+                                            "expires_date", "tai_utc")}
+
+
+def _notify_summary() -> dict:
+    """Kanäle und Zustellstand für die Übersicht – nur Zähler, keine Namen, Adressen oder Tokens."""
+    try:
+        channels = notify.api_status().get("channels") or []
+    except Exception:
+        channels = []
+    enabled = [c for c in channels if c.get("enabled")]
+    failing = [c for c in enabled if (c.get("status") or {}).get("state") == "error"]
+    return {"channels": len(channels), "enabled": len(enabled), "failing": len(failing)}
 
 
 def _update_status() -> dict:

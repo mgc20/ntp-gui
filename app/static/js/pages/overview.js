@@ -238,7 +238,18 @@ function meter(used, total, label) {
     el("span", { text: `${used} / ${total}` }));
 }
 
-function syncPanel(status, ref, rootDistance, issues) {
+// Schaltsekunden-Liste in einer Zeile: Tage bis zum Ablauf, nur wenn chrony die Datei liest.
+function leapText(leap) {
+  if (!leap || leap.source === "tz") return leap && leap.source === "tz" ? "über Zeitzone (leapsectz)" : "–";
+  if (leap.reason === "disabled") return badge("abgeschaltet", "warn");
+  if (!leap.available) return badge("fehlt", "warn");
+  if (leap.reason === "hash") return badge("Prüfsumme falsch", "warn");
+  if (leap.expired || (isNum(leap.days_left) && leap.days_left < 0)) return badge("abgelaufen", "warn");
+  const tone = leap.level === "warn" ? "warn" : "good";
+  return badge(`noch ${leap.days_left} Tage`, tone, leap.expires_date ? `gilt bis ${leap.expires_date}` : null);
+}
+
+function syncPanel(status, ref, rootDistance, issues, temp) {
   const t = status.tracking || {};
   if (!status.chrony_running) {
     return panel({ title: "Systemuhr", help: "chronyd", tone: "crit", state: "keine Antwort", value: "–",
@@ -256,7 +267,9 @@ function syncPanel(status, ref, rootDistance, issues) {
       ["Stratum", t.stratum ?? "–", "stratum"],
       ["Referenz", t.local_reference ? "LOCAL" : (sourceLabel(ref) !== "–" ? sourceLabel(ref) : t.ref_name || "–"), "reference"],
       ["Uhrensteuerung", status.system?.clock_control === false ? "aus (-x)" : status.system?.clock_control ? "aktiv" : "–", "clock_control"],
-    ]),
+      isNum(temp) ? ["Temperatur", `${fmtFixed(temp, 1)} °C`, "temp_now"] : null,
+      ["Schaltsekunden-Liste", leapText(status.leap), "leap_expiry"],
+    ].filter(Boolean)),
     href: "#/quellen", linkLabel: "Zu den Quellen",
   });
 }
@@ -360,7 +373,25 @@ function clientsPanel(ctx, lastRate, rate, issues, spanOpts) {
   });
 }
 
-function servicesPanel(services, issues) {
+// DNS-Modus und Benachrichtigungen: zwei Zeilen unter der Dienstliste.
+function opsRows(status) {
+  const dns = status.dns || {};
+  const dnsState = { ok: ["ok", "good"], fallback: ["Rückfall", "warn"], failing: ["gestört", "crit"], down: ["läuft nicht", "crit"] };
+  const ds = dnsState[dns.state];
+  const dnsValue = !dns.mode || dns.mode === "system" ? "System-DNS"
+    : el("span", {}, `${dns.mode_label || dns.mode} `, ds ? badge(ds[0], ds[1]) : null);
+  const n = status.notify || {};
+  const notifyValue = !n.channels ? "kein Kanal"
+    : !n.enabled ? badge("alle Kanäle aus", "muted")
+      : n.failing ? el("span", {}, `${n.enabled} aktiv `, badge(`${n.failing} mit Fehler`, "warn"))
+        : el("span", {}, `${n.enabled} aktiv `, badge("zugestellt", "good"));
+  return kv([
+    ["DNS für ntp-gui", dnsValue, "dns_modes"],
+    ["Benachrichtigungen", el("a", { href: "#/benachrichtigungen" }, notifyValue), "notify"],
+  ]);
+}
+
+function servicesPanel(services, issues, status = {}) {
   const names = Object.keys(services || {});
   names.sort((a, b) => {
     const ia = SERVICE_ORDER.indexOf(a); const ib = SERVICE_ORDER.indexOf(b);
@@ -392,7 +423,7 @@ function servicesPanel(services, issues) {
     title: "Dienste", help: "services", tone, issues,
     state: failed ? `${failed} ausgefallen` : restarting ? "Neustart läuft" : unclear ? `${unclear} unklar` : "alle laufen",
     value: `${running} / ${names.length - off}`, valueNote: off ? `laufen · ${off} aus` : "laufen",
-    body: el("div", {}, list, el("p", { class: "panel-foot" }, "Neustarts zählt der Supervisor ", info("overview_restarts", "Neustarts"))),
+    body: el("div", {}, list, opsRows(status), el("p", { class: "panel-foot" }, "Neustarts zählt der Supervisor ", info("overview_restarts", "Neustarts"))),
   });
 }
 
@@ -440,6 +471,9 @@ export function render(ctx) {
   let lastRate = null;
   for (let i = rate.length - 1; i >= 0; i -= 1) if (isNum(rate[i][1])) { lastRate = rate[i][1]; break; }
   const ref = sources.find((s) => s.state === "*");
+  // Temperatur: letzter Messpunkt des Verlaufs (nur wenn ein Sensor aufzeichnet, höchstens 5 min alt).
+  const lastSample = history.length ? history[history.length - 1] : null;
+  const lastTemp = lastSample && isNum(lastSample.temp) && Date.now() / 1000 - lastSample.t < 300 ? lastSample.temp : null;
   // x-Achse aller Verläufe: gewählter Zeitraum bis jetzt (Serverzeit).
   const span = { range: ctx.range, end: isNum(status.system?.time) ? status.system.time : Date.now() / 1000 };
 
@@ -482,10 +516,10 @@ export function render(ctx) {
   // --- Teilsysteme ------------------------------------------------------------
   const own = (id) => issuesFor(insights, id);
   const list = [
-    syncPanel(status, ref, rootDistance, own("clock")), sourcesPanel(status, own("sources")),
+    syncPanel(status, ref, rootDistance, own("clock"), lastTemp), sourcesPanel(status, own("sources")),
     (status.gps || {}).enabled ? gpsPanel(status, own("gps")) : null,
     (status.ptp || {}).enabled ? ptpPanel(status, own("ptp")) : null,
-    clientsPanel(ctx, lastRate, rate, own("clients"), span), servicesPanel(status.services, own("services")),
+    clientsPanel(ctx, lastRate, rate, own("clients"), span), servicesPanel(status.services, own("services"), status),
   ].filter(Boolean);
   // Die Ereignisse füllen die Zeile auf (4 bzw. 2 Spalten), damit keine Lücke bleibt.
   const events = eventsPanel(ctx);

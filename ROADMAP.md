@@ -61,18 +61,18 @@ Vorschläge, Erfahrungsberichte und Hilfe sind willkommen – siehe [CONTRIBUTIN
 - Clients: „Zuletzt“ und „Anfragen“ aus der eigenen Messung, wenn chrony das Gerät nach einem
   Neustart nicht mehr kennt
 
-## 1.4 – Melden, Clients 2.0, eigene DNS-Server (in Arbeit)
+## 1.4 – Melden, Clients 2.0, eigene DNS-Server ✅
 
-| Thema | Nutzen | Aufwand |
-|---|---|---|
-| Benachrichtigungen (Webhook, ntfy, Apprise-API als Zusatzcontainer für E-Mail, Telegram, Matrix …) 🔒 | ★★★ | ◆◆ |
-| Eigene DNS-Server für ntp-gui (auch DoT/DoH) – keine Schleifen mehr, wenn der LAN-DNS Zeitserver-Namen umschreibt | ★★★ | ◆ |
-| Clients 2.0: Detailseite je Gerät, Netzüberblick, aktiv nachmessen, Alarm | ★★★ | ◆◆ |
-| Temperatur aufzeichnen (Grundlage für den Temperaturausgleich in 1.5) | ★★ | ◆ |
-| Schaltsekunden-Übersicht | ★ | ◆ |
-| Uhr-Ansicht im Vollbild (Rack-Monitor, Tablet) | ★ | ◆ |
-| Update-Hinweis (opt-in) 🔒, Attestation und SBOM im Release, Dependabot | ★★ | ◆ |
-| Anleitungen: Home Assistant, Homepage, Glance, Uptime Kuma, Grafana | ★★ | ◆ |
+| Thema | Nutzen | Aufwand | Stand |
+|---|---|---|---|
+| Benachrichtigungen (Webhook, ntfy, Gotify, Apprise-API als Zusatzcontainer für E-Mail, Telegram, Matrix …) 🔒 | ★★★ | ◆◆ | ✅ |
+| Eigene DNS-Server für ntp-gui (auch DoT/DoH) – keine Schleifen mehr, wenn der LAN-DNS Zeitserver-Namen umschreibt | ★★★ | ◆ | ✅ |
+| Clients 2.0: Detailseite je Gerät, Netzüberblick, aktiv nachmessen, Alarm | ★★★ | ◆◆ | ✅ |
+| Temperatur aufzeichnen (Grundlage für den Temperaturausgleich in 1.5) | ★★ | ◆ | ✅ |
+| Schaltsekunden-Übersicht | ★ | ◆ | ✅ |
+| Uhr-Ansicht im Vollbild (Rack-Monitor, Tablet) | ★ | ◆ | ✅ |
+| Update-Hinweis (opt-in) 🔒, Attestation und SBOM im Release, Dependabot | ★★ | ◆ | ✅ |
+| Anleitungen: Home Assistant, Homepage, Glance, Uptime Kuma, Grafana | ★★ | ◆ | ✅ |
 
 ## 1.5 – GNSS-Werkbank, Clients 3, Uhrqualität
 

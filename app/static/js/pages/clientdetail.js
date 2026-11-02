@@ -5,6 +5,7 @@
 import { el, apiPost, fmtDuration, fmtNumber, fmtSeconds, fmtTime, isNum } from "../util.js";
 import { card, tile, info, badge, kv, emptyNote, toast } from "../ui.js";
 import { lineChart } from "../charts.js";
+import { axisSeconds } from "./overview.js";
 
 // --- Gemeinsame Helfer (auch für die Client-Liste) -----------------------------
 export const STATE_TONE = { ok: "good", "falsche Uhr": "crit", verschleiert: "muted", "ohne Zeitstempel": "muted" };
@@ -179,7 +180,7 @@ export function renderDetail(ctx, ip) {
     lineChart(offsetHost, {
       key: `client-offset:${ip}`,
       series: [{ id: "offset", label: "Abweichung", color: "var(--accent)", points: offsets }],
-      format: fmtOffset, range, end, ariaLabel: `Abweichung der Uhr von ${title} über die Zeit`,
+      format: fmtOffset, axisFormat: axisSeconds, range, end, ariaLabel: `Abweichung der Uhr von ${title} über die Zeit`,
       emptyText: entry.measurable === false ? "Nicht messbar – das Gerät schickt keine echte Uhrzeit" : "Noch zu wenige Messwerte",
     });
     lineChart(intervalHost, {
