@@ -9,6 +9,7 @@ import sys
 import tempfile
 import threading
 import time
+import types
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -528,6 +529,17 @@ class EndToEndTest(TempData):
         self.assertEqual(len(self.target.requests), 2)
         self.assertEqual(notify.get_channel(cid)["dropped"], 3)
         self.assertEqual(len(events.query(kinds=["notify"])), 1)
+
+    def test_rate_limit_event_shortly_after_boot(self):
+        # Fehler aus der CI: monotonic() zählt ab Systemstart. War der Rechner kürzer als eine Stunde an,
+        # blieb das „gedrosselt“-Ereignis aus, weil limit_noted mit 0.0 begann.
+        real = time.monotonic
+        start = real()
+        # Nur notify sieht „120 s seit Systemstart“; die Warteschleifen des Tests laufen mit der echten Uhr.
+        fake = types.SimpleNamespace(**{k: getattr(time, k) for k in dir(time) if not k.startswith("_")})
+        fake.monotonic = lambda: 120.0 + real() - start
+        with mock.patch.object(notify, "time", fake):
+            self.test_rate_limit()
 
     def test_hanging_channel_blocks_nothing(self):
         slow = Target()

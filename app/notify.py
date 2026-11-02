@@ -946,7 +946,7 @@ class _Sender:
         self.cond = threading.Condition()
         self.sent_times: deque = deque()
         self.stopped = False
-        self.limit_noted = 0.0
+        self.limit_noted: float | None = None  # nicht 0.0: monotonic() zählt ab Systemstart
         self.thread = threading.Thread(target=self._run, daemon=True, name=f"notify-{channel['id']}")
         self.thread.start()
 
@@ -992,7 +992,7 @@ class _Sender:
             channel = self.channel
             if not msg.get("attempt") and not self._rate_ok():
                 _record(channel["id"], True, dropped=1, attempt=False)
-                if time.monotonic() - self.limit_noted > 3600:
+                if self.limit_noted is None or time.monotonic() - self.limit_noted > 3600:
                     self.limit_noted = time.monotonic()
                     events.emit("notify", "warn", f"Benachrichtigungen über Kanal {_label(channel)} gedrosselt: "
                                 f"mehr als {channel['rate_per_hour']} je Stunde",
@@ -1039,7 +1039,7 @@ class Notifier:
         self.thread: threading.Thread | None = None
         self.last_id = 0
         self.saved_id = 0
-        self.saved_at = 0.0
+        self.saved_at = float("-inf")  # monotonic() zählt ab Systemstart
         self.version = ""
         self.deliver_fn = deliver
         self._dirty = True

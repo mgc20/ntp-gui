@@ -518,7 +518,7 @@ class Monitor:
         self._seen_set: set = set()
         self._last_persist = time.monotonic()
         self._last_flush = time.monotonic()
-        self._last_prune = 0.0
+        self._last_prune = float("-inf")  # monotonic() zählt ab Systemstart – 0.0 hieße „vor Kurzem“
 
     # -- Socket ---------------------------------------------------------------
     def open(self) -> bool:

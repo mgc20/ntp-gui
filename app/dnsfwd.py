@@ -1380,7 +1380,7 @@ def serve(cfg: dict | None = None, *, port: int | None = None, run_dir: str | No
     if threading.current_thread() is threading.main_thread():
         signal.signal(signal.SIGTERM, finish)
         signal.signal(signal.SIGINT, finish)
-    last = 0.0
+    last = float("-inf")  # monotonic() zählt ab Systemstart
     while not stop.is_set():
         if time.monotonic() - last >= STATUS_EVERY:
             last = time.monotonic()
