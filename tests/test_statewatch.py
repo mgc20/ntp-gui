@@ -97,8 +97,13 @@ class GpsFixHoldTest(unittest.TestCase):
         return [e[2] for e in self.events if e[0] == "gps"]
 
     def test_short_dropouts_are_quiet(self):
-        # 3D-Fix, dann immer wieder 20–40 s ohne Fix (wie im Diagnosepaket des Nutzers).
+        # 3D-Fix, dann immer wieder 20–40 s ohne Fix (wie im Diagnosepaket des Nutzers):
+        # keine Einzelmeldungen „verloren/wieder da“ – ab 1.5 EIN Ereignis „unstet“ mit Zählung.
         self.feed([3] * 3 + ([1] * 3 + [3] * 2) * 6)
+        self.assertEqual(self.titles(), ["GPS-Empfang unstet: Fix kam und ging 6-mal in 30 min"])
+
+    def test_two_short_dropouts_stay_quiet(self):
+        self.feed([3] * 3 + ([1] * 3 + [3] * 2) * 2 + [3] * 20)
         self.assertEqual(self.titles(), [])
 
     def test_lasting_loss_and_return_are_reported(self):

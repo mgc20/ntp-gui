@@ -127,9 +127,11 @@ export const HELP_CLIENTS = {
     text: "Gib Geräten einen Namen, den du wiedererkennst („Drucker Büro“), und eine Notiz. Beides steht "
       + "in der Datenbank dieser Instanz und erscheint in der Liste, im Netzüberblick und in Ereignissen. "
       + "Gespeicherte Ereignisse enthalten nur die **Adresse** – den Namen setzt erst die Anzeige ein. So "
-      + "bleibt ein alter Name nach Umbenennen oder Löschen nirgends stehen, und im **Diagnosepaket** und "
-      + "in **Benachrichtigungen** wird die Adresse zu client-01 usw. Sonst ersetzt der Datenschutzfilter "
-      + "einen Namen durch `<name>`. Notizen werden nie exportiert. Ändern dürfen nur Admins.",
+      + "bleibt ein alter Name nach Umbenennen oder Löschen nirgends stehen, und im **Diagnosepaket** wird "
+      + "die Adresse zu client-01 usw., ein Name zu `<name>`. **Benachrichtigungen** über ein Gerät (seit 1.5) "
+      + "nennen seinen eigenen Namen statt der Adresse – du sollst auf dem Handy erkennen, welches Gerät "
+      + "gemeint ist; die LAN-Adresse nur mit dem Schalter „LAN-Adressen in Nachrichten“. Ohne Namen heißt "
+      + "es dort „Gerät ohne Namen“. Notizen werden nie exportiert. Ändern dürfen nur Admins.",
   },
   client_probe: {
     title: "Aktiv nachmessen",
@@ -176,6 +178,168 @@ export const HELP_CLIENTS = {
       + "schreibt ntp-gui das Ereignis „Uhr von … weicht um … ab“ (Art **Clients**, Stufe Warnung). Das "
       + "kann eine Benachrichtigung auslösen. „Wieder im Rahmen“ folgt erst unter der halben Schwelle – "
       + "so meldet ein Gerät an der Grenze nicht ständig hin und her. Nur messbare Geräte zählen.",
+  },
+
+  // --- Clients 3 (1.5): Uhrgüte, Regeln, Gruppen, NTS, Gerätepass ------------------
+  client_quality: {
+    title: "Uhrgüte",
+    text: "Eine Zahl von 0 bis 100: Wie gut hält dieses Gerät seine Uhr? Sie fasst vier Dinge zusammen – "
+      + "**Abweichung** (bis 35 Punkte), **Stabilität** (Streuung der Messungen, bis 25), **Regelmäßigkeit** "
+      + "der Anfragen (bis 20) und **Messbarkeit** (Anteil der Anfragen mit echter Uhrzeit, bis 20). Ab 85 "
+      + "„sehr gut“, ab 70 „gut“, ab 50 „mäßig“, darunter „schlecht“. Grundlage sind die letzten 32 Messungen "
+      + "(nach einem Neustart die gespeicherten der letzten 24 h); es braucht mindestens 4. Geräte, die ihre "
+      + "Zeit verschleiern (chrony, NTS), bekommen **keine** Note – das ist gutes Verhalten, nur messbar ist es nicht.",
+  },
+  client_quality_parts: {
+    title: "Wie die Punkte der Uhrgüte entstehen",
+    text: "**Abweichung**: unter 1 ms 35 Punkte, unter 5 ms 30, unter 20 ms 22, unter 100 ms 12, unter 1 s 5. "
+      + "**Stabilität** (Streuung als robuste Standardabweichung, bei frei laufender Uhr um die Gerade): unter "
+      + "0,5 ms 25, unter 2 ms 20, unter 10 ms 12, unter 50 ms 6. **Regelmäßigkeit** (Schwankung der Abstände "
+      + "ohne Bursts): unter 10 % 20, unter 30 % 15, unter 60 % 8, sonst 3. **Messbarkeit**: 20 × Anteil der "
+      + "Anfragen mit echter Uhrzeit. Die Streuung enthält auch die Laufzeit im Netz – im WLAN ist sie größer.",
+  },
+  client_drift: {
+    title: "Gangabweichung (ppm)",
+    text: "Wie schnell die Uhr des Geräts wegläuft, in Millionstel (1 ppm ≈ 86 ms pro Tag). Ein Gerät, das bei "
+      + "jeder Abfrage nachstellt, läuft bis zur nächsten Abfrage um Gangabweichung × Intervall weg – genau das "
+      + "sieht ntp-gui in der Anfrage (**Sägezahn**): 3,2 ms bei 64 s heißen 50 ppm. Wächst die Abweichung "
+      + "gleichmäßig, läuft die Uhr **frei** (sie wird nicht gestellt) – dann ist die Steigung die "
+      + "Gangabweichung. Schwanken die Abstände der Anfragen genug, trennt ntp-gui dabei einen **festen Versatz** "
+      + "(z. B. Laufzeit über WLAN) vom Gang. Bei gleichmäßigen Abständen geht das nicht: Dann zeigt ntp-gui nur "
+      + "„**höchstens** … ppm“ – so viel wäre es, wenn die ganze Abweichung Gang wäre; ein fester Versatz von "
+      + "5 ms sähe bei 64 s sonst wie 78 ppm aus. Ergäbe sich mehr als 200 ppm (das schafft kaum ein Quarz), "
+      + "zeigt ntp-gui „fester Versatz“ statt einer Zahl. "
+      + "Positiv: die Uhr läuft zu schnell. Ein Gerät mit gutem Zeitdienst (chrony, ntpd) "
+      + "gleicht seine Frequenz selbst aus – dann bleibt nur ein kleiner Rest. Das ± ist die Unsicherheit "
+      + "aus der Streuung.",
+  },
+  client_rules: {
+    title: "Regeln für ein Gerät",
+    text: "Eigene Meldungen für einzelne Geräte, zusätzlich zur allgemeinen Schwelle in den Einstellungen: "
+      + "„fragt seit N Stunden nicht mehr“, eine eigene Alarm-Schwelle mit Mindestdauer, „stumm“ und die "
+      + "erwartete Software. Die Meldungen sind Ereignisse der Art **Clients** und laufen über deine "
+      + "Benachrichtigungskanäle – entprellt wie alle. Offene Alarme stehen in der Datenbank: Ein Neustart "
+      + "meldet nichts doppelt, „wieder da“ kommt trotzdem. Ändern dürfen nur Admins.",
+  },
+  client_rule_silent: {
+    title: "Melden, wenn es nicht mehr fragt",
+    text: "Für Geräte, die immer fragen sollten – Kamera, SPS, NAS, Zeiterfassung. Fragt das Gerät länger als "
+      + "die eingestellten Stunden nicht, entsteht **einmal** „… fragt seit … nicht mehr nach der Zeit“; "
+      + "kommt wieder eine Anfrage, folgt „… fragt wieder nach der Zeit“. Gezählt wird nur die Zeit, in der "
+      + "ntp-gui mithört – nach einem Neustart des Containers beginnt die Uhr neu. Wähle die Stunden "
+      + "großzügig: Viele IoT-Geräte fragen nur stündlich oder täglich (siehe „Typischer Abstand“).",
+  },
+  client_rule_offset: {
+    title: "Eigene Alarm-Schwelle",
+    text: "Ersetzt für dieses Gerät die allgemeine Schwelle (Einstellungen → „Alarm, wenn eine Client-Uhr "
+      + "abweicht“). Gemeldet wird, wenn die Abweichung mindestens zweimal hintereinander **und** mindestens "
+      + "so viele Minuten über der Schwelle liegt – „|Abweichung| > X für M Minuten“. „Wieder im Rahmen“ erst "
+      + "unter der halben Schwelle. Sinnvoll z. B. 50 ms für eine Zeiterfassung, 2000 ms für eine Kamera.",
+  },
+  client_rule_mute: {
+    title: "Stumm",
+    text: "Meldungen zu diesem Gerät (auch die der allgemeinen Schwelle) bleiben im Ereignisprotokoll, gehen "
+      + "aber nicht als Benachrichtigung hinaus. Gut für Geräte, die bekanntermaßen falsch gehen und die du "
+      + "nicht ändern kannst.",
+  },
+  client_rule_expect: {
+    title: "Erwartete Client-Software",
+    text: "Wenn du weißt, was auf dem Gerät läuft (Windows, chrony, IoT …), trag es ein. Es gilt dann statt "
+      + "der Vermutung in der Ansicht „nach Software“, für NTS-Hinweise und Empfehlungen im Gerätepass. Passt "
+      + "das Verhalten deutlich nicht dazu, zeigt die Detailseite einen Hinweis – vielleicht wurde das Gerät "
+      + "getauscht oder hat eine andere Adresse bekommen.",
+  },
+  client_group: {
+    title: "Gruppe",
+    text: "Die Gruppe, deren Netz diese Adresse enthält. Passen mehrere, gewinnt das **spezifischste** Netz "
+      + "(z. B. 10.0.30.0/26 vor 10.0.30.0/24). Gruppen legst du auf der Clients-Seite unter „Gruppen und "
+      + "Netze“ an.",
+  },
+  client_nts: {
+    title: "NTS für Clients",
+    text: "NTS sichert die Zeit kryptografisch ab. Nutzen können es Geräte nur, wenn der **NTS-Server** dieser "
+      + "Instanz an ist (Einstellungen → NTS) und ihre Software NTS spricht: chrony ab 4.0 und NTPsec ja; "
+      + "Windows, systemd-timesyncd, Apple, Smartphones und die meisten IoT-Geräte nein. Ob ein Gerät NTS "
+      + "**nutzt**, zeigt chrony über die Zahl seiner NTS-KE-Schlüsselaustausche (`chronyc clients -k`, zählt "
+      + "seit dem letzten Start von chrony). NTS-Clients schreiben Zufall statt Uhrzeit in die Anfrage – passiv "
+      + "„nicht messbar“ ist dort **gutes** Verhalten.",
+  },
+  client_pass: {
+    title: "Gerätepass",
+    text: "Alles Wichtige zu einem Gerät auf einer druckbaren Seite: Name, Gruppe, vermutete oder erwartete "
+      + "Software, Abfrage-Intervall, Abweichung (Median und 95 %-Wert über 7 Tage, 30-Tage-Median aus den "
+      + "Stundenwerten), Gangabweichung, Uhrgüte, NTS, letzte Anfrage und eine **Empfehlung** mit dem passenden "
+      + "Befehl. Gedruckt wird mit dem Browser (auch „Als PDF speichern“) – die Seite bleibt lokal. Zum "
+      + "Weitergeben (Forum, Ticket) gibt es eine **gefilterte Kopie**.",
+  },
+  client_pass_share: {
+    title: "Gefilterte Kopie des Gerätepasses",
+    text: "Der Gerätepass als Text, durch denselben Datenschutzfilter wie das Diagnosepaket: Adressen werden "
+      + "zu client-01 usw., eigene Geräte- und Gruppennamen zu `<name>`, eigene Hostnamen zu `<hostname-1>`. "
+      + "Die Notiz und die MAC-Adresse stehen nie drin. Findet die Schlussprüfung trotzdem etwas, gibt es keine "
+      + "Kopie. Verschickt wird nichts – du kopierst den Text selbst.",
+  },
+  client_pass_values: {
+    title: "Werte im Gerätepass",
+    text: "**Median** ist der mittlere Wert aller gespeicherten Messungen (7 Tage, höchstens alle 2 min eine), "
+      + "**P95** der Betrag, unter dem 95 % der Messungen liegen – er zeigt die Ausreißer. Der **30-Tage-Median** "
+      + "kommt aus den Stundenwerten, die ntp-gui ab 1.5 je Gerät 30 Tage aufhebt.",
+  },
+  clients_groups: {
+    title: "Gruppen und Netze",
+    text: "Fasse Geräte zu Gruppen zusammen – z. B. „IoT = 10.0.30.0/24“, „Kameras = 10.0.40.0/24“. ntp-gui "
+      + "sieht die VLAN-Nummer meist nicht (der Kernel entfernt die Markierung, bevor mitgelesen wird), "
+      + "deshalb entstehen Gruppen aus **Netzen**. Je Gruppe siehst du Anzahl (davon in den letzten 24 h "
+      + "aktiv), wie viele messbar sind, die **Median-Abweichung** und den **Anteil „gut“** (unter 10 ms). "
+      + "Fragt in einer Gruppe seit 24 h kein Gerät, erscheint ein Hinweis: Oft fehlt dort die DHCP-Option 42 "
+      + "oder die Umleitung (siehe „Zeitserver erzwingen“). Gruppen bleiben lokal; ihre Namen ersetzt der "
+      + "Datenschutzfilter beim Export.",
+  },
+  clients_group_by: {
+    title: "Ansicht: nach Gruppe, VLAN oder Software",
+    text: "**Gruppe**: nach deinen Netzen (spezifischstes Netz gewinnt), Rest unter „ohne Gruppe“. **VLAN**: "
+      + "nach der VLAN-Kennung im Paket – nur, wo sie sichtbar ist (Trunk-Port am Host); sonst stehen alle "
+      + "unter „ohne VLAN-Kennung“. **Software**: nach der erwarteten Software (Regel) bzw. der Vermutung aus "
+      + "den Anfragen – immer „vermutlich“.",
+  },
+  clients_group_stats: {
+    title: "Werte je Gruppe",
+    text: "**Geräte**: alle bekannten, dahinter die in den letzten 24 h aktiven. **Messbar**: Geräte mit "
+      + "echter Uhrzeit in der Anfrage. **Median**: mittlere |Abweichung| der messbaren Geräte. **Anteil gut**: "
+      + "messbare Geräte unter 10 ms. **Uhrgüte**: Median der Uhrgüte aller bewerteten Geräte der Gruppe.",
+  },
+  clients_group_suggest: {
+    title: "Vorschläge für Gruppen",
+    text: "Netze, aus denen Geräte fragen, die noch zu keiner Gruppe gehören – als /24 (IPv4) bzw. /64 (IPv6), "
+      + "die meisten Geräte zuerst. Ein Klick übernimmt das Netz ins Formular; den Namen wählst du selbst.",
+  },
+  clients_worst_clocks: {
+    title: "Schlechteste Uhren im Haus",
+    text: "Die Geräte mit der niedrigsten Uhrgüte – dort lohnt sich ein Blick zuerst. Die Zahl dahinter ist die "
+      + "Uhrgüte (0–100), dazu die Gangabweichung in ppm. Geräte, die ihre Zeit verschleiern oder noch zu "
+      + "wenige Messungen haben, stehen hier nicht.",
+  },
+  clients_new_device: {
+    title: "Neues Gerät fragt nach der Zeit",
+    text: "Meldet (Art **Clients**, Stufe Warnung), wenn ein Gerät zum ersten Mal fragt, das ntp-gui noch nie "
+      + "gesehen hat – ein einfacher Hinweis auf unbekannte Geräte im Netz. Erkannt wird an der MAC-Adresse "
+      + "(wenn das Gerät im selben Netz steht), sonst an der IPv4-Adresse; IPv6-Adressen ohne MAC zählen nicht, "
+      + "weil Datenschutz-Adressen täglich wechseln. Die ersten **24 Stunden** lernt ntp-gui nur, danach höchstens "
+      + "5 Meldungen pro Stunde (der Rest kommt zusammengefasst). Die Meldung steht für sich – es gibt kein "
+      + "„behoben“.",
+  },
+  notify_lan_addresses: {
+    title: "LAN-Adressen in Nachrichten",
+    text: "Benachrichtigungen über ein Gerät nennen seinen **eigenen Namen** (Clients → Gerät → Name), ohne "
+      + "Namen „Gerät ohne Namen“. Eingeschaltet steht die private LAN-Adresse dabei: „NAS (192.168.1.20)“. "
+      + "Standard **aus**: Die Nachricht läuft über fremde Dienste (ntfy, Gotify, Apprise …), und Adressen "
+      + "verraten dort den Aufbau deines Netzes. MAC-Adressen und öffentliche Adressen gehen nie hinaus; alles "
+      + "andere filtert der Datenschutzfilter wie bisher.",
+  },
+  client_score: {
+    title: "Güte (Spalte)",
+    text: "Die Uhrgüte des Geräts von 0 bis 100 (Details auf seiner Seite). „–“: nicht bewertbar, weil das Gerät "
+      + "seine Zeit verschleiert, keine sendet oder noch zu wenige Messungen hat.",
   },
 
   // --- Zeitserver erzwingen ----------------------------------------------------
@@ -250,6 +414,18 @@ export const HELP_CLIENTS = {
       + "nach außen ist gesperrt. **Schleife**: Anfragen von ntp-gui selbst landen bei ntp-gui – "
       + "dringend die Ausnahme eintragen.",
   },
+  enforce_upstream: {
+    title: "Eigene Quellen: Name → Resolver → Adresse → Antwort",
+    text: "Für jede Quelle aus „Zeitquellen“ zeigt die Prüfung die ganze Kette: welcher **Resolver** den Namen "
+      + "aufgelöst hat (System-DNS des Containers oder deine eigenen Server unter „DNS für ntp-gui“), welche "
+      + "**Adresse** dabei herauskam und wer dort **antwortet**. Antwortet ein fremder Server, ist alles gut. "
+      + "Ist die Adresse eine eigene, schreibt der DNS den Namen auf ntp-gui um (**DNS-Umschreibung ohne "
+      + "Ausnahme**). Ist die Adresse richtig, aber die Antwort trägt Stratum, Referenz-ID und Referenzzeit "
+      + "dieses Servers, leitet der Router das Paket auf ntp-gui zurück (**NAT-Umleitung ohne Ausnahme**). "
+      + "Quellen mit fester IP-Adresse fragen keinen Resolver – bei ihnen kann nur die NAT-Umleitung "
+      + "eine Schleife bauen. Unabhängig von dieser Prüfung beobachtet ntp-gui seine Quellen laufend "
+      + "und schreibt bei einer Schleife ein Ereignis „Zeitquelle“ (kritisch).",
+  },
   enforce_selftest: {
     title: "Selbsttest auf einem Gerät",
     text: "Auf einem Gerät im LAN einen **öffentlichen** Zeitserver abfragen und Stratum und "
@@ -269,7 +445,11 @@ export const HELP_GROUP_CLIENTS = {
     "clients_overview", "clients_histogram", "clients_worst", "clients_silent", "clients_chatty", "clients_alarm",
     "client_detail", "client_offset_chart", "client_interval_chart", "client_typical_interval", "client_version",
     "client_seen", "client_rdns", "client_mac", "client_vlan", "client_software", "client_meta", "client_probe",
+    "client_quality", "client_quality_parts", "client_drift", "client_score", "clients_worst_clocks",
+    "client_rules", "client_rule_silent", "client_rule_offset", "client_rule_mute", "client_rule_expect",
+    "client_group", "clients_groups", "clients_group_by", "clients_group_stats", "clients_group_suggest",
+    "client_nts", "client_pass", "client_pass_share", "client_pass_values", "clients_new_device", "notify_lan_addresses",
     "enforce", "enforce_dns", "enforce_nat", "enforce_hairpin", "enforce_nts", "enforce_not_ntp",
-    "enforce_hostnames", "enforce_check", "enforce_verdict", "enforce_selftest",
+    "enforce_hostnames", "enforce_check", "enforce_verdict", "enforce_upstream", "enforce_selftest",
   ],
 };

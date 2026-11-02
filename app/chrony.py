@@ -244,6 +244,26 @@ def clients() -> list[dict[str, Any]]:
     return _safe(lambda: parse_clients(run("-c", "clients")), default=[])
 
 
+def parse_clients_nts(text: str) -> list[dict[str, Any]]:
+    """chronyc -c clients -k: gleiche Spalten wie „clients“, nur stehen statt der Befehls-Pakete die
+    NTS-KE-Verbindungen dort (Kopf „NTS-KE Drop Int Last“ statt „Cmd Drop Int Last“, geprüft mit 4.5)."""
+    rows = []
+    for record in parse_clients(text):
+        rows.append({
+            "address": record.get("address"),
+            "ntp_packets": record.get("ntp_packets"),
+            "nts_ke": record.get("cmd_packets"),
+            "nts_ke_dropped": record.get("cmd_dropped"),
+            "nts_ke_last_rx": record.get("cmd_last_rx"),
+        })
+    return rows
+
+
+def clients_nts() -> list[dict[str, Any]]:
+    """NTS-KE-Verbindungen je Client (nur sinnvoll, wenn der NTS-Server an ist)."""
+    return _safe(lambda: parse_clients_nts(run("-c", "clients", "-k")), default=[])
+
+
 def activity() -> dict[str, Any]:
     return _safe(lambda: parse_activity(run("-c", "activity")), default={})
 
@@ -419,22 +439,30 @@ def authdata() -> list[dict[str, Any]]:
     return _safe(lambda: parse_authdata(run("-c", "authdata")), default=[])
 
 
-_NAME_CACHE: dict[str, tuple[float, str]] = {}
+_NAME_CACHE: dict[str, tuple[float, str]] = {}   # Adresse -> (gültig bis, Name)
+NAME_TTL = 600.0
+NAME_RETRY = 30.0
 
 
 def source_name(address: str) -> str | None:
-    """Konfigurierter Name (z. B. ptbtime1.ptb.de) zu einer Quell-IP, 10 min gecacht."""
-    now = time.time()
+    """Konfigurierter Name (z. B. ptbtime1.ptb.de) zu einer Quell-IP, 10 min gecacht.
+
+    Scheitert `chronyc sourcename` (z. B. Zeitüberschreitung auf einem ausgelasteten Pi), bleibt
+    der zuletzt bekannte Name stehen und es wird nach 30 s erneut gefragt – ein Aussetzer darf
+    keine Quelle für 10 min „namenlos“ machen (Schleifen-Erkennung, Anzeige)."""
+    now = time.monotonic()
     cached = _NAME_CACHE.get(address)
-    if cached and now - cached[0] < 600:
+    if cached and now < cached[0]:
         return cached[1] or None
     try:
         name = run("sourcename", address, timeout=2.0).strip()
     except ChronyError:
-        name = ""
+        previous = cached[1] if cached else ""
+        _NAME_CACHE[address] = (now + NAME_RETRY, previous)
+        return previous or None
     if name == address:
         name = ""
-    _NAME_CACHE[address] = (now, name)
+    _NAME_CACHE[address] = (now + NAME_TTL, name)
     return name or None
 
 

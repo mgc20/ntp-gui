@@ -29,6 +29,7 @@ Client-Adressen nur, wenn die Pakete nicht per NAT umgeschrieben werden
 from __future__ import annotations
 
 import ipaddress
+import math
 import os
 import socket
 import struct
@@ -280,6 +281,7 @@ def _attach_filter(sock: socket.socket, port: int) -> bool:
 # ---------------------------------------------------------------------------
 
 INTERVALS_KEPT = 16       # so viele Abstände zwischen Anfragen je Client (Median = typisches Intervall)
+RECENT_KEPT = 32          # letzte Messungen [Zeit, Abweichung] je Client – für die Uhrgüte (clients3)
 MIN_INTERVAL = 0.2        # kürzere Abstände sind Wiederholungen/Bursts, kein Intervall
 BURST_GAP = 4.0           # kürzere Abstände gehören zu einem Burst (ntpd iburst: 2 s, ntpdate/sntp-Serien)
 BURST_MIN_GAPS = 12       # erst so viele kurze Abstände OHNE längeren dazwischen = wirklich so oft
@@ -303,7 +305,7 @@ MAX_STORED_CLIENTS = 4 * MAX_CLIENTS  # Zeilen in clientmon_clients (neueste ble
 def _new_entry(now: float | None) -> dict:
     return {"requests": 0, "count": 0, "obfuscated": 0, "no_timestamp": 0,
             "last_offset": None, "ewma": None, "min": None, "max": None,
-            "first_seen": now, "absurd": None, "state": None, "intervals": []}
+            "first_seen": now, "absurd": None, "state": None, "intervals": [], "recent": []}
 
 
 def typical_interval(intervals: list) -> float | None:
@@ -387,6 +389,9 @@ class ClientTable:
                     entry["ewma"] + EWMA_ALPHA * (offset - entry["ewma"])
                 entry["min"] = offset if entry["min"] is None else min(entry["min"], offset)
                 entry["max"] = offset if entry["max"] is None else max(entry["max"], offset)
+                recent = entry.setdefault("recent", [])
+                recent.append([round(now, 3), round(offset, 7)])
+                del recent[:-RECENT_KEPT]
             entry["state"] = state
             self._queue_sample(ip, now, offset if state in (OK, WRONG_CLOCK) else None, req, interval,
                                first=entry["requests"] <= 1)
@@ -441,6 +446,7 @@ class ClientTable:
                 base.update({k: entry.get(k) for k in RESTORED_KEYS if k in entry})
                 if not isinstance(base.get("intervals"), list):
                     base["intervals"] = []
+                base["recent"] = _clean_recent(base.get("recent"))
                 self.clients[ip] = base
             while len(self.clients) > self.limit:
                 self.clients.popitem(last=False)
@@ -490,6 +496,7 @@ def private_entry(entry: dict) -> dict:
     out["obfuscated"] = entry.get("obfuscated") or 0
     out["no_timestamp"] = entry.get("no_timestamp") or 0
     out["intervals"] = list(entry.get("intervals") or [])
+    out["recent"] = [list(p) for p in entry.get("recent") or []]
     for key in ("mac", "stratum", "precision", "bare"):
         if entry.get(key) is not None:
             out[key] = entry[key]
@@ -513,6 +520,7 @@ class Monitor:
         self.packets = 0
         self.ignored = 0
         self.since = time.time()
+        self.since_mono = time.monotonic()   # für Dauer-Entscheidungen (Wanduhr kann springen)
         self.kernel_drops = 0
         self._seen: deque = deque(maxlen=DEDUP)
         self._seen_set: set = set()
@@ -699,6 +707,16 @@ class Monitor:
 CLIENT_RETENTION = 30 * 86400
 
 
+def _clean_recent(value: Any) -> list:
+    """Gespeicherte Messungen [[t, Abweichung], …] – nur endliche Zahlenpaare, höchstens RECENT_KEPT."""
+    out = []
+    for item in value if isinstance(value, list) else []:
+        if (isinstance(item, (list, tuple)) and len(item) == 2
+                and all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) for v in item)):
+            out.append([float(item[0]), float(item[1])])
+    return out[-RECENT_KEPT:]
+
+
 def _from_stored(entry: dict) -> dict:
     """Gespeicherte Zeile (private_entry als JSON) → Tabelleneintrag."""
     out = {"requests": entry.get("requests"), "count": entry.get("count"),
@@ -707,7 +725,8 @@ def _from_stored(entry: dict) -> dict:
            "first_seen": entry.get("first_seen"), "last_seen": entry.get("last_seen"),
            "version": entry.get("version"), "poll": entry.get("poll"),
            "state": entry.get("state"), "intervals": entry.get("intervals") or [],
-           "obfuscated": entry.get("obfuscated") or 0, "no_timestamp": entry.get("no_timestamp") or 0}
+           "obfuscated": entry.get("obfuscated") or 0, "no_timestamp": entry.get("no_timestamp") or 0,
+           "recent": _clean_recent(entry.get("recent"))}
     for key in ("vlan", "mac", "stratum", "precision", "bare"):
         if entry.get(key) is not None:
             out[key] = entry[key]
@@ -1001,6 +1020,27 @@ def status() -> dict:
         "port": monitor.port,
         "since": monitor.since,
     }
+
+
+def listening_seconds() -> float | None:
+    """Wie lange die Messung schon mithört – monoton gemessen (None ohne laufende Messung)."""
+    monitor = _MONITOR
+    start = getattr(monitor, "since_mono", None)
+    if monitor is None or start is None or not _alive(monitor):
+        return None
+    return max(0.0, time.monotonic() - start)
+
+
+def private_snapshot() -> dict[str, dict]:
+    """Alle Clients mit Merkmalen (private_entry: Abstände, letzte Messungen, MAC) – nur für die lokale
+    Auswertung (Uhrgüte, Gruppen, Inventar). Aus der laufenden Messung, sonst aus dem gespeicherten Stand."""
+    monitor = _MONITOR
+    if monitor is not None:
+        return monitor.table.snapshot(private=True)
+    try:
+        return {ip: private_entry(e) for ip, e in stored_clients().items()}
+    except Exception:  # noqa: BLE001
+        return {}
 
 
 def client(ip: str) -> dict | None:

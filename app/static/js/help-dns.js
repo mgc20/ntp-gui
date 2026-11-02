@@ -72,9 +72,34 @@ export const HELP_DNS = {
       + "Antworten höchstens so lange wie ihre TTL, maximal 5 Minuten), über den System-DNS beantwortet "
       + "(Rückfall) und ohne Antwort (SERVFAIL). Die Zahlen beginnen nach jedem Speichern der Einstellungen neu.",
   },
+  dns_last_ok: {
+    title: "Letzte erfolgreiche Auflösung",
+    text: "Wann einer deiner eigenen Server zuletzt eine Antwort geliefert hat – egal ob für chronyd, NTS oder die "
+      + "Erreichbarkeitsprobe. chronyd fragt Namen selten (beim Start und wenn eine Quelle ausfällt); deshalb "
+      + "fragt ntp-gui jeden eigenen Server 20 Sekunden nach dem Start und danach alle 15 Minuten einmal nach dem "
+      + "Namen deiner ersten Zeitquelle. Das ist eine einzige A-Anfrage je Server an die Server, die du selbst "
+      + "eingetragen hast – im Modus „System-DNS“ fragt ntp-gui nichts zusätzlich.",
+  },
+  dns_reachable: {
+    title: "Erreichbar",
+    text: "Wie viele deiner eigenen Server bei der letzten Anfrage geantwortet haben. Fällt ein Server aus "
+      + "(abgelehnt, TLS-Fehler, dreimal Zeitüberschreitung), steht im Ereignisprotokoll „DNS für ntp-gui: … nicht "
+      + "erreichbar“ mit dem Fehler, und „antwortet wieder“, sobald er zurück ist – je Server höchstens alle "
+      + "5 Minuten. Warum zwei Server: Fällt einer aus, löst der zweite weiter auf, ohne Rückfall auf einen DNS, "
+      + "der Zeitserver-Namen vielleicht umschreibt.",
+  },
+  dns_nts: {
+    title: "NTS und DNS",
+    text: "NTS-Quellen (z. B. ptbtime1.ptb.de, time.cloudflare.com) prüfen das TLS-Zertifikat gegen den **Namen**. "
+      + "Eine zuletzt bekannte IP-Adresse als Notlösung hilft deshalb nicht: Ohne funktionierende Namensauflösung "
+      + "startet kein neuer NTS-Schlüsselaustausch. Besser sind zwei **unabhängige** Resolver (verschiedene "
+      + "Betreiber, z. B. dns.quad9.net und one.one.one.one). NTS-Namen werden in den Anleitungen nie "
+      + "umgeschrieben – sie eignen sich deshalb gut als Quellen für ntp-gui selbst.",
+  },
 };
 
 export const HELP_GROUP_DNS = {
   title: "DNS für ntp-gui",
-  keys: ["dns", "dns_modes", "dns_state", "dns_resolv", "dns_upstreams", "dns_fallback", "dns_pin", "dns_counts"],
+  keys: ["dns", "dns_modes", "dns_state", "dns_resolv", "dns_upstreams", "dns_fallback", "dns_pin", "dns_counts",
+    "dns_last_ok", "dns_reachable", "dns_nts"],
 };

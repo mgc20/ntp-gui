@@ -233,6 +233,14 @@ services:
       # healthcheck unten liest WEB_PORT selbst):
       #  WEB_PORT: "8081"
 
+      # [OPTION HTTPS mit Caddy] Gehört zum Block „caddy“ ganz unten. Das
+      # Dashboard lauscht dann nur noch auf 127.0.0.1 – von außen geht es nur
+      # über Caddy mit HTTPS. TRUSTED_PROXIES: nur dieser Adresse glaubt
+      # ntp-gui die Köpfe X-Forwarded-For/-Proto (echte Client-Adresse im
+      # Zugriffsprotokoll, HTTPS-Hinweis). Leer = niemandem trauen.
+      #  WEB_BIND: "127.0.0.1"
+      #  TRUSTED_PROXIES: "127.0.0.1/32,::1/128"
+
     # Docker prüft alle 30 s, ob das Dashboard und chronyd antworten
     # (auf dem Port aus WEB_PORT, Standard 8080).
     healthcheck:
@@ -253,5 +261,39 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # [OPTION HTTPS mit Caddy] Verschlüsseltes Dashboard, z. B. unter
+  # https://zeitserver.lan. ntp-gui selbst spricht nur HTTP (bewusst, siehe
+  # docs/integrationen/https.md); ohne HTTPS gehen Passwort und API-Schlüssel
+  # lesbar durchs Netz. Caddy holt sich das Zertifikat selbst und erneuert es.
+  # So geht's:
+  # 1. Diese Zeilen und „caddy-data:“ ganz unten einkommentieren, dazu oben bei
+  # ntp-gui WEB_BIND und TRUSTED_PROXIES (Block mit demselben Namen).
+  # 2. „zeitserver.lan“ durch den Namen ersetzen, unter dem deine Geräte den
+  # Host erreichen (DNS-Eintrag im Router/AdGuard/Pi-hole), oder durch seine
+  # feste IP-Adresse. Endet der Name nicht auf .lan, .local, .home.arpa,
+  # .internal o. Ä. und ist kein Passwort gesetzt, ihn zusätzlich in
+  # WEB_ALLOWED_HOSTS eintragen (Schutz vor DNS-Rebinding).
+  # 3. „--internal-certs“: Zertifikat von Caddys eigener Zertifizierungsstelle –
+  # richtig fürs LAN. Damit Browser nicht warnen, deren Root-Zertifikat einmal
+  # auf deinen Geräten als vertrauenswürdig eintragen; herausholen mit
+  # „docker compose cp caddy:/data/caddy/pki/authorities/local/root.crt .“
+  # Ohne „--internal-certs“ und mit einem öffentlichen Namen, dessen Ports
+  # 80/443 aus dem Internet hierher führen, nimmt Caddy Let's Encrypt.
+  # Belegt auf dem Host 443/tcp und 80/tcp (Umleitung auf HTTPS; ist 80 belegt,
+  # „--disable-redirects“ anhängen). Port 8080 vorher auf WEB_PORT anpassen,
+  # falls geändert. NPM, Zoraxy, Traefik: siehe docs/integrationen/https.md.
+  #  caddy:
+  #    image: caddy:2.10.2
+  #    container_name: ntp-gui-caddy
+  #    restart: unless-stopped
+  #    network_mode: host
+  #    command: ["caddy", "reverse-proxy", "--from", "https://zeitserver.lan", "--to", "127.0.0.1:8080", "--internal-certs"]
+  #    volumes:
+  #      - caddy-data:/data    # Zertifikate und Caddys Zertifizierungsstelle
+  #    depends_on:
+  #      - ntp-gui
+
 volumes:
   chrony-data:
+  # [OPTION HTTPS mit Caddy]
+  #  caddy-data:

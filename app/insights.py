@@ -172,7 +172,8 @@ def dns_insights(dns: dict[str, Any], cfg: dict[str, Any], sources: list[dict] |
     mode = dns.get("mode") or cfg.get("dns_mode") or "system"
     if mode == "system":
         loops = list(dict.fromkeys(_own_loop_sources(sources or [], own_addresses or [])
-                                   + [str(l.get("host")) for l in enforce_loops or [] if l.get("host")]))
+                                   + [str(l.get("host")) for l in enforce_loops or []
+                                      if l.get("host") and l.get("cause", "dns") == "dns"]))
         if loops:
             add("warn", "Schleife durch DNS-Umschreibung",
                 f"{', '.join(loops)} zeigt per DNS auf ntp-gui selbst – chronyd fragt dann sich selbst und "
@@ -223,6 +224,8 @@ def dns_insights(dns: dict[str, Any], cfg: dict[str, Any], sources: list[dict] |
             "System-DNS dann wieder ntp-gui selbst ist. Trag die Adresse unter Einstellungen → "
             "„DNS für ntp-gui“ → „Feste Adressen für DoT/DoH“ ein, z. B. dns.quad9.net=9.9.9.9. "
             "Das Zertifikat wird weiter gegen den Namen geprüft.", "dns_pin_needed")
+    if dns.get("nts_note"):
+        add("info", "NTS hängt an einem einzigen DNS-Server", str(dns["nts_note"]), "dns_nts_single")
     state = dns.get("state")
     if state == "fallback":
         add("warn", "Eigene DNS-Server nicht erreichbar",

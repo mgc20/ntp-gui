@@ -188,6 +188,14 @@ function gpsCard(report) {
       ["NMEA-Verspätung (gpsd)", isNum(gpsdPps.toff_latency_ms) ? `${fmtNumber(gpsdPps.toff_latency_ms, 1)} ms` : "–", "hw_toff"],
     ]));
   }
+  // 1.5: welche Rolle das GPS spielt – ohne PPS ehrlich als Rückfallebene (E16).
+  const role = report.gps.role;
+  if (role && role.role !== "off") {
+    body.push(kv([
+      ["Rolle des GPS", `${role.label}${isNum(role.bound) ? ` · Fehlerschranke ± ${fmtNumber(role.bound * 1000, 0)} ms` : ""}`, "gpsq_role"],
+    ]));
+    body.push(el("p", { class: "hw-note", text: role.text || "" }));
+  }
   return card("GPS-Empfänger", { help: "hw_receiver" }, body);
 }
 

@@ -32,13 +32,19 @@ Regeln je Kanal
   Ereignis (Art „notify“) vermerkt. Ereignisse der Art „notify“ werden nie
   verschickt (keine Schleife zwischen zwei kaputten Kanälen).
 * Ratenlimit je Kanal (Standard 30 je Stunde, gleitend).
+* Ereignisse mit data.notify = false bleiben lokal (1.5: GNSS-Hinweis/-Warnung unterhalb
+  der Einstellung gnss_notify, Holdover-Test). data.notify = true heißt umgekehrt: hinaus, auch
+  unterhalb der Mindeststufe des Kanals (die Art-Auswahl gilt weiter).
+* data.standalone = true: Die Meldung steht für sich (kein offenes Problem, kein „behoben“),
+  z. B. „Neues Gerät fragt nach der Zeit“ (1.5, Clients 3).
 
 Datenschutz
 -----------
 Jede Meldung läuft durch egress.notify_message (Zweck „notify“): nur die Felder
 der Positivliste, Texte gefiltert (Koordinaten, öffentliche IPs, eigene
 Hostnamen …), danach check_no_leaks und backstop. Ereignisdaten (data) gehen nie
-hinaus. Ziele: nur http/https, keine Weiterleitungen, keine Proxys, Antwort
+hinaus. Meldungen über ein Gerät (Art „clients“, 1.5) nennen den eigenen Gerätenamen statt der
+Adresse; LAN-Adressen nur mit dem Schalter notify_lan_addresses (Standard aus). Ziele: nur http/https, keine Weiterleitungen, keine Proxys, Antwort
 höchstens 64 KiB. Tokens stehen in SQLite (Datei 600), werden in UI/API nur als
 „gesetzt“ gezeigt und landen nie in Ereignissen oder im Diagnosepaket.
 """
@@ -512,11 +518,11 @@ class ChannelRouter:
     def configure(self, channel: dict) -> None:
         self.channel = channel
 
-    def _matches(self, event: dict) -> bool:
+    def _matches(self, event: dict, ignore_level: bool = False) -> bool:
         kinds = self.channel.get("kinds") or []
         if kinds and event.get("kind") not in kinds:
             return False
-        return _level_rank(event.get("level")) >= _level_rank(self.channel.get("min_level", "warn"))
+        return ignore_level or _level_rank(event.get("level")) >= _level_rank(self.channel.get("min_level", "warn"))
 
     def _window(self) -> float:
         return max(0, int(self.channel.get("debounce_min", DEFAULT_DEBOUNCE_MIN))) * 60.0
@@ -525,19 +531,40 @@ class ChannelRouter:
     def _message(event: dict, title: str, **extra) -> dict:
         msg = {"title": title, "level": event.get("level") or "info", "kind": event.get("kind") or "other",
                "time": event.get("t") or time.time(), "event_id": event.get("id"), "resolved": False}
+        device = _event_device(event)
+        if device:
+            msg["device"] = device  # nur intern: steht nicht in egress.NOTIFY_FIELDS, geht nie hinaus
         msg.update(extra)
         return msg
 
     def offer(self, event: dict) -> list[dict]:
         if event.get("kind") == "notify":
             return []
+        data = event.get("data") if isinstance(event.get("data"), dict) else {}
+        level = event.get("level") or "info"
+        if data.get("notify") is False:
+            # Bleibt im Protokoll, geht nicht hinaus (z. B. GNSS-„Hinweis“, Holdover-Test, stummes Gerät).
+            # Beendet es aber ein offenes Problem (stummgeschaltet, Regel geändert), wird dieses still
+            # geschlossen – sonst bliebe der Betreff für immer offen und jeder spätere Alarm galt als
+            # „schon gemeldet“.
+            key = subject_key(event)
+            st = self.state.get(key)
+            if st is not None and st["open_since"] is not None and level not in ("warn", "crit") \
+                    and resolves(event):
+                st.update(open_since=None, notified=None, pending=None, suppressed=0)
+            return []
         now = self.clock()
         key = subject_key(event)
         st = self.state.setdefault(key, {"open_since": None, "notified": None, "last_sent": None,
                                          "pending": None, "suppressed": 0, "sent_level": None,
                                          "resolved_sent": False})
-        level = event.get("level") or "info"
-        problem = level in ("warn", "crit") and event.get("kind") not in STANDALONE_KINDS
+        # data.standalone (1.5): eine Meldung, die für sich steht – z. B. „Neues Gerät fragt nach der Zeit“.
+        # data.notify = true (1.5): Die Quelle hat ausdrücklich entschieden, dass das hinausgeht –
+        # z. B. „GNSS-Hinweis“ bei gnss_notify = hinweis. Dann gilt die Mindeststufe des Kanals nicht,
+        # und die Meldung zählt als offenes Problem (damit „wieder unauffällig“ dazu passt).
+        forced = data.get("notify") is True
+        problem = (level in ("warn", "crit") or forced) and event.get("kind") not in STANDALONE_KINDS \
+            and data.get("standalone") is not True
         if not problem and st["open_since"] is not None and resolves(event):
             # „behoben“: gehört zum offenen Problem – auch unterhalb der Mindeststufe.
             out = []
@@ -549,7 +576,7 @@ class ChannelRouter:
                 st["resolved_sent"] = True
             st.update(open_since=None, notified=None, pending=None, suppressed=0)
             return out
-        if not self._matches(event):
+        if not self._matches(event, ignore_level=forced):
             return []
         window = self._window()
         recent = st["last_sent"] is not None and now - st["last_sent"] < window
@@ -671,12 +698,60 @@ def _known() -> tuple[list, dict]:
     return _KNOWN["names"], _KNOWN["values"]
 
 
+DEVICE_KINDS = ("clients",)
+
+
+def _event_device(event: dict) -> str | None:
+    """Adresse des Geräts, um das es in einem Client-Ereignis geht (data.address) – sonst None."""
+    if event.get("kind") not in DEVICE_KINDS:
+        return None
+    data = event.get("data") if isinstance(event.get("data"), dict) else {}
+    addr = data.get("address")
+    if not isinstance(addr, str) or not addr or len(addr) > 45:
+        return None
+    try:
+        return str(ipaddress.ip_address(addr))
+    except ValueError:
+        return None
+
+
+def _address_re(addr: str) -> re.Pattern:
+    # Nur die ganze Adresse: 192.168.1.2 nicht in 192.168.1.20, fd00::1 nicht in fd00::1a.
+    return re.compile(r"(?<![0-9A-Za-z.:])" + re.escape(addr) + r"(?![0-9A-Za-z:]|\.[0-9A-Za-z])", re.IGNORECASE)
+
+
+def _device_label(addr: str) -> tuple[str, str | None]:
+    """(eigener Name, Adresse für die Meldung oder None) – Entscheidung F5 (1.5): Standard ist nur der
+    eigene Gerätename; die LAN-Adresse nur mit dem Schalter „LAN-Adressen in Nachrichten“."""
+    name = ""
+    try:
+        import clientinfo  # spät: clientinfo zieht clientmon nach
+        name = (clientinfo.all_meta().get(addr) or {}).get("name") or ""
+    except Exception:
+        name = ""
+    try:
+        show = bool(settings.values().get("notify_lan_addresses"))
+    except Exception:
+        show = False
+    return name, (addr if show else None)
+
+
 def outgoing(msg: dict, link_base: str | None = None) -> dict:
-    """Meldung → gefilterte Felder für den Versand (egress, Zweck „notify“) + Link. Wirft egress.NotifyLeak."""
+    """Meldung → gefilterte Felder für den Versand (egress, Zweck „notify“) + Link. Wirft egress.NotifyLeak.
+
+    Meldungen über ein Gerät (msg["device"], 1.5) nennen statt der Adresse den eigenen Namen des Geräts
+    (egress.notify_device_message); die Adresse nur mit dem Schalter notify_lan_addresses."""
     names, values = _known()
     draft = dict(msg)
     draft["text"] = _body(msg)
-    clean = egress.notify_message(draft, names, values)
+    device = msg.get("device")
+    if isinstance(device, str) and device:
+        pattern = _address_re(device)
+        draft["title"] = pattern.sub(egress.DEVICE_PLACEHOLDER, str(draft.get("title") or ""))
+        name, lan_ip = _device_label(device)
+        clean = egress.notify_device_message(draft, names, values, name, lan_ip)
+    else:
+        clean = egress.notify_message(draft, names, values)
     link = _link(clean.get("kind", ""), link_base)
     if link:
         clean["link"] = link  # selbst eingetragen und geprüft (http_url_ok) – wird nicht gefiltert

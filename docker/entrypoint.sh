@@ -314,6 +314,37 @@ start_chronyd() {
   spawn chrony /usr/sbin/chronyd "${chronyd_args[@]}"
   SVC_ENTRY[chronyd]="$SPAWNED"
   set_state chronyd running
+  reapply_noselect
+}
+
+# GPS-Sperre (1.5): Laufzeitschalter „selectopts +noselect“ überleben keinen Neustart von
+# chronyd. Das Dashboard (selectctl.py) führt deshalb DATA_DIR/noselect.list mit den gesperrten
+# Quellen; hier werden sie direkt nach dem Start wieder abgewählt – bevor chronyd die erste
+# GPS-Messung hat und das gesperrte GPS auswählen (oder die Uhr per makestep darauf stellen)
+# könnte. Kurz im Hintergrund, bis chronyd Befehle annimmt (höchstens ~10 s).
+reapply_noselect() {
+  local file="${NTPGUI_DATA_DIR:-/var/lib/chrony/ntp-gui}/noselect.list" name names=()
+  [[ -s "$file" ]] || return 0
+  while IFS= read -r name || [[ -n "$name" ]]; do
+    # Nur Namen wie in selectctl.NAME_RE – nichts anderes landet auf der Kommandozeile.
+    [[ "$name" =~ ^[A-Za-z0-9_.:%-]{1,64}$ ]] && names+=("$name")
+  done < "$file"
+  (( ${#names[@]} )) || return 0
+  (
+    local i
+    for (( i = 0; i < 40; i++ )); do
+      if chronyc -n tracking >/dev/null 2>&1; then
+        for name in "${names[@]}"; do
+          if chronyc selectopts "$name" +noselect >/dev/null 2>&1; then
+            log chrony "GPS-Sperre: ${name} nach dem Start von chronyd wieder abgewählt"
+          fi
+        done
+        exit 0
+      fi
+      sleep 0.25
+    done
+    log chrony "WARNUNG: GPS-Sperre nicht erneuert – chronyd nimmt keine Befehle an (das Dashboard versucht es weiter)"
+  ) &
 }
 
 start_gpsd() {

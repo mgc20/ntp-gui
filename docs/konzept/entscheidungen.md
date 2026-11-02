@@ -22,3 +22,14 @@ Format und Bewertung: siehe [entscheidungsrahmen.md](entscheidungsrahmen.md).
 | E12 | Schwarm Stufe A | **Ohne Laufzeitwerte** | mehrere Laufzeiten würden die Region verraten |
 | E13 | Schwarm Stufe B (regional) | **Frühestens nach einem Jahr Stufe A neu bewerten** | Datenschutz und Datenqualität erst mit Erfahrung beurteilbar |
 | E14 | Website-Hosting | **GitHub Pages für statische Teile**, eigener VPS nur für den Messpunkt | minimaler Betrieb, kein eigener Webserver für Inhalte |
+
+## 2026-11-02
+
+Antworten des Maintainers auf die offenen Fragen aus [version-1.5.md](version-1.5.md#5-offene-fragen-an-den-maintainer).
+
+| # | Frage | Entscheidung | Begründung |
+|---|---|---|---|
+| E15 | F1 – Schnitt 1.5 | **Schlankes 1.5.0, danach nach und nach 1.5.x** | wie E3 – kurze Abstände, jedes Release für sich fertig |
+| E16 | F4 – GPS ohne PPS standardmäßig „nur beobachten“? | **Nein.** GPS ohne PPS bleibt Zeitquelle, aber als **Rückfallebene**: ntp-gui gibt ihm eine ehrliche Fehlerschranke (aus der gemessenen Streuung, z. B. ± 60 ms), sodass chrony gute Internetquellen vorzieht und GPS automatisch nimmt, wenn das Internet schlecht oder weg ist (Mobilfunk, Störung, Insel). „Nur beobachten“ bleibt eine Wahl im Dashboard, kein Standard und kein automatischer Vorschlag. | Einwand des Maintainers: Bei Mobilfunk-Internet (große Laufzeitschwankungen, Ausfälle) ist das GPS oft die bessere oder einzige Quelle. Fehlerhaft war nicht die Rolle, sondern die zu kleine Fehlerschranke (`delay 0.03` bei ± 60 ms Streuung) – dadurch wählte chrony das GPS zeitweise als Referenz, obwohl gute NTS-Quellen da waren. |
+| E17 | F12 – VPS für Community-Dienste | **Start mit einem VPS**, ein zweiter ist möglich, aber nicht eingeplant | genug für Website + Server-Test; ein zweiter Standort erst, wenn der Betrieb ruhig läuft |
+| E18 | F16 – Abstimmung mit ntp-tester.eu | **Eigene Lösung bauen, ohne Abhängigkeit.** Eine freundliche Kontaktaufnahme ist möglich, aber keine Voraussetzung. | Die Frage war nicht „bauen oder nicht“, sondern ob man sich vorher abstimmt. Ziel bleibt eine eigene Website mit mehr Möglichkeiten (Server-Test, Erklärseiten, Anbindung an ntp-gui). |

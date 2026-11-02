@@ -1,6 +1,7 @@
 import { el, fmtSeconds, fmtNs, fmtNumber, fmtFixed, fmtRate, fmtDuration, isNum, sourceLabel } from "../util.js";
 import { card, tile, kv, badge, insightList, insightLink, rangeButtons, info, emptyNote, ACTION_LABEL } from "../ui.js";
 import { lineChart, sparkline, stepDecimals } from "../charts.js";
+import { t as tr } from "../i18n.js";
 
 export const ROUTES = { gps: "gps", sources: "quellen", settings: "einstellungen", clients: "clients", ptp: "ptp", hardware: "hardware" };
 
@@ -95,41 +96,44 @@ export function verdict(status, insights) {
   const crit = insights.filter((i) => i.level === "crit");
   const warn = insights.filter((i) => i.level === "warn");
   const issues = crit.length + warn.length;
-  const more = issues ? `${issues} ${issues === 1 ? "Punkt" : "Punkte"} unten prüfen` : "keine offenen Hinweise";
-  const stratum = isNum(t.stratum) && t.stratum > 0 && t.stratum < 16 ? `Stratum ${t.stratum}` : null;
-  const count = (n) => `${n} ${n === 1 ? "Hinweis" : "Hinweise"}`;
+  const more = issues ? tr("overview.verdict.check_count", { count: issues }) : tr("overview.verdict.no_issues");
+  const stratum = isNum(t.stratum) && t.stratum > 0 && t.stratum < 16 ? tr("overview.verdict.stratum", { n: t.stratum }) : null;
+  const withStratum = (text) => (stratum ? `${text} · ${stratum}` : text);
+  const synced = tr("overview.verdict.synced");
   if (!status.chrony_running) {
-    return { tone: "crit", title: "Zeitdienst antwortet nicht", text: "chronyd läuft nicht – Geräte im LAN bekommen gerade keine Zeit.",
-      pill: "chronyd offline", pillShort: "offline" };
+    return { tone: "crit", title: tr("overview.verdict.down_title"), text: tr("overview.verdict.down_text"),
+      pill: tr("overview.verdict.down_pill"), pillShort: tr("overview.verdict.down_pill_short") };
   }
   if (crit.length) {
-    return { tone: "crit", title: crit.length === 1 ? crit[0].title : `${crit.length} Störungen`, text: more,
-      pill: `Störung${stratum ? ` · ${stratum}` : ""}`, pillShort: "Störung" };
+    // Ein einzelner Hinweistitel kommt vom Server und ist vorerst deutsch.
+    return { tone: "crit", title: crit.length === 1 ? crit[0].title : tr("overview.verdict.crit_title", { count: crit.length }), text: more,
+      pill: withStratum(tr("overview.verdict.crit_pill")), pillShort: tr("overview.verdict.crit_pill") };
   }
   if (!t.synchronised) {
     return t.local_reference
-      ? { tone: "warn", title: "Inselbetrieb", text: `Keine Zeitquelle erreichbar – die Uhr läuft frei weiter · ${more}`,
-        pill: `Inselbetrieb${stratum ? ` · ${stratum}` : ""}`, pillShort: "Insel" }
-      : { tone: "warn", title: "Synchronisiert …", text: `chrony sucht noch eine verlässliche Quelle · ${more}`,
-        pill: "Synchronisiert …", pillShort: "sync …" };
+      ? { tone: "warn", title: tr("overview.verdict.island_title"), text: `${tr("overview.verdict.island_text")} · ${more}`,
+        pill: withStratum(tr("overview.verdict.island_title")), pillShort: tr("overview.verdict.island_pill_short") }
+      : { tone: "warn", title: tr("overview.verdict.syncing_title"), text: `${tr("overview.verdict.syncing_text")} · ${more}`,
+        pill: tr("overview.verdict.syncing_title"), pillShort: tr("overview.verdict.syncing_pill_short") };
   }
   if (warn.length) {
-    return { tone: "warn", title: "Synchron – mit Hinweisen", text: more,
-      pill: `Synchron · ${count(warn.length)}`, pillShort: stratum || "Synchron" };
+    return { tone: "warn", title: tr("overview.verdict.warn_title"), text: more,
+      pill: `${synced} · ${tr("overview.verdict.warn_count", { count: warn.length })}`, pillShort: stratum || synced };
   }
-  return { tone: "good", title: "Alles in Ordnung", text: "Die Uhr ist synchron, alle Teile laufen.",
-    pill: `Synchron${stratum ? ` · ${stratum}` : ""}`, pillShort: stratum || "Synchron" };
+  return { tone: "good", title: tr("overview.verdict.good_title"), text: tr("overview.verdict.good_text"),
+    pill: withStratum(synced), pillShort: stratum || synced };
 }
 
 // Zu welcher Kachel gehört ein Hinweis? So färbt sich die betroffene Kachel mit,
 // und die Hinweiszeile nennt den Bereich.
-const PANEL_NAME = { clock: "Systemuhr", sources: "Zeitquellen", gps: "GPS", ptp: "PTP", clients: "Clients", services: "Dienste" };
-const CLOCK_KEYS = new Set(["chrony_down", "no_clock_control", "island", "syncing", "synced"]);
+const PANEL_NAME_KEY = { clock: "overview.area.clock", sources: "overview.area.sources", gps: "overview.area.gps",
+  ptp: "overview.area.ptp", clients: "overview.area.clients", services: "overview.area.services" };
+const CLOCK_KEYS = new Set(["chrony_down", "no_clock_control", "island", "syncing", "synced", "holdover_running"]);
 
 export function panelOf(item) {
   const key = String(item.key || "");
   if (CLOCK_KEYS.has(key)) return "clock";
-  if (key === "dns_loop" || key === "dns_loop_risk") return "sources";
+  if (key === "dns_loop" || key === "dns_loop_risk" || key.startsWith("loop_")) return "sources";
   if (key.startsWith("service_") || key === "storage" || key.startsWith("dns_")) return "services";
   if (key.startsWith("hw_gps") || key.startsWith("gps") || item.action === "gps") return "gps";
   if (key.startsWith("hw_ptp") || key.startsWith("ptp") || item.action === "ptp") return "ptp";
@@ -143,7 +147,8 @@ const ISSUE_BADGE = {
   no_clock_control: "nicht geregelt", island: "Inselbetrieb", syncing: "synchronisiert …", chrony_down: "keine Antwort",
   gpsd_down: "gpsd offline", gps_nofix: "kein Fix", gps_falseticker: "Falseticker", hw_gps_usb: "Empfänger fehlt",
   hw_gps_pps: "PPS fehlt", ptp_down: "ptp4l aus", minsources: "zu wenige", storage: "kein Volume",
-  nts_server_files: "NTS-Zertifikat",
+  nts_server_files: "NTS-Zertifikat", dns_loop: "Schleife", loop_nat: "Schleife", loop_self: "Schleife",
+  gnss_stage: "GNSS gestört?", gnss_lock: "GPS gesperrt", holdover_running: "Holdover-Test",
 };
 
 function issuesFor(insights, id) {
@@ -163,15 +168,15 @@ function hintRow(ctx, item) {
     el("div", { class: "hint-main" },
       el("div", { class: "hint-title" },
         el("strong", { text: item.title }),
-        area ? el("span", { class: "hint-area", text: PANEL_NAME[area] }) : null),
+        area ? el("span", { class: "hint-area", text: tr(PANEL_NAME_KEY[area]) }) : null),
       open ? el("p", { class: "hint-text", id: textId, text: item.text }) : null),
     el("div", { class: "hint-actions" },
       crit ? null : el("button", {
         type: "button", class: "link hint-toggle", "aria-expanded": open ? "true" : "false",
         "aria-controls": open ? textId : null, "data-focus-key": `hint:${key}`,
-        "aria-label": `${open ? "Details ausblenden" : "Details anzeigen"}: ${item.title}`,
+        "aria-label": tr(open ? "overview.hints.details_hide" : "overview.hints.details_show", { title: item.title }),
         onclick: () => { if (open) openSet.delete(key); else openSet.add(key); ctx.rerender(); },
-      }, open ? "weniger" : "Details"),
+      }, tr(open ? "overview.hints.less" : "overview.hints.details")),
       insightLink(item),
       item.action ? el("a", { href: `#/${ROUTES[item.action] || item.action}`, class: "insight-action",
         text: ACTION_LABEL[item.action] || "Ansehen →" }) : null));
@@ -185,7 +190,7 @@ function hintsBlock(ctx, insights) {
   const rest = sorted.filter((i) => i.level !== "crit" && i.level !== "warn");
   const open = Boolean(ctx.uiState.overviewHintsOpen);
   const parts = [];
-  if (serious.length) parts.push(el("ul", { class: "hint-list", "aria-label": "Warnungen und Störungen" }, serious.map((i) => hintRow(ctx, i))));
+  if (serious.length) parts.push(el("ul", { class: "hint-list", "aria-label": tr("overview.hints.serious_label") }, serious.map((i) => hintRow(ctx, i))));
   if (rest.length) {
     const toggle = el("button", {
       type: "button", class: "hint-summary", "aria-expanded": open ? "true" : "false", "aria-controls": "hints-rest",
@@ -195,13 +200,13 @@ function hintsBlock(ctx, insights) {
     el("span", { class: "hint-summary-icons", "aria-hidden": "true" }, rest.slice(0, 4).map((i) =>
       el("span", { class: "insight-icon", "data-level": i.level, text: LEVEL_ICON[i.level] || "i" }))),
     el("span", { class: "hint-summary-text" },
-      el("strong", { text: `${rest.length} ${rest.length === 1 ? "Information" : "Informationen"}` }),
+      el("strong", { text: tr("overview.hints.info_count", { count: rest.length }) }),
       el("span", { class: "muted", text: ` · ${rest.map((i) => i.title).join(" · ")}` })),
-    el("span", { class: "hint-summary-action", text: open ? "ausblenden" : "anzeigen" }));
-    parts.push(el("div", { class: "hint-more" }, toggle, info("overview_hints", "Hinweise")));
+    el("span", { class: "hint-summary-action", text: tr(open ? "overview.hints.hide" : "overview.hints.show") }));
+    parts.push(el("div", { class: "hint-more" }, toggle, info("overview_hints", tr("overview.hints.label"))));
     if (open) parts.push(el("div", { class: "insights-rest", id: "hints-rest" }, insightList(rest, ROUTES)));
   } else if (serious.length) {
-    parts.push(el("div", { class: "hint-more hint-more-quiet" }, info("overview_hints", "Hinweise")));
+    parts.push(el("div", { class: "hint-more hint-more-quiet" }, info("overview_hints", tr("overview.hints.label"))));
   }
   return parts.length ? el("div", { class: "hero-hints" }, parts) : null;
 }
@@ -295,18 +300,33 @@ function sourcesPanel(status, issues) {
   });
 }
 
+// Empfangsampel (24 h) aus gpsquality.overview – nur Stufe und Satz, keine Satellitenwinkel.
+const RECEPTION = { green: ["gut", "good"], yellow: ["mäßig", "warn"], red: ["schwach", "crit"], unknown: ["noch offen", "muted"] };
+
+function gpsRoleText(summary) {
+  if (!summary || !summary.role_label) return "–";
+  const used = summary.active === true ? " · in Benutzung" : summary.active === false ? " · gerade nicht genutzt" : "";
+  return `${summary.role_label}${used}`;
+}
+
 function gpsPanel(status, issues) {
   const gps = status.gps || {};
-  const tone = gps.has_fix ? "good" : gps.running ? "warn" : "crit";
+  const summary = status.gps_summary || null;
+  const unstet = summary && summary.stability === "unstet";
+  const tone = gps.has_fix ? (unstet ? "warn" : "good") : gps.running ? "warn" : "crit";
   const pps = gps.pps_missing ? `fehlt (${gps.pps_missing})` : gps.pps ? gps.pps : "nicht eingerichtet";
+  const [recLabel, recTone] = RECEPTION[summary ? summary.level || "unknown" : "unknown"] || RECEPTION.unknown;
+  const reception = el("span", { title: summary && summary.sentence ? summary.sentence : null },
+    badge(recLabel, recTone), unstet ? " · unstet" : "");
   return panel({
     title: "GPS", help: gps.running && !gps.has_fix ? "cold_start" : "fix", tone, issues,
-    state: gps.running ? (gps.mode_label || "–") : "gpsd offline",
+    state: gps.running ? (unstet ? "unstet" : (gps.mode_label || "–")) : "gpsd offline",
     value: gps.running ? `${gps.satellites_used ?? 0}` : "–", valueNote: gps.running ? "Satelliten im Fix" : "keine Verbindung zu gpsd",
     body: kv([
+      ["Rolle", gpsRoleText(summary), "gpsq_role"],
+      ["Empfang 24 h", reception, "gpsq_assessment"],
       ["Satelliten", meter(gps.satellites_used ?? 0, gps.satellites_seen ?? 0, "genutzt von sichtbar"), "satellites"],
       ["Signal", isNum(gps.snr_avg) ? `${fmtNumber(gps.snr_avg, 1)} dB-Hz` : "–", "snr"],
-      ["HDOP", isNum(gps.hdop) ? fmtFixed(gps.hdop, 2) : "–", "dop"],
       ["PPS", pps, "pps"],
     ]),
     href: "#/gps", linkLabel: "Zur GPS-Seite",
@@ -458,7 +478,7 @@ const OFFSET_BANDS = [
   { from: 0.05, tone: "crit", label: "> 50 ms" }, { to: -0.05, tone: "crit", label: "< −50 ms" },
 ];
 
-const TONE_WORD = { warn: "erhöht", crit: "kritisch" };
+const TONE_WORD_KEY = { warn: "overview.kpi.tone_warn", crit: "overview.kpi.tone_crit" };
 
 export function render(ctx) {
   const { status, history } = ctx;
@@ -485,29 +505,31 @@ export function render(ctx) {
 
   // --- Statusband -------------------------------------------------------------
   const v = verdict(status, insights);
+  const clientCount = status.client_count ?? 0;
   const facts = status.chrony_running ? [
-    t.stratum ? `Stratum ${t.stratum}` : null,
-    ref ? `über ${sourceLabel(ref)}` : t.local_reference ? "lokale Uhr" : null,
-    `${sources.filter((s) => s.state === "*" || s.state === "+").length} von ${sources.length} Quellen genutzt`,
-    `${fmtNumber(status.client_count ?? 0)} Clients`,
+    t.stratum ? tr("overview.verdict.stratum", { n: t.stratum }) : null,
+    ref ? tr("overview.facts.via", { source: sourceLabel(ref) }) : t.local_reference ? tr("overview.facts.local_clock") : null,
+    tr("overview.facts.sources_used", { used: sources.filter((s) => s.state === "*" || s.state === "+").length, total: sources.length }),
+    tr("overview.facts.clients", { count: clientCount, n: fmtNumber(clientCount) }),
   ].filter(Boolean) : null;
   const offTone = offsetTone(t.system_time_offset);
   const kpis = el("div", { class: "hero-kpis" },
-    tile({ label: "Abweichung", help: "system_offset", value: fmtSeconds(t.system_time_offset, 3, true), tone: offTone,
-      note: TONE_WORD[offTone] ? el("span", {}, badge(TONE_WORD[offTone], offTone), ` RMS ${fmtSeconds(t.rms_offset)}`) : `RMS ${fmtSeconds(t.rms_offset)}`,
+    tile({ label: tr("overview.kpi.offset"), help: "system_offset", value: fmtSeconds(t.system_time_offset, 3, true), tone: offTone,
+      note: TONE_WORD_KEY[offTone] ? el("span", {}, badge(tr(TONE_WORD_KEY[offTone]), offTone), ` RMS ${fmtSeconds(t.rms_offset)}`) : `RMS ${fmtSeconds(t.rms_offset)}`,
       spark: sparkline(offsets, { zero: true, ...span }) }),
-    tile({ label: "Max. Fehler", help: "uncertainty", value: rootDistance === null ? "–" : `± ${fmtSeconds(rootDistance)}`,
-      tone: "muted", note: "Fehlerschranke zu UTC", spark: sparkline(distance, { min: 0, ...span }) }),
-    tile({ label: "Frequenz", help: "frequency", value: isNum(t.frequency_ppm) ? fmtFixed(t.frequency_ppm, 3) : "–", unit: "ppm",
+    tile({ label: tr("overview.kpi.max_error"), help: "uncertainty", value: rootDistance === null ? "–" : `± ${fmtSeconds(rootDistance)}`,
+      tone: "muted", note: tr("overview.kpi.max_error_note"), spark: sparkline(distance, { min: 0, ...span }) }),
+    tile({ label: tr("overview.kpi.frequency"), help: "frequency", value: isNum(t.frequency_ppm) ? fmtFixed(t.frequency_ppm, 3) : "–", unit: "ppm",
       tone: "muted", note: `Skew ${isNum(t.skew_ppm) ? fmtFixed(t.skew_ppm, 3) : "–"} ppm`, spark: sparkline(freq, span) }),
-    tile({ label: "Anfragen", help: "served_rate", value: fmtRate(lastRate), unit: "/min",
-      tone: "muted", note: `${fmtNumber(status.client_count ?? 0)} Clients im LAN`, spark: sparkline(rate, { min: 0, ...span }) }));
-  const hero = el("section", { class: "card hero", "data-tone": v.tone, "aria-label": "Gesamtzustand" },
+    tile({ label: tr("overview.kpi.requests"), help: "served_rate", value: fmtRate(lastRate), unit: "/min",
+      tone: "muted", note: tr("overview.kpi.requests_note", { count: clientCount, n: fmtNumber(clientCount) }),
+      spark: sparkline(rate, { min: 0, ...span }) }));
+  const hero = el("section", { class: "card hero", "data-tone": v.tone, "aria-label": tr("overview.band_label") },
     el("div", { class: "hero-top" },
       el("div", { class: "hero-verdict" },
         el("span", { class: "verdict-icon", "aria-hidden": "true", text: VERDICT_ICON[v.tone] }),
         el("div", { class: "verdict-text" },
-          el("div", { class: "verdict-title" }, el("h2", { text: v.title }), info("overview_verdict", "Gesamtzustand")),
+          el("div", { class: "verdict-title" }, el("h2", { text: v.title }), info("overview_verdict", tr("overview.band_label"))),
           el("p", { class: "verdict-sub", text: v.text }),
           facts ? el("p", { class: "verdict-facts" }, facts.map((f, i) => el("span", { class: "fact", text: i ? `· ${f}` : f }))) : null)),
       kpis),

@@ -418,6 +418,29 @@ def _as_network_list(value: Any) -> list[str]:
     return networks
 
 
+MAX_TRUSTED_PROXIES = 16
+
+
+def _as_proxy_list(value: Any) -> list[str]:
+    """Vertrauenswürdige Reverse Proxys: Adressen oder kleine Netze – nie „alle“."""
+    networks = []
+    for item in _list_items(value):
+        if item.lower() == "all":
+            raise ValidationError("„all“ geht hier nicht – dann könnte jeder seine Adresse fälschen. "
+                                  "Nur die Adresse des Proxys eintragen, z. B. 127.0.0.1/32")
+        try:
+            net = ipaddress.ip_network(item, strict=False)
+        except ValueError:
+            raise ValidationError(f"„{item}“ ist keine Adresse und kein Netz, z. B. 127.0.0.1/32") from None
+        if net.prefixlen == 0:
+            raise ValidationError(f"„{item}“ umfasst alle Adressen – nur die Adresse des Proxys eintragen")
+        if str(net) not in networks:
+            networks.append(str(net))
+    if len(networks) > MAX_TRUSTED_PROXIES:
+        raise ValidationError(f"höchstens {MAX_TRUSTED_PROXIES} Einträge")
+    return networks
+
+
 def _check_options(text: str, allowed: dict[str, int], what: str) -> str:
     tokens = str(text or "").split()
     index = 0
@@ -694,6 +717,14 @@ SCHEMA: list[dict] = [
                 "8.8.8.8 ein) wird nicht gefragt. Ein lokaler Zwischen-Resolver (127.0.0.53, "
                 "127.0.0.11) zählt als privat – wohin er weiterfragt, kann ntp-gui nicht sehen. "
                 "Der Name bleibt auf dieser Instanz."),
+    _field("clients_new_device_alarm", "lan", "Melden, wenn ein neues Gerät nach der Zeit fragt", "bool", False,
+           _as_bool, env="CLIENTS_NEW_DEVICE_ALARM", restart=RESTART_NONE, advanced=True,
+           help="Schreibt ein Ereignis „Neues Gerät fragt nach der Zeit“, sobald ein Gerät zum ersten Mal "
+                "fragt, das ntp-gui noch nie gesehen hat – nützlich, um unbekannte Geräte im Netz zu "
+                "bemerken. Erkannt wird an der MAC-Adresse (im selben Netz) bzw. an der IPv4-Adresse; "
+                "IPv6-Adressen ohne MAC zählen nicht, weil Datenschutz-Adressen täglich wechseln. Die "
+                "ersten 24 Stunden lernt ntp-gui nur (sonst wäre zu Beginn jedes Gerät „neu“), danach "
+                "höchstens 5 Meldungen je Stunde. Standard: aus."),
     _field("enforce_hostnames", "lan", "Weitere Namen für „Zeitserver erzwingen“", "hostlist",
            [], _as_host_list, env="ENFORCE_HOSTNAMES", restart=RESTART_NONE, advanced=True,
            placeholder="z. B. time.example.com",
@@ -811,14 +842,30 @@ SCHEMA: list[dict] = [
            _as_number(float, 0.0001, 1.0), env="GPS_DELAY", unit="s",
            help="Wie stark chrony dem GPS misstraut. 0,2 s ist vorsichtig für unkalibrierte "
                 "Empfänger. Je kleiner, desto eher wird das GPS gegenüber Internet-Servern "
-                "gewählt. Nach der Kalibrierung schlägt der Assistent einen passenden Wert vor."),
+                "gewählt. Nach der Kalibrierung schlägt der Assistent einen passenden Wert vor. "
+                "Ohne PPS und mit „Fehlerschranke: gemessen“ setzt ntp-gui den Wert selbst aus der "
+                "gemessenen Streuung – dann gilt dieser hier nur mit PPS oder im Modus „von Hand“."),
+    _field("gps_bound_mode", "gps", "Fehlerschranke ohne PPS", "select", "measured",
+           _as_choice("measured", "manual"), env="GPS_BOUND_MODE",
+           options=[("measured", "gemessen – aus der Streuung gegen die Netzquellen (empfohlen)"),
+                    ("manual", "von Hand – Delay und Auflösung wie eingestellt")],
+           help="Ein GPS ohne PPS (z. B. VK-162) liefert die Zeit nur auf einige bis einige zehn "
+                "Millisekunden genau. „Gemessen“ gibt chrony eine ehrliche Fehlerschranke aus der "
+                "Streuung der letzten Stunden: chrony nimmt dann die guten Netzquellen und das GPS "
+                "von selbst, wenn das Internet schlecht wird oder ausfällt (Rückfallebene). Bis "
+                "genug gemessen ist, gilt vorsichtig ± 100 ms. Jede Anpassung steht im "
+                "Ereignisprotokoll und startet chronyd kurz neu. Mit PPS wirkt diese Einstellung "
+                "nicht – dort zählt der Impuls."),
     _field("gps_select", "gps", "Rolle bei der Quellenauswahl", "select", "auto",
            _as_choice("auto", "prefer", "noselect"), env="GPS_SELECT",
-           options=[("auto", "automatisch – chrony entscheidet"),
+           options=[("auto", "automatisch – chrony entscheidet (ohne PPS: Rückfallebene)"),
                     ("prefer", "bevorzugen – GPS ist erste Wahl"),
                     ("noselect", "nur beobachten – nie zur Synchronisation")],
-           help="„Bevorzugen“ macht das GPS zur Hauptquelle, solange es plausibel ist. "
-                "„Nur beobachten“ ist praktisch zum Kalibrieren."),
+           help="„Automatisch“: chrony nimmt die genaueste Quelle – ohne PPS ist das GPS damit die "
+                "Rückfallebene, wenn das Internet schlecht wird oder ausfällt. „Bevorzugen“ macht "
+                "das GPS zur Hauptquelle, solange es plausibel ist (sinnvoll bei Mobilfunk oder "
+                "ohne Internet). „Nur beobachten“ misst nur und nutzt das GPS nie – auch nicht bei "
+                "einem Internetausfall; praktisch zum Kalibrieren."),
     _field("gps_pps_device", "gps", "PPS-Gerät", "device", "", _as_device(optional=True),
            env="GPS_PPS_DEVICE", placeholder="kein PPS",
            help="Ein echter Sekundenimpuls (z. B. /dev/pps0 über GPIO am Raspberry Pi). "
@@ -884,6 +931,30 @@ SCHEMA: list[dict] = [
            help="Wie lange GPS und Netzwerkquellen gemeinsam gemessen haben müssen, bevor "
                 "ein Offset vorgeschlagen oder übernommen wird. Mehrere Stunden glätten "
                 "Tagesschwankungen der Netzlaufzeit – darum ist das Ergebnis dann belastbar."),
+    _field("gnss_guard", "gps", "Störungserkennung (Jamming/Spoofing)", "select", "report",
+           _as_choice("off", "report", "lock"), env="GNSS_GUARD", restart=RESTART_NONE,
+           options=[("off", "aus – nicht prüfen"),
+                    ("report", "nur melden – Ereignis und Benachrichtigung (empfohlen)"),
+                    ("lock", "automatisch sperren – GPS bei Störung abwählen")],
+           help="ntp-gui prüft laufend, ob das GPS gestört oder gefälscht wird: gleichzeitiger "
+                "Signaleinbruch aller Satelliten, unnatürlich gleichmäßige Signale, GPS-Zeit weit "
+                "weg von den NTS-Quellen, Positionssprung. „Nur melden“ schreibt ein Ereignis. "
+                "„Automatisch sperren“ wählt das GPS bei einem starken Befund (Zeit oder Position, "
+                "nie bei reinem Signaleinbruch) per chronyc selectopts ab und gibt es nach 30 min "
+                "ohne Befund wieder frei – höchstens dreimal in Folge, danach nur von Hand. Erst "
+                "Praxisdaten sammeln, dann ggf. einschalten."),
+    _field("gnss_notify", "gps", "Störung benachrichtigen ab", "select", "stoerung",
+           _as_choice("stoerung", "warnung", "hinweis"), env="GNSS_NOTIFY", restart=RESTART_NONE,
+           advanced=True,
+           options=[("stoerung", "Störung – nur starke Befunde (empfohlen)"),
+                    ("warnung", "Warnung – auch zwei schwache Befunde zugleich"),
+                    ("hinweis", "Hinweis – jeder Befund")],
+           help="Ab welcher Stufe eine GNSS-Meldung über deine Benachrichtigungskanäle hinausgeht. "
+                "Schnee, ein Flugzeug oder ein Lkw vor dem Fenster lassen das Signal kurz "
+                "einbrechen – das ist ein „Hinweis“. Würde jeder davon gemeldet, lernt man, "
+                "Alarme zu ignorieren. Im Ereignisprotokoll steht immer alles. Was du hier "
+                "freigibst, geht auch an Kanäle, deren Mindeststufe höher liegt (z. B. „Warnung“) – "
+                "die Auswahl der Ereignisarten im Kanal gilt weiter."),
 
     # --- PTP ---------------------------------------------------------------
     _field("ptp_enable", "ptp", "PTP verwenden", "bool", False, _as_bool, env="PTP_ENABLE",
@@ -1000,6 +1071,13 @@ SCHEMA: list[dict] = [
                 "Dashboards an – ein Tipp auf dem Handy führt direkt zur GPS- oder Quellen-Seite. "
                 "Leer = kein Link. Der Link wird nicht gefiltert, weil du ihn selbst einträgst; trag "
                 "deshalb nur eine Adresse ein, die die Empfänger sehen dürfen."),
+    _field("notify_lan_addresses", "web", "LAN-Adressen in Nachrichten", "bool", False, _as_bool,
+           env="NOTIFY_LAN_ADDRESSES", restart=RESTART_NONE, advanced=True,
+           help="Benachrichtigungen über ein Gerät nennen seinen eigenen Namen (Clients → Gerät → Name), "
+                "ohne Namen „Gerät ohne Namen“. Eingeschaltet steht zusätzlich die private LAN-Adresse "
+                "dabei, z. B. „NAS (192.168.1.20)“. Standard: aus – die Nachricht läuft über fremde "
+                "Dienste (ntfy, Gotify, Apprise …), und die Adresse verrät dort den Aufbau deines Netzes. "
+                "MAC-Adressen und öffentliche IP-Adressen gehen nie hinaus."),
     _field("history_interval", "web", "Messintervall für Diagramme", "float", 10.0,
            _as_number(float, 2.0, 600.0), env="HISTORY_INTERVAL", unit="s",
            restart=RESTART_NONE, advanced=True,
@@ -1017,6 +1095,15 @@ SCHEMA: list[dict] = [
                 "und die Art der Quelle (GPS, NTP …), keine Einstellungen, Namen oder Adressen. "
                 "Aus = die Uhr ist wie das Dashboard geschützt. Ohne Anmeldung gilt der Schutz vor "
                 "DNS-Rebinding: nur IP-Adressen, lokale Namen und WEB_ALLOWED_HOSTS. Wirkt ohne Neustart."),
+    _field("trusted_proxies", "web", "Vertrauenswürdige Proxys", "networks", [], _as_proxy_list,
+           env="TRUSTED_PROXIES", restart=RESTART_NONE, advanced=True, placeholder="leer = niemandem trauen",
+           help="Adressen deiner Reverse Proxys (Caddy, Nginx Proxy Manager, Zoraxy, Traefik), z. B. "
+                "127.0.0.1/32 für Caddy auf demselben Host. Nur von diesen Adressen glaubt ntp-gui die "
+                "Köpfe X-Forwarded-For und X-Forwarded-Proto: Dann nennt das Zugriffsprotokoll die echte "
+                "Adresse des Browsers statt des Proxys, und der HTTPS-Hinweis erkennt, ob der Browser "
+                "verschlüsselt verbunden ist. Leer (Standard) = niemandem trauen – sonst könnte jeder "
+                "Browser eine falsche Adresse vorgeben. Über Anmeldung und Zugriff entscheiden die Köpfe "
+                "nie. Wirkt ohne Neustart."),
     _field("update_check", "web", "Update-Hinweis (fragt GitHub)", "bool", False, _as_bool,
            env="UPDATE_CHECK", restart=RESTART_NONE,
            help="Fragt einmal am Tag zu einer zufälligen Uhrzeit bei GitHub nach der neuesten "

@@ -1,8 +1,9 @@
-import { el, apiGet, fmtDuration, fmtNumber, fmtRate, fmtLogInterval, isNum, rich } from "../util.js";
+import { el, apiGet, apiPost, fmtDuration, fmtNumber, fmtRate, fmtLogInterval, isNum, rich } from "../util.js";
 import { card, tile, info, badge, rangeButtons, emptyNote, toast, copyButton } from "../ui.js";
 import { lineChart, stepDecimals } from "../charts.js";
 import { requestRate } from "./overview.js";
-import { renderDetail, fmtOffset, offsetTone, fmtInterval, clientHref, STATE_TONE, STATE_SHORT } from "./clientdetail.js";
+import { renderDetail, fmtOffset, offsetTone, fmtInterval, clientHref, STATE_TONE, STATE_SHORT, qualityBadge, fmtDrift } from "./clientdetail.js";
+import { renderPass } from "./clientpass.js";
 
 // Platzhalter, wenn die LAN-Adresse nicht bekannt ist – in den Beispielen gut sichtbar.
 const IP_PLACEHOLDER = "<IP-des-Servers>";
@@ -121,7 +122,133 @@ function overviewCard(ctx) {
       "Alle bekannten Geräte fragen weiter."),
     miniList("Fragt auffällig oft", "clients_chatty", data.chatty || [], data.chatty_total || 0,
       (item) => el("span", { class: "field-help", text: `alle ${fmtInterval(item.interval)} (${fmtNumber(item.rate_per_min, 0)}/min)` }),
-      "Kein Gerät fragt öfter als alle 8 s.")));
+      "Kein Gerät fragt öfter als alle 8 s."),
+    worstClocks(ctx)));
+}
+
+// --- Clients 3 (1.5): Uhrgüte, Gruppen ----------------------------------------------
+function qualityData(ctx) {
+  return ctx.data("clientquality", "/api/clients/quality", 30);
+}
+
+function worstClocks(ctx) {
+  const data = qualityData(ctx);
+  const items = (data && data.worst) || [];
+  return miniList("Schlechteste Uhren im Haus", "clients_worst_clocks", items, data?.rated || 0,
+    (item) => el("span", { class: "worst-clock" }, qualityBadge(item),
+      isNum(item.drift_ppm) || isNum(item.drift_bound_ppm)
+        ? el("span", { class: "field-help", text: ` ${fmtDrift(item)}` }) : null),
+    data === undefined ? "Lade Uhrgüte …" : "Noch kein Gerät bewertbar (es braucht mindestens 4 Messungen).");
+}
+
+const GROUP_BYS = [["group", "Gruppe"], ["vlan", "VLAN"], ["software", "Software"]];
+const MEMBERS_SHOWN = 100;
+
+function pct(value) {
+  return isNum(value) ? `${fmtNumber(value * 100, 0)} %` : "–";
+}
+
+function groupForm(ctx, data) {
+  const draft = ctx.uiState.groupDraft || (ctx.uiState.groupDraft = { name: "", network: "" });
+  const name = el("input", { type: "text", maxlength: "40", value: draft.name, placeholder: "z. B. IoT",
+    "aria-label": "Name der Gruppe" });
+  const network = el("input", { type: "text", maxlength: "64", value: draft.network, placeholder: "z. B. 10.0.30.0/24",
+    "aria-label": "Netz der Gruppe", class: "mono" });
+  name.addEventListener("input", () => { draft.name = name.value; });
+  network.addEventListener("input", () => { draft.network = network.value; });
+  const add = async () => {
+    try {
+      await apiPost("/api/clients/groups", { name: draft.name, network: draft.network });
+      ctx.uiState.groupDraft = { name: "", network: "" };
+      toast("Gruppe angelegt");
+      ctx.invalidate("clientgroups");
+      ctx.rerender();
+    } catch (error) {
+      toast(`Nicht angelegt: ${error.message}`, "crit");
+    }
+  };
+  const suggestions = data.suggestions || [];
+  return el("div", { class: "group-form" },
+    el("div", { class: "group-form-row" },
+      el("label", { class: "inline-field" }, el("span", { text: "Name" }), name),
+      el("label", { class: "inline-field" }, el("span", { text: "Netz" }), network),
+      el("button", { type: "button", class: "button primary", text: "Gruppe anlegen", onclick: add })),
+    suggestions.length ? el("div", { class: "group-suggest" },
+      el("span", { class: "field-help" }, "Vorschläge aus gesehenen Netzen: ", info("clients_group_suggest")),
+      suggestions.map((sug) => el("button", { type: "button", class: "chip mono",
+        text: `${sug.network} (${fmtNumber(sug.count)})`,
+        onclick: () => { draft.network = sug.network; ctx.rerender(); } }))) : null);
+}
+
+function groupRow(ctx, group, by) {
+  const del = by === "group" && group.group_id && !ctx.readonly ? el("button", { type: "button", class: "button",
+    text: "Löschen", "aria-label": `Gruppe ${group.label} löschen`,
+    onclick: async () => {
+      try {
+        await apiPost("/api/clients/groups/delete", { id: group.group_id });
+        ctx.invalidate("clientgroups");
+        ctx.rerender();
+      } catch (error) { toast(error.message, "crit"); }
+    } }) : null;
+  const names = ctx.uiState.groupNames || {};
+  const members = group.members || [];
+  const list = members.length ? el("details", { class: "group-members" },
+    el("summary", { text: `${fmtNumber(members.length)} Geräte zeigen` }),
+    el("ul", { class: "group-member-list" }, members.slice(0, MEMBERS_SHOWN).map((address) =>
+      el("li", {}, clientLink({ address, name: names[address] })))),
+    members.length > MEMBERS_SHOWN ? el("p", { class: "field-help", text: `… und ${fmtNumber(members.length - MEMBERS_SHOWN)} weitere` }) : null)
+    : null;
+  return [
+    el("tr", {},
+      el("td", {}, el("strong", { text: group.label }),
+        group.network ? el("span", { class: "mono client-sub", text: ` ${group.network}` }) : null),
+      el("td", { class: "num", text: `${fmtNumber(group.total)} (${fmtNumber(group.active)})` }),
+      el("td", { class: "num", text: fmtNumber(group.measured) }),
+      el("td", { class: "num" }, isNum(group.median_offset)
+        ? el("span", { class: "offset-value", "data-tone": offsetTone(group.median_offset), text: fmtOffset(group.median_offset).replace(/^\+/, "") })
+        : "–"),
+      el("td", { class: "num", text: pct(group.good_share) }),
+      el("td", { class: "num", text: isNum(group.score_median) ? fmtNumber(group.score_median, 0) : "–" }),
+      el("td", {}, del)),
+    group.hint || list ? el("tr", { class: "group-extra" }, el("td", { colspan: "7" },
+      group.hint ? el("p", { class: "group-hint" }, el("span", { text: group.hint }), " ",
+        el("a", { href: "#/clients", onclick: (event) => { event.preventDefault(); document.getElementById("erzwingen")?.scrollIntoView({ behavior: "smooth" }); },
+          text: "Zu „Zeitserver erzwingen“" })) : null,
+      list)) : null,
+  ];
+}
+
+function groupsCard(ctx, names) {
+  const by = ctx.uiState.groupBy || "group";
+  const data = ctx.data("clientgroups", `/api/clients/groups?by=${by}`, 30);
+  ctx.uiState.groupNames = names;
+  const switcher = el("div", { class: "range-group", role: "group", "aria-label": "Ansicht der Gruppen" },
+    GROUP_BYS.map(([key, label]) => el("button", { type: "button", class: `range${by === key ? " is-active" : ""}`,
+      text: label, "aria-pressed": by === key ? "true" : "false", "data-focus-key": `groupby:${key}`,
+      onclick: () => { ctx.uiState.groupBy = key; ctx.rerender(); } })),
+    info("clients_group_by", "Ansicht"));
+  if (data === undefined) return card("Gruppen und Netze", { help: "clients_groups", actions: switcher }, emptyNote("Lade Gruppen …"));
+  if (!data || !Array.isArray(data.groups)) {
+    return card("Gruppen und Netze", { help: "clients_groups", actions: switcher }, emptyNote("Gruppen nicht verfügbar."));
+  }
+  const table = data.groups.length ? el("div", { class: "table-scroll" }, el("table", { class: "group-table" },
+    el("thead", {}, el("tr", {},
+      el("th", {}, by === "vlan" ? "VLAN " : by === "software" ? "Software " : "Gruppe ", info("clients_group_by")),
+      el("th", { class: "num" }, "Geräte (aktiv) ", info("clients_group_stats")),
+      el("th", { class: "num" }, "Messbar ", info("client_measurable")),
+      el("th", { class: "num" }, "Median ", info("clients_group_stats")),
+      el("th", { class: "num" }, "Anteil gut ", info("clients_group_stats")),
+      el("th", { class: "num" }, "Uhrgüte ", info("client_quality")),
+      el("th", { "aria-label": "Aktion" }))),
+    el("tbody", {}, data.groups.map((g) => groupRow(ctx, g, by)))))
+    : emptyNote("Noch keine Geräte gesehen.");
+  return card("Gruppen und Netze", { help: "clients_groups", actions: switcher,
+    sub: by === "group" ? "Benenne Netze („IoT = 10.0.30.0/24“) – das spezifischste Netz gewinnt. Die Zahlen "
+      + "zeigen je Gruppe, wie gut die Uhren gehen." : by === "vlan"
+      ? "Nur, wo die VLAN-Kennung im Paket sichtbar ist (Trunk am Host) – sonst alle unter „ohne VLAN-Kennung“."
+      : "Nach erwarteter Software (Regel am Gerät), sonst nach der Vermutung aus den Anfragen." },
+  table,
+  by === "group" && !ctx.readonly ? groupForm(ctx, data) : null);
 }
 
 // --- Zeitserver erzwingen ------------------------------------------------------
@@ -146,7 +273,28 @@ const VERDICT_LABEL = {
   dns_rewrite: "umgeschrieben", answered_by_us: "antwortet wie dieser Server", dns_partial: "teilweise",
   not_redirected: "nicht umgeschrieben", no_reply: "keine Antwort", dns_error: "DNS-Fehler",
   direct: "erreicht echten Server", loop: "Schleife",
+  foreign: "fremder Server", self_reply: "Schleife", self_address: "Schleife",
 };
+
+// Kette „Name → Resolver → Adresse → Antwort“ für eine eigene Quelle (1.5).
+function chainRow(item) {
+  const reply = item.reply;
+  const answer = reply ? `Stratum ${reply.stratum ?? "?"} · ${reply.ref_label || reply.ref_id || "?"}` : "keine Antwort";
+  const steps = [
+    item.by === "name" ? item.host : `${item.host} (feste IP)`,
+    item.by === "name" ? (item.resolver || "System-DNS") : null,
+    item.address || (item.by === "name" ? "keine Adresse" : null),
+    answer,
+  ].filter(Boolean);
+  const chain = el("ol", { class: "enforce-chain", "aria-label": "Name, Resolver, Adresse, Antwort" },
+    steps.map((step) => el("li", { class: "mono", text: step })));
+  return el("li", { class: "enforce-row", "data-level": item.level },
+    el("div", { class: "enforce-row-head" },
+      el("span", { class: "mono", text: item.host + (item.nts ? " · NTS" : "") }),
+      badge(VERDICT_LABEL[item.state] || item.state || "–", item.level === "info" ? "muted" : item.level)),
+    chain,
+    el("p", { text: item.verdict || "" }));
+}
 
 function checkView(result) {
   if (!result) return null;
@@ -155,12 +303,21 @@ function checkView(result) {
       el("span", { class: "mono", text: label }),
       badge(VERDICT_LABEL[item.state] || item.state || "–", item.level === "info" ? "muted" : item.level)),
     el("p", { text: item.verdict || "" }));
+  // Nur Schleifen ausblenden, die die Kette selbst schon als Schleife zeigt – sonst bliebe eine
+  // Schleife unsichtbar, deren Kettenzeile (z. B. nur IPv4 geprüft) „fremder Server“ sagt.
+  const chained = new Set((result.upstream || [])
+    .filter((u) => u.state === "self_address" || u.state === "self_reply").map((u) => u.host));
   return el("div", { class: "enforce-result" },
     el("div", { class: "verdict", "data-tone": result.level === "info" ? null : result.level },
       el("div", { class: "verdict-label" }, el("span", { text: "Ergebnis" }), info("enforce_verdict")),
       el("p", { text: result.summary || "" })),
-    (result.loops || []).length ? el("ul", { class: "enforce-list" },
-      result.loops.map((l) => row(l.host, { ...l, state: "loop" }))) : null,
+    // Schleifen, die unten in der Kette der eigenen Quellen stehen, nicht doppelt zeigen.
+    (result.loops || []).some((l) => !chained.has(l.host)) ? el("ul", { class: "enforce-list" },
+      result.loops.filter((l) => !chained.has(l.host)).map((l) => row(l.host, { ...l, state: "loop" }))) : null,
+    (result.upstream || []).length ? el("h3", { class: "mini-head" },
+      el("span", { text: "Eigene Quellen: Name → Resolver → Adresse → Antwort" }), info("enforce_upstream")) : null,
+    (result.upstream || []).length ? el("ul", { class: "enforce-list" }, result.upstream.map(chainRow)) : null,
+    result.resolver && result.resolver.note ? emptyNote(result.resolver.note) : null,
     el("h3", { class: "mini-head", text: "Namen (über den DNS-Server dieses Containers)" }),
     el("ul", { class: "enforce-list" }, (result.hosts || []).map((h) => row(h.host, h))),
     el("h3", { class: "mini-head", text: "ntp-gui selbst → öffentliche Server" }),
@@ -255,6 +412,10 @@ function enforceSection(ctx, ip) {
 }
 
 export function render(ctx) {
+  if (ctx.subpath && ctx.subpath.endsWith("/pass")) {
+    const known = serverAddress(ctx.status);
+    return renderPass(ctx, ctx.subpath.slice(0, -5), known && isIp(known) ? known : null);
+  }
   if (ctx.subpath) return renderDetail(ctx, ctx.subpath);
   const { status, history } = ctx;
   const clients = status.clients || [];
@@ -281,6 +442,10 @@ export function render(ctx) {
   const known = new Set(clients.map((c) => c.address));
   const rows = clients.concat(Object.keys(offsets).filter((a) => !known.has(a)).map((address) => ({ address })));
 
+  const quality = qualityData(ctx);
+  const scores = (quality && quality.scores) || {};
+  const scoreCell = (q) => (q && isNum(q.score) ? el("span", { class: "score-value", "data-tone": q.tone || "muted",
+    title: q.grade || null, text: String(q.score) }) : el("span", { class: "muted", text: "–" }));
   const input = el("input", { type: "search", placeholder: "Filtern …", value: ctx.uiState.clientFilter || "",
     "aria-label": "Clients filtern" });
   const bodyRows = (needle) => rows.filter((c) => !needle || (c.address || "").toLowerCase().includes(needle)
@@ -295,7 +460,8 @@ export function render(ctx) {
       el("td", { class: "num", text: fmtLogInterval(c.ntp_interval) }),
       el("td", { class: "num", text: isNum(lastAge(c)) ? `vor ${fmtDuration(lastAge(c))}${isNum(c.ntp_last_rx) ? "" : "*"}` : "–",
         title: isNum(c.ntp_last_rx) ? "" : "* aus der eigenen Messung – chrony kennt das Gerät seit seinem letzten Neustart nicht" }),
-      ...offsetCells(offsets[c.address])));
+      ...offsetCells(offsets[c.address]),
+      el("td", { class: "num" }, scoreCell(scores[c.address]))));
   const tbody = el("tbody", {}, bodyRows(filter));
   // Nur die Zeilen tauschen – ein Neuaufbau der Seite würde dem Feld den Fokus nehmen.
   input.addEventListener("input", () => {
@@ -310,7 +476,8 @@ export function render(ctx) {
       el("th", { class: "num" }, "Intervall ", info("client_interval")),
       el("th", { class: "num" }, "Zuletzt ", info("client_last")),
       el("th", { class: "num" }, "Uhr geht falsch um ", info("client_offset")),
-      el("th", {}, "messbar ", info("client_measurable")))),
+      el("th", {}, "messbar ", info("client_measurable")),
+      el("th", { class: "num" }, "Güte ", info("client_score")))),
     tbody));
 
   const chartHost = el("div", { class: "chart-host" });
@@ -355,6 +522,7 @@ export function render(ctx) {
       sub: rows.length ? null : "Noch keine Anfragen. Sobald die Adresse verteilt ist, erscheinen die Geräte hier." },
       rows.length ? table : null, clientmonNote(mon)),
     overviewCard(ctx),
+    groupsCard(ctx, names),
     card("Anfragen pro Minute", { help: "served_rate", actions: rangeButtons(ctx.range, ctx.setRange) }, chartHost),
     setup,
     enforceSection(ctx, knownIp && isIp(knownIp) ? knownIp : null),

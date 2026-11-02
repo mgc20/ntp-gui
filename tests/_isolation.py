@@ -11,9 +11,15 @@ mitspielen. Tests, die eigene Pfade brauchen, patchen sie wie bisher selbst.
 """
 
 import atexit
+import faulthandler
 import os
 import shutil
 import tempfile
+
+# Stürzt der Interpreter ab (Segfault in einer C-Erweiterung), soll der Testlauf wenigstens die
+# Python-Stapel aller Threads zeigen statt nur „Segmentation fault“.
+if not faulthandler.is_enabled():
+    faulthandler.enable()
 
 ROOT = tempfile.mkdtemp(prefix="ntpgui-tests-")
 atexit.register(shutil.rmtree, ROOT, ignore_errors=True)

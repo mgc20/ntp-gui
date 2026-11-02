@@ -7,7 +7,7 @@
 
 <p align="center">
   <a href="https://github.com/ConGp20/ntp-gui/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/ConGp20/ntp-gui/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="https://github.com/ConGp20/ntp-gui/releases/latest"><img alt="Release" src="https://img.shields.io/badge/release-v1.4.0-0969da"></a>
+  <a href="https://github.com/ConGp20/ntp-gui/releases/latest"><img alt="Release" src="https://img.shields.io/badge/release-v1.5.0-0969da"></a>
   <img alt="Plattformen" src="https://img.shields.io/badge/platform-amd64%20%7C%20arm64-1a7f37">
   <img alt="Image" src="https://img.shields.io/badge/image-ghcr.io-8250df">
   <a href="LICENSE"><img alt="Lizenz: MIT" src="https://img.shields.io/badge/license-MIT-59636e"></a>
@@ -66,10 +66,11 @@ Raspberry Pi starten, die Adresse per **DHCP Option 42** verteilen – fertig.
 
 Elf Seiten: **Übersicht** (Hinweise, Kennzahlen, Verlauf, Zustand der Dienste), **Zeitquellen**
 (jede Quelle mit Zustand *und Grund* – ausgewählt, kombiniert, nicht kombiniert, Falseticker …),
-**GPS** (Himmelskarte, Signalstärken, Kalibrierassistent), **PTP** (Voraussetzungs-Check,
-Netzwerkkarten, Port-Zustand), **Uhrqualität** (Temperatur und Frequenz, Schaltsekunden),
+**GPS** (Himmelskarte, Signalstärken, Kalibrierassistent, Empfangsbewertung, Antennen-Test,
+Störungserkennung), **PTP** (Voraussetzungs-Check, Netzwerkkarten, Port-Zustand),
+**Uhrqualität** (Temperatur und Frequenz, Schaltsekunden, Holdover-Test),
 **Hardware** (was diese Hardware kann und was dafür fehlt), **Clients** (wer fragt, wie oft,
-wie genau seine Uhr geht – mit Detailseite je Gerät –, Snippets für DHCP-Server und
+wie genau seine Uhr geht – mit Uhrgüte, Gruppen, Regeln und Gerätepass –, Snippets für DHCP-Server und
 Betriebssysteme, Zeitserver erzwingen), **Diagnose** (Log, Ereignisse, Diagnosepaket),
 **Benachrichtigungen** (Kanäle und Zustellstand), **Einstellungen** (mit API-Schlüsseln, DNS
 und Update-Hinweis) und **Hilfe** (Glossar und Entscheidungshilfe). Dazu die
@@ -99,7 +100,7 @@ sie beim Verbindungsaufbau per DHCP.
 | `ptp4l` / `phc2sys` | PTP (IEEE 1588) als Grandmaster oder Slave, optional zuschaltbar |
 | `dnsfwd` | Optional: kleiner DNS-Weiterleiter auf 127.0.0.1 für ntp-gui selbst (DoT/DoH/feste Server), siehe [DNS für ntp-gui](#dns-für-ntp-gui-gegen-schleifen-durch-dns-umschreibung) |
 | Dashboard | Status, Offset-Verlauf, Zeitquellen, Clients, GPS-Fix, PTP-Zustand, aktive Konfiguration |
-| `/metrics` | Prometheus-Endpunkt (Offset, Stratum, Quellen, Paketzähler, GPS, PTP) |
+| `/metrics` | Prometheus-Endpunkt (Offset, Stratum, Quellen, Paketzähler, GPS, GNSS-Störungen, Schleifen, PTP) |
 | `/healthz` | Health-Check für Docker/Kubernetes (ohne Login erreichbar) |
 
 ## Was ist möglich?
@@ -110,7 +111,7 @@ Jede Stufe baut auf der vorigen auf. Für die meisten Heimnetze reicht die zweit
 |---|---|---|---|
 | **NTP aus dem Internet** | 1–50 ms | keine | Standard. Reicht für PCs, Server, Smart-Home, Logs und Zertifikate – bei stabiler Festnetz-/Glasfaserleitung. |
 | **+ NTS** | wie oben | keine | Gleiche Genauigkeit, aber gegen gefälschte Zeit abgesichert. Empfehlenswert. |
-| **+ USB-GPS ohne PPS** | 1–10 ms | ~15 € (z. B. VK-162) | *Nicht* genauer als gutes Festnetz-NTP. Lohnt bei Mobilfunk/LTE/5G, Starlink, häufigen Ausfällen, Netzen ohne Internet oder als unabhängige Kontrolle. Einmal kalibrieren. |
+| **+ USB-GPS ohne PPS** | 1–10 ms | ~15 € (z. B. VK-162) | *Nicht* genauer als gutes Festnetz-NTP. Lohnt bei Mobilfunk/LTE/5G, Starlink, häufigen Ausfällen, Netzen ohne Internet oder als unabhängige Kontrolle. ntp-gui macht es zur [Rückfallebene mit ehrlicher Fehlerschranke](#gps-ohne-pps-z-b-vk-162-rückfallebene-mit-ehrlicher-fehlerschranke). Einmal kalibrieren. |
 | **+ GPS mit PPS** | < 1 µs | ~30–60 € (GPS-HAT oder Modul an GPIO) | Tausendfach genauer. Für Messaufbauten, Audio/Video über IP und als Basis für PTP. |
 | **+ PTP** | < 1 µs im LAN | NIC mit Hardware-Zeitstempeln (z. B. Intel i210) | Nur mit GPS+PPS als Referenz und Clients, die PTP sprechen. AES67 (Dante nur im AES67-Modus), Labor, Lernen. |
 
@@ -450,6 +451,22 @@ Die Firewall-Anleitungen unter **Zeitserver erzwingen** enthalten außerdem eine
 **DNS-Umleitung per Firewall** (Port 53 auf AdGuard/Pi-hole) – mit Pflicht-Ausnahme für
 ntp-gui und den DNS-Server selbst.
 
+Fällt einer deiner eigenen DNS-Server aus oder antwortet wieder, steht das je Server im
+Ereignisprotokoll. ntp-gui prüft alle eigenen Server 20 s nach dem Start und dann alle 15 min;
+die Einstellungen zeigen „Letzte erfolgreiche Auflösung“ und „Erreichbar“. NTS-Quellen brauchen
+ihren Namen – mit nur einem eigenen DNS-Server rät ntp-gui zu einem zweiten, unabhängigen.
+
+### Schleifen erkennen (DNS-Umschreibung / NAT-Umleitung)
+
+Leitest du Zeitserver-Anfragen im LAN auf ntp-gui um (AdGuard/Pi-hole per DNS, UniFi/OPNsense per NAT), braucht **ntp-gui selbst eine Ausnahme**. Sonst fragt chronyd beim Versuch, `pool.ntp.org` zu erreichen, am Ende sich selbst. ntp-gui erkennt das von allein:
+
+- **Ereignis** „pool.ntp.org zeigt auf dich selbst – vermutlich DNS-Umschreibung ohne Ausnahme für ntp-gui“ bzw. „… NAT-Umleitung ohne Ausnahme für ntp-gui“, spätestens zwei Poll-Intervalle nach der ersten Antwort. Dazu ein kritischer Hinweis in der Übersicht, `GET /api/v1/loops` und die Metrik `ntpgui_source_loops`.
+- **Selbsttest** unter Clients → Zeitserver erzwingen → Prüfen: Für jede eigene Quelle siehst du die Kette *Name → Resolver → Adresse → Antwort*, für alle Adressen eines Namens.
+- **Abhilfe DNS:** Unter Einstellungen → „DNS für ntp-gui“ eigene Server eintragen, am besten zwei unabhängige DoT/DoH-Server. Oder in AdGuard eine Ausnahme für ntp-gui anlegen (`@@||pool.ntp.org^$dnsrewrite,client=<IP-von-ntp-gui>` oder ein eigener Client).
+- **Abhilfe NAT:** In der Umleitungsregel die Adresse von ntp-gui als Quelle ausnehmen (UniFi: Quelle ≠ ntp-gui) oder ntp-gui in ein eigenes VLAN legen.
+
+Für die Gegenprobe fragt ntp-gui den eigenen chronyd über 127.0.0.1 und die eigene LAN-Adresse; das klappt mit den Standard-Freigaben. Die Erkennung liest nur – an der Zeit ändert sie nichts. Ist die Schleife weg, folgt „Schleife behoben“.
+
 ### Wie genau gehen meine Clients?
 
 Die Seite **Clients** zeigt je Gerät, wie weit seine Uhr danebenliegt – **rein passiv**: Jede
@@ -504,8 +521,10 @@ Dort siehst du:
   https://standards-oui.ieee.org/oui/oui.txt. MAC-Adressen verlassen die Instanz nie.
 
 Du kannst jedem Gerät einen **eigenen Namen und eine Notiz** geben. Beides bleibt auf der
-Instanz. Gespeicherte Ereignisse nennen nur die Adresse, den Namen setzt erst die Anzeige ein;
-ins Diagnosepaket und in Benachrichtigungen gelangt nie ein Name, Notizen werden nie exportiert.
+Instanz. Gespeicherte Ereignisse nennen nur die Adresse, den Namen setzt erst die Anzeige ein.
+Ins Diagnosepaket gelangt nie ein Name, Notizen werden nie exportiert. **Benachrichtigungen**
+nennen ab 1.5 den Namen, den du dem Gerät gegeben hast („Uhr von NAS Keller weicht um +1,2 s
+ab“), ohne Namen „Gerät ohne Namen“ – die LAN-Adresse nur mit `NOTIFY_LAN_ADDRESSES=true`.
 
 **Aktiv nachmessen** schickt genau eine NTP-Anfrage an das Gerät. Router, NAS und manche
 Kameras sind selbst Zeitserver und antworten; dann siehst du ihre Uhr, auch wenn sie ihre
@@ -519,6 +538,23 @@ mit der größten Abweichung, verstummte Geräte und Geräte, die öfter als all
 meldet ntp-gui das Ereignis „Uhr von … weicht um … ab“, sobald ein Gerät zweimal in Folge mehr
 als eine Sekunde danebenliegt. Mit einem [Benachrichtigungskanal](#benachrichtigungen) für die
 Art „Clients“ landet die Meldung z. B. auf dem Handy.
+
+### Clients 3: Uhrgüte, Gruppen, Regeln, Gerätepass (ab 1.5)
+
+Auf der Seite **Clients** siehst du, wie gut die Uhren in deinem Netz gehen:
+
+- **Uhrgüte** (0–100) je Gerät und die **schlechtesten Uhren im Haus**; auf der Detailseite dazu die Gangabweichung in ppm („die Uhr läuft 50 ppm zu schnell“). Fragt ein Gerät in ganz gleichmäßigen Abständen, lassen sich fester Versatz und Gang nicht trennen – dann steht dort ehrlich „höchstens … ppm“.
+- **Gruppen und Netze:** Benenne deine Netze (z. B. `IoT = 10.0.30.0/24`) und vergleiche je Gruppe Anzahl, Median-Abweichung und Anteil „gut“ – auch nach VLAN oder Software. Fragt in einem Netz kein Gerät, fehlt dort meist die DHCP-Option 42 oder die Umleitung.
+- **Regeln je Gerät:** „melden, wenn die Kamera seit 6 h nicht mehr fragt“, eine eigene Alarm-Schwelle, stumm schalten, erwartete Software.
+- **NTS für Clients:** ob ein Gerät NTS nutzt (bei eingeschaltetem NTS-Server) und ob seine Software es könnte.
+- **Gerätepass:** eine druckbare Seite je Gerät mit Empfehlung und passendem Befehl, z. B. für die Doku im Homelab. Eine gefilterte Kopie (ohne Adressen und Namen) kannst du in Foren posten.
+
+Alles bleibt auf deiner Instanz. Benachrichtigungen nennen den Namen, den du einem Gerät gegeben hast. Die LAN-Adresse steht nur mit `NOTIFY_LAN_ADDRESSES=true` dabei.
+
+| Variable | Standard | Wirkung |
+|---|---|---|
+| `CLIENTS_NEW_DEVICE_ALARM` | `false` | Ereignis „Neues Gerät fragt nach der Zeit“ (nach 24 h Lernzeit, höchstens 5/h) |
+| `NOTIFY_LAN_ADDRESSES` | `false` | Private LAN-Adresse zusätzlich zum Gerätenamen in Benachrichtigungen |
 
 ## NTS – abgesicherte Zeit
 
@@ -829,7 +865,23 @@ bewusst vorsichtig sind:
 
 Erst beides zusammen – richtiger Offset, passender Delay – macht das GPS konkurrenzfähig.
 Bei funktionierendem Internet ist das optional; wichtig wird es, wenn das GPS bei einem
-Ausfall übernehmen soll.
+Ausfall übernehmen soll. Ab 1.5 setzt ntp-gui den Delay ohne PPS selbst aus der gemessenen
+Streuung (nächster Abschnitt); den Offset kalibrierst du wie unten beschrieben.
+
+### GPS ohne PPS (z. B. VK-162): Rückfallebene mit ehrlicher Fehlerschranke
+
+Ein USB-Empfänger ohne PPS liefert die Zeit nur auf einige bis einige zehn Millisekunden genau. Mit gutem Internet sind NTS-Quellen meist genauer. Ohne Internet oder mit wackeligem Mobilfunk ist das GPS dagegen die bessere oder einzige Quelle. ntp-gui macht das GPS deshalb zur **Rückfallebene**: Es misst, wie stark das GPS gegenüber deinen Netzquellen streut (letzte 6 Stunden), und gibt chrony daraus eine ehrliche Fehlerschranke. chrony nimmt dann die guten Netzquellen und übernimmt das GPS von selbst, wenn das Internet schlecht wird oder ausfällt. Bis genug gemessen ist, gilt vorsichtig ± 100 ms. Die Schranke wächst sofort mit (höchstens stündlich) und schrumpft nur deutlich und frühestens nach 12 Stunden. Jede Anpassung steht im Ereignisprotokoll. Ein eingestelltes, aber fehlendes PPS-Gerät zählt als „ohne PPS“.
+
+| Variable | Standard | Bedeutung |
+|---|---|---|
+| `GPS_BOUND_MODE` | `measured` | `measured`: Fehlerschranke aus der gemessenen Streuung (nur ohne PPS). `manual`: `GPS_DELAY`/`GPS_PRECISION` gelten wie eingestellt. |
+
+„Nur beobachten“ (`GPS_SELECT=noselect`) bleibt möglich, ist aber nie Standard: Dann nutzt chrony das GPS auch bei einem Internetausfall nicht. Damit die Rückfallebene greift, muss „Mindestzahl Quellen“ (`NTP_MINSOURCES`) auf 1 stehen – die GPS-Seite warnt sonst.
+
+Die GPS-Seite zeigt außerdem eine **Empfangsbewertung über 24 Stunden** (Ampel mit Begründung, auch in der Übersicht), fasst Fix-Flattern zu einem Ereignis „unstet“ zusammen und bietet einen **Antennen-Test** („5 Minuten messen“, umstellen, vergleichen). Der Antennen-Test bleibt auf deinem Gerät, ohne Satellitenwinkel. Praxistipps stehen im ⓘ: USB-Verlängerung ans Fenster, USB-3-Buchsen stören das GPS-Band, Wärmeschutzglas dämpft stark.
+
+API (lesen): `GET /api/v1/gps/quality`, `GET /api/v1/gps/antenna`.
+API (admin): `POST /api/v1/gps/antenna` (`start`/`stop`/`delete`), `POST /api/v1/gps/bound` (`{"action":"reset"}`).
 
 ### GPS kalibrieren – im Dashboard
 
@@ -967,6 +1019,30 @@ Ein Detail für Tests: **gpsd akzeptiert keine PTY- oder TCP-Quellen als Zeitref
 liefert also Position und Satelliten, aber niemals Samples für chrony – dafür braucht es
 ein echtes serielles bzw. USB-Gerät.
 
+### GNSS-Störungen, GPS-Sperre und Holdover-Test (ab 1.5)
+
+ntp-gui erkennt, wenn das GPS gestört (Jamming) oder gefälscht (Spoofing) wird. Gelesen wird nur aus gpsd und chrony, auf den Empfänger wird nichts geschrieben. Das klappt mit jedem Empfänger, auch mit einem USB-Stick ohne PPS. Die GPS-Seite zeigt Stufe und Befunde:
+
+| Befund | Stärke |
+|---|---|
+| Signale fast aller Satelliten brechen in einer Minute um ≥ 6 dB ein | schwach |
+| Alle Satelliten fast gleich stark | schwach |
+| chrony hält das GPS für falsch | schwach (5 min lang bei ≥ 2 NTS-Quellen: stark) |
+| GPS-Zeit weicht vom Median von ≥ 2 NTS-Quellen ab | stark |
+| Position springt um > 100 m | stark |
+
+Ein schwacher Befund ist ein „Hinweis“, zwei zugleich eine „Warnung“, ein starker eine „Störung“. Zeit und Position werden gegen einen langsam nachgeführten Anker geprüft (höchstens 10 ms bzw. 20 m pro Stunde) – auch ein Spoofer, der die Zeit langsam wegzieht, fällt so auf. Benachrichtigt wird standardmäßig nur bei „Störung“. Die Position verlässt das Gerät nie: Es wird nur die Abweichung in Metern genannt.
+
+```yaml
+environment:
+  GNSS_GUARD: report    # off | report (Standard) | lock = GPS bei Störung automatisch abwählen
+  GNSS_NOTIFY: stoerung # ab welcher Stufe benachrichtigt wird: stoerung | warnung | hinweis
+```
+
+**`lock`:** ntp-gui wählt GPS (und PPS) per `chronyc selectopts GPS +noselect` ab. chrony nimmt dann die Netzquellen. Automatisch gesperrt wird nur, wenn mindestens zwei andere auswählbare Netzquellen bleiben – ein reiner GPS-Server läuft also nie wegen eines Fehlalarms frei. Nach 30 min ohne Befund gibt ntp-gui das GPS wieder frei, höchstens dreimal hintereinander, danach nur von Hand. Sperren und Freigeben geht auch von Hand auf der GPS-Seite oder per API (`POST /api/v1/gnss {"action":"lock"|"unlock"}`). Solange das GPS gesperrt ist, steht es in `DATA_DIR/noselect.list`; der Supervisor wählt es direkt nach jedem chronyd-Start (auch nach dem Speichern von Einstellungen) wieder ab.
+
+**Holdover-Test (Seite Uhrqualität):** Wie lange hält die Uhr ohne Zeitquelle? Auf Knopfdruck werden GPS/PPS und alle Netzquellen für 1–24 h abgewählt. chrony misst die Netzquellen weiter und nutzt sie als Messlatte. Das Ergebnis lautet z. B. „Die Uhr hält 3,6 ms in 2 h“. Über 10 ms Abweichung, bei einem Neustart von chronyd oder per Knopf bricht der Test ab, danach sind alle Quellen automatisch wieder auswählbar. Während des Tests bekommen Clients eine ungenauere Zeit – am besten nachts laufen lassen. API: `GET/POST /api/v1/holdover`.
+
 ## Uhrqualität: Temperatur, Schaltsekunden, Vollbild-Uhr
 
 Die Seite **Uhrqualität** zeigt, was die Uhr deines Servers langfristig beeinflusst:
@@ -977,7 +1053,8 @@ Die Seite **Uhrqualität** zeigt, was die Uhr deines Servers langfristig beeinfl
   `cpu-thermal`, PC `x86_pkg_temp`/`k10temp`/`coretemp`, DS18B20 am 1-Wire-Bus); welchen ntp-gui
   nutzt, legst du mit `TEMP_SENSOR` fest (`auto`, `off` oder eine Kennung aus dem Hardware-Check,
   z. B. `w1:28-0316a2794bff`). Für eine Aussage braucht es 1–3 Tage mit Tag-/Nacht-Wechsel. In
-  VMs gibt es meist keinen Sensor. Einen Temperaturausgleich schlägt ntp-gui erst ab 1.5 vor.
+  VMs gibt es meist keinen Sensor. Einen Temperaturausgleich schlägt ntp-gui in einem der
+  nächsten 1.5.x-Releases vor.
 - **Schaltsekunden:** TAI−UTC, letzte Schaltsekunde und wie lange die `leap-seconds.list` im
   Image noch gilt – für die Datei, die chrony wirklich liest. Läuft sie in weniger als 60 Tagen
   ab, meldet ntp-gui „Image zu alt“ – dann `docker compose pull && docker compose up -d`.
@@ -985,6 +1062,8 @@ Die Seite **Uhrqualität** zeigt, was die Uhr deines Servers langfristig beeinfl
   eine große, mit dem Server abgeglichene Uhr (Ortszeit, UTC, Datum, Kalenderwoche, Status) –
   ideal für Wandmonitor oder altes Tablet. Rotlicht-Modus und Vollbild (Taste F) inklusive. Der
   Abgleich läuft wie bei NTP mit vier Zeitstempeln; die Uhr des Tablets ist egal.
+- **Holdover-Test:** misst, wie lange die Uhr ohne Zeitquelle hält – siehe
+  [GNSS-Störungen, GPS-Sperre und Holdover-Test](#gnss-störungen-gps-sperre-und-holdover-test-ab-15).
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/clock-dark.png">
@@ -1212,7 +1291,10 @@ unverändert übernommen und alle NTP-Variablen ignoriert.
 | `GPS_REFID` | `GPS` | Name des Refclocks in `chronyc sources` |
 | `GPS_SHM_UNIT` | `0` | SHM-Segment, über das gpsd die Zeit übergibt |
 | `GPS_POLL` / `GPS_FILTER` | `3` / `3` | Poll-Intervall (2^n s) und Medianfilter |
-| `GPS_DELAY` / `GPS_PRECISION` | `0.2` / `1e-1` | Angenommene Verzögerung und Auflösung |
+| `GPS_DELAY` / `GPS_PRECISION` | `0.2` / `1e-1` | Angenommene Verzögerung und Auflösung (ohne PPS nur mit `GPS_BOUND_MODE=manual`) |
+| `GPS_BOUND_MODE` | `measured` | Fehlerschranke ohne PPS: `measured` (aus der gemessenen Streuung) oder `manual`, siehe [GPS ohne PPS](#gps-ohne-pps-z-b-vk-162-rückfallebene-mit-ehrlicher-fehlerschranke) |
+| `GNSS_GUARD` | `report` | Störungserkennung: `off`, `report` (nur melden) oder `lock` (GPS bei Störung automatisch abwählen), siehe [GNSS-Störungen](#gnss-störungen-gps-sperre-und-holdover-test-ab-15) |
+| `GNSS_NOTIFY` | `stoerung` | Ab welcher Stufe GNSS-Befunde benachrichtigt werden: `stoerung`, `warnung` oder `hinweis` |
 | `GPS_PPS_DEVICE` | – | PPS-Gerät, z. B. `/dev/pps0` |
 | `GPS_PPS_POLL` | `3` | Poll-Intervall des PPS-Refclocks (2^n s) |
 | `GPS_PPS_OPTIONS` | – | Zusätzliche Optionen für die PPS-Refclock-Zeile |
@@ -1353,6 +1435,8 @@ PHC-Refclock dient ihm als Referenz für Stratum und Statistik.
 | `HISTORY_SIZE` | – | Nur wenn gesetzt: harte Obergrenze an Messpunkten (wie bis 1.2, z. B. `8640` = 24 h bei 10 s) |
 | `WEB_ACCESS_LOG` | `false` | Zugriffe protokollieren |
 | `NOTIFY_DASHBOARD_URL` | – | Adresse des Dashboards für Links in [Benachrichtigungen](#benachrichtigungen) (nur `http`/`https`, ohne Benutzer/Passwort) |
+| `NOTIFY_LAN_ADDRESSES` | `false` | Private LAN-Adresse eines Geräts zusätzlich zu seinem Namen in Benachrichtigungen |
+| `TRUSTED_PROXIES` | – (niemandem trauen) | Adressen deiner Reverse Proxys, siehe [HTTPS fürs Dashboard](#https-fürs-dashboard) |
 | `TEMP_SENSOR` | `auto` | Temperatursensor für die Seite [Uhrqualität](#uhrqualität-temperatur-schaltsekunden-vollbild-uhr) (`auto`, `off` oder Kennung aus dem Hardware-Check) |
 | `CLOCK_PUBLIC` | `false` | `true` = `/clock` und `/api/v1/time` ohne Anmeldung (nur Zeit und Status, Schutz vor DNS-Rebinding bleibt). Nicht einschalten, wenn das Dashboard aus dem Internet erreichbar ist |
 | `UPDATE_CHECK` | `false` | Einmal am Tag bei GitHub nach einer neuen Version fragen, siehe [Update-Hinweis](#update-hinweis-opt-in) |
@@ -1373,6 +1457,7 @@ Nur per Umgebung (sie betreffen den Start selbst oder sind Expertenwerte): `WEB_
 | `CLIENTMON` | `true` | Uhren der Clients passiv messen, siehe [Wie genau gehen meine Clients?](#wie-genau-gehen-meine-clients) |
 | `CLIENTS_ALARM_MS` | `0` | Ereignis, wenn eine Client-Uhr mehr als so viele Millisekunden abweicht (0 = aus), siehe [Ein Gerät im Detail](#ein-gerät-im-detail) |
 | `CLIENTS_RDNS` | `false` | Namen der Clients per Reverse-DNS nachschlagen – nur private Adressen, nur wenn kein beteiligter DNS-Server öffentlich ist, nie über DoT/DoH |
+| `CLIENTS_NEW_DEVICE_ALARM` | `false` | Ereignis „Neues Gerät fragt nach der Zeit“ (nach 24 h Lernzeit, höchstens 5/h), siehe [Clients 3](#clients-3-uhrgüte-gruppen-regeln-gerätepass-ab-15) |
 | `ENFORCE_HOSTNAMES` | – | Weitere Zeitserver-Namen für die Anleitungen unter [Zeitserver erzwingen](#zeitserver-erzwingen), kommagetrennt (nur DNS-Namen, höchstens 50) |
 | `NTPGUI_LOGTEE` | `1` | `0` schaltet die Log-Kopie für die Seite **Diagnose** ab |
 | `NTPGUI_REPLAY` | – | Nur für Entwicklung/Demo: Aufzeichnung (`.jsonl`) statt echter Dienste abspielen |
@@ -1381,8 +1466,26 @@ Nur per Umgebung (sie betreffen den Start selbst oder sind Expertenwerte): `WEB_
 Der Healthcheck (Dockerfile und alle Compose-Dateien) liest `WEB_PORT` selbst; bei einem
 anderen Port musst du ihn nicht anpassen.
 
-Das Dashboard hat **keine Verschlüsselung**. Für Zugriff über unsichere Netze einen
-Reverse Proxy mit TLS davorsetzen und `WEB_USER`/`WEB_PASSWORD` verwenden.
+### HTTPS fürs Dashboard
+
+ntp-gui spricht selbst nur HTTP – mit Absicht: Ein Reverse Proxy kann TLS besser, und in vielen Heimnetzen läuft schon einer. Ohne HTTPS gehen Passwort und API-Schlüssel lesbar durchs Netz. Darum zeigt die Übersicht einen Hinweis, sobald sie per HTTP aus dem Netz ankommen.
+
+Am schnellsten geht es mit der Caddy-Vorlage in `docker-compose.all-in-one.yml`:
+
+1. Den Block **[OPTION HTTPS mit Caddy]** einkommentieren: den Dienst `caddy`, das Volume `caddy-data` und bei ntp-gui `WEB_BIND` und `TRUSTED_PROXIES`.
+2. `zeitserver.lan` durch deinen Namen oder die feste IP-Adresse ersetzen.
+3. `docker compose up -d` ausführen. Das Dashboard ist dann unter `https://zeitserver.lan` erreichbar.
+4. Damit der Browser nicht warnt, Caddys Root-Zertifikat einmal auf deinen Geräten als vertrauenswürdig eintragen. Herausholen kannst du es mit `docker compose cp caddy:/data/caddy/pki/authorities/local/root.crt .`
+
+Nginx Proxy Manager, Zoraxy und Traefik gehen genauso. Die Anleitung dazu steht in [docs/integrationen/https.md](docs/integrationen/https.md). Läuft der Reverse Proxy auf einem anderen Gerät, ist nur die Strecke Browser → Proxy verschlüsselt; ntp-gui weist darauf hin. Am sichersten läuft der Proxy auf demselben Host (Caddy-Vorlage, `WEB_BIND=127.0.0.1`).
+
+| Variable | Standard | Bedeutung |
+|---|---|---|
+| `TRUSTED_PROXIES` | – (niemandem trauen) | Adressen deiner Reverse Proxys, z. B. `127.0.0.1/32,::1/128` für Caddy auf demselben Host. Nur von ihnen glaubt ntp-gui `X-Forwarded-For`/`-Proto` bzw. `Forwarded` (echte Client-Adresse im Zugriffsprotokoll, HTTPS-Hinweis). „all“ und `/0` sind nicht erlaubt. |
+
+### Sprache / Language
+
+Das Dashboard gibt es auf Deutsch und – als ersten Schritt – auf Englisch. Die Sprache wählst du mit dem Knopf „DE/EN“ oben rechts oder unter Einstellungen → Dashboard. Sie gilt nur in deinem Browser; ohne Wahl gilt die Sprache des Browsers. Übersetzt sind bisher Navigation, Kopfzeile, das Statusband der Übersicht und die Abschnitte der Einstellungen; die ⓘ-Erklärungen sind vorerst deutsch. Wie du beim Übersetzen hilfst, steht in [CONTRIBUTING.md](CONTRIBUTING.md#übersetzen).
 
 #### Schutz vor DNS-Rebinding
 
@@ -1479,14 +1582,19 @@ Einstellungen laufen) und `ntpgui_service_restarts_total`. Der mitgelieferte Ala
 | `/api/clients/offsets` | Passiv gemessene Abweichung der Client-Uhren (mit eigenen Namen) |
 | `/api/clients/overview`, `/api/clients/detail?ip=&range=` | Netzüberblick bzw. Verlauf und Gerätedaten eines Clients; `POST /api/clients/meta` (Name, Notiz) und `/api/clients/probe` (Aktiv nachmessen) mit Verwaltungsrecht |
 | `/api/notify/status` | Zustellstand je Benachrichtigungskanal (ohne Namen, Adressen, Tokens); `/api/notify`, `POST /api/notify/channels`, `/channels/delete`, `/test` mit Verwaltungsrecht |
-| `/api/dns` | DNS für ntp-gui: Modus, Zustand des Weiterleiters, Server, resolv.conf |
+| `/api/dns` | DNS für ntp-gui: Modus, Zustand des Weiterleiters, Server, resolv.conf, letzte erfolgreiche Auflösung |
+| `/api/loops` | Erkannte Schleifen (Zeitquelle zeigt auf ntp-gui selbst) mit Ursache und Abhilfe |
+| `/api/gps/quality`, `/api/gps/antenna` | Empfangsbewertung (24 h), Rolle und Fehlerschranke des GPS bzw. Antennen-Test; `POST /api/gps/antenna` und `POST /api/gps/bound` mit Verwaltungsrecht |
+| `/api/gnss` | GNSS-Störungserkennung: Stufe, Befunde, Sperre; `POST` (sperren, freigeben, neu lernen) mit Verwaltungsrecht |
+| `/api/holdover` | Holdover-Test: laufender Test und Ergebnisse; `POST` (starten, abbrechen) mit Verwaltungsrecht |
+| `/api/clients/groups?by=group\|vlan\|software`, `/api/clients/quality`, `/api/clients/rules`, `/api/clients/pass?ip=` | Clients 3: Gruppen, Uhrgüte, Regeln, Gerätepass (`&share=1` = gefilterte Kopie); `POST /api/clients/groups`, `/groups/delete`, `/rules` mit Verwaltungsrecht |
 | `/api/temperature`, `/api/leap` | Temperatur und Frequenz bzw. Schaltsekunden-Liste (Seite Uhrqualität) |
 | `/api/v1/time` | Serverzeit mit Zeitstempeln für die Vollbild-Uhr `/clock` |
 | `/api/update` | Zustand des Update-Hinweises (ohne Netzzugriff, wenn ausgeschaltet) |
 | `/api/apikeys` (Alias `/api/keys`) | API-Schlüssel auflisten, `POST` legt an, `/api/apikeys/revoke` widerruft (nur mit Benutzer/Passwort) |
 | `/api/v1/instance` | Zufällige Instanz-Kennung; `POST /api/instance/rotate` erzeugt eine neue (nur mit Benutzer/Passwort) |
 | `/api/v1/…` | Versionierte, stabile API (Alias der Pfade oben); `GET /api/v1` beschreibt alle Endpunkte samt nötigem Recht, siehe [API & Automatisierung](#api--automatisierung) |
-| `/metrics` | Prometheus (u. a. Offset, max. Fehler, Quellen, GPS, PTP, `ntpgui_service_*`, `ntpgui_hardware_capability`, `ntpgui_pps_live`, `ntpgui_nts_server_cert_days_left`, Temperatur, Schaltsekunden-Liste, `ntpgui_info`) |
+| `/metrics` | Prometheus (u. a. Offset, max. Fehler, Quellen, GPS, PTP, `ntpgui_service_*`, `ntpgui_hardware_capability`, `ntpgui_pps_live`, `ntpgui_nts_server_cert_days_left`, Temperatur, Schaltsekunden-Liste, GPS-Fehlerschranke und Empfang, `ntpgui_gnss_stage`, `ntpgui_gps_locked`, `ntpgui_source_loops`, `ntpgui_holdover_test_running`, `ntpgui_info`) |
 | `/clock` | Vollbild-Uhr (mit `CLOCK_PUBLIC=true` ohne Login) |
 | `/healthz` | `200`, solange chronyd antwortet (ohne Login) |
 
@@ -1566,7 +1674,8 @@ Fertig zum Importieren bzw. Abschreiben:
   [`docs/integrationen/grafana-prometheus.md`](docs/integrationen/grafana-prometheus.md).
 - **Prometheus-Alarme:** [`docs/prometheus/alerts.yml`](docs/prometheus/alerts.yml) – nicht
   synchron, Abweichung zu groß, keine nutzbare Quelle, GPS ohne Fix, PPS weg, Dienst gestört,
-  NTS-Zertifikat und Schaltsekunden-Liste laufen ab, neue Version.
+  NTS-Zertifikat und Schaltsekunden-Liste laufen ab, neue Version, Zeitquelle zeigt auf ntp-gui
+  selbst (Schleife), GNSS-Störung.
 - **Home Assistant:** [`docs/integrationen/home-assistant.md`](docs/integrationen/home-assistant.md)
   – REST- und Template-Sensoren, Binärsensoren, Automations-Beispiel.
 - **Homepage und Glance:** [`docs/integrationen/homepage-glance.md`](docs/integrationen/homepage-glance.md).
@@ -1667,7 +1776,12 @@ CSV-Zeile, „nie gehört“ ist `4294967295` und `pmc` antwortet nur, wenn die 
   NTP-Server dann nicht.
 * `chronyc clients` zählt nur, solange das Client-Log Platz hat (`CLIENTLOGLIMIT`).
 * Das Dashboard bringt kein TLS mit – für Zugriffe außerhalb des vertrauenswürdigen Netzes
-  gehört ein Reverse Proxy davor.
+  gehört ein Reverse Proxy davor ([Caddy-Vorlage](#https-fürs-dashboard)).
+* Die GNSS-Störungserkennung findet keinen Spoofer, der die Zeit langsamer als die
+  Unsicherheit der Netzquellen verschiebt; ohne ≥ 2 NTS- bzw. ≥ 3 Netzquellen gibt es keine
+  Zeitprüfung. Die Referenzposition wird nach einem Neustart neu gelernt.
+* Englisch umfasst bisher Navigation, Kopfzeile, Statusband und Einstellungs-Abschnitte;
+  alles andere ist noch deutsch.
 * PTP braucht das Host-Netzwerk; über eine Docker-Bridge funktioniert es nicht.
 * `ts2phc` (PPS direkt in die PTP-Uhr der Netzwerkkarte) wird nicht unterstützt; der
   Grandmaster-Betrieb geht immer über die Systemuhr (chrony → phc2sys).
@@ -1704,7 +1818,7 @@ Updates vor. Ein Release-Build läuft ohne Cache, zieht also immer aktuelle Debi
 **Herkunft prüfen** (GitHub-CLI, sobald das Repository öffentlich ist):
 
 ```bash
-gh attestation verify oci://ghcr.io/congp20/ntp-gui:1.4.0 -R ConGp20/ntp-gui
+gh attestation verify oci://ghcr.io/congp20/ntp-gui:1.5.0 -R ConGp20/ntp-gui
 ```
 
 Scheitert ein Schritt, entsteht kein halber Release. Bei einem privaten Repository

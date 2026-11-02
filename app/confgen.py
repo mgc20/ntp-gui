@@ -47,6 +47,16 @@ def _num(value) -> str:
     return str(value)
 
 
+def gps_refclock_values(cfg: dict) -> dict:
+    """delay/precision der GPS-Zeile (gpsquality.refclock_values); bei jedem Fehler die Einstellungen."""
+    try:
+        import gpsquality
+        return gpsquality.refclock_values(cfg)
+    except Exception as exc:  # die Konfiguration muss immer entstehen
+        _log("gps", f"HINWEIS: Fehlerschranke nicht gelesen ({exc}) – Einstellungen gelten.")
+        return {"delay": float(cfg["gps_delay"]), "precision": float(cfg["gps_precision"]), "source": "manual"}
+
+
 def gps_device_ok(cfg: dict) -> bool:
     return bool(cfg["gps_enable"]) and os.path.exists(cfg["gps_device"])
 
@@ -105,10 +115,16 @@ def render_chrony(cfg: dict, env: dict | None = None, warn=_log,
     if cfg["gps_enable"] and not gps_device_ok(cfg):
         warn("gps", f"WARNUNG: GPS-Refclock wird übersprungen, {cfg['gps_device']} fehlt.")
     elif cfg["gps_enable"]:
+        # Ohne PPS (1.5, E16): ehrliche Fehlerschranke aus der gemessenen Streuung, damit
+        # chrony gute Netzquellen vorzieht und das GPS als Rückfallebene nimmt.
+        clock = gps_refclock_values(cfg)
+        if clock["source"] in {"measured", "default"}:
+            lines.append(f"# GPS ohne PPS: Rückfallebene, Fehlerschranke ± {clock['delay'] / 2 * 1000:.0f} ms "
+                         + ("(gemessen)" if clock["source"] == "measured" else "(Standard, noch nicht gemessen)"))
         parts = [
             f"refclock SHM {int(env.get('GPS_SHM_UNIT', '0') or 0)} refid {cfg['gps_refid']}",
-            f"offset {_num(float(cfg['gps_offset']))} delay {_num(float(cfg['gps_delay']))}",
-            f"precision {_num(float(cfg['gps_precision']))} poll {cfg['gps_poll']}",
+            f"offset {_num(float(cfg['gps_offset']))} delay {_num(float(clock['delay']))}",
+            f"precision {_num(float(clock['precision']))} poll {cfg['gps_poll']}",
             f"filter {cfg['gps_filter']}",
         ]
         if cfg["gps_select"] in {"prefer", "noselect"}:

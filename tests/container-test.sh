@@ -14,6 +14,9 @@
 # Ereignisprotokoll, API-Schlüssel (read/admin), /api/v1, Übernahme des alten
 # Verlaufs (history.json.gz → SQLite) und passive Client-Messung im Bridge-Netz.
 # Ab 1.4: DNS für ntp-gui (Weiterleiter auf 127.0.0.1, resolv.conf, Absturz, Zurückschalten).
+# Ab 1.5: Schleifen-Erkennung bei DNS-Umschreibung ohne Ausnahme (Ereignis, Kette, Abhilfe);
+# GPS-Sperre und Holdover-Test per chronyc selectopts (setzen, Neustart von chronyd, zurückstellen).
+# HTTPS per Caddy-Vorlage: gültiges Compose, Dashboard nur noch über HTTPS, X-Forwarded-For vom Proxy.
 set -uo pipefail
 
 IMAGE="${1:-ntp-gui:test}"
@@ -27,7 +30,9 @@ FAIL=0
 cleanup() {
   docker rm -f "${PREFIX}-a" "${PREFIX}-b" "${PREFIX}-c" "${PREFIX}-d" "${PREFIX}-e" "${PREFIX}-f" \
     "${PREFIX}-g" "${PREFIX}-h" "${PREFIX}-i" "${PREFIX}-j" >/dev/null 2>&1
-  docker rm -f "${PREFIX}-k" "${PREFIX}-l" "${PREFIX}-m" >/dev/null 2>&1
+  docker rm -f "${PREFIX}-k" "${PREFIX}-l" "${PREFIX}-m" "${PREFIX}-n" "${PREFIX}-o" >/dev/null 2>&1
+  docker rm -f "${PREFIX}-p" "${PREFIX}-q" "${PREFIX}-r" "${PREFIX}-s" "${PREFIX}-t" >/dev/null 2>&1
+  docker network rm "${PREFIX}-net" "${PREFIX}-net2" >/dev/null 2>&1
   docker volume rm "${PREFIX}-data" "${PREFIX}-hist" >/dev/null 2>&1
   rm -rf "$CFG_DIR" "$NTS_DIR" "$DIAG_DIR"
 }
@@ -227,6 +232,23 @@ if grep -q '"available": true' <<<"$CM" || grep -q '"available":true' <<<"$CM"; 
   contains "Clients: Reverse-DNS ab Werk aus" "$DETAIL" 'In den Einstellungen ausgeschaltet'
 else
   ok "Clients: Detailseite übersprungen (Messung im Container nicht verfügbar)"
+fi
+
+# Clients 3 (1.5): Gruppen, Regeln, Uhrgüte, Gerätepass – alles lokal, Eingaben per Allowlist.
+check "Clients 3: Gruppe mit ungültigem Netz abgelehnt" 422 "$(http "${CJ[@]}" -d '{"name":"x","network":"10.0.0.0/24; rm -rf /"}' http://127.0.0.1:18080/api/clients/groups)"
+check "Clients 3: Gruppe angelegt" 200 "$(http "${CJ[@]}" -d '{"name":"Loopback","network":"127.0.0.0/8"}' http://127.0.0.1:18080/api/clients/groups)"
+contains "Clients 3: Gruppenansicht nennt die Gruppe" "$(curl -s --max-time 10 'http://127.0.0.1:18080/api/v1/clients/groups?by=group')" '"Loopback"'
+check "Clients 3: Regel mit ungültiger Software abgelehnt" 422 "$(http "${CJ[@]}" -d '{"ip":"127.0.0.1","expect":"evil"}' http://127.0.0.1:18080/api/clients/rules)"
+check "Clients 3: Regel gespeichert" 200 "$(http "${CJ[@]}" -d '{"ip":"127.0.0.1","silent_h":6,"mute":true}' http://127.0.0.1:18080/api/clients/rules)"
+check "Clients 3: Uhrgüte antwortet" 200 "$(http http://127.0.0.1:18080/api/v1/clients/quality)"
+if grep -q '"measurable_reason"' <<<"$DETAIL"; then
+  check "Clients 3: Gerätepass antwortet" 200 "$(http 'http://127.0.0.1:18080/api/v1/clients/pass?ip=127.0.0.1')"
+  SHARE=$(curl -s --max-time 20 'http://127.0.0.1:18080/api/clients/pass?ip=127.0.0.1&share=1')
+  contains "Clients 3: gefilterte Kopie des Gerätepasses" "$SHARE" 'pass (ntp-gui)'
+  if grep -q 'Container Selbsttest' <<<"$SHARE"; then bad "Clients 3: eigener Name in der gefilterten Kopie"
+  else ok "Clients 3: eigener Name nicht in der gefilterten Kopie"; fi
+else
+  ok "Clients 3: Gerätepass übersprungen (Messung im Container nicht verfügbar)"
 fi
 
 # Benachrichtigungen: Webhook an ein Ziel im Container, Token nie in der Antwort, keine Weiterleitung.
@@ -467,6 +489,28 @@ check "gpsd wartet auf das Gerät" stopped "$(svc "${PREFIX}-h" gpsd state)"
 docker exec "${PREFIX}-h" touch /dev/shm/gps
 if wait_svc "${PREFIX}-h" gpsd state running 60; then ok "gpsd startet nach dem Einstecken"; else bad "Hotplug nicht erkannt"; fi
 check "GPS-Refclock nach Hotplug eingetragen" 1 "$(docker exec "${PREFIX}-h" sh -c 'grep -c "refclock SHM" /etc/chrony/chrony.conf')"
+# 1.5 (E16): GPS ohne PPS ist Rückfallebene – ohne Messung mit vorsichtiger Schranke (delay 0.2).
+contains "GPS ohne PPS: Standard-Fehlerschranke" "$(docker exec "${PREFIX}-h" grep '^refclock SHM' /etc/chrony/chrony.conf)" "delay 0.2 "
+ROLE=$(curl -s --max-time 10 http://127.0.0.1:18086/api/v1/gps/quality \
+  | python3 -c "import json,sys; print(json.load(sys.stdin)['role']['label'])" 2>/dev/null)
+check "Rolle des GPS ohne PPS" "Rückfallebene" "$ROLE"
+# Gemessene Schranke (wie nach einigen Stunden Messung) eintragen und neu laden: chronyd 4.6 startet damit.
+docker exec "${PREFIX}-h" python3 -c "
+import sys; sys.path.insert(0, '/app')
+import gpsquality
+gpsquality.save_state({'applied': {'delay': 0.117, 'precision': 0.006, 'bound': 0.058, 't': 1}})
+" >/dev/null 2>&1
+BEFORE=$(svc "${PREFIX}-h" chronyd restarts); BEFORE=${BEFORE:-0}
+docker exec "${PREFIX}-h" sh -c 'date +%s > /run/ntp-gui/reload.request'
+MEASURED=0
+for _ in $(seq 1 60); do
+  if docker exec "${PREFIX}-h" grep -q '^refclock SHM .*delay 0.117 precision 0.006' /etc/chrony/chrony.conf 2>/dev/null; then MEASURED=1; break; fi
+  sleep 1
+done
+if (( MEASURED )); then ok "Gemessene Fehlerschranke steht in chrony.conf"; else bad "Gemessene Fehlerschranke fehlt in chrony.conf"; fi
+check "chronyd akzeptiert die Konfiguration mit gemessener Schranke" 0 "$(docker exec "${PREFIX}-h" sh -c 'chronyd -p -f /etc/chrony/chrony.conf >/dev/null 2>&1; echo $?')"
+if wait_svc "${PREFIX}-h" chronyd state running 60; then ok "chronyd läuft mit gemessener Schranke"; else bad "chronyd läuft nicht (state: $(svc "${PREFIX}-h" chronyd state))"; fi
+contains "chronyd 4.6" "$(docker exec "${PREFIX}-h" chronyd --version 2>&1)" "chronyd (chrony) version 4.6"
 docker rm -f "${PREFIX}-h" >/dev/null 2>&1
 
 echo
@@ -654,6 +698,229 @@ check "Keine Schleife im Kreis (höchstens wenige Anfragen)" True \
   "$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['stats']['queries'] < 20)" "$DNSJ" 2>/dev/null)"
 contains "Hinweis „Feste Adressen“ unter den Hinweisen" "$(curl -s --max-time 20 http://127.0.0.1:18092/api/status)" "dns_pin_needed"
 docker rm -f "${PREFIX}-m" >/dev/null 2>&1
+
+echo
+echo "12e) Schleifen-Erkennung: DNS-Umschreibung ohne Ausnahme für ntp-gui (1.5)"
+# Wie R1: Der DNS im LAN (hier ein Fake-Resolver statt AdGuard) schreibt den Quellnamen auf
+# ntp-gui selbst um, und ntp-gui fragt genau diesen DNS. Erwartet: Ereignis „source/crit“ mit
+# dem richtigen Satz in ≤ 2 Poll-Intervallen (minpoll 4 = 16 s), danach mit eigenem DNS-Server
+# für ntp-gui (Modus servers, ehrliche Antwort → 172.31.77.20, dort läuft ein echter
+# Zeitserver) „Schleife behoben … erreicht wieder einen fremden Server“.
+LOOPNET="${PREFIX}-net"
+docker network create --subnet 172.31.77.0/24 "$LOOPNET" >/dev/null
+docker run -d --name "${PREFIX}-n" --network "$LOOPNET" --ip 172.31.77.53 --entrypoint python3 "$IMAGE" -c '
+import socket, struct, threading
+def serve(port, target):
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.bind(("0.0.0.0", port))
+    while True:
+        q, a = s.recvfrom(4096)
+        i, labels = 12, []
+        while q[i]:
+            labels.append(q[i + 1:i + 1 + q[i]].decode()); i += q[i] + 1
+        qtype, end = struct.unpack("!H", q[i + 1:i + 3])[0], i + 5
+        name = ".".join(labels).lower()
+        hit = name == "loop.lab.test" and qtype == 1
+        flags = 0x8180 | (0 if name == "loop.lab.test" else 3)
+        body = q[12:end] + (b"\xc0\x0c" + struct.pack("!HHIH", 1, 1, 5, 4) + socket.inet_aton(target) if hit else b"")
+        s.sendto(q[:2] + struct.pack("!HHHHH", flags, 1, 1 if hit else 0, 0, 0) + body, a)
+threading.Thread(target=serve, args=(5353, "172.31.77.20"), daemon=True).start()
+serve(53, "172.31.77.10")' >/dev/null
+# fremder Zeitserver für die „ehrliche“ Antwort: ntp-gui im Inselbetrieb (local stratum)
+docker run -d --name "${PREFIX}-t" --network "$LOOPNET" --ip 172.31.77.20 -e NTP_POOLS="" -e NTP_SERVERS="" "$IMAGE" >/dev/null
+docker run -d --name "${PREFIX}-o" --network "$LOOPNET" --ip 172.31.77.10 --dns 172.31.77.53 -p 18093:8080 \
+  -e NTP_POOLS="" -e NTP_SERVERS="loop.lab.test" -e NTP_SERVER_OPTIONS="iburst minpoll 4 maxpoll 4" "$IMAGE" >/dev/null
+wait_for_health http://127.0.0.1:18093/healthz 90 || true
+STARTED=$(date +%s)
+LOOPS=""
+for ((i = 0; i < 60; i++)); do
+  LOOPS=$(curl -s --max-time 10 http://127.0.0.1:18093/api/v1/loops)
+  grep -q '"cause": "dns"' <<<"$LOOPS" && break
+  sleep 1
+done
+WAITED=$(( $(date +%s) - STARTED ))
+contains "Schleife erkannt (Ursache DNS-Umschreibung)" "$LOOPS" '"cause": "dns"'
+if (( WAITED <= 40 )); then ok "Erkannt nach ${WAITED} s (≤ 2 Poll-Intervalle à 16 s + Start)"; else bad "Erkennung zu langsam (${WAITED} s)"; fi
+# JSON mit Umlauten/Gedankenstrich lesbar machen (der Server schreibt \uXXXX).
+utf() { python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin), ensure_ascii=False))' 2>/dev/null; }
+EVENTS=$(curl -s --max-time 10 'http://127.0.0.1:18093/api/v1/events?kinds=source' | utf)
+contains "Ereignis mit dem richtigen Satz" "$EVENTS" "loop.lab.test zeigt auf dich selbst – vermutlich DNS-Umschreibung ohne Ausnahme für ntp-gui"
+contains "Hinweis „Schleife durch DNS-Umschreibung“ in der Übersicht" "$(curl -s --max-time 20 http://127.0.0.1:18093/api/status)" '"key": "dns_loop"'
+CHAIN=$(curl -s --max-time 20 http://127.0.0.1:18093/api/v1/enforce/check)
+contains "Upstream-Kette im Selbsttest zeigt die Schleife" "$CHAIN" '"state": "self_address"'
+# Abhilfe: eigener DNS für ntp-gui, der den Namen nicht umschreibt.
+curl -s --max-time 10 -X POST -H 'Content-Type: application/json' -H 'X-NTP-GUI: 1' \
+  -d '{"changes":{"dns_mode":"servers","dns_servers":["172.31.77.53:5353"]}}' http://127.0.0.1:18093/api/settings >/dev/null
+for ((i = 0; i < 90; i++)); do
+  grep -q "Schleife behoben: loop.lab.test" <<<"$(curl -s --max-time 10 'http://127.0.0.1:18093/api/v1/events?kinds=source' | utf)" && break
+  sleep 1
+done
+contains "Mit eigenem DNS: „Schleife behoben“" "$(curl -s --max-time 10 'http://127.0.0.1:18093/api/v1/events?kinds=source' | utf)" \
+  "Schleife behoben: loop.lab.test erreicht wieder einen fremden Server"
+check "Keine Schleife mehr" '[]' "$(curl -s --max-time 10 http://127.0.0.1:18093/api/v1/loops | python3 -c 'import json,sys; print(json.load(sys.stdin)["loops"])' 2>/dev/null)"
+docker rm -f "${PREFIX}-n" "${PREFIX}-o" "${PREFIX}-t" >/dev/null 2>&1
+docker network rm "$LOOPNET" >/dev/null 2>&1
+
+echo
+echo "12f) GPS-Sperre und Holdover-Test per selectopts (1.5)"
+# Zwei ntp-gui ohne eigene Quellen liefern ihre Uhr aus (Inselbetrieb, local stratum) und dienen
+# als Netzquellen/Messreferenzen; der dritte hat dazu ein GPS auf /dev/null (die SHM-Refclock
+# „GPS“ steht in chrony, liefert nur nichts). Geprüft wird, was chrony selbst meldet.
+HONET="${PREFIX}-net2"
+docker network create --subnet 172.31.78.0/24 "$HONET" >/dev/null
+for n in p q; do
+  docker run -d --name "${PREFIX}-${n}" --network "$HONET" --ip "172.31.78.1$([[ $n == p ]] && echo 1 || echo 2)" \
+    -e NTP_POOLS="" -e NTP_SERVERS="" "$IMAGE" >/dev/null
+done
+docker run -d --name "${PREFIX}-r" --network "$HONET" --ip 172.31.78.20 -p 18094:8080 \
+  -e NTP_POOLS="" -e NTP_SERVERS="172.31.78.11 172.31.78.12" -e NTP_SERVER_OPTIONS="iburst minpoll 4 maxpoll 4" \
+  -e GPS_ENABLE=true -e GPS_DEVICE=/dev/null "$IMAGE" >/dev/null
+wait_for_health http://127.0.0.1:18094/healthz 90 || true
+# effopts <quelle> -> wirksame Optionen laut chronyc selectdata, z. B. "['noselect']" (leer: "[]")
+effopts() {
+  docker exec "${PREFIX}-r" python3 -c "import sys; sys.path.insert(0, '/app'); import chrony
+print([r['effective_options'] for r in chrony.selectdata() if r['name'] == sys.argv[1]][:1] or 'fehlt')" "$1" 2>/dev/null
+}
+wait_effopts() { # wait_effopts <quelle> <erwartet> <sekunden>
+  local i
+  for ((i = 0; i < $3; i++)); do
+    [[ "$(effopts "$1")" == "$2" ]] && return 0
+    sleep 1
+  done
+  return 1
+}
+HOJSON=""
+for ((i = 0; i < 90; i++)); do
+  HOJSON=$(curl -s --max-time 10 http://127.0.0.1:18094/api/v1/holdover)
+  grep -q '"ok": true' <<<"$HOJSON" && break
+  sleep 1
+done
+contains "Holdover-Vorprüfung: zwei Messreferenzen erreichbar" "$HOJSON" '"ok": true'
+check "GPS-Refclock in chrony auswählbar" "[[]]" "$(effopts GPS)"
+check "GPS von Hand sperren" 200 "$(post -H 'Content-Type: application/json' -H 'X-NTP-GUI: 1' -d '{"action":"lock"}' http://127.0.0.1:18094/api/gnss)"
+check "chronyc selectdata: GPS noselect" "[['noselect']]" "$(effopts GPS)"
+check "Netzquelle bleibt auswählbar" "[[]]" "$(effopts 172.31.78.11)"
+check "Sperrliste für den Supervisor geschrieben" "GPS" "$(docker exec "${PREFIX}-r" cat /var/lib/chrony/ntp-gui/noselect.list 2>/dev/null)"
+# Einstellungen speichern startet chronyd neu – die Sperre muss danach wieder gesetzt werden.
+curl -s --max-time 10 -X POST -H 'Content-Type: application/json' -H 'X-NTP-GUI: 1' \
+  -d '{"changes":{"ntp_minsources":2}}' http://127.0.0.1:18094/api/settings >/dev/null
+for ((i = 0; i < 60; i++)); do
+  grep -q "minsources 2" <<<"$(docker exec "${PREFIX}-r" cat /etc/chrony/chrony.conf 2>/dev/null)" && break
+  sleep 1
+done
+if wait_effopts GPS "[['noselect']]" 60; then ok "Sperre übersteht Einstellungs-Speichern (chronyd-Neustart)"; else bad "Sperre nach Neustart weg ($(effopts GPS))"; fi
+EVENTS=$(curl -s --max-time 10 'http://127.0.0.1:18094/api/v1/events?kinds=gps' | utf)
+contains "Ereignis: GPS von Hand gesperrt" "$EVENTS" "GPS von Hand gesperrt"
+# Der Supervisor wählt das GPS direkt nach dem Start von chronyd wieder ab (noselect.list) – nicht erst
+# der ~10-s-Prüftakt des Dashboards (dessen Ereignis „erneuert“ kommt dann nur noch als Rückfallebene).
+contains "Supervisor: Sperre direkt nach chronyd-Start erneuert" "$(docker logs "${PREFIX}-r" 2>&1)" \
+  "GPS-Sperre: GPS nach dem Start von chronyd wieder abgewählt"
+check "GPS freigeben" 200 "$(post -H 'Content-Type: application/json' -H 'X-NTP-GUI: 1' -d '{"action":"unlock"}' http://127.0.0.1:18094/api/gnss)"
+check "GPS wieder auswählbar" "[[]]" "$(effopts GPS)"
+check "Sperrliste nach Freigabe entfernt" 1 "$(docker exec "${PREFIX}-r" sh -c 'test -e /var/lib/chrony/ntp-gui/noselect.list; echo $?')"
+# Holdover: alle Quellen abwählen, dann abbrechen → alle wieder auswählbar.
+for ((i = 0; i < 60; i++)); do
+  grep -q '"ok": true' <<<"$(curl -s --max-time 10 http://127.0.0.1:18094/api/v1/holdover)" && break
+  sleep 1
+done
+check "Holdover-Test starten" 200 "$(post -H 'Content-Type: application/json' -H 'X-NTP-GUI: 1' \
+  -d '{"action":"start","hours":1,"include_network":true,"limit_ms":1000}' http://127.0.0.1:18094/api/holdover)"
+check "Holdover: GPS noselect" "[['noselect']]" "$(effopts GPS)"
+check "Holdover: Netzquelle noselect" "[['noselect']]" "$(effopts 172.31.78.12)"
+MEASURED=""
+for ((i = 0; i < 40; i++)); do
+  MEASURED=$(curl -s --max-time 10 http://127.0.0.1:18094/api/v1/holdover | python3 -c 'import json,sys; print((json.load(sys.stdin).get("run") or {}).get("measured"))' 2>/dev/null)
+  [[ "$MEASURED" == "2" ]] && break
+  sleep 1
+done
+check "Holdover: abgewählte Netzquellen werden weiter gemessen" 2 "$MEASURED"
+contains "Holdover-Hinweis in der Übersicht" "$(curl -s --max-time 20 http://127.0.0.1:18094/api/status)" '"key": "holdover_running"'
+check "Holdover abbrechen" 200 "$(post -H 'Content-Type: application/json' -H 'X-NTP-GUI: 1' -d '{"action":"abort"}' http://127.0.0.1:18094/api/holdover)"
+check "Nach dem Test: GPS auswählbar" "[[]]" "$(effopts GPS)"
+check "Nach dem Test: Netzquellen auswählbar" "[[]]" "$(effopts 172.31.78.11)"
+# Neustart von chronyd während des Tests → Test abgebrochen, Zustand sauber.
+post -H 'Content-Type: application/json' -H 'X-NTP-GUI: 1' -d '{"action":"start","hours":2}' http://127.0.0.1:18094/api/holdover >/dev/null
+check "Zweiter Test: Netzquelle noselect" "[['noselect']]" "$(effopts 172.31.78.11)"
+post -H 'X-NTP-GUI: 1' -H 'Content-Type: application/json' -d '{}' http://127.0.0.1:18094/api/reload >/dev/null
+HOJSON=""
+for ((i = 0; i < 90; i++)); do
+  HOJSON=$(curl -s --max-time 10 http://127.0.0.1:18094/api/v1/holdover | utf)
+  grep -q '"outcome": "restart"' <<<"$HOJSON" && break
+  sleep 1
+done
+contains "Neustart von chronyd bricht den Test ab" "$HOJSON" '"outcome": "restart"'
+contains "Kein Test mehr aktiv" "$HOJSON" '"active": false'
+check "Nach dem Abbruch: GPS auswählbar" "[[]]" "$(effopts GPS)"
+contains "Ergebnis-Satz gespeichert" "$HOJSON" "chronyd wurde neu gestartet – Test nach"
+docker rm -f "${PREFIX}-p" "${PREFIX}-q" "${PREFIX}-r" >/dev/null 2>&1
+docker network rm "$HONET" >/dev/null 2>&1
+
+echo
+echo "12g) HTTPS per Caddy-Vorlage: Dashboard nur über HTTPS (1.5)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TPL_DIR="$(mktemp -d)"
+# Die Kommentar-Regel der Datei: „#  “ hinter der Einrückung löschen = alles einkommentiert.
+sed -E 's/^( +)#  /\1/' "$REPO_ROOT/docker-compose.all-in-one.yml" > "$TPL_DIR/docker-compose.yml"
+if docker compose version >/dev/null 2>&1; then
+  if docker compose -f "$REPO_ROOT/docker-compose.all-in-one.yml" config -q 2>/dev/null; then
+    ok "Vorlage wie ausgeliefert ist gültiges Compose"
+  else bad "Vorlage wie ausgeliefert ist kein gültiges Compose"; fi
+  if TPL_CFG=$(docker compose -f "$TPL_DIR/docker-compose.yml" config 2>&1); then
+    ok "Vorlage mit allen Optionen (inkl. Caddy) ist gültiges Compose"
+    contains "Caddy-Dienst in der Vorlage" "$TPL_CFG" "--internal-certs"
+    contains "TRUSTED_PROXIES in der Vorlage" "$TPL_CFG" "TRUSTED_PROXIES: 127.0.0.1/32,::1/128"
+  else bad "Vorlage mit allen Optionen ist kein gültiges Compose: $TPL_CFG"; fi
+else
+  echo "  – docker compose fehlt, Compose-Prüfung übersprungen"
+fi
+CADDY_IMAGE="${CADDY_IMAGE:-$(sed -nE 's/^ *#  +image: (caddy:[0-9.]+)$/\1/p' "$REPO_ROOT/docker-compose.all-in-one.yml" | head -1)}"
+if ! docker image inspect "$CADDY_IMAGE" >/dev/null 2>&1; then
+  docker pull -q "$CADDY_IMAGE" >/dev/null 2>&1 \
+    || { docker pull -q "mirror.gcr.io/library/$CADDY_IMAGE" >/dev/null 2>&1 \
+         && docker tag "mirror.gcr.io/library/$CADDY_IMAGE" "$CADDY_IMAGE"; }
+fi
+if docker image inspect "$CADDY_IMAGE" >/dev/null 2>&1; then
+  # Wie die Vorlage: Caddy im selben Netz-Namensraum wie ntp-gui (dort: Host-Netzwerk), ntp-gui nur an 127.0.0.1.
+  docker run -d --name "${PREFIX}-s" -p 18095:443 -p 18096:8080 \
+    -e WEB_BIND=127.0.0.1 -e TRUSTED_PROXIES="127.0.0.1/32,::1/128" -e WEB_ACCESS_LOG=true \
+    -e WEB_USER=admin -e WEB_PASSWORD=geheim123 \
+    -e NTP_PORT=10140 -e NTP_POOLS="" -e NTP_SERVERS="" "$IMAGE" >/dev/null
+  docker run -d --name "${PREFIX}-t" --network "container:${PREFIX}-s" "$CADDY_IMAGE" \
+    caddy reverse-proxy --from https://zeitserver.lan --to 127.0.0.1:8080 --internal-certs >/dev/null
+  # --noproxy: ein gesetztes HTTPS_PROXY schickte zeitserver.lan sonst über den Proxy.
+  RESOLVE=(--noproxy '*' --resolve zeitserver.lan:18095:127.0.0.1)
+  HTTPS_UP=0
+  for ((i = 0; i < 90; i++)); do
+    [[ "$(http -k "${RESOLVE[@]}" https://zeitserver.lan:18095/healthz)" == "200" ]] && { HTTPS_UP=1; break; }
+    sleep 1
+  done
+  if [[ "$HTTPS_UP" == 1 ]]; then ok "Dashboard über HTTPS (Caddy) erreichbar"; else bad "Dashboard über HTTPS nicht erreichbar"; fi
+  docker cp "${PREFIX}-t:/data/caddy/pki/authorities/local/root.crt" "$TPL_DIR/root.crt" >/dev/null 2>&1
+  check "Zertifikat prüft gegen Caddys Root-Zertifikat" 200 \
+    "$(http --cacert "$TPL_DIR/root.crt" "${RESOLVE[@]}" https://zeitserver.lan:18095/healthz)"
+  check "Direkt per HTTP nicht erreichbar (WEB_BIND=127.0.0.1)" 000 "$(http http://127.0.0.1:18096/healthz)"
+  check "Ohne Passwort auch über HTTPS 401" 401 "$(http --cacert "$TPL_DIR/root.crt" "${RESOLVE[@]}" https://zeitserver.lan:18095/api/v1)"
+  check "Mit Passwort über HTTPS 200" 200 \
+    "$(http --cacert "$TPL_DIR/root.crt" "${RESOLVE[@]}" -u admin:geheim123 -H 'X-Forwarded-For: 6.6.6.6' https://zeitserver.lan:18095/api/v1)"
+  # Speichern über den Proxy: Origin passt zum (unveränderten) Host – sonst lehnte der CSRF-Schutz ab.
+  check "Speichern über den Proxy klappt (Host bleibt erhalten)" 200 \
+    "$(http --cacert "$TPL_DIR/root.crt" "${RESOLVE[@]}" -u admin:geheim123 -X POST -H 'Content-Type: application/json' \
+        -H 'X-NTP-GUI: 1' -H 'Origin: https://zeitserver.lan:18095' -d '{"changes":{"web_title":"HTTPS-Test"}}' \
+        https://zeitserver.lan:18095/api/settings)"
+  STATUS_JSON=$(curl -s --max-time 10 --cacert "$TPL_DIR/root.crt" "${RESOLVE[@]}" -u admin:geheim123 \
+    https://zeitserver.lan:18095/api/status)
+  contains "Status über HTTPS lesbar" "$STATUS_JSON" '"insights"'
+  if grep -q '"web_plain_http"\|"web_proxy_untrusted"\|"web_proxy_hop_plain"' <<<"$STATUS_JSON"; then
+    bad "HTTPS über eingetragenen Proxy löst trotzdem einen HTTPS-Hinweis aus"
+  else ok "Kein HTTPS-Hinweis bei HTTPS über eingetragenen Proxy"; fi
+  ACCESS=$(docker logs "${PREFIX}-s" 2>&1 | grep '"GET /api/v1 HTTP' || true)
+  if [[ -n "$ACCESS" ]] && ! grep -q '^127\.0\.0\.1 \|^6\.6\.6\.6 ' <<<"$ACCESS"; then
+    ok "Zugriffsprotokoll nennt den Browser, nicht den Proxy und keine gefälschte Adresse"
+  else bad "Zugriffsprotokoll: $(head -2 <<<"$ACCESS")"; fi
+  docker rm -f "${PREFIX}-s" "${PREFIX}-t" >/dev/null 2>&1
+else
+  echo "  – Caddy-Image ($CADDY_IMAGE) nicht verfügbar, HTTPS-Start übersprungen"
+fi
+rm -rf "$TPL_DIR"
 
 echo
 echo "13) Sauberes Stoppen"

@@ -22,7 +22,10 @@ NOW = 1_800_000_000.0
 
 def cfg(**over):
     base = {"gps_enable": True, "gps_autocal": "auto", "gps_autocal_max_step_ms": 5.0,
-            "gps_autocal_min_hours": 6.0, "gps_offset": 0.05, "gps_delay": 0.2, "gps_refid": "GPS"}
+            "gps_autocal_min_hours": 6.0, "gps_offset": 0.05, "gps_delay": 0.2, "gps_refid": "GPS",
+            # Delay-Regeln gelten im Modus „von Hand“; „gemessen“ (Standard ab 1.5) siehe
+            # test_measured_bound_keeps_delay.
+            "gps_bound_mode": "manual"}
     base.update(over)
     return base
 
@@ -395,6 +398,15 @@ class TickTest(unittest.TestCase):
         self.tick(NOW)
         self.tick(NOW + 7 * H)
         self.assertEqual(self.h.saved, [{"gps_offset": 0.053, "gps_delay": 0.012}])
+
+    def test_measured_bound_keeps_delay(self):
+        # 1.5 (E16): ohne PPS mit „Fehlerschranke: gemessen“ setzt gpsquality den Delay –
+        # die Kalibrierung ändert dann nur den Offset.
+        self.h.cfg["gps_bound_mode"] = "measured"
+        self.h.calibration = cal(bias=0.003)
+        self.tick(NOW)
+        self.tick(NOW + 7 * H)
+        self.assertEqual(self.h.saved, [{"gps_offset": 0.053}])
 
     def test_corrupt_state_file(self):
         os.makedirs(os.path.dirname(self.file))

@@ -39,7 +39,11 @@ PTP4L_CONF = os.environ.get("PTP4L_CONF", "/etc/linuxptp/ptp4l.conf")
 
 DEADLINE = 2.5               # Sekunden für alle Sammler zusammen
 SECTION_CAP = 512 * 1024     # Bytes je Abschnitt (nach dem Filtern)
-RECORDING_CAP = 4 * 1024 * 1024
+# Eine Aufzeichnung von 1 h ist bei typischem Betrieb 6–10 MB groß. 4 MB schnitten sie auf die
+# letzte halbe Stunde (Rückmeldung mit 1.3.2). Gefiltert wird seit 1.3.2 in einem eigenen Prozess
+# mit niedriger Priorität – auf dem Pi dauert ein großes Paket länger, das Dashboard bleibt aber
+# bedienbar.
+RECORDING_CAP = 12 * 1024 * 1024
 LOG_LINES = 2000
 LOG_READ_BYTES = 1024 * 1024
 EVENT_DAYS = 7
@@ -407,6 +411,10 @@ def _stats(values: list[float]) -> dict | None:
             "p95_abs": p95, "last": values[-1] if isinstance(values[-1], (int, float)) else None}
 
 
+def _num(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and value == value
+
+
 def summarize_history(samples: list[dict], since: float | None = None) -> dict:
     """Kennzahlen statt Rohdaten: Anzahl, Min/Max/Mittel, 95 %-Wert je Größe."""
     if since is not None:
@@ -419,10 +427,26 @@ def summarize_history(samples: list[dict], since: float | None = None) -> dict:
         "from": samples[0].get("t"), "to": samples[-1].get("t"),
         "metrics": {},
     }
-    for key in ("offset", "rms", "freq", "skew", "root_delay", "root_dispersion", "stratum", "clients"):
+    for key in ("offset", "rms", "freq", "skew", "root_delay", "root_dispersion", "stratum", "clients", "temp"):
         stats = _stats([s.get(key) for s in samples])
         if stats:
             out["metrics"][key] = stats
+    # Temperatur ↔ Frequenz (Grundlage für den Temperaturausgleich): Mittel je Stunde seit Beginn
+    # des Zeitraums – nur Kennzahlen, keine Rohdaten; Stunden zählen ab „from“, nicht nach Uhrzeit.
+    start = samples[0].get("t") or 0
+    hours: dict[int, dict[str, list]] = {}
+    for sample in samples:
+        temp, freq = sample.get("temp"), sample.get("freq")
+        if not (_num(temp) and _num(freq)):
+            continue
+        slot = hours.setdefault(int(((sample.get("t") or start) - start) // 3600), {"temp": [], "freq": []})
+        slot["temp"].append(float(temp))
+        slot["freq"].append(float(freq))
+    if hours:
+        out["temp_freq_hourly"] = [
+            {"h": h, "n": len(v["temp"]), "temp": round(sum(v["temp"]) / len(v["temp"]), 2),
+             "freq": round(sum(v["freq"]) / len(v["freq"]), 4)}
+            for h, v in sorted(hours.items())]
     strata = [s.get("stratum") for s in samples if s.get("stratum") is not None]
     out["stratum_changes"] = sum(1 for a, b in zip(strata, strata[1:]) if a != b)
     sources: dict[str, dict] = {}
@@ -660,9 +684,15 @@ def _client_names() -> list[str]:
     """Selbst vergebene Namen der Clients (Clients-Detailseite) – egress ersetzt sie durch <name>."""
     try:
         import clientinfo
-        return clientinfo.export_names()
+        names = clientinfo.export_names()
     except Exception:  # noqa: BLE001
-        return []
+        names = []
+    try:
+        import clients3  # 1.5: eigene Gruppennamen („Kinderzimmer“) ebenso ersetzen
+        names = sorted(set(names) | set(clients3.group_names()))
+    except Exception:  # noqa: BLE001
+        pass
+    return names
 
 
 def _render(name: str, content: Any) -> tuple[str, str]:

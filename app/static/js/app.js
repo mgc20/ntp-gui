@@ -13,19 +13,21 @@ import * as diagnose from "./pages/diagnose.js";
 import * as notify from "./pages/notify.js";
 import * as settings from "./pages/settings.js";
 import * as help from "./pages/help.js";
+import { t, initI18n, setLanguage, language, LANGUAGES, onLanguageChange } from "./i18n.js";
 
+// Titel als Katalogschlüssel (i18n.js) – die Route (id) bleibt deutsch, damit Lesezeichen gelten.
 const PAGES = [
-  { id: "", title: "Übersicht", module: overview, history: true },
-  { id: "quellen", title: "Zeitquellen", module: sources, history: true },
-  { id: "gps", title: "GPS", module: gps, history: true },
-  { id: "ptp", title: "PTP", module: ptp, history: true },
-  { id: "uhrqualitaet", title: "Uhrqualität", module: clockquality, history: false },
-  { id: "hardware", title: "Hardware", module: hardware, history: false },
-  { id: "clients", title: "Clients", module: clients, history: true },
-  { id: "diagnose", title: "Diagnose", module: diagnose, history: false },
-  { id: "benachrichtigungen", title: "Benachrichtigungen", module: notify, history: false },
-  { id: "einstellungen", title: "Einstellungen", module: settings },
-  { id: "hilfe", title: "Hilfe", module: help },
+  { id: "", titleKey: "nav.overview", module: overview, history: true },
+  { id: "quellen", titleKey: "nav.sources", module: sources, history: true },
+  { id: "gps", titleKey: "nav.gps", module: gps, history: true },
+  { id: "ptp", titleKey: "nav.ptp", module: ptp, history: true },
+  { id: "uhrqualitaet", titleKey: "nav.clockquality", module: clockquality, history: false },
+  { id: "hardware", titleKey: "nav.hardware", module: hardware, history: false },
+  { id: "clients", titleKey: "nav.clients", module: clients, history: true },
+  { id: "diagnose", titleKey: "nav.diagnose", module: diagnose, history: false },
+  { id: "benachrichtigungen", titleKey: "nav.notify", module: notify, history: false },
+  { id: "einstellungen", titleKey: "nav.settings", module: settings },
+  { id: "hilfe", titleKey: "nav.help", module: help },
 ];
 
 const state = {
@@ -130,14 +132,14 @@ function restoreFocus(saved) {
 
 function render() {
   const page = currentPage();
-  document.title = `${page.title} · ${state.status?.system?.title || "ntp-gui"}`;
+  document.title = `${t(page.titleKey)} · ${state.status?.system?.title || "ntp-gui"}`;
   for (const link of nav.querySelectorAll("a")) {
     const active = link.dataset.page === page.id;
     link.classList.toggle("is-active", active);
     if (active) link.setAttribute("aria-current", "page"); else link.removeAttribute("aria-current");
   }
   if (!state.status && page.module !== help && page.module !== settings) {
-    main.replaceChildren(el("p", { class: "empty-note", text: "Verbinde mit dem Server …" }));
+    main.replaceChildren(el("p", { class: "empty-note", text: t("app.connecting_server") }));
     return;
   }
   const scroll = window.scrollY;
@@ -161,7 +163,7 @@ function render() {
     nodes = page.module.render(ctx);
   } catch (error) {
     console.error(error);
-    nodes = [el("p", { class: "empty-note", text: `Darstellungsfehler: ${error.message}` })];
+    nodes = [el("p", { class: "empty-note", text: t("app.render_error", { message: error.message }) })];
   }
   const focus = captureFocus();
   main.replaceChildren(...nodes.filter(Boolean));
@@ -178,7 +180,7 @@ function renderHeader() {
   const sys = status.system || {};
   document.getElementById("title").textContent = sys.title || "ntp-gui";
   document.getElementById("hostname").textContent = sys.hostname || "";
-  document.getElementById("clock").textContent = `${new Date(sys.time * 1000).toLocaleString("de-DE")} ${sys.timezone || ""}`;
+  document.getElementById("clock").textContent = `${new Date(sys.time * 1000).toLocaleString(language() === "en" ? "en-GB" : "de-DE")} ${sys.timezone || ""}`;
   // Dieselbe Bewertung wie das Statusband der Übersicht – Kopfzeile und Übersicht
   // dürfen sich nie widersprechen. Schmal: nur Punkt + Kurztext.
   const v = overview.verdict(status, status.insights || []);
@@ -191,7 +193,7 @@ function renderHeader() {
   setBadge("hardware", serious.filter((i) => i.action === "hardware").length);
   renderUpdateBanner(status.update);
   document.getElementById("footer-note").textContent =
-    `ntp-gui ${sys.version || ""} · aktualisiert ${fmtTime(sys.time)} · alle ${sys.refresh_seconds} s`;
+    t("app.footer", { version: sys.version || "", time: fmtTime(sys.time), seconds: sys.refresh_seconds });
 }
 
 // --- Update-Hinweis (opt-in) ---------------------------------------------------
@@ -253,7 +255,7 @@ async function refresh() {
     state.failed += 1;
     document.body.classList.add("is-stale");
     document.getElementById("sync-pill").dataset.state = "crit";
-    document.getElementById("sync-label").textContent = "keine Verbindung";
+    document.getElementById("sync-label").textContent = t("app.no_connection");
   }
   const every = Math.max(1, state.status?.system?.refresh_seconds || 5) * 1000;
   state.timer = setTimeout(refresh, state.failed ? Math.min(30000, every * (state.failed + 1)) : every);
@@ -290,7 +292,7 @@ function watchReload() {
 // --- Start -------------------------------------------------------------------------
 function buildNav() {
   nav.replaceChildren(...PAGES.map((page) => el("a", { href: `#/${page.id}`, dataset: { page: page.id } },
-    el("span", { text: page.title }),
+    el("span", { text: t(page.titleKey) }),
     page.id === "" || page.id === "hardware" ? el("span", { class: "nav-badge", hidden: true }) : null)));
 }
 
@@ -345,8 +347,31 @@ window.addEventListener("hashchange", () => {
   revealActiveNav(true);
 });
 
+// Sprache: je Browser (localStorage), Standard = Browsersprache. Der Knopf schaltet reihum.
+function initLanguage() {
+  const button = document.getElementById("lang-toggle");
+  const code = document.getElementById("lang-code");
+  const show = () => { if (code) code.textContent = language().toUpperCase(); };
+  show();
+  button?.addEventListener("click", () => {
+    const index = LANGUAGES.findIndex((l) => l.code === language());
+    setLanguage(LANGUAGES[(index + 1) % LANGUAGES.length].code);
+  });
+  onLanguageChange(() => {
+    show();
+    const counts = [...nav.querySelectorAll(".nav-badge")].map((n) => [n.closest("a")?.dataset.page, n.textContent]);
+    buildNav();
+    for (const [page, text] of counts) setBadge(page, Number(text) || 0);
+    renderHeader();
+    render();
+    revealActiveNav(false);
+  });
+}
+
+await initI18n();
 buildNav();
 initTheme();
+initLanguage();
 render();
 revealActiveNav(false);
 refresh();

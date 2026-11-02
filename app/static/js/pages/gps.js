@@ -4,6 +4,8 @@ import { lineChart, skyPlot, snrBars } from "../charts.js";
 import { stateBadge, reasonCell } from "./sources.js";
 import { axisSeconds } from "./overview.js";
 import { hardwareData, pickReceiver, accuracyLadder, PPS_PATH } from "./hardware.js";
+import { receptionCard, roleCard, antennaCard } from "./gpsquality.js";
+import { gnssCard } from "./gnss.js";
 
 const WINDOWS = [[0, "gesamter Verlauf"], [3600, "letzte Stunde"], [21600, "letzte 6 h"], [86400, "letzte 24 h"]];
 
@@ -212,7 +214,11 @@ function calibrationCard(ctx, gpsSource) {
     el("span", { text: cal.message })));
 
   if (isNum(cal.bias)) {
-    const delayChanged = Math.abs(cal.suggested_delay - cal.current_delay) > 1e-9;
+    // Modus „gemessen“ (ohne PPS): chrony nutzt die gemessene Schranke bzw. den Standard, nicht
+    // gps_delay – dann zeigt „aktuell“ diesen Wert und „Übernehmen“ setzt nur den Offset.
+    const delayManaged = cal.delay_managed === true;
+    const delayChanged = !delayManaged && Math.abs(cal.suggested_delay - cal.current_delay) > 1e-9;
+    const delaySourceLabel = cal.delay_source === "measured" ? "gemessen" : "Standard";
     const offsetChanged = Math.abs(cal.suggested_offset - cal.current_offset) > 0.0005;
     body.push(el("div", { class: "cal-grid" },
       kv([
@@ -225,8 +231,9 @@ function calibrationCard(ctx, gpsSource) {
         el("tbody", {},
           el("tr", {}, el("th", {}, "Offset ", info("gps_offset", "Offset")), el("td", { text: `${cal.current_offset} s` }),
             el("td", { class: offsetChanged ? "changed" : "", text: `${cal.suggested_offset} s` })),
-          el("tr", {}, el("th", {}, "Delay ", info("gps_delay", "Delay")), el("td", { text: `${cal.current_delay} s` }),
-            el("td", { class: delayChanged ? "changed" : "", text: `${cal.suggested_delay} s` }))))));
+          el("tr", {}, el("th", {}, "Delay ", info("gps_delay", "Delay")),
+            el("td", { text: delayManaged ? `${cal.current_delay} s (${delaySourceLabel})` : `${cal.current_delay} s` }),
+            el("td", { class: delayChanged ? "changed" : "", text: delayManaged ? "automatisch gemessen" : `${cal.suggested_delay} s` }))))));
 
     const role = el("select", { id: "cal-role", "aria-label": "Rolle des GPS" },
       [["auto", "automatisch – chrony entscheidet"], ["prefer", "bevorzugen – GPS ist erste Wahl"]].map(([value, label]) =>
@@ -236,8 +243,9 @@ function calibrationCard(ctx, gpsSource) {
     apply.addEventListener("click", async () => {
       apply.disabled = true;
       try {
-        const result = await apiPost("/api/settings", { changes: {
-          gps_offset: cal.suggested_offset, gps_delay: cal.suggested_delay, gps_select: role.value } });
+        const changes = { gps_offset: cal.suggested_offset, gps_select: role.value };
+        if (!delayManaged) changes.gps_delay = cal.suggested_delay;
+        const result = await apiPost("/api/settings", { changes });
         toast(result.reload_triggered ? "Übernommen – Zeitdienste starten neu" : (result.reload_note || "Gespeichert"));
         ctx.watchReload();
         ctx.invalidate("calibration");
@@ -248,6 +256,9 @@ function calibrationCard(ctx, gpsSource) {
     });
     body.push(el("div", { class: "cal-apply" },
       el("label", { class: "inline-field" }, el("span", {}, "Rolle ", info("gps_role", "Rolle")), role), apply));
+    if (delayManaged) {
+      body.push(emptyNote("Den Delay (die Fehlerschranke) misst ntp-gui im Modus „gemessen“ selbst – „Übernehmen“ setzt nur Offset und Rolle. Delay von Hand: Einstellungen → GPS → „Fehlerschranke ohne PPS: von Hand“."));
+    }
     body.push(emptyNote("Nach dem Übernehmen startet chrony neu (die Messhistorie bleibt erhalten). Die Abweichung im Diagramm sollte danach um 0 schwanken. Neu kalibrieren nach einem Wechsel von Empfänger, USB-Port oder Firmware."));
 
     const host = el("div", { class: "chart-host" });
@@ -260,13 +271,32 @@ function calibrationCard(ctx, gpsSource) {
       format: (v) => fmtSeconds(v, 3, true), axisFormat: axisSeconds, height: 200, zeroLine: true,
     }));
   }
-  if (gpsSource && gpsSource.select_state === "large_distance") {
+  // Dieselbe PPS-Prüfung wie im Server (gpsquality.has_pps): Gerät vorhanden oder „PPS über gpsd“.
+  const bound = cfg.gps_bound || {};
+  const fallback = !bound.pps && (cfg.gps_bound_mode || "measured") === "measured" && cfg.gps_select !== "prefer";
+  const delayNow = isNum(bound.delay) ? bound.delay : cfg.gps_delay;
+  if (gpsSource && gpsSource.select_state === "large_distance" && fallback) {
+    body.push(el("div", { class: "callout" }, rich("**Darum steht das GPS auf „Unsicherheit zu groß“:** Das ist so gewollt. "
+      + "Ohne PPS ist das GPS die **Rückfallebene** mit ehrlicher Fehlerschranke (siehe „Rolle des GPS“): Solange die "
+      + "Netzwerkquellen genauer sind, nimmt chrony sie; wird das Internet schlecht oder fällt aus, übernimmt das GPS von selbst."),
+      " ", info("gpsq_role", "Rolle des GPS")));
+  } else if (gpsSource && gpsSource.select_state === "large_distance") {
     body.push(el("div", { class: "callout" }, rich("**Darum steht das GPS auf „Unsicherheit zu groß“:** Mit Delay "
-      + `${cfg.gps_delay} s nimmt chrony an, die GPS-Zeit könne bis zu ${fmtSeconds(cfg.gps_delay / 2)} daneben liegen – die Netzwerkquellen sind viel genauer. `
+      + `${delayNow} s nimmt chrony an, die GPS-Zeit könne bis zu ${fmtSeconds(delayNow / 2)} daneben liegen – die Netzwerkquellen sind viel genauer. `
       + "Der vorgeschlagene kleinere Delay macht das GPS konkurrenzfähig.")));
   }
   body.push(autocalSection(ctx));
   return card("GPS kalibrieren", { help: "gps_offset", id: "kalibrierung" }, body);
+}
+
+// Delay, den chrony wirklich nutzt: im Modus „gemessen“ die gemessene Schranke bzw. der
+// vorsichtige Standard (nicht die Einstellung gps_delay), sonst die Einstellung.
+function delayCell(cfg) {
+  const bound = cfg.gps_bound || {};
+  if (bound.managed && isNum(bound.delay)) {
+    return `${bound.delay} s (${bound.source === "measured" ? "gemessen" : "vorsichtiger Standard"}, ± ${fmtSeconds(bound.delay / 2)})`;
+  }
+  return `${cfg.gps_delay} s (eingestellt)`;
 }
 
 export function render(ctx) {
@@ -300,7 +330,7 @@ export function render(ctx) {
       ["Offset der letzten Messung", fmtSeconds(gpsSource.offset, 3, true), "source_offset"],
       ["Jitter", isNum(gpsSource.std_dev) ? fmtSeconds(gpsSource.std_dev) : "–", "jitter"],
       ["Eingestellter Offset", `${cfg.gps_offset} s`, "gps_offset"],
-      ["Eingestellter Delay", `${cfg.gps_delay} s`, "gps_delay"],
+      ["Delay in chrony", delayCell(cfg), "gps_delay"],
       ["Rolle", { auto: "automatisch", prefer: "bevorzugt", noselect: "nur beobachten" }[cfg.gps_select] || cfg.gps_select, "gps_role"],
     ]) : emptyNote("Die GPS-Zeile fehlt in chrony – meist weil das Gerät beim Start nicht vorhanden war. Der Hinweis oben auf der Übersicht nennt den Grund."));
 
@@ -339,9 +369,12 @@ export function render(ctx) {
   return [
     receiverCard(ctx, report),
     tiles,
+    el("div", { class: "grid-2" }, receptionCard(ctx), roleCard(ctx)),
+    gnssCard(ctx),
     el("div", { class: "grid-2" }, chronyCard, facts),
     calibrationCard(ctx, gpsSource),
     satCard,
+    antennaCard(ctx),
     card("Satelliten im Verlauf", { help: "satellites", sub: "Bricht die Zahl regelmäßig ein, verdeckt zu bestimmten Zeiten etwas die Sicht." }, satHost),
     card("Was bringt GPS hier?", { class: "explain", help: "gps_value" }, el("p", {}, rich(
       "Ohne PPS bleibt die Genauigkeit im Millisekundenbereich – so gut wie die PTB über eine gute Festnetzleitung. "

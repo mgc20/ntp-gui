@@ -19,7 +19,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _isolation  # noqa: E402,F401 – vor jedem App-Import: Host-Pfade umlenken
-from _support import fake_hostnames  # noqa: E402
+from _support import JoiningHTTPServer, fake_hostnames, stop_http_server  # noqa: E402
 
 import apikeys  # noqa: E402
 import diagnostics  # noqa: E402
@@ -45,7 +45,7 @@ class ApiAuthTest(unittest.TestCase):
         apikeys._READY["db"] = None
         apikeys.clear_cache()
         server.AUTH_CACHE.clear()
-        cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        cls.httpd = JoiningHTTPServer(("127.0.0.1", 0), server.Handler)
         cls.port = cls.httpd.server_address[1]
         cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
         cls.thread.start()
@@ -54,8 +54,7 @@ class ApiAuthTest(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
-        cls.httpd.shutdown()
-        cls.httpd.server_close()
+        stop_http_server(cls.httpd)
         for patch in reversed(cls.patches):
             patch.stop()
         store.close_all()
@@ -265,7 +264,7 @@ class HostCheckServerTest(unittest.TestCase):
         apikeys.clear_cache()
         server.AUTH_CACHE.clear()
         server._REJECTED_HOSTS.clear()
-        cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        cls.httpd = JoiningHTTPServer(("127.0.0.1", 0), server.Handler)
         cls.port = cls.httpd.server_address[1]
         cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
         cls.thread.start()
@@ -273,8 +272,7 @@ class HostCheckServerTest(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
-        cls.httpd.shutdown()
-        cls.httpd.server_close()
+        stop_http_server(cls.httpd)
         for patch in reversed(cls.patches):
             patch.stop()
         store.close_all()

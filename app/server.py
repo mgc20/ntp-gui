@@ -38,6 +38,7 @@ import os
 import re
 import signal
 import socket
+import sys
 import threading
 import time
 from http import HTTPStatus
@@ -48,9 +49,14 @@ from urllib.parse import parse_qs, urlparse
 import apikeys
 import apiv1
 import autocal
+import gnssguard
+import gpsquality
+import holdover
+import loopguard
 import chrony
 import clientinfo
 import clientmon
+import clients3
 import devices
 import diagnostics
 import dnsfwd
@@ -69,6 +75,7 @@ import settings
 import statewatch
 import thermal
 import updatecheck
+import webtransport
 
 STATIC_DIR = Path(__file__).with_name("static")
 CHRONY_CONF = os.environ.get("CHRONY_CONF", "/etc/chrony/chrony.conf")
@@ -76,7 +83,7 @@ PTP4L_CONF = os.environ.get("PTP4L_CONF", "/etc/linuxptp/ptp4l.conf")
 RUN_DIR = os.environ.get("NTPGUI_RUN_DIR", "/run/ntp-gui")
 START_TIME = time.time()
 MAX_BODY = 64 * 1024
-VERSION = os.environ.get("NTPGUI_VERSION", "1.4.0")
+VERSION = os.environ.get("NTPGUI_VERSION", "1.5.0")
 EVENTS_INTERVAL = 5.0          # so oft liest der Server die Supervisor-Ereignisse ein
 CALIBRATION_DEFAULT_WINDOW = 86400.0  # /api/gps/calibration ohne window: letzte 24 h
 
@@ -141,13 +148,16 @@ apiv1.endpoint("GET", "/enforce/snippets", "/api/enforce/snippets", "read",
                 "ip": "Adresse dieses Servers aus Sicht der Clients",
                 "dns_ip": "Adresse von AdGuard Home/Pi-hole für die optionale DNS-Umleitung per Firewall"})
 apiv1.endpoint("GET", "/enforce/check", "/api/enforce/check", "read",
-               "Prüft, ob die Umleitung wirkt (höchstens alle 30 s).", ["level", "summary", "hosts"],
+               "Prüft, ob die Umleitung wirkt (höchstens alle 30 s). „upstream“ zeigt für jede eigene Quelle die "
+               "Kette Name → Resolver → Adresse → Antwort und erkennt Schleifen (DNS-Umschreibung, NAT-Umleitung).",
+               ["level", "summary", "hosts", "public", "loops", "upstream", "resolver"],
                {"ip": "Adresse dieses Servers aus Sicht der Clients"})
 apiv1.endpoint("GET", "/dns", "/api/dns", "read",
                "DNS für ntp-gui: eingestellter Modus, Zustand des Weiterleiters auf 127.0.0.1, eigene "
                "Server mit letzter Antwort bzw. letztem Fehler, Rückfall auf den System-DNS, resolv.conf. "
                "DoH-Adressen nur mit Servername (der Pfad kann eine Konto-Kennung enthalten).",
-               ["mode", "effective_mode", "running", "state", "upstreams", "resolv", "stats"])
+               ["mode", "effective_mode", "running", "state", "upstreams", "resolv", "stats", "last_success",
+                "reachable", "upstream_count", "nts_note"])
 apiv1.endpoint("GET", "/clients/offsets", "/api/clients/offsets", "read",
                "Passiv gemessene Abweichung der Client-Uhren, dazu eigene Namen der Geräte (names).",
                ["available", "running", "reason", "clients", "names"])
@@ -168,6 +178,31 @@ apiv1.endpoint("POST", "/clients/probe", "/api/clients/probe", "admin",
                "Aktiv nachmessen: eine NTP-Anfrage an einen bekannten Client im LAN (2 s Zeitlimit; je Gerät "
                "alle 30 s, insgesamt 10 pro Minute). Body: {\"ip\": …}.",
                ["ip", "answered", "offset", "rtt", "stratum", "text"])
+apiv1.endpoint("GET", "/clients/groups", "/api/clients/groups", "read",
+               "Clients 3: Geräte nach Gruppe (eigene Netze, spezifischstes Netz gewinnt), VLAN oder Software – je "
+               "Gruppe Anzahl, aktive, messbare, Median-Abweichung, Anteil „gut“ (< 10 ms), Hinweis bei leerer Gruppe; "
+               "bei by=group Vorschläge aus gesehenen /24- und /64-Netzen.",
+               ["by", "groups", "total", "defined", "suggestions"], {"by": "group (Standard), vlan oder software"})
+apiv1.endpoint("POST", "/clients/groups", "/api/clients/groups", "admin",
+               "Gruppe anlegen (ohne id) oder ändern (mit id). Body: {\"name\": …, \"network\": \"10.0.30.0/24\"}.",
+               ["id", "name", "network"])
+apiv1.endpoint("POST", "/clients/groups/delete", "/api/clients/groups/delete", "admin",
+               "Gruppe löschen. Body: {\"id\": …}.", ["ok"])
+apiv1.endpoint("GET", "/clients/quality", "/api/clients/quality", "read",
+               "Uhrgüte je Gerät (0–100 aus Abweichung, Stabilität, Regelmäßigkeit, Messbarkeit) und die "
+               "schlechtesten Uhren im Haus.", ["scores", "worst", "rated", "total"])
+apiv1.endpoint("GET", "/clients/rules", "/api/clients/rules", "read",
+               "Regeln je Gerät: Stunden ohne Anfrage, eigene Schwelle (ms, Minuten), stumm, erwartete Software, "
+               "dazu offene Alarme und der Lernstand von „neues Gerät“.", ["rules", "inventory"])
+apiv1.endpoint("POST", "/clients/rules", "/api/clients/rules", "admin",
+               "Regeln eines Geräts setzen. Body: {\"ip\": …, \"silent_h\": 6, \"offset_ms\": 500, "
+               "\"offset_min\": 10, \"mute\": false, \"expect\": \"windows\"} (null/\"\" = aus).",
+               ["ip", "silent_h", "offset_ms", "offset_min", "mute", "expect"])
+apiv1.endpoint("GET", "/clients/pass", "/api/clients/pass", "read",
+               "Gerätepass: alles Wichtige zu einem Gerät für die Druckseite (lokal). Mit share=1 nur eine "
+               "gefilterte Textkopie zum Weitergeben (Adressen als Pseudonym, eigene Namen ersetzt, ohne Notiz).",
+               ["address", "name", "group", "software", "entry", "week", "daily", "month", "quality", "nts",
+                "recommendations"], {"ip": "Adresse des Clients (Pflicht)", "share": "1 = gefilterte Textkopie"})
 apiv1.endpoint("GET", "/notify", "/api/notify", "admin",
                "Benachrichtigungen: Kanäle mit Filtern und Zustellstand. Tokens nur als „gesetzt“ "
                "(secret_set), nie im Klartext; Adressen mit Pfad/Abfrage nur gekürzt (url_hidden).", ["channels", "types", "levels", "kinds", "defaults", "limits",
@@ -191,6 +226,50 @@ apiv1.endpoint("GET", "/gps/autocal", "/api/gps/autocal", "read",
 apiv1.endpoint("POST", "/gps/autocal/rollback", "/api/gps/autocal/rollback", "admin",
                "Letzte automatische Änderung(en) zurücknehmen. Body: {\"steps\": 1}.",
                ["ok", "restored_offset", "restored_delay", "reload_triggered", "change"])
+
+apiv1.endpoint("GET", "/loops", "/api/loops", "read",
+               "Schleifen-Erkennung je Zeitquelle: Quellen, über die chronyd sich selbst fragt (DNS-Umschreibung "
+               "oder NAT-Umleitung ohne Ausnahme für ntp-gui), mit Ursache, Belegen und Abhilfe. Geprüft im Takt "
+               "des halben kleinsten Poll-Intervalls, bestätigt nach zwei Prüfungen.",
+               ["loops", "checked", "interval_s", "confirm", "level"])
+apiv1.endpoint("GET", "/gps/quality", "/api/gps/quality", "read",
+               "GPS ohne PPS und schwacher Empfang: Empfangsbewertung über 24 h (Ampel, Satz, Gründe, Fix-Anteil, "
+               "Fix-Wechsel je Stunde, Median-C/N0 der vier stärksten Satelliten, genutzte Satelliten), Zustand "
+               "des Fix (stetig/unstet), Rolle des GPS (Rückfallebene, Referenz, nur beobachten) und die "
+               "Fehlerschranke, die chrony für das GPS verwendet. Ohne Position und Satellitenwinkel.",
+               ["enabled", "available", "assessment", "stability", "role", "bound"])
+apiv1.endpoint("POST", "/gps/bound", "/api/gps/bound", "admin",
+               "Gemessene Fehlerschranke des GPS auf den vorsichtigen Standard (± 100 ms) zurücksetzen. "
+               "Body: {\"action\": \"reset\"}. Startet die Zeitdienste neu, Eintrag im Ereignisprotokoll.",
+               ["ok", "reload_triggered", "delay"])
+apiv1.endpoint("GET", "/gps/antenna", "/api/gps/antenna", "read",
+               "Antennen-Test: laufende Messung, gespeicherte Messungen (Fix-Anteil, C/N0 der vier stärksten, "
+               "Satelliten) und der Vergleich zweier Messungen. Bleibt lokal, ohne Satellitenwinkel.",
+               ["test", "results", "comparison", "default_seconds"],
+               {"a": "id der ersten Messung (Standard: vorletzte)", "b": "id der zweiten (Standard: letzte)"})
+apiv1.endpoint("POST", "/gps/antenna", "/api/gps/antenna", "admin",
+               "Antennen-Test steuern. Body: {\"action\": \"start\", \"label\": \"Fensterbank\", \"seconds\": 300} "
+               "(60–900 s), {\"action\": \"stop\"} oder {\"action\": \"delete\", \"id\": …}.",
+               ["test", "results", "comparison", "default_seconds"])
+
+apiv1.endpoint("GET", "/gnss", "/api/gnss", "read",
+               "GNSS-Störungserkennung: Stufe (ok, hinweis, warnung, stoerung), Signale (C/N0-Einbruch, gleichmäßige "
+               "Signale, Falseticker, Zeitabweichung zu den NTS-Quellen, Positionssprung in Metern) und die GPS-Sperre. "
+               "Ohne Koordinaten und Satellitenwinkel.",
+               ["enabled", "mode", "stage", "stage_label", "signals", "time", "position", "cn0", "lock"])
+apiv1.endpoint("POST", "/gnss", "/api/gnss", "admin",
+               "GPS-Sperre von Hand: {\"action\": \"lock\"} bzw. {\"action\": \"unlock\"} (chronyc selectopts), "
+               "{\"action\": \"relearn\"} lernt Referenzposition und Zeitabstand neu. Jede Aktion steht im "
+               "Ereignisprotokoll.", ["stage", "lock"])
+apiv1.endpoint("GET", "/holdover", "/api/holdover", "read",
+               "Echter Holdover-Test: läuft einer (Fortschritt, Zeitfehler gegen die Messreferenzen), Vorprüfung "
+               "und die letzten Ergebnisse („Die Uhr hält X ms in Y h“).",
+               ["active", "run", "check", "results", "defaults"])
+apiv1.endpoint("POST", "/holdover", "/api/holdover", "admin",
+               "Holdover-Test starten oder abbrechen. Body: {\"action\": \"start\", \"hours\": 2, "
+               "\"include_network\": true, \"limit_ms\": 10} (1–24 h, 1–1000 ms) oder {\"action\": \"abort\"}. "
+               "Wählt die Quellen per chronyc selectopts ab und stellt sie danach automatisch zurück.",
+               ["active", "run", "results"])
 
 apiv1.endpoint("GET", "/temperature", "/api/temperature", "read",
                "Temperatur und Frequenz: gewählter Sensor, gefundene Sensoren, Paare (Zeit, °C, ppm) aus dem "
@@ -229,6 +308,7 @@ CONTENT_TYPES = {
     ".svg": "image/svg+xml",
     ".ico": "image/x-icon",
     ".png": "image/png",
+    ".json": "application/json; charset=utf-8",  # Sprachkataloge (static/i18n)
 }
 
 
@@ -271,7 +351,7 @@ def collect_sample() -> dict:
         g = gps.status()
         sample["gps"] = {"used": _num(g.get("satellites_used")), "seen": _num(g.get("satellites_seen")),
                          "hdop": _num(g.get("hdop")), "snr": _num(g.get("snr_avg")),
-                         "mode": _num(g.get("mode"))}
+                         "mode": _num(g.get("mode")), "cn4": _num(g.get("cn0_top4"))}
     if ptp.enabled():
         p = ptp.status()
         metrics = p.get("log_metrics") or {}
@@ -299,7 +379,9 @@ def collector() -> None:
             HISTORY.save()
             STATE_WATCH.sample(sample)
             client_alarms()
+            clients3.tick(settings.values(), events.emit)  # Regeln je Gerät, Inventar, Stundenwerte; wirft nie
             autocal.maybe_tick()   # höchstens einmal pro Stunde, wirft nie
+            gpsquality.maybe_tick(settings.values)  # Fehlerschranke GPS ohne PPS, stündlich, wirft nie
         except Exception as exc:  # ein Messfehler darf den Thread nie beenden
             print(f"[web] Messung fehlgeschlagen: {exc}", flush=True)
         try:
@@ -314,6 +396,42 @@ def collector() -> None:
         time.sleep(max(2.0, interval))
 
 
+# 1.5: Schleifen-Erkennung je Quelle (DNS-Umschreibung / NAT-Umleitung ohne Ausnahme für ntp-gui).
+LOOP_GUARD = loopguard.LoopGuard(events.emit, prober=enforce.probe_many, tracker=chrony.tracking)
+
+
+def host_addresses() -> list[str]:
+    """Eigene Adressen: alle Interfaces (/proc/net, je Namensraum) plus die Adressen des Hostnamens."""
+    out: list[str] = loopguard.interface_addresses()
+    try:
+        for _family, _, _, _, sockaddr in socket.getaddrinfo(socket.gethostname(), None):
+            if sockaddr[0] not in out:
+                out.append(sockaddr[0])
+    except (socket.gaierror, UnicodeError):
+        pass
+    return out
+
+
+def loop_check() -> None:
+    """Schleifen-Prüfung im Takt des halben kleinsten Poll-Intervalls (wirft nie)."""
+    try:
+        if not LOOP_GUARD.due():
+            return
+        cfg = settings.values()
+        LOOP_GUARD.check(chrony.detailed_sources(), chrony.tracking(), host_addresses(), cfg.get("ntp_port", 123))
+    except Exception as exc:  # die Prüfung darf die Messung nie aufhalten
+        print(f"[web] Schleifen-Prüfung fehlgeschlagen: {exc}", flush=True)
+
+
+def loop_guard_runner(stop: threading.Event | None = None) -> None:
+    """Eigener Takt für die Schleifen-Prüfung (halbes kleinstes Poll-Intervall, 10–60 s) –
+    unabhängig vom Verlaufs-Takt (history_interval bis 600 s), damit „≤ 2 Poll-Intervalle“ gilt."""
+    stop = stop or threading.Event()
+    while not stop.is_set():
+        loop_check()
+        stop.wait(min(loopguard.MAX_INTERVAL, max(1.0, LOOP_GUARD.seconds_until_due())))
+
+
 def client_alarms() -> None:
     """Alarm-Schwelle für Client-Uhren (clients_alarm_ms) prüfen – Ereignis „clients“."""
     try:
@@ -324,7 +442,12 @@ def client_alarms() -> None:
         # Titel nur mit der Adresse (egress pseudonymisiert sie): Ein eigener Name im gespeicherten
         # Titel bliebe nach Umbenennen/Löschen 90 Tage stehen und ginge dann ungefiltert hinaus.
         # Den Namen setzt erst die Anzeige ein (/api/events → display_title).
-        STATE_WATCH.clients(clientmon.status()["clients"], threshold, fmt=clientinfo.fmt_offset)
+        # 1.5: Geräte mit eigener Schwelle prüft clients3 (Regeln je Gerät); stumme bleiben lokal.
+        rule_map = clients3.rules()
+        STATE_WATCH.clients(clients3.global_alarm_filter(clientmon.status()["clients"], rule_map), threshold,
+                            fmt=clientinfo.fmt_offset,
+                            data_for=lambda ip: {"notify": False} if (rule_map.get(ip) or {}).get("mute") else {},
+                            handover=clients3.own_threshold_ips(rule_map))
     except Exception as exc:  # ein Alarm darf die Messung nie aufhalten
         print(f"[web] Alarm für Client-Uhren nicht geprüft: {exc}", flush=True)
 
@@ -603,7 +726,7 @@ def build_status() -> dict:
         "chrony_running": bool(tracking),
         "update": _update_status(),
         "config": {key: cfg[key] for key in (
-            "gps_enable", "gps_device", "gps_offset", "gps_delay", "gps_select", "gps_refid",
+            "gps_enable", "gps_device", "gps_offset", "gps_delay", "gps_select", "gps_refid", "gps_bound_mode",
             "gps_pps_device", "ptp_enable", "ptp_interface", "ptp_mode", "ptp_time_stamping",
             "ntp_minsources", "serve_unsynced", "allow_networks", "ntp_port", "phc2sys_enable",
             "phc_refclock")},
@@ -614,10 +737,18 @@ def build_status() -> dict:
             "reload": reload_status(),
         },
     }
+    # GPS-Seite: wirklich aktiver PPS-Refclock und der Delay, den chrony nutzt (gemessen/Standard).
+    status["config"]["gps_bound"] = gpsquality.status_hint(cfg)
+    # Übersicht: Rolle des GPS, Empfangsampel (24 h) und „unstet“ in einer Kurzfassung.
+    try:
+        status["gps_summary"] = gpsquality.overview(cfg, HISTORY, status["sources"], STATE_WATCH.gps_stability())
+    except Exception:
+        status["gps_summary"] = None
     leap_info = leap.status(cfg, tracking)
     status["leap"] = _leap_summary(leap_info)
     status["notify"] = _notify_summary()
     status["insights"] = combine_insights(insights.build(status, cfg),
+                                          loopguard.insights(LOOP_GUARD.loops()),
                                           insights.dns_insights(status["dns"], cfg, status["sources"],
                                                                 status["system"].get("addresses") or [],
                                                                 enforce.last_loops(),
@@ -626,7 +757,11 @@ def build_status() -> dict:
                                           service_insights(status["services"]),
                                           hardware.cached_insights(cfg),
                                           leap.insights(leap_info),
-                                          updatecheck.insights(status["update"]))
+                                          updatecheck.insights(status["update"]),
+                                          gpsquality.insights(status.get("gps_summary")),
+                                          gnssguard.insights(gnssguard.GUARD.status(cfg)),
+                                          holdover.insights(holdover.TEST.status()),
+                                          webtransport.WATCH.insights())
     return status
 
 
@@ -818,6 +953,7 @@ def build_metrics() -> str:
         _metric(lines, "ntpgui_gps_satellites_seen", gps_state.get("satellites_seen"), "Satellites in view")
         _metric(lines, "ntpgui_gps_hdop", gps_state.get("hdop"), "Horizontal dilution of precision")
         _metric(lines, "ntpgui_gps_snr_avg_db", gps_state.get("snr_avg"), "Average SNR of used satellites")
+        _gps15_metrics(lines)
 
     ptp_state = ptp.status()
     if ptp_state.get("enabled"):
@@ -864,8 +1000,51 @@ def build_metrics() -> str:
         _metric(lines, "ntpgui_update_check_last_success_timestamp_seconds", upd.get("last_success"),
                 "Unix time of the last successful update check")
 
+    loops = LOOP_GUARD.loops()
+    _metric(lines, "ntpgui_source_loops", len(loops),
+            "Own time sources that point back to ntp-gui (DNS rewrite / NAT redirect without exception)")
+    try:
+        running = 1 if holdover.TEST.state().get("active") else 0
+    except Exception:
+        running = None
+    _metric(lines, "ntpgui_holdover_test_running", running,
+            "1 while a holdover test runs (sources deselected on purpose, clients get less accurate time)")
     _hardware_metrics(lines)
     return "\n".join(lines) + "\n"
+
+
+GNSS_STAGE_VALUE = {"ok": 0, "hinweis": 1, "warnung": 2, "stoerung": 3}
+RECEPTION_VALUE = {"green": 0, "yellow": 1, "red": 2}
+
+
+def _gps15_metrics(lines: list[str]) -> None:
+    """1.5: Fehlerschranke ohne PPS, Empfangsampel, „unstet“, GNSS-Stufe und GPS-Sperre."""
+    cfg = settings.values()
+    try:
+        hint = gpsquality.status_hint(cfg)
+        delay = hint.get("delay")
+        _metric(lines, "ntpgui_gps_error_bound_seconds", delay / 2 if isinstance(delay, (int, float)) else None,
+                "Error bound chrony assumes for the GPS refclock (delay/2; measured spread without PPS)")
+    except Exception:
+        pass
+    try:
+        summary = gpsquality.overview(cfg, HISTORY, None, STATE_WATCH.gps_stability()) or {}
+        _metric(lines, "ntpgui_gps_reception_level", RECEPTION_VALUE.get(summary.get("level")),
+                "GPS reception over 24 h: 0 good, 1 moderate, 2 weak (absent while unknown)")
+        _metric(lines, "ntpgui_gps_unstable", 1 if summary.get("stability") == "unstet" else 0,
+                "1 while the GPS fix flaps (state unstet)")
+    except Exception:
+        pass
+    try:
+        with gnssguard.GUARD.lock:
+            stage = gnssguard.GUARD.stage
+            locked = gnssguard.GUARD.lock_status().get("locked")
+        _metric(lines, "ntpgui_gnss_stage", GNSS_STAGE_VALUE.get(stage),
+                "GNSS interference detection: 0 normal, 1 hint, 2 warning, 3 disturbance")
+        _metric(lines, "ntpgui_gps_locked", 1 if locked else 0,
+                "1 while ntp-gui keeps the GPS deselected (chronyc selectopts +noselect)")
+    except Exception:
+        pass
 
 
 def _hardware_metrics(lines: list[str]) -> None:
@@ -1012,6 +1191,27 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt: str, *args) -> None:
         if env_flag("WEB_ACCESS_LOG"):
             super().log_message(fmt, *args)
+
+    def _transport(self) -> dict:
+        """Echte Gegenstelle und Protokoll – Proxy-Köpfe nur von TRUSTED_PROXIES (webtransport)."""
+        try:
+            trusted = webtransport.parse_networks(settings.values().get("trusted_proxies"))
+        except Exception:
+            trusted = []
+        return webtransport.resolve(self.client_address[0] if self.client_address else "", self.headers, trusted)
+
+    def address_string(self) -> str:
+        # Zugriffsprotokoll: hinter einem eingetragenen Proxy die Adresse des Browsers.
+        try:
+            return self._transport()["client"]
+        except Exception:
+            return super().address_string()
+
+    def _note_transport(self, ident: dict) -> None:
+        try:
+            webtransport.WATCH.note(self._transport(), ident.get("kind"))
+        except Exception:
+            pass  # nur für einen Hinweis – nie eine Anfrage daran scheitern lassen
 
     def _send(self, status: HTTPStatus, body: bytes, content_type: str, extra_headers: dict | None = None) -> None:
         self.send_response(status)
@@ -1206,6 +1406,7 @@ class Handler(BaseHTTPRequestHandler):
             self._deny_scope(ident, "GET", path)
             return
         self._ident = ident
+        self._note_transport(ident)
         try:
             if index:
                 self._send_json(apiv1.describe())
@@ -1286,10 +1487,22 @@ class Handler(BaseHTTPRequestHandler):
             # Ohne window die letzten 24 h: über 30 Tage SQLite-Verlauf dauert es sonst Sekunden.
             window = env_like(query.get("window", query.get("seconds")), CALIBRATION_DEFAULT_WINDOW)
             since = time.time() - window if window > 0 else None
-            self._send_json(historymod.calibrate(HISTORY.snapshot(since), cfg["gps_refid"],
-                                                 float(cfg["gps_offset"]), float(cfg["gps_delay"])))
+            result = historymod.calibrate(HISTORY.snapshot(since), cfg["gps_refid"],
+                                          float(cfg["gps_offset"]), float(cfg["gps_delay"]))
+            # Im Modus „gemessen“ gilt nicht gps_delay, sondern die gemessene Schranke.
+            self._send_json(gpsquality.annotate_calibration(result, cfg))
         elif path == "/api/gps/autocal":
             self._send_json(autocal.api_status(settings.values(), fresh=query.get("fresh") != "0"))
+        elif path == "/api/gps/quality":
+            cfg = settings.values()
+            sources = chrony.detailed_sources() if cfg.get("gps_enable") else None
+            self._send_json(gpsquality.api_status(cfg, HISTORY, sources, STATE_WATCH.gps_stability()))
+        elif path == "/api/gps/antenna":
+            self._send_json(gpsquality.antenna_status(query.get("a"), query.get("b")))
+        elif path == "/api/gnss":
+            self._send_json(gnssguard.GUARD.status(settings.values()))
+        elif path == "/api/holdover":
+            self._send_json(holdover.api_status())
         elif path == "/api/events":
             limit = int(env_like(query.get("limit"), 500))
             since = env_like(query.get("since"), 0.0) or None
@@ -1328,7 +1541,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(enforce.api_snippets(query, settings.values()))
         elif path == "/api/enforce/check":
             cfg = settings.values()
-            self._send_json(enforce.api_check(query, cfg, system_info(cfg)["addresses"], chrony.tracking()))
+            self._send_json(enforce.api_check(query, cfg, system_info(cfg)["addresses"], chrony.tracking(),
+                                              dnsfwd.api_status(cfg)))
+        elif path == "/api/loops":
+            self._send_json(LOOP_GUARD.status())
         elif path == "/api/dns":
             self._send_json(dnsfwd.api_status(settings.values()))
         elif path == "/api/clients/offsets":
@@ -1348,7 +1564,41 @@ class Handler(BaseHTTPRequestHandler):
             if result is None:
                 self._error(HTTPStatus.NOT_FOUND, "Dieses Gerät ist (noch) nicht bekannt.")
                 return
+            try:
+                result.update(clients3.detail_extras(result["address"], result, settings.values()))
+            except Exception as exc:  # noqa: BLE001 – Clients 3 ist ein Zusatz zur Detailseite
+                print(f"[web] Uhrgüte/Regeln für die Detailseite fehlgeschlagen: {exc}", flush=True)
             self._send_json(result)
+        elif path == "/api/clients/groups":
+            status = clientmon.status()
+            # Wie Detailseite und Uhrgüte: private Einträge (MAC, Kopffelder) – sonst fiele die
+            # Software-Vermutung schwächer aus als auf der Detailseite. Ohne Messung: gespeicherter Stand.
+            snap = clientmon.private_snapshot()
+            self._send_json(clients3.view(snap, str(query.get("by") or "group"), clientinfo.all_meta(),
+                                          clients3.rules(), clients3.quality_all(), now=time.time(),
+                                          monitor_since=status.get("since"), running=bool(status.get("running"))))
+        elif path == "/api/clients/quality":
+            self._send_json(clients3.quality_overview(clients3.quality_all()))
+        elif path == "/api/clients/rules":
+            self._send_json({"rules": {ip: clients3.public_rule(r) for ip, r in clients3.rules().items()},
+                             "inventory": clients3.INVENTORY.status()})
+        elif path == "/api/clients/pass":
+            addr = clientinfo.clean_ip(query.get("ip"))
+            if addr is None:
+                self._error(HTTPStatus.BAD_REQUEST, "Ungültige IP-Adresse.")
+                return
+            cfg = settings.values()
+            data = clients3.device_pass(addr, cfg)
+            if data is None:
+                self._error(HTTPStatus.NOT_FOUND, "Dieses Gerät ist (noch) nicht bekannt.")
+                return
+            if str(query.get("share") or "") == "1":
+                try:
+                    self._send_json(clients3.shared_pass(data, cfg))
+                except clients3.PassLeak as exc:
+                    self._error(HTTPStatus.CONFLICT, str(exc))
+                return
+            self._send_json(data)
         elif path == "/api/notify":
             self._send_json(notify.api_config())
         elif path == "/api/notify/status":
@@ -1413,6 +1663,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if not self._host_ok(ident):
             return
+        self._note_transport(ident)
         if index:
             self._error(HTTPStatus.METHOD_NOT_ALLOWED, "GET /api/v1 beschreibt die API; hier gibt es nichts zu senden")
             return
@@ -1441,6 +1692,10 @@ class Handler(BaseHTTPRequestHandler):
             self._error(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
 
     def _after_change(self, result: dict) -> dict:
+        changed = result.get("changed")
+        if isinstance(changed, (list, dict, set, tuple)) and "trusted_proxies" in changed:
+            # Neue Proxy-Liste gilt sofort – alte HTTPS-Hinweise beruhten auf der alten.
+            webtransport.WATCH.reset()
         reloaded = trigger_reload() if result.get("restart") else False
         result["reload_triggered"] = reloaded
         if result.get("restart") and not reloaded:
@@ -1500,6 +1755,26 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(autocal.rollback(data.get("steps", 1), cfg=settings.values()))
             except autocal.AutocalError as exc:
                 self._error(HTTPStatus.CONFLICT, str(exc))
+        elif path in {"/api/gps/antenna", "/api/gps/bound"}:
+            try:
+                if path == "/api/gps/antenna":
+                    self._send_json(gpsquality.antenna_action(data))
+                elif data.get("action") == "reset":
+                    self._send_json(gpsquality.reset(settings.values()))
+                else:
+                    self._error(HTTPStatus.BAD_REQUEST, "action muss „reset“ sein")
+            except gpsquality.QualityError as exc:
+                self._error(HTTPStatus.CONFLICT if exc.conflict else HTTPStatus.BAD_REQUEST, str(exc))
+        elif path == "/api/gnss":
+            try:
+                self._send_json(gnssguard.GUARD.action(settings.values(), data))
+            except gnssguard.GuardError as exc:
+                self._error(HTTPStatus.CONFLICT if exc.conflict else HTTPStatus.BAD_REQUEST, str(exc))
+        elif path == "/api/holdover":
+            try:
+                self._send_json(holdover.action(data))
+            except holdover.HoldoverError as exc:
+                self._error(HTTPStatus.CONFLICT if exc.conflict else HTTPStatus.BAD_REQUEST, str(exc))
         elif path == "/api/recording":
             action = "stop" if data.get("stop") else str(data.get("action", "start"))
             if action == "stop":
@@ -1529,6 +1804,19 @@ class Handler(BaseHTTPRequestHandler):
             except clientinfo.ProbeLimited as exc:
                 self._error(HTTPStatus.TOO_MANY_REQUESTS, str(exc), retry_after=round(exc.retry_after))
             except clientinfo.MetaError as exc:
+                self._error(HTTPStatus.UNPROCESSABLE_ENTITY, str(exc))
+        elif path in ("/api/clients/groups", "/api/clients/groups/delete", "/api/clients/rules"):
+            try:
+                if path == "/api/clients/groups":
+                    self._send_json(clients3.save_group(data))
+                elif path == "/api/clients/groups/delete":
+                    if not clients3.delete_group(data.get("id")):
+                        self._error(HTTPStatus.NOT_FOUND, "Diese Gruppe gibt es nicht (mehr).")
+                        return
+                    self._send_json({"ok": True})
+                else:
+                    self._send_json(clients3.save_rule(data.get("ip"), data, emit=events.emit))
+            except clients3.Clients3Error as exc:
                 self._error(HTTPStatus.UNPROCESSABLE_ENTITY, str(exc))
         elif path == "/api/notify/channels":
             try:
@@ -1581,6 +1869,18 @@ def env_like(raw, default: float) -> float:
         return default
 
 
+class QuietHTTPServer(ThreadingHTTPServer):
+    """Browser, die eine Verbindung mittendrin abbrechen (Tab zu, Reload, Handy im Standby),
+    sind Alltag und kein Fehler. Ohne das hier schreibt socketserver für jeden Abbruch einen
+    vollständigen Traceback ins Log – mehrere Threads gleichzeitig und ineinander verschränkt."""
+
+    def handle_error(self, request, client_address):
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (ConnectionResetError, BrokenPipeError, ConnectionAbortedError, TimeoutError)):
+            return
+        super().handle_error(request, client_address)
+
+
 def main() -> None:
     port = env_number("WEB_PORT", 8080, int, minimum=1)
     bind = os.environ.get("WEB_BIND", "0.0.0.0")
@@ -1589,8 +1889,12 @@ def main() -> None:
               "das Dashboard läuft ohne Authentifizierung.", flush=True)
 
     autocal.configure(history=HISTORY, trigger_reload=trigger_reload)
+    gpsquality.configure(history=HISTORY, trigger_reload=trigger_reload)
     threading.Thread(target=collector, daemon=True, name="collector").start()
+    threading.Thread(target=loop_guard_runner, daemon=True, name="loopguard").start()
     threading.Thread(target=hardware_refresher, daemon=True, name="hardware").start()
+    # 1.5: GNSS-Störungen, GPS-Sperre und Holdover-Test im festen 10-s-Takt (eigener Thread).
+    threading.Thread(target=gnssguard.run, args=(settings.values,), daemon=True, name="gnssguard").start()
     threading.Thread(target=events_ingester, daemon=True, name="events").start()
     notify.start(VERSION)  # eigener Thread je Kanal; ohne angelegte Kanäle geht nichts hinaus
     updatecheck.start(VERSION)  # opt-in; ausgeschaltet keine Anfrage nach außen
@@ -1607,7 +1911,7 @@ def main() -> None:
     signal.signal(signal.SIGTERM, save_and_exit)
 
     try:
-        server = ThreadingHTTPServer((bind, port), Handler)
+        server = QuietHTTPServer((bind, port), Handler)
     except OSError as exc:
         raise SystemExit(f"[web] Port {bind}:{port} nicht verfügbar ({exc}). "
                          f"WEB_PORT anpassen oder den belegenden Dienst beenden.")

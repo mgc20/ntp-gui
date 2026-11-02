@@ -1,5 +1,6 @@
 import { el, rich, apiPost, apiGet } from "../util.js";
 import { card, info, badge, kv, emptyNote, toast, copyButton, isPopoverOpen } from "../ui.js";
+import { t, has, language, setLanguage, LANGUAGES } from "../i18n.js";
 
 export const live = false; // nicht bei jedem Refresh neu aufbauen – Eingaben bleiben stehen
 
@@ -28,13 +29,29 @@ export const FIELD_HELP = {
   ptp_clock_class: "clock_class", phc2sys_enable: "phc2sys", phc_refclock: "phc",
   gps_autocal: "autocal_mode", gps_autocal_max_step_ms: "autocal_step", gps_autocal_min_hours: "autocal_window",
   clientmon_enable: "clientmon", clients_alarm_ms: "clients_alarm", clients_rdns: "client_rdns",
+  clients_new_device_alarm: "clients_new_device", notify_lan_addresses: "notify_lan_addresses",
   web_title: "web_title", web_refresh_seconds: "web_refresh", history_interval: "history_interval",
   notify_dashboard_url: "notify_link",
   temp_sensor: "temp_sensor", clock_public: "clock_public", update_check: "update_check",
+  trusted_proxies: "trusted_proxies",
   dns_mode: "dns_modes", dns_servers: "dns_upstreams", dns_dot: "dns_modes", dns_doh: "dns_modes",
   dns_pin: "dns_pin", dns_fallback: "dns_fallback",
   gps_device: "hw_device_path", allow_networks: "allow_networks", gps_show_position: "gps_show_position",
 };
+
+// Sprache des Dashboards: keine Server-Einstellung, sondern je Browser (i18n.js, localStorage).
+function languageRow() {
+  const select = el("select", { id: "f-ui-language" }, LANGUAGES.map((l) =>
+    el("option", { value: l.code, selected: l.code === language() ? true : null, text: l.label })));
+  select.addEventListener("change", () => { setLanguage(select.value); });
+  return el("div", { class: "fields" }, el("div", { class: "field", id: "row-ui-language" },
+    el("div", { class: "field-head" },
+      el("span", { class: "field-label" }, el("label", { for: "f-ui-language", text: t("settings.language.label") }), " ",
+        info("ui_language", t("settings.language.label"))),
+      el("span", { class: "field-meta" }, badge("Browser", "muted"))),
+    select,
+    el("p", { class: "field-help", text: t("settings.language.note") })));
+}
 
 function fmtDate(unix) {
   return typeof unix === "number" && Number.isFinite(unix)
@@ -220,11 +237,16 @@ function dnsStatus(dns) {
       : (dns.fallback_servers || []).length ? `an (${dns.fallback_servers.join(", ")})` : "an – kein System-DNS bekannt", "dns_fallback"] : null,
     dns.running ? ["Anfragen", `${stats.queries ?? 0} · Cache ${stats.cache_hits ?? 0} · Rückfall ${stats.fallback ?? 0}`
       + ` · ohne Antwort ${stats.servfail ?? 0}`, "dns_counts"] : null,
+    dns.effective_mode !== "system" && dns.running ? ["Letzte erfolgreiche Auflösung",
+      typeof dns.last_success === "number" ? fmtAgo(dns.last_success) : "noch keine", "dns_last_ok"] : null,
+    dns.effective_mode !== "system" && dns.running ? ["Erreichbar", `${dns.reachable ?? 0} von ${ups.length} Servern`
+      + (typeof stats.health_last === "number" ? ` · zuletzt geprüft ${fmtAgo(stats.health_last)}` : ""), "dns_reachable"] : null,
   ];
   return el("div", { class: "dns-status" },
     kv(rows),
     dns.error ? el("p", { class: "field-error", role: "alert", text: dns.error }) : null,
     (dns.warnings || []).map((w) => el("p", { class: "field-error", text: w })),
+    dns.nts_note ? el("p", { class: "card-sub" }, el("span", { text: dns.nts_note }), info("dns_nts", "NTS und DNS")) : null,
     ups.length ? el("div", {},
       el("h3", { class: "mini-head" }, "Eigene Server ", info("dns_upstreams", "Eigene Server")),
       el("ul", { class: "svc-list" }, ups.map((u) => {
@@ -444,9 +466,14 @@ export function render(ctx) {
     const toggle = advancedCount ? el("button", { type: "button", class: "link", text: showAdv ? "Weniger anzeigen" : `Erweitert (${advancedCount})`,
       "aria-expanded": showAdv ? "true" : "false", onclick: () => { ui.showAdvanced[section.key] = !showAdv; ctx.rerender(); } }) : null;
     const helpKey = { ntp: "minsources", lan: "island", nts: "nts", dns: "dns", gps: "gps_value", ptp: "ptp_requirements", web: "settings_source" }[section.key];
-    out.push(card(section.label, { id: `s-${section.key}`, help: helpKey, sub: section.description, actions: toggle },
+    // Titel und Beschreibung aus dem Sprachkatalog; unbekannte Abschnitte behalten den Servertext.
+    const titleKey = `settings.section.${section.key}.title`;
+    const descKey = `settings.section.${section.key}.description`;
+    out.push(card(has(titleKey) ? t(titleKey) : section.label, { id: `s-${section.key}`, help: helpKey,
+      sub: has(descKey) ? t(descKey) : section.description, actions: toggle },
       section.key === "dns" ? dnsStatus(dns) : null,
       section.key === "web" ? updateStatus(update) : null,
+      section.key === "web" ? languageRow() : null,
       el("div", { class: "fields" }, visible.map(fieldRow))));
   }
 
