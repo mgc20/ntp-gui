@@ -104,6 +104,10 @@ Erst ein schlankes 1.5.0 ✅, dann kurze 1.5.x-Releases (Entscheidung E15).
 - **Schwellen aus echten Daten nachschärfen:** Empfangsampel und „unstet“ (bisher aus einem
   VK-162 drinnen und synthetischen Tagen), GNSS-Störungsschwellen gegen echte
   Jamming-/Spoofing-Aufzeichnungen, Mindest-Schranke ± 10 ms für NMEA.
+- **Aus der Abschlussprüfung 1.5.0:** eine von Hand gesetzte GPS-Sperre ohne verbleibende
+  andere Quelle nach einigen Stunden kritisch melden bzw. lösen; Hilfetext „Empfänger umgezogen →
+  Position neu lernen“; Warnung bei `TRUSTED_PROXIES` breiter als /24; Holdover-Frist auf die
+  monotone Uhr umstellen.
 - **Optional:** AdGuard-Home-API lesen (eigener Ausgangs-Zweck, opt-in), Empfangsbewertung und
   Client-Gruppen ins Diagnosepaket (gefiltert).
 - **1.5.2+:** Temperaturausgleich anwenden mit 24-h-Probelauf (braucht Daten aus 1.5.1),

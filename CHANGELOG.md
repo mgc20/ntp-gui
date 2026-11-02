@@ -22,6 +22,11 @@ Reverse Proxy und ein Gerüst für Englisch.
   immer eine Pseudo-Adresse. Die LAN-Adresse kommt nur mit der neuen Einstellung „LAN-Adressen
   in Nachrichten“ (`NOTIFY_LAN_ADDRESSES`, Standard aus) dazu; öffentliche Adressen und
   MAC-Adressen gehen nie hinaus.
+- **Zwei neue Hintergrundabfragen, beide nur an Server, die du selbst eingetragen hast:** Der
+  DNS-Gesundheitscheck fragt deine eigenen DNS-Server alle 15 Minuten einmal an (nur in den
+  Modi „eigene Server“, DoT und DoH). Die Schleifenerkennung schickt höchstens alle 5 Minuten je
+  Adresse eine eigene NTP-Anfrage an eine eingetragene Zeitquelle. Fremde Dienste werden dabei
+  nicht kontaktiert.
 
 ### Hinzugefügt
 
