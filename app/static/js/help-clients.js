@@ -116,7 +116,11 @@ export const HELP_CLIENTS = {
     title: "Selbsttest auf einem Gerät",
     text: "Auf einem Gerät im LAN einen **öffentlichen** Zeitserver abfragen und Stratum und "
       + "Referenz-ID der Antwort mit diesem Server vergleichen. Stimmen beide überein, hat die "
-      + "Umleitung gegriffen. Zusätzlich taucht das Gerät dann in der Client-Liste oben auf.",
+      + "Umleitung gegriffen. Zusätzlich taucht das Gerät dann in der Client-Liste oben auf. "
+      + "Hast du DNS-Umschreibung **und** Firewall-Umleitung, teste beide getrennt: per **Name** "
+      + "(time.google.com) greift schon der DNS – die Firewall-Regel prüfst du nur **per IP-Adresse** "
+      + "(216.239.35.0 gehört zu time.google.com). Antwortet die IP gar nicht, das Gerät steht aber "
+      + "in der Client-Liste, ist es das Hairpin-Problem.",
   },
 };
 

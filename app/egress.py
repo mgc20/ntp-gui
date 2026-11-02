@@ -44,6 +44,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import re
+import sys
 import threading
 from typing import Any
 
@@ -702,6 +703,65 @@ def _refid_harmless(hex8: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
+# Einzelne Zahl oder UTC-Zeitstempel (gpsd "time", Aufzeichnung) – die allgemeinen Regeln des
+# Filters ändern sie nie (test_diagnostics prüft das gegen den vollen Filter). Bekannte Werte aus
+# der Konfiguration (eine rein numerische Seriennummer, ein Hostname „4711“) können aber genau so
+# aussehen – deshalb gilt der Schnellweg nur, wenn keins dieser Muster trifft (Sanitizer._plain).
+_PLAIN_SAFE_RE = re.compile(r"[-+]?\d{1,11}(?:\.\d{1,11})?(?:[eE][-+]?\d{1,3})?"
+                            r"|\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z")
+PLAIN_CACHE_SIZE = 200_000     # Zeilen je Filterlauf
+PLAIN_CACHE_MAX_LINE = 8192    # längere Zeilen werden nicht zwischengespeichert
+PLAIN_CACHE_BYTES = 16 * 1024 * 1024   # Speicher je Filterlauf (Raspberry Pi)
+
+
+class LineMemo:
+    """Zwischenspeicher für Ergebnisse je Zeile, nach Speicher begrenzt.
+
+    Ist die Grenze erreicht, wird einfach nichts Neues mehr gemerkt – das Ergebnis ist mit
+    und ohne Eintrag dasselbe, nur langsamer. Größe grob: Schlüssel (wie Python ihn ablegt,
+    nicht-Latin-1-Text also bis 4 Byte je Zeichen) plus Wert.
+    """
+
+    def __init__(self, max_bytes: int, max_key_chars: int = PLAIN_CACHE_MAX_LINE,
+                 max_entries: int | None = None) -> None:
+        self.max_bytes = max_bytes
+        self.max_key_chars = max_key_chars
+        self.max_entries = max_entries
+        self.bytes = 0
+        self._data: dict = {}
+        self._lock = threading.Lock()
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+    def get(self, key: str):
+        return self._data.get(key)
+
+    def put(self, key: str, value, value_bytes: int = 0) -> None:
+        if len(key) > self.max_key_chars:
+            return
+        size = sys.getsizeof(key) + 64 + value_bytes
+        with self._lock:
+            if key in self._data or self.bytes + size > self.max_bytes:
+                return
+            if self.max_entries is not None and len(self._data) >= self.max_entries:
+                return
+            self._data[key] = value
+            self.bytes += size
+
+    def clear(self) -> None:
+        with self._lock:
+            self._data.clear()
+            self.bytes = 0
+
+
+def _tuple_bytes(value) -> int:
+    """Grobe Größe eines (verschachtelten) Tupels aus Strings für LineMemo."""
+    if isinstance(value, tuple):
+        return sys.getsizeof(value) + sum(_tuple_bytes(v) for v in value)
+    return sys.getsizeof(value)
+
+
 class Sanitizer:
     """Ein Filterlauf: Pseudonyme bleiben über alle Abschnitte eines Exports stabil."""
 
@@ -717,6 +777,9 @@ class Sanitizer:
         self._clock_ids: dict[str, str] = {}
         self._ifaces: dict[str, str] = {}
         self._lock = threading.RLock()
+        # Gleiche Zeilen kommen in Aufzeichnungen tausendfach vor („Leap status : Normal“).
+        # Das Ergebnis hängt nur von der Zeile und den (stabilen) Pseudonymen ab.
+        self._plain_cache = LineMemo(PLAIN_CACHE_BYTES, PLAIN_CACHE_MAX_LINE, PLAIN_CACHE_SIZE)
         known = dict(known or {})
         all_names = list(known_names) + list(known.pop("hostname", []) or [])
         names = sorted({str(n).strip().rstrip(".") for n in all_names if n and len(str(n).strip()) >= 3
@@ -835,6 +898,25 @@ class Sanitizer:
         return pattern.sub(wrapped, text)
 
     def _plain(self, s: str) -> str:
+        if (_PLAIN_SAFE_RE.fullmatch(s)  # Zahl oder ISO-Zeitstempel: nichts zu filtern …
+                and not (self._tokens_re is not None and self._tokens_re.search(s))
+                and not (self._names_re is not None and self._names_re.search(s))):
+            return s  # … außer sie ist selbst ein bekannter Wert oder Name
+        if len(s) > PLAIN_CACHE_MAX_LINE:
+            return self._plain_uncached(s)
+        hit = self._plain_cache.get(s)
+        if hit is not None:
+            out, delta = hit
+            for category, n in delta:  # Zählung wie beim ersten Mal (MANIFEST)
+                self.count(category, n)
+            return out
+        before = dict(self.removed)
+        out = self._plain_uncached(s)
+        delta = tuple((k, v - before.get(k, 0)) for k, v in self.removed.items() if v != before.get(k, 0))
+        self._plain_cache.put(s, (out, delta), sys.getsizeof(out) + 64 * len(delta))
+        return out
+
+    def _plain_uncached(self, s: str) -> str:
         s = s.translate(_DOTS)
         s = self._sub(_NMEA_RE, "position", lambda m: m.group(0).split(",", 1)[0] + "," + REMOVED, s)
         if self._tokens_re is not None:  # Titel, Seriennummern, Interface-Namen aus der Konfiguration
@@ -1541,7 +1623,37 @@ def _finding(kind: str, path: str, text: str) -> dict:
     return {"kind": kind, "path": path or "$", "text": text[:80]}
 
 
+# Gleiche Zeilen prüft check_no_leaks nur einmal (Aufzeichnungen und Logs durchlaufen die
+# Prüfung mehrfach). Die Funde hängen nur von der Zeile ab – Pfade werden je Aufruf neu gesetzt.
+# Nach Speicher begrenzt; diagnostics leert die Speicher nach jedem Paket (clear_check_caches).
+CHECK_CACHE_BYTES = 8 * 1024 * 1024
+JSON_CACHE_MAX_LINE = 64 * 1024     # längere JSON-Zeilen werden jedes Mal neu geprüft
+_TEXT_MEMO = LineMemo(CHECK_CACHE_BYTES, PLAIN_CACHE_MAX_LINE)
+_JSON_MEMO = LineMemo(CHECK_CACHE_BYTES, JSON_CACHE_MAX_LINE)
+_NOT_OBJECT = object()  # Merker im Zwischenspeicher: Zeile ist kein JSON-Objekt
+
+
+def clear_check_caches() -> None:
+    _TEXT_MEMO.clear()
+    _JSON_MEMO.clear()
+
+
 def _text_findings(text: str, path: str) -> list[dict]:
+    if len(text) > PLAIN_CACHE_MAX_LINE:
+        return _text_findings_uncached(text, path)
+    return [{"kind": kind, "path": path or "$", "text": snippet}
+            for kind, snippet in _text_findings_cached(text)]
+
+
+def _text_findings_cached(text: str) -> tuple:
+    hit = _TEXT_MEMO.get(text)
+    if hit is None:
+        hit = tuple((f["kind"], f["text"]) for f in _text_findings_uncached(text, ""))
+        _TEXT_MEMO.put(text, hit, _tuple_bytes(hit))
+    return hit
+
+
+def _text_findings_uncached(text: str, path: str) -> list[dict]:
     found = []
     for pattern, kind in ((_COORD_NMEA_RE, "position"), (_COORD_DMS_RE, "position"),
                           (_COORD_DEG_RE, "position"), (_NMEA_RE, "position"),
@@ -1655,28 +1767,57 @@ def _walk(value: Any, path: str, found: list[dict], parent_gps: bool = False) ->
             _walk(sub, f"{path}[{i}]", found, parent_gps)
     elif isinstance(value, str):
         for number, line in enumerate(value.split("\n"), 1):  # wie der Filter: zeilenweise
-            parsed = _json_line(line)
-            if parsed is not None:
-                # JSON-Zeile (Aufzeichnung, gpsd): wie Sanitizer._line geparst prüfen – sonst
-                # stünden die Zeilen eines eingebetteten chronyc-Texts auf einer Zeile.
-                sub_path = f"{path} Zeile {number}" if path else f"Zeile {number}"
-                before = len(found)
-                _walk(parsed, sub_path, found)
-                if len(found) == before:
-                    found.extend(_struct_probe(parsed, sub_path))
-                continue
-            found.extend(_text_findings(line, path))
+            # JSON-Zeile (Aufzeichnung, gpsd): wie Sanitizer._line geparst prüfen – sonst
+            # stünden die Zeilen eines eingebetteten chronyc-Texts auf einer Zeile.
+            hits = _json_line_findings(line, f"{path} Zeile {number}" if path else f"Zeile {number}",
+                                       max_len=1_000_000)  # wie Sanitizer._line
+            if hits is None:
+                found.extend(_text_findings(line, path))
+            else:
+                found.extend(hits)
 
 
-def _json_line(line: str) -> dict | None:
+_ROOT = "\0"  # Platzhalter-Pfad für zwischengespeicherte Funde
+
+
+def _json_line_findings(line: str, sub_path: str, max_len: int | None = None) -> list[dict] | None:
+    """Funde einer JSON-Objekt-Zeile (None: keine solche Zeile). Gleiche Zeilen werden nur
+    einmal geprüft – Aufzeichnungen durchlaufen die Prüfung sonst mehrfach komplett.
+
+    max_len: längere Zeilen gelten als Text (wie in _walk/Sanitizer._line). check_no_leaks auf
+    einem Text setzt keine Grenze – dort wird jede JSON-Zeile geparst, egal wie lang."""
     stripped = line.strip()
-    if not (stripped.startswith("{") and stripped.endswith("}")) or len(stripped) >= 1_000_000:
+    if not (stripped.startswith("{") and stripped.endswith("}")):
         return None
+    if max_len is not None and len(stripped) >= max_len:
+        return None
+    if len(stripped) > JSON_CACHE_MAX_LINE:
+        hits = _json_line_findings_uncached(stripped)
+    else:
+        hits = _JSON_MEMO.get(stripped)
+        if hits is None:
+            hits = _json_line_findings_uncached(stripped)
+            _JSON_MEMO.put(stripped, _NOT_OBJECT if hits is None else hits, _tuple_bytes(hits or ()))
+        elif hits is _NOT_OBJECT:
+            hits = None
+    if hits is None:
+        return None
+    return [{"kind": kind, "path": sub_path + where[len(_ROOT):] if where.startswith(_ROOT) else where,
+             "text": text} for kind, where, text in hits]
+
+
+def _json_line_findings_uncached(stripped: str) -> tuple | None:
     try:
         parsed = json.loads(stripped)
     except ValueError:
         return None
-    return parsed if isinstance(parsed, dict) else None
+    if not isinstance(parsed, dict):
+        return None
+    found: list[dict] = []
+    _walk(parsed, _ROOT, found)
+    if not found:
+        found.extend(_struct_probe(parsed, _ROOT))
+    return tuple((f["kind"], f["path"], f["text"]) for f in found)
 
 
 def check_no_leaks(obj_or_text: Any) -> list[dict]:
@@ -1691,19 +1832,11 @@ def check_no_leaks(obj_or_text: Any) -> list[dict]:
         obj_or_text = obj_or_text.decode("utf-8", errors="replace")
     if isinstance(obj_or_text, str):
         for number, line in enumerate(obj_or_text.split("\n"), 1):
-            stripped = line.strip()
-            if stripped.startswith("{") and stripped.endswith("}"):
-                try:
-                    parsed = json.loads(stripped)
-                except ValueError:
-                    parsed = None
-                if isinstance(parsed, dict):
-                    before = len(found)
-                    _walk(parsed, f"Zeile {number}", found)
-                    if len(found) == before:
-                        found.extend(_struct_probe(parsed, f"Zeile {number}"))
-                    continue
-            found.extend(_text_findings(line, f"Zeile {number}"))
+            hits = _json_line_findings(line, f"Zeile {number}")  # ohne Längengrenze: jede JSON-Zeile
+            if hits is None:
+                found.extend(_text_findings(line, f"Zeile {number}"))
+            else:
+                found.extend(hits)
         return found
     _walk(obj_or_text, "", found)
     if not found:
@@ -2017,7 +2150,7 @@ def backstop_compact_json(bytes_by_file: dict) -> list[dict]:
     return findings
 
 
-def backstop(bytes_by_file: dict, known: dict | None = None) -> list[dict]:
+def backstop(bytes_by_file: dict, known: dict | None = None, memo: "BackstopMemo | None" = None) -> list[dict]:
     """Unabhängige Schlussprüfung auf den fertigen Bytes. Leere Liste = sauber.
 
     Sucht (ohne die Muster des Filters):
@@ -2029,73 +2162,103 @@ def backstop(bytes_by_file: dict, known: dict | None = None) -> list[dict]:
         chrony-Laufzeiten;
       * von chronyc gekürzte IPv6-Adressen ("2a01:4f8:…>");
       * jeden Namen mit Punkt, der nicht auf der Positivliste steht.
+
+    memo: Zwischenspeicher für einen Exportlauf (gleiche Zeilen, gleiche bekannte Werte – die
+    Funde einer Zeile hängen nur von ihr und von known ab). Passt known nicht, wird er nicht benutzt.
     """
     patterns = _bs_known_res(known)
+    if memo is not None and memo.tag != _bs_known_tag(known):
+        memo = None
     findings: list[dict] = []
     for filename, data in (bytes_by_file or {}).items():
         text = data.decode("utf-8", errors="replace") if isinstance(data, (bytes, bytearray)) else str(data)
         for number, line in enumerate(text.split("\n"), 1):
-            where = f"{filename}: Zeile {number}"
-            line = line.translate(_BS_DOTS)
-            for pattern, kind in patterns:
-                for m in pattern.finditer(line):
-                    findings.append(_finding(kind, where, m.group(0)))
-            for m in _BS_HEX12.finditer(line):
-                if m.group(1).lower() not in BACKSTOP_ALLOWED_HEX:
-                    findings.append(_finding("hex12", where, m.group(0)))
-            for m in _BS_MAC_SEP.finditer(line):
-                digits = re.sub(r"[:-]", "", m.group(0))
-                if not int(digits[:2], 16) & 1 and digits.strip("0"):
-                    findings.append(_finding("mac", where, m.group(0)))
-            for hit in _bs_float_pairs(line) + _bs_ecef(line) + _bs_e7(line) + _bs_json_pairs(line):
-                findings.append(_finding("koordinaten", where, hit))
-            for m in _BS_HEXLONG.finditer(line):
-                findings.append(_finding("kennung", where, m.group(0)))
-            for pattern, kind in ((_BS_DMS, "koordinaten"), (_BS_NMEA_SENTENCE, "koordinaten"),
-                                  (_BS_SAT_ROW, "satellitenwinkel"), (_BS_SAT_LIST, "satellitenliste"),
-                                  (_BS_SERIAL, "seriennummer"), (_BS_TOKEN, "zugangsdaten")):
-                for m in pattern.finditer(line):
-                    findings.append(_finding(kind, where, m.group(0)))
-            for hit in _bs_delay(line):
-                findings.append(_finding("laufzeit", where, hit))
-            for segment in _bs_segments(line):
-                dn_parts = _BS_DN_PART.findall(segment)
-                if len(dn_parts) >= 2 and not any(ca in segment.lower() for ca in KNOWN_CAS):
-                    for m in _BS_DN_VALUE.finditer(segment):
-                        findings.append(_finding("zertifikat", where, m.group(0)))
-            for m in _BS_CLOCK_ID.finditer(line):
-                if re.search(r"[1-9a-fA-F]", m.group(0)):
-                    findings.append(_finding("uhr_id", where, m.group(0)))
-            for m in _BS_REFID_LABEL.finditer(line):
-                if not _refid_harmless(m.group(1)):
-                    findings.append(_finding("refid", where, m.group(0)))
-            for m in _BS_XY.finditer(line):
-                x, y = float(m.group(1).replace(",", ".")), float(m.group(2).replace(",", "."))
-                if ((abs(x) <= 180 and abs(y) <= 90) or (abs(x) <= 90 and abs(y) <= 180)) and max(abs(x), abs(y)) >= 1:
-                    findings.append(_finding("koordinaten", where, m.group(0)))
-            m = _BS_CSV_REFID.match(line)
-            if m and not _refid_harmless(m.group(1)):
-                findings.append(_finding("refid", where, m.group(0)))
-            for m in _BS_IP_DASHED.finditer(line):
-                octets = m.group(1).split("-")
-                if all(int(o) <= 255 and (o == "0" or not o.startswith("0")) for o in octets):
-                    if _ip_kind(".".join(octets)) in ("public", "private"):
-                        findings.append(_finding("ip", where, m.group(0)))
-            for m in _BS_NMEA.finditer(line):
-                findings.append(_finding("koordinaten", where, m.group(0)))
-            for pattern, kind in ((_BS_LABELLED, "koordinaten"), (_BS_ZONE, "zeitzone")):
-                for m in pattern.finditer(line):
-                    findings.append(_finding(kind, where, m.group(0)))
-            for m in _BS_TRUNC_V6.finditer(line):
-                if m.group(0).count(":") >= 3:
-                    findings.append(_finding("ipv6_gekuerzt", where, m.group(0)))
-            for m in _BS_DOTTED.finditer(line):
-                start = m.start()
-                before = line[start - 1] if start else ""
-                if before in "@-" and before or before.isalnum():
-                    continue
-                if before == "." and start >= 2 and (line[start - 2].isalnum() or line[start - 2] in "-_"):
-                    continue
-                if not _bs_dotted_allowed(m.group(0), before):
-                    findings.append(_finding("name_mit_punkt", where, m.group(0)))
+            hits = memo.get(line) if memo is not None else None
+            if hits is None:
+                hits = tuple(_bs_line(line, patterns))
+                if memo is not None:
+                    memo.put(line, hits, _tuple_bytes(hits))
+            if hits:
+                where = f"{filename}: Zeile {number}"
+                findings.extend(_finding(kind, where, hit) for kind, hit in hits)
     return findings
+
+
+def _bs_known_tag(known: dict | None) -> str:
+    return json.dumps(known or {}, sort_keys=True, ensure_ascii=False, default=str)
+
+
+class BackstopMemo(LineMemo):
+    """Zwischenspeicher für backstop() innerhalb eines Exports (gleiche bekannte Werte)."""
+
+    def __init__(self, known: dict | None, max_bytes: int = CHECK_CACHE_BYTES) -> None:
+        super().__init__(max_bytes, PLAIN_CACHE_MAX_LINE)
+        self.tag = _bs_known_tag(known)
+
+
+def _bs_line(line: str, patterns: list[tuple[re.Pattern, str]]) -> list[tuple[str, str]]:
+    """Funde einer Zeile als (Art, Text) – Text wie _finding auf 80 Zeichen gekürzt."""
+    hits: list[tuple[str, str]] = []
+    line = line.translate(_BS_DOTS)
+    for pattern, kind in patterns:
+        for m in pattern.finditer(line):
+            hits.append((kind, m.group(0)))
+    for m in _BS_HEX12.finditer(line):
+        if m.group(1).lower() not in BACKSTOP_ALLOWED_HEX:
+            hits.append(("hex12", m.group(0)))
+    for m in _BS_MAC_SEP.finditer(line):
+        digits = re.sub(r"[:-]", "", m.group(0))
+        if not int(digits[:2], 16) & 1 and digits.strip("0"):
+            hits.append(("mac", m.group(0)))
+    for hit in _bs_float_pairs(line) + _bs_ecef(line) + _bs_e7(line) + _bs_json_pairs(line):
+        hits.append(("koordinaten", hit))
+    for m in _BS_HEXLONG.finditer(line):
+        hits.append(("kennung", m.group(0)))
+    for pattern, kind in ((_BS_DMS, "koordinaten"), (_BS_NMEA_SENTENCE, "koordinaten"),
+                          (_BS_SAT_ROW, "satellitenwinkel"), (_BS_SAT_LIST, "satellitenliste"),
+                          (_BS_SERIAL, "seriennummer"), (_BS_TOKEN, "zugangsdaten")):
+        for m in pattern.finditer(line):
+            hits.append((kind, m.group(0)))
+    for hit in _bs_delay(line):
+        hits.append(("laufzeit", hit))
+    for segment in _bs_segments(line):
+        dn_parts = _BS_DN_PART.findall(segment)
+        if len(dn_parts) >= 2 and not any(ca in segment.lower() for ca in KNOWN_CAS):
+            for m in _BS_DN_VALUE.finditer(segment):
+                hits.append(("zertifikat", m.group(0)))
+    for m in _BS_CLOCK_ID.finditer(line):
+        if re.search(r"[1-9a-fA-F]", m.group(0)):
+            hits.append(("uhr_id", m.group(0)))
+    for m in _BS_REFID_LABEL.finditer(line):
+        if not _refid_harmless(m.group(1)):
+            hits.append(("refid", m.group(0)))
+    for m in _BS_XY.finditer(line):
+        x, y = float(m.group(1).replace(",", ".")), float(m.group(2).replace(",", "."))
+        if ((abs(x) <= 180 and abs(y) <= 90) or (abs(x) <= 90 and abs(y) <= 180)) and max(abs(x), abs(y)) >= 1:
+            hits.append(("koordinaten", m.group(0)))
+    m = _BS_CSV_REFID.match(line)
+    if m and not _refid_harmless(m.group(1)):
+        hits.append(("refid", m.group(0)))
+    for m in _BS_IP_DASHED.finditer(line):
+        octets = m.group(1).split("-")
+        if all(int(o) <= 255 and (o == "0" or not o.startswith("0")) for o in octets):
+            if _ip_kind(".".join(octets)) in ("public", "private"):
+                hits.append(("ip", m.group(0)))
+    for m in _BS_NMEA.finditer(line):
+        hits.append(("koordinaten", m.group(0)))
+    for pattern, kind in ((_BS_LABELLED, "koordinaten"), (_BS_ZONE, "zeitzone")):
+        for m in pattern.finditer(line):
+            hits.append((kind, m.group(0)))
+    for m in _BS_TRUNC_V6.finditer(line):
+        if m.group(0).count(":") >= 3:
+            hits.append(("ipv6_gekuerzt", m.group(0)))
+    for m in _BS_DOTTED.finditer(line):
+        start = m.start()
+        before = line[start - 1] if start else ""
+        if before in "@-" and before or before.isalnum():
+            continue
+        if before == "." and start >= 2 and (line[start - 2].isalnum() or line[start - 2] in "-_"):
+            continue
+        if not _bs_dotted_allowed(m.group(0), before):
+            hits.append(("name_mit_punkt", m.group(0)))
+    return [(kind, text[:80]) for kind, text in hits]

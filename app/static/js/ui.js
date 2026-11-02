@@ -69,12 +69,14 @@ export function card(title, options = {}, ...children) {
     head, options.sub ? el("p", { class: "card-sub" }, rich(options.sub)) : null, ...children);
 }
 
-export function tile({ label, value, unit, note, tone = "muted", help, long }) {
-  return el("div", { class: "stat", "data-tone": tone },
+// spark: optionaler Mini-Verlauf (charts.sparkline) unter dem Wert.
+export function tile({ label, value, unit, note, tone = "muted", help, long, spark }) {
+  return el("div", { class: `stat${spark ? " has-spark" : ""}`, "data-tone": tone },
     el("div", { class: "stat-label" }, el("span", { text: label }), help ? info(help, label) : null),
     el("div", { class: "stat-value", "data-long": long || String(value).length > 11 ? "true" : null },
       String(value), unit ? el("span", { class: "unit", text: unit }) : null),
-    note ? el("div", { class: "stat-note", text: note }) : null);
+    note ? el("div", { class: "stat-note" }, note) : null,
+    spark ? el("div", { class: "stat-spark" }, spark) : null);
 }
 
 export function badge(text, tone = "muted", title) {
@@ -92,7 +94,7 @@ export function rangeButtons(current, onChange) {
   const options = [[900, "15 min"], [3600, "1 h"], [21600, "6 h"], [86400, "24 h"]];
   return el("div", { class: "range-group", role: "group", "aria-label": "Zeitraum" },
     options.map(([seconds, label]) => el("button", {
-      type: "button", class: `range${current === seconds ? " is-active" : ""}`, text: label,
+      type: "button", class: `range${current === seconds ? " is-active" : ""}`, text: label, "data-focus-key": `range:${seconds}`,
       "aria-pressed": current === seconds ? "true" : "false", onclick: () => onChange(seconds),
     })));
 }
@@ -125,7 +127,7 @@ export function insightList(items, navigate) {
         text: ACTION_LABEL[item.action] || "Ansehen →" }) : null))));
 }
 
-const ACTION_LABEL = {
+export const ACTION_LABEL = {
   gps: "Zur GPS-Seite →", sources: "Zu den Quellen →", settings: "Zu den Einstellungen →",
   clients: "Zu den Clients →", ptp: "Zur PTP-Seite →", hardware: "Zur Hardware-Seite →",
 };

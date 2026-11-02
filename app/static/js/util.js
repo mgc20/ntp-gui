@@ -47,17 +47,31 @@ export function isNum(value) {
   return typeof value === "number" && Number.isFinite(value);
 }
 
+// Alle Zahlen im Dashboard laufen über diesen deutschen Formatierer: Komma als
+// Dezimalzeichen, Punkt als Tausendertrenner. „-0,000“ nach dem Runden wird zu „0,000“.
+const FIXED = new Map();
+export function fmtFixed(value, digits = 0) {
+  if (!isNum(value)) return "–";
+  let format = FIXED.get(digits);
+  if (!format) {
+    format = new Intl.NumberFormat("de-DE", { minimumFractionDigits: digits, maximumFractionDigits: digits });
+    FIXED.set(digits, format);
+  }
+  const text = format.format(value);
+  return /^-0(,0*)?$/.test(text) ? text.slice(1) : text;
+}
+
 // Sekunden in eine lesbare Größe (ns/µs/ms/s).
 export function fmtSeconds(value, digits = 3, signed = false) {
   if (!isNum(value)) return "–";
   const abs = Math.abs(value);
   const sign = signed && value > 0 ? "+" : "";
   if (abs === 0) return "0 s";
-  if (abs < 1e-6) return `${sign}${(value * 1e9).toFixed(0)} ns`;
-  if (abs < 1e-3) return `${sign}${(value * 1e6).toFixed(abs < 1e-5 ? 2 : 1)} µs`;
+  if (abs < 1e-6) return `${sign}${fmtFixed(value * 1e9, 0)} ns`;
+  if (abs < 1e-3) return `${sign}${fmtFixed(value * 1e6, abs < 1e-5 ? 2 : 1)} µs`;
   // Höchstens fünf signifikante Stellen – „100.000 ms“ läse sich im Deutschen wie hunderttausend.
-  if (abs < 1) return `${sign}${(value * 1e3).toFixed(Math.min(digits, abs >= 0.1 ? 1 : 3))} ms`;
-  return `${sign}${value.toFixed(digits)} s`;
+  if (abs < 1) return `${sign}${fmtFixed(value * 1e3, Math.min(digits, abs >= 0.1 ? 1 : 3))} ms`;
+  return `${sign}${fmtFixed(value, digits)} s`;
 }
 
 export function fmtNs(value) {
@@ -76,11 +90,16 @@ export function fmtDuration(seconds) {
 export function fmtLogInterval(exponent) {
   if (!isNum(exponent)) return "–";
   const seconds = 2 ** exponent;
-  return seconds < 1 ? `${seconds.toFixed(3).replace(/0+$/, "")} s` : fmtDuration(seconds);
+  return seconds < 1 ? `${fmtFixed(seconds, 3).replace(/0+$/, "")} s` : fmtDuration(seconds);
 }
 
 export function fmtNumber(value, digits = 0) {
-  return isNum(value) ? value.toLocaleString("de-DE", { maximumFractionDigits: digits, minimumFractionDigits: digits }) : "–";
+  return fmtFixed(value, digits);
+}
+
+// Anfragen pro Minute: ganze Zahl, nur unter 10/min mit einer Nachkommastelle.
+export function fmtRate(value) {
+  return isNum(value) ? fmtFixed(value, Math.abs(value) < 10 && value !== 0 ? 1 : 0) : "–";
 }
 
 export function fmtTime(unix, seconds = true) {

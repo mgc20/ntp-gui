@@ -1,6 +1,7 @@
 // Einstieg: Navigation, Aktualisierung, Datencache, Neustart-Anzeige.
 import { el, apiGet, storageGet, storageSet, fmtTime } from "./util.js";
 import { toast, isPopoverOpen } from "./ui.js";
+import { resetChartState } from "./charts.js";
 import * as overview from "./pages/overview.js";
 import * as sources from "./pages/sources.js";
 import * as gps from "./pages/gps.js";
@@ -65,6 +66,36 @@ function invalidate(key) { state.cache.delete(key); }
 // --- Rendern -----------------------------------------------------------------
 let pendingAfter = [];
 
+// Tastaturfokus über das Neuzeichnen retten: Die Seite wird alle paar Sekunden
+// komplett neu gebaut. Vorher merken, welches Element (Schlüssel + Position unter
+// gleichartigen) den Fokus hatte, danach das passende neue Element fokussieren.
+const FOCUSABLE = "a[href], button, input, select, textarea, summary, [tabindex]";
+
+function focusKeyOf(node) {
+  if (!node || node === main || !main.contains(node)) return null;
+  if (node.dataset && node.dataset.focusKey) return node.dataset.focusKey;
+  const parts = [node.tagName, node.getAttribute("href") || "", node.getAttribute("aria-label") || "", node.id || ""];
+  if (!parts[1] && !parts[2] && !parts[3]) parts.push((node.textContent || "").trim().slice(0, 60));
+  return parts.join("|");
+}
+
+function captureFocus() {
+  const node = document.activeElement;
+  const key = focusKeyOf(node);
+  if (!key) return null;
+  const same = [...main.querySelectorAll(FOCUSABLE)].filter((n) => focusKeyOf(n) === key);
+  return { key, index: Math.max(0, same.indexOf(node)) };
+}
+
+function restoreFocus(saved) {
+  if (!saved) return;
+  const active = document.activeElement;
+  if (active && active !== document.body && active !== main && active.isConnected) return;
+  const same = [...main.querySelectorAll(FOCUSABLE)].filter((n) => focusKeyOf(n) === saved.key);
+  const target = same[Math.min(saved.index, same.length - 1)];
+  if (target) target.focus({ preventScroll: true });
+}
+
 function render() {
   const page = currentPage();
   document.title = `${page.title} · ${state.status?.system?.title || "ntp-gui"}`;
@@ -99,8 +130,10 @@ function render() {
     console.error(error);
     nodes = [el("p", { class: "empty-note", text: `Darstellungsfehler: ${error.message}` })];
   }
+  const focus = captureFocus();
   main.replaceChildren(...nodes.filter(Boolean));
   for (const fn of pendingAfter) { try { fn(); } catch (error) { console.error(error); } }
+  restoreFocus(focus);
   window.scrollTo(0, scroll);
 }
 
@@ -113,13 +146,12 @@ function renderHeader() {
   document.getElementById("title").textContent = sys.title || "ntp-gui";
   document.getElementById("hostname").textContent = sys.hostname || "";
   document.getElementById("clock").textContent = `${new Date(sys.time * 1000).toLocaleString("de-DE")} ${sys.timezone || ""}`;
-  const t = status.tracking || {};
-  let tone = "warn"; let text = "Synchronisiert …";
-  if (!status.chrony_running) { tone = "crit"; text = "chronyd offline"; }
-  else if (t.synchronised) { tone = "good"; text = `Synchron · Stratum ${t.stratum}`; }
-  else if (t.local_reference) { text = `Inselbetrieb · Stratum ${t.stratum ?? "–"}`; }
-  pill.dataset.state = tone;
-  label.textContent = text;
+  // Dieselbe Bewertung wie das Statusband der Übersicht – Kopfzeile und Übersicht
+  // dürfen sich nie widersprechen. Schmal: nur Punkt + Kurztext.
+  const v = overview.verdict(status, status.insights || []);
+  pill.dataset.state = v.tone;
+  label.replaceChildren(el("span", { class: "pill-long", text: v.pill }), el("span", { class: "pill-short", text: v.pillShort }));
+  pill.title = v.title;
   const serious = (status.insights || []).filter((i) => i.level === "warn" || i.level === "crit");
   // Übersicht zählt alle Probleme, „Hardware“ nur die aus dem Hardware-Check.
   setBadge("", serious.length);
@@ -241,6 +273,7 @@ window.addEventListener("resize", () => {
 });
 window.addEventListener("hashchange", () => {
   state.uiState.scrolled = false;
+  resetChartState();
   window.scrollTo(0, 0);
   const page = currentPage();
   if (page.history) refresh(); else render();

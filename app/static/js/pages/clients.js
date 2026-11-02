@@ -1,4 +1,4 @@
-import { el, apiGet, fmtDuration, fmtNumber, fmtLogInterval, fmtSeconds, isNum, rich } from "../util.js";
+import { el, apiGet, fmtDuration, fmtNumber, fmtRate, fmtLogInterval, fmtSeconds, isNum, rich } from "../util.js";
 import { card, tile, info, badge, rangeButtons, emptyNote, toast, copyButton } from "../ui.js";
 import { lineChart, stepDecimals } from "../charts.js";
 import { requestRate } from "./overview.js";
@@ -139,17 +139,25 @@ function selfTest(status, ip) {
   const stratum = isNum(t.stratum) ? String(t.stratum) : "?";
   const ref = t.ref_id || "?";
   const target = "time.google.com";
+  // Feste Adresse von time.google.com: Ein Name würde die DNS-Umschreibung testen, nicht die Firewall.
+  const natTarget = "216.239.35.0";
   return el("div", { class: "enforce-selftest" },
     el("h3", { class: "mini-head" }, "Selbsttest auf einem Gerät ", info("enforce_selftest")),
     el("p", { class: "card-sub" }, rich(`Frage auf einem Gerät einen **öffentlichen** Server ab. Kommt die Antwort mit `
       + `**Stratum ${stratum}** und **Referenz-ID ${ref}**, hat die Umleitung gegriffen – das sind die Werte `
-      + `dieses Servers.`)),
+      + `dieses Servers. **Per Name** prüfst du die DNS-Umschreibung, **per IP-Adresse** die Firewall-Umleitung `
+      + `(NAT) – der Name wird ja schon vom DNS umgeschrieben.`)),
     el("div", { class: "snippets" },
-      snippet("Windows (Eingabeaufforderung)", `w32tm /stripchart /computer:${target} /samples:1 /packetinfo`),
-      snippet("Linux mit systemd-timesyncd", "timedatectl timesync-status"),
+      snippet("DNS-Umschreibung – Windows", `w32tm /stripchart /computer:${target} /samples:1 /packetinfo`),
+      snippet("DNS-Umschreibung – macOS/Linux", `sntp -d ${target}`),
+      snippet("Firewall-Umleitung (NAT) – Windows", `w32tm /stripchart /computer:${natTarget} /samples:3 /packetinfo`),
+      snippet("Firewall-Umleitung (NAT) – macOS/Linux", `sntp -d ${natTarget}`),
       snippet("Linux mit chrony", `chronyc tracking\nchronyc ntpdata   # Stratum und Referenz-ID je Quelle`),
-      snippet("macOS (Terminal)", `sntp -d ${target}`),
-      snippet("Gegenprobe: direkt an ntp-gui", ip ? `sntp -d ${ip}` : `sntp -d ${IP_PLACEHOLDER}`)));
+      snippet("Gegenprobe: direkt an ntp-gui", ip ? `sntp -d ${ip}` : `sntp -d ${IP_PLACEHOLDER}`)),
+    el("p", { class: "card-sub" }, rich("**Zeitüberschreitung beim NAT-Test**, aber das Gerät erscheint oben in der "
+      + "Client-Liste? Dann kommt die Anfrage bei ntp-gui an, die Antwort aber nicht zurück: das "
+      + "**Hairpin-Problem** (Gerät und ntp-gui im selben Netz). Abhilfe: Masquerade-/SNAT-Regel oder ein "
+      + "eigenes VLAN für ntp-gui – siehe Anleitung unten.")));
 }
 
 function enforceSection(ctx, ip) {
@@ -225,6 +233,13 @@ export function render(ctx) {
   const measured = Object.values(offsets).filter((c) => c.measurable && isNum(c.ewma));
   const worst = measured.reduce((acc, c) => (acc === null || Math.abs(c.ewma) > Math.abs(acc) ? c.ewma : acc), null);
 
+  // chrony leert seine Client-Liste bei jedem Neustart (z. B. nach dem Speichern von Einstellungen);
+  // die eigene Messung kennt die Geräte weiter. Fehlt chronys Wert, gilt ihrer (mit * markiert).
+  const lastAge = (c) => {
+    if (isNum(c.ntp_last_rx)) return c.ntp_last_rx;
+    const seen = offsets[c.address]?.last_seen;
+    return isNum(seen) ? Math.max(0, Date.now() / 1000 - seen) : null;
+  };
   // Geräte aus chronyd, ergänzt um solche, die nur die passive Messung kennt.
   const known = new Set(clients.map((c) => c.address));
   const rows = clients.concat(Object.keys(offsets).filter((a) => !known.has(a)).map((address) => ({ address })));
@@ -232,13 +247,16 @@ export function render(ctx) {
   const input = el("input", { type: "search", placeholder: "Filtern …", value: ctx.uiState.clientFilter || "",
     "aria-label": "Clients filtern" });
   const bodyRows = (needle) => rows.filter((c) => !needle || (c.address || "").toLowerCase().includes(needle))
-    .sort((a, b) => (a.ntp_last_rx ?? 1e12) - (b.ntp_last_rx ?? 1e12))
+    .sort((a, b) => (lastAge(a) ?? 1e12) - (lastAge(b) ?? 1e12))
     .map((c) => el("tr", {},
       el("td", { class: "mono", text: c.address }),
-      el("td", { class: "num", text: fmtNumber(c.ntp_packets) }),
+      el("td", { class: "num", text: isNum(c.ntp_packets) ? fmtNumber(c.ntp_packets)
+        : isNum(offsets[c.address]?.requests) ? `${fmtNumber(offsets[c.address].requests)}*` : "–",
+        title: isNum(c.ntp_packets) ? "" : "* aus der eigenen Messung – chrony kennt das Gerät seit seinem letzten Neustart nicht" }),
       el("td", { class: "num", text: fmtNumber(c.ntp_dropped) }),
       el("td", { class: "num", text: fmtLogInterval(c.ntp_interval) }),
-      el("td", { class: "num", text: isNum(c.ntp_last_rx) ? `vor ${fmtDuration(c.ntp_last_rx)}` : "–" }),
+      el("td", { class: "num", text: isNum(lastAge(c)) ? `vor ${fmtDuration(lastAge(c))}${isNum(c.ntp_last_rx) ? "" : "*"}` : "–",
+        title: isNum(c.ntp_last_rx) ? "" : "* aus der eigenen Messung – chrony kennt das Gerät seit seinem letzten Neustart nicht" }),
       ...offsetCells(offsets[c.address])));
   const tbody = el("tbody", {}, bodyRows(filter));
   // Nur die Zeilen tauschen – ein Neuaufbau der Seite würde dem Feld den Fokus nehmen.
@@ -260,7 +278,8 @@ export function render(ctx) {
   const chartHost = el("div", { class: "chart-host" });
   ctx.afterRender(() => lineChart(chartHost, {
     series: [{ id: "rate", label: "pro Minute", color: "var(--accent)", points: rate }],
-    format: (v) => `${fmtNumber(v, 1)}/min`, axisFormat: (v, step) => fmtNumber(v, stepDecimals(step)), area: true, min: 0,
+    format: (v) => `${fmtRate(v)}/min`, axisFormat: (v, step) => fmtNumber(v, stepDecimals(step)), area: true, min: 0,
+    range: ctx.range, end: ctx.status.system?.time, ariaLabel: "Beantwortete Anfragen pro Minute",
     emptyText: "Noch keine Anfragen gemessen",
   }));
 

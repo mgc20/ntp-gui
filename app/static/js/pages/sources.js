@@ -173,7 +173,8 @@ export function render(ctx) {
   ctx.afterRender(() => lineChart(chartHost, {
     series: names.map((name) => ({ id: name, label: labelOf(name),
       points: history.map((s) => [s.t, (s.sources || {})[name]?.o ?? null]) })),
-    format: (v) => fmtSeconds(v, 3, true), axisFormat: axisSeconds, height: 260, hidden,
+    format: (v) => fmtSeconds(v, 3, true), axisFormat: axisSeconds, height: 260, hidden, range: ctx.range, end: ctx.status.system?.time, 
+    ariaLabel: "Offset je Quelle",
     onToggle: (id) => { if (hidden.has(id)) hidden.delete(id); else hidden.add(id); ctx.rerender(); },
     emptyText: "Noch zu wenige Messwerte – der Verlauf füllt sich alle paar Sekunden",
   }));

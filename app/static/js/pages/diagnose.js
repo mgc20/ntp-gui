@@ -287,25 +287,58 @@ function bundleCard(state) {
   const previewButton = el("button", { type: "button", class: "button", text: "Vorschau" });
   const downloadButton = el("button", { type: "button", class: "button primary", text: "Herunterladen" });
 
+  // Die angezeigte Vorschau: ihr Merker (reuse) und die Schalter, mit denen sie entstand. Nur dann
+  // liefert der Download genau dieses Paket; sonst baut der Server neu.
+  let shown = null;
+
+  const busyNote = () => emptyNote("Paket wird zusammengestellt und gefiltert … "
+    + (state.recording ? "Mit Aufzeichnung kann das auf einem Raspberry Pi eine bis mehrere Minuten dauern. " : "")
+    + "Das Dashboard bleibt währenddessen bedienbar.");
+
   previewButton.addEventListener("click", async () => {
     previewButton.disabled = true;
-    output.replaceChildren(emptyNote("Paket wird zusammengestellt und gefiltert …"));
+    downloadButton.disabled = true;
+    shown = null;
+    output.replaceChildren(busyNote());
+    const asked = query();
     try {
-      output.replaceChildren(previewView(await getJson(`/api/diagnostics/preview?${query()}`)));
+      const data = await getJson(`/api/diagnostics/preview?${asked}`);
+      output.replaceChildren(previewView(data));
+      if (data && data.ok !== false && data.reuse) shown = { query: asked, reuse: String(data.reuse) };
     } catch (error) {
       output.replaceChildren(previewView(error.data || { ok: false, error: error.message }));
     } finally {
       previewButton.disabled = false;
+      downloadButton.disabled = false;
     }
   });
 
+  // Schalter geändert: Die angezeigte Vorschau zeigt nicht mehr, was heruntergeladen würde.
+  const staleView = () => {
+    if (shown === null && !output.firstChild) return;
+    shown = null;
+    if (!previewButton.disabled) output.replaceChildren();
+  };
+
   downloadButton.addEventListener("click", async () => {
     downloadButton.disabled = true;
+    previewButton.disabled = true;
+    // Nach einer Vorschau mit denselben Schaltern ist das Paket schon fertig (dieselben Daten, sofort);
+    // sonst wird es jetzt gebaut.
+    const asked = query();
+    const hadPreview = shown !== null && shown.query === asked
+      && output.querySelector(".diag-preview:not([data-state=error])") !== null;
+    if (!hadPreview) {
+      shown = null;
+      output.replaceChildren(busyNote());
+    }
+    const reuse = hadPreview ? `&${new URLSearchParams({ reuse: shown.reuse })}` : "";
     try {
-      const response = await fetch(`/api/diagnostics/bundle?${query()}`, { cache: "no-store" });
+      const response = await fetch(`/api/diagnostics/bundle?${asked}${reuse}`, { cache: "no-store" });
       if (!response.ok) {
         let data = null;
         try { data = await response.json(); } catch (error) { /* kein JSON */ }
+        shown = null;
         output.replaceChildren(previewView(data || { ok: false, error: `HTTP ${response.status}` }));
         toast("Diagnosepaket nicht erstellt", "crit");
         return;
@@ -318,10 +351,12 @@ function bundleCard(state) {
       link.remove();
       setTimeout(() => URL.revokeObjectURL(url), 10000);
       toast("Diagnosepaket gespeichert – nichts wurde hochgeladen");
+      if (!hadPreview) output.replaceChildren();
     } catch (error) {
       toast(`Herunterladen fehlgeschlagen: ${error.message}`, "crit");
     } finally {
       downloadButton.disabled = false;
+      previewButton.disabled = false;
     }
   });
 
@@ -333,9 +368,9 @@ function bundleCard(state) {
       + "IP-Adressen, eigenen Domains oder Zeitzonennamen." }), info("diag_privacy", "Datenschutzfilter")),
   el("div", { class: "diag-options" },
     switchControl("Client-Liste einschließen (pseudonymisiert)", state.clients,
-      (on) => { state.clients = on; }, "diag_include_clients"),
+      (on) => { state.clients = on; staleView(); }, "diag_include_clients"),
     switchControl("Aufzeichnung einschließen", state.recording,
-      (on) => { state.recording = on; }, "diag_include_recording")),
+      (on) => { state.recording = on; staleView(); }, "diag_include_recording")),
   el("div", { class: "button-row" },
     previewButton, info("diag_preview", "Vorschau"),
     downloadButton, info("diag_download", "Herunterladen")),

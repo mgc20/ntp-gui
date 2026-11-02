@@ -323,6 +323,7 @@ export function render(ctx) {
       { id: "gps-used", label: "genutzt", points: history.map((s) => [s.t, s.gps?.used ?? null]) },
       { id: "gps-seen", label: "sichtbar", points: history.map((s) => [s.t, s.gps?.seen ?? null]) },
     ], format: (v) => fmtNumber(v, 0), axisFormat: (v, step) => fmtNumber(v, step < 1 ? 1 : 0), height: 180, min: 0, minSpan: 12,
+    range: ctx.range, end: ctx.status.system?.time, ariaLabel: "Satelliten genutzt und sichtbar",
   }));
 
   const facts = card("Empfänger", { help: "gps" }, kv([
