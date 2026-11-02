@@ -47,33 +47,70 @@ Vorschläge, Erfahrungsberichte und Hilfe sind willkommen – siehe [CONTRIBUTIN
 - Schaltsekunden über `leapseclist` (automatische Migration von `LEAPSECTZ`)
 - Künftige Debian-Versionen werden zeitnah übernommen
 
-## 1.4 – nach den ersten Praxis-Logs
+## 1.3.2 – Übersicht, schnelles Diagnosepaket, ruhigere GPS-Ereignisse ✅
+
+- Übersicht neu als „Single Pane of Glass“: Statusband mit Gesamturteil, Kennzahlen mit
+  Verlaufslinie, Hinweise dem passenden Bereich zugeordnet
+- Klarere Diagramme überall: jetzt/min/max/Mittel, Ausreißer markiert statt Skala gesprengt,
+  Lücken sichtbar, Tooltip für Maus, Touch und Tastatur
+- Diagnosepaket mit Aufzeichnung etwa 8× schneller, in eigenem Prozess mit niedriger Priorität;
+  Download nach der Vorschau sofort und identisch
+- GPS-Fix-Ereignisse erst nach 60 s – kein „verloren/wieder da“-Flattern bei schwachem Empfang
+- Selbsttest „Zeitserver erzwingen“ prüft DNS-Umschreibung und Firewall-Umleitung getrennt,
+  mit Hinweis zum Hairpin-Problem
+- Clients: „Zuletzt“ und „Anfragen“ aus der eigenen Messung, wenn chrony das Gerät nach einem
+  Neustart nicht mehr kennt
+
+## 1.4 – Melden, Clients 2.0, eigene DNS-Server (in Arbeit)
 
 | Thema | Nutzen | Aufwand |
 |---|---|---|
-| Benachrichtigungen: Webhook, ntfy, Gotify, E-Mail, MQTT | ★★★ | ◆ |
-| Home-Assistant-Anbindung (MQTT mit automatischer Erkennung) | ★★ | ◆ |
-| Temperaturausgleich des Quarzes (chrony `tempcomp`, Werte gemessen und vorgeschlagen) | ★★★ | ◆◆ |
-| Stabilität ohne Quelle (Allan-Abweichung, „wie lange hält die Uhr?“) | ★★ | ◆◆ |
-| Verbund: mehrere Instanzen im Überblick, gegenseitige Prüfung, Einstellungen teilen | ★★ | ◆◆ |
-| Uhr-Ansicht im Vollbild (Rack-Monitor, Tablet) | ★ | ◆ |
+| Benachrichtigungen (Webhook, ntfy, Apprise-API als Zusatzcontainer für E-Mail, Telegram, Matrix …) 🔒 | ★★★ | ◆◆ |
+| Eigene DNS-Server für ntp-gui (auch DoT/DoH) – keine Schleifen mehr, wenn der LAN-DNS Zeitserver-Namen umschreibt | ★★★ | ◆ |
+| Clients 2.0: Detailseite je Gerät, Netzüberblick, aktiv nachmessen, Alarm | ★★★ | ◆◆ |
+| Temperatur aufzeichnen (Grundlage für den Temperaturausgleich in 1.5) | ★★ | ◆ |
 | Schaltsekunden-Übersicht | ★ | ◆ |
+| Uhr-Ansicht im Vollbild (Rack-Monitor, Tablet) | ★ | ◆ |
+| Update-Hinweis (opt-in) 🔒, Attestation und SBOM im Release, Dependabot | ★★ | ◆ |
+| Anleitungen: Home Assistant, Homepage, Glance, Uptime Kuma, Grafana | ★★ | ◆ |
 
-## Später
+## 1.5 – GNSS-Werkbank, Clients 3, Uhrqualität
+
+Begründung, Bewertung und Abnahme: [docs/konzept/version-1.5.md](docs/konzept/version-1.5.md).
+Erst ein schlankes 1.5.0, dann kurze 1.5.x-Releases.
+
+| Thema | Nutzen | Aufwand | Stufe |
+|---|---|---|---|
+| GPS ohne PPS und schwacher Empfang (z. B. VK-162): Empfangsbewertung, Antennen-Test, ehrliches Profil | ★★★ | ◆ | 1.5.0 |
+| DNS/NAT-Schleifen erkennen und erklären (AdGuard-Umschreibung, UniFi-Umleitung) | ★★★ | ◆ | 1.5.0 |
+| GNSS-Störungen erkennen (Jamming/Spoofing) und GPS vorübergehend sperren | ★★★ | ◆◆ | 1.5.0 |
+| Clients 3: Regeln je Gerät, Gruppen/VLAN-Ansichten, Uhrgüte je Gerät, NTS für Clients, Gerätepass | ★★★ | ◆◆ | 1.5.0 |
+| Echter Holdover-Test („wie lange hält die Uhr ohne Quelle?“) | ★★ | ◆ | 1.5.0 |
+| HTTPS fürs Dashboard über Caddy-Vorlage | ★★ | ◆ | 1.5.0 |
+| Mehrsprachigkeit: Gerüst, dann englische Oberfläche (Weblate) | ★★★ | ◆◆◆ | 1.5.0 / 1.5.x |
+| u-blox-Empfänger auslesen (Firmware, Jamming-Anzeige, Fähigkeiten) | ★★ | ◆◆ | 1.5.x |
+| Temperaturausgleich: Fit, Vorschlag, anwenden mit 24-h-Probelauf | ★★ (★★★ ohne GPS) | ◆◆ | 1.5.x |
+| Allan-Abweichung | ★★ | ◆◆ | 1.5.x |
+| Verbund: Übersicht und Gegenmessung; Einstellungen teilen (experimentell) | ★★ | ◆◆ | 1.5.x |
+| Einstellungen als Datei (TOML) | ★ | ◆ | 1.5.x |
+| MQTT mit Home-Assistant-Discovery | ★★ | ◆◆ | nur auf Nachfrage |
+
+## 1.6 und später
 
 | Thema | Nutzen | Aufwand |
 |---|---|---|
-| GPS-Empfänger aus dem Dashboard einrichten (u-blox Timing-Modus, Systeme, PPS) | ★★ | ◆◆ |
-| Störungen erkennen (Jamming/Spoofing) und GPS vorübergehend sperren | ★★★ | ◆◆ |
-| Profi-PTP mit `ts2phc` (PPS direkt in i210/i226/TimeHAT) | ★★ | ◆◆◆ |
-| Gemeinsame virtuelle IP für zwei Instanzen (keepalived/VRRP) | ★ | ◆◆ |
-| Einstellungen als YAML (Konfiguration als Code) | ★ | ◆ |
-| Mehrsprachigkeit (Englisch zuerst) | ★★ | ◆◆ |
-| Funkuhr-Empfänger (DCF77) | ★ | ◆◆ |
+| GPS-Empfänger aus dem Dashboard einrichten (u-blox-Voreinstellungen, mit Sicherung und „zurück“) | ★★ | ◆◆◆ |
+| „Von außen prüfen“-Knopf (gegen den Server-Test der Community) 🔒 | ★★★ | ◆ |
+| Gemeinsame virtuelle IP für zwei Instanzen (keepalived/VRRP, Doku) | ★ | ◆ |
+| Profi-PTP mit `ts2phc` (PPS direkt in i210/i226/TimeHAT), experimentell | ★★ | ◆◆◆ |
+| Funkuhr-Empfänger (DCF77), nur bei Nachfrage | ★ | ◆◆ |
 
 ## Community-Dienste (eigenes Repository, freiwillig)
 
-Gestaffelt nach Nutzen für alle – auch für Menschen ohne ntp-gui.
+Gestaffelt nach Nutzen für alle – auch für Menschen ohne ntp-gui. **Erster eigener Dienst:**
+Zeit-Check-Website und Server-Test (Selbsttest des eigenen Anschlusses) auf dem VPS des
+Maintainers – Architektur, Aufwand, Kosten und Recht in
+[version-1.5.md, Abschnitt 4.6](docs/konzept/version-1.5.md#46-erster-konkreter-schritt-zeit-check-website--server-test-auf-dem-vps-des-maintainers).
 
 | Dienst | Nutzen | Aufwand |
 |---|---|---|
