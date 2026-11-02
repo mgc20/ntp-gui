@@ -518,7 +518,13 @@ class EndToEndTest(TempData):
         for i in range(5):
             events.emit("service", "warn", f"Dienst d{i} beendet", {"service": f"d{i}"})
         self.target.wait(2)
-        time.sleep(0.8)
+        # Auf den Zustand warten statt fest zu schlafen: Auf einem ausgelasteten CI-Runner kam das
+        # „verworfen“-Ereignis erst nach mehr als 0,8 s an.
+        end = time.monotonic() + 5
+        while time.monotonic() < end and (notify.get_channel(cid)["dropped"] < 3
+                                           or not events.query(kinds=["notify"])):
+            time.sleep(0.05)
+        time.sleep(0.3)  # kein vierter Versand und kein zweites Ereignis hinterher
         self.assertEqual(len(self.target.requests), 2)
         self.assertEqual(notify.get_channel(cid)["dropped"], 3)
         self.assertEqual(len(events.query(kinds=["notify"])), 1)
