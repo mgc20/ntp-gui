@@ -1,0 +1,158 @@
+{
+ "_comment": "Aus dem Diagnosepaket des Maintainers (Pi 4, 17 LAN-Clients, chronyc clients; Adressen dort pseudonymisiert). Adressen und Software-Art hier synthetisch; Intervalle (log2), Paketzahlen und letzte Anfrage echt.",
+ "clients": [
+  {
+   "address": "192.168.1.20",
+   "source": "client-01",
+   "ntp_packets": 247,
+   "ntp_interval": 6.0,
+   "ntp_last_rx": 8,
+   "interval": 64.0,
+   "kind": "windows"
+  },
+  {
+   "address": "192.168.1.21",
+   "source": "client-02",
+   "ntp_packets": 6,
+   "ntp_interval": 11.0,
+   "ntp_last_rx": 192,
+   "interval": 2048.0,
+   "kind": "timesyncd"
+  },
+  {
+   "address": "192.168.1.22",
+   "source": "client-03",
+   "ntp_packets": 10,
+   "ntp_interval": 10.0,
+   "ntp_last_rx": 1015,
+   "interval": 1024.0,
+   "kind": "sntp"
+  },
+  {
+   "address": "192.168.1.23",
+   "source": "client-04",
+   "ntp_packets": 10,
+   "ntp_interval": 10.0,
+   "ntp_last_rx": 858,
+   "interval": 1024.0,
+   "kind": "chrony"
+  },
+  {
+   "address": "192.168.1.24",
+   "source": "client-05",
+   "ntp_packets": 5,
+   "ntp_interval": 11.0,
+   "ntp_last_rx": 1437,
+   "interval": 2048.0,
+   "kind": "sntp"
+  },
+  {
+   "address": "192.168.1.25",
+   "source": "client-06",
+   "ntp_packets": 5,
+   "ntp_interval": 11.0,
+   "ntp_last_rx": 1143,
+   "interval": 2048.0,
+   "kind": "windows"
+  },
+  {
+   "address": "192.168.1.26",
+   "source": "client-07",
+   "ntp_packets": 16,
+   "ntp_interval": -5.0,
+   "ntp_last_rx": 2509,
+   "interval": 64.0,
+   "kind": "sntp"
+  },
+  {
+   "address": "192.168.1.27",
+   "source": "client-08",
+   "ntp_packets": 2,
+   "ntp_interval": 13.0,
+   "ntp_last_rx": 706,
+   "interval": 8192.0,
+   "kind": "timesyncd"
+  },
+  {
+   "address": "192.168.1.28",
+   "source": "client-09",
+   "ntp_packets": 189,
+   "ntp_interval": 7.0,
+   "ntp_last_rx": 160,
+   "interval": 128.0,
+   "kind": "chrony"
+  },
+  {
+   "address": "10.0.30.19",
+   "source": "client-10",
+   "ntp_packets": 12,
+   "ntp_interval": 9.0,
+   "ntp_last_rx": 349,
+   "interval": 512.0,
+   "kind": "windows"
+  },
+  {
+   "address": "10.0.30.20",
+   "source": "client-11",
+   "ntp_packets": 5,
+   "ntp_interval": 11.0,
+   "ntp_last_rx": 1088,
+   "interval": 2048.0,
+   "kind": "timesyncd"
+  },
+  {
+   "address": "10.0.30.21",
+   "source": "client-12",
+   "ntp_packets": 3,
+   "ntp_interval": 12.0,
+   "ntp_last_rx": 1032,
+   "interval": 4096.0,
+   "kind": "sntp"
+  },
+  {
+   "address": "10.0.30.22",
+   "source": "client-13",
+   "ntp_packets": 1,
+   "ntp_interval": null,
+   "ntp_last_rx": 3609,
+   "interval": 64.0,
+   "kind": "chrony"
+  },
+  {
+   "address": "10.0.30.23",
+   "source": "client-14",
+   "ntp_packets": 1,
+   "ntp_interval": null,
+   "ntp_last_rx": 3609,
+   "interval": 64.0,
+   "kind": "sntp"
+  },
+  {
+   "address": "fd00:1::e",
+   "source": "client-15",
+   "ntp_packets": 1,
+   "ntp_interval": null,
+   "ntp_last_rx": 1369,
+   "interval": 64.0,
+   "kind": "windows"
+  },
+  {
+   "address": "fd00:1::f",
+   "source": "client-16",
+   "ntp_packets": 1,
+   "ntp_interval": null,
+   "ntp_last_rx": 795,
+   "interval": 64.0,
+   "kind": "sntp"
+  },
+  {
+   "address": "fd00:1::10",
+   "source": "client-17",
+   "ntp_packets": 14,
+   "ntp_interval": 6.0,
+   "ntp_last_rx": 28,
+   "interval": 64.0,
+   "kind": "timesyncd"
+  }
+ ]
+}

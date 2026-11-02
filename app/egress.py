@@ -2377,6 +2377,68 @@ def notify_message(message: dict, known_names=(), known: dict | None = None) -> 
     return out
 
 
+# --- Benachrichtigung zu EINEM Gerät (1.5, Clients 3, Entscheidung F5) ----------------
+
+# Platzhalter für das Gerät im Titel – Großbuchstaben ohne Hex-Muster, damit der Filter ihn stehen lässt.
+DEVICE_PLACEHOLDER = "GERAETXPLATZHALTER"
+DEVICE_UNNAMED = "Gerät ohne Namen"
+# Nur diese Bereiche gelten als LAN-Adresse (wie clientinfo.LAN_NETWORKS): 6to4, Teredo und andere
+# „nicht globale“ Sonderbereiche tragen öffentliche Adressen in sich und bleiben Pseudonym.
+_LAN_NETWORKS = tuple(ipaddress.ip_network(n) for n in (
+    "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "169.254.0.0/16",
+    "fc00::/7", "fe80::/10"))
+
+
+def lan_address(text: Any) -> str | None:
+    """Normalisierte private LAN-Adresse – oder None (öffentlich, Sonderbereich, keine IP)."""
+    try:
+        addr = ipaddress.ip_address(str(text or "").strip())
+    except ValueError:
+        return None
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
+        addr = addr.ipv4_mapped
+    if any(addr.version == net.version and addr in net for net in _LAN_NETWORKS):
+        return str(addr)
+    return None
+
+
+def notify_device_message(message: dict, known_names=(), known: dict | None = None,
+                          device_name: str = "", lan_ip: str | None = None) -> dict:
+    """Wie notify_message, aber für eine Meldung über EIN Gerät (Clients 3).
+
+    Im Titel steht DEVICE_PLACEHOLDER statt der Adresse. Eingesetzt wird der eigene Name des Geräts –
+    selbst gefiltert, nur ohne diesen einen Namen in der Namensliste (ein Name mit Hostname, öffentlicher
+    IP oder dem Namen eines ANDEREN Geräts wird also trotzdem bereinigt) – sonst „Gerät ohne Namen“.
+    Die LAN-Adresse nur, wenn lan_ip gesetzt ist (Schalter „LAN-Adressen in Nachrichten“) und wirklich
+    privat ist. Die Schlussprüfung läuft über die fertige Meldung; nur die erlaubte Adresse wird dafür
+    durch ein neutrales Wort ersetzt. Wirft NotifyLeak wie notify_message."""
+    known = {k: list(v or ()) for k, v in (known or {}).items()}
+    name = " ".join(str(device_name or "").split())[:64]
+    if name:
+        known["name"] = [n for n in known.get("name", []) if " ".join(str(n).split()).lower() != name.lower()]
+    out = notify_message(message, known_names, known)
+    label = ""
+    if name:
+        cleaner = Sanitizer("notify", known_names, known)
+        label = " ".join(_notify_coords(cleaner.text(name), cleaner).split())
+    allowed = lan_address(lan_ip) if lan_ip else None
+    if label and allowed:
+        text = f"{label} ({allowed})"
+    else:
+        text = label or allowed or DEVICE_UNNAMED
+    for key in ("title", "text"):
+        if isinstance(out.get(key), str) and DEVICE_PLACEHOLDER in out[key]:
+            out[key] = out[key].replace(DEVICE_PLACEHOLDER, text)[:NOTIFY_MAX_TEXT]
+    probe = {k: (v.replace(allowed, "LAN-Adresse") if allowed and isinstance(v, str) else v) for k, v in out.items()}
+    findings = check_no_leaks(probe)
+    if not findings:
+        rendered = json.dumps(probe, ensure_ascii=False, indent=1)
+        findings = backstop({"nachricht": rendered.encode("utf-8")}, Sanitizer("notify", known_names, known).backstop_known())
+    if findings:
+        raise NotifyLeak(findings)
+    return out
+
+
 # --- Update-Hinweis (Zweck "update_check") -------------------------------------------
 
 # Die einzige Anfrage des Update-Hinweises: fest verdrahtet, ohne Daten der Instanz. Der

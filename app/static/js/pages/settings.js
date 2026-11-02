@@ -28,6 +28,7 @@ export const FIELD_HELP = {
   ptp_clock_class: "clock_class", phc2sys_enable: "phc2sys", phc_refclock: "phc",
   gps_autocal: "autocal_mode", gps_autocal_max_step_ms: "autocal_step", gps_autocal_min_hours: "autocal_window",
   clientmon_enable: "clientmon", clients_alarm_ms: "clients_alarm", clients_rdns: "client_rdns",
+  clients_new_device_alarm: "clients_new_device", notify_lan_addresses: "notify_lan_addresses",
   web_title: "web_title", web_refresh_seconds: "web_refresh", history_interval: "history_interval",
   notify_dashboard_url: "notify_link",
   temp_sensor: "temp_sensor", clock_public: "clock_public", update_check: "update_check",

@@ -233,6 +233,23 @@ else
   ok "Clients: Detailseite übersprungen (Messung im Container nicht verfügbar)"
 fi
 
+# Clients 3 (1.5): Gruppen, Regeln, Uhrgüte, Gerätepass – alles lokal, Eingaben per Allowlist.
+check "Clients 3: Gruppe mit ungültigem Netz abgelehnt" 422 "$(http "${CJ[@]}" -d '{"name":"x","network":"10.0.0.0/24; rm -rf /"}' http://127.0.0.1:18080/api/clients/groups)"
+check "Clients 3: Gruppe angelegt" 200 "$(http "${CJ[@]}" -d '{"name":"Loopback","network":"127.0.0.0/8"}' http://127.0.0.1:18080/api/clients/groups)"
+contains "Clients 3: Gruppenansicht nennt die Gruppe" "$(curl -s --max-time 10 'http://127.0.0.1:18080/api/v1/clients/groups?by=group')" '"Loopback"'
+check "Clients 3: Regel mit ungültiger Software abgelehnt" 422 "$(http "${CJ[@]}" -d '{"ip":"127.0.0.1","expect":"evil"}' http://127.0.0.1:18080/api/clients/rules)"
+check "Clients 3: Regel gespeichert" 200 "$(http "${CJ[@]}" -d '{"ip":"127.0.0.1","silent_h":6,"mute":true}' http://127.0.0.1:18080/api/clients/rules)"
+check "Clients 3: Uhrgüte antwortet" 200 "$(http http://127.0.0.1:18080/api/v1/clients/quality)"
+if grep -q '"measurable_reason"' <<<"$DETAIL"; then
+  check "Clients 3: Gerätepass antwortet" 200 "$(http 'http://127.0.0.1:18080/api/v1/clients/pass?ip=127.0.0.1')"
+  SHARE=$(curl -s --max-time 20 'http://127.0.0.1:18080/api/clients/pass?ip=127.0.0.1&share=1')
+  contains "Clients 3: gefilterte Kopie des Gerätepasses" "$SHARE" 'pass (ntp-gui)'
+  if grep -q 'Container Selbsttest' <<<"$SHARE"; then bad "Clients 3: eigener Name in der gefilterten Kopie"
+  else ok "Clients 3: eigener Name nicht in der gefilterten Kopie"; fi
+else
+  ok "Clients 3: Gerätepass übersprungen (Messung im Container nicht verfügbar)"
+fi
+
 # Benachrichtigungen: Webhook an ein Ziel im Container, Token nie in der Antwort, keine Weiterleitung.
 docker exec -d "${PREFIX}-a" python3 -c '
 from http.server import BaseHTTPRequestHandler, HTTPServer

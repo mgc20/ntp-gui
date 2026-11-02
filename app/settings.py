@@ -694,6 +694,14 @@ SCHEMA: list[dict] = [
                 "8.8.8.8 ein) wird nicht gefragt. Ein lokaler Zwischen-Resolver (127.0.0.53, "
                 "127.0.0.11) zählt als privat – wohin er weiterfragt, kann ntp-gui nicht sehen. "
                 "Der Name bleibt auf dieser Instanz."),
+    _field("clients_new_device_alarm", "lan", "Melden, wenn ein neues Gerät nach der Zeit fragt", "bool", False,
+           _as_bool, env="CLIENTS_NEW_DEVICE_ALARM", restart=RESTART_NONE, advanced=True,
+           help="Schreibt ein Ereignis „Neues Gerät fragt nach der Zeit“, sobald ein Gerät zum ersten Mal "
+                "fragt, das ntp-gui noch nie gesehen hat – nützlich, um unbekannte Geräte im Netz zu "
+                "bemerken. Erkannt wird an der MAC-Adresse (im selben Netz) bzw. an der IPv4-Adresse; "
+                "IPv6-Adressen ohne MAC zählen nicht, weil Datenschutz-Adressen täglich wechseln. Die "
+                "ersten 24 Stunden lernt ntp-gui nur (sonst wäre zu Beginn jedes Gerät „neu“), danach "
+                "höchstens 5 Meldungen je Stunde. Standard: aus."),
     _field("enforce_hostnames", "lan", "Weitere Namen für „Zeitserver erzwingen“", "hostlist",
            [], _as_host_list, env="ENFORCE_HOSTNAMES", restart=RESTART_NONE, advanced=True,
            placeholder="z. B. time.example.com",
@@ -1038,6 +1046,13 @@ SCHEMA: list[dict] = [
                 "Dashboards an – ein Tipp auf dem Handy führt direkt zur GPS- oder Quellen-Seite. "
                 "Leer = kein Link. Der Link wird nicht gefiltert, weil du ihn selbst einträgst; trag "
                 "deshalb nur eine Adresse ein, die die Empfänger sehen dürfen."),
+    _field("notify_lan_addresses", "web", "LAN-Adressen in Nachrichten", "bool", False, _as_bool,
+           env="NOTIFY_LAN_ADDRESSES", restart=RESTART_NONE, advanced=True,
+           help="Benachrichtigungen über ein Gerät nennen seinen eigenen Namen (Clients → Gerät → Name), "
+                "ohne Namen „Gerät ohne Namen“. Eingeschaltet steht zusätzlich die private LAN-Adresse "
+                "dabei, z. B. „NAS (192.168.1.20)“. Standard: aus – die Nachricht läuft über fremde "
+                "Dienste (ntfy, Gotify, Apprise …), und die Adresse verrät dort den Aufbau deines Netzes. "
+                "MAC-Adressen und öffentliche IP-Adressen gehen nie hinaus."),
     _field("history_interval", "web", "Messintervall für Diagramme", "float", 10.0,
            _as_number(float, 2.0, 600.0), env="HISTORY_INTERVAL", unit="s",
            restart=RESTART_NONE, advanced=True,

@@ -115,6 +115,16 @@ def _fix(sample: dict) -> bool | None:
     return isinstance(mode, (int, float)) and not isinstance(mode, bool) and mode >= 2
 
 
+def _extra(data_for: Callable[[str], dict] | None, ip: str) -> dict:
+    if data_for is None:
+        return {}
+    try:
+        extra = data_for(ip)
+    except Exception:  # Zusatzdaten sind nie kritisch
+        return {}
+    return {k: v for k, v in (extra or {}).items() if k not in ("address", "offset", "threshold_ms")}
+
+
 class StateWatcher:
     def __init__(self, emit: Callable[..., None], confirm: int = CONFIRM,
                  gps_fix_hold: float | None = None, clock: Callable[[], float] = time.monotonic,
@@ -277,7 +287,8 @@ class StateWatcher:
                     del self._pps[dev]
 
     # --- Client-Uhren (Alarm-Schwelle aus den Einstellungen) -------------------
-    def clients(self, clients: Any, threshold_ms: Any, fmt: Callable[[float], str] | None = None) -> None:
+    def clients(self, clients: Any, threshold_ms: Any, fmt: Callable[[float], str] | None = None,
+                data_for: Callable[[str], dict] | None = None) -> None:
         """Meldet Client-Uhren, die um mehr als threshold_ms abweichen.
 
         Hysterese wie bei den übrigen Zuständen: Ein Alarm entsteht erst, wenn ZWEI neue
@@ -287,6 +298,9 @@ class StateWatcher:
 
         Der Titel nennt nur die Adresse, nie den eigenen Namen: Gespeicherte Titel bleiben 90 Tage
         stehen, der Datenschutzfilter kennt aber nur die aktuellen Namen (Umbenennen/Löschen).
+
+        data_for(ip) (1.5): zusätzliche Ereignisdaten je Gerät, z. B. {"notify": False} für
+        stummgeschaltete Geräte (Clients 3) – das Ereignis bleibt dann im Protokoll.
         """
         try:
             threshold = float(threshold_ms or 0) / 1000.0
@@ -324,14 +338,16 @@ class StateWatcher:
                     if state["streak"] >= CONFIRM:
                         state.update(alarm=True, streak=0)
                         self._send("clients", "warn", f"Uhr von {ip} weicht um {fmt(value)} ab",
-                                   {"address": ip, "offset": value, "threshold_ms": threshold * 1000})
+                                   {"address": ip, "offset": value, "threshold_ms": threshold * 1000,
+                                    **_extra(data_for, ip)})
                 else:
                     back = abs(value) < threshold / 2
                     state["streak"] = state["streak"] + 1 if back else 0
                     if state["streak"] >= CONFIRM:
                         state.update(alarm=False, streak=0)
                         self._send("clients", "info", f"Uhr von {ip} wieder im Rahmen ({fmt(value)})",
-                                   {"address": ip, "offset": value, "threshold_ms": threshold * 1000})
+                                   {"address": ip, "offset": value, "threshold_ms": threshold * 1000,
+                                    **_extra(data_for, ip)})
             if len(self._clients) > 5000:
                 for ip in list(self._clients)[:len(self._clients) - 5000]:
                     del self._clients[ip]

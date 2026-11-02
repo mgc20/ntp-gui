@@ -55,6 +55,7 @@ import loopguard
 import chrony
 import clientinfo
 import clientmon
+import clients3
 import devices
 import diagnostics
 import dnsfwd
@@ -175,6 +176,31 @@ apiv1.endpoint("POST", "/clients/probe", "/api/clients/probe", "admin",
                "Aktiv nachmessen: eine NTP-Anfrage an einen bekannten Client im LAN (2 s Zeitlimit; je Gerät "
                "alle 30 s, insgesamt 10 pro Minute). Body: {\"ip\": …}.",
                ["ip", "answered", "offset", "rtt", "stratum", "text"])
+apiv1.endpoint("GET", "/clients/groups", "/api/clients/groups", "read",
+               "Clients 3: Geräte nach Gruppe (eigene Netze, spezifischstes Netz gewinnt), VLAN oder Software – je "
+               "Gruppe Anzahl, aktive, messbare, Median-Abweichung, Anteil „gut“ (< 10 ms), Hinweis bei leerer Gruppe; "
+               "bei by=group Vorschläge aus gesehenen /24- und /64-Netzen.",
+               ["by", "groups", "total", "defined", "suggestions"], {"by": "group (Standard), vlan oder software"})
+apiv1.endpoint("POST", "/clients/groups", "/api/clients/groups", "admin",
+               "Gruppe anlegen (ohne id) oder ändern (mit id). Body: {\"name\": …, \"network\": \"10.0.30.0/24\"}.",
+               ["id", "name", "network"])
+apiv1.endpoint("POST", "/clients/groups/delete", "/api/clients/groups/delete", "admin",
+               "Gruppe löschen. Body: {\"id\": …}.", ["ok"])
+apiv1.endpoint("GET", "/clients/quality", "/api/clients/quality", "read",
+               "Uhrgüte je Gerät (0–100 aus Abweichung, Stabilität, Regelmäßigkeit, Messbarkeit) und die "
+               "schlechtesten Uhren im Haus.", ["scores", "worst", "rated", "total"])
+apiv1.endpoint("GET", "/clients/rules", "/api/clients/rules", "read",
+               "Regeln je Gerät: Stunden ohne Anfrage, eigene Schwelle (ms, Minuten), stumm, erwartete Software, "
+               "dazu offene Alarme und der Lernstand von „neues Gerät“.", ["rules", "inventory"])
+apiv1.endpoint("POST", "/clients/rules", "/api/clients/rules", "admin",
+               "Regeln eines Geräts setzen. Body: {\"ip\": …, \"silent_h\": 6, \"offset_ms\": 500, "
+               "\"offset_min\": 10, \"mute\": false, \"expect\": \"windows\"} (null/\"\" = aus).",
+               ["ip", "silent_h", "offset_ms", "offset_min", "mute", "expect"])
+apiv1.endpoint("GET", "/clients/pass", "/api/clients/pass", "read",
+               "Gerätepass: alles Wichtige zu einem Gerät für die Druckseite (lokal). Mit share=1 nur eine "
+               "gefilterte Textkopie zum Weitergeben (Adressen als Pseudonym, eigene Namen ersetzt, ohne Notiz).",
+               ["address", "name", "group", "software", "entry", "week", "daily", "month", "quality", "nts",
+                "recommendations"], {"ip": "Adresse des Clients (Pflicht)", "share": "1 = gefilterte Textkopie"})
 apiv1.endpoint("GET", "/notify", "/api/notify", "admin",
                "Benachrichtigungen: Kanäle mit Filtern und Zustellstand. Tokens nur als „gesetzt“ "
                "(secret_set), nie im Klartext; Adressen mit Pfad/Abfrage nur gekürzt (url_hidden).", ["channels", "types", "levels", "kinds", "defaults", "limits",
@@ -350,6 +376,7 @@ def collector() -> None:
             HISTORY.save()
             STATE_WATCH.sample(sample)
             client_alarms()
+            clients3.tick(settings.values(), events.emit)  # Regeln je Gerät, Inventar, Stundenwerte; wirft nie
             loop_check()
             autocal.maybe_tick()   # höchstens einmal pro Stunde, wirft nie
             gpsquality.maybe_tick(settings.values)  # Fehlerschranke GPS ohne PPS, stündlich, wirft nie
@@ -404,7 +431,11 @@ def client_alarms() -> None:
         # Titel nur mit der Adresse (egress pseudonymisiert sie): Ein eigener Name im gespeicherten
         # Titel bliebe nach Umbenennen/Löschen 90 Tage stehen und ginge dann ungefiltert hinaus.
         # Den Namen setzt erst die Anzeige ein (/api/events → display_title).
-        STATE_WATCH.clients(clientmon.status()["clients"], threshold, fmt=clientinfo.fmt_offset)
+        # 1.5: Geräte mit eigener Schwelle prüft clients3 (Regeln je Gerät); stumme bleiben lokal.
+        rule_map = clients3.rules()
+        STATE_WATCH.clients(clients3.global_alarm_filter(clientmon.status()["clients"], rule_map), threshold,
+                            fmt=clientinfo.fmt_offset,
+                            data_for=lambda ip: {"notify": False} if (rule_map.get(ip) or {}).get("mute") else {})
     except Exception as exc:  # ein Alarm darf die Messung nie aufhalten
         print(f"[web] Alarm für Client-Uhren nicht geprüft: {exc}", flush=True)
 
@@ -1444,7 +1475,40 @@ class Handler(BaseHTTPRequestHandler):
             if result is None:
                 self._error(HTTPStatus.NOT_FOUND, "Dieses Gerät ist (noch) nicht bekannt.")
                 return
+            try:
+                result.update(clients3.detail_extras(result["address"], result, settings.values()))
+            except Exception as exc:  # noqa: BLE001 – Clients 3 ist ein Zusatz zur Detailseite
+                print(f"[web] Uhrgüte/Regeln für die Detailseite fehlgeschlagen: {exc}", flush=True)
             self._send_json(result)
+        elif path == "/api/clients/groups":
+            status = clientmon.status()
+            # Wie Detailseite und Uhrgüte: ohne laufende Messung der gespeicherte Stand.
+            snap = status["clients"] if status.get("running") else clientmon.private_snapshot()
+            self._send_json(clients3.view(snap, str(query.get("by") or "group"), clientinfo.all_meta(),
+                                          clients3.rules(), clients3.quality_all(), now=time.time(),
+                                          monitor_since=status.get("since"), running=bool(status.get("running"))))
+        elif path == "/api/clients/quality":
+            self._send_json(clients3.quality_overview(clients3.quality_all()))
+        elif path == "/api/clients/rules":
+            self._send_json({"rules": {ip: clients3.public_rule(r) for ip, r in clients3.rules().items()},
+                             "inventory": clients3.INVENTORY.status()})
+        elif path == "/api/clients/pass":
+            addr = clientinfo.clean_ip(query.get("ip"))
+            if addr is None:
+                self._error(HTTPStatus.BAD_REQUEST, "Ungültige IP-Adresse.")
+                return
+            cfg = settings.values()
+            data = clients3.device_pass(addr, cfg)
+            if data is None:
+                self._error(HTTPStatus.NOT_FOUND, "Dieses Gerät ist (noch) nicht bekannt.")
+                return
+            if str(query.get("share") or "") == "1":
+                try:
+                    self._send_json(clients3.shared_pass(data, cfg))
+                except clients3.PassLeak as exc:
+                    self._error(HTTPStatus.CONFLICT, str(exc))
+                return
+            self._send_json(data)
         elif path == "/api/notify":
             self._send_json(notify.api_config())
         elif path == "/api/notify/status":
@@ -1645,6 +1709,19 @@ class Handler(BaseHTTPRequestHandler):
             except clientinfo.ProbeLimited as exc:
                 self._error(HTTPStatus.TOO_MANY_REQUESTS, str(exc), retry_after=round(exc.retry_after))
             except clientinfo.MetaError as exc:
+                self._error(HTTPStatus.UNPROCESSABLE_ENTITY, str(exc))
+        elif path in ("/api/clients/groups", "/api/clients/groups/delete", "/api/clients/rules"):
+            try:
+                if path == "/api/clients/groups":
+                    self._send_json(clients3.save_group(data))
+                elif path == "/api/clients/groups/delete":
+                    if not clients3.delete_group(data.get("id")):
+                        self._error(HTTPStatus.NOT_FOUND, "Diese Gruppe gibt es nicht (mehr).")
+                        return
+                    self._send_json({"ok": True})
+                else:
+                    self._send_json(clients3.save_rule(data.get("ip"), data))
+            except clients3.Clients3Error as exc:
                 self._error(HTTPStatus.UNPROCESSABLE_ENTITY, str(exc))
         elif path == "/api/notify/channels":
             try:

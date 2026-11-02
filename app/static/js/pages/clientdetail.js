@@ -2,7 +2,7 @@
 // Verlauf der Abweichung, Abstand/Poll, Zustand mit Grund, vermutete Software, Name/Notiz,
 // „Aktiv nachmessen“. Alles kommt aus /api/clients/detail; geschrieben wird nur über
 // /api/clients/meta und /api/clients/probe (Admin).
-import { el, apiPost, fmtDuration, fmtNumber, fmtSeconds, fmtTime, isNum } from "../util.js";
+import { el, apiPost, fmtDuration, fmtNumber, fmtSeconds, fmtTime, isNum, rich } from "../util.js";
 import { card, tile, info, badge, kv, emptyNote, toast } from "../ui.js";
 import { lineChart } from "../charts.js";
 import { axisSeconds } from "./overview.js";
@@ -80,8 +80,8 @@ function metaCard(ctx, ip, detail) {
     }
   };
   return card("Eigener Name und Notiz", { help: "client_meta",
-    sub: "Nur für dich: Name und Notiz bleiben auf dieser Instanz. Im Diagnosepaket und in Benachrichtigungen "
-      + "ersetzt ntp-gui den Namen durch einen Platzhalter." },
+    sub: "Nur für dich: Name und Notiz bleiben auf dieser Instanz. Im Diagnosepaket ersetzt ntp-gui den Namen "
+      + "durch einen Platzhalter; Benachrichtigungen über dieses Gerät nennen ihn – statt der Adresse." },
   el("div", { class: "fields" },
     el("label", { class: "field" }, el("span", { class: "field-label", text: "Name" }), name),
     el("label", { class: "field" }, el("span", { class: "field-label", text: "Notiz" }), note)),
@@ -136,12 +136,130 @@ function softwareCard(detail) {
   const list = sw.candidates || [];
   return card("Vermutete Client-Software", { help: "client_software",
     badge: badge("Vermutung", "warn", "Aus Indizien geschätzt – kein Beweis") },
+  detail.expect_mismatch ? el("p", { class: "client-mismatch", text: detail.expect_mismatch }) : null,
   list.length ? el("ul", { class: "client-guess" }, list.map((c) => el("li", {},
     el("div", { class: "client-guess-head" }, el("strong", { text: c.label }),
       badge(c.confidence, c.confidence === "wahrscheinlich" ? "good" : "muted")),
     el("ul", { class: "client-guess-reasons" }, (c.reasons || []).map((r) => el("li", { text: r }))))))
     : emptyNote("Zu wenig Hinweise für eine Vermutung."),
   (sw.basis || []).length ? el("p", { class: "field-help", text: `Grundlage: ${sw.basis.join(" · ")}` }) : null);
+}
+
+// --- Clients 3 (1.5): Uhrgüte, Regeln, NTS -------------------------------------------
+export function qualityBadge(q) {
+  if (!q || !isNum(q.score)) return badge(q?.grade || "–", "muted", q?.text || null);
+  return badge(`${q.score} · ${q.grade}`, q.tone || "muted", q.text || null);
+}
+
+export function fmtPpm(value) {
+  if (!isNum(value)) return "–";
+  return `${value >= 0 ? "+" : "−"}${fmtNumber(Math.abs(value), Math.abs(value) < 10 ? 1 : 0)} ppm`;
+}
+
+function qualityCard(detail) {
+  const q = detail.quality;
+  if (!q) return null;
+  const parts = q.components || [];
+  return card("Uhrgüte", { help: "client_quality", badge: qualityBadge(q),
+    sub: q.text || null },
+  kv([
+    ["Gangabweichung", isNum(q.drift_ppm) ? `${fmtPpm(q.drift_ppm)}${isNum(q.drift_err_ppm) ? ` (± ${fmtNumber(q.drift_err_ppm, 1)})` : ""}` : "–", "client_drift"],
+    ["Abfrage-Intervall", fmtInterval(q.interval), "client_typical_interval"],
+    ["Streuung", isNum(q.jitter) ? `± ${fmtOffset(q.jitter).replace(/^[+−]/, "")}` : "–", "client_quality_parts"],
+    ["Messungen ausgewertet", fmtNumber(q.n || 0), "client_quality"],
+  ]),
+  parts.length ? el("ul", { class: "quality-parts", "aria-label": "Bestandteile der Uhrgüte" }, parts.map((c) =>
+    el("li", {},
+      el("span", { class: "quality-part-label", text: c.label }),
+      el("span", { class: "quality-part-bar", "aria-hidden": "true" },
+        el("span", { class: "quality-part-fill", style: `width:${(c.points / c.max) * 100}%` })),
+      el("span", { class: "quality-part-points", text: `${c.points}/${c.max}` }),
+      el("span", { class: "field-help", text: c.text })))) : null,
+  parts.length ? el("p", { class: "field-help" }, "Wie die Punkte entstehen: ", info("client_quality_parts")) : null);
+}
+
+function numberInput(value, attrs) {
+  return el("input", { type: "number", inputmode: "decimal", value: isNum(value) ? String(value) : "", ...attrs });
+}
+
+function rulesCard(ctx, ip, detail) {
+  const rule = detail.rule || {};
+  const drafts = ctx.uiState.clientRules || (ctx.uiState.clientRules = {});
+  const fresh = { silent_h: rule.silent_h ?? null, offset_ms: rule.offset_ms ?? null, offset_min: rule.offset_min || 0,
+    mute: Boolean(rule.mute), expect: rule.expect || "" };
+  const draft = drafts[ip] && drafts[ip].dirty ? drafts[ip] : (drafts[ip] = { ...fresh, dirty: false });
+  const readonly = ctx.readonly;
+  const touch = (key, value) => { draft[key] = value; draft.dirty = true; };
+  const silent = numberInput(draft.silent_h, { min: "0.25", max: "720", step: "0.25", disabled: readonly || null,
+    placeholder: "aus", "aria-label": "Stunden ohne Anfrage" });
+  silent.addEventListener("input", () => touch("silent_h", silent.value === "" ? null : Number(silent.value)));
+  const offset = numberInput(draft.offset_ms, { min: "1", max: "86400000", step: "1", disabled: readonly || null,
+    placeholder: "aus", "aria-label": "Eigene Schwelle in Millisekunden" });
+  offset.addEventListener("input", () => touch("offset_ms", offset.value === "" ? null : Number(offset.value)));
+  const minutes = numberInput(draft.offset_min, { min: "0", max: "1440", step: "1", disabled: readonly || null,
+    "aria-label": "Minuten über der Schwelle" });
+  minutes.addEventListener("input", () => touch("offset_min", minutes.value === "" ? 0 : Number(minutes.value)));
+  const mute = el("input", { type: "checkbox", role: "switch", checked: draft.mute, disabled: readonly || null,
+    "aria-label": "Gerät stummschalten" });
+  const muteText = el("span", { class: "switch-text", text: draft.mute ? "an" : "aus" });
+  mute.addEventListener("change", () => { touch("mute", mute.checked); muteText.textContent = mute.checked ? "an" : "aus"; });
+  const expect = el("select", { disabled: readonly || null, "aria-label": "Erwartete Client-Software" },
+    el("option", { value: "", text: "keine Angabe" }),
+    (detail.expect_options || []).map((o) => el("option", { value: o.key, text: o.label })));
+  expect.value = draft.expect;
+  expect.addEventListener("change", () => touch("expect", expect.value));
+  const save = async () => {
+    try {
+      await apiPost("/api/clients/rules", { ip, silent_h: draft.silent_h, offset_ms: draft.offset_ms,
+        offset_min: draft.offset_min, mute: draft.mute, expect: draft.expect });
+      drafts[ip] = { ...draft, dirty: false };
+      toast("Regeln gespeichert");
+      ctx.invalidate(`clientdetail:${ip}`);
+      ctx.invalidate("clientgroups");
+      ctx.rerender();
+    } catch (error) {
+      toast(`Nicht gespeichert: ${error.message}`, "crit");
+    }
+  };
+  const field = (label, help, control, note) => el("div", { class: "field" },
+    el("div", { class: "field-head" }, el("span", { class: "field-label" }, el("span", { text: label }), " ", info(help, label))),
+    control, note ? el("p", { class: "field-help", text: note }) : null);
+  const open = [rule.silent_alarm ? "„fragt nicht mehr“ ist gemeldet" : null,
+    rule.offset_alarm ? "„weicht ab“ ist gemeldet" : null].filter(Boolean);
+  return card("Regeln für dieses Gerät", { help: "client_rules",
+    badge: open.length ? badge("Alarm offen", "warn", open.join(", ")) : null,
+    sub: "Eigene Meldungen nur für dieses Gerät – entprellt wie alle Ereignisse. Benachrichtigungen nennen den "
+      + "**eigenen Namen** des Geräts" + (detail.lan_addresses_in_messages ? " und seine LAN-Adresse." : ", nie seine Adresse.") },
+  el("div", { class: "fields" },
+    field("Melden, wenn es so lange nicht fragt (Stunden)", "client_rule_silent", silent,
+      "Für Geräte, die immer fragen sollten (Kamera, SPS, NAS). Leer = aus. Gezählt wird nur, solange ntp-gui mithört."),
+    field("Eigene Alarm-Schwelle (ms)", "client_rule_offset", offset,
+      "Ersetzt für dieses Gerät die allgemeine Schwelle aus den Einstellungen. Leer = allgemeine Schwelle."),
+    field("… für mindestens (Minuten)", "client_rule_offset", minutes,
+      "0 = sobald zwei Messungen hintereinander darüber liegen."),
+    field("Stumm", "client_rule_mute", el("label", { class: "switch" }, mute,
+      el("span", { class: "switch-track", "aria-hidden": "true" }), muteText),
+    "Ereignisse bleiben im Protokoll, gehen aber nicht als Benachrichtigung hinaus."),
+    field("Erwartete Client-Software", "client_rule_expect", expect,
+      "Was auf dem Gerät läuft, wenn du es weißt – zählt in der Ansicht „nach Software“ und im Gerätepass vor der Vermutung.")),
+  readonly ? emptyNote("Änderungen sind gesperrt (WEB_READONLY).")
+    : el("div", { class: "button-row" }, el("button", { type: "button", class: "button primary", text: "Regeln speichern", onclick: save })));
+}
+
+function ntsCard(detail) {
+  const nts = detail.nts;
+  if (!nts) return null;
+  const tone = nts.uses ? "good" : nts.server ? "muted" : "muted";
+  const can = nts.can === true ? "ja" : nts.can === false ? "nein" : "je nach Variante";
+  return card("NTS für dieses Gerät", { help: "client_nts",
+    badge: badge(nts.uses ? "nutzt NTS" : nts.server ? "kein NTS" : "NTS-Server aus", tone) },
+  kv([
+    ["NTS-Server dieser Instanz", nts.server ? "an" : "aus", "client_nts"],
+    ["Nutzt NTS", nts.uses === null ? "–" : nts.uses ? `ja (${fmtNumber(nts.nts_ke || 0)} Schlüsselaustausche)` : "nein", "client_nts"],
+    ["Software kann NTS", can, "client_nts"],
+  ]),
+  el("p", { class: "field-help", text: nts.text || "" }),
+  el("p", { class: "field-help" }, rich(nts.how || "")));
 }
 
 // --- Seite --------------------------------------------------------------------------
@@ -212,7 +330,9 @@ export function renderDetail(ctx, ip) {
     el("div", { class: "client-head" },
       el("h1", { class: "client-title", text: title }),
       detail.name ? el("span", { class: "mono client-sub", text: detail.address }) : null,
-      detail.rdns ? el("span", { class: "mono client-sub", text: detail.rdns }) : null),
+      detail.rdns ? el("span", { class: "mono client-sub", text: detail.rdns }) : null,
+      el("a", { class: "button client-pass-link", href: `${clientHref(detail.address)}/pass`, text: "Gerätepass" }),
+      info("client_pass", "Gerätepass")),
     el("div", { class: "stat-row" },
       tile({ label: "Uhr geht falsch um", help: "client_offset", value: entry.measurable ? fmtOffset(entry.ewma) : "–",
         tone: entry.measurable ? offsetTone(entry.ewma) : "muted",
@@ -223,7 +343,10 @@ export function renderDetail(ctx, ip) {
         tone: isNum(entry.interval) && entry.interval < 8 ? "warn" : "muted",
         note: isNum(entry.poll) ? `Poll-Feld ${entry.poll}${entry.poll === 0 ? " (nicht gesetzt)" : ""}` : "Poll-Feld unbekannt" }),
       tile({ label: "NTP-Version", help: "client_version", value: isNum(entry.version) ? String(entry.version) : "–",
-        tone: "muted", note: `${fmtNumber(entry.requests || 0)} Anfragen` })),
+        tone: "muted", note: `${fmtNumber(entry.requests || 0)} Anfragen` }),
+      tile({ label: "Uhrgüte", help: "client_quality", value: isNum(detail.quality?.score) ? String(detail.quality.score) : "–",
+        unit: isNum(detail.quality?.score) ? "/100" : null, tone: detail.quality?.tone || "muted",
+        note: isNum(detail.quality?.drift_ppm) ? `${detail.quality.grade} · ${fmtPpm(detail.quality.drift_ppm)}` : (detail.quality?.grade || "–") })),
     card("Abweichung über die Zeit", { help: "client_offset_chart", actions: rangeGroup(range, setRange),
       sub: `Jede gespeicherte Anfrage ein Punkt (höchstens alle 2 min einer), ${fmtNumber(detail.retention_days || 7)} Tage lang.` },
     offsetHost),
@@ -236,6 +359,7 @@ export function renderDetail(ctx, ip) {
           ["MAC-Adresse", macText, "client_mac"],
           ["Hersteller", vendorText, "client_mac"],
           ["VLAN", isNum(entry.vlan) ? String(entry.vlan) : "–", "client_vlan"],
+          ["Gruppe", detail.group ? `${detail.group.name} (${detail.group.network})` : "ohne Gruppe", "client_group"],
           ["Zuerst gesehen", fmtDate(entry.first_seen), "client_seen"],
           ["Zuletzt gesehen", fmtDate(entry.last_seen), "client_seen"],
           ["Anfragen", fmtNumber(entry.requests || 0), "client_packets"],
@@ -244,7 +368,9 @@ export function renderDetail(ctx, ip) {
         el("p", { class: "field-help", text: detail.measurable_reason || "" }),
         detail.rdns_skipped ? el("p", { class: "field-help", text: `DNS: ${detail.rdns_skipped}` }) : null),
       softwareCard(detail)),
-    el("div", { class: "grid-2" }, metaCard(ctx, ip, detail), probeCard(ctx, ip, detail)),
+    el("div", { class: "grid-2" }, qualityCard(detail), ntsCard(detail)),
+    el("div", { class: "grid-2" }, metaCard(ctx, ip, detail), rulesCard(ctx, ip, detail)),
+    probeCard(ctx, ip, detail),
   ];
 }
 

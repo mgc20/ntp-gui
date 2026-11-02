@@ -684,9 +684,15 @@ def _client_names() -> list[str]:
     """Selbst vergebene Namen der Clients (Clients-Detailseite) – egress ersetzt sie durch <name>."""
     try:
         import clientinfo
-        return clientinfo.export_names()
+        names = clientinfo.export_names()
     except Exception:  # noqa: BLE001
-        return []
+        names = []
+    try:
+        import clients3  # 1.5: eigene Gruppennamen („Kinderzimmer“) ebenso ersetzen
+        names = sorted(set(names) | set(clients3.group_names()))
+    except Exception:  # noqa: BLE001
+        pass
+    return names
 
 
 def _render(name: str, content: Any) -> tuple[str, str]:

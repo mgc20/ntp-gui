@@ -244,6 +244,26 @@ def clients() -> list[dict[str, Any]]:
     return _safe(lambda: parse_clients(run("-c", "clients")), default=[])
 
 
+def parse_clients_nts(text: str) -> list[dict[str, Any]]:
+    """chronyc -c clients -k: gleiche Spalten wie „clients“, nur stehen statt der Befehls-Pakete die
+    NTS-KE-Verbindungen dort (Kopf „NTS-KE Drop Int Last“ statt „Cmd Drop Int Last“, geprüft mit 4.5)."""
+    rows = []
+    for record in parse_clients(text):
+        rows.append({
+            "address": record.get("address"),
+            "ntp_packets": record.get("ntp_packets"),
+            "nts_ke": record.get("cmd_packets"),
+            "nts_ke_dropped": record.get("cmd_dropped"),
+            "nts_ke_last_rx": record.get("cmd_last_rx"),
+        })
+    return rows
+
+
+def clients_nts() -> list[dict[str, Any]]:
+    """NTS-KE-Verbindungen je Client (nur sinnvoll, wenn der NTS-Server an ist)."""
+    return _safe(lambda: parse_clients_nts(run("-c", "clients", "-k")), default=[])
+
+
 def activity() -> dict[str, Any]:
     return _safe(lambda: parse_activity(run("-c", "activity")), default={})
 

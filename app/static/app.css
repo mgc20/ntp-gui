@@ -882,3 +882,43 @@ details.enforce-names { margin-top: 10px; }
 .antenna-pick { margin-bottom: 8px; }
 .antenna-pick .inline-field { min-width: 0; flex: 1 1 220px; }
 .antenna-pick select { max-width: 100%; }
+
+/* ---------- Clients 3 (1.5): Uhrgüte, Gruppen, Gerätepass ---------- */
+.score-value { font-variant-numeric: tabular-nums; font-weight: 600; }
+.score-value[data-tone="good"] { color: var(--good); }
+.score-value[data-tone="warn"] { color: var(--warn); }
+.score-value[data-tone="crit"] { color: var(--crit); }
+.worst-clock { display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.quality-parts { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 8px; }
+.quality-parts li { display: grid; grid-template-columns: minmax(7em, auto) minmax(60px, 1fr) auto; gap: 2px 10px; align-items: center; }
+.quality-parts .field-help { grid-column: 1 / -1; }
+.quality-part-label { font-size: 13px; font-weight: 600; }
+.quality-part-bar { height: 8px; border-radius: 4px; background: var(--border-soft); overflow: hidden; }
+.quality-part-fill { display: block; height: 100%; background: var(--accent); }
+.quality-part-points { font-size: 12.5px; font-variant-numeric: tabular-nums; color: var(--ink-muted); }
+.client-mismatch { margin: 0 0 10px; padding: 8px 10px; border-radius: 8px; background: var(--warn-soft, var(--accent-soft)); font-size: 13px; }
+.client-pass-link { margin-left: auto; align-self: center; }
+.group-table td { vertical-align: top; }
+.group-extra td { padding-top: 0; border-top: 0; }
+.group-hint { margin: 0 0 6px; font-size: 13px; color: var(--warn); }
+.group-members summary { cursor: pointer; font-size: 13px; color: var(--ink-muted); }
+.group-member-list { list-style: none; margin: 6px 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.group-form { margin-top: 14px; display: grid; gap: 10px; }
+.group-form-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; }
+.group-form-row .inline-field { flex: 1 1 180px; min-width: 0; }
+.group-suggest { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.client-pass-head { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 18px; margin-bottom: 14px; }
+.client-pass-head > div:first-child { flex: 1 1 260px; min-width: 0; }
+.client-pass-kind { margin: 0; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--ink-muted); }
+.client-pass-meta { display: grid; gap: 4px; justify-items: start; }
+.client-pass-note { margin: 10px 0 0; font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.client-pass-foot { margin-top: 12px; display: flex; gap: 6px; align-items: center; }
+
+/* Druck: nur der Inhalt (Gerätepass), ohne Kopfzeile, Navigation und Knöpfe. */
+@media print {
+  .topbar, .nav, .footer, .update-banner, .no-print, .info, .copy { display: none !important; }
+  body { background: #fff; color: #000; }
+  main { padding: 0 !important; max-width: none !important; }
+  .card { box-shadow: none !important; break-inside: avoid; border-color: #bbb; }
+  .client-pass .snippet pre { white-space: pre-wrap; }
+}
