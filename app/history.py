@@ -1,7 +1,11 @@
 """Verlauf der Messwerte für die Diagramme – in SQLite, mit Rückfall auf .json.gz.
 
 Ein Messpunkt enthält die Systemuhr (tracking), den Offset jeder Quelle, den
-Zähler der beantworteten Anfragen sowie GPS- und PTP-Werte.
+Zähler der beantworteten Anfragen sowie GPS- und PTP-Werte. Ab 1.4 dazu „temp“:
+die Temperatur des gewählten Sensors in °C (thermal.py), falls es einen gibt. Weil
+ein Messpunkt als JSON gespeichert wird, braucht das neue Feld keine Migration –
+ältere Punkte haben es einfach nicht, die Verdichtung (Mittelwert je Fenster)
+behandelt es wie die übrigen Zahlen.
 
 Speicher (ab 1.3): Tabelle samples(t INTEGER PRIMARY KEY, json TEXT) in
 DATA_DIR/ntp-gui.db (store.py). Neue Messpunkte sammeln sich im Speicher und
@@ -60,7 +64,7 @@ except ImportError:  # pragma: no cover – Python ohne sqlite3
 import store
 
 _NUMERIC_TOP = ("offset", "rms", "freq", "skew", "root_delay", "root_dispersion",
-                "stratum", "served", "clients")
+                "stratum", "served", "clients", "temp")
 _GROUPS = ("gps", "ptp")
 
 LEGACY_SIZE = 8640          # Standard von HISTORY_SIZE in 1.2 (24 h bei 10 s)

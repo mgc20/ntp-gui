@@ -856,3 +856,7 @@ details.enforce-names { margin-top: 10px; }
 .dns-status { margin: 4px 0 16px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
 .dns-status .mini-head { margin-top: 12px; }
 .dns-status .svc-name { overflow-wrap: anywhere; }
+
+/* ---------- Uhrqualität (1.4) ---------- */
+.uq-subchart { margin-top: 12px; }
+.uq-subchart .mini-head { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }

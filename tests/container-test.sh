@@ -99,6 +99,15 @@ assert d['tracking'].get('stratum') is not None, 'kein Stratum'
 assert 'system' in d and 'sources' in d and 'gps' in d and 'ptp' in d, 'Felder fehlen'
 " "$STATUS" 2>/dev/null; then ok "API liefert vollständigen Status"; else bad "API-Status unvollständig"; fi
 contains "Metrik ntpgui_up vorhanden" "$(curl -s http://127.0.0.1:18080/metrics)" "ntpgui_up 1"
+# 1.4 Uhrqualität: Schaltsekunden-Liste aus dem Image, Vollbild-Uhr, Temperatur (im CI meist ohne Sensor).
+LEAPJ=$(curl -s --max-time 10 http://127.0.0.1:18080/api/v1/leap)
+check "Schaltsekunden: TAI−UTC aus der Liste" 37 "$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('tai_utc'))" "$LEAPJ" 2>/dev/null)"
+check "Schaltsekunden: Prüfsumme der Liste stimmt" True "$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('hash_ok'))" "$LEAPJ" 2>/dev/null)"
+check "Vollbild-Uhr /clock" 200 "$(http http://127.0.0.1:18080/clock)"
+TIMEJ=$(curl -s --max-time 10 http://127.0.0.1:18080/api/v1/time)
+check "/api/v1/time: t1 ≤ t2" True "$(python3 -c "import json,sys; d=json.loads(sys.argv[1]); print(0 < d['t1'] <= d['t2'])" "$TIMEJ" 2>/dev/null)"
+check "Temperatur-API antwortet (auch ohne Sensor)" 200 "$(http http://127.0.0.1:18080/api/v1/temperature)"
+contains "Metrik TAI−UTC vorhanden" "$(curl -s http://127.0.0.1:18080/metrics)" "ntpgui_tai_utc_offset_seconds 37"
 
 echo
 echo "1b) Log, Ereignisse, Diagnosepaket, Client-Messung (1.3)"
@@ -278,6 +287,14 @@ check "Mit Login erlaubt"       200 "$(http -u 'admin:S3hr geheim' http://127.0.
 check "healthz bleibt offen"    200 "$(http http://127.0.0.1:18081/healthz)"
 check "Mit Login gilt jeder Host-Name" 200 "$(http -u 'admin:S3hr geheim' -H 'Host: attacker.example' http://127.0.0.1:18081/api/status)"
 check "Fremder Host ohne Login: 401" 401 "$(http -H 'Host: attacker.example' http://127.0.0.1:18081/api/status)"
+check "Vollbild-Uhr standardmäßig geschützt" 401 "$(http http://127.0.0.1:18081/api/v1/time)"
+curl -s --max-time 10 -u 'admin:S3hr geheim' -H 'Content-Type: application/json' -H 'X-NTP-GUI: 1' \
+  -d '{"changes":{"clock_public":true}}' http://127.0.0.1:18081/api/settings >/dev/null
+check "clock_public: /clock ohne Login"        200 "$(http http://127.0.0.1:18081/clock)"
+check "clock_public: /api/v1/time ohne Login"  200 "$(http http://127.0.0.1:18081/api/v1/time)"
+check "clock_public: Status bleibt geschützt"  401 "$(http http://127.0.0.1:18081/api/v1/status)"
+check "clock_public: kein Quellenname ohne Login" None \
+  "$(curl -s --max-time 10 http://127.0.0.1:18081/api/v1/time | python3 -c "import json,sys; print(json.load(sys.stdin).get('source'))" 2>/dev/null)"
 
 echo
 echo "3b) API-Schlüssel und /api/v1"

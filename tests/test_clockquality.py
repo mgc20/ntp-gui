@@ -1,0 +1,558 @@
+"""1.4 Uhrqualität: Temperatursensoren, Schaltsekunden-Liste, Vollbild-Uhr (/clock, /api/v1/time).
+
+Läuft ohne chronyd und ohne echte Sensoren: sysfs wird als Ordnerbaum nachgebaut,
+chronyc durch Attrappen ersetzt.
+"""
+
+import base64
+import http.client
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import unittest
+from http.server import ThreadingHTTPServer
+from pathlib import Path
+from unittest import mock
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "app"))
+
+import history  # noqa: E402
+import leap  # noqa: E402
+import server  # noqa: E402
+import settings  # noqa: E402
+import store  # noqa: E402
+import thermal  # noqa: E402
+
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
+LEAP_REAL = FIXTURES / "leap-seconds.list"        # aus dem Image (debian:trixie, tzdata)
+LEAP_EXPIRED = FIXTURES / "leap-seconds-expired.list"
+NOW = 1793577600.0   # 2026-11-02 00:00 UTC
+
+
+def write(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+class FakeSys:
+    """Nachgebautes /sys mit Thermalzonen, hwmon und DS18B20."""
+
+    def __init__(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+
+    def zone(self, n, kind, millideg):
+        write(self.root / "class/thermal" / f"thermal_zone{n}" / "type", kind + "\n")
+        write(self.root / "class/thermal" / f"thermal_zone{n}" / "temp", f"{millideg}\n")
+
+    def hwmon(self, n, name, temps, labels=None):
+        base = self.root / "class/hwmon" / f"hwmon{n}"
+        write(base / "name", name + "\n")
+        for i, value in enumerate(temps, start=1):
+            write(base / f"temp{i}_input", f"{value}\n")
+            if labels:
+                write(base / f"temp{i}_label", labels[i - 1] + "\n")
+
+    def w1(self, serial, temperature=None, slave=None):
+        base = self.root / "bus/w1/devices" / serial
+        base.mkdir(parents=True, exist_ok=True)
+        if temperature is not None:
+            write(base / "temperature", f"{temperature}\n")
+        if slave is not None:
+            write(base / "w1_slave", slave)
+
+    def cleanup(self):
+        self.tmp.cleanup()
+
+
+class ThermalParseTest(unittest.TestCase):
+    def test_millidegrees(self):
+        self.assertEqual(thermal.parse_millidegrees("48312\n"), 48.31)
+        self.assertEqual(thermal.parse_millidegrees("-5000"), -5.0)
+        for bad in ("", "abc", "200000", "-60000", None):
+            self.assertIsNone(thermal.parse_millidegrees(bad), bad)
+
+    def test_w1_slave(self):
+        ok = "72 01 4b 46 7f ff 0e 10 57 : crc=57 YES\n72 01 4b 46 7f ff 0e 10 57 t=23125\n"
+        self.assertEqual(thermal.parse_w1_slave(ok), 23.12)
+        self.assertIsNone(thermal.parse_w1_slave(ok.replace("YES", "NO")), "Prüfsumme falsch → verwerfen")
+        self.assertIsNone(thermal.parse_w1_slave(ok.replace("t=23125", "t=85000")), "85 °C = Einschaltwert")
+        self.assertIsNone(thermal.parse_w1_slave(""))
+        self.assertIsNone(thermal.parse_w1_value("-127000"))
+
+
+class ThermalDiscoverTest(unittest.TestCase):
+    def setUp(self):
+        self.sys = FakeSys()
+        self.addCleanup(self.sys.cleanup)
+
+    def test_empty_system(self):
+        self.assertEqual(thermal.discover(str(self.sys.root)), [])
+        self.assertIsNone(thermal.choose([], "auto"))
+
+    def test_pi_prefers_cpu_thermal(self):
+        self.sys.zone(0, "cpu-thermal", 51234)
+        self.sys.zone(1, "rp1_adc", 40000)
+        self.sys.hwmon(0, "rp1_adc", [40000])
+        self.sys.w1("28-0316a2794bff", temperature=21500)
+        found = thermal.discover(str(self.sys.root))
+        self.assertEqual([s["id"] for s in found],
+                         ["thermal:cpu-thermal", "w1:28-0316a2794bff", "thermal:rp1_adc", "hwmon:rp1_adc:temp1"])
+        self.assertEqual(found[0]["celsius"], 51.23)
+        self.assertEqual(thermal.choose(found, "auto")["id"], "thermal:cpu-thermal")
+        self.assertEqual(thermal.choose(found, "w1:28-0316a2794bff")["celsius"], 21.5)
+        self.assertIsNone(thermal.choose(found, "off"))
+        self.assertIsNone(thermal.choose(found, "w1:28-000000000000"), "fehlender Sensor → kein stiller Ersatz")
+
+    def test_pc_hwmon_and_duplicates(self):
+        self.sys.zone(0, "acpitz", 27800)
+        self.sys.zone(1, "acpitz", 29800)
+        self.sys.zone(2, "x86_pkg_temp", 45000)
+        self.sys.hwmon(3, "nvme", [38850, 0], ["Composite", "Sensor 1"])
+        self.sys.hwmon(4, "coretemp", [46000, 44000], ["Package id 0", "Core 0"])
+        found = thermal.discover(str(self.sys.root))
+        ids = [s["id"] for s in found]
+        self.assertEqual(ids[0], "thermal:x86_pkg_temp")
+        self.assertEqual(ids[1], "hwmon:coretemp:temp1")
+        self.assertIn("thermal:acpitz", ids)
+        self.assertIn("thermal:acpitz:2", ids, "zweite Zone gleichen Namens bekommt :2")
+        coretemp = next(s for s in found if s["id"] == "hwmon:coretemp:temp1")
+        self.assertEqual(coretemp["label"], "coretemp Package id 0")
+        # Jede Kennung passt zur Prüfung der Einstellung.
+        for sensor_id in ids:
+            self.assertEqual(settings._as_temp_sensor(sensor_id), sensor_id)
+
+    def test_k10temp_and_unreadable_zone(self):
+        self.sys.zone(0, "broken", "")
+        self.sys.hwmon(0, "k10temp", [55125])
+        found = thermal.discover(str(self.sys.root))
+        self.assertEqual([s["id"] for s in found], ["hwmon:k10temp:temp1"])
+
+    def test_w1_slave_fallback_and_silent_sensor(self):
+        self.sys.w1("28-0316a2794bff", slave="aa : crc=57 YES\naa t=19437\n")
+        self.sys.w1("28-0416b1110aff")  # ohne Werte: falsch verkabelt, trotzdem gelistet
+        found = thermal.discover(str(self.sys.root))
+        by_id = {s["id"]: s for s in found}
+        self.assertEqual(by_id["w1:28-0316a2794bff"]["celsius"], 19.44)
+        self.assertTrue(by_id["w1:28-0316a2794bff"]["path"].endswith("w1_slave"))
+        self.assertIsNone(by_id["w1:28-0416b1110aff"]["celsius"])
+        self.assertEqual(thermal.choose(found, "auto")["id"], "w1:28-0316a2794bff", "auto nimmt nur Sensoren mit Wert")
+
+    def test_monitor_status_and_sample(self):
+        self.sys.zone(0, "cpu-thermal", 50000)
+        with mock.patch.dict(os.environ, {"NTPGUI_SYS_ROOT": str(self.sys.root)}):
+            mon = thermal.Monitor()
+            self.assertEqual(mon.sample("auto"), 50.0)
+            status = mon.status("auto")
+            self.assertTrue(status["available"])
+            self.assertEqual(status["sensor"]["id"], "thermal:cpu-thermal")
+            self.assertNotIn("path", status["sensor"], "kein Dateipfad in der API")
+            self.assertEqual(mon.status("off")["reason"], "off")
+            self.assertEqual(mon.status("hwmon:k10temp:temp1")["reason"], "missing")
+            self.assertIsNone(mon.sample("off"))
+        empty = FakeSys()
+        self.addCleanup(empty.cleanup)
+        with mock.patch.dict(os.environ, {"NTPGUI_SYS_ROOT": str(empty.root)}):
+            status = thermal.Monitor().status("auto")
+            self.assertFalse(status["available"])
+            self.assertEqual(status["reason"], "none")
+
+    def test_setting_validation(self):
+        for good in ("auto", "off", "", "thermal:cpu-thermal", "hwmon:k10temp:temp1", "hwmon:nvme:temp2:2",
+                     "w1:28-0316a2794bff"):
+            settings._as_temp_sensor(good)
+        for bad in ("/sys/class/thermal/thermal_zone0/temp", "thermal:../../etc", "w1:28-xyz",
+                    "hwmon:k10temp", "auto\nfoo", "thermal:" + "a" * 41, "w1:10-0316a2794bff"):
+            with self.assertRaises(settings.ValidationError, msg=bad):
+                settings._as_temp_sensor(bad)
+        self.assertEqual(settings._as_temp_sensor(""), "auto")
+
+
+class ThermalSummaryTest(unittest.TestCase):
+    def test_pairs_need_both_values(self):
+        samples = [{"t": 1, "temp": 20.0, "freq": -3.0}, {"t": 2, "freq": -3.1}, {"t": 3, "temp": 21.0},
+                   {"t": 4, "temp": True, "freq": 1.0}, {"t": 5, "temp": 22.5, "freq": -3.2}]
+        self.assertEqual(thermal.pairs_from_samples(samples), [[1, 20.0, -3.0], [5, 22.5, -3.2]])
+
+    def test_summary_correlation_and_readiness(self):
+        # 4 Tage, Tagesgang 18–26 °C, Frequenz folgt mit 0,15 ppm/K.
+        import math
+        pairs = []
+        for i in range(4 * 96):
+            t = i * 900.0
+            temp = 22 + 4 * math.sin(2 * math.pi * t / 86400)
+            pairs.append([t, temp, -5.0 + 0.15 * (temp - 22)])
+        info = thermal.summarize(pairs)
+        self.assertTrue(info["ready"])
+        self.assertGreater(info["days"], 3.9)
+        self.assertAlmostEqual(info["span_k"], 8.0, delta=0.1)
+        self.assertAlmostEqual(info["correlation"], 1.0, places=3)
+        short = thermal.summarize(pairs[:96])
+        self.assertFalse(short["ready"], "1 Tag reicht nicht")
+        self.assertEqual(thermal.summarize([])["count"], 0)
+        flat = thermal.summarize([[i, 30.0, 1.0] for i in range(20)])
+        self.assertIsNone(flat["correlation"])
+
+
+class HistoryTempTest(unittest.TestCase):
+    def test_temp_is_aggregated_sqlite_and_python(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        db = os.path.join(tmp.name, store.DB_NAME)
+        self.addCleanup(store.close_all)
+        hist = history.History(None, os.path.join(tmp.name, "history.json.gz"), days=30, db_path=db)
+        self.assertEqual(hist.backend, "sqlite")
+        now = int(time.time())
+        for i in range(400):
+            sample = {"t": now - 4000 + i * 10, "freq": -3.0, "offset": 0.0}
+            if i % 2 == 0:
+                sample["temp"] = 20.0 + (i % 4)   # abwechselnd 20 und 22 °C
+            hist.add(sample)
+        hist.save(force=True)
+        rows = hist.query(None, 50)
+        temps = [r["temp"] for r in rows if "temp" in r]
+        self.assertTrue(temps, "temp muss die Verdichtung überleben")
+        self.assertTrue(all(20.0 <= t <= 22.0 for t in temps))
+        merged = history.downsample([{"t": 1, "temp": 20.0}, {"t": 2, "temp": 22.0}, {"t": 3}], 1)
+        self.assertEqual(merged[0]["temp"], 21.0)
+
+
+class LeapParseTest(unittest.TestCase):
+    def test_real_file_from_image(self):
+        parsed = leap.parse(LEAP_REAL.read_text(encoding="ascii"))
+        self.assertIs(parsed["hash_ok"], True)
+        info = leap.evaluate(parsed, NOW)
+        self.assertEqual(info["tai_utc"], 37)
+        self.assertEqual(info["last_leap_date"], "2017-01-01")
+        self.assertEqual(info["last_leap_delta"], 1)
+        self.assertEqual(info["leap_count"], 27)
+        self.assertEqual(info["expires_date"], "2027-06-28")
+        self.assertIsNone(info["next_leap_date"])
+        self.assertEqual(info["days_left"], 238)
+        self.assertEqual((info["level"], info["reason"]), ("ok", None))
+        self.assertEqual(leap.insights(info), [])
+
+    def test_expiring_within_60_days(self):
+        parsed = leap.parse(LEAP_REAL.read_text(encoding="ascii"))
+        expires = leap.to_unix(parsed["expires"])
+        info = leap.evaluate(parsed, expires - 30 * 86400)
+        self.assertEqual((info["level"], info["reason"], info["days_left"]), ("warn", "expiring", 30))
+        items = leap.insights(info)
+        self.assertEqual(len(items), 1)
+        self.assertIn("Image zu alt", items[0]["title"])
+        self.assertEqual(items[0]["action"], "uhrqualitaet")
+        self.assertEqual(leap.evaluate(parsed, expires - 61 * 86400)["level"], "ok")
+
+    def test_expired_fixture(self):
+        parsed = leap.parse(LEAP_EXPIRED.read_text(encoding="ascii"))
+        self.assertIs(parsed["hash_ok"], True, "Testdatei hat eine korrekt neu berechnete Prüfsumme")
+        info = leap.evaluate(parsed, NOW)
+        self.assertTrue(info["expired"])
+        self.assertEqual(info["expires_date"], "2024-06-28")
+        self.assertLess(info["days_left"], 0)
+        self.assertEqual((info["level"], info["reason"]), ("warn", "expired"))
+        self.assertIn("abgelaufen", leap.insights(info)[0]["title"])
+
+    def test_hash_mismatch(self):
+        text = re.sub(r"3692217600\s+37", "3692217600 38", LEAP_REAL.read_text(encoding="ascii"))
+        parsed = leap.parse(text)
+        self.assertIs(parsed["hash_ok"], False)
+        info = leap.evaluate(parsed, NOW)
+        self.assertEqual((info["level"], info["reason"]), ("warn", "hash"))
+        self.assertEqual(info["tai_utc"], 38)
+
+    def test_leading_zeros_in_hash_words(self):
+        # Wörter mit führender Null stehen ohne sie in der Datei – Vergleich als Zahl.
+        body = "#$ 3676924800\n#@ 3881174400\n2272060800 10 # 1 Jan 1972\n"
+        import hashlib
+        digest = hashlib.sha1(b"3676924800388117440022720608001 0".replace(b" ", b"")).hexdigest()
+        words = " ".join(format(int(digest[i:i + 8], 16), "x") for i in range(0, 40, 8))
+        self.assertIs(leap.parse(body + f"#h {words}\n")["hash_ok"], True)
+        self.assertIs(leap.parse(body + f"#h {'0' + words}\n")["hash_ok"], True)
+        self.assertIsNone(leap.parse(body)["hash_ok"], "ohne #h: unbekannt")
+
+    def test_future_leap_and_errors(self):
+        text = re.sub(r"(3692217600\s+37.*)", r"\1\n4030000000 38", LEAP_REAL.read_text(encoding="ascii"))
+        info = leap.evaluate(leap.parse(text), NOW)
+        self.assertEqual(info["tai_utc"], 37)
+        self.assertIsNotNone(info["next_leap_date"])
+        self.assertEqual(info["next_leap_delta"], 1)
+        with self.assertRaises(leap.LeapFileError):
+            leap.parse("#@ 4023129600\n")
+        with self.assertRaises(leap.LeapFileError):
+            leap.parse("2272060800 10\n")  # ohne Ablaufdatum
+        with self.assertRaises(leap.LeapFileError):
+            leap.parse("#@ 4023129600\nkaputt zeile\n")
+
+    def test_status_missing_file(self):
+        info = leap.status({"leapseclist": "/nicht/da"}, {"leap_status": "Normal"})
+        self.assertFalse(info["available"])
+        self.assertEqual(info["reason"], "missing")
+        self.assertEqual(info["chrony_leap"], "Normal")
+        self.assertEqual(leap.insights(info), [], "fehlende Datei meldet confgen/chrony selbst")
+        info = leap.status(path=str(LEAP_REAL), now=NOW)
+        self.assertTrue(info["available"])
+        self.assertEqual(info["tai_utc"], 37)
+
+
+class LeapWatchTest(unittest.TestCase):
+    def test_expired_file_emits_leap_warn_once(self):
+        emitted, recent = [], []
+        watch = leap.Watch(lambda *args: emitted.append(args), lambda since: recent)
+        info = leap.status(path=str(LEAP_EXPIRED), now=NOW)
+        self.assertTrue(watch.check(info, NOW))
+        self.assertEqual(len(emitted), 1)
+        kind, level, title, data = emitted[0]
+        self.assertEqual((kind, level), ("leap", "warn"))
+        self.assertIn("abgelaufen", title)
+        self.assertEqual(data["expires"], "2024-06-28")
+        self.assertFalse(watch.check(info, NOW + 3600), "nicht bei jeder Prüfung")
+        self.assertTrue(watch.check(info, NOW + 8 * 86400), "nach einer Woche Erinnerung")
+        ok = leap.status(path=str(LEAP_REAL), now=NOW)
+        self.assertFalse(watch.check(ok, NOW))
+
+    def test_restart_reads_protocol(self):
+        info = leap.status(path=str(LEAP_EXPIRED), now=NOW)
+        key = f"expired:{info['expires']}"
+        emitted = []
+        watch = leap.Watch(lambda *args: emitted.append(args),
+                           lambda since: [{"t": NOW - 3600, "kind": "leap", "data": {"key": key}}])
+        self.assertFalse(watch.check(info, NOW), "nach Neustart nicht erneut melden")
+        self.assertEqual(emitted, [])
+
+    def test_with_real_event_store(self):
+        import events
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        with mock.patch.object(store, "DATA_DIR", tmp.name):
+            try:
+                watch = leap.Watch(events.emit, lambda since: events.query(since=since, kinds=["leap"]))
+                info = leap.status(path=str(LEAP_EXPIRED))
+                self.assertTrue(watch.check(info))
+                rows = events.query(kinds=["leap"])
+                self.assertEqual(len(rows), 1)
+                self.assertEqual((rows[0]["kind"], rows[0]["level"]), ("leap", "warn"))
+                again = leap.Watch(events.emit, lambda since: events.query(since=since, kinds=["leap"]))
+                self.assertFalse(again.check(info))
+            finally:
+                store.close_all()
+
+
+class ClockStatusTest(unittest.TestCase):
+    def test_levels_and_kinds(self):
+        gps = {"synchronised": True, "stratum": 1, "ref_name": "PPS", "root_delay": 0.0, "root_dispersion": 2e-5,
+               "system_time_offset": 1e-6, "leap_status": "Normal"}
+        out = server.clock_status(gps)
+        self.assertEqual((out["level"], out["source_kind"]), ("good", "GPS + PPS"))
+        self.assertAlmostEqual(out["accuracy"], 2.1e-5)
+        own = server.clock_status({**gps, "ref_name": "XYZ1"})
+        self.assertEqual(own["source_kind"], "Referenzuhr", "eigene Refid wird nicht verraten")
+        ntp = server.clock_status({**gps, "stratum": 3, "ref_name": "ptbtime1.ptb.de", "root_delay": 0.02})
+        self.assertEqual(ntp["source_kind"], "NTP")
+        bad = server.clock_status({**gps, "stratum": 3, "root_delay": 0.4})
+        self.assertEqual(bad["level"], "warn")
+        self.assertEqual(server.clock_status({})["level"], "crit")
+        island = server.clock_status({"stratum": 10, "local_reference": True, "synchronised": False})
+        self.assertEqual((island["level"], island["source_kind"]), ("warn", "lokal (Inselbetrieb)"))
+
+
+class ClockHttpTest(unittest.TestCase):
+    TRACKING = {"synchronised": True, "stratum": 2, "ref_name": "nas.fritz.box", "root_delay": 0.004,
+                "root_dispersion": 0.0005, "system_time_offset": 0.0, "leap_status": "Normal"}
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.patches = [
+            mock.patch.object(settings, "DATA_DIR", cls.tmp.name),
+            mock.patch.object(settings, "SETTINGS_FILE", os.path.join(cls.tmp.name, "settings.json")),
+            mock.patch.object(server, "RUN_DIR", cls.tmp.name),
+            mock.patch.dict(os.environ, {"WEB_USER": "admin", "WEB_PASSWORD": "geheim123"}),
+            mock.patch.object(server.chrony, "tracking", return_value=dict(cls.TRACKING)),
+        ]
+        for patch in cls.patches:
+            patch.start()
+        os.environ.pop("CLOCK_PUBLIC", None)
+        server.AUTH_CACHE.clear()
+        cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        cls.port = cls.httpd.server_address[1]
+        threading.Thread(target=cls.httpd.serve_forever, daemon=True).start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+        for patch in reversed(cls.patches):
+            patch.stop()
+        store.close_all()
+        server.AUTH_CACHE.clear()
+        cls.tmp.cleanup()
+
+    def request(self, path, auth=False):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        headers = {"Host": "example.com"}
+        if auth:
+            headers["Authorization"] = "Basic " + base64.b64encode(b"admin:geheim123").decode()
+        conn.request("GET", path, headers=headers)
+        resp = conn.getresponse()
+        body = resp.read()
+        conn.close()
+        return resp.status, body
+
+    def set_public(self, value):
+        patcher = mock.patch.dict(os.environ, {"CLOCK_PUBLIC": "true" if value else "false"})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_protected_by_default(self):
+        self.set_public(False)
+        for path in ("/clock", "/api/v1/time", "/static/js/clock.js"):
+            self.assertEqual(self.request(path)[0], 401, path)
+        status, body = self.request("/api/v1/time", auth=True)
+        self.assertEqual(status, 200)
+        payload = json.loads(body)
+        self.assertEqual(payload["source"], "nas.fritz.box", "angemeldet: mit Quellennamen")
+        self.assertFalse(payload["public"])
+        status, body = self.request("/clock", auth=True)
+        self.assertEqual(status, 200)
+        self.assertIn(b"/static/js/clock.js", body)
+
+    def test_public_clock_shows_only_time(self):
+        self.set_public(True)
+        before = time.time()
+        status, body = self.request("/api/v1/time")
+        self.assertEqual(status, 200)
+        payload = json.loads(body)
+        self.assertTrue(before <= payload["t1"] <= payload["t2"] <= time.time())
+        self.assertTrue(payload["public"])
+        self.assertIsNone(payload["source"], "ohne Anmeldung kein Quellenname")
+        self.assertEqual(payload["source_kind"], "NTP")
+        self.assertNotIn(b"fritz", body)
+        for path in ("/clock", "/static/app.css", "/static/clock.css", "/static/js/clock.js", "/static/js/clocksync.js"):
+            self.assertEqual(self.request(path)[0], 200, path)
+        # Alles andere bleibt geschützt.
+        for path in ("/", "/api/status", "/api/v1/status", "/static/js/app.js", "/api/leap", "/api/temperature",
+                     "/metrics", "/static/index.html"):
+            self.assertEqual(self.request(path)[0], 401, path)
+
+    def test_v1_description(self):
+        status, body = self.request("/api/v1", auth=True)
+        paths = {e["path"] for e in json.loads(body)["endpoints"]}
+        self.assertTrue({"/api/v1/time", "/api/v1/leap", "/api/v1/temperature"} <= paths)
+
+    def test_leap_and_temperature_endpoints(self):
+        status, body = self.request("/api/v1/leap", auth=True)
+        self.assertEqual(status, 200)
+        payload = json.loads(body)
+        self.assertIn("tai_utc", payload)
+        fake = FakeSys()
+        self.addCleanup(fake.cleanup)
+        fake.zone(0, "cpu-thermal", 47000)
+        with mock.patch.dict(os.environ, {"NTPGUI_SYS_ROOT": str(fake.root)}), \
+                mock.patch.object(server, "HISTORY") as hist:
+            hist.query.return_value = [{"t": 1, "temp": 40.0, "freq": -2.0}, {"t": 2, "freq": -2.0}]
+            server.thermal.MONITOR.sensors(refresh=True)
+            status, body = self.request("/api/v1/temperature?range=86400", auth=True)
+            server.thermal.MONITOR.sensors(refresh=True)
+        payload = json.loads(body)
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["available"])
+        self.assertEqual(payload["pairs"], [[1, 40.0, -2.0]])
+        self.assertEqual(payload["summary"]["count"], 1)
+        hist.query.assert_called_with(86400.0, 1500)
+
+
+class MetricsTest(unittest.TestCase):
+    def test_temperature_and_leap_metrics(self):
+        with mock.patch.object(server.chrony, "tracking", return_value={}), \
+                mock.patch.object(server.chrony, "detailed_sources", return_value=[]), \
+                mock.patch.object(server.chrony, "serverstats", return_value={}), \
+                mock.patch.object(server.chrony, "clients", return_value=[]), \
+                mock.patch.object(server.chrony, "nts_server_status", return_value={"enabled": False}), \
+                mock.patch.object(server.gps, "status", return_value={"enabled": False}), \
+                mock.patch.object(server.ptp, "status", return_value={"enabled": False}), \
+                mock.patch.object(server.thermal.MONITOR, "last", {"t": time.time(), "celsius": 42.5}), \
+                mock.patch.object(server.leap, "file_path", return_value=str(LEAP_REAL)):
+            text = server.build_metrics()
+        self.assertIn("ntpgui_temperature_celsius 42.5", text)
+        self.assertIn("ntpgui_tai_utc_offset_seconds 37", text)
+        self.assertIn("ntpgui_leapseconds_list_days_left", text)
+        with mock.patch.object(server.chrony, "tracking", return_value={}), \
+                mock.patch.object(server.chrony, "detailed_sources", return_value=[]), \
+                mock.patch.object(server.chrony, "serverstats", return_value={}), \
+                mock.patch.object(server.chrony, "clients", return_value=[]), \
+                mock.patch.object(server.chrony, "nts_server_status", return_value={"enabled": False}), \
+                mock.patch.object(server.gps, "status", return_value={"enabled": False}), \
+                mock.patch.object(server.ptp, "status", return_value={"enabled": False}), \
+                mock.patch.object(server.thermal.MONITOR, "last", {"t": time.time() - 3600, "celsius": 42.5}):
+            self.assertNotIn("ntpgui_temperature_celsius", server.build_metrics(), "veralteter Wert wird nicht gemeldet")
+
+
+@unittest.skipUnless(shutil.which("node"), "node nicht installiert")
+class ClockSyncJsTest(unittest.TestCase):
+    """Rechnung der Vollbild-Uhr (clocksync.js) mit Node."""
+
+    def run_js(self, code):
+        module = (ROOT / "app/static/js/clocksync.js").as_uri()
+        script = f"import * as c from {json.dumps(module)};\n{code}"
+        out = subprocess.run(["node", "--input-type=module", "-e", script], capture_output=True, text=True, timeout=30)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return json.loads(out.stdout)
+
+    def test_rtt_200ms_error_below_100ms(self):
+        # Browseruhr geht 3,2 s nach. Fünf Messungen, RTT 200–600 ms, unsymmetrisch verteilt.
+        result = self.run_js("""
+          const skew = 3200; const out = [];
+          const cases = [[150, 50], [300, 300], [100, 100], [500, 100], [50, 250]];
+          for (const [up, down] of cases) {
+            const t0 = 1000000; const t1 = t0 + skew + up; const t2 = t1 + 3; const t3 = t0 + up + 3 + down;
+            out.push(c.measure(t0, t1, t2, t3));
+          }
+          const best = c.best(out);
+          console.log(JSON.stringify({ best, error: Math.abs(best.offset - skew) }));
+        """)
+        self.assertEqual(result["best"]["rtt"], 200)
+        self.assertLess(result["error"], 100)
+        self.assertLessEqual(result["error"], result["best"]["accuracy"])
+
+    def test_iso_week_and_format(self):
+        result = self.run_js("""
+          const w = (s) => c.isoWeek(new Date(s), true);
+          console.log(JSON.stringify({
+            a: w("2026-11-02T12:00:00Z"), b: w("2021-01-03T12:00:00Z"), d: w("2020-12-31T12:00:00Z"),
+            hms: c.hms(new Date("2026-11-02T03:04:05Z"), true),
+            acc: [c.fmtAccuracy(0.4), c.fmtAccuracy(4.26), c.fmtAccuracy(42), c.fmtAccuracy(1500)],
+            bad: c.measure(5, 1, 0, 6), resp: c.fromResponse(1000, {t1: 1.1, t2: 1.1}, 1010),
+          }));
+        """)
+        self.assertEqual(result["a"], {"week": 45, "year": 2026})
+        self.assertEqual(result["b"], {"week": 53, "year": 2020})
+        self.assertEqual(result["d"], {"week": 53, "year": 2020})
+        self.assertEqual(result["hms"], "03:04:05")
+        self.assertEqual(result["acc"], ["± 400 µs", "± 4,3 ms", "± 42 ms", "± 1,5 s"])
+        self.assertIsNone(result["bad"], "t2 < t1 ist Unsinn")
+        self.assertAlmostEqual(result["resp"]["offset"], 95, places=6)
+        self.assertEqual(result["resp"]["rtt"], 10)
+
+
+class DiagnosticsW1SerialTest(unittest.TestCase):
+    def test_ds18b20_serial_is_known_value(self):
+        import diagnostics
+        fake = FakeSys()
+        self.addCleanup(fake.cleanup)
+        fake.w1("28-0316a2794bff", temperature=21000)
+        with mock.patch.dict(os.environ, {"NTPGUI_SYS_ROOT": str(fake.root)}):
+            serials = diagnostics._hardware_serials()
+        self.assertIn("28-0316a2794bff", serials)
+        self.assertIn("0316a2794bff", serials)
+
+
+if __name__ == "__main__":
+    unittest.main()

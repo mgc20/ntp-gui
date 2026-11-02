@@ -322,6 +322,32 @@ function rtcCard(report, ctx) {
     el("p", { class: "hw-note" }, rich(note)));
 }
 
+const TEMP_KIND = { thermal: "Thermalzone", hwmon: "Sensorchip (hwmon)", w1: "1-Wire (DS18B20)" };
+
+function temperatureCard(report) {
+  const temp = report.temperature;
+  if (missing(temp)) return card("Temperatursensoren", { help: "temp_candidates" }, emptyNote(NO_DATA));
+  const rows = temp.candidates || [];
+  const chosen = temp.sensor?.id;
+  const note = !rows.length
+    ? "Keine Temperatursensoren sichtbar – typisch für VMs und Docker Desktop. Die Seite **Uhrqualität** zeigt dann „nicht verfügbar“."
+    : temp.available
+      ? `Aufgezeichnet wird **${temp.sensor.label || temp.sensor.id}** (Einstellung „${temp.setting}“). Die Kennung eines anderen Sensors kannst du in den Einstellungen unter „Temperatursensor“ eintragen.`
+      : "Der eingestellte Sensor liefert keinen Wert – in den Einstellungen „auto“ wählen oder eine Kennung aus der Tabelle eintragen.";
+  const head = (text, help) => el("th", {}, text, " ", info(help, text));
+  return card("Temperatursensoren", { help: "temp_candidates" },
+    rows.length ? el("div", { class: "table-scroll" }, el("table", {},
+      el("thead", {}, el("tr", {}, head("Kennung", "temp_candidates"), el("th", { text: "Art" }),
+        el("th", { text: "Name" }), head("Wert", "temp_now"), head("Aufgezeichnet", "temp_sensor"))),
+      el("tbody", {}, rows.map((s) => el("tr", {},
+        el("td", { class: "mono", text: s.id }),
+        el("td", { text: TEMP_KIND[s.kind] || s.kind || "–" }),
+        el("td", { text: s.label || s.name || "–" }),
+        el("td", { text: isNum(s.celsius) ? `${fmtNumber(s.celsius, 1)} °C` : "kein Wert" }),
+        el("td", {}, s.id === chosen ? badge("ja", "good") : "")))))) : null,
+    el("p", { class: "hw-note" }, rich(note)));
+}
+
 function headCard(report, ctx) {
   const plat = report.platform || {};
   const board = plat.board || {};
@@ -377,6 +403,7 @@ export function render(ctx) {
       snippet(fixes.map((m) => `# ${m.title}\n${m.fix}`).join("\n\n"), "Alle Änderungen")) : null),
     gpsCard(report),
     el("div", { class: "grid-2" }, ppsCard(report), rtcCard(report, ctx)),
+    temperatureCard(report),
     ptpCard(report),
     permissionsCard(report),
   ];

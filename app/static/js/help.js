@@ -5,6 +5,7 @@ import { HELP_DIAGNOSE, HELP_GROUP_DIAGNOSE } from "./help-diagnose.js";
 import { HELP_API, HELP_GROUP_API } from "./help-api.js";
 import { HELP_NOTIFY, HELP_GROUP_NOTIFY } from "./help-notify.js";
 import { HELP_DNS, HELP_GROUP_DNS } from "./help-dns.js";
+import { HELP_UHR, HELP_GROUP_UHR } from "./help-uhr.js";
 
 // Alle Erklärungen an einer Stelle. Die ⓘ-Knöpfe im Dashboard und die
 // Hilfeseite nutzen dieselben Texte. **fett** und `code` werden formatiert.
@@ -914,6 +915,7 @@ export const HELP_GROUPS = [
   HELP_GROUP_API,
   HELP_GROUP_NOTIFY,
   HELP_GROUP_DNS,
+  HELP_GROUP_UHR,
   HELP_GROUP_DIAGNOSE,
   HELP_GROUP_HARDWARE,
 ];
@@ -925,3 +927,4 @@ Object.assign(HELP, HELP_DIAGNOSE);
 Object.assign(HELP, HELP_API);
 Object.assign(HELP, HELP_NOTIFY);
 Object.assign(HELP, HELP_DNS);
+Object.assign(HELP, HELP_UHR);

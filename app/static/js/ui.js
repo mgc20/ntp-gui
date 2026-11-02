@@ -130,6 +130,7 @@ export function insightList(items, navigate) {
 export const ACTION_LABEL = {
   gps: "Zur GPS-Seite →", sources: "Zu den Quellen →", settings: "Zu den Einstellungen →",
   clients: "Zu den Clients →", ptp: "Zur PTP-Seite →", hardware: "Zur Hardware-Seite →",
+  uhrqualitaet: "Zur Uhrqualität →",
 };
 
 export function emptyNote(text) {

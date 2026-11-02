@@ -30,6 +30,7 @@ export const FIELD_HELP = {
   clientmon_enable: "clientmon", clients_alarm_ms: "clients_alarm", clients_rdns: "client_rdns",
   web_title: "web_title", web_refresh_seconds: "web_refresh", history_interval: "history_interval",
   notify_dashboard_url: "notify_link",
+  temp_sensor: "temp_sensor", clock_public: "clock_public",
   dns_mode: "dns_modes", dns_servers: "dns_upstreams", dns_dot: "dns_modes", dns_doh: "dns_modes",
   dns_pin: "dns_pin", dns_fallback: "dns_fallback",
   gps_device: "hw_device_path", allow_networks: "allow_networks", gps_show_position: "gps_show_position",

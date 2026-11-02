@@ -1,0 +1,63 @@
+/* Vollbild-Uhr (/clock). Nutzt die Farben aus app.css; Rotlicht überschreibt sie. */
+:root[data-mode="red"] {
+  --bg: #000000; --surface: #0a0000; --surface-2: #120000; --border: #3a0000; --border-soft: #220000;
+  --ink: #ff2a1a; --ink-2: #d01a10; --ink-muted: #8c120a; --accent: #ff2a1a;
+  --good: #ff2a1a; --warn: #d01a10; --crit: #ff2a1a; --on-status: #000000;
+}
+html, body.clock-page { height: 100%; }
+body.clock-page {
+  margin: 0; display: flex; flex-direction: column; min-height: 100vh; min-height: 100dvh;
+  background: var(--bg); color: var(--ink); overflow-x: hidden;
+}
+
+.clock-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;
+  padding: max(10px, env(safe-area-inset-top)) clamp(10px, 3vw, 32px) 6px; font-size: clamp(12px, 1.1vw + 6px, 18px); }
+.clock-back { color: var(--ink-muted); }
+.clock-tools { display: flex; gap: 6px; flex-wrap: wrap; }
+.clock-tool { font: inherit; font-size: 0.9em; cursor: pointer; border-radius: 9px; padding: 0.35em 0.8em;
+  background: transparent; color: var(--ink-muted); border: 1px solid var(--border); }
+.clock-tool:hover { border-color: var(--accent); color: var(--ink); }
+.clock-tool[aria-pressed="true"] { color: var(--ink); border-color: var(--accent); }
+/* Nach ein paar Sekunden ohne Bewegung verschwindet die Leiste (Wandmonitor). */
+body.is-idle .clock-bar { opacity: 0; transition: opacity .6s; }
+body.is-idle { cursor: none; }
+
+.clock-main { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  text-align: center; padding: 0 clamp(8px, 3vw, 48px); min-height: 0; }
+.clock-label { margin: 0; color: var(--ink-muted); font-size: clamp(12px, 1vw + 8px, 28px); letter-spacing: .08em;
+  text-transform: uppercase; }
+.clock-time { display: block; font-variant-numeric: tabular-nums; font-weight: 600; line-height: 1;
+  letter-spacing: -0.02em; white-space: nowrap;
+  /* Breite (8 Zeichen ≈ 4,9 em) und Höhe begrenzen – passt von 320 px bis 4K. */
+  font-size: min(19vw, 34vh); margin: 0.05em 0 0.1em; }
+.clock-date { margin: 0; font-size: clamp(16px, 2.6vw, 7vh); color: var(--ink-2); }
+.clock-sub { display: flex; gap: clamp(12px, 4vw, 64px); align-items: baseline; justify-content: center; flex-wrap: wrap;
+  margin-top: clamp(8px, 2vh, 32px); font-size: clamp(16px, 3vw, 8vh); color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.clock-sub .clock-label { font-size: 0.55em; }
+
+.clock-band { display: flex; align-items: center; gap: 0.6em 1.2em; flex-wrap: wrap; justify-content: center;
+  padding: 0.7em clamp(10px, 3vw, 32px) max(0.8em, env(safe-area-inset-bottom));
+  font-size: clamp(13px, 1.2vw + 6px, 26px); border-top: 1px solid var(--border-soft); color: var(--ink-2);
+  background: color-mix(in srgb, var(--surface) 70%, transparent); }
+.clock-band-main { color: var(--ink); font-weight: 600; }
+.clock-band-detail, .clock-band-wake { color: var(--ink-muted); }
+.clock-dot { width: 0.8em; height: 0.8em; border-radius: 50%; background: var(--ink-muted); flex: none; }
+.clock-band[data-state="good"] .clock-dot { background: var(--good); box-shadow: 0 0 0 0.25em color-mix(in srgb, var(--good) 25%, transparent); }
+.clock-band[data-state="warn"] .clock-dot { background: var(--warn); }
+.clock-band[data-state="crit"] .clock-dot { background: var(--crit); }
+.clock-band[data-state="stale"] .clock-dot, .clock-band[data-state="unknown"] .clock-dot { background: var(--ink-muted); }
+.clock-band[data-state="stale"] .clock-band-main { color: var(--ink-muted); }
+body.is-stale .clock-time { color: var(--ink-muted); }
+
+@media (orientation: portrait) {
+  .clock-time { font-size: min(21vw, 30vh); }
+}
+/* Querformat mit wenig Höhe (Handy quer, kleine Displays): Beschriftung weg, alles etwas kleiner. */
+@media (max-height: 480px) {
+  .clock-main > .clock-label { display: none; }
+  .clock-time { font-size: min(19vw, 36vh); }
+  .clock-date { font-size: clamp(13px, 5.5vh, 40px); }
+  .clock-sub { margin-top: 2px; font-size: clamp(13px, 6vh, 40px); }
+  .clock-bar { padding-top: 6px; padding-bottom: 0; }
+  .clock-band { padding-top: 0.4em; padding-bottom: 0.4em; font-size: 12px; }
+}

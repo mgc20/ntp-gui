@@ -520,6 +520,10 @@ def _hardware_serials() -> list[str]:
         found.append(_read_first_line(path))
     for name in ("product_serial", "board_serial", "chassis_serial", "product_uuid"):
         found.append(_read_first_line(os.path.join(root, "class", "dmi", "id", name)))
+    # DS18B20-Temperaturfühler (1.4): die Kennung „28-…“ ist die eindeutige ROM-Seriennummer.
+    for path in sorted(glob.glob(os.path.join(root, "bus", "w1", "devices", "28-*")))[:64]:
+        name = os.path.basename(path)
+        found += [name, name[3:]]
     return [v for v in dict.fromkeys(found) if egress.serial_is_specific(v)]
 
 

@@ -498,6 +498,20 @@ def _as_leapseclist(value: Any) -> str:
     return text
 
 
+_TEMP_SENSOR_RE = re.compile(r"^(auto|off|thermal:[A-Za-z0-9_.+-]{1,40}(:\d{1,2})?"
+                             r"|hwmon:[A-Za-z0-9_.+-]{1,40}:temp\d{1,2}(:\d{1,2})?"
+                             r"|w1:28-[0-9a-f]{12})$")
+
+
+def _as_temp_sensor(value: Any) -> str:
+    """„auto“, „off“ oder eine Kennung aus thermal.discover() – nie ein Pfad."""
+    text = str(value if value is not None else "").strip() or "auto"
+    if not _TEMP_SENSOR_RE.match(text):
+        raise ValidationError("„auto“, „off“ oder eine Sensor-Kennung aus dem Hardware-Check "
+                              "(z. B. thermal:cpu-thermal, hwmon:k10temp:temp1, w1:28-…)")
+    return text
+
+
 SOURCE_TYPES = ("server", "pool", "peer")
 
 
@@ -976,6 +990,18 @@ SCHEMA: list[dict] = [
            _as_number(float, 2.0, 600.0), env="HISTORY_INTERVAL", unit="s",
            restart=RESTART_NONE, advanced=True,
            help="Alle wie viele Sekunden ein Messpunkt für die Verlaufsdiagramme entsteht."),
+    _field("temp_sensor", "web", "Temperatursensor", "text", "auto", _as_temp_sensor,
+           env="TEMP_SENSOR", restart=RESTART_NONE, advanced=True, placeholder="auto",
+           help="Welcher Sensor zu jedem Messpunkt die Temperatur liefert (Seite „Uhrqualität“). "
+                "„auto“ nimmt den Chip neben dem Quarz (Raspberry Pi: cpu-thermal, PC: x86_pkg_temp, "
+                "k10temp, coretemp), sonst einen DS18B20 am 1-Wire-Bus. „off“ schaltet die Aufzeichnung "
+                "ab. Die möglichen Kennungen listet der Hardware-Check. Wirkt ohne Neustart."),
+    _field("clock_public", "web", "Vollbild-Uhr ohne Anmeldung", "bool", False, _as_bool,
+           env="CLOCK_PUBLIC", restart=RESTART_NONE, advanced=True,
+           help="Macht /clock und /api/v1/time auch ohne Passwort erreichbar – praktisch für einen "
+                "Wandmonitor oder ein altes Tablet. Sichtbar werden nur Uhrzeit, Ampel, Genauigkeit "
+                "und die Art der Quelle (GPS, NTP …), keine Einstellungen, Namen oder Adressen. "
+                "Aus = die Uhr ist wie das Dashboard geschützt. Wirkt ohne Neustart."),
 ]
 
 

@@ -58,11 +58,13 @@ import hardware
 import history as historymod
 import insights
 import instance
+import leap
 import notify
 import providers
 import ptp
 import settings
 import statewatch
+import thermal
 
 STATIC_DIR = Path(__file__).with_name("static")
 CHRONY_CONF = os.environ.get("CHRONY_CONF", "/etc/chrony/chrony.conf")
@@ -185,6 +187,29 @@ apiv1.endpoint("POST", "/gps/autocal/rollback", "/api/gps/autocal/rollback", "ad
                "Letzte automatische Änderung(en) zurücknehmen. Body: {\"steps\": 1}.",
                ["ok", "restored_offset", "restored_delay", "reload_triggered", "change"])
 
+apiv1.endpoint("GET", "/temperature", "/api/temperature", "read",
+               "Temperatur und Frequenz: gewählter Sensor, gefundene Sensoren, Paare (Zeit, °C, ppm) aus dem "
+               "Verlauf und Kennzahlen (Dauer, Spanne, Korrelation). 1.4 misst nur – kein Temperaturausgleich.",
+               ["available", "setting", "reason", "sensor", "celsius", "candidates", "pairs", "summary"],
+               {"range": "Zeitraum in Sekunden (Standard 7 Tage, höchstens 30 Tage)",
+                "points": "Höchstzahl der Paare, 100–3000 (Standard 1500)"})
+apiv1.endpoint("GET", "/leap", "/api/leap", "read",
+               "Schaltsekunden: TAI−UTC, letzte (und ggf. angekündigte) Schaltsekunde, Ablaufdatum und "
+               "Prüfsumme der leap-seconds.list, Leap-Status von chrony.",
+               ["available", "path", "tai_utc", "last_leap_date", "next_leap_date", "expires_date", "days_left",
+                "expired", "hash_ok", "level", "reason", "chrony_leap"])
+apiv1.endpoint("GET", "/time", None, "read",
+               "Zeit für die Vollbild-Uhr (/clock): Empfangs- (t1) und Sendezeit (t2) des Servers in Unix-Sekunden "
+               "für den Abgleich mit vier Zeitstempeln, dazu Synchronstatus, Genauigkeit und Art der Quelle. "
+               "Mit „Vollbild-Uhr ohne Anmeldung“ (clock_public) ohne Login erreichbar – dann ohne Quellennamen.",
+               ["t1", "t2", "synchronised", "level", "accuracy", "stratum", "leap", "source_kind", "source",
+                "public"])
+
+# Ohne Anmeldung erreichbar, wenn „Vollbild-Uhr ohne Anmeldung“ an ist: nur die Uhrseite, ihre
+# statischen Dateien (kein Inhalt aus der Konfiguration) und /api/v1/time.
+CLOCK_PUBLIC_PATHS = {"/clock", "/api/v1/time", "/static/app.css", "/static/clock.css",
+                      "/static/js/clock.js", "/static/js/clocksync.js"}
+
 CONTENT_TYPES = {
     ".html": "text/html; charset=utf-8",
     ".css": "text/css; charset=utf-8",
@@ -224,6 +249,12 @@ def collect_sample() -> dict:
         if name:
             sample["sources"][name] = {"o": source.get("offset"), "s": source.get("state"),
                                        "k": source.get("mode"), "j": source.get("std_dev")}
+    try:
+        temp = thermal.MONITOR.sample(settings.values().get("temp_sensor"))
+    except Exception:  # Sensor weg – der Messpunkt entsteht trotzdem
+        temp = None
+    if temp is not None:
+        sample["temp"] = temp
     if gps.enabled():
         g = gps.status()
         sample["gps"] = {"used": _num(g.get("satellites_used")), "seen": _num(g.get("satellites_seen")),
@@ -285,6 +316,17 @@ def client_alarms() -> None:
         print(f"[web] Alarm für Client-Uhren nicht geprüft: {exc}", flush=True)
 
 
+LEAP_WATCH = leap.Watch(events.emit, lambda since: events.query(since=since, kinds=["leap"], limit=50))
+
+
+def leap_check() -> None:
+    """Ereignis leap/warn, wenn die Schaltsekunden-Liste bald abläuft (wirft nie)."""
+    try:
+        LEAP_WATCH.check(leap.status(settings.values()))
+    except Exception as exc:
+        print(f"[web] Schaltsekunden-Liste nicht geprüft: {exc}", flush=True)
+
+
 HARDWARE_FIRST_DELAY = 5.0
 HARDWARE_INTERVAL = 300.0
 
@@ -300,6 +342,7 @@ def hardware_refresher(stop: threading.Event | None = None) -> None:
             STATE_WATCH.hardware(hardware.report(settings.values(), refresh=True))
         except Exception as exc:  # die Prüfung darf das Dashboard nie stören
             print(f"[web] Hardware-Prüfung fehlgeschlagen: {exc}", flush=True)
+        leap_check()
         if stop.wait(HARDWARE_INTERVAL):
             return
 
@@ -548,8 +591,65 @@ def build_status() -> dict:
                                                                 bool(cfg.get("enforce_hostnames"))
                                                                 or enforce.check_ran()),
                                           service_insights(status["services"]),
-                                          hardware.cached_insights(cfg))
+                                          hardware.cached_insights(cfg),
+                                          leap.insights(leap.status(cfg, tracking)))
     return status
+
+
+# ---------------------------------------------------------------------------
+# Vollbild-Uhr und Temperatur
+# ---------------------------------------------------------------------------
+
+# Refids, die als Art der Quelle öffentlich gezeigt werden dürfen (eigene Refids sind Einstellungen).
+KNOWN_REFIDS = {"GPS": "GPS", "PPS": "GPS + PPS", "NMEA": "GPS", "GNSS": "GNSS", "PHC": "PTP", "PTP": "PTP",
+                "SHM0": "GPS", "SHM1": "GPS + PPS", "DCF": "DCF77"}
+
+
+def clock_status(tracking: dict) -> dict:
+    """Ampel und Quelle für /clock – ohne Namen, Adressen oder Einstellungen."""
+    running = bool(tracking)
+    synced = bool(tracking.get("synchronised"))
+    delay, disp = tracking.get("root_delay"), tracking.get("root_dispersion")
+    accuracy = None
+    if isinstance(delay, (int, float)) and isinstance(disp, (int, float)):
+        offset = tracking.get("system_time_offset")
+        accuracy = abs(delay) / 2 + abs(disp) + (abs(offset) if isinstance(offset, (int, float)) else 0.0)
+    stratum = tracking.get("stratum") if isinstance(tracking.get("stratum"), int) else None
+    if not running:
+        kind, level = None, "crit"
+    elif tracking.get("local_reference"):
+        kind, level = "lokal (Inselbetrieb)", "warn"
+    elif not synced:
+        kind, level = None, "warn"
+    else:
+        ref = str(tracking.get("ref_name") or "").strip().upper()
+        kind = KNOWN_REFIDS.get(ref, "Referenzuhr") if stratum == 1 else "NTP"
+        level = "good" if accuracy is None or accuracy < 0.1 else "warn"
+    return {"synchronised": synced, "running": running, "level": level, "accuracy": accuracy,
+            "stratum": stratum, "leap": tracking.get("leap_status") or None, "source_kind": kind}
+
+
+def time_payload(received: float, public: bool) -> dict:
+    """Antwort von /api/v1/time. t2 wird so spät wie möglich genommen."""
+    tracking = chrony.tracking()
+    out = clock_status(tracking)
+    out.update(t1=received, public=public,
+               source=None if public else (str(tracking.get("ref_name") or "") or None))
+    out["t2"] = time.time()
+    return out
+
+
+TEMPERATURE_DEFAULT_RANGE = 7 * 86400.0
+
+
+def temperature_payload(query: dict) -> dict:
+    seconds = env_like(query.get("range"), TEMPERATURE_DEFAULT_RANGE)
+    seconds = max(3600.0, min(seconds, 30 * 86400.0))
+    points = int(max(100, min(env_like(query.get("points"), 1500), 3000)))
+    out = thermal.MONITOR.status(settings.values().get("temp_sensor"))
+    pairs = thermal.pairs_from_samples(HISTORY.query(seconds, points))
+    out.update(pairs=pairs, summary=thermal.summarize(pairs), range=seconds)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -630,6 +730,16 @@ def build_metrics() -> str:
     if nts.get("enabled"):
         _metric(lines, "ntpgui_nts_server_cert_days_left", nts.get("days_left"),
                 "Days until the NTS server certificate expires")
+
+    last = thermal.MONITOR.last
+    if isinstance(last.get("t"), (int, float)) and time.time() - last["t"] < 900:
+        _metric(lines, "ntpgui_temperature_celsius", last.get("celsius"),
+                "Temperature of the selected sensor (Uhrqualitaet, last history sample)")
+    leap_info = leap.status(settings.values(), tracking)
+    if leap_info.get("available"):
+        _metric(lines, "ntpgui_leapseconds_list_days_left", leap_info.get("days_left"),
+                "Days until leap-seconds.list expires (negative = expired)")
+        _metric(lines, "ntpgui_tai_utc_offset_seconds", leap_info.get("tai_utc"), "TAI-UTC from leap-seconds.list")
 
     _hardware_metrics(lines)
     return "\n".join(lines) + "\n"
@@ -939,7 +1049,14 @@ class Handler(BaseHTTPRequestHandler):
         self.do_GET()
 
     def do_GET(self) -> None:
+        received = time.time()   # t1 für /api/v1/time – so früh wie möglich
         path, index = self._api_path(self.path)
+        if path in CLOCK_PUBLIC_PATHS and self._clock_public():
+            try:
+                self._route_clock(path, received, public=True)
+            except BrokenPipeError:
+                pass
+            return
         if path == "/healthz":
             healthy = bool(chrony.tracking())
             self._send_json({"status": "ok" if healthy else "degraded", "chrony": healthy},
@@ -958,15 +1075,33 @@ class Handler(BaseHTTPRequestHandler):
             if index:
                 self._send_json(apiv1.describe())
             else:
-                self._route_get(path)
+                self._route_get(path, received)
         except BrokenPipeError:
             pass
         except Exception as exc:  # nie wegen eines Parserfehlers ausfallen
             self._error(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
 
-    def _route_get(self, path: str) -> None:
+    @staticmethod
+    def _clock_public() -> bool:
+        try:
+            return bool(settings.values().get("clock_public"))
+        except Exception:
+            return False
+
+    def _route_clock(self, path: str, received: float, public: bool) -> None:
+        """/clock, ihre statischen Dateien und /api/v1/time."""
+        if path == "/api/v1/time":
+            self._send_json(time_payload(received, public))
+        elif path == "/clock":
+            self._serve_static("clock.html")
+        else:
+            self._serve_static(path[len("/static/"):])
+
+    def _route_get(self, path: str, received: float | None = None) -> None:
         query = self._query()
-        if path == "/":
+        if path in ("/clock", "/api/v1/time"):
+            self._route_clock(path, received or time.time(), public=False)
+        elif path == "/":
             self._serve_static("index.html")
         elif path.startswith("/static/"):
             self._serve_static(path[len("/static/"):])
@@ -1048,6 +1183,10 @@ class Handler(BaseHTTPRequestHandler):
                         "Cache-Control": "no-store"})
         elif path == "/api/recording":
             self._send_json(recording_status())
+        elif path == "/api/temperature":
+            self._send_json(temperature_payload(query))
+        elif path == "/api/leap":
+            self._send_json(leap.status(settings.values(), chrony.tracking()))
         elif path == "/api/enforce/snippets":
             self._send_json(enforce.api_snippets(query, settings.values()))
         elif path == "/api/enforce/check":

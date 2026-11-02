@@ -6,6 +6,7 @@ import * as overview from "./pages/overview.js";
 import * as sources from "./pages/sources.js";
 import * as gps from "./pages/gps.js";
 import * as ptp from "./pages/ptp.js";
+import * as clockquality from "./pages/clockquality.js";
 import * as hardware from "./pages/hardware.js";
 import * as clients from "./pages/clients.js";
 import * as diagnose from "./pages/diagnose.js";
@@ -18,6 +19,7 @@ const PAGES = [
   { id: "quellen", title: "Zeitquellen", module: sources, history: true },
   { id: "gps", title: "GPS", module: gps, history: true },
   { id: "ptp", title: "PTP", module: ptp, history: true },
+  { id: "uhrqualitaet", title: "Uhrqualität", module: clockquality, history: false },
   { id: "hardware", title: "Hardware", module: hardware, history: false },
   { id: "clients", title: "Clients", module: clients, history: true },
   { id: "diagnose", title: "Diagnose", module: diagnose, history: false },

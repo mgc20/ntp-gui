@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="de" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<meta name="robots" content="noindex">
+<title>Uhr · ntp-gui</title>
+<link rel="stylesheet" href="/static/app.css">
+<link rel="stylesheet" href="/static/clock.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ccircle cx='12' cy='12' r='9' fill='none' stroke='%234493f8' stroke-width='2'/%3E%3Cpath d='M12 7v5l3.5 2' fill='none' stroke='%234493f8' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E">
+<script type="module" src="/static/js/clock.js"></script>
+</head>
+<body class="clock-page">
+<header class="clock-bar">
+  <a class="clock-back" id="clock-back" href="/">← Dashboard</a>
+  <div class="clock-tools" role="group" aria-label="Darstellung">
+    <button type="button" class="clock-tool" id="mode-theme" aria-pressed="false" title="Hell oder dunkel">Hell</button>
+    <button type="button" class="clock-tool" id="mode-red" aria-pressed="false" title="Rotlicht: schont die Dunkeladaption der Augen (Sternwarte, Schlafzimmer, Serverraum bei Nacht)">Rotlicht</button>
+    <button type="button" class="clock-tool" id="mode-full" title="Vollbild ein oder aus (Taste F)">Vollbild</button>
+  </div>
+</header>
+
+<main class="clock-main">
+  <p class="clock-label" id="local-label">Ortszeit</p>
+  <time class="clock-time" id="local-time" aria-live="off">--:--:--</time>
+  <p class="clock-date" id="local-date">&nbsp;</p>
+  <div class="clock-sub">
+    <span class="clock-utc"><span class="clock-label">UTC</span> <time id="utc-time">--:--:--</time></span>
+    <span class="clock-week" id="iso-week">KW –</span>
+  </div>
+</main>
+
+<footer class="clock-band" id="band" data-state="unknown" role="status" aria-live="polite">
+  <span class="clock-dot" aria-hidden="true"></span>
+  <span class="clock-band-main" id="band-main">verbinde …</span>
+  <span class="clock-band-detail" id="band-detail"></span>
+  <span class="clock-band-wake" id="band-wake"></span>
+</footer>
+</body>
+</html>

@@ -439,7 +439,7 @@ export function lineChart(container, opts) {
   const gaps = findGaps(times);
   const limit = times.length > 2 ? gapLimit(times) : 30;
   const shaded = gaps.map(([g0, g1]) => [g0, g1, "keine Daten"]);
-  if (d0 - t0 > Math.max(limit, span * 0.02)) shaded.unshift([t0, d0, `Verlauf ab ${fmtClock(d0)}`]);
+  if (d0 - t0 > Math.max(limit, span * 0.02)) shaded.unshift([t0, d0, `Verlauf ab ${span > 86400 ? fmtStamp(d0, span) : fmtClock(d0)}`]);
   if (t1 - d1 > Math.max(limit, span * 0.02)) shaded.push([d1, t1, "keine Daten"]);
   for (const [g0, g1, text] of shaded) {
     const x0 = X(g0); const x1 = X(g1);
@@ -829,4 +829,128 @@ export { css };
 // Nachkommastellen passend zur Rasterweite, damit Achsenbeschriftungen eindeutig bleiben.
 export function stepDecimals(step) {
   return Math.min(6, Math.max(0, -Math.floor(Math.log10(step) + 1e-9)));
+}
+
+/**
+ * Streudiagramm (1.4: Temperatur ↔ Frequenz). Jeder Punkt ein Messpunkt; die Farbe wird
+ * mit dem Alter blasser, damit Tag-/Nacht-Schleifen und Verschiebungen sichtbar bleiben.
+ * opts: { points: [{x, y, t}], xFormat(v), yFormat(v), xAxis(v, step), yAxis(v, step), xUnit, yUnit,
+ *         height, emptyText, ariaLabel, key, robust (Standard: an – Ausreißer in y abschneiden) }
+ */
+export function scatterChart(container, opts) {
+  const height = opts.height || 260;
+  const width = Math.max(280, container.clientWidth || 640);
+  const xFormat = opts.xFormat || defaultFormat;
+  const yFormat = opts.yFormat || defaultFormat;
+  const xAxis = opts.xAxis || xFormat;
+  const yAxis = opts.yAxis || yFormat;
+  const pts = (opts.points || []).filter((p) => isNum(p.x) && isNum(p.y));
+  container.replaceChildren();
+  container.classList.add("chart-host");
+  const svg = svgEl("svg", { viewBox: `0 0 ${width} ${height}`, width: "100%", height, role: "img",
+    "aria-label": opts.ariaLabel || "Streudiagramm", "aria-roledescription": "Diagramm", class: "chart-svg" });
+  const figure = el("div", { class: "chart-wrap" }, svg);
+  container.append(figure);
+  if (pts.length < 2) {
+    emptyState(svg, width, height, opts.emptyText || "Noch zu wenige Messwerte", false);
+    return;
+  }
+  const yr = robustRange(pts.map((p) => p.y), opts.robust !== false);
+  const [xMin, xMax] = extent(pts.map((p) => p.x));
+  const axis = (lo, hi) => {
+    if (lo === hi) { const d = Math.abs(lo) * 0.01 || 0.5; lo -= d; hi += d; }
+    const step = niceStep(hi - lo, 5);
+    lo = Math.floor(lo / step - 1e-9) * step;
+    hi = Math.ceil(hi / step + 1e-9) * step;
+    const ticks = [];
+    for (let v = lo; v <= hi + step / 2; v += step) ticks.push(Math.abs(v) < step / 1e6 ? 0 : v);
+    return { lo, hi, step, ticks };
+  };
+  const ax = axis(xMin, xMax);
+  const ay = axis(yr.lo, yr.hi);
+  const yLabels = ay.ticks.map((v) => yAxis(v, ay.step));
+  const pad = { top: opts.yUnit ? 22 : 12, right: 16, bottom: 40, left: 0 };
+  pad.left = Math.max(40, Math.round(Math.max(...yLabels.map((l) => l.length)) * 6.6 + 14));
+  const pw = width - pad.left - pad.right;
+  const ph = height - pad.top - pad.bottom;
+  const X = (v) => pad.left + ((v - ax.lo) / (ax.hi - ax.lo)) * pw;
+  const Y = (v) => pad.top + ph - ((Math.min(ay.hi, Math.max(ay.lo, v)) - ay.lo) / (ay.hi - ay.lo)) * ph;
+
+  const grid = svgEl("g", { class: "chart-grid", "aria-hidden": "true" });
+  ay.ticks.forEach((v, i) => {
+    grid.append(svgEl("line", { x1: pad.left, x2: width - pad.right, y1: Y(v), y2: Y(v) }));
+    const label = svgEl("text", { x: pad.left - 8, y: Y(v) + 3.5, "text-anchor": "end", class: "chart-label" });
+    label.textContent = yLabels[i];
+    svg.append(label);
+  });
+  const every = Math.max(1, Math.ceil(ax.ticks.length / Math.max(2, Math.floor(pw / 64))));
+  ax.ticks.forEach((v, i) => {
+    grid.append(svgEl("line", { x1: X(v), x2: X(v), y1: pad.top, y2: pad.top + ph }));
+    if (i % every) return;
+    const label = svgEl("text", { x: X(v), y: pad.top + ph + 16, "text-anchor": "middle", class: "chart-label" });
+    label.textContent = xAxis(v, ax.step);
+    svg.append(label);
+  });
+  svg.append(grid);
+  svg.append(svgEl("line", { x1: pad.left, x2: width - pad.right, y1: pad.top + ph, y2: pad.top + ph, class: "chart-axis" }));
+  if (opts.yUnit) {
+    const unit = svgEl("text", { x: pad.left - 8, y: 12, "text-anchor": "end", class: "chart-unit" });
+    unit.textContent = opts.yUnit;
+    svg.append(unit);
+  }
+  if (opts.xUnit) {
+    const unit = svgEl("text", { x: width - pad.right, y: height - 4, "text-anchor": "end", class: "chart-unit" });
+    unit.textContent = opts.xUnit;
+    svg.append(unit);
+  }
+
+  // Punkte: ältere blasser. Sortiert nach Zeit, damit die neuesten oben liegen.
+  const color = resolve("var(--accent)");
+  const times = pts.map((p) => (isNum(p.t) ? p.t : 0));
+  const [tMin, tMax] = extent(times);
+  const sorted = [...pts].sort((a, b) => (a.t || 0) - (b.t || 0));
+  const plot = svgEl("g", { class: "chart-plot" });
+  for (const p of sorted) {
+    const age = tMax > tMin ? (p.t - tMin) / (tMax - tMin) : 1;
+    const out = p.y > ay.hi || p.y < ay.lo;
+    plot.append(svgEl("circle", { cx: X(p.x).toFixed(1), cy: Y(p.y).toFixed(1), r: out ? 3 : 2.4, fill: color,
+      "fill-opacity": (0.12 + 0.78 * age).toFixed(2), class: out ? "chart-clip-mark" : null }));
+  }
+  svg.append(plot);
+  const latest = sorted[sorted.length - 1];
+  svg.append(svgEl("circle", { cx: X(latest.x), cy: Y(latest.y), r: 4.5, fill: color, class: "chart-last" }));
+  svg.setAttribute("aria-label", `${opts.ariaLabel || "Streudiagramm"}: ${pts.length} Punkte, x von ${xFormat(xMin)} bis ${xFormat(xMax)}, `
+    + `y von ${yFormat(yr.min)} bis ${yFormat(yr.max)}; zuletzt ${xFormat(latest.x)} / ${yFormat(latest.y)}`);
+
+  // Tooltip: nächster Punkt zur Maus (Bildschirmabstand).
+  const tooltip = el("div", { class: "tooltip", hidden: true, "aria-hidden": "true" });
+  const marker = svgEl("circle", { r: 5.5, fill: color, class: "chart-marker", visibility: "hidden" });
+  svg.append(marker);
+  figure.append(tooltip);
+  const show = (p) => {
+    marker.setAttribute("cx", X(p.x)); marker.setAttribute("cy", Y(p.y));
+    marker.setAttribute("visibility", "visible");
+    tooltip.replaceChildren(
+      el("div", { class: "tt-time", text: isNum(p.t) ? fmtStamp(p.t, 2 * 86400) : "" }),
+      el("div", { class: "tt-row tt-single" }, el("b", { text: `${xFormat(p.x)} · ${yFormat(p.y)}` })));
+    tooltip.hidden = false;
+    const left = (X(p.x) / width) * 100;
+    tooltip.style.left = `${left}%`;
+    tooltip.style.transform = left > 60 ? "translate(calc(-100% - 12px), 0)" : "translate(12px, 0)";
+  };
+  const hide = () => { marker.setAttribute("visibility", "hidden"); tooltip.hidden = true; };
+  const pick = (event) => {
+    const rect = svg.getBoundingClientRect();
+    const px = ((event.clientX - rect.left) / rect.width) * width;
+    const py = ((event.clientY - rect.top) / rect.height) * height;
+    let winner = null; let dist = Infinity;
+    for (const p of pts) {
+      const d = (X(p.x) - px) ** 2 + (Y(p.y) - py) ** 2;
+      if (d < dist) { dist = d; winner = p; }
+    }
+    if (winner && dist < 40 * 40) show(winner); else hide();
+  };
+  svg.addEventListener("pointermove", pick);
+  svg.addEventListener("pointerdown", pick);
+  svg.addEventListener("pointerleave", (event) => { if (event.pointerType === "mouse") hide(); });
 }

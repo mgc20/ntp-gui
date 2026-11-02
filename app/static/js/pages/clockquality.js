@@ -1,0 +1,172 @@
+// Seite „Uhrqualität“ (1.4): Temperatur ↔ Frequenz, Schaltsekunden, Vollbild-Uhr.
+import { el, isNum, fmtFixed, fmtNumber, rich } from "../util.js";
+import { card, tile, kv, badge, emptyNote, info } from "../ui.js";
+import { lineChart, scatterChart, stepDecimals } from "../charts.js";
+
+const RANGES = [[86400, "1 Tag"], [3 * 86400, "3 Tage"], [7 * 86400, "7 Tage"], [30 * 86400, "30 Tage"]];
+
+const NO_SENSOR = {
+  none: "Dieses System stellt keinen Temperatursensor bereit – typisch für virtuelle Maschinen und Docker Desktop. "
+    + "Ohne Messwert gibt es hier nichts aufzuzeichnen; die Uhr funktioniert trotzdem.",
+  off: "Die Aufzeichnung ist abgeschaltet (Einstellungen → Dashboard → Temperatursensor = „off“).",
+  missing: "Der eingestellte Sensor ist nicht (mehr) da – abgesteckt oder umbenannt? Der Hardware-Check zeigt, "
+    + "welche Sensoren es gibt; „auto“ wählt selbst einen.",
+  no_value: "Es gibt Sensoren, aber keiner liefert gerade einen plausiblen Wert (−40 bis 125 °C). Der Hardware-Check "
+    + "zeigt die Kandidaten.",
+  error: "Die Sensoren ließen sich nicht lesen. Details stehen im Container-Log.",
+};
+
+const fmtC = (v) => (isNum(v) ? `${fmtFixed(v, 1)} °C` : "–");
+const fmtPpm = (v) => (isNum(v) ? `${fmtFixed(v, 3)} ppm` : "–");
+
+function rangeGroup(current, onChange) {
+  return el("div", { class: "range-group", role: "group", "aria-label": "Zeitraum der Temperaturauswertung" },
+    RANGES.map(([seconds, label]) => el("button", {
+      type: "button", class: `range${current === seconds ? " is-active" : ""}`, text: label, "data-focus-key": `uqrange:${seconds}`,
+      "aria-pressed": current === seconds ? "true" : "false", onclick: () => onChange(seconds),
+    })));
+}
+
+function fmtDays(days) {
+  if (!isNum(days) || days <= 0) return "–";
+  if (days < 1) return `${fmtNumber(days * 24, 1)} h`;
+  return `${fmtNumber(days, 1)} Tage`;
+}
+
+function readiness(summary) {
+  if (!summary || !summary.count) return "Noch keine gemeinsamen Messpunkte von Temperatur und Frequenz.";
+  const missing = [];
+  if (summary.days < summary.need_days) missing.push(`${fmtDays(summary.days)} von ${fmtNumber(summary.need_days, 0)} Tagen`);
+  if (summary.span_k < summary.need_span_k) missing.push(`${fmtNumber(summary.span_k, 1)} K von ${fmtNumber(summary.need_span_k, 0)} K Spanne`);
+  if (!missing.length) {
+    return "Genug Daten für eine Auswertung: mindestens 3 Tage und 4 K Spanne. Den Vorschlag für den Temperaturausgleich "
+      + "berechnet ntp-gui ab Version 1.5 – bis dahin hilft das Streudiagramm beim Einschätzen.";
+  }
+  return `Es wird weiter gesammelt (bisher ${missing.join(", ")}). Für eine Aussage braucht es **1–3 Tage mit Tag-/Nacht-Wechsel**.`;
+}
+
+function temperatureSection(ctx, data) {
+  const out = [];
+  if (!data) {
+    out.push(card("Temperatur und Frequenz", { help: "temp_freq" }, emptyNote("lädt …")));
+    return out;
+  }
+  if (!data.available) {
+    const candidates = (data.candidates || []).length;
+    out.push(card("Temperatur und Frequenz", { help: "temp_freq", badge: badge("nicht verfügbar", "muted") },
+      emptyNote(NO_SENSOR[data.reason] || NO_SENSOR.none),
+      kv([["Temperatursensor", data.setting === "off" ? "aus" : "nicht verfügbar", "temp_sensor"],
+        ["Gefundene Sensoren", String(candidates), "temp_candidates"]]),
+      el("p", { class: "card-sub" }, el("a", { href: "#/hardware", text: "Zum Hardware-Check →" }))));
+    return out;
+  }
+  const summary = data.summary || {};
+  const pairs = data.pairs || [];
+  const sensor = data.sensor || {};
+  const r = summary.correlation;
+  const tone = summary.ready ? "good" : "muted";
+  out.push(card("Temperatur und Frequenz", { help: "temp_freq",
+    sub: "Zu jedem Messpunkt speichert ntp-gui die Temperatur. So zeigt sich, wie stark der Quarz mit ihr wandert – "
+      + "die Grundlage für einen Temperaturausgleich ab 1.5. Hier wird nur gemessen, nichts verstellt." },
+  el("div", { class: "stat-row" },
+    tile({ label: "Sensor", help: "temp_sensor", value: sensor.name || "–", note: data.setting === "auto" ? "automatisch gewählt" : "eingestellt", tone: "muted" }),
+    tile({ label: "Temperatur jetzt", help: "temp_now", value: isNum(data.celsius) ? fmtFixed(data.celsius, 1) : "–", unit: "°C", tone: "muted" }),
+    tile({ label: "Spanne", help: "temp_span", value: isNum(summary.span_k) ? fmtFixed(summary.span_k, 1) : "–", unit: "K",
+      note: isNum(summary.temp_min) ? `${fmtC(summary.temp_min)} … ${fmtC(summary.temp_max)}` : null, tone }),
+    tile({ label: "Messdauer", help: "temp_duration", value: fmtDays(summary.days), note: `${fmtNumber(summary.count || 0, 0)} Punkte`, tone }),
+    tile({ label: "Zusammenhang r", help: "temp_correlation", value: isNum(r) ? fmtFixed(r, 2) : "–",
+      note: !isNum(r) ? "zu wenige Punkte" : Math.abs(r) >= 0.5 ? "deutlich" : Math.abs(r) >= 0.2 ? "schwach" : "kaum", tone: "muted" })),
+  el("p", { class: "hw-note" }, rich(readiness(summary)))));
+
+  const scatter = el("div", { class: "chart-host" });
+  const tempChart = el("div", { class: "chart-host" });
+  const freqChart = el("div", { class: "chart-host" });
+  out.push(el("div", { class: "grid-2" },
+    card("Temperatur ↔ Frequenz", { help: "temp_scatter", class: "chart-card",
+      sub: "x: Temperatur, y: Frequenzfehler von chrony. Blasse Punkte sind älter." }, scatter),
+    card("Temperaturverlauf", { help: "temp_history", class: "chart-card", sub: "Darunter der Frequenzfehler im selben Zeitraum." },
+      tempChart, el("div", { class: "uq-subchart" }, el("h3", { class: "mini-head" }, "Frequenzfehler ", info("frequency", "Frequenzfehler")), freqChart))));
+  const range = data.range;
+  ctx.afterRender(() => {
+    scatterChart(scatter, { points: pairs.map(([t, x, y]) => ({ t, x, y })), height: 300, key: "uq-scatter",
+      xFormat: fmtC, yFormat: fmtPpm, xAxis: (v, step) => fmtFixed(v, stepDecimals(step)), yAxis: (v, step) => fmtFixed(v, stepDecimals(step)),
+      xUnit: "°C", yUnit: "ppm", ariaLabel: "Streudiagramm Temperatur gegen Frequenzfehler",
+      emptyText: "Noch zu wenige Messpunkte mit Temperatur" });
+    lineChart(tempChart, { height: 170, key: "uq-temp", range, zeroLine: false,
+      series: [{ id: "temp", label: "°C", color: "var(--accent)", points: pairs.map(([t, x]) => [t, x]) }],
+      current: data.celsius, format: fmtC, axisFormat: (v, step) => `${fmtFixed(v, stepDecimals(step))} °C`,
+      ariaLabel: "Verlauf der Temperatur", emptyText: "Noch zu wenige Messpunkte mit Temperatur" });
+    lineChart(freqChart, { height: 150, key: "uq-freq", range, zeroLine: false, stats: false,
+      series: [{ id: "freq", label: "ppm", color: "var(--accent)", points: pairs.map(([t, , y]) => [t, y]) }],
+      format: fmtPpm, axisFormat: (v, step) => `${fmtFixed(v, stepDecimals(step))} ppm`,
+      ariaLabel: "Verlauf des Frequenzfehlers", emptyText: "Noch zu wenige Messpunkte" });
+  });
+  return out;
+}
+
+const CHRONY_LEAP = { Normal: "normal", "Insert second": "Schaltsekunde wird eingefügt", "Delete second": "Schaltsekunde wird entfernt",
+  "Not synchronised": "nicht synchron" };
+
+function fmtDate(iso) {
+  if (!iso) return "–";
+  const [y, m, d] = iso.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString("de-DE", { day: "numeric", month: "long", year: "numeric", timeZone: "UTC" });
+}
+
+function leapSection(info_, status) {
+  if (!info_) return card("Schaltsekunden", { help: "leap_overview" }, emptyNote("lädt …"));
+  const chrony = info_.chrony_leap || status?.tracking?.leap_status;
+  if (!info_.available) {
+    return card("Schaltsekunden", { help: "leap_overview", badge: badge("Liste fehlt", "warn") },
+      emptyNote(`Die Schaltsekunden-Liste ${info_.path} ist nicht lesbar: ${info_.error || "unbekannter Fehler"}.`),
+      kv([["Leap-Status von chrony", CHRONY_LEAP[chrony] || chrony || "–", "leap"], ["Datei", info_.path, "leap_source"]]));
+  }
+  const days = info_.days_left;
+  const expiryTone = info_.expired ? "crit" : info_.reason === "expiring" ? "warn" : "good";
+  const expiryText = info_.expired ? `abgelaufen seit ${-days} Tagen` : `noch ${days} Tage`;
+  const hash = info_.hash_ok === true ? badge("stimmt", "good") : info_.hash_ok === false ? badge("stimmt nicht", "crit") : badge("keine Prüfsumme in der Datei", "muted");
+  const last = info_.last_leap_date
+    ? `${fmtDate(info_.last_leap_date)} (${info_.last_leap_delta > 0 ? "+" : "−"}1 s)` : "–";
+  const headBadge = info_.level === "warn" ? badge(info_.reason === "hash" ? "Prüfsumme falsch" : "Image zu alt", "warn") : badge("aktuell", "good");
+  return card("Schaltsekunden", { help: "leap_overview", badge: headBadge,
+    sub: "Aus der leap-seconds.list im Image (Paket tzdata) – ntp-gui lädt sie nicht selbst nach." },
+  kv([
+    ["TAI − UTC", isNum(info_.tai_utc) ? `${info_.tai_utc} s` : "–", "leap_tai_utc"],
+    ["Letzte Schaltsekunde", last, "leap_last"],
+    ["Angekündigt", info_.next_leap_date ? `${fmtDate(info_.next_leap_date)} (${info_.next_leap_delta > 0 ? "+" : "−"}1 s)` : "keine", "leap_next"],
+    ["Liste gültig bis", el("span", {}, `${fmtDate(info_.expires_date)} `, badge(expiryText, expiryTone)), "leap_expiry"],
+    ["Prüfsumme (SHA-1)", hash, "leap_hash"],
+    ["Leap-Status von chrony", CHRONY_LEAP[chrony] || chrony || "–", "leap"],
+    ["Datei", info_.leapsectz ? `${info_.path} (chrony nutzt die Zeitzone ${info_.leapsectz})` : info_.path, "leap_source"],
+    ["Zukunft der Schaltsekunde", "spätestens 2035 abgeschafft (CGPM 2022)", "leap_future"],
+  ]));
+}
+
+function clockSection(ctx) {
+  const schema = ctx.data("uq-settings", "/api/settings", 120);
+  const field = (schema?.fields || []).find((f) => f.key === "clock_public");
+  const publicText = !field ? "–" : field.value ? "ja – Uhr und /api/v1/time ohne Passwort" : "nein – wie das Dashboard geschützt";
+  return card("Vollbild-Uhr", { help: "clock_page",
+    actions: el("a", { class: "button primary", href: "/clock", text: "Uhr öffnen" }) },
+  el("p", { class: "card-sub" }, rich("Große Uhrzeit (Ortszeit und UTC), Datum und Kalenderwoche für Wandmonitor oder Tablet – "
+    + "abgeglichen mit der Serveruhr statt mit der Uhr des Geräts. Taste **F** für Vollbild.")),
+  kv([
+    ["Ohne Anmeldung erreichbar", publicText, "clock_public"],
+    ["Genauigkeit der Anzeige", "± halbe Laufzeit (RTT), wird auf der Uhr angezeigt", "clock_sync"],
+  ]));
+}
+
+export function render(ctx) {
+  const ui = ctx.uiState;
+  if (!ui.uqRange) ui.uqRange = 7 * 86400;
+  const temp = ctx.data("temperature", `/api/temperature?range=${ui.uqRange}&points=1500`, 60);
+  const leapInfo = ctx.data("leap", "/api/leap", 300);
+  return [
+    el("div", { class: "toolbar section-head" },
+      el("h2", { class: "section-title" }, "Uhrqualität ", info("uq_page", "Uhrqualität")),
+      el("span", { class: "toolbar-label", text: "Zeitraum" }),
+      rangeGroup(ui.uqRange, (seconds) => { ui.uqRange = seconds; ctx.rerender(); })),
+    ...temperatureSection(ctx, temp),
+    el("div", { class: "grid-2" }, leapSection(leapInfo, ctx.status), clockSection(ctx)),
+  ];
+}
