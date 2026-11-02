@@ -229,6 +229,37 @@ class RouterTest(unittest.TestCase):
         self.assertEqual(len(info.offer(ev("source", "info", "Zeitquelle gewechselt", 1000))), 1)
         self.assertEqual(info.offer(ev("source", "info", "Zeitquelle gewechselt", 1000)), [])  # entprellt
 
+    def test_update_events_never_pair(self):
+        """Zwei Achtung-Releases nacheinander, dann ein normales: jedes kommt einzeln, nie „behoben“."""
+        router = notify.ChannelRouter(channel(min_level="info"), clock=lambda: self.now[0])
+
+        def update(version, level, t, attention=False):
+            self.now[0] = t
+            title = f"Neue Version {version} verfügbar" + (" – Achtung beim Update" if attention else "")
+            return router.offer(ev("update", level, title, t,
+                                   {"subject": f"update:{version}", "resolves": False, "version": version}))
+
+        a = update("1.4.0", "warn", 1000, True)
+        b = update("1.5.0", "warn", 1000 + 7 * 86400, True)
+        c = update("1.5.1", "info", 1000 + 30 * 86400)
+        self.now[0] = 1000 + 30 * 86400
+        other = router.offer(ev("other", "info", "Irgendwas", 1000 + 30 * 86400))
+        for out, title in ((a, "Neue Version 1.4.0 verfügbar – Achtung beim Update"),
+                           (b, "Neue Version 1.5.0 verfügbar – Achtung beim Update"),
+                           (c, "Neue Version 1.5.1 verfügbar")):
+            self.assertEqual([m["title"] for m in out], [title])
+            self.assertFalse(out[0]["resolved"])
+        self.assertEqual(a[0]["level"], "warn")
+        self.assertFalse(any(m.get("resolved") for m in other))
+        self.assertIn("update", events.KINDS)
+        self.assertEqual(notify.KIND_LABELS["update"], "Update-Hinweis")
+        # auch ohne Betreff (gleicher Schlüssel „update:“): die Art allein verhindert das Paaren
+        bare = notify.ChannelRouter(channel(min_level="info", debounce_min=0), clock=lambda: 5000.0)
+        self.assertEqual(len(bare.offer(ev("update", "warn", "Neue Version 1.4.0 – Achtung", 5000))), 1)
+        self.assertEqual(len(bare.offer(ev("update", "warn", "Neue Version 1.5.0 – Achtung", 5000))), 1)
+        last = bare.offer(ev("update", "info", "Neue Version 1.5.1 verfügbar", 5000))
+        self.assertEqual([(m["title"], m["resolved"]) for m in last], [("Neue Version 1.5.1 verfügbar", False)])
+
     def test_resolved_can_be_switched_off(self):
         router = notify.ChannelRouter(channel(resolved=False), clock=lambda: 1000.0)
         router.offer(ev("gps", "warn", "GPS-Fix verloren", 1000))

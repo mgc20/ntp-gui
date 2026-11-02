@@ -114,6 +114,12 @@ code { font-size: 0.88em; background: var(--surface-3); padding: 1px 5px; border
 .update-banner a { font-weight: 600; }
 .update-banner .update-attention { display: inline-flex; align-items: center; gap: 4px; }
 .update-banner .update-close { width: 26px; height: 26px; font-size: 13px; }
+/* Handy: Titel weg (steht in den Einstellungen), ✕ fest oben rechts statt in eigener Zeile. */
+@media (max-width: 600px) {
+  .update-banner { position: relative; justify-content: flex-start; padding: 6px 44px 6px 16px; }
+  .update-banner .update-title { display: none; }
+  .update-banner .update-close { position: absolute; top: 4px; right: 10px; }
+}
 
 main { max-width: var(--page-max); margin: 0 auto; padding: clamp(14px, 2.5vw, 26px) clamp(14px, 3vw, 32px) 90px;
   display: flex; flex-direction: column; gap: 16px; }

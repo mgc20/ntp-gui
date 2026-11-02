@@ -45,6 +45,9 @@ import egress
 DAY = 86400
 TICK = 60.0
 TIMEOUT = 10.0
+# Obergrenze für die ganze Anfrage (DNS + Verbindung + TLS + Lesen). TIMEOUT gilt je Socket-Schritt,
+# getaddrinfo() hat gar keinen – ein toter DNS-Server hielte den Abruf sonst beliebig lange auf.
+DEADLINE = 20.0
 MAX_RESPONSE = 512 * 1024
 MAX_TITLE = 120
 MAX_NOTE = 300
@@ -263,15 +266,19 @@ class Checker:
 
     def __init__(self, version: str, enabled: Callable[[], bool], *, fetcher: Callable[[], bytes] = fetch,
                  state: Store | None = None, rng: random.Random | None = None,
-                 emit: Callable[..., None] | None = None) -> None:
+                 emit: Callable[..., None] | None = None, deadline: float = DEADLINE) -> None:
         self.version = version
         self.enabled = enabled
         self.fetcher = fetcher
         self.state = state or Store()
         self.rng = rng or random.SystemRandom()
         self.emit = emit
+        self.deadline = deadline
         self.slots: dict[int, float] = {}
+        # Schützt nur den Zustand – nie während der Netzanfrage gehalten, sonst warteten
+        # /api/status und /metrics auf GitHub.
         self.lock = threading.Lock()
+        self.busy = False
         self.data: dict | None = None
 
     def _data(self) -> dict:
@@ -313,32 +320,73 @@ class Checker:
         """Prüft, wenn fällig. True, wenn eine Anfrage gestellt wurde."""
         now = time.time() if now is None else now
         with self.lock:
-            if not self.due(now):
+            if self.busy or not self.due(now):
                 return False
+            self.busy = True
+        try:
             self.check(now)
-            return True
+        finally:
+            with self.lock:
+                self.busy = False
+        return True
+
+    def _fetch(self) -> bytes:
+        """fetcher() mit Gesamtfrist: läuft in einem eigenen Thread; hängt er, wird er aufgegeben."""
+        box: dict = {}
+
+        def work() -> None:
+            try:
+                box["raw"] = self.fetcher()
+            except BaseException as exc:  # noqa: BLE001 – wird im aufrufenden Thread ausgewertet
+                box["exc"] = exc
+
+        worker = threading.Thread(target=work, daemon=True, name="update-fetch")
+        worker.start()
+        worker.join(self.deadline)
+        if worker.is_alive():
+            raise UpdateError(f"Zeitüberschreitung ({int(self.deadline)} s) – GitHub antwortet nicht rechtzeitig")
+        if "exc" in box:
+            raise box["exc"]
+        return box["raw"]
 
     def check(self, now: float) -> dict:
-        data = self._data()
-        data["last_attempt"] = now
+        # 1. Versuch vermerken (kurz unter der Sperre) – auch ein Absturz zählt als „heute gefragt“.
+        with self.lock:
+            data = self._data()
+            data["last_attempt"] = now
+            self.state.save(data)
+        # 2. Netz ohne Sperre.
+        latest = None
+        error = None
         try:
-            latest = parse_release(self.fetcher())
+            latest = parse_release(self._fetch())
         except UpdateError as exc:
-            data["error"] = str(exc)
+            error = str(exc)
         except Exception:  # noqa: BLE001 – nie den Thread verlieren
-            data["error"] = "Prüfung fehlgeschlagen"
-        else:
-            data.update(error=None, last_success=now, latest=latest)
-            newer = is_newer(latest["version"], self.version)
-            if newer and data.get("announced") != latest["version"]:
-                data["announced"] = latest["version"]
-                if self.emit:
-                    self.emit("other", "warn" if latest["attention"] else "info",
-                              f"Neue Version {latest['version']} verfügbar"
-                              + (" – Achtung beim Update" if latest["attention"] else ""),
-                              {"version": latest["version"], "current": self.version}, "update")
-        self.state.save(data)
-        return data
+            error = "Prüfung fehlgeschlagen"
+        # 3. Ergebnis speichern (kurz unter der Sperre), Ereignis danach.
+        event = None
+        with self.lock:
+            data = self._data()
+            if latest is None:
+                data["error"] = error
+            else:
+                data.update(error=None, last_success=now, latest=latest)
+                newer = is_newer(latest["version"], self.version)
+                if newer and data.get("announced") != latest["version"]:
+                    data["announced"] = latest["version"]
+                    event = latest
+            self.state.save(data)
+            result = dict(data)
+        if event and self.emit:
+            # Eigene Art „update“ mit Betreff je Version: kein offenes Problem, das ein späteres
+            # Ereignis „beheben“ oder unterdrücken könnte (notify.STANDALONE_KINDS).
+            self.emit("update", "warn" if event["attention"] else "info",
+                      f"Neue Version {event['version']} verfügbar"
+                      + (" – Achtung beim Update" if event["attention"] else ""),
+                      {"subject": f"update:{event['version']}", "resolves": False,
+                       "version": event["version"], "current": self.version}, "update")
+        return result
 
     def status(self, now: float | None = None) -> dict:
         now = time.time() if now is None else now

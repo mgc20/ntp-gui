@@ -33,6 +33,11 @@ leben. Er sagt **nicht**, ob die Zeit stimmt.
 | Header (unter „Headers“) | `{"Authorization": "Bearer ntpg_…"}` |
 | Intervall | 60 s, Wiederholungen 5 (nach einem Neustart braucht chrony ein paar Minuten) |
 
+Der Schlüssel geht bei jedem Prüfintervall über die Leitung – über `http://` im Klartext. Nimm
+darum einen eigenen Lese-Schlüssel nur für Uptime Kuma (einzeln widerrufbar) und frag entweder
+per `https://` über einen Reverse-Proxy (Caddy, Traefik, nginx) oder nur innerhalb eines
+vertrauenswürdigen Netzsegments ab. Oft reicht zusätzlich Monitor 3 unten – der braucht gar keinen Schlüssel.
+
 Ist „Vollbild-Uhr ohne Anmeldung“ eingeschaltet, geht `/api/v1/time` auch ohne Schlüssel.
 Wer zusätzlich die Genauigkeit überwachen will: Json Query `accuracy < 0.01` (Sekunden),
 erwarteter Wert `true` – sofern deine Uptime-Kuma-Version Ausdrücke (JSONata) auswertet.

@@ -14,6 +14,7 @@ import socket
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -140,11 +141,29 @@ class EgressTest(unittest.TestCase):
             dict(headers={"Accept": "application/json"}),
             dict(url=egress.UPDATE_CHECK_URL + "?v=1.3.2"),
             dict(url="https://example.org/releases/latest"),
+            # Werte ohne Ziffern, die trotzdem etwas über die Instanz verraten: Hostname, Ort, Base32-Kennung
+            dict(headers={"User-Agent": "ntp-gui", "Accept": "zeitserver.fritz.box"}),
+            dict(headers={"User-Agent": "ntp-gui", "Accept": "berlin-mitte"}),
+            dict(headers={"User-Agent": "ntp-gui", "Accept": "mfrggzdfmztwq"}),
+            dict(headers={"User-Agent": "ntp-gui", "Accept": "application/json"}),
         ]
         for kwargs in bad:
             with self.subTest(**{k: str(v) for k, v in kwargs.items()}):
                 with self.assertRaises(egress.UpdateCheckRejected):
                     egress.update_check_request(**kwargs)
+
+
+    def test_second_layer_runs_central_checks(self):
+        # Auch wenn die erste Schicht später gelockert würde: check_no_leaks/backstop laufen mit.
+        with mock.patch.object(egress, "check_no_leaks", wraps=egress.check_no_leaks) as leaks, \
+                mock.patch.object(egress, "backstop", wraps=egress.backstop) as bs:
+            egress.update_check_request()
+        self.assertTrue(leaks.called)
+        self.assertTrue(bs.called)
+        text = egress._render_update_request(egress.UPDATE_CHECK_URL,
+                                              {"User-Agent": "ntp-gui", "Accept": "zeitserver.fritz.box"})
+        base = egress._render_update_request(egress.UPDATE_CHECK_URL, egress.UPDATE_CHECK_HEADERS)
+        self.assertTrue(egress._update_findings(text) - egress._update_findings(base))
 
 
 class FetchTest(unittest.TestCase):
@@ -321,8 +340,10 @@ class ScheduleTest(TempStore):
         self.assertEqual(status["latest"]["version"], "1.4.0")
         self.assertGreater(status["next_check"], T0 + DAY + 200)
         self.assertEqual(len(emitted), 1, "Ereignis nur einmal je neuer Version")
-        self.assertEqual(emitted[0][0], "other")
+        self.assertEqual(emitted[0][0], "update")
         self.assertEqual(emitted[0][1], "warn")
+        self.assertEqual(emitted[0][3]["subject"], "update:1.4.0")
+        self.assertIs(emitted[0][3]["resolves"], False)
         found = updatecheck.insights(status)
         self.assertEqual(len(found), 1)
         self.assertEqual(found[0]["key"], "update_available")
@@ -331,6 +352,42 @@ class ScheduleTest(TempStore):
         self.assertIn("Diun", found[0]["text"])
         self.assertNotIn("Watchtower ist", found[0]["text"].replace("Watchtower ist seit", ""))
         self.assertTrue(found[0]["link"].startswith("https://github.com/ConGp20/ntp-gui/releases/"))
+
+    def test_status_not_blocked_by_slow_fetch(self):
+        """/api/status und /metrics dürfen nie auf GitHub warten (Sperre nicht während der Anfrage)."""
+        started, release_fetch = threading.Event(), threading.Event()
+
+        def slow():
+            started.set()
+            release_fetch.wait(5)
+            return release()
+
+        check = self.checker(fetcher=slow)
+        check.slots[T0 // DAY] = 0.0
+        worker = threading.Thread(target=check.tick, args=(T0 + 10,))
+        worker.start()
+        try:
+            self.assertTrue(started.wait(2))
+            t = time.monotonic()
+            status = check.status(T0 + 11)
+            self.assertLess(time.monotonic() - t, 0.5, "status() hat auf den Abruf gewartet")
+            self.assertEqual(status["last_attempt"], T0 + 10)
+            self.assertFalse(check.tick(T0 + 12), "kein zweiter Abruf, solange einer läuft")
+        finally:
+            release_fetch.set()
+            worker.join(5)
+        self.assertEqual(check.status(T0 + 20)["latest"]["version"], "1.4.0")
+
+    def test_overall_deadline(self):
+        hang = threading.Event()
+        check = updatecheck.Checker("1.3.2", lambda: True, fetcher=lambda: hang.wait(5) and release(),
+                                    state=updatecheck.Store(), rng=random.Random(1), deadline=0.2)
+        t = time.monotonic()
+        data = check.check(T0 + 5)
+        hang.set()
+        self.assertLess(time.monotonic() - t, 2)
+        self.assertIn("Zeitüberschreitung", data["error"])
+        self.assertEqual(updatecheck.DEADLINE, 20.0)
 
     def test_same_or_older_version_no_hint(self):
         check = self.checker(fetcher=lambda: release(tag="v1.3.2"))

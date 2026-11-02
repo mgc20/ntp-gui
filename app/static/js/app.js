@@ -215,7 +215,7 @@ function renderUpdateBanner(update) {
   banner.replaceChildren(
     el("span", { class: "update-text" },
       el("strong", { text: `Neue Version ${latest.version} verfügbar` }),
-      latest.title ? el("span", { text: ` – ${latest.title}` }) : null),
+      latest.title ? el("span", { class: "update-title", text: ` – ${latest.title}` }) : null),
     update.attention ? el("span", { class: "update-attention" }, badge("Achtung beim Update", "warn"),
       info("update_attention", "Achtung beim Update")) : null,
     link ? el("a", { href: link, target: "_blank", rel: "noopener noreferrer", text: "Release-Notizen →" }) : null,

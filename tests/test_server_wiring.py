@@ -5,6 +5,7 @@ Läuft ohne chronyd/gpsd: alle Abfragen werden durch Attrappen ersetzt.
 
 import json
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -184,6 +185,44 @@ class MetricsTest(RunDirMixin, unittest.TestCase):
         # jede Metrik genau ein HELP/TYPE
         for name in ("ntpgui_service_up", "ntpgui_pps_live", "ntpgui_hardware_capability"):
             self.assertEqual(text.count(f"# TYPE {name} "), 1)
+
+    def test_intentionally_stopped_services_do_not_alert(self):
+        """Standardinstallation: GPS/PTP aus, DNS-Modus system – stopped, aber nicht eingeschaltet."""
+        off = {"state": "stopped", "restarts": 0, "enabled": False, "optional": True}
+        self.write({"time": 1700000000, "services": {
+            "chronyd": {"state": "running", "restarts": 0, "enabled": True},
+            "gpsd": dict(off, message="GPS ist aus"), "ptp4l": dict(off, message="PTP ist aus"),
+            "phc2sys": dict(off, message="PTP ist aus"), "dnsfwd": dict(off, message="System-DNS (Modus system)"),
+            "web": {"state": "running", "restarts": 0, "enabled": True},
+            # GPS eingeschaltet, Gerät fehlt: stopped, aber gewollt → Alarm soll greifen
+            "gpsd2": {"state": "stopped", "restarts": 0, "enabled": True},
+            # ältere services.json ohne Feld: stopped = aus, failed = gewollt
+            "old_off": {"state": "stopped", "restarts": 0},
+            "old_failed": {"state": "failed", "restarts": 3},
+        }})
+        with FakeBackends(report=None):
+            text = server.build_metrics()
+        for name in ("gpsd", "ptp4l", "phc2sys", "dnsfwd", "old_off"):
+            self.assertIn('ntpgui_service_up{service="%s"} 0' % name, text)
+            self.assertIn('ntpgui_service_enabled{service="%s"} 0' % name, text)
+        for name in ("chronyd", "web", "gpsd2", "old_failed"):
+            self.assertIn('ntpgui_service_enabled{service="%s"} 1' % name, text)
+        self.assertEqual(text.count("# TYPE ntpgui_service_enabled gauge"), 1)
+        # Alarmregel nachgerechnet: up == 0 and enabled == 1
+        up = dict(re.findall(r'^ntpgui_service_up\{service="([^"]+)"\} (\d)$', text, re.M))
+        enabled = dict(re.findall(r'^ntpgui_service_enabled\{service="([^"]+)"\} (\d)$', text, re.M))
+        firing = sorted(n for n in up if up[n] == "0" and enabled.get(n) == "1")
+        self.assertEqual(firing, ["gpsd2", "old_failed"])
+        # Blöcke zusammenhängend (Prometheus-Textformat)
+        names = [line.split("{")[0] for line in text.splitlines() if line.startswith("ntpgui_service_")]
+        self.assertEqual(names, sorted(names, key=lambda n: ["ntpgui_service_up", "ntpgui_service_enabled",
+                                                               "ntpgui_service_restarts_total"].index(n)))
+
+    def test_alert_rule_requires_enabled(self):
+        rules = (Path(__file__).resolve().parents[1] / "docs" / "prometheus" / "alerts.yml").read_text(encoding="utf-8")
+        block = rules[rules.index("alert: NtpGuiServiceDown"):]
+        expr = re.search(r"expr:\s*(.+)", block).group(1)
+        self.assertIn("ntpgui_service_enabled == 1", expr)
 
     def test_without_report_or_files(self):
         with FakeBackends(report=None):

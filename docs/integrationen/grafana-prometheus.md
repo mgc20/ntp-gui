@@ -35,6 +35,15 @@ scrape_configs:
       - targets: ["zeitserver.lan:8080"]
 ```
 
+Prometheus schickt den Schlüssel bei jedem Abruf mit – über `http://` im Klartext, für jeden im
+selben Netz lesbar. Darum einen eigenen Lese-Schlüssel nur für Prometheus anlegen und entweder
+über einen Reverse-Proxy mit TLS abfragen (`scheme: https` im Scrape-Job) oder nur innerhalb eines
+vertrauenswürdigen Netzsegments.
+
+`NtpGuiServiceDown` meldet nur Dienste, die laut Einstellungen laufen sollen
+(`ntpgui_service_enabled == 1`): gpsd bei ausgeschaltetem GPS, ptp4l/phc2sys ohne PTP und dnsfwd
+im DNS-Modus „system“ sind absichtlich gestoppt und lösen keinen Alarm aus.
+
 Die Schwellen in `alerts.yml` sind Vorschläge für GPS bzw. gute LAN-Quellen (Abweichung 10 ms,
 Fehlerschranke 100 ms). Wer nur über Internet-NTP synchronisiert, setzt die Abweichung eher
 auf 50 ms. Prüfen: `promtool check rules alerts.yml`.

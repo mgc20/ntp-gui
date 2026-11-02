@@ -1,23 +1,31 @@
 name: Release
 
 # Per Knopfdruck veröffentlichen: Actions → Release → "Run workflow".
-# Reihenfolge mit Absicht: erst alles testen, dann das Image veröffentlichen,
-# erst danach Tag und GitHub-Release anlegen. Scheitert ein Schritt, bleibt
-# kein halber Release (Tag ohne Image) zurück.
+# Reihenfolge mit Absicht: erst alles testen und prüfen, dann das Image nur per Digest
+# hochladen (noch ohne Tag), dann Herkunftsnachweis, erst danach Image-Tags, Git-Tag und
+# GitHub-Release. Scheitert ein Schritt, bleibt kein halber Release (Tag ohne Image, „latest“
+# auf einem ungeprüften Image) zurück – höchstens ein unbenannter Digest in der Registry.
 #
 # Lieferkette (ab 1.4):
-#   * SBOM (SPDX-JSON, syft über anchore/sbom-action) hängt am GitHub-Release.
-#   * Schwachstellen-Scan mit Grype (anchore/scan-action). Regel: Der Release bricht nur ab,
-#     wenn das Image eine KRITISCHE Lücke enthält, für die es schon eine Korrektur gibt
-#     (Debian hat ein gepatchtes Paket – dann ist nur das Image veraltet; neu bauen bzw. das
-#     Basis-Image per Dependabot anheben behebt es). Lücken ohne Korrektur („unfixed“ in
-#     Debian) und alles unterhalb von kritisch stehen nur im Bericht (Job-Zusammenfassung
-#     und Datei am Release) – sonst ließe sich praktisch nie ein Release bauen.
+#   * Release-Builds ohne Build-Cache (no-cache): jeder Release zieht die aktuellen
+#     Debian-Pakete, auch wenn sich das Basis-Image nicht geändert hat.
+#   * SBOM (SPDX-JSON, syft) und Schwachstellen-Scan (Grype) laufen gegen den hochgeladenen
+#     Digest – getrennt für linux/amd64 und linux/arm64, also genau gegen das, was ausgeliefert
+#     und nachgewiesen wird. Beide SBOMs und Berichte hängen am GitHub-Release.
+#   * Regel des Scans: Der Release bricht nur ab, wenn eine Architektur eine KRITISCHE Lücke
+#     enthält, für die es schon eine Korrektur gibt (Debian hat ein gepatchtes Paket). Abhilfe:
+#     Release einfach neu starten (baut ohne Cache mit den aktuellen Paketen) – reicht das
+#     nicht, steckt die Lücke im Basis-Image: den Dependabot-PR für den neuen Digest von
+#     debian:trixie-slim mergen. Lücken ohne Korrektur („unfixed“ in Debian) und alles
+#     unterhalb von kritisch stehen nur im Bericht – sonst ließe sich praktisch nie ein
+#     Release bauen.
 #   * Herkunftsnachweis (SLSA Build Provenance) per actions/attest-build-provenance für den
 #     Digest des veröffentlichten Images, in der Registry abgelegt und direkt danach mit
-#     „gh attestation verify“ geprüft.
-#   * Fremde Actions der Lieferkette sind auf Commit-SHAs festgenagelt; Dependabot
-#     (.github/dependabot.yml) schlägt Updates wöchentlich vor.
+#     „gh attestation verify“ geprüft. Das OIDC-Token (id-token: write) bekommt nur der
+#     kleine Job „attest“, in dem außer dieser einen Action keine fremde läuft.
+#   * Alle Actions (auch actions/* und docker/*) sind auf Commit-SHAs festgenagelt, die
+#     Version steht als Kommentar dahinter; Dependabot (.github/dependabot.yml) schlägt
+#     Updates wöchentlich vor und hebt SHA und Kommentar gemeinsam an.
 on:
   workflow_dispatch:
     inputs:
@@ -26,21 +34,25 @@ on:
         required: true
         default: "1.0.0"
 
-permissions:
-  contents: write      # Tag und Release anlegen
-  packages: write      # Image nach ghcr.io pushen
-  id-token: write      # OIDC-Token für die Signatur des Herkunftsnachweises (Sigstore)
-  attestations: write  # Herkunftsnachweis speichern
+# Rechte je Job (unten); global nichts.
+permissions: {}
 
 concurrency:
   group: release
   cancel-in-progress: false
 
 jobs:
-  release:
+  build:
+    name: Testen, bauen, prüfen
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write      # Image per Digest nach ghcr.io laden
     env:
       VERSION: ${{ inputs.version }}
+    outputs:
+      image: ${{ steps.image.outputs.name }}
+      digest: ${{ steps.push.outputs.digest }}
     steps:
       - name: Release nur von main
         if: github.ref != 'refs/heads/main'
@@ -48,9 +60,10 @@ jobs:
           echo "::error::Release bitte von main starten (aktuell: ${GITHUB_REF})"
           exit 1
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Version prüfen
         run: |
@@ -65,7 +78,7 @@ jobs:
           fi
           echo "Release v${VERSION} von $(git rev-parse --short HEAD)"
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.13"
 
@@ -75,18 +88,17 @@ jobs:
       - name: Entrypoint-Syntax prüfen
         run: bash -n docker/entrypoint.sh
 
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       - name: Image für den Integrationstest bauen
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           platforms: linux/amd64
           load: true
+          no-cache: true
           tags: ntp-gui:release-test
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
 
       - name: Integrationstest
         run: |
@@ -94,96 +106,161 @@ jobs:
           sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends chrony || true
           ./tests/container-test.sh ntp-gui:release-test
 
-      # --- Lieferkette: SBOM und Schwachstellen (am getesteten amd64-Image; arm64 enthält
-      # dieselben Debian-Pakete in derselben Version) -----------------------------------
-      - name: SBOM erzeugen (SPDX)
-        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
-        with:
-          image: ntp-gui:release-test
-          format: spdx-json
-          output-file: ntp-gui-${{ inputs.version }}.spdx.json
-          upload-artifact: false
-          upload-release-assets: false
-
-      - name: Schwachstellen-Bericht (Grype, nur Bericht)
-        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
-        with:
-          image: ntp-gui:release-test
-          fail-build: false
-          output-format: table
-          output-file: ntp-gui-${{ inputs.version }}-vulnerabilities.txt
-
-      - name: Bericht in die Job-Zusammenfassung
-        run: |
-          set -euo pipefail
-          {
-            echo "## Schwachstellen im Image (Grype)"
-            echo
-            echo "Regel: Abbruch nur bei kritischen Lücken mit verfügbarer Korrektur – siehe nächster Schritt."
-            echo
-            echo '```'
-            head -n 300 "ntp-gui-${VERSION}-vulnerabilities.txt"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Schwachstellen-Sperre (kritisch und behebbar)
-        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
-        with:
-          image: ntp-gui:release-test
-          only-fixed: true
-          severity-cutoff: critical
-          fail-build: true
-          output-format: table
-          output-file: grype-gate.txt
-
       - name: In die GitHub Container Registry einloggen
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Metadaten
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository }}
-          tags: |
-            type=semver,pattern={{version}},value=v${{ inputs.version }}
-            type=semver,pattern={{major}}.{{minor}},value=v${{ inputs.version }}
-            type=raw,value=latest
-
-      - name: Image bauen und veröffentlichen (amd64 + arm64)
-        id: push
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
       - name: Image-Namen klein schreiben
         id: image
         run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
 
+      - name: Metadaten (Labels)
+        id: meta
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}},value=v${{ inputs.version }}
+
+      # Nur per Digest, noch ohne Tag: „latest“ und die Versionstags kommen erst im Job „publish“,
+      # wenn Scan und Herkunftsnachweis durch sind.
+      - name: Image bauen und per Digest hochladen (amd64 + arm64)
+        id: push
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          no-cache: true
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=${{ steps.image.outputs.name }},push-by-digest=true,name-canonical=true,push=true
+
+      # --- Lieferkette: SBOM und Schwachstellen am hochgeladenen Digest, je Architektur ------
+      - name: syft bereitstellen
+        id: syft
+        uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+
+      - name: Grype bereitstellen
+        id: grype
+        uses: anchore/scan-action/download-grype@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
+
+      - name: SBOM und Schwachstellen-Bericht (je Architektur)
+        env:
+          SYFT: ${{ steps.syft.outputs.cmd }}
+          GRYPE: ${{ steps.grype.outputs.cmd }}
+          REF: ${{ steps.image.outputs.name }}@${{ steps.push.outputs.digest }}
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          {
+            echo "## Schwachstellen im Image (Grype)"
+            echo
+            echo "Geprüft: \`${REF}\` – Regel: Abbruch nur bei kritischen Lücken mit verfügbarer Korrektur."
+          } >> "$GITHUB_STEP_SUMMARY"
+          for arch in amd64 arm64; do
+            "$SYFT" scan "registry:${REF}" --platform "linux/${arch}" \
+              -o "spdx-json=release-assets/ntp-gui-${VERSION}-${arch}.spdx.json"
+            # Grype liest das Image selbst (nicht die SPDX-Datei): nur so kennt es die Debian-Version.
+            "$GRYPE" "registry:${REF}" --platform "linux/${arch}" -o table \
+              > "release-assets/ntp-gui-${VERSION}-${arch}-vulnerabilities.txt"
+            {
+              echo
+              echo "### linux/${arch}"
+              echo
+              echo '```'
+              head -n 300 "release-assets/ntp-gui-${VERSION}-${arch}-vulnerabilities.txt"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          done
+
+      - name: Schwachstellen-Sperre (kritisch und behebbar, je Architektur)
+        env:
+          GRYPE: ${{ steps.grype.outputs.cmd }}
+          REF: ${{ steps.image.outputs.name }}@${{ steps.push.outputs.digest }}
+        run: |
+          set -euo pipefail
+          for arch in amd64 arm64; do
+            echo "== linux/${arch}"
+            "$GRYPE" "registry:${REF}" --platform "linux/${arch}" --only-fixed --fail-on critical -o table
+          done
+
+      - name: SBOM und Berichte für den Release ablegen
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-assets
+          path: release-assets/
+          if-no-files-found: error
+          retention-days: 7
+
+  attest:
+    name: Herkunftsnachweis
+    needs: build
+    runs-on: ubuntu-latest
+    # Nur hier gibt es das OIDC-Token – und hier läuft keine andere fremde Action.
+    permissions:
+      contents: read
+      packages: write      # Nachweis in der Registry ablegen
+      id-token: write      # OIDC-Token für die Signatur (Sigstore)
+      attestations: write  # Nachweis speichern
+    steps:
       - name: Herkunftsnachweis (Build Provenance) anlegen
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-name: ${{ steps.image.outputs.name }}
-          subject-digest: ${{ steps.push.outputs.digest }}
+          subject-name: ${{ needs.build.outputs.image }}
+          subject-digest: ${{ needs.build.outputs.digest }}
           push-to-registry: true
 
       - name: Herkunftsnachweis prüfen
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          IMAGE: ${{ steps.image.outputs.name }}
-          DIGEST: ${{ steps.push.outputs.digest }}
+          IMAGE: ${{ needs.build.outputs.image }}
+          DIGEST: ${{ needs.build.outputs.digest }}
         run: |
           set -euo pipefail
           gh attestation verify "oci://${IMAGE}@${DIGEST}" -R "${GITHUB_REPOSITORY}"
+
+  publish:
+    name: Tags und GitHub-Release
+    needs: [build, attest]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write      # Tag und Release anlegen
+      packages: write      # Image-Tags setzen
+    env:
+      VERSION: ${{ inputs.version }}
+      IMAGE: ${{ needs.build.outputs.image }}
+      DIGEST: ${{ needs.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+
+      - name: SBOM und Berichte holen
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-assets
+          path: release-assets
+
+      - name: Image-Tags setzen (gleicher Digest)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+          docker buildx imagetools create \
+            -t "${IMAGE}:${VERSION}" -t "${IMAGE}:${VERSION%.*}" -t "${IMAGE}:latest" \
+            "${IMAGE}@${DIGEST}"
+          # Ein Tag auf dieselbe Quelle ändert den Digest nicht – der Nachweis gilt weiter.
+          for tag in "${VERSION}" "${VERSION%.*}" latest; do
+            got=$(docker buildx imagetools inspect "${IMAGE}:${tag}" --format '{{json .Manifest.Digest}}' | tr -d '"')
+            if [[ "$got" != "$DIGEST" ]]; then
+              echo "::error::${IMAGE}:${tag} zeigt auf ${got}, erwartet ${DIGEST}"
+              exit 1
+            fi
+          done
 
       - name: Tag anlegen
         run: |
@@ -196,9 +273,6 @@ jobs:
       - name: GitHub-Release anlegen
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAGS: ${{ steps.meta.outputs.tags }}
-          IMAGE: ${{ steps.image.outputs.name }}
-          DIGEST: ${{ steps.push.outputs.digest }}
         run: |
           set -euo pipefail
           {
@@ -207,13 +281,15 @@ jobs:
             echo "Für linux/amd64 und linux/arm64 (Raspberry Pi):"
             echo
             echo '```'
-            echo "$TAGS"
+            echo "${IMAGE}:${VERSION}"
+            echo "${IMAGE}:${VERSION%.*}"
+            echo "${IMAGE}:latest"
             echo '```'
             echo
             echo "Schnellstart:"
             echo
             echo '```bash'
-            echo "docker run -d -p 123:123/udp -p 8080:8080 --cap-add SYS_TIME $(echo "$TAGS" | head -n1)"
+            echo "docker run -d -p 123:123/udp -p 8080:8080 --cap-add SYS_TIME ${IMAGE}:${VERSION}"
             echo '```'
             echo
             echo "## Herkunft prüfen"
@@ -224,10 +300,11 @@ jobs:
             echo "gh attestation verify oci://${IMAGE}:${VERSION} -R ${GITHUB_REPOSITORY}"
             echo '```'
             echo
-            echo "Am Release: SBOM (\`ntp-gui-${VERSION}.spdx.json\`) und Schwachstellen-Bericht von Grype"
-            echo "(\`ntp-gui-${VERSION}-vulnerabilities.txt\`). Der Release bricht nur bei kritischen Lücken mit"
+            echo "Am Release je Architektur (amd64, arm64) eine SBOM (\`ntp-gui-${VERSION}-<arch>.spdx.json\`)"
+            echo "und der Schwachstellen-Bericht von Grype (\`ntp-gui-${VERSION}-<arch>-vulnerabilities.txt\`) –"
+            echo "beide aus genau diesem Digest erzeugt. Der Release bricht nur bei kritischen Lücken mit"
             echo "verfügbarer Korrektur ab; offene Debian-Lücken ohne Korrektur stehen nur im Bericht."
           } > release-notes.md
           gh release create "v${VERSION}" --title "ntp-gui ${VERSION}" \
             --notes-file release-notes.md --generate-notes \
-            "ntp-gui-${VERSION}.spdx.json" "ntp-gui-${VERSION}-vulnerabilities.txt"
+            release-assets/*

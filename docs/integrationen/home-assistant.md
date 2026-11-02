@@ -19,6 +19,13 @@ ntpgui_auth: "Bearer ntpg_DEIN_SCHLUESSEL"
 > Ohne Dashboard-Passwort geht es auch ohne Schlüssel. Mit Schlüssel bleibt die Konfiguration
 > aber gültig, wenn du später ein Passwort setzt.
 
+> **Der Schlüssel reist im Klartext.** ntp-gui spricht selbst nur HTTP. Bei `http://` kann jeder
+> im selben Netz den `Authorization`-Header mitlesen – und ein Lese-Schlüssel zeigt in
+> `/api/v1/status` Client-Adressen, Quellennamen und Einstellungen. Darum: entweder per
+> `https://` über einen Reverse-Proxy (Caddy, Traefik, nginx) abfragen oder nur innerhalb
+> eines vertrauenswürdigen Netzsegments. Und für jede Integration einen eigenen Lese-Schlüssel
+> anlegen – dann widerrufst du bei Bedarf genau den einen.
+
 ## 2. REST-Sensoren (configuration.yaml)
 
 ```yaml
@@ -28,6 +35,9 @@ rest:
       Authorization: !secret ntpgui_auth
     scan_interval: 60
     timeout: 10
+    # Mit Reverse-Proxy (empfohlen, Schlüssel verschlüsselt):
+    #   resource: https://zeitserver.example.lan/api/v1/status
+    #   verify_ssl: true
     sensor:
       - name: "Zeitserver Abweichung"
         unique_id: ntpgui_offset

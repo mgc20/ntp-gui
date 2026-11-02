@@ -116,6 +116,15 @@ METRICS_A=$(curl -s http://127.0.0.1:18080/metrics)
 contains "Metrik ntpgui_info mit Version" "$METRICS_A" 'ntpgui_info{version="'
 contains "Metrik ntpgui_sources_usable vorhanden" "$METRICS_A" "ntpgui_sources_usable"
 check "Ohne Update-Hinweis keine Update-Metrik" 0 "$(grep -c '^ntpgui_update_available' <<<"$METRICS_A")"
+# Absichtlich gestoppte Dienste (GPS/PTP aus, DNS-Modus system) zählen nicht als Ausfall.
+contains "gpsd aus: ntpgui_service_enabled 0" "$METRICS_A" 'ntpgui_service_enabled{service="gpsd"} 0'
+contains "chronyd: ntpgui_service_enabled 1" "$METRICS_A" 'ntpgui_service_enabled{service="chronyd"} 1'
+check "Ab Werk kein Dienst eingeschaltet und gestoppt" 0 "$(python3 -c "
+import re, sys
+t = sys.stdin.read()
+up = dict(re.findall(r'^ntpgui_service_up\{service=\"([^\"]+)\"\} (\d)$', t, re.M))
+on = dict(re.findall(r'^ntpgui_service_enabled\{service=\"([^\"]+)\"\} (\d)$', t, re.M))
+print(sum(1 for n in up if up[n] == '0' and on.get(n) == '1'))" <<<"$METRICS_A")"
 
 echo
 echo "1b) Log, Ereignisse, Diagnosepaket, Client-Messung (1.3)"

@@ -75,12 +75,12 @@ KIND_LABELS = {
     "service": "Dienste", "reload": "Neuladen", "settings": "Einstellungen", "source": "Zeitquellen",
     "gps": "GPS", "pps": "PPS", "calibration": "Kalibrierung", "cert": "Zertifikat",
     "leap": "Schaltsekunde", "startup": "Start", "clients": "Clients", "api": "API", "dns": "DNS für ntp-gui",
-    "other": "Sonstiges",
+    "update": "Update-Hinweis", "other": "Sonstiges",
 }
 # Seite im Dashboard, auf die der Link einer Meldung zeigt.
 KIND_PAGES = {"gps": "gps", "pps": "gps", "calibration": "gps", "source": "quellen", "clients": "clients",
               "service": "diagnose", "reload": "diagnose", "cert": "einstellungen", "settings": "einstellungen",
-              "leap": "quellen", "dns": "einstellungen"}
+              "leap": "quellen", "dns": "einstellungen", "update": "einstellungen"}
 
 MAX_CHANNELS = 10
 QUEUE_MAX = 50                     # Meldungen je Kanal; bei Überlauf fällt die älteste weg
@@ -450,6 +450,10 @@ def _record(channel_id: str, ok: bool, error: str | None = None, dropped: int = 
 # „erneuert“, „wieder im Rahmen“ …). Andere Arten (Kalibrierung, Einstellungen, Sonstiges) haben keine
 # solchen Paare. Neue Quellen können data.resolves = true/false setzen, ohne hier etwas zu ändern.
 RESOLVING_KINDS = ("gps", "pps", "service", "source", "reload", "cert", "clients", "dns")
+# Arten, deren Ereignisse für sich stehen: auch „warn“ ist kein offenes Problem. „Neue Version 1.5.0 –
+# Achtung beim Update“ darf weder die nächste Achtung-Version unterdrücken noch von einem späteren
+# Info-Ereignis als „behoben … – Dauer 30 Tage“ geschlossen werden.
+STANDALONE_KINDS = ("update",)
 
 
 def resolves(event: dict) -> bool:
@@ -527,7 +531,7 @@ class ChannelRouter:
                                          "pending": None, "suppressed": 0, "sent_level": None,
                                          "resolved_sent": False})
         level = event.get("level") or "info"
-        problem = level in ("warn", "crit")
+        problem = level in ("warn", "crit") and event.get("kind") not in STANDALONE_KINDS
         if not problem and st["open_since"] is not None and resolves(event):
             # „behoben“: gehört zum offenen Problem – auch unterhalb der Mindeststufe.
             out = []

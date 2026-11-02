@@ -85,13 +85,14 @@ groups:
           description: "Am PPS-Gerät kommen seit 10 Minuten keine Pulse an. Ohne PPS ist GPS-Zeit nur auf Millisekunden genau."
 
       - alert: NtpGuiServiceDown
-        expr: ntpgui_service_up == 0
+        # Nur eingeschaltete Dienste: GPS/PTP aus oder DNS-Modus „system“ heißt „stopped“ mit Absicht.
+        expr: ntpgui_service_up == 0 and on(instance, job, service) ntpgui_service_enabled == 1
         for: 10m
         labels:
           severity: warning
         annotations:
           summary: "Dienst {{ $labels.service }} läuft nicht ({{ $labels.instance }})"
-          description: "Der Supervisor meldet {{ $labels.service }} seit 10 Minuten als nicht laufend. Seite „Hardware“ und Container-Log prüfen."
+          description: "Der Supervisor meldet {{ $labels.service }} seit 10 Minuten als nicht laufend, obwohl er laut Einstellungen laufen soll. Seite „Hardware“ und Container-Log prüfen."
 
       - alert: NtpGuiNtsCertExpiring
         expr: ntpgui_nts_server_cert_days_left < 14

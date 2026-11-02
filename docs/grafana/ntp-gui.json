@@ -1241,8 +1241,8 @@
     {
       "id": 22,
       "type": "stat",
-      "title": "Dienste",
-      "description": "Laufende Dienste unter dem Supervisor (chronyd, gpsd, ptp4l …).",
+      "title": "Dienste gestört",
+      "description": "Eingeschaltete Dienste, die gerade nicht laufen (0 = alles gut). Absichtlich ausgeschaltete Dienste (GPS/PTP aus, DNS-Modus system) zählen nicht.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1259,7 +1259,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by (instance) (ntpgui_service_up{instance=~\"$instance\"})",
+          "expr": "sum by (instance) ((1 - ntpgui_service_up{instance=~\"$instance\"}) * on(instance, job, service) ntpgui_service_enabled{instance=~\"$instance\"})",
           "legendFormat": "{{instance}}",
           "refId": "A",
           "range": true
@@ -1287,8 +1287,12 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "blue",
+                "color": "green",
                 "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
               }
             ]
           },

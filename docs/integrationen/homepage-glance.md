@@ -7,6 +7,16 @@ Nötige unter `/api/v1/status`; ein API-Schlüssel mit Recht **nur lesen** genü
 Der Schlüssel steht in der Widget-Konfiguration – leg ihn als Umgebungsvariable bzw. Secret
 ab, nicht im Klartext in einem Repository.
 
+> **Der Schlüssel reist im Klartext.** ntp-gui spricht selbst nur HTTP. Bei `http://` kann jeder
+> im selben Netz den `Authorization`-Header mitlesen – und ein Lese-Schlüssel zeigt in
+> `/api/v1/status` Client-Adressen, Quellennamen und Einstellungen. Darum: entweder per
+> `https://` über einen Reverse-Proxy (Caddy, Traefik, nginx) abfragen oder nur innerhalb
+> eines vertrauenswürdigen Netzsegments. Und für jede Integration einen eigenen Lese-Schlüssel
+> anlegen – dann widerrufst du bei Bedarf genau den einen.
+>
+> Die Beispiele unten nutzen `http://zeitserver.lan:8080` der Kürze halber. Mit Proxy wird daraus
+> z. B. `https://zeitserver.example.lan`.
+
 ## Homepage (gethomepage.dev)
 
 `services.yaml`:

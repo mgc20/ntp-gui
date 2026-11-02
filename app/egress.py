@@ -2387,27 +2387,43 @@ UPDATE_CHECK_HEADERS: dict[str, str] = {
     "User-Agent": "ntp-gui",
     "Accept": "application/vnd.github+json",
 }
-_UPDATE_CHECK_VALUE_RE = re.compile(r"^[a-z][a-z./+-]{0,40}$")
 
 
 class UpdateCheckRejected(ValueError):
     """Die Update-Anfrage weicht von der festen Form ab – nicht senden."""
 
 
+def _render_update_request(url: str, headers: dict) -> str:
+    return "\n".join([url] + [f"{name}: {value}" for name, value in headers.items()])
+
+
+def _update_findings(text: str) -> set:
+    found = {(f["kind"], f["text"]) for f in check_no_leaks(text)}
+    found |= {(f["kind"], f["text"]) for f in backstop({"update_check": text.encode("utf-8")})}
+    return found
+
+
 def update_check_request(url: str = UPDATE_CHECK_URL, headers: dict | None = None) -> tuple[str, dict]:
     """(URL, Kopfzeilen) für den Update-Hinweis – nur die feste Form geht hinaus.
 
-    Wer später eine Version, eine Instanz-ID oder einen anderen Host ergänzt, bekommt hier
-    UpdateCheckRejected statt einer Anfrage: keine Ziffern in Kopfzeilen, nur bekannte
-    Kopfzeilen, nur die eine URL, keine Abfrageparameter."""
+    Wer später eine Version, eine Instanz-ID, einen Hostnamen, einen Ortsnamen oder einen
+    anderen Host ergänzt, bekommt hier UpdateCheckRejected statt einer Anfrage: Kopfzeilen
+    müssen exakt UPDATE_CHECK_HEADERS sein (Namen und Werte), nur die eine URL, keine
+    Abfrageparameter. Zweite Schicht: check_no_leaks und backstop über die fertige Anfrage."""
     headers = dict(UPDATE_CHECK_HEADERS if headers is None else headers)
     if url != UPDATE_CHECK_URL:
         raise UpdateCheckRejected("Update-Hinweis: nur die feste GitHub-Adresse ist erlaubt")
     if set(headers) - set(UPDATE_CHECK_HEADERS):
         raise UpdateCheckRejected("Update-Hinweis: unbekannte Kopfzeile")
-    for value in headers.values():
-        if not isinstance(value, str) or not _UPDATE_CHECK_VALUE_RE.match(value):
-            raise UpdateCheckRejected("Update-Hinweis: Kopfzeile enthält mehr als einen festen Namen")
     if headers.get("User-Agent") != "ntp-gui":
         raise UpdateCheckRejected("Update-Hinweis: User-Agent muss „ntp-gui“ ohne Version sein")
+    for name, value in headers.items():
+        if value != UPDATE_CHECK_HEADERS[name]:
+            raise UpdateCheckRejected("Update-Hinweis: Kopfzeile weicht vom festen Wert ab")
+    # Was die zentralen Prüfungen schon in der festen Form melden („vnd.github“ sieht aus wie ein
+    # Hostname), ist erlaubt – jeder weitere Fund stoppt die Anfrage (bei jedem Aufruf neu gerechnet,
+    # damit eine geänderte Konfiguration den Vergleich nicht verschiebt).
+    baseline = _update_findings(_render_update_request(UPDATE_CHECK_URL, UPDATE_CHECK_HEADERS))
+    if _update_findings(_render_update_request(url, headers)) - baseline:
+        raise UpdateCheckRejected("Update-Hinweis: die Filterprüfung findet Daten der Instanz")
     return url, headers

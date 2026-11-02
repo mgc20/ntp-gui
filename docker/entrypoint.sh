@@ -41,6 +41,9 @@ NTS_CERT_EVERY=60       # Sekunden zwischen zwei Prüfungen auf ein erneuertes N
 NTS_CERT_SETTLE=10      # so lange muss eine Änderung stabil sein (Zertifikat + Schlüssel)
 declare -A SVC_ENTRY=() SVC_STATE=() SVC_RESTARTS=() SVC_EXIT=() SVC_SINCE=() \
            SVC_NEXT=() SVC_STARTED=() SVC_FAILS=() SVC_NOTE=()
+# Soll der Dienst laut Einstellungen laufen? „stopped“ bei false ist Absicht (GPS/PTP aus,
+# DNS-Modus system) – /metrics meldet das als ntpgui_service_enabled 0, damit kein Alarm feuert.
+declare -A SVC_ON=([chronyd]=true [web]=true)
 HOTPLUG_PATHS=""        # konfigurierte, aber fehlende Geräte (von confgen)
 GPS_DEV_ID=""           # Identität des Geräteknotens, den gpsd liest
 GPS_DEV_GONE=0
@@ -193,6 +196,7 @@ write_services() {
     out+=", \"since\": ${SVC_SINCE[$name]:-null}"
     out+=", \"pid\": ${pid:-null}"
     out+=", \"optional\": ${optional}"
+    out+=", \"enabled\": ${SVC_ON[$name]:-false}"
     out+=", \"next_retry\": $([[ "${SVC_STATE[$name]:-}" == restarting ]] && echo "${SVC_NEXT[$name]:-null}" || echo null)"
     out+=", \"message\": $(json_str "${SVC_NOTE[$name]:-}")}"
     sep=", "
@@ -356,7 +360,14 @@ start_services() {
   for name in gpsd ptp4l phc2sys dnsfwd; do
     SVC_ENTRY[$name]=""
     SVC_FAILS[$name]=0
+    SVC_ON[$name]=false
   done
+  [[ "${NTPGUI_DNS_MODE:-system}" != system ]] && SVC_ON[dnsfwd]=true
+  [[ "${NTPGUI_GPS_ENABLE:-0}" == 1 ]] && SVC_ON[gpsd]=true
+  if [[ "${NTPGUI_PTP_START:-0}" == 1 ]]; then
+    SVC_ON[ptp4l]=true
+    [[ "${NTPGUI_PHC2SYS_START:-0}" == 1 ]] && SVC_ON[phc2sys]=true
+  fi
   if [[ "${NTPGUI_DNS_MODE:-system}" != system ]]; then
     start_dnsfwd
   else

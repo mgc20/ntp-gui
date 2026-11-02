@@ -471,6 +471,9 @@ def services_status() -> dict:
             "since": entry.get("since") if isinstance(entry.get("since"), (int, float)) else None,
             "pid": entry.get("pid") if isinstance(entry.get("pid"), int) else None,
             "optional": entry.get("optional") is True,
+            # Soll laut Einstellungen laufen? Ältere services.json ohne das Feld: „stopped“ = absichtlich aus.
+            "enabled": (entry["enabled"] if isinstance(entry.get("enabled"), bool)
+                        else state in SERVICE_STATES and state != "stopped"),
             "next_retry": entry.get("next_retry") if isinstance(entry.get("next_retry"), (int, float)) else None,
             "message": str(entry.get("message") or ""),
             "label": SERVICE_LABELS.get(str(name), str(name)),
@@ -792,10 +795,16 @@ def build_metrics() -> str:
         _metric(lines, "ntpgui_ptp_mean_path_delay_seconds", delay / 1e9 if isinstance(delay, (int, float)) else None, "PTP mean path delay")
         _metric(lines, "ntpgui_ptp_steps_removed", ptp_state.get("stepsRemoved"), "Steps removed from the grandmaster")
 
-    for name, svc in services_status().items():
-        labels = '{service="%s"}' % _escape_label(name)
+    services = [('{service="%s"}' % _escape_label(name), svc) for name, svc in services_status().items()]
+    # Je Metrik ein zusammenhängender Block (Prometheus-Textformat).
+    for labels, svc in services:
         _metric(lines, "ntpgui_service_up", 1 if svc["state"] == "running" else 0,
                 "1 when the supervised service is running", labels=labels)
+    for labels, svc in services:
+        _metric(lines, "ntpgui_service_enabled", 1 if svc.get("enabled", True) else 0,
+                "1 when the service should run per settings (0 = switched off on purpose, e.g. GPS/PTP off)",
+                labels=labels)
+    for labels, svc in services:
         _metric(lines, "ntpgui_service_restarts_total", svc["restarts"],
                 "Restarts of the service by the supervisor", kind="counter", labels=labels)
 
