@@ -128,7 +128,7 @@ export function verdict(status, insights) {
 // und die Hinweiszeile nennt den Bereich.
 const PANEL_NAME_KEY = { clock: "overview.area.clock", sources: "overview.area.sources", gps: "overview.area.gps",
   ptp: "overview.area.ptp", clients: "overview.area.clients", services: "overview.area.services" };
-const CLOCK_KEYS = new Set(["chrony_down", "no_clock_control", "island", "syncing", "synced"]);
+const CLOCK_KEYS = new Set(["chrony_down", "no_clock_control", "island", "syncing", "synced", "holdover_running"]);
 
 export function panelOf(item) {
   const key = String(item.key || "");
@@ -148,6 +148,7 @@ const ISSUE_BADGE = {
   gpsd_down: "gpsd offline", gps_nofix: "kein Fix", gps_falseticker: "Falseticker", hw_gps_usb: "Empfänger fehlt",
   hw_gps_pps: "PPS fehlt", ptp_down: "ptp4l aus", minsources: "zu wenige", storage: "kein Volume",
   nts_server_files: "NTS-Zertifikat", dns_loop: "Schleife", loop_nat: "Schleife", loop_self: "Schleife",
+  gnss_stage: "GNSS gestört?", gnss_lock: "GPS gesperrt", holdover_running: "Holdover-Test",
 };
 
 function issuesFor(insights, id) {
@@ -299,18 +300,33 @@ function sourcesPanel(status, issues) {
   });
 }
 
+// Empfangsampel (24 h) aus gpsquality.overview – nur Stufe und Satz, keine Satellitenwinkel.
+const RECEPTION = { green: ["gut", "good"], yellow: ["mäßig", "warn"], red: ["schwach", "crit"], unknown: ["noch offen", "muted"] };
+
+function gpsRoleText(summary) {
+  if (!summary || !summary.role_label) return "–";
+  const used = summary.active === true ? " · in Benutzung" : summary.active === false ? " · gerade nicht genutzt" : "";
+  return `${summary.role_label}${used}`;
+}
+
 function gpsPanel(status, issues) {
   const gps = status.gps || {};
-  const tone = gps.has_fix ? "good" : gps.running ? "warn" : "crit";
+  const summary = status.gps_summary || null;
+  const unstet = summary && summary.stability === "unstet";
+  const tone = gps.has_fix ? (unstet ? "warn" : "good") : gps.running ? "warn" : "crit";
   const pps = gps.pps_missing ? `fehlt (${gps.pps_missing})` : gps.pps ? gps.pps : "nicht eingerichtet";
+  const [recLabel, recTone] = RECEPTION[summary ? summary.level || "unknown" : "unknown"] || RECEPTION.unknown;
+  const reception = el("span", { title: summary && summary.sentence ? summary.sentence : null },
+    badge(recLabel, recTone), unstet ? " · unstet" : "");
   return panel({
     title: "GPS", help: gps.running && !gps.has_fix ? "cold_start" : "fix", tone, issues,
-    state: gps.running ? (gps.mode_label || "–") : "gpsd offline",
+    state: gps.running ? (unstet ? "unstet" : (gps.mode_label || "–")) : "gpsd offline",
     value: gps.running ? `${gps.satellites_used ?? 0}` : "–", valueNote: gps.running ? "Satelliten im Fix" : "keine Verbindung zu gpsd",
     body: kv([
+      ["Rolle", gpsRoleText(summary), "gpsq_role"],
+      ["Empfang 24 h", reception, "gpsq_assessment"],
       ["Satelliten", meter(gps.satellites_used ?? 0, gps.satellites_seen ?? 0, "genutzt von sichtbar"), "satellites"],
       ["Signal", isNum(gps.snr_avg) ? `${fmtNumber(gps.snr_avg, 1)} dB-Hz` : "–", "snr"],
-      ["HDOP", isNum(gps.hdop) ? fmtFixed(gps.hdop, 2) : "–", "dop"],
       ["PPS", pps, "pps"],
     ]),
     href: "#/gps", linkLabel: "Zur GPS-Seite",

@@ -38,11 +38,16 @@ PPS_MISSING = os.path.join(_PPS_DIR, "pps-fehlt")  # eingestellt, aber nicht vor
 
 
 def setUpModule():
+    # In zufälliger Reihenfolge (shuffle) läuft setUp/tearDownModule mehrfach –
+    # das Verzeichnis darum jedes Mal neu anlegen.
+    os.makedirs(_PPS_DIR, exist_ok=True)
     Path(PPS_DEV).touch()
 
 
 def tearDownModule():
     shutil.rmtree(_PPS_DIR, ignore_errors=True)
+
+
 T0 = 1_800_000_000.0
 H = 3600.0
 

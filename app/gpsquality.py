@@ -987,6 +987,67 @@ _ASSESS_CACHE: dict[str, Any] = {"mono": None, "value": None, "key": None}
 ASSESS_TTL = 60.0
 
 
+def _cached_assessment(history: Any, now: float, clock: Callable[[], float] = time.monotonic) -> dict[str, Any]:
+    """Empfangsbewertung, höchstens einmal je ASSESS_TTL neu gerechnet (GPS-Seite und Übersicht)."""
+    hist = history if history is not None else _DEPS.get("history")
+    mono = clock()
+    cached = _ASSESS_CACHE
+    if cached["value"] is not None and cached["key"] == id(hist) and cached["mono"] is not None \
+            and mono - cached["mono"] < ASSESS_TTL:
+        return cached["value"]
+    samples = hist.snapshot(now - ASSESS_HOURS * 3600.0) if hist is not None else []
+    assessment = assess(samples, now)
+    cached.update(mono=mono, value=assessment, key=id(hist))
+    return assessment
+
+
+def overview(cfg: dict, history: Any = None, sources: Any = None, stability: dict | None = None,
+             now: float | None = None, clock: Callable[[], float] = time.monotonic) -> dict[str, Any] | None:
+    """Kurzfassung für die Übersicht (/api/status → gps_summary): Rolle, Empfangsampel, unstet.
+
+    Nur Wörter und Ampelstufen – keine Satellitenwinkel, keine Position.
+    """
+    if not cfg.get("gps_enable"):
+        return None
+    now = time.time() if now is None else now
+    try:
+        assessment = _cached_assessment(history, now, clock)
+    except Exception:
+        assessment = {"available": False, "level": "unknown"}
+    try:
+        info = role(cfg, sources)
+    except Exception:
+        info = {"role": "unknown", "label": "–", "active": None, "warnings": []}
+    stab = (stability or {}).get("state") or "unbekannt"
+    return {
+        "role": info.get("role"), "role_label": info.get("label"), "active": info.get("active"),
+        "role_warnings": len(info.get("warnings") or []),
+        "level": assessment.get("level") if assessment.get("available") else "unknown",
+        "sentence": assessment.get("sentence") if assessment.get("available") else None,
+        "stability": stab,
+        "unstet_changes": (stability or {}).get("unstet_changes") if stab == "unstet" else None,
+    }
+
+
+def insights(summary: dict | None) -> list[dict[str, Any]]:
+    """Hinweise für die Übersicht: GPS unstet bzw. Empfang rot (Info – kein Dauer-Alarm bei Innenantennen)."""
+    if not summary:
+        return []
+    out: list[dict[str, Any]] = []
+    if summary.get("stability") == "unstet":
+        n = summary.get("unstet_changes")
+        count = f" ({n} Fix-Wechsel bisher)" if isinstance(n, int) and n > 0 else ""
+        out.append({"level": "info", "key": "gps_unstet", "action": "gps", "title": "GPS-Empfang unstet" + count,
+                    "text": "Der Fix kommt und geht. Ohne PPS bleibt das GPS trotzdem die Rückfallebene – chrony "
+                            "nimmt es nur, solange es plausibel ist. Besserer Platz für die Antenne: GPS-Seite → "
+                            "Antennen-Test."})
+    elif summary.get("level") == "red":
+        out.append({"level": "info", "key": "gps_reception", "action": "gps", "title": "GPS-Empfang schwach (24 h)",
+                    "text": (summary.get("sentence") or "Der Empfang reicht nicht für eine stabile Zeitquelle.")
+                            + ". Tipps und Antennen-Test findest du auf der GPS-Seite."})
+    return out
+
+
 def api_status(cfg: dict, history: Any = None, sources: Any = None, stability: dict | None = None,
                now: float | None = None, clock: Callable[[], float] = time.monotonic) -> dict[str, Any]:
     """Alles für GET /api/gps/quality."""
@@ -994,16 +1055,7 @@ def api_status(cfg: dict, history: Any = None, sources: Any = None, stability: d
     if not cfg.get("gps_enable"):
         return {"enabled": False, "available": False,
                 "reason": "GPS ist ausgeschaltet – Empfangsbewertung nicht verfügbar."}
-    hist = history if history is not None else _DEPS.get("history")
-    mono = clock()
-    cached = _ASSESS_CACHE
-    if cached["value"] is not None and cached["key"] == id(hist) and cached["mono"] is not None \
-            and mono - cached["mono"] < ASSESS_TTL:
-        assessment = cached["value"]
-    else:
-        samples = hist.snapshot(now - ASSESS_HOURS * 3600.0) if hist is not None else []
-        assessment = assess(samples, now)
-        cached.update(mono=mono, value=assessment, key=id(hist))
+    assessment = _cached_assessment(history, now, clock)
     state = load_state()
     applied = _valid_applied(state.get("applied"))
     return {

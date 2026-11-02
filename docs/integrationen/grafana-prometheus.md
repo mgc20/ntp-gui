@@ -73,6 +73,11 @@ bleiben leer – die Metriken gibt es nur, wenn die Funktion an ist.
 | `ntpgui_source_*{source=…}` | Offset, Erreichbarkeit, Jitter, Auswahl je Quelle |
 | `ntpgui_clients`, `ntpgui_ntp_packets_received_total` | Clients und beantwortete Anfragen |
 | `ntpgui_gps_*` | Fix-Art, Satelliten, HDOP, Signalstärke (nur mit GPS) |
+| `ntpgui_gps_error_bound_seconds` | Fehlerschranke, mit der chrony das GPS rechnet (ohne PPS gemessen, ab 1.5) |
+| `ntpgui_gps_reception_level`, `ntpgui_gps_unstable` | Empfang über 24 h (0 gut, 1 mäßig, 2 schwach) bzw. 1 = Fix flattert („unstet“) |
+| `ntpgui_gnss_stage`, `ntpgui_gps_locked` | GNSS-Störungserkennung (0 unauffällig … 3 Störung) bzw. 1 = GPS gesperrt |
+| `ntpgui_source_loops` | Zeitquellen, die auf ntp-gui selbst zeigen (DNS-/NAT-Schleife) |
+| `ntpgui_holdover_test_running` | 1 = Holdover-Test läuft (Clients bekommen ungenauere Zeit) |
 | `ntpgui_pps_live{device=…}` | 1 = PPS-Pulse kommen an |
 | `ntpgui_temperature_celsius` | Temperatur des gewählten Sensors |
 | `ntpgui_leapseconds_list_days_left` | Tage bis zum Ablauf der Schaltsekunden-Liste |

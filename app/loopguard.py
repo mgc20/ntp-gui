@@ -241,11 +241,13 @@ def foreign_reply(src: dict | None, own: set[str], since_rx: float | None, same_
 
 
 def assess(source: dict, own: set[str], tracking: dict | None,
-           probes: dict[str, bool | None] | None = None) -> dict | None:
+           probes: dict[str, bool | None] | None = None, ntp_port: int | None = None) -> dict | None:
     """Entscheidung für eine Quelle aus chrony.detailed_sources(). None = keine Schleife.
 
     probes: Ergebnis der Gegenprobe je Adresse (True = dort antwortet dieser Server,
-    False = ein fremder, None/fehlt = nicht geprüft oder nicht vergleichbar)."""
+    False = ein fremder, None/fehlt = nicht geprüft oder nicht vergleichbar).
+    ntp_port: eigener NTP-Port. Eine eigene Adresse mit anderem Port (laut chronyc ntpdata) ist
+    ein anderer Server auf demselben Rechner, keine Schleife – dann zählen nur Antwort/Gegenprobe."""
     if not isinstance(source, dict) or source.get("mode") not in ("^", "="):
         return None
     ip = _ip(source.get("name"))
@@ -255,8 +257,12 @@ def assess(source: dict, own: set[str], tracking: dict | None,
     host = str(source.get("hostname") or "").strip().rstrip(".").lower() or None
     ntp = source.get("ntp") or {}
     evidence: list[str] = []
-    if addr in own or ip.is_loopback:
+    remote_port = _num(ntp.get("remote_port"))
+    other_port = bool(ntp_port) and remote_port is not None and int(remote_port) != int(ntp_port)
+    if (addr in own or ip.is_loopback) and not other_port:
         evidence.append("address")
+    elif addr in own or ip.is_loopback:
+        pass  # eigener Rechner, aber anderer Port: anderer Server (z. B. chronyd des Hosts)
     else:
         remote, local = _ip(ntp.get("remote")), _ip(ntp.get("local"))
         if remote is not None and remote == local:
@@ -490,7 +496,7 @@ class LoopGuard:
                 # Name kam erst jetzt dazu: Zustand unter der Adresse auf den Namen umhängen.
                 if host and str(ip) in self._state and host not in self._state:
                     self._state[host] = self._state.pop(str(ip))
-                verdict = assess(src, own, tracking, probes)
+                verdict = assess(src, own, tracking, probes, ntp_port)
                 if verdict and verdict["key"] not in found:
                     found[verdict["key"]] = verdict
             self._update(found, current, own)
@@ -573,7 +579,7 @@ def insights(loops: list[dict] | None) -> list[dict]:
     keys = {"dns": "dns_loop", "nat": "loop_nat", "self_ip": "loop_self"}
     actions = {"dns": "settings", "nat": "clients", "self_ip": "sources"}
     for cause, items in by_cause.items():
-        lines = "; ".join(item.get("title") or "" for item in items)
+        lines = "; ".join(dict.fromkeys(item.get("title") or "" for item in items))
         out.append({"level": "crit", "title": titles.get(cause, "Schleife"),
                     "text": f"{lines}. chronyd fragt dann sich selbst und hat keine echte Quelle. "
                             + REMEDY.get(cause, ""),

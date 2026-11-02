@@ -83,7 +83,7 @@ PTP4L_CONF = os.environ.get("PTP4L_CONF", "/etc/linuxptp/ptp4l.conf")
 RUN_DIR = os.environ.get("NTPGUI_RUN_DIR", "/run/ntp-gui")
 START_TIME = time.time()
 MAX_BODY = 64 * 1024
-VERSION = os.environ.get("NTPGUI_VERSION", "1.4.0")
+VERSION = os.environ.get("NTPGUI_VERSION", "1.5.0")
 EVENTS_INTERVAL = 5.0          # so oft liest der Server die Supervisor-Ereignisse ein
 CALIBRATION_DEFAULT_WINDOW = 86400.0  # /api/gps/calibration ohne window: letzte 24 h
 
@@ -739,6 +739,11 @@ def build_status() -> dict:
     }
     # GPS-Seite: wirklich aktiver PPS-Refclock und der Delay, den chrony nutzt (gemessen/Standard).
     status["config"]["gps_bound"] = gpsquality.status_hint(cfg)
+    # Übersicht: Rolle des GPS, Empfangsampel (24 h) und „unstet“ in einer Kurzfassung.
+    try:
+        status["gps_summary"] = gpsquality.overview(cfg, HISTORY, status["sources"], STATE_WATCH.gps_stability())
+    except Exception:
+        status["gps_summary"] = None
     leap_info = leap.status(cfg, tracking)
     status["leap"] = _leap_summary(leap_info)
     status["notify"] = _notify_summary()
@@ -753,6 +758,7 @@ def build_status() -> dict:
                                           hardware.cached_insights(cfg),
                                           leap.insights(leap_info),
                                           updatecheck.insights(status["update"]),
+                                          gpsquality.insights(status.get("gps_summary")),
                                           gnssguard.insights(gnssguard.GUARD.status(cfg)),
                                           holdover.insights(holdover.TEST.status()),
                                           webtransport.WATCH.insights())
@@ -947,6 +953,7 @@ def build_metrics() -> str:
         _metric(lines, "ntpgui_gps_satellites_seen", gps_state.get("satellites_seen"), "Satellites in view")
         _metric(lines, "ntpgui_gps_hdop", gps_state.get("hdop"), "Horizontal dilution of precision")
         _metric(lines, "ntpgui_gps_snr_avg_db", gps_state.get("snr_avg"), "Average SNR of used satellites")
+        _gps15_metrics(lines)
 
     ptp_state = ptp.status()
     if ptp_state.get("enabled"):
@@ -993,8 +1000,51 @@ def build_metrics() -> str:
         _metric(lines, "ntpgui_update_check_last_success_timestamp_seconds", upd.get("last_success"),
                 "Unix time of the last successful update check")
 
+    loops = LOOP_GUARD.loops()
+    _metric(lines, "ntpgui_source_loops", len(loops),
+            "Own time sources that point back to ntp-gui (DNS rewrite / NAT redirect without exception)")
+    try:
+        running = 1 if holdover.TEST.state().get("active") else 0
+    except Exception:
+        running = None
+    _metric(lines, "ntpgui_holdover_test_running", running,
+            "1 while a holdover test runs (sources deselected on purpose, clients get less accurate time)")
     _hardware_metrics(lines)
     return "\n".join(lines) + "\n"
+
+
+GNSS_STAGE_VALUE = {"ok": 0, "hinweis": 1, "warnung": 2, "stoerung": 3}
+RECEPTION_VALUE = {"green": 0, "yellow": 1, "red": 2}
+
+
+def _gps15_metrics(lines: list[str]) -> None:
+    """1.5: Fehlerschranke ohne PPS, Empfangsampel, „unstet“, GNSS-Stufe und GPS-Sperre."""
+    cfg = settings.values()
+    try:
+        hint = gpsquality.status_hint(cfg)
+        delay = hint.get("delay")
+        _metric(lines, "ntpgui_gps_error_bound_seconds", delay / 2 if isinstance(delay, (int, float)) else None,
+                "Error bound chrony assumes for the GPS refclock (delay/2; measured spread without PPS)")
+    except Exception:
+        pass
+    try:
+        summary = gpsquality.overview(cfg, HISTORY, None, STATE_WATCH.gps_stability()) or {}
+        _metric(lines, "ntpgui_gps_reception_level", RECEPTION_VALUE.get(summary.get("level")),
+                "GPS reception over 24 h: 0 good, 1 moderate, 2 weak (absent while unknown)")
+        _metric(lines, "ntpgui_gps_unstable", 1 if summary.get("stability") == "unstet" else 0,
+                "1 while the GPS fix flaps (state unstet)")
+    except Exception:
+        pass
+    try:
+        with gnssguard.GUARD.lock:
+            stage = gnssguard.GUARD.stage
+            locked = gnssguard.GUARD.lock_status().get("locked")
+        _metric(lines, "ntpgui_gnss_stage", GNSS_STAGE_VALUE.get(stage),
+                "GNSS interference detection: 0 normal, 1 hint, 2 warning, 3 disturbance")
+        _metric(lines, "ntpgui_gps_locked", 1 if locked else 0,
+                "1 while ntp-gui keeps the GPS deselected (chronyc selectopts +noselect)")
+    except Exception:
+        pass
 
 
 def _hardware_metrics(lines: list[str]) -> None:

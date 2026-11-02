@@ -4,7 +4,207 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), die Versionen folgen
 [Semantic Versioning](https://semver.org/lang/de/).
 
-## [Unveröffentlicht]
+## [1.5.0] – 2026-11-02
+
+Schwerpunkt: GPS ohne PPS als ehrliche Rückfallebene, Schleifen durch DNS-Umschreibung und
+NAT-Umleitung erkennen, GNSS-Störungen samt GPS-Sperre und Holdover-Test, Clients 3, HTTPS per
+Reverse Proxy und ein Gerüst für Englisch.
+
+### Achtung beim Update
+- **GPS ohne PPS (z. B. VK-162):** Ein früher gespeicherter, zu kleiner Delay (z. B. 0,03 s)
+  gilt nicht mehr. ntp-gui misst jetzt die Streuung des GPS gegen deine Netzquellen und gibt
+  chrony daraus die Fehlerschranke; bis zur ersten Messung (nach etwa 6 Stunden Daten) gilt
+  vorsichtig ± 100 ms. Genau der zu kleine Delay ließ chrony das GPS bisher guten NTS-Quellen
+  vorziehen. Wer die alten Werte behalten will, stellt „Fehlerschranke ohne PPS“ auf „von Hand“
+  (`GPS_BOUND_MODE=manual`).
+- **Benachrichtigungen über ein Gerät nennen jetzt den Namen, den du ihm gegeben hast**
+  („Uhr von NAS Keller weicht um +1,2 s ab“), ohne Namen „Gerät ohne Namen“. Bisher stand dort
+  immer eine Pseudo-Adresse. Die LAN-Adresse kommt nur mit der neuen Einstellung „LAN-Adressen
+  in Nachrichten“ (`NOTIFY_LAN_ADDRESSES`, Standard aus) dazu; öffentliche Adressen und
+  MAC-Adressen gehen nie hinaus.
+
+### Hinzugefügt
+
+#### GPS ohne PPS und schwacher Empfang (Entscheidung E16)
+- **GPS ohne PPS ist die Rückfallebene mit ehrlicher Fehlerschranke:** ntp-gui misst über die
+  letzten 6 Stunden, wie stark das GPS gegenüber deinen Netzquellen streut (95-%-Wert, mindestens
+  |Median| + 3 × robuste Streuung), und schreibt daraus `delay`/`precision` in chrony.conf. So
+  nimmt chrony gute Internetquellen und springt von selbst auf das GPS um, wenn das Internet
+  schlecht wird oder ausfällt (Mobilfunk, Störung, Insel).
+  - Die Schranke wächst, sobald die Streuung sie übersteigt (höchstens stündlich, mit Reserve),
+    und schrumpft nur deutlich und frühestens nach 12 Stunden – auch nach „Auf Standard
+    zurücksetzen“. Jede Anpassung steht im Ereignisprotokoll und startet chronyd kurz neu.
+  - Gezählt werden auch GPS-Werte, die chrony als Falschgeber („x“) oder zu unruhig („~“)
+    verworfen hat; hat chrony das GPS gewählt, vergleicht ntp-gui mit den übrigen erreichbaren
+    Netzquellen. So kann die Schranke sich nicht selbst kleinrechnen oder einfrieren.
+  - Ein eingestelltes, aber fehlendes PPS-Gerät zählt als „ohne PPS“.
+  - Zurücksetzen auf der GPS-Seite, abschalten mit „Fehlerschranke ohne PPS: von Hand“.
+- **Rolle des GPS** auf der GPS-Seite, im Hardware-Check und neu in der Übersicht:
+  „Rückfallebene“, „Referenz“ (mit PPS oder bei „bevorzugen“) oder „nur beobachten“ (nur als
+  deine bewusste Wahl, nie Standard). Dazu, ob chrony das GPS gerade nutzt, und Warnungen bei
+  einer zu kleinen Schranke von Hand oder bei „Mindestzahl Quellen“ über 1.
+- **Empfangsbewertung über 24 Stunden:** Fix-Anteil, Fix-Wechsel je Stunde, Signalstärke der
+  vier stärksten Satelliten und genutzte Satelliten als Ampel mit einem Satz und dem Grund je
+  Kennzahl, z. B. „Fix 92 % der Zeit, 9,6 Wechsel/h – Empfang zu schwach für eine stabile
+  Zeitquelle“. Die Ampel steht auch in der GPS-Kachel der Übersicht.
+- **Fix-Flattern wird zusammengefasst:** Kommt und geht der Fix mindestens sechsmal in
+  30 Minuten, gibt es **ein** Ereignis „GPS-Empfang unstet“ mit Zählung statt Dutzender
+  „verloren/wieder da“. Nach einer Stunde Ruhe folgt ein Abschlussereignis; bleibt der Fix
+  10 Minuten am Stück weg, kommt „GPS-Fix verloren“ sofort. „Fix gerade: stetig“ nennt die Zahl
+  der Fix-Wechsel der letzten halben Stunde.
+- **Antennen-Test:** „5 Minuten messen“, Empfänger umstellen, erneut messen, nebeneinander
+  vergleichen. Die Messung bleibt lokal – ohne Satellitenwinkel, ohne Position und nicht im
+  Diagnosepaket.
+- **Kalibrier-Assistent:** schlägt nie einen Delay vor, der kleiner ist als die gemessene
+  Streuung (95-%-Quantil statt mittlerer Streuung). Im Modus „gemessen“ zeigt er den Delay, den
+  chrony wirklich nutzt, „Vorschlag übernehmen“ setzt dann nur Offset und Rolle, und die
+  automatische Kalibrierung ändert nur noch den Offset.
+- **Praxistipps in ⓘ:** USB-Verlängerung ans Fenster, USB 3 stört das GPS-Band (1,5 GHz),
+  Wärmeschutzglas dämpft stark.
+
+#### Schleifen erkennen (DNS-Umschreibung, NAT-Umleitung)
+- ntp-gui prüft laufend jede eigene Zeitquelle darauf, ob chronyd über sie sich selbst fragt –
+  anhand der eigenen Adresse, einer Antwort mit eigener Referenz-ID, eigenem Stratum und eigener
+  Referenzzeit und einer kurzen Gegenprobe beim eigenen chronyd (127.0.0.1 und eigene
+  LAN-Adresse, sonst Vergleich mit `chronyc tracking`). Ergebnis ist ein kritisches Ereignis
+  „pool.ntp.org zeigt auf dich selbst – vermutlich DNS-Umschreibung ohne Ausnahme für ntp-gui“
+  bzw. „… NAT-Umleitung ohne Ausnahme für ntp-gui“, spätestens nach zwei Poll-Intervallen, dazu
+  ein Hinweis in der Übersicht. Titel nennen keine LAN-Adressen.
+  - Ist der Fehler behoben, folgt „Schleife behoben … erreicht wieder einen fremden Server“ – nur,
+    wenn wirklich ein fremder Server geantwortet hat; sonst „Schleife bei … beendet – die Quelle
+    antwortet derzeit nicht“.
+  - Eine passive Übereinstimmung allein reicht bei öffentlichen Adressen nicht (kein Fehlalarm bei
+    Pool-Servern, die an derselben Quelle hängen). Gegenprobe höchstens alle 5 min je Adresse.
+  - Die Prüfung läuft im eigenen Takt und ändert nichts an der Zeit.
+- **Selbsttest mit Upstream-Kette:** „Zeitserver erzwingen → Prüfen“ zeigt für jede eigene Quelle
+  den Weg Name → Resolver → Adresse → Antwort, für alle Adressen eines Namens (z. B. nur AAAA
+  umgeschrieben).
+- **Zustand der eigenen DNS-Server:** Fällt ein eigener DNS-Server (klassisch, DoT, DoH) aus oder
+  antwortet wieder, steht das je Server im Ereignisprotokoll; Wechsel innerhalb von 5 min werden
+  nachgereicht statt verschluckt. Alle eigenen Server werden 20 s nach dem Start und dann alle
+  15 min geprüft. Die Einstellungen zeigen „Letzte erfolgreiche Auflösung“ und „Erreichbar“.
+- **Hinweis zu NTS:** NTS-Quellen brauchen ihren Namen; mit nur einem eigenen DNS-Server rät
+  ntp-gui zu einem zweiten, unabhängigen.
+- **Anleitungen nachgeschärft:** AdGuard-Ausnahme `@@||…^$dnsrewrite,client=<IP>` und
+  „Client-spezifische Regel“, die Variante „ein Ziel“ (`||time.amazon.com^$dnsrewrite=time.lan`)
+  mit ihren Grenzen (nie für NTS-Namen, Privates DNS/DoH umgeht sie, AAAA bedenken); UniFi: woran
+  du siehst, ob die Ausnahme greift.
+
+#### GNSS-Störungen, GPS-Sperre, Holdover-Test
+- **GNSS-Störungen erkennen (Jamming/Spoofing)** mit jedem Empfänger, auch ohne PPS – gelesen
+  wird nur aus gpsd und chrony:
+  - gleichzeitiger Signaleinbruch der meisten Satelliten (≥ 6 dB in 60 s), unnatürlich
+    gleichmäßige Signale, chrony hält das GPS für falsch (schwache Befunde);
+  - GPS-Zeit weicht vom Median von ≥ 2 NTS-Quellen ab, Position springt um > 100 m, chrony
+    markiert das GPS 5 min lang als Falschgeber, während ≥ 2 NTS-Quellen da sind (starke
+    Befunde).
+  - Zeit und Position werden gegen einen langsam nachgeführten Anker geprüft (höchstens 10 ms
+    bzw. 20 m pro Stunde): Ein Spoofer, der die Zeit langsam wegzieht, fällt auf, und eine
+    Fälschung, die einfach bleibt, wird nicht nach einer Weile „normal“. Der gewohnte Abstand
+    GPS ↔ Netz übersteht Neustarts und wird neu gelernt, wenn sich Offset, Gerät oder Name des
+    GPS ändern.
+  - Stufen „Hinweis“, „Warnung“ und „Störung“ mit Hysterese; Schnee auf der Antenne oder ein
+    Flugzeug lösen höchstens einen Hinweis aus. Ohne neue Messwerte endet ein Befund nach
+    10 min mit „keine Messwerte mehr“.
+  - Benachrichtigt wird standardmäßig nur bei „Störung“ (`GNSS_NOTIFY`), ins Protokoll kommt
+    alles. Die Referenzposition bleibt im Arbeitsspeicher – Protokoll, Benachrichtigungen und
+    API nennen nur die Abweichung in Metern.
+- **GPS-Sperre per `chronyc selectopts`:** Einstellung „Störungserkennung“ (`GNSS_GUARD`):
+  aus / nur melden (Standard) / automatisch sperren.
+  - Gesperrt wird nur bei starken Befunden, nie bei reinem Jamming, und automatisch nur, wenn
+    mindestens zwei andere auswählbare Netzquellen bleiben. Von Hand ohne andere Quelle nur nach
+    ausdrücklicher Bestätigung.
+  - Freigabe nach 30 min ohne Befund, höchstens dreimal in Folge, danach nur von Hand. Sperren,
+    Freigeben und „Neu lernen“ gehen auch auf der GPS-Seite.
+  - Die Sperre übersteht das Speichern von Einstellungen und Neustarts: Der Supervisor wählt das
+    gesperrte GPS direkt nach jedem Start von chronyd wieder ab. Jede Sperre und Freigabe steht
+    im Ereignisprotokoll.
+- **Echter Holdover-Test (Seite Uhrqualität):** GPS/PPS und auf Wunsch alle Netzquellen werden
+  für 1–24 h abgewählt; chrony misst die Netzquellen weiter als Messlatte. Ergebnis: „Die Uhr hält
+  X ms in Y h“ samt Gangabweichung in ppm.
+  - Abbruch über der Grenze (Standard 10 ms), bei einem Neustart von chronyd oder per Knopf;
+    danach automatisch zurück, auch nach einem Neustart von ntp-gui.
+  - Zeitfehler je Referenz gerechnet (kein Sprung, wenn ein Server ausfällt); Quellen, die
+    während des Tests dazukommen, werden mit abgewählt (sonst „ungültig“). Ein Lauf nur ohne
+    GPS/PPS heißt „Ohne GPS/PPS: Abweichung …“.
+  - Hinweis in der Übersicht, solange der Test läuft. Übergaben zwischen GPS-Sperre und
+    Holdover-Test überleben einen Neustart von ntp-gui.
+
+#### Clients 3 – mehr über die Uhren im Haus
+- **Uhrgüte je Gerät** (0–100) aus Abweichung, Stabilität, Regelmäßigkeit der Anfragen und
+  Messbarkeit – als Spalte „Güte“ in der Client-Liste (gleich nach dem Update, aus den
+  gespeicherten Messpunkten), als Kachel und Karte auf der Detailseite. Dazu die
+  **Gangabweichung in ppm**; bei gleichmäßigen Abständen der Anfragen zeigt ntp-gui ehrlich nur
+  „höchstens … ppm“, weil fester Versatz und Gang dann nicht zu trennen sind. Geräte, die ihre
+  Zeit verschleiern (chrony, NTS), bekommen bewusst keine Note.
+- **„Schlechteste Uhren im Haus“** im Netzüberblick.
+- **Gruppen und Netze:** Benenne Netze („IoT = 10.0.30.0/24“), das spezifischste Netz gewinnt
+  (IPv4 und IPv6). Ansicht nach Gruppe, VLAN (wo die Kennung sichtbar ist) oder Software, je
+  Gruppe Anzahl, aktive Geräte, Median-Abweichung, Anteil „gut“ und Uhrgüte. Vorschläge aus den
+  gesehenen /24- und /64-Netzen; Hinweis, wenn in einer Gruppe kein Gerät fragt („fehlt dort
+  die Umleitung?“) – erst, wenn ntp-gui lange genug mithört.
+- **Regeln je Gerät:** „fragt seit N h nicht mehr“ (meldet genau einmal, danach „fragt wieder“,
+  gemessen mit der monotonen Uhr), eigene Alarm-Schwelle „|Abweichung| > X ms für M min“,
+  **stumm** (Ereignis bleibt lokal) und **erwartete Client-Software** mit Hinweis, wenn das
+  Verhalten nicht dazu passt. Offene Alarme überstehen Neustarts und werden beim Stummschalten
+  oder Ändern der Regel still geschlossen.
+- **Neues Gerät fragt nach der Zeit:** `CLIENTS_NEW_DEVICE_ALARM` (Standard aus), erkannt an MAC
+  bzw. IPv4-Adresse, die ersten 24 h nur Lernen, höchstens 5 Meldungen pro Stunde.
+- **NTS für Clients:** Die Detailseite zeigt, ob ein Gerät NTS nutzt (NTS-KE-Verbindungen aus
+  `chronyc clients -k`, nur bei eingeschaltetem NTS-Server) und ob seine Software NTS kann.
+- **Gerätepass** (`#/clients/<adresse>/pass`): alles Wichtige zu einem Gerät auf einer
+  druckbaren Seite, mit Empfehlung und passendem Befehl (z. B. `w32tm …`). Zum Weitergeben gibt
+  es eine **gefilterte Kopie** (Adressen als Pseudonym, Geräte- und Gruppennamen ersetzt – auch
+  kurze –, ohne Notiz und MAC).
+- **Stundenwerte je Gerät** werden 30 Tage aufgehoben.
+
+#### HTTPS fürs Dashboard per Reverse Proxy (Entscheidung E5)
+- In `docker-compose.all-in-one.yml` steht ein fertiger, auskommentierter Block
+  **[OPTION HTTPS mit Caddy]**: im LAN mit Caddys eigener Zertifizierungsstelle
+  (`--internal-certs`), mit öffentlichem Namen Let's Encrypt, dazu `WEB_BIND=127.0.0.1` und
+  `TRUSTED_PROXIES`. `docs/integrationen/https.md` erklärt, wie du Caddys Root-Zertifikat auf
+  Windows, macOS, Linux, iOS und Android einträgst, und nennt die Einstellungen für Nginx Proxy
+  Manager, Zoraxy und Traefik. ntp-gui selbst bleibt bei HTTP.
+- **Einstellung „Vertrauenswürdige Proxys“ (`TRUSTED_PROXIES`):** Nur von diesen Adressen glaubt
+  ntp-gui `X-Forwarded-For`/`-Proto` bzw. den Standard-Kopf `Forwarded` (RFC 7239); dann nennt
+  das Zugriffsprotokoll den Browser statt des Proxys. Standard: leer. „all“ und `/0` werden
+  abgelehnt. Über Anmeldung und Zugriff entscheiden diese Köpfe nie.
+- **Hinweise in der Übersicht:** „Dashboard über unverschlüsseltes HTTP mit Anmeldung“, wenn
+  Passwort oder API-Schlüssel per HTTP aus dem Netz ankommen (auch über einen nicht
+  eingetragenen Proxy); „Strecke Proxy → ntp-gui ist unverschlüsselt“, wenn der Proxy auf einem
+  anderen Gerät läuft; ein Info-Hinweis, wenn ein nicht eingetragener Proxy seine Köpfe
+  mitschickt. Die Hinweise verschwinden, sobald das Problem behoben ist (Speichern der Proxy-Liste
+  setzt sie sofort zurück, nach späteren HTTPS-Zugriffen bleibt der HTTP-Hinweis höchstens eine
+  Stunde).
+
+#### Englisch (Gerüst)
+- Mit dem Knopf „DE/EN“ oben rechts oder unter Einstellungen → Dashboard wählst du die Sprache;
+  sie gilt je Browser, ohne Wahl gilt die Sprache des Browsers. Übersetzt sind bisher
+  Navigation, Kopfzeile, das Statusband der Übersicht und die Abschnitte der Einstellungen. Fehlt
+  ein englischer Text, erscheint der deutsche; die ⓘ-Erklärungen und Meldungen vom Server sind
+  vorerst deutsch. Kann der Sprachkatalog nicht geladen werden, bleibt die Oberfläche deutsch
+  statt rohe Schlüssel zu zeigen.
+- **Übersetzen leicht gemacht:** Texte in `app/static/i18n/<sprache>.json` (Weblate-tauglich,
+  Format i18next v4), Anleitung in CONTRIBUTING.md unter „Übersetzen“. Fehlende englische Texte
+  stehen in einem Bericht (`python3 tests/test_i18n.py --report`).
+
+#### Übersicht, API und Monitoring
+- **GPS-Kachel der Übersicht** zeigt Rolle („Rückfallebene · in Benutzung“), Empfangsampel
+  (24 h) und „unstet“. Neue Hinweise: „GPS-Empfang unstet“ bzw. „GPS-Empfang schwach (24 h)“
+  (Info), GNSS-Störung/-Warnung, GPS gesperrt (färbt die GPS-Kachel), Holdover-Test läuft
+  (färbt die Uhr-Kachel), Schleifen (Quellen-Kachel).
+- **Neue API-Endpunkte** (auch unter `/api/v1`): lesen `GET /gps/quality`, `/gps/antenna`,
+  `/loops`, `/gnss`, `/holdover`, `/clients/groups?by=group|vlan|software`, `/clients/quality`,
+  `/clients/rules`, `/clients/pass?ip=…[&share=1]`; verwalten (Recht „admin“) `POST /gps/antenna`,
+  `/gps/bound`, `/gnss`, `/holdover`, `/clients/groups`, `/clients/groups/delete`,
+  `/clients/rules`. `/status` liefert zusätzlich `gps_summary`, `/clients/detail` Uhrgüte, Regel,
+  Gruppe und NTS.
+- **Neue Prometheus-Metriken:** `ntpgui_gps_error_bound_seconds`, `ntpgui_gps_reception_level`,
+  `ntpgui_gps_unstable`, `ntpgui_gnss_stage`, `ntpgui_gps_locked`, `ntpgui_source_loops`,
+  `ntpgui_holdover_test_running`. Neue Alarmregeln `NtpGuiSourceLoop` und
+  `NtpGuiGnssDisturbance` in `docs/prometheus/alerts.yml`.
+- Neue Einstellungen: `GPS_BOUND_MODE`, `GNSS_GUARD`, `GNSS_NOTIFY`, `CLIENTS_NEW_DEVICE_ALARM`,
+  `NOTIFY_LAN_ADDRESSES`, `TRUSTED_PROXIES`.
 
 ### Geändert
 - **Diagnosepaket nimmt bis zu 12 MB Aufzeichnung mit** (bisher 4 MB). Eine einstündige
@@ -12,10 +212,18 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
   Paket damit länger; das Dashboard bleibt währenddessen bedienbar.
 - Die Verlaufs-Kennzahlen im Diagnosepaket enthalten die Temperatur und ein Stundenprofil
   Temperatur ↔ Frequenz (Mittel je Stunde) – Grundlage für den Temperaturausgleich.
+- Benachrichtigungen: Ereignisse mit `data.notify = false` bleiben lokal (GNSS-Hinweise unter der
+  Schwelle, stumm geschaltete Geräte, Holdover-Test). Ereignisse, die ausdrücklich gemeldet werden
+  sollen (z. B. „GNSS ab Hinweis“), gehen auch an Kanäle mit höherer Mindeststufe.
+- GPS-Kachel der Übersicht: Rolle und Empfangsampel ersetzen die Zeile HDOP (steht weiter auf
+  der GPS-Seite).
+- Datenschutzfilter: Eigene Gruppennamen werden im Diagnosepaket wie Gerätenamen ersetzt.
 
 ### Behoben
 - Bricht ein Browser eine Verbindung ab (Tab zu, Neuladen, Handy im Standby), steht im Log kein
   Python-Traceback mehr. Bisher landeten dort mehrere ineinander verschränkte Fehlermeldungen.
+- Ein kurzer Aussetzer von `chronyc sourcename` lässt den Namen einer Quelle nicht mehr für
+  10 Minuten verschwinden; ntp-gui behält den letzten Namen und fragt nach 30 s erneut.
 
 ## [1.4.0] – 2026-11-02
 
@@ -548,6 +756,7 @@ Erste Veröffentlichung.
 - CI mit Unittests und Integrationstest gegen das gebaute Image; Release-Workflow,
   der das Image für amd64 und arm64 nach ghcr.io veröffentlicht.
 
+[1.5.0]: https://github.com/ConGp20/ntp-gui/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/ConGp20/ntp-gui/compare/v1.3.2...v1.4.0
 [1.3.2]: https://github.com/ConGp20/ntp-gui/compare/v1.3.1...v1.3.2
 [1.3.1]: https://github.com/ConGp20/ntp-gui/compare/v1.3.0...v1.3.1

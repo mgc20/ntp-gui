@@ -77,23 +77,37 @@ Vorschläge, Erfahrungsberichte und Hilfe sind willkommen – siehe [CONTRIBUTIN
 ## 1.5 – GNSS-Werkbank, Clients 3, Uhrqualität
 
 Begründung, Bewertung und Abnahme: [docs/konzept/version-1.5.md](docs/konzept/version-1.5.md).
-Erst ein schlankes 1.5.0, dann kurze 1.5.x-Releases.
+Erst ein schlankes 1.5.0 ✅, dann kurze 1.5.x-Releases (Entscheidung E15).
 
 | Thema | Nutzen | Aufwand | Stufe |
 |---|---|---|---|
-| GPS ohne PPS und schwacher Empfang (z. B. VK-162): Empfangsbewertung, Antennen-Test, ehrliches Profil | ★★★ | ◆ | 1.5.0 |
-| DNS/NAT-Schleifen erkennen und erklären (AdGuard-Umschreibung, UniFi-Umleitung) | ★★★ | ◆ | 1.5.0 |
-| GNSS-Störungen erkennen (Jamming/Spoofing) und GPS vorübergehend sperren | ★★★ | ◆◆ | 1.5.0 |
-| Clients 3: Regeln je Gerät, Gruppen/VLAN-Ansichten, Uhrgüte je Gerät, NTS für Clients, Gerätepass | ★★★ | ◆◆ | 1.5.0 |
-| Echter Holdover-Test („wie lange hält die Uhr ohne Quelle?“) | ★★ | ◆ | 1.5.0 |
-| HTTPS fürs Dashboard über Caddy-Vorlage | ★★ | ◆ | 1.5.0 |
-| Mehrsprachigkeit: Gerüst, dann englische Oberfläche (Weblate) | ★★★ | ◆◆◆ | 1.5.0 / 1.5.x |
+| GPS ohne PPS und schwacher Empfang (z. B. VK-162): Empfangsbewertung, Antennen-Test, ehrliches Profil | ★★★ | ◆ | 1.5.0 ✅ |
+| DNS/NAT-Schleifen erkennen und erklären (AdGuard-Umschreibung, UniFi-Umleitung) | ★★★ | ◆ | 1.5.0 ✅ |
+| GNSS-Störungen erkennen (Jamming/Spoofing) und GPS vorübergehend sperren | ★★★ | ◆◆ | 1.5.0 ✅ |
+| Clients 3: Regeln je Gerät, Gruppen/VLAN-Ansichten, Uhrgüte je Gerät, NTS für Clients, Gerätepass | ★★★ | ◆◆ | 1.5.0 ✅ |
+| Echter Holdover-Test („wie lange hält die Uhr ohne Quelle?“) | ★★ | ◆ | 1.5.0 ✅ |
+| HTTPS fürs Dashboard über Caddy-Vorlage | ★★ | ◆ | 1.5.0 ✅ |
+| Mehrsprachigkeit: Gerüst, dann englische Oberfläche (Weblate) | ★★★ | ◆◆◆ | Gerüst 1.5.0 ✅, Oberfläche 1.5.x |
 | u-blox-Empfänger auslesen (Firmware, Jamming-Anzeige, Fähigkeiten) | ★★ | ◆◆ | 1.5.x |
 | Temperaturausgleich: Fit, Vorschlag, anwenden mit 24-h-Probelauf | ★★ (★★★ ohne GPS) | ◆◆ | 1.5.x |
 | Allan-Abweichung | ★★ | ◆◆ | 1.5.x |
 | Verbund: Übersicht und Gegenmessung; Einstellungen teilen (experimentell) | ★★ | ◆◆ | 1.5.x |
 | Einstellungen als Datei (TOML) | ★ | ◆ | 1.5.x |
 | MQTT mit Home-Assistant-Discovery | ★★ | ◆◆ | nur auf Nachfrage |
+
+**Als Nächstes (1.5.1 und folgende):**
+
+- **1.5.1:** u-blox lesen (Firmware, Fähigkeiten, Jamming-Anzeige aus MON-HW bzw. gpsd 3.26 `jam`
+  als weiterer Befund der Störungserkennung), Allan-Abweichung, Temperatur-Fit mit Vorschlag.
+- **Englisch, nächste Scheiben:** Seiten GPS, Zeitquellen, Clients und Einstellungsfelder;
+  Server-Texte (Hinweise, Ereignisse, Benachrichtigungen) als Schlüssel; Weblate-Projekt.
+- **Schwellen aus echten Daten nachschärfen:** Empfangsampel und „unstet“ (bisher aus einem
+  VK-162 drinnen und synthetischen Tagen), GNSS-Störungsschwellen gegen echte
+  Jamming-/Spoofing-Aufzeichnungen, Mindest-Schranke ± 10 ms für NMEA.
+- **Optional:** AdGuard-Home-API lesen (eigener Ausgangs-Zweck, opt-in), Empfangsbewertung und
+  Client-Gruppen ins Diagnosepaket (gefiltert).
+- **1.5.2+:** Temperaturausgleich anwenden mit 24-h-Probelauf (braucht Daten aus 1.5.1),
+  Verbund 1, Einstellungen als Datei (TOML).
 
 ## 1.6 und später
 

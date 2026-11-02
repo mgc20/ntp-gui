@@ -16,6 +16,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _isolation  # noqa: E402,F401 – vor jedem App-Import: Host-Pfade umlenken
+from _support import JoiningHTTPServer, stop_http_server  # noqa: E402
 
 import dnsfwd  # noqa: E402
 import enforce  # noqa: E402
@@ -333,14 +334,13 @@ class LoopsEndpointTest(unittest.TestCase):
                        mock.patch.dict(os.environ, env, clear=True)]
         for patch in cls.patches:
             patch.start()
-        cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        cls.httpd = JoiningHTTPServer(("127.0.0.1", 0), server.Handler)
         cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
         cls.thread.start()
 
     @classmethod
     def tearDownClass(cls):
-        cls.httpd.shutdown()
-        cls.httpd.server_close()
+        stop_http_server(cls.httpd)
         for patch in reversed(cls.patches):
             patch.stop()
         import store

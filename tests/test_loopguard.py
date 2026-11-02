@@ -228,6 +228,27 @@ class AssessTest(unittest.TestCase):
         self.assertEqual(verdict["cause"], "dns")
 
 
+    def test_own_address_other_port_is_another_server(self):
+        """Ein zweiter NTP-Server auf demselben Rechner (anderer Port, z. B. chronyd des Hosts) ist
+        keine Schleife – gefunden im 1.5.0-Labor mit Upstreams auf 127.0.0.1:10323/127.0.0.2:10325."""
+        other = {"mode": "^", "name": "127.0.0.1", "hostname": None,
+                 "ntp": {"remote": "127.0.0.1", "remote_port": 10323, "local": "127.0.0.1"}}
+        self.assertIsNone(loopguard.assess(other, set(), self.track, ntp_port=10324))
+        same = dict(other, ntp=dict(other["ntp"], remote_port=10324))
+        self.assertEqual(loopguard.assess(same, set(), self.track, ntp_port=10324)["cause"], "self_ip")
+        # Port unbekannt (kein ntpdata): wie bisher vorsichtig als Schleife.
+        unknown = dict(other, ntp={})
+        self.assertEqual(loopguard.assess(unknown, set(), self.track, ntp_port=10324)["cause"], "self_ip")
+        # Anderer Port, aber die Antwort ist die eigene: die Antwort zählt weiter.
+        src = find(self.sources, "ptbtime1.ptb.de")
+        echo_own(src, self.track)
+        src["name"] = src["ntp"]["remote"] = "127.0.0.1"
+        src["ntp"]["remote_port"] = 10323
+        verdict = loopguard.assess(src, set(), self.track, ntp_port=10324)
+        self.assertIsNotNone(verdict)
+        self.assertEqual(verdict["evidence"], ["reply"])
+
+
 class IntervalTest(unittest.TestCase):
     def test_interval_follows_poll(self):
         self.assertEqual(loopguard.check_interval(detailed()), loopguard.MAX_INTERVAL)  # poll 9/10

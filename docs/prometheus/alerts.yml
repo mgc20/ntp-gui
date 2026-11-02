@@ -129,3 +129,21 @@ groups:
         annotations:
           summary: "Neue ntp-gui-Version verfügbar ({{ $labels.instance }})"
           description: "Nur mit eingeschaltetem Update-Hinweis. Release-Notizen lesen, dann Image ziehen und Container neu erstellen."
+
+      - alert: NtpGuiSourceLoop
+        expr: ntpgui_source_loops > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Zeitquelle zeigt auf ntp-gui selbst ({{ $labels.instance }})"
+          description: "DNS-Umschreibung oder NAT-Umleitung ohne Ausnahme für ntp-gui – chronyd fragt sich selbst. Die Übersicht nennt Quelle und Abhilfe."
+
+      - alert: NtpGuiGnssDisturbance
+        expr: ntpgui_gnss_stage >= 3
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "GNSS-Störung erkannt ({{ $labels.instance }})"
+          description: "GPS-Zeit oder -Position weicht stark ab (Spoofing/Jamming möglich). Befunde auf der GPS-Seite; mit GNSS_GUARD=lock wird das GPS automatisch abgewählt."

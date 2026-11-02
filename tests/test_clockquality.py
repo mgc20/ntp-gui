@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "app"))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _isolation  # noqa: E402,F401 – vor jedem App-Import: Host-Pfade umlenken
-from _support import fake_hostnames  # noqa: E402
+from _support import JoiningHTTPServer, fake_hostnames, stop_http_server  # noqa: E402
 
 import history  # noqa: E402
 import leap  # noqa: E402
@@ -455,14 +455,13 @@ class ClockHttpTest(unittest.TestCase):
             patch.start()
         os.environ.pop("CLOCK_PUBLIC", None)
         server.AUTH_CACHE.clear()
-        cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        cls.httpd = JoiningHTTPServer(("127.0.0.1", 0), server.Handler)
         cls.port = cls.httpd.server_address[1]
         threading.Thread(target=cls.httpd.serve_forever, daemon=True).start()
 
     @classmethod
     def tearDownClass(cls):
-        cls.httpd.shutdown()
-        cls.httpd.server_close()
+        stop_http_server(cls.httpd)
         for patch in reversed(cls.patches):
             patch.stop()
         store.close_all()
