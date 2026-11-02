@@ -912,6 +912,43 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class TestGpsdLdiscOnTtyAcm(HardwareTestCase):
+    """Fehlerbericht 1.3.2: gpsd hängt beim Öffnen selbst eine PPS-Leitungsdisziplin an /dev/ttyACM0
+    (/dev/pps0 „acm0“). Der Hardware-Check schlug dann vor, /dev/pps0 einzubinden – beim VK-162
+    kommen darüber aber nie Impulse."""
+
+    def setUp(self):
+        super().setUp()
+        self.host.pi("Raspberry Pi 4 Model B Rev 1.5")
+        self.host.usb_tty("ttyACM0", "cdc_acm", "1546", "01a7", "u-blox AG - www.u-blox.com",
+                          "u-blox 7 - GPS/GNSS Receiver")
+        self.host.pps(0, "acm0", path="/dev/ttyACM0", assert_="0.000000000#0", node=False, major=249)
+
+    def test_receiver_stays_without_pps(self):
+        rep = self.run_report(base_cfg(gps_enable=True, gps_device="/dev/ttyACM0"))
+        rec = rep["gps"]["receivers"][0]
+        self.assertEqual(rec["pps_path"], "none")
+        self.assertNotIn("DCD", rec["verdict"])
+
+    def test_no_mount_suggestion(self):
+        row = self.row(self.run_report(base_cfg(gps_enable=True, gps_device="/dev/ttyACM0")), "gps_pps")
+        self.assertEqual(row["status"], "no")
+        # Ein Fix darf nur der für ANDERE Hardware sein (GPS-Modul an GPIO), nie „/dev/pps0 einbinden“ allein.
+        if row["fix"]:
+            self.assertIn("nicht mit einem USB-Stick", row["fix"])
+            self.assertIn("dtoverlay=pps-gpio", row["fix"])
+        self.assertIn("gpsd selbst", row["text"])
+        self.assertIn("nicht unter „devices:“", row["text"])
+
+    def test_gpio_pps_without_pulses_not_suggested(self):
+        # Allgemein: Ein PPS-Gerät, das am Host nie einen Impuls gezählt hat, soll nicht eingebunden werden.
+        self.host.pps(1, "pps@12.-1", assert_="0.000000000#0", node=False)
+        row = self.row(self.run_report(base_cfg(gps_enable=True)), "gps_pps")
+        self.assertEqual(row["status"], "no")
+        self.assertNotIn("devices:", row["fix"] or "")
+        self.assertIn("noch nie einen Impuls", row["text"])
+
+
 class TestTtyAcmWithoutDriverLink(HardwareTestCase):
     """Regression: VK-162 wurde ohne lesbaren Treiber-Link als USB-Seriell/DCD eingestuft."""
 

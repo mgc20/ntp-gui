@@ -135,6 +135,14 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 - Das Update-Banner liegt nicht in der klebenden Kopfzeile und ist auf dem Handy kompakt.
 - Im Diagramm-Kopf steht bei Zeiträumen über einem Tag auch das Datum („Verlauf ab …“).
 
+### Behoben
+- **Hardware-Check schlug beim VK-162 & Co. weiter „/dev/pps0 einbinden“ vor.** gpsd hängt beim
+  Öffnen selbst eine PPS-Leitungsdisziplin an `/dev/ttyACM0` (`/dev/pps0`, Name „acm0“); über einen
+  USB-Empfänger kommt dort aber nie ein Impuls. Der Empfänger bleibt jetzt „kein PPS“, der Check
+  erklärt, woher `/dev/pps0` stammt, und rät nicht mehr zum Einbinden. Allgemein: Ein PPS-Gerät,
+  das am Host noch nie einen Impuls gezählt hat, wird nicht mehr zum Einbinden vorgeschlagen.
+- Benachrichtigungen: Das Ereignis „gedrosselt“ blieb in der ersten Stunde nach dem Systemstart aus.
+
 ### Sicherheit
 - **Datenschutz bei Benachrichtigungen:** Jede Nachricht läuft durch den Datenschutzfilter
   (neuer Zweck `notify` mit eigener Feldliste). Hinaus gehen nur Titel, Text, Stufe, Art und

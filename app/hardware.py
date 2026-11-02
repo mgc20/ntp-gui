@@ -504,13 +504,16 @@ def receivers_info(cfg: dict, platform_: dict, perms: dict, pps_list: list[dict]
         interface = _interface_label(driver, usb)
         # PPS-Weg: entscheidet die Anbindung, nicht die Chip-Generation.
         live_gpio = next((p for p in gpio if p["state"] == "live"), None)
-        if name in ldisc:
-            pps_path = "dcd_usb" if (usb or driver in USB_SERIAL_DRIVERS) else "dcd_uart"
-        elif driver == "cdc_acm" or name.startswith("ttyACM"):
+        if driver == "cdc_acm" or name.startswith("ttyACM"):
             # ttyACM* legt ausschließlich cdc_acm an (USB-Modem-Klasse): Über diese Anbindung
             # kommt kein PPS beim Rechner an – auch dann nicht, wenn sich der Treiber-Link in
             # /sys nicht lesen lässt (sonst landete der Stick fälschlich bei „USB-Seriell/DCD“).
+            # Das gilt auch, wenn eine PPS-Leitungsdisziplin daranhängt: gpsd hängt sie beim
+            # Öffnen selbst an jede serielle Schnittstelle (/dev/pps0 „acm0“) – Impulse kommen
+            # darüber bei einem USB-Stick trotzdem nie an (Fehlerbericht VK-162, 1.3.2).
             pps_path = "none"
+        elif name in ldisc:
+            pps_path = "dcd_usb" if (usb or driver in USB_SERIAL_DRIVERS) else "dcd_uart"
         elif driver in USB_SERIAL_DRIVERS or usb:
             pps_path = "dcd_usb"
         elif gpio:
@@ -1076,7 +1079,10 @@ def build_matrix(cfg: dict, rep: dict, ctx: dict) -> tuple[list[dict], list[str]
     # --- GPS + PPS -----------------------------------------------------------
     title_pps = "GPS + PPS (Mikrosekunden)"
     pps_active = gps_on and bool(cfg.get("gps_pps_device") or cfg.get("gps_pps_shm"))
-    kernel_pps = [p for p in pps_list if p["kind"] in {"gpio", "ldisc"}]
+    # PPS-Leitungsdisziplin an einem USB-CDC-Gerät (ttyACM): legt gpsd selbst an, liefert nie Impulse.
+    acm_ldisc = [p for p in pps_list if p["kind"] == "ldisc"
+                 and os.path.basename(p.get("path") or "").startswith("ttyACM")]
+    kernel_pps = [p for p in pps_list if p["kind"] in {"gpio", "ldisc"} and p not in acm_ldisc]
     kernel_pps.sort(key=lambda p: (not p["configured"], p["state"] != "live", p["dev"]))
     src = kernel_pps[0] if kernel_pps else None
     dcd_usb = next((r for r in receivers if r["pps_path"] == "dcd_usb"), None)
@@ -1084,7 +1090,9 @@ def build_matrix(cfg: dict, rep: dict, ctx: dict) -> tuple[list[dict], list[str]
                      and r["tty"] not in {os.path.basename(p["path"]) for p in kernel_pps}), None)
     gpio_overlay = ("# NUR mit einem GPS-Modul/HAT, dessen PPS-Pin an GPIO18 angeschlossen ist –\n"
                     "# nicht mit einem USB-Stick. /dev/pps0 entsteht erst durch dieses Overlay;\n"
-                    "# vorher lässt „devices:“ den Containerstart scheitern.\n"
+                    "# vorher lässt „devices:“ den Containerstart scheitern. Das Overlay lädt beim\n"
+                    "# Booten zuerst und bekommt /dev/pps0; ein /dev/pps*, das gpsd an einem USB-\n"
+                    "# Empfänger anlegt, rückt dann eine Nummer weiter und bleibt ungenutzt.\n"
                     "# /boot/firmware/config.txt (am Host), danach neu starten:\n"
                     "dtoverlay=pps-gpio,gpiopin=18\n\n"
                     "# im Compose:\ndevices:\n  - /dev/pps0:/dev/pps0\n"
@@ -1093,7 +1101,14 @@ def build_matrix(cfg: dict, rep: dict, ctx: dict) -> tuple[list[dict], list[str]
         how = "GPIO" if src["kind"] == "gpio" else f"DCD ({src['path']})"
         acc = "~1 µs" if src["kind"] == "gpio" else "~1–5 µs"
         problem = _access_problem(src, "PPS_MAJOR")
-        if problem:
+        if problem and src["state"] == "never":
+            # Am Host noch nie ein Impuls: Einbinden in den Container brächte nichts.
+            pin = " (GPIO18?)" if src["kind"] == "gpio" else ""
+            rows.append(_row("gps_pps", title_pps, "no",
+                             f"{src['dev']} ({src['name']}) gibt es am Host, er hat dort aber noch nie einen "
+                             f"Impuls gezählt – Einbinden in den Container bringt deshalb nichts. Erst "
+                             f"Fix abwarten, Kabel/Pin prüfen{pin}.", None, acc, pps_active))
+        elif problem:
             rows.append(_row("gps_pps", title_pps, "change",
                              f"PPS-Quelle {src['dev']} ({src['name']}) am Host erkannt"
                              + (f", {_fmt_rate(src['rate_hz'])}" if src["state"] == "live" else "")
@@ -1184,6 +1199,16 @@ def build_matrix(cfg: dict, rep: dict, ctx: dict) -> tuple[list[dict], list[str]
                          "Kein PPS-Eingang. Möglich mit RS-232-Karte (DCD) oder einer PCIe-Timecard.",
                          None, None, pps_active))
     gps_pps_row = rows[-1]
+
+    if acm_ldisc:
+        names = ", ".join(f"{p['dev']} ({p['name']})" for p in acm_ldisc)
+        ttys = ", ".join(sorted({p["path"] for p in acm_ldisc}))
+        for row in rows:
+            if row["key"] == "gps_pps":
+                row["text"] += (f" Hinweis: {names} hat gpsd selbst an {ttys} angelegt. Ein USB-Empfänger wie "
+                                "dieser liefert darüber nie einen Impuls – diese Zeile also nicht unter "
+                                "„devices:“ eintragen.")
+                break
 
     # --- PTP mit Hardware-Zeitstempeln ---------------------------------------
     title_hw = "PTP mit Hardware-Zeitstempeln"
