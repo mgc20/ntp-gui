@@ -20,7 +20,10 @@ Schutz der schreibenden Routen:
     werden nur Anfragen an IP-Adressen, localhost, den eigenen Hostnamen,
     lokale Namen (*.local, *.lan, *.home.arpa, *.internal …), den
     NTS-Namen und WEB_ALLOWED_HOSTS beantwortet (host_allowed). Mit Passwort
-    schützt die Anmeldung, dann gilt jeder Name. /healthz ist immer offen.
+    schützt die Anmeldung, dann gilt jeder Name. /healthz ist immer offen;
+  * clock_public: /clock, /api/v1/time und ihre vier statischen Dateien
+    antworten ohne Anmeldung (nur Zeit und Ampel) – die Host-Prüfung gilt für
+    diese anonymen Anfragen trotzdem, auch wenn ein Passwort gesetzt ist.
 """
 
 from __future__ import annotations
@@ -46,9 +49,11 @@ import apikeys
 import apiv1
 import autocal
 import chrony
+import clientinfo
 import clientmon
 import devices
 import diagnostics
+import dnsfwd
 import enforce
 import events
 import gps
@@ -56,10 +61,14 @@ import hardware
 import history as historymod
 import insights
 import instance
+import leap
+import notify
 import providers
 import ptp
 import settings
 import statewatch
+import thermal
+import updatecheck
 
 STATIC_DIR = Path(__file__).with_name("static")
 CHRONY_CONF = os.environ.get("CHRONY_CONF", "/etc/chrony/chrony.conf")
@@ -67,7 +76,7 @@ PTP4L_CONF = os.environ.get("PTP4L_CONF", "/etc/linuxptp/ptp4l.conf")
 RUN_DIR = os.environ.get("NTPGUI_RUN_DIR", "/run/ntp-gui")
 START_TIME = time.time()
 MAX_BODY = 64 * 1024
-VERSION = os.environ.get("NTPGUI_VERSION", "1.3.2")
+VERSION = os.environ.get("NTPGUI_VERSION", "1.4.0")
 EVENTS_INTERVAL = 5.0          # so oft liest der Server die Supervisor-Ereignisse ein
 CALIBRATION_DEFAULT_WINDOW = 86400.0  # /api/gps/calibration ohne window: letzte 24 h
 
@@ -129,18 +138,89 @@ apiv1.endpoint("GET", "/enforce/snippets", "/api/enforce/snippets", "read",
                "Anleitungen, um Zeitserver per DNS oder Firewall auf diesen Server umzuleiten.",
                ["server_ip", "systems", "hostnames", "snippets"],
                {"system": "adguard, pihole, dnsmasq, unbound, opnsense, mikrotik, openwrt, nftables, unifi oder all",
-                "ip": "Adresse dieses Servers aus Sicht der Clients"})
+                "ip": "Adresse dieses Servers aus Sicht der Clients",
+                "dns_ip": "Adresse von AdGuard Home/Pi-hole für die optionale DNS-Umleitung per Firewall"})
 apiv1.endpoint("GET", "/enforce/check", "/api/enforce/check", "read",
                "Prüft, ob die Umleitung wirkt (höchstens alle 30 s).", ["level", "summary", "hosts"],
                {"ip": "Adresse dieses Servers aus Sicht der Clients"})
+apiv1.endpoint("GET", "/dns", "/api/dns", "read",
+               "DNS für ntp-gui: eingestellter Modus, Zustand des Weiterleiters auf 127.0.0.1, eigene "
+               "Server mit letzter Antwort bzw. letztem Fehler, Rückfall auf den System-DNS, resolv.conf. "
+               "DoH-Adressen nur mit Servername (der Pfad kann eine Konto-Kennung enthalten).",
+               ["mode", "effective_mode", "running", "state", "upstreams", "resolv", "stats"])
 apiv1.endpoint("GET", "/clients/offsets", "/api/clients/offsets", "read",
-               "Passiv gemessene Abweichung der Client-Uhren.", ["available", "running", "reason", "clients"])
+               "Passiv gemessene Abweichung der Client-Uhren, dazu eigene Namen der Geräte (names).",
+               ["available", "running", "reason", "clients", "names"])
+apiv1.endpoint("GET", "/clients/overview", "/api/clients/overview", "read",
+               "Netzüberblick: Histogramm der Abweichungen, schlechteste Geräte, verstummte und "
+               "auffällig oft fragende Geräte.",
+               ["histogram", "measured", "unmeasurable", "total", "worst", "silent", "chatty"])
+apiv1.endpoint("GET", "/clients/detail", "/api/clients/detail", "read",
+               "Ein Client im Detail: Verlauf der Abweichung (7 Tage), Poll und Abstand, Zustand mit Grund, "
+               "vermutete Software, Reverse-DNS, MAC/Hersteller (nur im selben Netz), eigener Name und Notiz.",
+               ["address", "entry", "samples", "name", "note", "rdns", "mac", "software", "measurable_reason"],
+               {"ip": "Adresse des Clients (Pflicht)", "range": "Zeitraum in Sekunden (Standard 7 Tage)"})
+apiv1.endpoint("POST", "/clients/meta", "/api/clients/meta", "admin",
+               "Eigenen Namen und Notiz eines Clients setzen. Body: {\"ip\": …, \"name\": …, \"note\": …} "
+               "(weglassen = unverändert, \"\" = löschen). Bleibt lokal; beim Export pseudonymisiert.",
+               ["ip", "name", "note"])
+apiv1.endpoint("POST", "/clients/probe", "/api/clients/probe", "admin",
+               "Aktiv nachmessen: eine NTP-Anfrage an einen bekannten Client im LAN (2 s Zeitlimit; je Gerät "
+               "alle 30 s, insgesamt 10 pro Minute). Body: {\"ip\": …}.",
+               ["ip", "answered", "offset", "rtt", "stratum", "text"])
+apiv1.endpoint("GET", "/notify", "/api/notify", "admin",
+               "Benachrichtigungen: Kanäle mit Filtern und Zustellstand. Tokens nur als „gesetzt“ "
+               "(secret_set), nie im Klartext; Adressen mit Pfad/Abfrage nur gekürzt (url_hidden).", ["channels", "types", "levels", "kinds", "defaults", "limits",
+                                                 "dashboard_url", "running"])
+apiv1.endpoint("GET", "/notify/status", "/api/notify/status", "read",
+               "Zustellstand je Benachrichtigungskanal (Kennung, Art, zuletzt gesendet, letzter Fehler) – "
+               "ohne Namen, Adressen und Tokens.", ["channels", "running"])
+apiv1.endpoint("POST", "/notify/channels", "/api/notify/channels", "admin",
+               "Benachrichtigungskanal anlegen (ohne id) oder ändern (mit id). Body: name, type "
+               "(webhook|ntfy|gotify|apprise), url (beim Ändern weglassen = behalten), topic, secret "
+               "(weglassen = behalten, nur bei gleichem Ziel und gleicher Art; \"\" = löschen), "
+               "min_level, kinds, debounce_min, rate_per_hour, resolved, enabled.", ["channel"])
+apiv1.endpoint("POST", "/notify/channels/delete", "/api/notify/channels/delete", "admin",
+               "Benachrichtigungskanal löschen. Body: {\"id\": …}.", ["ok"])
+apiv1.endpoint("POST", "/notify/test", "/api/notify/test", "admin",
+               "Testnachricht sofort über einen Kanal senden (ohne Wiederholung). Body: {\"id\": …}.",
+               ["ok", "error", "status"])
 apiv1.endpoint("GET", "/gps/autocal", "/api/gps/autocal", "read",
                "Automatische GPS-Kalibrierung: Modus, aktuelle Entscheidung, letzte Änderungen.",
                ["mode", "decision", "changes", "rollback"], {"fresh": "0 = letzte gespeicherte Entscheidung"})
 apiv1.endpoint("POST", "/gps/autocal/rollback", "/api/gps/autocal/rollback", "admin",
                "Letzte automatische Änderung(en) zurücknehmen. Body: {\"steps\": 1}.",
                ["ok", "restored_offset", "restored_delay", "reload_triggered", "change"])
+
+apiv1.endpoint("GET", "/temperature", "/api/temperature", "read",
+               "Temperatur und Frequenz: gewählter Sensor, gefundene Sensoren, Paare (Zeit, °C, ppm) aus dem "
+               "Verlauf und Kennzahlen (Dauer, Spanne, Korrelation). 1.4 misst nur – kein Temperaturausgleich.",
+               ["available", "setting", "reason", "sensor", "celsius", "candidates", "pairs", "summary"],
+               {"range": "Zeitraum in Sekunden (Standard 7 Tage, höchstens 30 Tage)",
+                "points": "Höchstzahl der Paare, 100–3000 (Standard 1500)"})
+apiv1.endpoint("GET", "/leap", "/api/leap", "read",
+               "Schaltsekunden: TAI−UTC, letzte (und ggf. angekündigte) Schaltsekunde, Ablaufdatum und "
+               "Prüfsumme der leap-seconds.list, Leap-Status von chrony.",
+               ["available", "path", "tai_utc", "last_leap_date", "next_leap_date", "expires_date", "days_left",
+                "expired", "hash_ok", "level", "reason", "chrony_leap"])
+apiv1.endpoint("GET", "/time", None, "read",
+               "Zeit für die Vollbild-Uhr (/clock): Empfangs- (t1) und Sendezeit (t2) des Servers in Unix-Sekunden "
+               "für den Abgleich mit vier Zeitstempeln, dazu Synchronstatus, Genauigkeit und Art der Quelle. "
+               "Mit „Vollbild-Uhr ohne Anmeldung“ (clock_public) ohne Login erreichbar – dann ohne Quellennamen.",
+               ["t1", "t2", "synchronised", "level", "accuracy", "stratum", "leap", "source_kind", "source",
+                "public"])
+
+apiv1.endpoint("GET", "/update", "/api/update", "read",
+               "Update-Hinweis (opt-in, Einstellung update_check): installierte und neueste Version auf GitHub, "
+               "ob ein Update da ist, Markierung „Achtung beim Update“, Zeitpunkt der letzten und nächsten "
+               "Prüfung. Ausgeschaltet ohne jede Anfrage nach außen.",
+               ["enabled", "current", "current_valid", "latest", "available", "attention", "last_attempt",
+                "last_success", "error", "next_check", "releases_url", "changelog_url", "automation"])
+
+# Ohne Anmeldung erreichbar, wenn „Vollbild-Uhr ohne Anmeldung“ an ist: nur die Uhrseite, ihre
+# statischen Dateien (kein Inhalt aus der Konfiguration) und /api/v1/time.
+CLOCK_PUBLIC_PATHS = {"/clock", "/api/v1/time", "/static/app.css", "/static/clock.css",
+                      "/static/js/clock.js", "/static/js/clocksync.js"}
 
 CONTENT_TYPES = {
     ".html": "text/html; charset=utf-8",
@@ -181,6 +261,12 @@ def collect_sample() -> dict:
         if name:
             sample["sources"][name] = {"o": source.get("offset"), "s": source.get("state"),
                                        "k": source.get("mode"), "j": source.get("std_dev")}
+    try:
+        temp = thermal.MONITOR.sample(settings.values().get("temp_sensor"))
+    except Exception:  # Sensor weg – der Messpunkt entsteht trotzdem
+        temp = None
+    if temp is not None:
+        sample["temp"] = temp
     if gps.enabled():
         g = gps.status()
         sample["gps"] = {"used": _num(g.get("satellites_used")), "seen": _num(g.get("satellites_seen")),
@@ -212,6 +298,7 @@ def collector() -> None:
             HISTORY.add(sample)
             HISTORY.save()
             STATE_WATCH.sample(sample)
+            client_alarms()
             autocal.maybe_tick()   # höchstens einmal pro Stunde, wirft nie
         except Exception as exc:  # ein Messfehler darf den Thread nie beenden
             print(f"[web] Messung fehlgeschlagen: {exc}", flush=True)
@@ -225,6 +312,32 @@ def collector() -> None:
         except Exception:
             interval = 10.0
         time.sleep(max(2.0, interval))
+
+
+def client_alarms() -> None:
+    """Alarm-Schwelle für Client-Uhren (clients_alarm_ms) prüfen – Ereignis „clients“."""
+    try:
+        threshold = settings.values().get("clients_alarm_ms") or 0
+        if not threshold:
+            STATE_WATCH.clients({}, 0)
+            return
+        # Titel nur mit der Adresse (egress pseudonymisiert sie): Ein eigener Name im gespeicherten
+        # Titel bliebe nach Umbenennen/Löschen 90 Tage stehen und ginge dann ungefiltert hinaus.
+        # Den Namen setzt erst die Anzeige ein (/api/events → display_title).
+        STATE_WATCH.clients(clientmon.status()["clients"], threshold, fmt=clientinfo.fmt_offset)
+    except Exception as exc:  # ein Alarm darf die Messung nie aufhalten
+        print(f"[web] Alarm für Client-Uhren nicht geprüft: {exc}", flush=True)
+
+
+LEAP_WATCH = leap.Watch(events.emit, lambda since: events.query(since=since, kinds=["leap"], limit=50))
+
+
+def leap_check() -> None:
+    """Ereignis leap/warn, wenn die Schaltsekunden-Liste bald abläuft (wirft nie)."""
+    try:
+        LEAP_WATCH.check(leap.status(settings.values()))
+    except Exception as exc:
+        print(f"[web] Schaltsekunden-Liste nicht geprüft: {exc}", flush=True)
 
 
 HARDWARE_FIRST_DELAY = 5.0
@@ -242,6 +355,7 @@ def hardware_refresher(stop: threading.Event | None = None) -> None:
             STATE_WATCH.hardware(hardware.report(settings.values(), refresh=True))
         except Exception as exc:  # die Prüfung darf das Dashboard nie stören
             print(f"[web] Hardware-Prüfung fehlgeschlagen: {exc}", flush=True)
+        leap_check()
         if stop.wait(HARDWARE_INTERVAL):
             return
 
@@ -325,7 +439,8 @@ def reload_status() -> dict:
 
 
 SERVICE_LABELS = {"chronyd": "chronyd (NTP)", "gpsd": "gpsd (GPS)", "ptp4l": "ptp4l (PTP)",
-                  "phc2sys": "phc2sys (PTP-Uhr ↔ Systemuhr)", "web": "Dashboard"}
+                  "phc2sys": "phc2sys (PTP-Uhr ↔ Systemuhr)", "dnsfwd": "dnsfwd (DNS für ntp-gui)",
+                  "web": "Dashboard"}
 SERVICE_STATES = {"running", "restarting", "failed", "stopped"}
 
 
@@ -356,6 +471,9 @@ def services_status() -> dict:
             "since": entry.get("since") if isinstance(entry.get("since"), (int, float)) else None,
             "pid": entry.get("pid") if isinstance(entry.get("pid"), int) else None,
             "optional": entry.get("optional") is True,
+            # Soll laut Einstellungen laufen? Ältere services.json ohne das Feld: „stopped“ = absichtlich aus.
+            "enabled": (entry["enabled"] if isinstance(entry.get("enabled"), bool)
+                        else state in SERVICE_STATES and state != "stopped"),
             "next_retry": entry.get("next_retry") if isinstance(entry.get("next_retry"), (int, float)) else None,
             "message": str(entry.get("message") or ""),
             "label": SERVICE_LABELS.get(str(name), str(name)),
@@ -395,6 +513,17 @@ def service_insights(services: dict, now: float | None = None) -> list[dict]:
         label = svc.get("label") or name
         note = f" Letzte Meldung: {svc['message']}" if svc.get("message") else ""
         exit_text = f" (Exit-Code {svc['last_exit']})" if svc.get("last_exit") is not None else ""
+        if name == "dnsfwd" and svc.get("state") in ("restarting", "failed"):
+            out.append({
+                "level": "warn", "key": f"service_{name}",
+                "title": f"{label} ist ausgefallen" + (" und wird neu gestartet" if svc.get("state") == "restarting" else ""),
+                "text": f"Der DNS-Weiterleiter hat sich beendet{exit_text}.{note} Bis er wieder läuft, zeigt "
+                        "/etc/resolv.conf auf den ursprünglichen DNS des Containers – Namen lösen sich weiter "
+                        "auf, aber ohne deine eigenen Server. Das Container-Log nennt den Grund (z. B. Port 53 "
+                        "belegt).",
+                "action": "settings",
+            })
+            continue
         if svc.get("state") == "restarting":
             attempt = (svc.get("restarts") or 0) + 1  # restarts = bisherige Neustarts, dieser ist der nächste
             retry = svc.get("next_retry")
@@ -457,7 +586,9 @@ def build_status() -> dict:
         "gps": gps.status(),
         "nts_server": chrony.nts_server_status(cfg),
         "services": services_status(),
+        "dns": dnsfwd.api_status(cfg),
         "chrony_running": bool(tracking),
+        "update": _update_status(),
         "config": {key: cfg[key] for key in (
             "gps_enable", "gps_device", "gps_offset", "gps_delay", "gps_select", "gps_refid",
             "gps_pps_device", "ptp_enable", "ptp_interface", "ptp_mode", "ptp_time_stamping",
@@ -470,10 +601,142 @@ def build_status() -> dict:
             "reload": reload_status(),
         },
     }
+    leap_info = leap.status(cfg, tracking)
+    status["leap"] = _leap_summary(leap_info)
+    status["notify"] = _notify_summary()
     status["insights"] = combine_insights(insights.build(status, cfg),
+                                          insights.dns_insights(status["dns"], cfg, status["sources"],
+                                                                status["system"].get("addresses") or [],
+                                                                enforce.last_loops(),
+                                                                bool(cfg.get("enforce_hostnames"))
+                                                                or enforce.check_ran()),
                                           service_insights(status["services"]),
-                                          hardware.cached_insights(cfg))
+                                          hardware.cached_insights(cfg),
+                                          leap.insights(leap_info),
+                                          updatecheck.insights(status["update"]))
     return status
+
+
+def _leap_summary(info: dict) -> dict:
+    """Kurzfassung der Schaltsekunden-Liste für die Übersicht (volle Angaben: /api/leap)."""
+    return {key: info.get(key) for key in ("available", "source", "level", "reason", "days_left", "expired",
+                                            "expires_date", "tai_utc")}
+
+
+def _notify_summary() -> dict:
+    """Kanäle und Zustellstand für die Übersicht – nur Zähler, keine Namen, Adressen oder Tokens."""
+    try:
+        channels = notify.api_status().get("channels") or []
+    except Exception:
+        channels = []
+    enabled = [c for c in channels if c.get("enabled")]
+    failing = [c for c in enabled if (c.get("status") or {}).get("state") == "error"]
+    return {"channels": len(channels), "enabled": len(enabled), "failing": len(failing)}
+
+
+def _update_status() -> dict:
+    """Update-Hinweis (wirft nie; ausgeschaltet nur {"enabled": False, …} ohne Netz)."""
+    try:
+        return updatecheck.checker(VERSION).status()
+    except Exception:
+        return {"enabled": False, "available": False}
+
+
+# ---------------------------------------------------------------------------
+# Vollbild-Uhr und Temperatur
+# ---------------------------------------------------------------------------
+
+# Refids, die als Art der Quelle öffentlich gezeigt werden dürfen (eigene Refids sind Einstellungen).
+KNOWN_REFIDS = {"GPS": "GPS", "PPS": "GPS + PPS", "NMEA": "GPS", "GNSS": "GNSS", "PHC": "PTP", "PTP": "PTP",
+                "SHM0": "GPS", "SHM1": "GPS + PPS", "DCF": "DCF77"}
+# chrony vergibt ohne „refid“ den Treibernamen plus Nummer (PHC0, PHC1 …) – so schreibt confgen den PHC-Refclock.
+_DRIVER_REFID = re.compile(r"^(PHC|SHM|PPS|SOCK)(\d+)$")
+_DRIVER_KIND = {"PHC": "PTP", "SHM": "GPS", "PPS": "GPS + PPS", "SOCK": "GPS"}
+
+
+def source_kind(ref: str, cfg: dict | None = None) -> str:
+    """Art einer Stratum-1-Quelle aus ihrer Refid – nie die Refid selbst (eigene Namen sind Einstellungen)."""
+    ref = str(ref or "").strip().upper()
+    if ref in KNOWN_REFIDS:
+        return KNOWN_REFIDS[ref]
+    match = _DRIVER_REFID.match(ref)
+    if match:
+        return _DRIVER_KIND[match.group(1)]
+    gps_refid = str((cfg or {}).get("gps_refid") or "").strip().upper()
+    if gps_refid and ref == gps_refid:
+        return "GPS"   # confgen: refclock SHM … refid <gps_refid>; PPS hat immer die Refid „PPS“
+    return "Referenzuhr"
+
+
+def clock_status(tracking: dict, cfg: dict | None = None) -> dict:
+    """Ampel und Quelle für /clock – ohne Namen, Adressen oder Einstellungen."""
+    running = bool(tracking)
+    synced = bool(tracking.get("synchronised"))
+    delay, disp = tracking.get("root_delay"), tracking.get("root_dispersion")
+    accuracy = None
+    if isinstance(delay, (int, float)) and isinstance(disp, (int, float)):
+        offset = tracking.get("system_time_offset")
+        accuracy = abs(delay) / 2 + abs(disp) + (abs(offset) if isinstance(offset, (int, float)) else 0.0)
+    stratum = tracking.get("stratum") if isinstance(tracking.get("stratum"), int) else None
+    if not running:
+        kind, level = None, "crit"
+    elif tracking.get("local_reference"):
+        kind, level = "lokal (Inselbetrieb)", "warn"
+    elif not synced:
+        kind, level = None, "warn"
+    else:
+        kind = source_kind(tracking.get("ref_name"), cfg) if stratum == 1 else "NTP"
+        level = "good" if accuracy is None or accuracy < 0.1 else "warn"
+    return {"synchronised": synced, "running": running, "level": level, "accuracy": accuracy,
+            "stratum": stratum, "leap": tracking.get("leap_status") or None, "source_kind": kind}
+
+
+CLOCK_CACHE_SECONDS = 1.0
+_CLOCK_CACHE: dict = {"t": None, "tracking": None}
+_CLOCK_CACHE_LOCK = threading.Lock()
+
+
+def _clock_tracking() -> dict:
+    """chronyc tracking für /api/v1/time, höchstens einmal je Sekunde.
+
+    Viele Wanduhren (je 5 Anfragen pro Abgleich plus Status alle 5 s) und – mit
+    clock_public – Anfragen ohne Anmeldung sollen nicht je einen chronyc-Prozess
+    starten. t1/t2 bleiben pro Anfrage; nur der Status ist bis zu 1 s alt.
+    """
+    with _CLOCK_CACHE_LOCK:
+        now = time.monotonic()
+        if _CLOCK_CACHE["t"] is not None and now - _CLOCK_CACHE["t"] < CLOCK_CACHE_SECONDS:
+            return _CLOCK_CACHE["tracking"]
+        tracking = chrony.tracking()
+        _CLOCK_CACHE.update(t=time.monotonic(), tracking=tracking)
+        return tracking
+
+
+def time_payload(received: float, public: bool) -> dict:
+    """Antwort von /api/v1/time. t2 wird so spät wie möglich genommen."""
+    tracking = _clock_tracking()
+    try:
+        cfg = settings.values()
+    except Exception:
+        cfg = {}
+    out = clock_status(tracking, cfg)
+    out.update(t1=received, public=public,
+               source=None if public else (str(tracking.get("ref_name") or "") or None))
+    out["t2"] = time.time()
+    return out
+
+
+TEMPERATURE_DEFAULT_RANGE = 7 * 86400.0
+
+
+def temperature_payload(query: dict) -> dict:
+    seconds = env_like(query.get("range"), TEMPERATURE_DEFAULT_RANGE)
+    seconds = max(3600.0, min(seconds, 30 * 86400.0))
+    points = int(max(100, min(env_like(query.get("points"), 1500), 3000)))
+    out = thermal.MONITOR.status(settings.values().get("temp_sensor"))
+    pairs = thermal.pairs_from_samples(HISTORY.query(seconds, points))
+    out.update(pairs=pairs, summary=thermal.summarize(pairs), range=seconds)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -507,8 +770,17 @@ def build_metrics() -> str:
     _metric(lines, "ntpgui_root_delay_seconds", tracking.get("root_delay"), "Root delay")
     _metric(lines, "ntpgui_root_dispersion_seconds", tracking.get("root_dispersion"), "Root dispersion")
     _metric(lines, "ntpgui_synchronised", 1 if tracking.get("synchronised") else 0, "1 when the clock is synchronised")
+    _metric(lines, "ntpgui_max_error_seconds", clock_status(tracking)["accuracy"] if tracking else None,
+            "Maximum error bound of the system clock: |offset| + root dispersion + root delay / 2")
+    lines.append("# HELP ntpgui_info Build information (value is always 1)")
+    lines.append("# TYPE ntpgui_info gauge")
+    lines.append('ntpgui_info{version="%s"} 1' % _escape_label(VERSION))
 
-    for source in chrony.detailed_sources():
+    sources = chrony.detailed_sources()
+    _metric(lines, "ntpgui_sources", len(sources), "Configured time sources known to chronyd")
+    _metric(lines, "ntpgui_sources_usable", sum(1 for s in sources if s.get("state") in {"*", "+"}),
+            "Sources currently used by chronyd (selected or combined)")
+    for source in sources:
         labels = '{source="%s",mode="%s"}' % (
             _escape_label(source.get("name", "")), _escape_label(source.get("mode_label", "")))
         _metric(lines, "ntpgui_source_offset_seconds", source.get("offset"), "Offset per source", labels=labels)
@@ -543,10 +815,16 @@ def build_metrics() -> str:
         _metric(lines, "ntpgui_ptp_mean_path_delay_seconds", delay / 1e9 if isinstance(delay, (int, float)) else None, "PTP mean path delay")
         _metric(lines, "ntpgui_ptp_steps_removed", ptp_state.get("stepsRemoved"), "Steps removed from the grandmaster")
 
-    for name, svc in services_status().items():
-        labels = '{service="%s"}' % _escape_label(name)
+    services = [('{service="%s"}' % _escape_label(name), svc) for name, svc in services_status().items()]
+    # Je Metrik ein zusammenhängender Block (Prometheus-Textformat).
+    for labels, svc in services:
         _metric(lines, "ntpgui_service_up", 1 if svc["state"] == "running" else 0,
                 "1 when the supervised service is running", labels=labels)
+    for labels, svc in services:
+        _metric(lines, "ntpgui_service_enabled", 1 if svc.get("enabled", True) else 0,
+                "1 when the service should run per settings (0 = switched off on purpose, e.g. GPS/PTP off)",
+                labels=labels)
+    for labels, svc in services:
         _metric(lines, "ntpgui_service_restarts_total", svc["restarts"],
                 "Restarts of the service by the supervisor", kind="counter", labels=labels)
 
@@ -554,6 +832,24 @@ def build_metrics() -> str:
     if nts.get("enabled"):
         _metric(lines, "ntpgui_nts_server_cert_days_left", nts.get("days_left"),
                 "Days until the NTS server certificate expires")
+
+    last = thermal.MONITOR.last
+    if isinstance(last.get("t"), (int, float)) and time.time() - last["t"] < 900:
+        _metric(lines, "ntpgui_temperature_celsius", last.get("celsius"),
+                "Temperature of the selected sensor (Uhrqualitaet, last history sample)")
+    leap_info = leap.status(settings.values(), tracking)
+    if leap_info.get("available") and leap_info.get("source") == "list":
+        # Nur die Datei, die chrony wirklich liest – sonst meldet die Metrik ein Ablaufdatum ohne Bedeutung.
+        _metric(lines, "ntpgui_leapseconds_list_days_left", leap_info.get("days_left"),
+                "Days until leap-seconds.list expires (negative = expired)")
+        _metric(lines, "ntpgui_tai_utc_offset_seconds", leap_info.get("tai_utc"), "TAI-UTC from leap-seconds.list")
+
+    upd = _update_status()
+    if upd.get("enabled") and upd.get("last_success"):
+        _metric(lines, "ntpgui_update_available", 1 if upd.get("available") else 0,
+                "1 when GitHub lists a newer ntp-gui release (opt-in update check)")
+        _metric(lines, "ntpgui_update_check_last_success_timestamp_seconds", upd.get("last_success"),
+                "Unix time of the last successful update check")
 
     _hardware_metrics(lines)
     return "\n".join(lines) + "\n"
@@ -774,6 +1070,11 @@ class Handler(BaseHTTPRequestHandler):
                        {"Cache-Control": "no-store"})
         return False
 
+    def _read_only_key(self) -> bool:
+        """Anfrage mit einem API-Schlüssel ohne Admin-Recht (sieht z. B. den DoH-Pfad nur gekürzt)."""
+        ident = getattr(self, "_ident", None) or {}
+        return ident.get("kind") == "key" and ident.get("scope") != "admin"
+
     def _scope_ok(self, ident: dict, method: str, path: str) -> bool:
         """Darf diese Identität die Methode auf dem Pfad nutzen (apiv1.required_scope)?"""
         if ident["kind"] != "key":
@@ -863,7 +1164,22 @@ class Handler(BaseHTTPRequestHandler):
         self.do_GET()
 
     def do_GET(self) -> None:
+        received = time.time()   # t1 für /api/v1/time – so früh wie möglich
         path, index = self._api_path(self.path)
+        if path in CLOCK_PUBLIC_PATHS and self._clock_public():
+            # Wer gültig angemeldet ist, bekommt die volle Antwort (mit Quellennamen); sonst die
+            # öffentliche – nie 401. Ohne Anmeldung gilt auch hier die Host-Prüfung (DNS-Rebinding).
+            ident = self._identity()
+            full = (ident is not None and ident.get("kind") != "open"
+                    and self._scope_ok(ident, "GET", path))
+            if not full and not self._host_ok({"kind": "open"}):
+                return
+            try:
+                # Ohne Passwort ist ohnehin alles offen – dann auch der Quellenname.
+                self._route_clock(path, received, public=not (full or (ident or {}).get("kind") == "open"))
+            except BrokenPipeError:
+                pass
+            return
         if path == "/healthz":
             healthy = bool(chrony.tracking())
             self._send_json({"status": "ok" if healthy else "degraded", "chrony": healthy},
@@ -878,19 +1194,38 @@ class Handler(BaseHTTPRequestHandler):
         if not self._scope_ok(ident, "GET", path):
             self._deny_scope(ident, "GET", path)
             return
+        self._ident = ident
         try:
             if index:
                 self._send_json(apiv1.describe())
             else:
-                self._route_get(path)
+                self._route_get(path, received)
         except BrokenPipeError:
             pass
         except Exception as exc:  # nie wegen eines Parserfehlers ausfallen
             self._error(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
 
-    def _route_get(self, path: str) -> None:
+    @staticmethod
+    def _clock_public() -> bool:
+        try:
+            return bool(settings.values().get("clock_public"))
+        except Exception:
+            return False
+
+    def _route_clock(self, path: str, received: float, public: bool) -> None:
+        """/clock, ihre statischen Dateien und /api/v1/time."""
+        if path == "/api/v1/time":
+            self._send_json(time_payload(received, public))
+        elif path == "/clock":
+            self._serve_static("clock.html")
+        else:
+            self._serve_static(path[len("/static/"):])
+
+    def _route_get(self, path: str, received: float | None = None) -> None:
         query = self._query()
-        if path == "/":
+        if path in ("/clock", "/api/v1/time"):
+            self._route_clock(path, received or time.time(), public=False)
+        elif path == "/":
             self._serve_static("index.html")
         elif path.startswith("/static/"):
             self._serve_static(path[len("/static/"):])
@@ -913,7 +1248,7 @@ class Handler(BaseHTTPRequestHandler):
             primary = files[0] if files else {"path": CHRONY_CONF, "content": f"# {CHRONY_CONF} nicht lesbar"}
             self._send_json({"path": primary["path"], "content": primary["content"], "files": files})
         elif path == "/api/settings":
-            schema = settings.public_schema()
+            schema = settings.public_schema(masked=self._read_only_key())
             schema["readonly"] = env_flag("WEB_READONLY")
             schema["auth"] = auth_info()
             schema["reload"] = reload_status()
@@ -923,7 +1258,8 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/settings/notes":
             self._send_json({"schema": settings.schema_version(), "notes": settings.migration_notes()})
         elif path == "/api/settings/export":
-            body = json.dumps(settings.export_values(), indent=2, ensure_ascii=False).encode()
+            body = json.dumps(settings.export_values(masked=self._read_only_key()), indent=2,
+                              ensure_ascii=False).encode()
             self._send(HTTPStatus.OK, body, "application/json; charset=utf-8",
                        {"Content-Disposition": 'attachment; filename="ntp-gui-einstellungen.json"',
                         "Cache-Control": "no-store"})
@@ -948,8 +1284,9 @@ class Handler(BaseHTTPRequestHandler):
             since = env_like(query.get("since"), 0.0) or None
             until = env_like(query.get("until"), 0.0) or None
             level = query.get("level") if query.get("level") in events.LEVELS else None
-            self._send_json({"events": events.query(since=since, until=until, kinds=query.get("kinds") or None,
-                                                    level=level, limit=max(1, min(limit, 5000)))})
+            rows = events.query(since=since, until=until, kinds=query.get("kinds") or None,
+                                level=level, limit=max(1, min(limit, 5000)))
+            self._send_json({"events": clientinfo.with_display_titles(rows)})
         elif path == "/api/logs":
             level = query.get("level") if query.get("level") in {"warn", "crit"} else ""
             self._send_json(diagnostics.logs(int(env_like(query.get("lines"), 500)),
@@ -972,17 +1309,45 @@ class Handler(BaseHTTPRequestHandler):
                         "Cache-Control": "no-store"})
         elif path == "/api/recording":
             self._send_json(recording_status())
+        elif path == "/api/temperature":
+            self._send_json(temperature_payload(query))
+        elif path == "/api/leap":
+            self._send_json(leap.status(settings.values(), chrony.tracking()))
         elif path == "/api/enforce/snippets":
             self._send_json(enforce.api_snippets(query, settings.values()))
         elif path == "/api/enforce/check":
             cfg = settings.values()
             self._send_json(enforce.api_check(query, cfg, system_info(cfg)["addresses"], chrony.tracking()))
+        elif path == "/api/dns":
+            self._send_json(dnsfwd.api_status(settings.values()))
         elif path == "/api/clients/offsets":
-            self._send_json(clientmon.status())
+            payload = clientmon.status()
+            payload["names"] = clientinfo.names()
+            self._send_json(payload)
+        elif path == "/api/clients/overview":
+            self._send_json(clientinfo.overview(clientmon.status()["clients"], clientinfo.all_meta()))
+        elif path == "/api/clients/detail":
+            seconds = env_like(query.get("range"), float(clientmon.SAMPLE_RETENTION))
+            seconds = max(60.0, min(seconds, float(clientmon.SAMPLE_RETENTION)))
+            try:
+                result = clientinfo.detail(query.get("ip"), settings.values(), time.time() - seconds)
+            except clientinfo.MetaError as exc:
+                self._error(HTTPStatus.BAD_REQUEST, str(exc))
+                return
+            if result is None:
+                self._error(HTTPStatus.NOT_FOUND, "Dieses Gerät ist (noch) nicht bekannt.")
+                return
+            self._send_json(result)
+        elif path == "/api/notify":
+            self._send_json(notify.api_config())
+        elif path == "/api/notify/status":
+            self._send_json(notify.api_status())
         elif path == "/api/apikeys":
             self._send_json({"keys": apikeys.list(), "auth_enabled": auth_info()["enabled"]})
         elif path == "/api/v1/instance":
             self._send_json(instance.info())
+        elif path == "/api/update":
+            self._send_json(updatecheck.checker(VERSION).status())
         elif path == "/metrics":
             self._send(HTTPStatus.OK, build_metrics().encode(), "text/plain; version=0.0.4; charset=utf-8")
         else:
@@ -1106,6 +1471,10 @@ class Handler(BaseHTTPRequestHandler):
             values = data.get("values")
             if not isinstance(values, dict):
                 raise settings.ValidationError("Datei enthält keine Einstellungen")
+            # Export mit Leserecht: gekürzte Werte (z. B. DoH-Pfad) nicht über die echten schreiben.
+            masked = data.get("masked")
+            values = {k: v for k, v in values.items()
+                      if not (isinstance(masked, list) and k in masked)}
             # Auch Sicherungen älterer Versionen: erst auf das aktuelle Schema bringen.
             values, notes = settings.migrate_import({"schema": data.get("schema", 1), "values": values})
             result = settings.save(values) if values else {"changed": [], "restart": False}
@@ -1136,6 +1505,35 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(recording_status())
             else:
                 self._error(HTTPStatus.BAD_REQUEST, "action muss „start“ oder „stop“ sein")
+        elif path == "/api/clients/meta":
+            try:
+                result = clientinfo.set_meta(data.get("ip"), data.get("name"), data.get("note"))
+            except clientinfo.MetaError as exc:
+                self._error(HTTPStatus.UNPROCESSABLE_ENTITY, str(exc))
+                return
+            self._send_json(result)
+        elif path == "/api/clients/probe":
+            try:
+                self._send_json(clientinfo.probe(data.get("ip"), lambda ip: clientmon.client(ip) is not None))
+            except clientinfo.ProbeLimited as exc:
+                self._error(HTTPStatus.TOO_MANY_REQUESTS, str(exc), retry_after=round(exc.retry_after))
+            except clientinfo.MetaError as exc:
+                self._error(HTTPStatus.UNPROCESSABLE_ENTITY, str(exc))
+        elif path == "/api/notify/channels":
+            try:
+                self._send_json({"channel": notify.save_channel(data)})
+            except notify.NotifyError as exc:
+                self._error(HTTPStatus.UNPROCESSABLE_ENTITY, str(exc))
+        elif path == "/api/notify/channels/delete":
+            if not notify.delete_channel(str(data.get("id", ""))):
+                self._error(HTTPStatus.NOT_FOUND, "Diesen Kanal gibt es nicht (mehr)")
+                return
+            self._send_json({"ok": True})
+        elif path == "/api/notify/test":
+            try:
+                self._send_json(notify.send_test(str(data.get("id", ""))))
+            except notify.NotifyError as exc:
+                self._error(HTTPStatus.NOT_FOUND, str(exc))
         elif path == "/api/apikeys":
             key_id, token = apikeys.create(data.get("name"), data.get("scope"))
             entry = next((k for k in apikeys.list() if k["id"] == key_id), {})
@@ -1183,12 +1581,15 @@ def main() -> None:
     threading.Thread(target=collector, daemon=True, name="collector").start()
     threading.Thread(target=hardware_refresher, daemon=True, name="hardware").start()
     threading.Thread(target=events_ingester, daemon=True, name="events").start()
+    notify.start(VERSION)  # eigener Thread je Kanal; ohne angelegte Kanäle geht nichts hinaus
+    updatecheck.start(VERSION)  # opt-in; ausgeschaltet keine Anfrage nach außen
     # Folgt clientmon_enable/ntp_port ohne Neustart.
     threading.Thread(target=clientmon.watch, args=(settings.values,), daemon=True, name="clientmon-watch").start()
 
     def save_and_exit(*_):
         clientmon.stop()
         HISTORY.save(force=True)
+        notify.flush()  # Position der verteilten Ereignisse – sonst kommt Zugestelltes nach dem Neustart doppelt
         raise SystemExit(0)
 
     signal.signal(signal.SIGTERM, save_and_exit)

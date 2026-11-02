@@ -123,13 +123,24 @@ export function insightList(items, navigate) {
     el("div", { class: "insight-body" },
       el("strong", { text: item.title }),
       el("p", { text: item.text }),
+      insightLink(item),
       item.action ? el("a", { href: `#/${navigate[item.action] || item.action}`, class: "insight-action",
         text: ACTION_LABEL[item.action] || "Ansehen →" }) : null))));
+}
+
+// Externer Link eines Hinweises (bisher nur Update-Hinweis): nur auf die Release-Seiten des Projekts.
+const INSIGHT_LINK = /^https:\/\/github\.com\/ConGp20\/ntp-gui\/releases(\/tag\/v[0-9A-Za-z.-]+)?$/;
+
+export function insightLink(item) {
+  if (!item || typeof item.link !== "string" || !INSIGHT_LINK.test(item.link)) return null;
+  return el("a", { href: item.link, class: "insight-action", target: "_blank", rel: "noopener noreferrer",
+    text: "Release-Notizen →" });
 }
 
 export const ACTION_LABEL = {
   gps: "Zur GPS-Seite →", sources: "Zu den Quellen →", settings: "Zu den Einstellungen →",
   clients: "Zu den Clients →", ptp: "Zur PTP-Seite →", hardware: "Zur Hardware-Seite →",
+  uhrqualitaet: "Zur Uhrqualität →",
 };
 
 export function emptyNote(text) {

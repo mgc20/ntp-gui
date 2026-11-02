@@ -48,7 +48,11 @@ import sys
 import threading
 from typing import Any
 
-PURPOSES = ("diagnostics", "recording", "community")
+# Zwecke: wofür etwas die Instanz verlässt. "notify" (Benachrichtigungen, 1.4) hat zusätzlich eine
+# eigene Feldliste (NOTIFY_FIELDS) – nur diese Felder einer Meldung gehen überhaupt hinaus.
+# "update_check" (Update-Hinweis, 1.4) schickt gar keine Daten: eine feste GET-Anfrage mit festen
+# Kopfzeilen (update_check_request) – ohne Version, ohne Kennung.
+PURPOSES = ("diagnostics", "recording", "community", "notify", "update_check")
 
 PUBLIC_IP = "<öffentliche-IP>"
 REMOVED = "<entfernt>"
@@ -2262,3 +2266,164 @@ def _bs_line(line: str, patterns: list[tuple[re.Pattern, str]]) -> list[tuple[st
         if not _bs_dotted_allowed(m.group(0), before):
             hits.append(("name_mit_punkt", m.group(0)))
     return [(kind, text[:80]) for kind, text in hits]
+
+
+# --- Benachrichtigungen (Zweck "notify") ---------------------------------------------
+
+# Positivliste: Feld → Typ. Alles andere einer Meldung (Ereignisdaten mit Gerätepfaden,
+# Quellen, Werten …) bleibt zu Hause. Texte laufen durch den Filter, danach beide Schranken.
+NOTIFY_FIELDS: dict[str, type] = {
+    "title": str, "text": str, "level": str, "kind": str, "time": float, "resolved": bool,
+    "duration_s": int, "test": bool, "event_id": int, "suppressed": int,
+}
+NOTIFY_LEVELS = ("info", "warn", "crit")
+NOTIFY_MAX_TEXT = 400
+_NOTIFY_KIND_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
+
+
+class NotifyLeak(ValueError):
+    """Die Schlussprüfung hat in einer Benachrichtigung etwas gefunden – nicht senden."""
+
+    def __init__(self, findings: list[dict]) -> None:
+        kinds = sorted({str(f.get("kind")) for f in findings})
+        super().__init__("Filter hat die Nachricht zurückgehalten (" + ", ".join(kinds) + ")")
+        self.findings = findings
+
+
+def _written_pair_ok(a: str, b: str) -> bool:
+    """Wie _coord_pair_ok, aber mit GESCHRIEBENEN Nachkommastellen (mindestens 2, Nullen am Ende zählen)."""
+    x, y = _to_float(a), _to_float(b)
+    if x is None or y is None or _decimals(a.lstrip("+-")) < 2 or _decimals(b.lstrip("+-")) < 2:
+        return False
+    if not ((-90 <= x <= 90 and -180 <= y <= 180) or (-90 <= y <= 90 and -180 <= x <= 180)):
+        return False
+    return abs(x) >= 1 or abs(y) >= 1
+
+
+def notify_coord_spans(line: str) -> list[tuple[int, int]]:
+    """Koordinatenpaare im kurzen Freitext einer Benachrichtigung – strenger als coord_pair_spans.
+
+    Dort zählen signifikante Stellen (für Zahlenreihen aus chronyc gedacht), so dass „52.5200, 13.4050“
+    (≈ 10 m genau geschrieben) als zwei Stellen durchginge. Ein Ereignistitel ist keine Messreihe: Hier
+    reichen zwei geschriebene Nachkommastellen je Zahl (≈ 1 km) – ein falscher Treffer kostet nur eine Zahl."""
+    tokens = [m for m in _COORD_TOKEN_RE.finditer(line) if m.group(2)]
+    spans = []
+    i = 0
+    while i < len(tokens) - 1:
+        a, b = tokens[i], tokens[i + 1]
+        if _COORD_GAP_RE.fullmatch(line, a.end(), b.start()) and _written_pair_ok(a.group(2), b.group(2)):
+            spans.append((a.start(), b.end()))
+            i += 2
+        else:
+            i += 1
+    return spans
+
+
+def _notify_coords(text: str, sanitizer: "Sanitizer") -> str:
+    spans = notify_coord_spans(text)
+    if not spans:
+        return text
+    out, last = [], 0
+    for start, end in spans:
+        out.append(text[last:start])
+        out.append("<koordinaten>")
+        sanitizer.count("position")
+        last = end
+    out.append(text[last:])
+    return "".join(out)
+
+
+def notify_message(message: dict, known_names=(), known: dict | None = None) -> dict:
+    """Meldung → was hinausgehen darf: nur NOTIFY_FIELDS, Texte gefiltert, Schranken geprüft.
+
+    Wirft NotifyLeak, wenn check_no_leaks oder backstop danach noch etwas finden."""
+    sanitizer = Sanitizer("notify", known_names, known)
+    out: dict[str, Any] = {}
+    for key, kind in NOTIFY_FIELDS.items():
+        if key not in (message or {}):
+            continue
+        value = message[key]
+        if value is None:
+            continue
+        if kind is str:
+            text = " ".join(str(value).split())[:NOTIFY_MAX_TEXT]
+            if key == "level":
+                text = text if text in NOTIFY_LEVELS else "info"
+            elif key == "kind":
+                text = text if _NOTIFY_KIND_RE.match(text) else "other"
+            else:
+                text = _notify_coords(sanitizer.text(text), sanitizer)
+            out[key] = text
+        elif kind is bool:
+            out[key] = bool(value)
+        elif kind is int:
+            try:
+                out[key] = int(value)
+            except (TypeError, ValueError):
+                continue
+        elif kind is float:
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                continue
+            if number == number and abs(number) < 1e12:
+                out[key] = round(number, 3)
+    findings = check_no_leaks(out)
+    if not findings:
+        rendered = json.dumps(out, ensure_ascii=False, indent=1)
+        findings = backstop({"nachricht": rendered.encode("utf-8")}, sanitizer.backstop_known())
+    if findings:
+        raise NotifyLeak(findings)
+    return out
+
+
+# --- Update-Hinweis (Zweck "update_check") -------------------------------------------
+
+# Die einzige Anfrage des Update-Hinweises: fest verdrahtet, ohne Daten der Instanz. Der
+# User-Agent nennt bewusst weder Version noch Kennung – GitHub sieht so nur „irgendein
+# ntp-gui“ und die öffentliche IP-Adresse (die lässt sich technisch nicht verbergen).
+UPDATE_CHECK_URL = "https://api.github.com/repos/ConGp20/ntp-gui/releases/latest"
+UPDATE_CHECK_HEADERS: dict[str, str] = {
+    "User-Agent": "ntp-gui",
+    "Accept": "application/vnd.github+json",
+}
+
+
+class UpdateCheckRejected(ValueError):
+    """Die Update-Anfrage weicht von der festen Form ab – nicht senden."""
+
+
+def _render_update_request(url: str, headers: dict) -> str:
+    return "\n".join([url] + [f"{name}: {value}" for name, value in headers.items()])
+
+
+def _update_findings(text: str) -> set:
+    found = {(f["kind"], f["text"]) for f in check_no_leaks(text)}
+    found |= {(f["kind"], f["text"]) for f in backstop({"update_check": text.encode("utf-8")})}
+    return found
+
+
+def update_check_request(url: str = UPDATE_CHECK_URL, headers: dict | None = None) -> tuple[str, dict]:
+    """(URL, Kopfzeilen) für den Update-Hinweis – nur die feste Form geht hinaus.
+
+    Wer später eine Version, eine Instanz-ID, einen Hostnamen, einen Ortsnamen oder einen
+    anderen Host ergänzt, bekommt hier UpdateCheckRejected statt einer Anfrage: Kopfzeilen
+    müssen exakt UPDATE_CHECK_HEADERS sein (Namen und Werte), nur die eine URL, keine
+    Abfrageparameter. Zweite Schicht: check_no_leaks und backstop über die fertige Anfrage."""
+    headers = dict(UPDATE_CHECK_HEADERS if headers is None else headers)
+    if url != UPDATE_CHECK_URL:
+        raise UpdateCheckRejected("Update-Hinweis: nur die feste GitHub-Adresse ist erlaubt")
+    if set(headers) - set(UPDATE_CHECK_HEADERS):
+        raise UpdateCheckRejected("Update-Hinweis: unbekannte Kopfzeile")
+    if headers.get("User-Agent") != "ntp-gui":
+        raise UpdateCheckRejected("Update-Hinweis: User-Agent muss „ntp-gui“ ohne Version sein")
+    for name, value in headers.items():
+        if value != UPDATE_CHECK_HEADERS[name]:
+            raise UpdateCheckRejected("Update-Hinweis: Kopfzeile weicht vom festen Wert ab")
+    # Was die zentralen Prüfungen schon in der festen Form melden („vnd.github“ sieht aus wie ein
+    # Hostname), ist erlaubt – jeder weitere Fund stoppt die Anfrage (bei jedem Aufruf neu gerechnet,
+    # damit eine geänderte Konfiguration den Vergleich nicht verschiebt).
+    baseline = _update_findings(_render_update_request(UPDATE_CHECK_URL, UPDATE_CHECK_HEADERS))
+    if _update_findings(_render_update_request(url, headers)) - baseline:
+        raise UpdateCheckRejected("Update-Hinweis: die Filterprüfung findet Daten der Instanz")
+    return url, headers

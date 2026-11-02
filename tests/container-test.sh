@@ -13,6 +13,7 @@
 # sauberes Stoppen. Ab 1.3: Log-Seite, Diagnosepaket ohne Standort-/Kennungsdaten,
 # Ereignisprotokoll, API-Schlüssel (read/admin), /api/v1, Übernahme des alten
 # Verlaufs (history.json.gz → SQLite) und passive Client-Messung im Bridge-Netz.
+# Ab 1.4: DNS für ntp-gui (Weiterleiter auf 127.0.0.1, resolv.conf, Absturz, Zurückschalten).
 set -uo pipefail
 
 IMAGE="${1:-ntp-gui:test}"
@@ -26,7 +27,7 @@ FAIL=0
 cleanup() {
   docker rm -f "${PREFIX}-a" "${PREFIX}-b" "${PREFIX}-c" "${PREFIX}-d" "${PREFIX}-e" "${PREFIX}-f" \
     "${PREFIX}-g" "${PREFIX}-h" "${PREFIX}-i" "${PREFIX}-j" >/dev/null 2>&1
-  docker rm -f "${PREFIX}-k" >/dev/null 2>&1
+  docker rm -f "${PREFIX}-k" "${PREFIX}-l" "${PREFIX}-m" >/dev/null 2>&1
   docker volume rm "${PREFIX}-data" "${PREFIX}-hist" >/dev/null 2>&1
   rm -rf "$CFG_DIR" "$NTS_DIR" "$DIAG_DIR"
 }
@@ -98,6 +99,36 @@ assert d['tracking'].get('stratum') is not None, 'kein Stratum'
 assert 'system' in d and 'sources' in d and 'gps' in d and 'ptp' in d, 'Felder fehlen'
 " "$STATUS" 2>/dev/null; then ok "API liefert vollständigen Status"; else bad "API-Status unvollständig"; fi
 contains "Metrik ntpgui_up vorhanden" "$(curl -s http://127.0.0.1:18080/metrics)" "ntpgui_up 1"
+# 1.4 Uhrqualität: Schaltsekunden-Liste aus dem Image, Vollbild-Uhr, Temperatur (im CI meist ohne Sensor).
+LEAPJ=$(curl -s --max-time 10 http://127.0.0.1:18080/api/v1/leap)
+check "Schaltsekunden: TAI−UTC aus der Liste" 37 "$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('tai_utc'))" "$LEAPJ" 2>/dev/null)"
+check "Schaltsekunden: Prüfsumme der Liste stimmt" True "$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('hash_ok'))" "$LEAPJ" 2>/dev/null)"
+check "Vollbild-Uhr /clock" 200 "$(http http://127.0.0.1:18080/clock)"
+TIMEJ=$(curl -s --max-time 10 http://127.0.0.1:18080/api/v1/time)
+check "/api/v1/time: t1 ≤ t2" True "$(python3 -c "import json,sys; d=json.loads(sys.argv[1]); print(0 < d['t1'] <= d['t2'])" "$TIMEJ" 2>/dev/null)"
+check "Temperatur-API antwortet (auch ohne Sensor)" 200 "$(http http://127.0.0.1:18080/api/v1/temperature)"
+contains "Metrik TAI−UTC vorhanden" "$(curl -s http://127.0.0.1:18080/metrics)" "ntpgui_tai_utc_offset_seconds 37"
+# 1.4: Update-Hinweis ist ab Werk aus – und dann fragt der Container niemanden.
+UPDJ=$(curl -s --max-time 10 http://127.0.0.1:18080/api/v1/update)
+check "Update-Hinweis ab Werk aus" "False None" "$(python3 -c "import json,sys; d=json.loads(sys.argv[1]); print(d['enabled'], d['next_check'])" "$UPDJ" 2>/dev/null)"
+check "Update-Hinweis aus: nie geprüft" "None" "$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['last_attempt'])" "$UPDJ" 2>/dev/null)"
+# 1.4: Übersicht bekommt Kurzfassungen für Schaltsekunden-Liste und Benachrichtigungen.
+STATJ=$(curl -s --max-time 10 http://127.0.0.1:18080/api/v1/status)
+check "Status: Schaltsekunden-Kurzfassung (TAI−UTC)" 37 "$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['leap']['tai_utc'])" "$STATJ" 2>/dev/null)"
+check "Status: ohne Kanal keine Benachrichtigung" "0 0" "$(python3 -c "import json,sys; n=json.loads(sys.argv[1])['notify']; print(n['channels'], n['enabled'])" "$STATJ" 2>/dev/null)"
+METRICS_A=$(curl -s http://127.0.0.1:18080/metrics)
+contains "Metrik ntpgui_info mit Version" "$METRICS_A" 'ntpgui_info{version="'
+contains "Metrik ntpgui_sources_usable vorhanden" "$METRICS_A" "ntpgui_sources_usable"
+check "Ohne Update-Hinweis keine Update-Metrik" 0 "$(grep -c '^ntpgui_update_available' <<<"$METRICS_A")"
+# Absichtlich gestoppte Dienste (GPS/PTP aus, DNS-Modus system) zählen nicht als Ausfall.
+contains "gpsd aus: ntpgui_service_enabled 0" "$METRICS_A" 'ntpgui_service_enabled{service="gpsd"} 0'
+contains "chronyd: ntpgui_service_enabled 1" "$METRICS_A" 'ntpgui_service_enabled{service="chronyd"} 1'
+check "Ab Werk kein Dienst eingeschaltet und gestoppt" 0 "$(python3 -c "
+import re, sys
+t = sys.stdin.read()
+up = dict(re.findall(r'^ntpgui_service_up\{service=\"([^\"]+)\"\} (\d)$', t, re.M))
+on = dict(re.findall(r'^ntpgui_service_enabled\{service=\"([^\"]+)\"\} (\d)$', t, re.M))
+print(sum(1 for n in up if up[n] == '0' and on.get(n) == '1'))" <<<"$METRICS_A")"
 
 echo
 echo "1b) Log, Ereignisse, Diagnosepaket, Client-Messung (1.3)"
@@ -166,6 +197,68 @@ if d['available']:
 " "$CM" 2>/dev/null; then ok "Client-Messung meldet Zustand im Bridge-Netz verständlich (available=$(python3 -c "import json,sys;print(json.loads(sys.argv[1])['available'])" "$CM" 2>/dev/null))"
 else bad "Client-Messung: unklare Antwort ($CM)"; fi
 
+# Clients 2.0: Detailseite, Netzüberblick, eigene Namen, Nachmessen nur im LAN.
+check "Clients: Netzüberblick antwortet" 200 "$(http http://127.0.0.1:18080/api/v1/clients/overview)"
+CJ=(-H 'Content-Type: application/json' -H 'X-NTP-GUI: 1')
+check "Clients: Name für ungültige Adresse abgelehnt" 422 "$(http "${CJ[@]}" -d '{"ip":"kein;ip","name":"x"}' http://127.0.0.1:18080/api/clients/meta)"
+check "Clients: Name gespeichert" 200 "$(http "${CJ[@]}" -d '{"ip":"127.0.0.1","name":"Container Selbsttest"}' http://127.0.0.1:18080/api/clients/meta)"
+contains "Clients: Name erscheint in der Liste" "$(curl -s --max-time 10 http://127.0.0.1:18080/api/clients/offsets)" 'Container Selbsttest'
+check "Clients: Nachmessen öffentlicher Adressen abgelehnt" 422 "$(http "${CJ[@]}" -d '{"ip":"8.8.8.8"}' http://127.0.0.1:18080/api/clients/probe)"
+check "Clients: Nachmessen über 6to4 (öffentliche IPv4 darin) abgelehnt" 422 "$(http "${CJ[@]}" -d '{"ip":"2002:808:808::1"}' http://127.0.0.1:18080/api/clients/probe)"
+check "Clients: Nachmessen link-lokaler IPv6 abgelehnt" 422 "$(http "${CJ[@]}" -d '{"ip":"fe80::1"}' http://127.0.0.1:18080/api/clients/probe)"
+check "Clients: Detail einer unbekannten Adresse -> 404" 404 "$(http 'http://127.0.0.1:18080/api/clients/detail?ip=192.0.2.77')"
+docker exec "${PREFIX}-a" python3 -c '
+import socket, struct, time
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(0.5)
+for _ in range(3):
+    t = time.time() + 2208988800
+    s.sendto(bytes([0x23]) + bytes(39) + struct.pack("!II", int(t), int((t % 1) * 2**32)), ("127.0.0.1", 10123))
+    try: s.recv(100)
+    except OSError: pass
+    time.sleep(0.3)' 2>/dev/null
+DETAIL=""
+for _ in 1 2 3 4 5 6; do
+  DETAIL=$(curl -s --max-time 10 'http://127.0.0.1:18080/api/clients/detail?ip=127.0.0.1')
+  grep -q '"measurable_reason"' <<<"$DETAIL" && break
+  sleep 1
+done
+if grep -q '"available": true' <<<"$CM" || grep -q '"available":true' <<<"$CM"; then
+  contains "Clients: Detailseite eines gemessenen Geräts mit Vermutung zur Software" "$DETAIL" '"software"'
+  contains "Clients: Reverse-DNS ab Werk aus" "$DETAIL" 'In den Einstellungen ausgeschaltet'
+else
+  ok "Clients: Detailseite übersprungen (Messung im Container nicht verfügbar)"
+fi
+
+# Benachrichtigungen: Webhook an ein Ziel im Container, Token nie in der Antwort, keine Weiterleitung.
+docker exec -d "${PREFIX}-a" python3 -c '
+from http.server import BaseHTTPRequestHandler, HTTPServer
+class H(BaseHTTPRequestHandler):
+    def do_POST(self):
+        body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        if self.path == "/umleitung":
+            self.send_response(302); self.send_header("Location", "http://127.0.0.1:18999/hook"); self.end_headers(); return
+        open("/tmp/notify-sink.log", "ab").write(self.path.encode() + b" " + body + b"\n")
+        self.send_response(200); self.end_headers()
+    def log_message(self, *a): pass
+HTTPServer(("127.0.0.1", 18999), H).serve_forever()'
+sleep 1
+J=(-H 'Content-Type: application/json' -H 'X-NTP-GUI: 1')
+NCH=$(curl -s --max-time 10 "${J[@]}" -d '{"name":"CT","type":"webhook","url":"http://127.0.0.1:18999/hook","secret":"CtGeheim42"}' \
+  http://127.0.0.1:18080/api/notify/channels)
+NID=$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['channel']['id'])" "$NCH" 2>/dev/null)
+check "Benachrichtigung: Kanal angelegt" 1 "$([[ -n "$NID" ]] && echo 1 || echo 0)"
+check "Benachrichtigung: ftp:// abgelehnt" 422 "$(http "${J[@]}" -d '{"name":"x","type":"webhook","url":"ftp://x.lan/"}' http://127.0.0.1:18080/api/notify/channels)"
+NTEST=$(curl -s --max-time 15 "${J[@]}" -d "{\"id\":\"$NID\"}" http://127.0.0.1:18080/api/notify/test)
+contains "Benachrichtigung: Testnachricht zugestellt" "$NTEST" '"ok": true'
+contains "Benachrichtigung: Ziel hat die Nachricht" "$(docker exec "${PREFIX}-a" cat /tmp/notify-sink.log 2>/dev/null)" '"test":true'
+check "Benachrichtigung: Token nie in der API" 0 "$(curl -s http://127.0.0.1:18080/api/notify | grep -c CtGeheim42)"
+check "Benachrichtigung: Status per /api/v1" 200 "$(http http://127.0.0.1:18080/api/v1/notify/status)"
+curl -s --max-time 10 "${J[@]}" -d "{\"id\":\"$NID\",\"url\":\"http://127.0.0.1:18999/umleitung\"}" http://127.0.0.1:18080/api/notify/channels >/dev/null
+contains "Benachrichtigung: Weiterleitung wird nicht befolgt" \
+  "$(curl -s --max-time 15 "${J[@]}" -d "{\"id\":\"$NID\"}" http://127.0.0.1:18080/api/notify/test)" 'Weiterleitung abgelehnt'
+check "Benachrichtigung: nach 302 keine zweite Anfrage" 1 "$(docker exec "${PREFIX}-a" grep -c '"test":true' /tmp/notify-sink.log)"
+http "${J[@]}" -d "{\"id\":\"$NID\"}" http://127.0.0.1:18080/api/notify/channels/delete >/dev/null
+
 echo
 echo "1c) Schutz vor DNS-Rebinding (ohne Passwort)"
 A=http://127.0.0.1:18080
@@ -218,6 +311,17 @@ check "Mit Login erlaubt"       200 "$(http -u 'admin:S3hr geheim' http://127.0.
 check "healthz bleibt offen"    200 "$(http http://127.0.0.1:18081/healthz)"
 check "Mit Login gilt jeder Host-Name" 200 "$(http -u 'admin:S3hr geheim' -H 'Host: attacker.example' http://127.0.0.1:18081/api/status)"
 check "Fremder Host ohne Login: 401" 401 "$(http -H 'Host: attacker.example' http://127.0.0.1:18081/api/status)"
+check "Vollbild-Uhr standardmäßig geschützt" 401 "$(http http://127.0.0.1:18081/api/v1/time)"
+curl -s --max-time 10 -u 'admin:S3hr geheim' -H 'Content-Type: application/json' -H 'X-NTP-GUI: 1' \
+  -d '{"changes":{"clock_public":true}}' http://127.0.0.1:18081/api/settings >/dev/null
+check "clock_public: /clock ohne Login"        200 "$(http http://127.0.0.1:18081/clock)"
+check "clock_public: /api/v1/time ohne Login"  200 "$(http http://127.0.0.1:18081/api/v1/time)"
+check "clock_public: Status bleibt geschützt"  401 "$(http http://127.0.0.1:18081/api/v1/status)"
+check "clock_public: kein Quellenname ohne Login" None \
+  "$(curl -s --max-time 10 http://127.0.0.1:18081/api/v1/time | python3 -c "import json,sys; print(json.load(sys.stdin).get('source'))" 2>/dev/null)"
+check "clock_public: fremder Host ohne Login: 403" 403 "$(http -H 'Host: attacker.example' http://127.0.0.1:18081/api/v1/time)"
+check "clock_public: angemeldet nicht öffentlich" False \
+  "$(curl -s --max-time 10 -u 'admin:S3hr geheim' http://127.0.0.1:18081/api/v1/time | python3 -c "import json,sys; print(json.load(sys.stdin).get('public'))" 2>/dev/null)"
 
 echo
 echo "3b) API-Schlüssel und /api/v1"
@@ -490,6 +594,66 @@ FILES=$(docker exec "${PREFIX}-k" ls /var/lib/chrony/ntp-gui)
 contains "Alte Datei als .migrated aufbewahrt" "$FILES" "history.json.gz.migrated"
 contains "SQLite-Datenbank angelegt" "$FILES" "ntp-gui.db"
 docker rm -f "${PREFIX}-k" >/dev/null 2>&1
+
+echo
+echo "12c) DNS für ntp-gui (Modus servers, Upstream im Container – kein Internet nötig)"
+docker run -d --name "${PREFIX}-l" -p 18091:8080 -e NTP_PORT=10135 -e NTP_POOLS="" -e NTP_SERVERS="" \
+  -e DNS_MODE=servers -e DNS_SERVERS=127.0.0.1:5354 -e DNS_FALLBACK=false "$IMAGE" >/dev/null
+wait_for_health http://127.0.0.1:18091/healthz 90 || true
+# Fake-Upstream: beantwortet jede Frage mit 192.0.2.53 (A).
+docker exec -d "${PREFIX}-l" python3 -c '
+import socket, struct
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.bind(("127.0.0.1", 5354))
+while True:
+    q, a = s.recvfrom(4096)
+    i = 12
+    while q[i]: i += q[i] + 1
+    end = i + 5
+    s.sendto(q[:2] + b"\x81\x80" + q[4:6] + b"\x00\x01\x00\x00\x00\x00" + q[12:end]
+             + b"\xc0\x0c\x00\x01\x00\x01\x00\x00\x00\x3c\x00\x04" + bytes([192, 0, 2, 53]), a)'
+sleep 1
+RESOLV=$(docker exec "${PREFIX}-l" cat /etc/resolv.conf)
+contains "resolv.conf zeigt auf 127.0.0.1" "$RESOLV" "nameserver 127.0.0.1"
+contains "resolv.conf trägt die ntp-gui-Markierung" "$RESOLV" "# ntp-gui: dnsfwd"
+check "dnsfwd läuft (services.json)" running "$(svc "${PREFIX}-l" dnsfwd state)"
+check "Name wird über den Weiterleiter aufgelöst" 192.0.2.53 \
+  "$(docker exec "${PREFIX}-l" getent ahostsv4 ntpgui-test.example 2>/dev/null | awk 'NR==1 {print $1}')"
+DNSJ=$(curl -s --max-time 10 http://127.0.0.1:18091/api/v1/dns)
+check "/api/v1/dns meldet ok" ok "$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('state'))" "$DNSJ" 2>/dev/null)"
+contains "Weiterleiter lauscht auf 127.0.0.1:53" "$(docker exec "${PREFIX}-l" cat /proc/net/udp)" "0100007F:0035"
+check "Weiterleiter nur auf Loopback" "" "$(docker exec "${PREFIX}-l" sh -c "cat /proc/net/udp /proc/net/tcp | awk '\$2 ~ /:0035\$/ {print \$2}' | grep -v '^0100007F:'")"
+# Absturz: resolv.conf muss sofort zurück auf den System-DNS, dann Neustart mit Backoff.
+docker exec "${PREFIX}-l" pkill -KILL -f 'dnsfwd.py serve' >/dev/null 2>&1
+if wait_svc "${PREFIX}-l" dnsfwd state restarting 10; then ok "Absturz erkannt, Neustart geplant"; else bad "Absturz nicht erkannt"; fi
+check "Nach Absturz: Original-resolv.conf zurück" 0 "$(docker exec "${PREFIX}-l" grep -c 'ntp-gui: dnsfwd' /etc/resolv.conf)"
+if wait_svc "${PREFIX}-l" dnsfwd state running 20; then ok "dnsfwd läuft wieder"; else bad "dnsfwd startet nicht neu"; fi
+sleep 1
+contains "resolv.conf zeigt wieder auf 127.0.0.1" "$(docker exec "${PREFIX}-l" cat /etc/resolv.conf)" "# ntp-gui: dnsfwd"
+# Zurück auf „system“: Weiterleiter aus, Original-resolv.conf zurück.
+curl -s --max-time 10 -X POST -H 'Content-Type: application/json' -H 'X-NTP-GUI: 1' \
+  -d '{"changes":{"dns_mode":"system"}}' http://127.0.0.1:18091/api/settings >/dev/null
+if wait_svc "${PREFIX}-l" dnsfwd state stopped 30; then ok "Modus system: dnsfwd gestoppt"; else bad "dnsfwd läuft weiter"; fi
+check "Modus system: resolv.conf ohne Markierung" 0 "$(docker exec "${PREFIX}-l" grep -c 'ntp-gui: dnsfwd' /etc/resolv.conf)"
+contains "Modus system: Original-Resolver wieder eingetragen" "$(docker exec "${PREFIX}-l" cat /etc/resolv.conf)" "nameserver"
+docker rm -f "${PREFIX}-l" >/dev/null 2>&1
+
+echo
+echo "12d) DNS für ntp-gui mit „dns: 127.0.0.1“ und DoT-Namen ohne feste Adresse"
+# Der System-DNS ist dann der Weiterleiter selbst: Die Adresse von dns.quad9.net ist nicht
+# ermittelbar. Erwartet: schneller Fehler statt Schleife und der Hinweis auf „Feste Adressen“.
+docker run -d --name "${PREFIX}-m" -p 18092:8080 --dns 127.0.0.1 -e NTP_PORT=10136 -e NTP_POOLS="" \
+  -e NTP_SERVERS="" -e DNS_MODE=dot -e DNS_DOT=dns.quad9.net "$IMAGE" >/dev/null
+wait_for_health http://127.0.0.1:18092/healthz 90 || true
+if wait_svc "${PREFIX}-m" dnsfwd state running 20; then ok "dnsfwd läuft"; else bad "dnsfwd startet nicht"; fi
+docker exec "${PREFIX}-m" getent hosts ntpgui-test.example >/dev/null 2>&1
+sleep 1
+DNSJ=$(curl -s --max-time 10 http://127.0.0.1:18092/api/v1/dns)
+check "Upstream meldet: Adresse nicht ermittelbar" True \
+  "$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['upstreams'][0].get('bootstrap_failed'))" "$DNSJ" 2>/dev/null)"
+check "Keine Schleife im Kreis (höchstens wenige Anfragen)" True \
+  "$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['stats']['queries'] < 20)" "$DNSJ" 2>/dev/null)"
+contains "Hinweis „Feste Adressen“ unter den Hinweisen" "$(curl -s --max-time 20 http://127.0.0.1:18092/api/status)" "dns_pin_needed"
+docker rm -f "${PREFIX}-m" >/dev/null 2>&1
 
 echo
 echo "13) Sauberes Stoppen"

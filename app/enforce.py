@@ -345,9 +345,10 @@ def snip_unbound(ip: str | None, hosts: list[str], port: int = 123) -> dict:
 def _dns_common_notes(ip: str | None, port: int) -> list[str]:
     notes = [
         "Wichtig: ntp-gui selbst darf diese Umschreibung nicht sehen, sonst sucht chronyd seine Quellen "
-        "(z. B. pool.ntp.org) bei sich selbst. Gib dem ntp-gui-Host einen anderen DNS-Server, nimm ihn "
-        "im DNS-Server aus (Client-Gruppe ohne diese Regeln) oder nutze als Quellen Namen, die nicht "
-        "umgeschrieben werden – etwa die NTS-Server ptbtime1.ptb.de oder time.cloudflare.com.",
+        "(z. B. pool.ntp.org) bei sich selbst. Am einfachsten: unter Einstellungen → „DNS für ntp-gui“ "
+        "eigene Server eintragen (DoT/DoH). Sonst nimm ntp-gui im DNS-Server aus (Client-Gruppe ohne "
+        "diese Regeln) oder nutze als Quellen Namen, die nicht umgeschrieben werden – etwa die "
+        "NTS-Server ptbtime1.ptb.de oder time.cloudflare.com.",
         "Geräte mit fester IP-Adresse statt Namen oder mit eigenem DNS (DNS-over-HTTPS, Google-DNS "
         "fest eingetragen) erreichst du so nicht – dafür ist die Firewall-Umleitung da.",
     ]
@@ -544,6 +545,120 @@ def snip_unifi(ip: str | None, hosts: list[str], port: int = 123) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# DNS-Umleitung per Firewall (Port 53 → AdGuard Home / Pi-hole), ab 1.4
+# ---------------------------------------------------------------------------
+
+DNS_PLACEHOLDER = "<IP-des-DNS-Servers>"
+
+DNS_REDIRECT_NOTES = [
+    "**DNS-Umleitung per Firewall** (optional): Manche Geräte fragen fest eingetragene DNS-Server wie "
+    "8.8.8.8 und umgehen so die DNS-Umschreibung. Die Regel oben leitet jede DNS-Anfrage (Port 53) aus "
+    "dem LAN auf deinen AdGuard Home bzw. Pi-hole um.",
+    "Die Ausnahme für ntp-gui ist dabei **Pflicht**: Nutzt ntp-gui unter „DNS für ntp-gui“ eigene "
+    "DNS-Server mit klassischem DNS (Port 53), landete seine Anfrage sonst wieder bei AdGuard/Pi-hole – "
+    "und damit bei der Umschreibung auf sich selbst. Die Modi **DNS-over-TLS** (853/tcp) und "
+    "**DNS-over-HTTPS** (443/tcp) betrifft eine Umleitung von Port 53 nicht.",
+    "Den DNS-Server selbst ebenfalls ausnehmen – sonst kommen seine eigenen Anfragen an die "
+    "Upstream-Server wieder bei ihm an. Steht er im selben Netz wie die Geräte, gilt das Hairpin-Problem "
+    "wie bei NTP (Masquerade/SNAT für umgeleitete Pakete an den DNS-Server).",
+    "Nur IPv4. Geräte mit DNS-over-HTTPS (Browser, Android „Privates DNS“) erreicht keine Port-53-Regel.",
+]
+
+
+def _dns_redirect_unifi(ip: str, dns: str) -> str:
+    return (
+        "Regel 3 – DNS-Umleitung (optional, Destination NAT):\n"
+        "  Interface/Netz: dein Client-Netz (LAN bzw. VLAN)\n"
+        "  Protokoll:      TCP/UDP\n"
+        f"  Quelle:         alle – aber ntp-gui ({ip}) und den DNS-Server ({dns}) ausnehmen\n"
+        f"  Ziel:           Port 53, Adresse ≠ {dns}\n"
+        f"  Übersetzte IP:  {dns}\n"
+        "  Übersetzter Port: 53"
+    )
+
+
+def _dns_redirect_opnsense(ip: str, dns: str) -> str:
+    return (
+        f"1. Firewall → Aliase → Hinzufügen: Name „dnsausnahme“, Typ Host(s), Inhalt {ip} und {dns}.\n"
+        "2. Firewall → NAT → Portweiterleitung → Hinzufügen:\n"
+        "   Schnittstelle:      LAN\n"
+        "   Protokoll:          TCP/UDP\n"
+        "   Quelle:             „Umkehren“ angehakt, Einzelner Host/Alias: dnsausnahme\n"
+        f"   Ziel:               „Umkehren“ angehakt, Einzelner Host: {dns}\n"
+        "   Zielport:           DNS (53)\n"
+        f"   Umleitungsziel-IP:  {dns}\n"
+        "   Umleitungsziel-Port: 53\n"
+        "   Beschreibung:       DNS auf AdGuard/Pi-hole umleiten (ntp-gui ausgenommen)\n"
+        "   Filterregel-Zuordnung: Zugehörige Filterregel hinzufügen (bzw. „Pass“)"
+    )
+
+
+def _dns_redirect_mikrotik(ip: str, dns: str) -> str:
+    lines = [f"/ip firewall address-list add list=dnsausnahme address={ip} comment=\"ntp-gui\"",
+             f"/ip firewall address-list add list=dnsausnahme address={dns} comment=\"DNS-Server selbst\""]
+    for proto in ("udp", "tcp"):
+        lines.append(f"/ip firewall nat add chain=dstnat in-interface-list=LAN protocol={proto} dst-port=53 \\\n"
+                     f"    src-address-list=!dnsausnahme dst-address=!{dns} \\\n"
+                     f"    action=dst-nat to-addresses={dns} to-ports=53 comment=\"DNS umleiten ({proto})\"")
+    return "\n".join(lines)
+
+
+def _dns_redirect_openwrt(ip: str, dns: str) -> str:
+    return (
+        "uci set firewall.dnsausnahme=ipset\n"
+        "uci set firewall.dnsausnahme.name='dnsausnahme'\n"
+        "uci set firewall.dnsausnahme.family='ipv4'\n"
+        "uci add_list firewall.dnsausnahme.match='src_ip'\n"
+        f"uci add_list firewall.dnsausnahme.entry='{ip}'\n"
+        f"uci add_list firewall.dnsausnahme.entry='{dns}'\n"
+        "uci add firewall redirect\n"
+        "uci set firewall.@redirect[-1].name='DNS auf AdGuard/Pi-hole'\n"
+        "uci set firewall.@redirect[-1].target='DNAT'\n"
+        "uci set firewall.@redirect[-1].family='ipv4'\n"
+        "uci set firewall.@redirect[-1].src='lan'\n"
+        "uci set firewall.@redirect[-1].proto='tcp udp'\n"
+        "uci set firewall.@redirect[-1].src_dport='53'\n"
+        "uci set firewall.@redirect[-1].ipset='!dnsausnahme'\n"
+        f"uci set firewall.@redirect[-1].src_dip='!{dns}'\n"
+        f"uci set firewall.@redirect[-1].dest_ip='{dns}'\n"
+        "uci set firewall.@redirect[-1].dest_port='53'\n"
+        "uci commit firewall\n"
+        "service firewall restart"
+    )
+
+
+def _dns_redirect_nftables(ip: str, dns: str) -> str:
+    return (
+        "# /etc/nftables.d/ntp-gui-dns.nft – LAN-Interface anpassen\n"
+        "define LAN_IF = \"<LAN-Interface>\"\n"
+        f"define NTPGUI = {ip}\n"
+        f"define DNS_SERVER = {dns}\n\n"
+        "table ip ntpgui_dns {\n"
+        "  chain prerouting {\n"
+        "    type nat hook prerouting priority dstnat; policy accept;\n"
+        "    iifname $LAN_IF ip saddr != { $NTPGUI, $DNS_SERVER } ip daddr != $DNS_SERVER \\\n"
+        "      meta l4proto { udp, tcp } th dport 53 dnat to $DNS_SERVER:53 comment \"DNS umleiten\"\n"
+        "  }\n"
+        "}"
+    )
+
+
+DNS_REDIRECTS: dict[str, Callable[[str, str], str]] = {
+    "unifi": _dns_redirect_unifi, "opnsense": _dns_redirect_opnsense, "mikrotik": _dns_redirect_mikrotik,
+    "openwrt": _dns_redirect_openwrt, "nftables": _dns_redirect_nftables,
+}
+
+
+def dns_redirect(system: str, ip: str | None, dns_ip: str | None) -> tuple[dict, list[str]] | None:
+    """Zusatzblock „DNS-Umleitung per Firewall“ für ein NAT-System – mit Ausnahme für ntp-gui."""
+    func = DNS_REDIRECTS.get(system)
+    if not func:
+        return None
+    code = func(ip or IP_PLACEHOLDER, dns_ip or DNS_PLACEHOLDER)
+    return _block("Optional: DNS-Umleitung per Firewall (Port 53 → AdGuard/Pi-hole)", code), list(DNS_REDIRECT_NOTES)
+
+
 SYSTEMS: list[tuple[str, str, Callable[..., dict]]] = [
     ("adguard", "AdGuard Home", snip_adguard),
     ("pihole", "Pi-hole", snip_pihole),
@@ -574,9 +689,10 @@ EXPLAIN = [
 
 
 def snippets(system: str, server_ip: Any = None, extra_hosts: list[str] | None = None,
-             ntp_port: Any = 123) -> dict:
-    """Antwort für GET /api/enforce/snippets?system=…&ip=…"""
+             ntp_port: Any = 123, dns_ip: Any = None) -> dict:
+    """Antwort für GET /api/enforce/snippets?system=…&ip=…&dns_ip=…"""
     ip = clean_server_ip(server_ip)
+    dns = clean_server_ip(dns_ip)
     port = _port(ntp_port)
     hosts, skipped = merged_hostnames(extra_hosts)
     names = [h["host"] for h in hosts]
@@ -597,6 +713,10 @@ def snippets(system: str, server_ip: Any = None, extra_hosts: list[str] | None =
     for sid, title, func in SYSTEMS:
         if sid in wanted:
             item = func(ip, names, port)
+            extra = dns_redirect(sid, ip, dns)
+            if extra:
+                item["blocks"].append(extra[0])
+                item["notes"] = list(item["notes"]) + extra[1]
             item.update(id=sid, title=title)
             out.append(item)
     if not out:
@@ -940,10 +1060,36 @@ def source_hosts_from(cfg: dict) -> list[str]:
     return hosts
 
 
+def rewritten_sources(source_hosts: list[str], extra: list[str] | None = None) -> list[str]:
+    """Eigene Quellen, die unter die Namen der Umschreib-Anleitungen fallen (pool.ntp.org,
+    de.pool.ntp.org, time.windows.com …) – schreibt der DNS im LAN sie um und fragt ntp-gui
+    denselben DNS, landet chronyd bei sich selbst."""
+    hosts, _skipped = merged_hostnames(extra)
+    zones = collapse_zones([h["host"] for h in hosts])
+    out = []
+    for raw in source_hosts or []:
+        host = str(raw or "").strip().rstrip(".").lower()
+        if host and host not in out and any(host == z or host.endswith("." + z) for z in zones):
+            out.append(host)
+    return out
+
+
+def last_loops() -> list[dict]:
+    """Schleifen aus der letzten Prüfung (check), ohne neu zu prüfen."""
+    with _CHECK_LOCK:
+        result = _LAST["result"]
+    return list((result or {}).get("loops") or [])
+
+
+def check_ran() -> bool:
+    with _CHECK_LOCK:
+        return _LAST["result"] is not None
+
+
 def api_snippets(query: dict, cfg: dict) -> dict:
-    """GET /api/enforce/snippets – query: system, ip."""
+    """GET /api/enforce/snippets – query: system, ip, dns_ip (AdGuard/Pi-hole für die DNS-Umleitung)."""
     return snippets(query.get("system") or "all", query.get("ip"), cfg.get("enforce_hostnames") or [],
-                    cfg.get("ntp_port", 123))
+                    cfg.get("ntp_port", 123), query.get("dns_ip"))
 
 
 def api_check(query: dict, cfg: dict, own_addresses: list[str], tracking: dict | None) -> dict:

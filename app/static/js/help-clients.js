@@ -40,6 +40,144 @@ export const HELP_CLIENTS = {
       + "`network_mode: host`.",
   },
 
+  // --- Clients 2.0: Detailseite und Netzüberblick ----------------------------------
+  client_detail: {
+    title: "Ein Gerät im Detail",
+    text: "Ein Klick auf ein Gerät in der Liste öffnet seine Seite: wie seine Uhr über die Zeit lag, wie oft "
+      + "es fragt, ob es messbar ist (und warum nicht), welche Software vermutlich fragt, sein Name im DNS, "
+      + "MAC-Adresse und Hersteller (nur im selben Netz). Alles stammt aus den Anfragen, die das Gerät "
+      + "ohnehin schickt – ntp-gui sendet nur dann selbst etwas, wenn du **Aktiv nachmessen** drückst. "
+      + "Die Daten bleiben auf dieser Instanz.",
+  },
+  client_offset_chart: {
+    title: "Abweichung über die Zeit",
+    text: "Jeder Punkt ist eine Anfrage des Geräts: seine Uhrzeit minus die Uhrzeit dieses Servers beim "
+      + "Empfang. Gespeichert wird höchstens alle **2 Minuten** ein Punkt je Gerät, **7 Tage** lang – "
+      + "das reicht, um zu sehen, ob ein Gerät langsam wegläuft und dann springt (typisch für Windows "
+      + "und IoT-Geräte, die selten nachstellen) oder ruhig dicht an null bleibt. Ein Sägezahn heißt: "
+      + "Die Uhr läuft gleichmäßig weg und wird bei jeder Abfrage zurückgestellt. Verschleiert das Gerät "
+      + "seine Zeit, bleibt das Diagramm leer.",
+  },
+  client_interval_chart: {
+    title: "Abstand der Anfragen und Poll",
+    text: "**Abstand der Anfragen**: wie lange das Gerät zwischen zwei Anfragen wirklich gewartet hat. "
+      + "**Poll-Feld**: was das Gerät in die Anfrage schreibt (2^poll Sekunden) – sein eigener Plan. "
+      + "chrony und ntpd fragen anfangs oft (64 s) und werden ruhiger, wenn die Uhr stabil läuft; Windows "
+      + "fragt meist nur alle paar Stunden bis einmal pro Woche. Logarithmische Achse, damit Sekunden und "
+      + "Tage in ein Bild passen.",
+  },
+  client_typical_interval: {
+    title: "Typischer Abstand",
+    text: "Der Median der letzten 16 Abstände zwischen zwei Anfragen. Abstände unter **4 s** gelten als "
+      + "Schwall (Burst) und zählen nicht, sobald es längere gibt – ntpd mit iburst schickt beim Start acht "
+      + "Anfragen im Abstand von 2 s, ntpdate/sntp mehrere hintereinander. Kommen **nur** kurze Abstände, "
+      + "steht hier erst nach zwölf davon ein Wert; vorher war es vielleicht nur ein Start-Schwall. "
+      + "Unter **8 s** fragt ein Gerät auffällig oft – meist ein Fehler in der Firmware oder ein Client, "
+      + "der keine Antwort bekommt und es immer wieder versucht.",
+  },
+  client_version: {
+    title: "NTP-Version",
+    text: "Die Protokollversion, die das Gerät in die Anfrage schreibt. Heute üblich ist **4**. **3** "
+      + "schicken vor allem Windows und ältere SNTP-Clients – kein Problem, der Server antwortet in "
+      + "derselben Version.",
+  },
+  client_seen: {
+    title: "Zuerst und zuletzt gesehen",
+    text: "Wann ntp-gui die erste und die letzte Anfrage dieses Geräts mitgelesen hat. Die Werte "
+      + "überstehen Neustarts von chrony und vom Container (gespeichert in der Datenbank, 30 Tage). "
+      + "**Verstummt** heißt: Das Gerät hat länger als dreimal seinen üblichen Abstand oder über 24 h "
+      + "nicht gefragt – ausgeschaltet, anderer Zeitserver oder keine Verbindung.",
+  },
+  client_rdns: {
+    title: "Name aus dem DNS",
+    text: "Ist „Namen der Clients per DNS nachschlagen“ eingeschaltet (Standard: aus), fragt ntp-gui den "
+      + "DNS nach dem Namen zur Adresse (Reverse-DNS, z. B. „nas.fritz.box“) – höchstens 1 s lang, das "
+      + "Ergebnis wird eine Stunde gemerkt. Gefragt wird nur bei privaten Adressen und nur, wenn jeder "
+      + "DNS-Server, über den die Frage gehen kann, selbst eine private Adresse hat – nie über DoT/DoH "
+      + "oder einen öffentlichen Server (Docker trägt z. B. 8.8.8.8 ein, wenn der Host nur 127.0.0.53 "
+      + "kennt). Denn die Frage verrät die Adresse deines Geräts, und die geht niemanden außerhalb "
+      + "deines Netzes etwas an. Warum nicht gefragt wurde, steht unter der Gerätetabelle.",
+  },
+  client_mac: {
+    title: "MAC-Adresse und Hersteller",
+    text: "Die MAC-Adresse steht im Ethernet-Kopf der Anfrage. Sie ist nur dann die des Geräts, wenn es "
+      + "im **selben Netz** steht – kommt die Anfrage über einen Router, wäre es dessen MAC; dann zeigt "
+      + "ntp-gui keine. Den Hersteller liest ntp-gui aus einer OUI-Liste, falls eine im Image liegt "
+      + "(oder du sie als `/config/oui.txt` einhängst). **Zufällige MAC**: iPhone, Android und Windows "
+      + "wählen im WLAN je Netz eine zufällige Adresse – sie verrät keinen Hersteller. MAC-Adressen "
+      + "verlassen die Instanz nie (sie werden in jedem Export entfernt).",
+  },
+  client_vlan: {
+    title: "VLAN",
+    text: "Die VLAN-Nummer, wenn die Anfrage mit 802.1Q-Markierung ankam. Meist leer: Der Kernel entfernt "
+      + "die Markierung, bevor ntp-gui mitliest, oder das Netz nutzt keine VLANs.",
+  },
+  client_software: {
+    title: "Vermutete Client-Software",
+    text: "Eine **Vermutung** aus Indizien – kein Beweis. Ausgewertet werden NTP-Version, Poll-Feld, ob "
+      + "das Gerät die übrigen Kopffelder ausfüllt, ob es seine Sendezeit verschleiert, der Abstand der "
+      + "Anfragen, Hersteller und Namen. Typisch: **Windows** schickt Version 3 mit Poll 10 … 15; "
+      + "**chrony, NTPsec, OpenNTPD** verschleiern die Sendezeit; **systemd-timesyncd** und viele "
+      + "**IoT-Geräte** (ESP32) füllen nur die Sendezeit aus; **ntpd** schreibt sein eigenes Stratum mit. "
+      + "Viele Geräte nutzen dieselbe Bibliothek – zwei Kandidaten mit „möglich“ heißen: nicht zu "
+      + "unterscheiden.",
+  },
+  client_meta: {
+    title: "Eigener Name und Notiz",
+    text: "Gib Geräten einen Namen, den du wiedererkennst („Drucker Büro“), und eine Notiz. Beides steht "
+      + "in der Datenbank dieser Instanz und erscheint in der Liste, im Netzüberblick und in Ereignissen. "
+      + "Gespeicherte Ereignisse enthalten nur die **Adresse** – den Namen setzt erst die Anzeige ein. So "
+      + "bleibt ein alter Name nach Umbenennen oder Löschen nirgends stehen, und im **Diagnosepaket** und "
+      + "in **Benachrichtigungen** wird die Adresse zu client-01 usw. Sonst ersetzt der Datenschutzfilter "
+      + "einen Namen durch `<name>`. Notizen werden nie exportiert. Ändern dürfen nur Admins.",
+  },
+  client_probe: {
+    title: "Aktiv nachmessen",
+    text: "Schickt **eine** NTP-Anfrage an das Gerät (Port 123, Zeitlimit 2 s, zufälliger Sendezeitstempel – "
+      + "sie verrät nichts über diesen Server). Viele Router, NAS und manche Kameras sind selbst "
+      + "Zeitserver und antworten; dann siehst du ihre Uhr samt Laufzeit, auch wenn sie ihre Sendezeit "
+      + "verschleiern. Die meisten Geräte antworten **nicht** – das ist normal und kein Fehler. Nur für "
+      + "Geräte mit privater Adresse, die diesen Server schon gefragt haben; je Gerät höchstens alle "
+      + "30 s, insgesamt 10 Messungen pro Minute. Nicht bei IPv6-Adressen mit **fe80::**: Die sind nur "
+      + "zusammen mit der Netzwerkschnittstelle eindeutig, und die merkt sich die passive Messung nicht.",
+  },
+  clients_overview: {
+    title: "Netzüberblick",
+    text: "Alle Geräte auf einen Blick: wie weit ihre Uhren danebenliegen, welche am weitesten, welche "
+      + "verstummt sind und welche auffällig oft fragen. Ein Klick auf ein Gerät öffnet seine Detailseite.",
+  },
+  clients_histogram: {
+    title: "Wie weit gehen die Uhren falsch?",
+    text: "Die aktuelle (geglättete) Abweichung jedes messbaren Geräts, in Stufen von jeweils Faktor 10. "
+      + "**Unter 1 ms** und **1–10 ms** ist für Menschen und fast alle Anwendungen „richtig“. Ab "
+      + "**0,1 s** merkt man es bei Logs und Videoaufnahmen, ab **1 s** stimmt etwas nicht. **Falsche "
+      + "Uhr**: mehr als einen Tag daneben, meist nach Stromausfall ohne Pufferbatterie. Geräte, die seit "
+      + "über 24 h nicht gefragt haben, zählen nicht mit.",
+  },
+  clients_worst: {
+    title: "Größte Abweichung",
+    text: "Die fünf messbaren Geräte, deren Uhr gerade am weitesten von diesem Server abweicht.",
+  },
+  clients_silent: {
+    title: "Verstummt",
+    text: "Geräte, die früher gefragt haben, jetzt aber länger als **dreimal ihr üblicher Abstand** "
+      + "(mindestens 2 min) oder über **24 h** still sind. Ausgeschaltet, im Urlaub, auf einen anderen "
+      + "Zeitserver umgestellt – oder die Anfragen kommen nicht mehr an (Firewall, DHCP-Änderung).",
+  },
+  clients_chatty: {
+    title: "Fragt auffällig oft",
+    text: "Geräte, die gerade öfter als alle **8 s** fragen. Normal sind 64 s bis mehrere Stunden. "
+      + "Häufige Gründe: Die Antworten kommen nicht an (Hairpin-Problem, Firewall), die Firmware ist "
+      + "fehlerhaft, oder mehrere Geräte stecken hinter einer Adresse (NAT).",
+  },
+  clients_alarm: {
+    title: "Alarm bei falsch gehender Client-Uhr",
+    text: "Liegt die gemessene Uhr eines Geräts zweimal hintereinander weiter als die Schwelle daneben, "
+      + "schreibt ntp-gui das Ereignis „Uhr von … weicht um … ab“ (Art **Clients**, Stufe Warnung). Das "
+      + "kann eine Benachrichtigung auslösen. „Wieder im Rahmen“ folgt erst unter der halben Schwelle – "
+      + "so meldet ein Gerät an der Grenze nicht ständig hin und her. Nur messbare Geräte zählen.",
+  },
+
   // --- Zeitserver erzwingen ----------------------------------------------------
   enforce: {
     title: "Zeitserver erzwingen",
@@ -128,6 +266,9 @@ export const HELP_GROUP_CLIENTS = {
   title: "Zeitserver erzwingen und Client-Uhren",
   keys: [
     "clientmon", "clientmon_status", "client_offset", "client_measurable",
+    "clients_overview", "clients_histogram", "clients_worst", "clients_silent", "clients_chatty", "clients_alarm",
+    "client_detail", "client_offset_chart", "client_interval_chart", "client_typical_interval", "client_version",
+    "client_seen", "client_rdns", "client_mac", "client_vlan", "client_software", "client_meta", "client_probe",
     "enforce", "enforce_dns", "enforce_nat", "enforce_hairpin", "enforce_nts", "enforce_not_ntp",
     "enforce_hostnames", "enforce_check", "enforce_verdict", "enforce_selftest",
   ],

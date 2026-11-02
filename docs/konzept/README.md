@@ -23,6 +23,11 @@ Einstellungen im Verbund teilen) folgt in **1.5**, wenn die Praxisdaten aus 1.3/
 Die **Community-Dienste** starten ohne eigenen Server-Code (Hardware-Liste über GitHub-Issues,
 Pool-Server mit ntp-gui selbst); der erste eigene Dienst ist der Server-Test als Selbsttest.
 
+**Planung 1.5 (02.11.2026):** [version-1.5.md](version-1.5.md) nimmt die Rückmeldungen nach 1.3.2
+auf (DNS/NAT-Schleifen, „mehr Client-Messungen“, GPS ohne PPS, VPS für Community-Dienste) und
+staffelt 1.5.0 schlank, Rest in 1.5.x; 1.6 bringt u-blox schreiben, erster eigener Dienst ist
+Zeit-Check-Website + Server-Test.
+
 **Gegenprüfung (01.11.2026):** Das volle 1.4 ist für einen Maintainer eher 3–4 Monate Arbeit;
 [version-1.4.md](version-1.4.md#realistischer-gesamtaufwand-gegenprüfung) schlägt ein schlankes
 1.4 vor. Jedes Dokument endet mit **„Offene Fragen“** – dort stehen die Entscheidungen, die nur
@@ -36,6 +41,7 @@ der Maintainer treffen kann.
 | [entscheidungen.md](entscheidungen.md) | Getroffene Entscheidungen zu den offenen Fragen (E1–E14 …) | wenn eine Frage schon entschieden sein könnte |
 | [bausteine.md](bausteine.md) | Geprüfte Open-Source-Bausteine mit Empfehlung (übernehmen / Sidecar / klein selbst / weglassen) und Quellen | wenn eine Funktion Fremdsoftware brauchen könnte |
 | [version-1.4.md](version-1.4.md) | Staffelung 1.4 / 1.5 / später, Bewertung je Thema, Abhängigkeiten zu 1.3, Abnahmekriterien, Sicherheit | beim Planen und Abnehmen der nächsten Versionen |
+| [version-1.5.md](version-1.5.md) | Planung 1.5 (GNSS-Werkbank, Clients 3, DNS/NAT-Schleifen, Uhrqualität, Englisch), 1.6 und später, erster eigener Community-Dienst (Zeit-Check + Server-Test), offene Fragen an den Maintainer | beim Planen von 1.5 und der Community-Dienste |
 | [community-dienste.md](community-dienste.md) | Architektur der Dienste im eigenen Repository, Missbrauchs- und Datenschutz, Datenverträge mit ntp-gui, Startempfehlung | bevor am Community-Repository gearbeitet wird |
 
 ## So sind die Dokumente gedacht

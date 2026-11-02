@@ -10,6 +10,9 @@
 # Container mit Exit 1, damit Docker ihn neu startet. gpsd, ptp4l und phc2sys
 # sind optional: Fallen sie aus, startet der Supervisor sie mit wachsender
 # Pause neu (5 s, 15 s, 60 s, dann alle 5 min) – NTP läuft derweil weiter.
+# Ebenso optional ist dnsfwd (DNS für ntp-gui, ab 1.4): ein Weiterleiter auf
+# 127.0.0.1:53, auf den /etc/resolv.conf zeigt, solange er läuft. Stirbt er,
+# kommt sofort die Original-resolv.conf zurück, damit Namen weiter auflösbar sind.
 # Der Zustand jedes Dienstes steht in ${RUN_DIR}/services.json.
 #
 # Alle Ausgaben (Supervisor und Dienste) laufen zusätzlich durch logtee.py nach
@@ -28,8 +31,9 @@ export CHRONY_CONF PTP4L_CONF PTP_LOG_FILE NTPGUI_RUN_DIR="$RUN_DIR"
 WEB_PID=""        # Dashboard, "pid=comm"
 RELOAD_REQUESTED=0
 
-SERVICES=(chronyd gpsd ptp4l phc2sys web)
-OPTIONAL_SERVICES=" gpsd ptp4l phc2sys "
+SERVICES=(chronyd gpsd ptp4l phc2sys dnsfwd web)
+OPTIONAL_SERVICES=" gpsd ptp4l phc2sys dnsfwd "
+RESOLV_CONF="${NTPGUI_RESOLV_CONF:-/etc/resolv.conf}"
 BACKOFF=(5 15 60 300)   # Pause vor dem 1., 2., 3. und jedem weiteren Neustart
 STABLE_AFTER=600        # lief ein Dienst so lange, beginnt der Backoff wieder bei 5 s
 HOTPLUG_EVERY=30        # Sekunden zwischen zwei Prüfungen auf neue/ersetzte Geräte
@@ -37,6 +41,9 @@ NTS_CERT_EVERY=60       # Sekunden zwischen zwei Prüfungen auf ein erneuertes N
 NTS_CERT_SETTLE=10      # so lange muss eine Änderung stabil sein (Zertifikat + Schlüssel)
 declare -A SVC_ENTRY=() SVC_STATE=() SVC_RESTARTS=() SVC_EXIT=() SVC_SINCE=() \
            SVC_NEXT=() SVC_STARTED=() SVC_FAILS=() SVC_NOTE=()
+# Soll der Dienst laut Einstellungen laufen? „stopped“ bei false ist Absicht (GPS/PTP aus,
+# DNS-Modus system) – /metrics meldet das als ntpgui_service_enabled 0, damit kein Alarm feuert.
+declare -A SVC_ON=([chronyd]=true [web]=true)
 HOTPLUG_PATHS=""        # konfigurierte, aber fehlende Geräte (von confgen)
 GPS_DEV_ID=""           # Identität des Geräteknotens, den gpsd liest
 GPS_DEV_GONE=0
@@ -189,6 +196,7 @@ write_services() {
     out+=", \"since\": ${SVC_SINCE[$name]:-null}"
     out+=", \"pid\": ${pid:-null}"
     out+=", \"optional\": ${optional}"
+    out+=", \"enabled\": ${SVC_ON[$name]:-false}"
     out+=", \"next_retry\": $([[ "${SVC_STATE[$name]:-}" == restarting ]] && echo "${SVC_NEXT[$name]:-null}" || echo null)"
     out+=", \"message\": $(json_str "${SVC_NOTE[$name]:-}")}"
     sep=", "
@@ -323,12 +331,49 @@ start_phc2sys() {
   set_state phc2sys running
 }
 
+# DNS für ntp-gui: Weiterleiter starten und kurz warten, bis er lauscht und
+# resolv.conf umgestellt hat – dann löst chronyd seine Quellen schon beim Start
+# über ihn auf.
+start_dnsfwd() {
+  local i
+  rm -f "${RUN_DIR}/dnsfwd.ready"
+  spawn dns python3 "${APP_DIR}/dnsfwd.py" serve
+  SVC_ENTRY[dnsfwd]="$SPAWNED"
+  set_state dnsfwd running
+  for (( i = 0; i < 30; i++ )); do
+    [[ -s "${RUN_DIR}/dnsfwd.ready" ]] && return 0
+    service_alive "${SVC_ENTRY[dnsfwd]}" || return 0
+    sleep 0.1
+  done
+  log dns "WARNUNG: Weiterleiter meldet sich nicht – chronyd startet trotzdem."
+}
+
+# Original-resolv.conf zurück, falls sie noch auf den Weiterleiter zeigt
+# (Modus „system“, Absturz, Neustart des Containers ohne Neuerstellen).
+dns_restore() {
+  grep -q '^# ntp-gui: dnsfwd' "$RESOLV_CONF" 2>/dev/null || return 0
+  python3 "${APP_DIR}/dnsfwd.py" restore || true
+}
+
 start_services() {
   local name
-  for name in gpsd ptp4l phc2sys; do
+  for name in gpsd ptp4l phc2sys dnsfwd; do
     SVC_ENTRY[$name]=""
     SVC_FAILS[$name]=0
+    SVC_ON[$name]=false
   done
+  [[ "${NTPGUI_DNS_MODE:-system}" != system ]] && SVC_ON[dnsfwd]=true
+  [[ "${NTPGUI_GPS_ENABLE:-0}" == 1 ]] && SVC_ON[gpsd]=true
+  if [[ "${NTPGUI_PTP_START:-0}" == 1 ]]; then
+    SVC_ON[ptp4l]=true
+    [[ "${NTPGUI_PHC2SYS_START:-0}" == 1 ]] && SVC_ON[phc2sys]=true
+  fi
+  if [[ "${NTPGUI_DNS_MODE:-system}" != system ]]; then
+    start_dnsfwd
+  else
+    dns_restore
+    set_state dnsfwd stopped "System-DNS (Modus system)"
+  fi
   start_chronyd
 
   if [[ "${NTPGUI_GPS_START:-0}" == 1 ]]; then
@@ -360,16 +405,18 @@ start_services() {
 
 stop_services() {
   local name entry
-  for name in phc2sys ptp4l gpsd chronyd; do
+  for name in phc2sys ptp4l gpsd chronyd dnsfwd; do
     entry="${SVC_ENTRY[$name]:-}"
     if [[ -n "$entry" ]] && service_alive "$entry"; then kill "${entry%%=*}" 2>/dev/null || true; fi
   done
-  for name in phc2sys ptp4l gpsd chronyd; do
+  for name in phc2sys ptp4l gpsd chronyd dnsfwd; do
     entry="${SVC_ENTRY[$name]:-}"
     if [[ -n "$entry" ]]; then wait "${entry%%=*}" 2>/dev/null || true; fi
     SVC_ENTRY[$name]=""
     SVC_STATE[$name]=stopped
   done
+  # dnsfwd schreibt resolv.conf beim Beenden selbst zurück; nach einem SIGKILL nicht.
+  dns_restore
   write_services
 }
 
@@ -378,7 +425,7 @@ reload_services() {
   write_status running "Zeitdienste werden neu gestartet"
   stop_services
   local name
-  for name in gpsd ptp4l phc2sys; do SVC_RESTARTS[$name]=0; SVC_EXIT[$name]=""; done
+  for name in gpsd ptp4l phc2sys dnsfwd; do SVC_RESTARTS[$name]=0; SVC_EXIT[$name]=""; done
   if apply_config; then
     start_services
     write_status done "Neue Einstellungen aktiv"
@@ -468,6 +515,8 @@ schedule_restart() {  # schedule_restart <dienst>
   SVC_EXIT[$name]=$code
   SVC_NEXT[$name]=$(( t + delay ))
   SVC_ENTRY[$name]=""
+  # Ohne Weiterleiter darf resolv.conf nicht auf 127.0.0.1 zeigen – sonst löst nichts mehr auf.
+  if [[ "$name" == dnsfwd ]]; then "${DNS_RESTORE:-dns_restore}"; fi
   log main "Dienst '${name}' (PID ${entry%%=*}) wurde unerwartet beendet (Exit ${code}) –" \
            "Neustart in ${delay} s; NTP läuft weiter."
   set_state "$name" restarting "beendet mit Exit ${code}, neuer Versuch in ${delay} s"
@@ -570,7 +619,7 @@ while true; do
     fi
   done
   NOW=$(now)
-  for name in gpsd ptp4l phc2sys; do
+  for name in gpsd ptp4l phc2sys dnsfwd; do
     case "${SVC_STATE[$name]:-stopped}" in
       running)
         if ! service_alive "${SVC_ENTRY[$name]:-}"; then schedule_restart "$name"; fi ;;

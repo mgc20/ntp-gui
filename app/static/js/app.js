@@ -1,14 +1,16 @@
 // Einstieg: Navigation, Aktualisierung, Datencache, Neustart-Anzeige.
 import { el, apiGet, storageGet, storageSet, fmtTime } from "./util.js";
-import { toast, isPopoverOpen } from "./ui.js";
+import { toast, isPopoverOpen, info, badge } from "./ui.js";
 import { resetChartState } from "./charts.js";
 import * as overview from "./pages/overview.js";
 import * as sources from "./pages/sources.js";
 import * as gps from "./pages/gps.js";
 import * as ptp from "./pages/ptp.js";
+import * as clockquality from "./pages/clockquality.js";
 import * as hardware from "./pages/hardware.js";
 import * as clients from "./pages/clients.js";
 import * as diagnose from "./pages/diagnose.js";
+import * as notify from "./pages/notify.js";
 import * as settings from "./pages/settings.js";
 import * as help from "./pages/help.js";
 
@@ -17,9 +19,11 @@ const PAGES = [
   { id: "quellen", title: "Zeitquellen", module: sources, history: true },
   { id: "gps", title: "GPS", module: gps, history: true },
   { id: "ptp", title: "PTP", module: ptp, history: true },
+  { id: "uhrqualitaet", title: "Uhrqualität", module: clockquality, history: false },
   { id: "hardware", title: "Hardware", module: hardware, history: false },
   { id: "clients", title: "Clients", module: clients, history: true },
   { id: "diagnose", title: "Diagnose", module: diagnose, history: false },
+  { id: "benachrichtigungen", title: "Benachrichtigungen", module: notify, history: false },
   { id: "einstellungen", title: "Einstellungen", module: settings },
   { id: "hilfe", title: "Hilfe", module: help },
 ];
@@ -38,8 +42,19 @@ const state = {
 const main = document.getElementById("main");
 const nav = document.getElementById("nav");
 
+// #/<seite>/<unterpfad> – der Unterpfad (z. B. die Adresse auf #/clients/192.168.1.5) geht als
+// ctx.subpath an die Seite.
+function routeParts() {
+  const raw = window.location.hash.replace(/^#\/?/, "").split("?")[0] || "";
+  const slash = raw.indexOf("/");
+  const id = (slash < 0 ? raw : raw.slice(0, slash)).toLowerCase();
+  let sub = slash < 0 ? "" : raw.slice(slash + 1);
+  try { sub = decodeURIComponent(sub); } catch (error) { sub = ""; }
+  return { id, sub };
+}
+
 function currentPage() {
-  const id = (window.location.hash.replace(/^#\/?/, "").split("?")[0] || "").toLowerCase();
+  const { id } = routeParts();
   return PAGES.find((p) => p.id === id) || PAGES[0];
 }
 
@@ -47,18 +62,35 @@ function currentPage() {
 function data(key, url, ttlSeconds) {
   const entry = state.cache.get(key);
   const now = Date.now();
-  const fresh = entry && entry.url === url && entry.data !== undefined
-    && (ttlSeconds === 0 || now - entry.time < ttlSeconds * 1000);
+  // Ein Fehler gilt ttlSeconds lang (bei 0: 5 s) – sonst fragte die Seite nach einem 404 bei jedem
+  // Neuzeichnen neu.
+  const fresh = entry && entry.url === url && (entry.data !== undefined
+    ? ttlSeconds === 0 || now - entry.time < ttlSeconds * 1000
+    : Boolean(entry.error) && now - entry.time < (ttlSeconds || 5) * 1000);
   if (!fresh && !(entry && entry.pending && entry.url === url)) {
-    const record = { url, pending: true, time: entry?.time || 0, data: entry?.url === url ? entry.data : undefined };
+    const same = entry?.url === url;
+    const record = { url, pending: true, time: entry?.time || 0, data: same ? entry.data : undefined,
+      error: same ? entry.error || null : null };
     state.cache.set(key, record);
     apiGet(url).then((result) => {
-      Object.assign(record, { data: result, time: Date.now(), pending: false });
+      Object.assign(record, { data: result, time: Date.now(), pending: false, error: null });
       render();
-    }).catch(() => { record.pending = false; record.time = Date.now(); });
+    }).catch((error) => {
+      const known = record.error;
+      Object.assign(record, { pending: false, time: Date.now(), error: { status: error.status || 0, message: error.message } });
+      // Nur neu zeichnen, wenn der Fehler neu ist – sonst hinge die Seite in einer Schleife.
+      if (!known || known.status !== record.error.status) render();
+    });
   }
   const current = state.cache.get(key);
   return current && current.url === url ? current.data : undefined;
+}
+
+// Letzter Fehler einer Abfrage ({status, message}) – z. B. 404, damit eine Seite „keine Daten“
+// statt endlos „Lade …“ zeigen kann. null, solange die letzte Abfrage geklappt hat.
+function dataError(key, url) {
+  const entry = state.cache.get(key);
+  return entry && entry.url === url && entry.data === undefined ? entry.error || null : null;
 }
 
 function invalidate(key) { state.cache.delete(key); }
@@ -115,11 +147,12 @@ function render() {
     history: state.history,
     range: state.range,
     uiState: state.uiState,
+    subpath: page.id ? routeParts().sub : "",
     readonly: Boolean(state.status?.ui?.readonly),
     setRange: (seconds) => { state.range = seconds; storageSet("ntp-gui-range", seconds); refresh(); },
     rerender: () => render(),
     afterRender: (fn) => pendingAfter.push(fn),
-    data, invalidate,
+    data, dataError, invalidate,
     watchReload,
     refresh: () => refresh(),
   };
@@ -156,8 +189,40 @@ function renderHeader() {
   // Übersicht zählt alle Probleme, „Hardware“ nur die aus dem Hardware-Check.
   setBadge("", serious.length);
   setBadge("hardware", serious.filter((i) => i.action === "hardware").length);
+  renderUpdateBanner(status.update);
   document.getElementById("footer-note").textContent =
     `ntp-gui ${sys.version || ""} · aktualisiert ${fmtTime(sys.time)} · alle ${sys.refresh_seconds} s`;
+}
+
+// --- Update-Hinweis (opt-in) ---------------------------------------------------
+// Nur ein Link nach github.com/ConGp20/ntp-gui – der Server baut ihn aus der geprüften Versionsnummer.
+const RELEASE_LINK = /^https:\/\/github\.com\/ConGp20\/ntp-gui\/releases(\/tag\/v[0-9A-Za-z.-]+)?$/;
+
+function renderUpdateBanner(update) {
+  const banner = document.getElementById("update-banner");
+  if (!banner) return;
+  const latest = update?.latest;
+  const dismissed = storageGet("ntp-gui-update-dismissed", "");
+  if (!update?.available || !latest?.version || dismissed === latest.version) {
+    banner.hidden = true;
+    banner.replaceChildren();
+    return;
+  }
+  if (banner.dataset.version === `${latest.version}:${update.attention}` && !banner.hidden) return; // offenes ⓘ nicht wegreißen
+  banner.dataset.version = `${latest.version}:${update.attention}`;
+  banner.dataset.state = update.attention ? "warn" : "info";
+  const link = RELEASE_LINK.test(latest.url || "") ? latest.url : null;
+  banner.replaceChildren(
+    el("span", { class: "update-text" },
+      el("strong", { text: `Neue Version ${latest.version} verfügbar` }),
+      latest.title ? el("span", { class: "update-title", text: ` – ${latest.title}` }) : null),
+    update.attention ? el("span", { class: "update-attention" }, badge("Achtung beim Update", "warn"),
+      info("update_attention", "Achtung beim Update")) : null,
+    link ? el("a", { href: link, target: "_blank", rel: "noopener noreferrer", text: "Release-Notizen →" }) : null,
+    info("update_banner", "Neue Version verfügbar"),
+    el("button", { type: "button", class: "icon-button update-close", "aria-label": `Hinweis auf Version ${latest.version} ausblenden`,
+      text: "✕", onclick: () => { storageSet("ntp-gui-update-dismissed", latest.version); renderUpdateBanner(update); } }));
+  banner.hidden = false;
 }
 
 function setBadge(pageId, count) {

@@ -3,6 +3,10 @@ import { HELP_CLIENTS, HELP_GROUP_CLIENTS } from "./help-clients.js";
 import { HELP_AUTOCAL, HELP_GROUP_AUTOCAL } from "./help-autocal.js";
 import { HELP_DIAGNOSE, HELP_GROUP_DIAGNOSE } from "./help-diagnose.js";
 import { HELP_API, HELP_GROUP_API } from "./help-api.js";
+import { HELP_NOTIFY, HELP_GROUP_NOTIFY } from "./help-notify.js";
+import { HELP_DNS, HELP_GROUP_DNS } from "./help-dns.js";
+import { HELP_UHR, HELP_GROUP_UHR } from "./help-uhr.js";
+import { HELP_UPDATE, HELP_GROUP_UPDATE } from "./help-update.js";
 
 // Alle Erklärungen an einer Stelle. Die ⓘ-Knöpfe im Dashboard und die
 // Hilfeseite nutzen dieselben Texte. **fett** und `code` werden formatiert.
@@ -910,6 +914,10 @@ export const HELP_GROUPS = [
   { title: "Einstellungen", keys: ["settings_source", "settings_export", "web_title", "web_refresh", "history_interval",
     "allow_networks", "gps_show_position"] },
   HELP_GROUP_API,
+  HELP_GROUP_NOTIFY,
+  HELP_GROUP_DNS,
+  HELP_GROUP_UHR,
+  HELP_GROUP_UPDATE,
   HELP_GROUP_DIAGNOSE,
   HELP_GROUP_HARDWARE,
 ];
@@ -919,3 +927,7 @@ Object.assign(HELP, HELP_CLIENTS);
 Object.assign(HELP, HELP_AUTOCAL);
 Object.assign(HELP, HELP_DIAGNOSE);
 Object.assign(HELP, HELP_API);
+Object.assign(HELP, HELP_NOTIFY);
+Object.assign(HELP, HELP_DNS);
+Object.assign(HELP, HELP_UHR);
+Object.assign(HELP, HELP_UPDATE);

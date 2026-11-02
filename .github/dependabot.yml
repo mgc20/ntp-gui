@@ -1,0 +1,35 @@
+# Dependabot: schlägt wöchentlich Updates als Pull Request vor – nichts wird automatisch gemergt.
+#   * docker: das Basis-Image im Dockerfile (debian:trixie-slim@sha256:…). Es ist per Digest
+#     festgenagelt – nur dann hat Dependabot etwas zu vergleichen und schlägt den neuen Digest
+#     vor, sobald Debian das Image neu veröffentlicht. Unabhängig davon baut jeder Release ohne
+#     Cache und holt mit apt-get die aktuellen Debian-Sicherheitsupdates.
+#   * github-actions: Actions in .github/workflows, auch die per Commit-SHA festgenagelten
+#     (Dependabot aktualisiert SHA und Versionskommentar gemeinsam).
+# Python-Abhängigkeiten gibt es keine (nur Standardbibliothek), darum kein pip-Eintrag.
+version: 2
+updates:
+  - package-ecosystem: docker
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "deps(docker)"
+    labels:
+      - dependencies
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      actions:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "deps(actions)"
+    labels:
+      - dependencies

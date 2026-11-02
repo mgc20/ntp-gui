@@ -13,7 +13,7 @@ const LOG_LINES = 500;
 const EVENT_KINDS = {
   service: "Dienst", reload: "Neuladen", settings: "Einstellungen", source: "Quelle", gps: "GPS",
   pps: "PPS", calibration: "Kalibrierung", cert: "Zertifikat", leap: "Schaltsekunde", startup: "Start",
-  clients: "Clients", api: "API", other: "Sonstiges",
+  clients: "Clients", api: "API", notify: "Benachrichtigung", dns: "DNS", update: "Update-Hinweis", other: "Sonstiges",
 };
 // Filter „Stufe“: die API liefert ab der gewählten Stufe aufwärts (warn → warn + crit).
 const LEVEL_FILTERS = [["", "alle Stufen"], ["warn", "ab Warnung"], ["crit", "nur Kritisch"]];
@@ -157,7 +157,7 @@ function eventRow(event) {
     badge(LEVEL_LABEL[event.level] || event.level || "Info", event.level === "crit" ? "crit"
       : event.level === "warn" ? "warn" : "info"),
     el("span", { class: "diag-event-kind", text: EVENT_KINDS[event.kind] || event.kind || "–" }),
-    el("span", { class: "diag-event-title", text: event.title || "" }),
+    el("span", { class: "diag-event-title", text: event.display_title || event.title || "" }),
     data.length ? el("span", { class: "diag-event-data mono",
       text: data.map(([k, v]) => `${k}=${typeof v === "object" ? JSON.stringify(v) : v}`).join(" · ") }) : null);
 }

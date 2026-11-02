@@ -345,7 +345,13 @@ def _collect_events(cfg: dict, options: dict) -> Any:
     except ImportError:
         return {"hinweis": "Ereignisprotokoll nicht verfügbar"}
     rows = events.query(since=time.time() - EVENT_DAYS * 86400, limit=2000)
-    return [_without_key_name(row) for row in rows]
+    try:
+        import clientinfo
+        strip_client = clientinfo.without_client_name
+    except ImportError:  # pragma: no cover
+        def strip_client(row: Any) -> Any:
+            return row
+    return [strip_client(_without_key_name(row)) for row in rows]
 
 
 def _without_key_name(row: Any) -> Any:
@@ -384,6 +390,10 @@ def _collect_settings(cfg: dict, options: dict) -> dict:
     for key in list(values):
         if re.search(r"(?i)pass|hash|secret|token|auth", key):
             values.pop(key)
+    if isinstance(values.get("dns_doh"), list):
+        # Der Pfad einer DoH-Adresse kann eine Konto-Kennung sein (z. B. NextDNS) – nur der Server.
+        import dnsfwd
+        values["dns_doh"] = [dnsfwd.doh_label(str(url)) for url in values["dns_doh"]]
     return {"values": values, "herkunft": sources}
 
 
@@ -516,6 +526,10 @@ def _hardware_serials() -> list[str]:
         found.append(_read_first_line(path))
     for name in ("product_serial", "board_serial", "chassis_serial", "product_uuid"):
         found.append(_read_first_line(os.path.join(root, "class", "dmi", "id", name)))
+    # DS18B20-Temperaturfühler (1.4): die Kennung „28-…“ ist die eindeutige ROM-Seriennummer.
+    for path in sorted(glob.glob(os.path.join(root, "bus", "w1", "devices", "28-*")))[:64]:
+        name = os.path.basename(path)
+        found += [name, name[3:]]
     return [v for v in dict.fromkeys(found) if egress.serial_is_specific(v)]
 
 
@@ -589,7 +603,17 @@ def _known_values(cfg: dict) -> dict:
         "titel": [title] if title and title not in egress.DEFAULT_TITLES else [],
         "seriennummer": _hardware_serials(),
         "schnittstelle": _interface_names(cfg),
+        "name": _client_names(),
     }
+
+
+def _client_names() -> list[str]:
+    """Selbst vergebene Namen der Clients (Clients-Detailseite) – egress ersetzt sie durch <name>."""
+    try:
+        import clientinfo
+        return clientinfo.export_names()
+    except Exception:  # noqa: BLE001
+        return []
 
 
 def _render(name: str, content: Any) -> tuple[str, str]:

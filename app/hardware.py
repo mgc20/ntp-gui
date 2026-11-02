@@ -1415,6 +1415,16 @@ def _probe_gpsd(timeout: float) -> dict[str, Any] | None:
         return None
 
 
+def _temperature(cfg: dict) -> dict[str, Any]:
+    """Temperatursensoren für die Seite „Uhrqualität“ (1.4: nur messen). Wirft nie."""
+    try:
+        import thermal
+        thermal.MONITOR.sensors(refresh=True)
+        return thermal.MONITOR.status(cfg.get("temp_sensor"))
+    except Exception as exc:  # pragma: no cover – sysfs seltsam
+        return {"available": False, "reason": "error", "error": str(exc), "candidates": []}
+
+
 def build_report(cfg: dict, ctx: dict) -> dict[str, Any]:
     """Baut den Bericht. ctx: gps_status, tracking, chronyd, gpsd_probe (oder None)."""
     perms = permissions_info()
@@ -1439,6 +1449,7 @@ def build_report(cfg: dict, ctx: dict) -> dict[str, Any]:
         "pps": pps,
         "ptp": ptp_info(plat),
         "rtc": rtc_info(),
+        "temperature": _temperature(cfg),
         "majors": {"pps": majors.get("pps"), "ptp": majors.get("ptp")},
     }
     rep["matrix"], rep["warnings"] = build_matrix(cfg, rep, ctx)

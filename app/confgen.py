@@ -21,6 +21,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import dnsfwd  # noqa: E402
 import settings  # noqa: E402
 
 CHRONY_CONF = os.environ.get("CHRONY_CONF", "/etc/chrony/chrony.conf")
@@ -662,7 +663,11 @@ def apply(env: dict | None = None) -> dict:
         _log("ptp", f"phc2sys {phc['options']} ({direction}, chronyd "
                     f"{'mit -x' if phc['nocontrol'] else 'regelt weiter'})")
 
+    for note in dnsfwd.config_warnings(cfg):
+        _log("dns", note)
+
     return {
+        "NTPGUI_DNS_MODE": dnsfwd.effective_mode(cfg),
         "NTPGUI_GPS_START": "1" if gps_device_ok(cfg) else "0",
         "NTPGUI_GPS_ENABLE": "1" if cfg["gps_enable"] else "0",
         "NTPGUI_HOTPLUG_PATHS": " ".join(hotplug_paths(cfg)),

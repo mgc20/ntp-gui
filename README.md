@@ -7,7 +7,7 @@
 
 <p align="center">
   <a href="https://github.com/ConGp20/ntp-gui/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/ConGp20/ntp-gui/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="https://github.com/ConGp20/ntp-gui/releases/latest"><img alt="Release" src="https://img.shields.io/badge/release-v1.3.2-0969da"></a>
+  <a href="https://github.com/ConGp20/ntp-gui/releases/latest"><img alt="Release" src="https://img.shields.io/badge/release-v1.4.0-0969da"></a>
   <img alt="Plattformen" src="https://img.shields.io/badge/platform-amd64%20%7C%20arm64-1a7f37">
   <img alt="Image" src="https://img.shields.io/badge/image-ghcr.io-8250df">
   <a href="LICENSE"><img alt="Lizenz: MIT" src="https://img.shields.io/badge/license-MIT-59636e"></a>
@@ -19,10 +19,13 @@
   <a href="#hardware-check">Hardware-Check</a> ·
   <a href="#per-dhcp-verteilen-option-42">DHCP</a> ·
   <a href="#zeitserver-erzwingen">Erzwingen</a> ·
+  <a href="#dns-für-ntp-gui-gegen-schleifen-durch-dns-umschreibung">DNS</a> ·
   <a href="#was-ist-möglich">Was ist möglich?</a> ·
   <a href="#nts--abgesicherte-zeit">NTS</a> ·
   <a href="#stratum-1-mit-gps">GPS</a> ·
   <a href="#ptp">PTP</a> ·
+  <a href="#uhrqualität-temperatur-schaltsekunden-vollbild-uhr">Uhrqualität</a> ·
+  <a href="#benachrichtigungen">Benachrichtigungen</a> ·
   <a href="#diagnose--fehlersuche">Diagnose</a> ·
   <a href="#konfiguration">Konfiguration</a> ·
   <a href="#api--automatisierung">API</a> ·
@@ -43,12 +46,16 @@ Raspberry Pi starten, die Adresse per **DHCP Option 42** verteilen – fertig.
 - **NTS** – kryptografisch abgesicherte Zeit von PTB, Cloudflare, Netnod & Co., optional auch als NTS-Server – auch hinter einem Reverse Proxy, mit dessen Let's-Encrypt-Zertifikat
 - **Hardware-Check** – erkennt GPS-Empfänger, PPS, PTP-Netzwerkkarten, VM und Container-Rechte und sagt, was geht und welche Zeile in der Compose-Datei fehlt
 - **Zeitserver erzwingen** – fertige Anleitungen für AdGuard, Pi-hole, dnsmasq, Unbound, OPNsense, MikroTik, OpenWrt, nftables und UniFi, damit auch Geräte mit fest eingebautem Zeitserver bei dir landen – samt Prüfung per Klick
-- **Wie genau gehen meine Clients?** – misst passiv aus den NTP-Anfragen, wie weit die Uhr jedes Geräts im LAN danebenliegt
+- **Wie genau gehen meine Clients?** – misst passiv aus den NTP-Anfragen, wie weit die Uhr jedes Geräts im LAN danebenliegt – mit 7-Tage-Verlauf und Detailseite je Gerät, Netzüberblick und Alarm bei falsch gehender Uhr
+- **Benachrichtigungen** – per ntfy, Gotify, Webhook oder Apprise (E-Mail, Telegram, Matrix …), entprellt, mit „behoben“-Meldung und durch den Datenschutzfilter
+- **Uhrqualität** – Temperatur gegen Frequenz, Ablauf der Schaltsekunden-Liste und eine Vollbild-Uhr unter `/clock` für Wandmonitor und Tablet
+- **Eigener DNS für ntp-gui** – DNS-over-TLS/-HTTPS oder feste Server, damit eine DNS-Umschreibung im LAN keine Schleife baut
 - **Diagnose ohne Datenleck** – Log-Seite, Ereignisprotokoll und ein Diagnosepaket mit Vorschau; ein zentraler Datenschutzfilter sorgt dafür, dass sich aus dem Paket kein Standort ablesen lässt. Hochgeladen wird nichts
 - **Fällt nicht um** – stirbt gpsd oder ptp4l (Kabel gezogen, Karte weg), startet der Supervisor nur diesen Dienst neu; NTP läuft weiter
 - **Dashboard ohne Ballast** – reines Python aus der Distribution, kein npm, kein pip; Diagramme in eigenem SVG
-- **Monitoring eingebaut** – versionierte JSON-API `/api/v1` mit API-Schlüsseln (nur lesen / verwalten), Prometheus-`/metrics` und `/healthz`; Verlauf über 30 Tage (SQLite), übersteht Neustarts
-- **Getestet** – 478 Unittests und ein 95-Punkte-Integrationstest gegen das gebaute Image in der CI
+- **Monitoring eingebaut** – versionierte JSON-API `/api/v1` mit API-Schlüsseln (nur lesen / verwalten), Prometheus-`/metrics` und `/healthz`; Verlauf über 30 Tage (SQLite), übersteht Neustarts; fertiges Grafana-Dashboard, Alarmregeln und Anleitungen für Home Assistant, Homepage, Glance und Uptime Kuma
+- **Nachprüfbare Lieferkette** – SBOM, Schwachstellen-Bericht und Herkunftsnachweis zu jedem Release
+- **Getestet** – 854 Unittests und ein 173-Punkte-Integrationstest gegen das gebaute Image in der CI
 
 ## Auf einen Blick
 
@@ -57,14 +64,16 @@ Raspberry Pi starten, die Adresse per **DHCP Option 42** verteilen – fertig.
   <img alt="Übersicht von ntp-gui: Hinweise zum aktuellen Zustand, Kennzahlen und Verlaufsdiagramme" src="docs/screenshots/dashboard-light.png">
 </picture>
 
-Neun Seiten: **Übersicht** (Hinweise, Kennzahlen, Verlauf, Zustand der Dienste), **Zeitquellen**
+Elf Seiten: **Übersicht** (Hinweise, Kennzahlen, Verlauf, Zustand der Dienste), **Zeitquellen**
 (jede Quelle mit Zustand *und Grund* – ausgewählt, kombiniert, nicht kombiniert, Falseticker …),
 **GPS** (Himmelskarte, Signalstärken, Kalibrierassistent), **PTP** (Voraussetzungs-Check,
-Netzwerkkarten, Port-Zustand), **Hardware** (was diese Hardware kann und was dafür fehlt),
-**Clients** (wer fragt, wie oft, wie genau seine Uhr geht, Snippets für DHCP-Server und
+Netzwerkkarten, Port-Zustand), **Uhrqualität** (Temperatur und Frequenz, Schaltsekunden),
+**Hardware** (was diese Hardware kann und was dafür fehlt), **Clients** (wer fragt, wie oft,
+wie genau seine Uhr geht – mit Detailseite je Gerät –, Snippets für DHCP-Server und
 Betriebssysteme, Zeitserver erzwingen), **Diagnose** (Log, Ereignisse, Diagnosepaket),
-**Einstellungen** (mit API-Schlüsseln und Update-Hinweisen) und **Hilfe** (Glossar und
-Entscheidungshilfe).
+**Benachrichtigungen** (Kanäle und Zustellstand), **Einstellungen** (mit API-Schlüsseln, DNS
+und Update-Hinweis) und **Hilfe** (Glossar und Entscheidungshilfe). Dazu die
+**Vollbild-Uhr** unter `/clock`.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/sources-dark.png">
@@ -88,6 +97,7 @@ sie beim Verbindungsaufbau per DHCP.
 | `chronyd` | NTP-Server für das LAN (Port 123/udp) und NTP-Client zu den Upstream-Quellen |
 | `gpsd` | Optional: USB-/serieller GPS-Empfänger als Stratum-0-Referenz, inkl. PPS |
 | `ptp4l` / `phc2sys` | PTP (IEEE 1588) als Grandmaster oder Slave, optional zuschaltbar |
+| `dnsfwd` | Optional: kleiner DNS-Weiterleiter auf 127.0.0.1 für ntp-gui selbst (DoT/DoH/feste Server), siehe [DNS für ntp-gui](#dns-für-ntp-gui-gegen-schleifen-durch-dns-umschreibung) |
 | Dashboard | Status, Offset-Verlauf, Zeitquellen, Clients, GPS-Fix, PTP-Zustand, aktive Konfiguration |
 | `/metrics` | Prometheus-Endpunkt (Offset, Stratum, Quellen, Paketzähler, GPS, PTP) |
 | `/healthz` | Health-Check für Docker/Kubernetes (ohne Login erreichbar) |
@@ -404,13 +414,49 @@ wird nur auf deinen Klick, höchstens einmal je 30 Sekunden, und nur NTP-Anfrage
 Daten über deine Instanz. Ob ein *Gerät* wirklich umgeleitet wird, kann der Server nicht von
 innen sehen; dafür zeigt die Seite einen Selbsttest für Windows, macOS und Linux.
 
+### DNS für ntp-gui (gegen Schleifen durch DNS-Umschreibung)
+
+Schreibt dein DNS-Server im LAN (AdGuard Home, Pi-hole, dnsmasq) Zeitserver-Namen auf ntp-gui um
+und nutzt ntp-gui denselben DNS, fragt chronyd für `pool.ntp.org` sich selbst. Abhilfe:
+ntp-gui eigene DNS-Server geben – im Dashboard unter **Einstellungen → DNS für ntp-gui** oder
+per Umgebungsvariable:
+
+```yaml
+environment:
+  DNS_MODE: dot                      # system (Standard) | servers | dot | doh
+  DNS_DOT: "dns.quad9.net one.one.one.one"
+  # DNS_SERVERS: "9.9.9.9 149.112.112.112"          # Modus servers (nur IP-Adressen)
+  # DNS_DOH: "https://dns.quad9.net/dns-query"      # Modus doh
+  # DNS_PIN: "dns.quad9.net=9.9.9.9"                # optional: feste Adressen für DoT/DoH
+  # DNS_FALLBACK: "false"                           # kein Rückfall auf den System-DNS
+```
+
+ntp-gui startet dann einen kleinen Weiterleiter **nur auf 127.0.0.1** im Container und trägt
+ihn in `/etc/resolv.conf` ein (das Original wird gesichert und beim Zurückschalten, Beenden
+und nach einem Absturz zurückgeschrieben). chronyd, NTS und die Prüfung „Zeitserver erzwingen“
+nutzen ab da deine Server. DNS-over-TLS (853/tcp) und DNS-over-HTTPS (443/tcp) sind
+verschlüsselt, prüfen das Zertifikat und sind auch von einer DNS-Umleitung per Firewall
+(Port 53) nicht betroffen. Antwortet keiner deiner Server, fragt ntp-gui den ursprünglichen
+DNS (abschaltbar mit `DNS_FALLBACK=false`) und meldet das als Ereignis „DNS“. Den Zustand
+zeigen **Einstellungen → DNS für ntp-gui**, die Kachel **Dienste** der Übersicht und
+`/api/v1/dns`.
+
+Ist das Dateisystem schreibgeschützt (`read_only: true`), setz zusätzlich `dns: 127.0.0.1`
+beim Dienst in der Compose-Datei. Dann gibt es keinen System-DNS mehr, der die Namen von
+DoT/DoH-Servern auflösen kann: Trag die Server unter „Feste Adressen für DoT/DoH“ ein
+(`DNS_PIN=dns.quad9.net=9.9.9.9`) oder nutze den Modus „Eigene DNS-Server“ mit IP-Adressen.
+
+Die Firewall-Anleitungen unter **Zeitserver erzwingen** enthalten außerdem eine optionale
+**DNS-Umleitung per Firewall** (Port 53 auf AdGuard/Pi-hole) – mit Pflicht-Ausnahme für
+ntp-gui und den DNS-Server selbst.
+
 ### Wie genau gehen meine Clients?
 
 Die Seite **Clients** zeigt je Gerät, wie weit seine Uhr danebenliegt – **rein passiv**: Jede
 NTP-Anfrage trägt die Uhrzeit des Clients beim Absenden, der Kernel stempelt sie beim
 Empfang mit der Zeit dieses Servers. Die Differenz ist die Abweichung der Client-Uhr (plus
 die Laufzeit im LAN, meist unter 1 ms). Positiv heißt: die Uhr des Geräts geht vor. An die
-Geräte wird nichts gesendet.
+Geräte wird dabei nichts gesendet – nur auf deinen Klick „Aktiv nachmessen“ (siehe unten).
 
 | Zustand | Bedeutung |
 |---|---|
@@ -432,6 +478,47 @@ Voraussetzungen:
 Diagnosepaket kommt die Client-Liste nur, wenn du es ankreuzt – und dann mit Pseudonymen
 (`client-07`) statt Adressen. Abschalten: `CLIENTMON=false` oder in den Einstellungen
 (wirkt ohne Neustart). API: `/api/clients/offsets`.
+
+### Ein Gerät im Detail
+
+Ein Klick auf ein Gerät in der Liste unter **Clients** öffnet seine eigene Seite
+(`#/clients/192.168.1.23`).
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/clients-detail-dark.png">
+  <img alt="Detailseite eines Clients: Abweichung über die Zeit, Abstand der Anfragen, vermutete Software und Gerätedaten" src="docs/screenshots/clients-detail-light.png">
+</picture>
+
+Dort siehst du:
+
+- wie die Uhr des Geräts in den letzten 7 Tagen lag: Sägezahn = läuft weg und wird
+  nachgestellt, Sprung = stellt selten nach;
+- wie oft das Gerät fragt (tatsächlicher Abstand und das Poll-Feld aus der Anfrage);
+- ob es messbar ist, und wenn nicht, warum;
+- welche Software vermutlich fragt (Windows, systemd-timesyncd, chrony/NTPsec, ntpd,
+  ESP32/IoT, Apple), mit Begründung und klar als **Vermutung** markiert;
+- seinen Namen aus dem DNS – nur wenn du `CLIENTS_RDNS=true` setzt, nur für private Adressen
+  und nur, wenn kein beteiligter DNS-Server öffentlich ist; nie über DoT/DoH;
+- seine MAC-Adresse, nur wenn das Gerät im selben Netz steht. Den Hersteller zeigt ntp-gui nur,
+  wenn eine OUI-Liste vorliegt, z. B. als Datei `/config/oui.txt` aus
+  https://standards-oui.ieee.org/oui/oui.txt. MAC-Adressen verlassen die Instanz nie.
+
+Du kannst jedem Gerät einen **eigenen Namen und eine Notiz** geben. Beides bleibt auf der
+Instanz. Gespeicherte Ereignisse nennen nur die Adresse, den Namen setzt erst die Anzeige ein;
+ins Diagnosepaket und in Benachrichtigungen gelangt nie ein Name, Notizen werden nie exportiert.
+
+**Aktiv nachmessen** schickt genau eine NTP-Anfrage an das Gerät. Router, NAS und manche
+Kameras sind selbst Zeitserver und antworten; dann siehst du ihre Uhr, auch wenn sie ihre
+Sendezeit verschleiern. Die meisten Geräte antworten nicht, das ist normal. Das geht nur bei
+bekannten Geräten mit privater Adresse (nicht fe80::), pro Gerät höchstens alle 30 s.
+
+Der **Netzüberblick** auf der Clients-Seite zeigt die Verteilung der Abweichungen, die Geräte
+mit der größten Abweichung, verstummte Geräte und Geräte, die öfter als alle 8 s fragen.
+
+**Alarm:** Mit `CLIENTS_ALARM_MS=1000` (oder in den Einstellungen unter LAN → Erweitert)
+meldet ntp-gui das Ereignis „Uhr von … weicht um … ab“, sobald ein Gerät zweimal in Folge mehr
+als eine Sekunde danebenliegt. Mit einem [Benachrichtigungskanal](#benachrichtigungen) für die
+Art „Clients“ landet die Meldung z. B. auf dem Handy.
 
 ## NTS – abgesicherte Zeit
 
@@ -880,6 +967,116 @@ Ein Detail für Tests: **gpsd akzeptiert keine PTY- oder TCP-Quellen als Zeitref
 liefert also Position und Satelliten, aber niemals Samples für chrony – dafür braucht es
 ein echtes serielles bzw. USB-Gerät.
 
+## Uhrqualität: Temperatur, Schaltsekunden, Vollbild-Uhr
+
+Die Seite **Uhrqualität** zeigt, was die Uhr deines Servers langfristig beeinflusst:
+
+- **Temperatur und Frequenz:** Der Quarz der Systemuhr läuft je nach Temperatur etwas schneller
+  oder langsamer. ntp-gui speichert zu jedem Messpunkt die Temperatur und zeigt sie als
+  Streudiagramm gegen chronys Frequenzfehler. Sensoren werden automatisch gefunden (Raspberry Pi
+  `cpu-thermal`, PC `x86_pkg_temp`/`k10temp`/`coretemp`, DS18B20 am 1-Wire-Bus); welchen ntp-gui
+  nutzt, legst du mit `TEMP_SENSOR` fest (`auto`, `off` oder eine Kennung aus dem Hardware-Check,
+  z. B. `w1:28-0316a2794bff`). Für eine Aussage braucht es 1–3 Tage mit Tag-/Nacht-Wechsel. In
+  VMs gibt es meist keinen Sensor. Einen Temperaturausgleich schlägt ntp-gui erst ab 1.5 vor.
+- **Schaltsekunden:** TAI−UTC, letzte Schaltsekunde und wie lange die `leap-seconds.list` im
+  Image noch gilt – für die Datei, die chrony wirklich liest. Läuft sie in weniger als 60 Tagen
+  ab, meldet ntp-gui „Image zu alt“ – dann `docker compose pull && docker compose up -d`.
+- **Vollbild-Uhr:** `http://<server>:8080/clock` (Uhr-Symbol oben rechts im Dashboard) zeigt
+  eine große, mit dem Server abgeglichene Uhr (Ortszeit, UTC, Datum, Kalenderwoche, Status) –
+  ideal für Wandmonitor oder altes Tablet. Rotlicht-Modus und Vollbild (Taste F) inklusive. Der
+  Abgleich läuft wie bei NTP mit vier Zeitstempeln; die Uhr des Tablets ist egal.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/clock-dark.png">
+  <img alt="Vollbild-Uhr: große Ortszeit, UTC, Datum, Kalenderwoche und Statusband" src="docs/screenshots/clock-light.png">
+</picture>
+
+Mit `CLOCK_PUBLIC=true` sind `/clock` und `/api/v1/time` ohne Anmeldung erreichbar (nur Zeit,
+Ampel, Genauigkeit und Art der Quelle – keine Namen, Adressen oder Einstellungen). Auch dann
+antwortet ntp-gui ohne Anmeldung nur über IP-Adressen, einteilige oder lokale Namen (`*.local`,
+`*.lan`, `*.home.arpa`, `*.internal`) und `WEB_ALLOWED_HOSTS` – Schutz vor DNS-Rebinding. Für
+einen Wandmonitor, der den Server über einen eigenen DNS-Namen aufruft, diesen Namen in
+`WEB_ALLOWED_HOSTS` eintragen. Nicht einschalten, wenn das Dashboard aus dem Internet
+erreichbar ist.
+
+Neue API-Endpunkte (lesend): `/api/v1/temperature`, `/api/v1/leap`, `/api/v1/time`. Metriken:
+`ntpgui_temperature_celsius`, `ntpgui_leapseconds_list_days_left`, `ntpgui_tai_utc_offset_seconds`.
+
+## Benachrichtigungen
+
+Auf der Seite **Benachrichtigungen** legst du Kanäle an. Jeder Kanal hat eigene Regeln: ab
+welcher Stufe (Warnung, Kritisch …) und für welche Arten (GPS, PPS, Dienste, Zeitquellen,
+Clients, DNS …) er Nachrichten bekommt. **Ohne angelegten Kanal verlässt nichts den Server.**
+Die Kachel **Dienste** der Übersicht zeigt, ob die Zustellung klappt.
+
+| Kanal | Adresse | Thema/Schlüssel | Token |
+|---|---|---|---|
+| ntfy | `https://ntfy.sh` oder dein ntfy-Server (`https://ntfy.sh/mein-thema` geht auch) | Thema (z. B. `zeitserver-8f3k`) | optional (`tk_…`) |
+| Gotify | `http://gotify.lan` | – | App-Token (Pflicht) |
+| Webhook | beliebige URL, z. B. Home-Assistant-Webhook | – | optional: Schlüssel für die Signatur |
+| Apprise-API | `http://apprise:8000` | Schlüssel einer gespeicherten Konfiguration | oder direkt Apprise-URLs |
+
+- **Entprellen:** dieselbe Meldung höchstens einmal je N Minuten; „behoben“ kommt mit Dauer,
+  „Kritisch“ immer sofort.
+- **Wiederholung:** nach 30 s, 2 min und 10 min, danach verworfen (steht im Ereignisprotokoll).
+- **Limit:** standardmäßig höchstens 30 Nachrichten je Stunde und Kanal.
+- **Link:** Mit `NOTIFY_DASHBOARD_URL=http://zeitserver.lan:8080/` enthält jede Nachricht einen
+  Link auf die passende Seite.
+
+Für ntfy, Gotify und Apprise nur die Server-Adresse eintragen (ohne `?…`).
+
+**Sicherheit:** Kanäle anlegen darf nur, wer das Verwaltungsrecht hat (Passwort oder
+API-Schlüssel „lesen und verwalten“). Damit kann nur ein Admin den Server Anfragen an beliebige
+Adressen schicken lassen (SSRF) – und Admins können die Zeitversorgung ohnehin umstellen.
+Erlaubt sind nur `http`/`https`. Weiterleitungen werden nicht befolgt, Proxys aus der Umgebung
+nicht benutzt, Gesamtfrist 10 s, Antwort höchstens 64 KiB. Tokens gehen nur über `https://`
+hinaus oder über `http://` an Adressen im eigenen Netz (private IP, `*.lan`, `*.local`,
+`*.home.arpa`, Name ohne Punkt wie `apprise`). Änderst du Ziel oder Art eines Kanals, musst du
+das Token neu eingeben. Tokens liegen in der Datenbank im Volume, werden im Dashboard und in der
+API nie wieder angezeigt und landen nie im Diagnosepaket; Adressen mit Pfad zeigen Dashboard
+und API nur gekürzt. Jede Nachricht läuft durch den Datenschutzfilter: keine Koordinaten, keine
+öffentlichen IP-Adressen, keine eigenen Hostnamen, keine Client-Namen.
+
+**Webhook-Format:** `POST` mit JSON-Feldern `source` („ntp-gui“), `version` (1), `title`,
+`text`, `level` (info/warn/crit), `kind`, `time` (Unix-Zeit), `resolved`, `duration_s` (bei
+„behoben“), optional `link`, `suppressed`, `event_id` und `test`. Ist ein Signatur-Schlüssel
+gesetzt, kommt der Header `X-NTPGUI-Signature: sha256=<hex>` mit: HMAC-SHA256 über die
+unveränderten Bytes des Bodys.
+
+Testvektor: Schlüssel `geheim`, Body `{"source":"ntp-gui","test":true}` →
+
+```bash
+printf '%s' '{"source":"ntp-gui","test":true}' | openssl dgst -sha256 -hmac geheim
+# sha256=aa6b045120327114063405a2160f1f0e2257424dfb0c0a0728d2881de0104c6e
+```
+
+**E-Mail, Telegram, Matrix & Co. über Apprise** (optionaler Zusatz-Container in der
+Compose-Datei):
+
+```yaml
+services:
+  ntp-gui:
+    # … wie bisher …
+  # apprise:                        # optional: leitet Benachrichtigungen weiter
+  #   image: caronc/apprise:latest
+  #   restart: unless-stopped
+  #   # kein ports: nötig – ntp-gui erreicht ihn im Compose-Netz als http://apprise:8000
+  #   volumes:
+  #     - apprise-config:/config
+# volumes:
+#   apprise-config:
+```
+
+In der Apprise-Oberfläche unter einem Schlüssel wie `ntp` die Ziele speichern (z. B.
+`mailto://user:pass@mail.example.org`, `tgram://bottoken/chatid`). In ntp-gui dann einen Kanal
+„Apprise-API“ mit Adresse `http://apprise:8000` und Schlüssel `ntp` anlegen. So liegen
+E-Mail-Passwörter nur bei Apprise. Läuft ntp-gui mit `network_mode: host`, erreicht es den
+Apprise-Container nicht über den Dienstnamen – dann Apprise einen Port geben
+(`ports: ["127.0.0.1:8000:8000"]`) und `http://127.0.0.1:8000` eintragen.
+
+Zustand für Monitoring (Lese-Schlüssel genügt): `GET /api/v1/notify/status` – je Kanal nur
+Kennung, Art und Zustellstand.
+
 ## Diagnose & Fehlersuche
 
 Die Seite **Diagnose** bündelt alles, was du für die Fehlersuche brauchst – ohne
@@ -1155,6 +1352,10 @@ PHC-Refclock dient ihm als Referenz für Stratum und Statistik.
 | `HISTORY_DAYS` | `30` | So viele Tage hält der Verlauf (SQLite, `ntp-gui.db`; 1–3650). Neue Punkte werden gesammelt und alle 5 Minuten sowie beim Stoppen geschrieben – das schont SD-Karten |
 | `HISTORY_SIZE` | – | Nur wenn gesetzt: harte Obergrenze an Messpunkten (wie bis 1.2, z. B. `8640` = 24 h bei 10 s) |
 | `WEB_ACCESS_LOG` | `false` | Zugriffe protokollieren |
+| `NOTIFY_DASHBOARD_URL` | – | Adresse des Dashboards für Links in [Benachrichtigungen](#benachrichtigungen) (nur `http`/`https`, ohne Benutzer/Passwort) |
+| `TEMP_SENSOR` | `auto` | Temperatursensor für die Seite [Uhrqualität](#uhrqualität-temperatur-schaltsekunden-vollbild-uhr) (`auto`, `off` oder Kennung aus dem Hardware-Check) |
+| `CLOCK_PUBLIC` | `false` | `true` = `/clock` und `/api/v1/time` ohne Anmeldung (nur Zeit und Status, Schutz vor DNS-Rebinding bleibt). Nicht einschalten, wenn das Dashboard aus dem Internet erreichbar ist |
+| `UPDATE_CHECK` | `false` | Einmal am Tag bei GitHub nach einer neuen Version fragen, siehe [Update-Hinweis](#update-hinweis-opt-in) |
 
 Nur per Umgebung (sie betreffen den Start selbst oder sind Expertenwerte): `WEB_PORT`,
 `WEB_BIND`, `WEB_READONLY`, `WEB_USER`/`WEB_PASSWORD`, `WEB_ALLOWED_HOSTS`, `WEB_ACCESS_LOG`, `HISTORY_SIZE`,
@@ -1170,6 +1371,8 @@ Nur per Umgebung (sie betreffen den Start selbst oder sind Expertenwerte): `WEB_
 | Variable | Default | Bedeutung |
 |---|---|---|
 | `CLIENTMON` | `true` | Uhren der Clients passiv messen, siehe [Wie genau gehen meine Clients?](#wie-genau-gehen-meine-clients) |
+| `CLIENTS_ALARM_MS` | `0` | Ereignis, wenn eine Client-Uhr mehr als so viele Millisekunden abweicht (0 = aus), siehe [Ein Gerät im Detail](#ein-gerät-im-detail) |
+| `CLIENTS_RDNS` | `false` | Namen der Clients per Reverse-DNS nachschlagen – nur private Adressen, nur wenn kein beteiligter DNS-Server öffentlich ist, nie über DoT/DoH |
 | `ENFORCE_HOSTNAMES` | – | Weitere Zeitserver-Namen für die Anleitungen unter [Zeitserver erzwingen](#zeitserver-erzwingen), kommagetrennt (nur DNS-Namen, höchstens 50) |
 | `NTPGUI_LOGTEE` | `1` | `0` schaltet die Log-Kopie für die Seite **Diagnose** ab |
 | `NTPGUI_REPLAY` | – | Nur für Entwicklung/Demo: Aufzeichnung (`.jsonl`) statt echter Dienste abspielen |
@@ -1199,6 +1402,17 @@ Jeder andere Name bekommt `403` mit einer Erklärung; im Log steht er einmal (be
 Endung. Öffnest du das Dashboard als `ntp.fritz.box`, trage `WEB_ALLOWED_HOSTS=*.fritz.box`
 ein oder setze ein Passwort. Mit Passwort oder API-Schlüssel gilt jeder Name – die Anmeldung
 schützt dann. `/healthz` antwortet immer.
+
+### DNS für ntp-gui
+
+| Variable | Default | Bedeutung |
+|---|---|---|
+| `DNS_MODE` | `system` | `system` (wie bisher), `servers` (klassisches DNS an feste IPs), `dot` (DNS-over-TLS), `doh` (DNS-over-HTTPS), siehe [DNS für ntp-gui](#dns-für-ntp-gui-gegen-schleifen-durch-dns-umschreibung) |
+| `DNS_SERVERS` | – | Modus `servers`: IP-Adressen (optional `:port`), leerzeichen- oder kommagetrennt; keine Namen, kein Loopback auf Port 53 |
+| `DNS_DOT` | – | Modus `dot`: Servernamen (optional `:port`, Standard 853) |
+| `DNS_DOH` | – | Modus `doh`: `https://`-Adressen, ohne Benutzer/Passwort |
+| `DNS_PIN` | – | Feste Adressen für DoT/DoH-Namen (`name=IP`), nötig bei `dns: 127.0.0.1` |
+| `DNS_FALLBACK` | `true` | Antwortet keiner der eigenen Server, den ursprünglichen DNS des Containers fragen |
 
 ### Was im Container unter welchem Benutzer läuft
 
@@ -1236,7 +1450,9 @@ Ein Supervisor im Container startet und überwacht alle Dienste. Er unterscheide
 
 Die Übersicht zeigt den Zustand in der Karte **Dienste** (läuft, wird neu gestartet, ausgefallen,
 aus) mit Anzahl der Neustarts; ein ausgefallener Dienst erscheint auch im Hinweis-Kasten.
-Für Prometheus gibt es `ntpgui_service_up` und `ntpgui_service_restarts_total`.
+Für Prometheus gibt es `ntpgui_service_up`, `ntpgui_service_enabled` (1 = soll laut
+Einstellungen laufen) und `ntpgui_service_restarts_total`. Der mitgelieferte Alarm
+`NtpGuiServiceDown` meldet nur eingeschaltete Dienste, die nicht laufen.
 
 ## Endpunkte
 
@@ -1260,11 +1476,18 @@ Für Prometheus gibt es `ntpgui_service_up` und `ntpgui_service_restarts_total`.
 | `/api/diagnostics/preview`, `/bundle` | Diagnosepaket: Vorschau bzw. `.tar.gz` – gefiltert, ohne Standort und Kennungen, wird nie hochgeladen |
 | `/api/recording` | Aufzeichnung der Datenquellen; `POST {"seconds": 300}` startet, `{"action": "stop"}` stoppt |
 | `/api/enforce/snippets`, `/api/enforce/check` | Zeitserver erzwingen: Anleitungen (DNS/Firewall) und Prüfung |
-| `/api/clients/offsets` | Passiv gemessene Abweichung der Client-Uhren |
+| `/api/clients/offsets` | Passiv gemessene Abweichung der Client-Uhren (mit eigenen Namen) |
+| `/api/clients/overview`, `/api/clients/detail?ip=&range=` | Netzüberblick bzw. Verlauf und Gerätedaten eines Clients; `POST /api/clients/meta` (Name, Notiz) und `/api/clients/probe` (Aktiv nachmessen) mit Verwaltungsrecht |
+| `/api/notify/status` | Zustellstand je Benachrichtigungskanal (ohne Namen, Adressen, Tokens); `/api/notify`, `POST /api/notify/channels`, `/channels/delete`, `/test` mit Verwaltungsrecht |
+| `/api/dns` | DNS für ntp-gui: Modus, Zustand des Weiterleiters, Server, resolv.conf |
+| `/api/temperature`, `/api/leap` | Temperatur und Frequenz bzw. Schaltsekunden-Liste (Seite Uhrqualität) |
+| `/api/v1/time` | Serverzeit mit Zeitstempeln für die Vollbild-Uhr `/clock` |
+| `/api/update` | Zustand des Update-Hinweises (ohne Netzzugriff, wenn ausgeschaltet) |
 | `/api/apikeys` (Alias `/api/keys`) | API-Schlüssel auflisten, `POST` legt an, `/api/apikeys/revoke` widerruft (nur mit Benutzer/Passwort) |
 | `/api/v1/instance` | Zufällige Instanz-Kennung; `POST /api/instance/rotate` erzeugt eine neue (nur mit Benutzer/Passwort) |
 | `/api/v1/…` | Versionierte, stabile API (Alias der Pfade oben); `GET /api/v1` beschreibt alle Endpunkte samt nötigem Recht, siehe [API & Automatisierung](#api--automatisierung) |
-| `/metrics` | Prometheus (u. a. Offset, Quellen, GPS, PTP, `ntpgui_service_*`, `ntpgui_hardware_capability`, `ntpgui_pps_live`, `ntpgui_nts_server_cert_days_left`) |
+| `/metrics` | Prometheus (u. a. Offset, max. Fehler, Quellen, GPS, PTP, `ntpgui_service_*`, `ntpgui_hardware_capability`, `ntpgui_pps_live`, `ntpgui_nts_server_cert_days_left`, Temperatur, Schaltsekunden-Liste, `ntpgui_info`) |
+| `/clock` | Vollbild-Uhr (mit `CLOCK_PUBLIC=true` ohne Login) |
 | `/healthz` | `200`, solange chronyd antwortet (ohne Login) |
 
 ## API & Automatisierung
@@ -1333,6 +1556,25 @@ scrape_configs:
       - targets: ["192.168.1.10:8080"]
 ```
 
+### Grafana, Home Assistant & Co.
+
+Fertig zum Importieren bzw. Abschreiben:
+
+- **Grafana:** [`docs/grafana/ntp-gui.json`](docs/grafana/ntp-gui.json) – Variablen für
+  Datenquelle und Instanz; Offset, max. Fehler, Frequenz, Stratum, Quellen, Clients, Anfragen,
+  GPS, Temperatur, Schaltsekunden-Liste, NTS-Zertifikat. Anleitung und Metrik-Tabelle:
+  [`docs/integrationen/grafana-prometheus.md`](docs/integrationen/grafana-prometheus.md).
+- **Prometheus-Alarme:** [`docs/prometheus/alerts.yml`](docs/prometheus/alerts.yml) – nicht
+  synchron, Abweichung zu groß, keine nutzbare Quelle, GPS ohne Fix, PPS weg, Dienst gestört,
+  NTS-Zertifikat und Schaltsekunden-Liste laufen ab, neue Version.
+- **Home Assistant:** [`docs/integrationen/home-assistant.md`](docs/integrationen/home-assistant.md)
+  – REST- und Template-Sensoren, Binärsensoren, Automations-Beispiel.
+- **Homepage und Glance:** [`docs/integrationen/homepage-glance.md`](docs/integrationen/homepage-glance.md).
+- **Uptime Kuma:** [`docs/integrationen/uptime-kuma.md`](docs/integrationen/uptime-kuma.md).
+
+Der API-Schlüssel reist über HTTP im Klartext. Nutze `https://` über einen Reverse Proxy oder
+ein vertrauenswürdiges Netz und gib jeder Integration einen eigenen Lese-Schlüssel.
+
 ### Instanz-Kennung
 
 `/api/v1/instance` liefert eine zufällige Kennung (UUID), die beim ersten Start entsteht. Sie
@@ -1363,15 +1605,32 @@ Beim Update musst du nichts von Hand umbauen:
   `ntp-gui.db` übernommen und als `history.json.gz.migrated` aufbewahrt. Kann die Datenbank
   nicht geöffnet werden, arbeitet der Verlauf wie in 1.2 weiter.
 
+### Update-Hinweis (opt-in)
+
+Ausgeschaltet (Standard) fragt ntp-gui nirgends nach. Unter **Einstellungen → Dashboard →
+Update-Hinweis** oder mit `UPDATE_CHECK=true` fragt es einmal am Tag zu einer zufälligen
+Uhrzeit `https://api.github.com/repos/ConGp20/ntp-gui/releases/latest` und vergleicht die
+Version lokal. Ist eine neuere da, erscheint oben ein Banner (pro Version ausblendbar) und in
+der Übersicht ein Hinweis mit Release-Titel und Link zu den Release-Notizen – markiert mit
+**„Achtung beim Update“**, wenn der Release-Text `BREAKING` oder „Achtung“ enthält. ntp-gui lädt
+nichts herunter und aktualisiert sich nicht selbst; dafür eignen sich Diun oder What's up
+Docker (Watchtower ist archiviert).
+
+Datenschutz, ehrlich gesagt: GitHub sieht dabei einmal am Tag deine öffentliche IP-Adresse
+(grob ortbar) und dass dort vermutlich ntp-gui läuft. Die Anfrage ist fest verdrahtet:
+User-Agent nur „ntp-gui“, ohne Version oder Kennung, keine Daten der Instanz, keine
+Weiterleitungen, höchstens 20 s, Antwort höchstens 512 KiB. Zustand: `/api/v1/update`,
+Metriken `ntpgui_update_available` und `ntpgui_update_check_last_success_timestamp_seconds`.
+
 ## Entwicklung
 
 ```bash
-python3 -m unittest discover -s tests -v     # 570 Tests: Parser, Einstellungen, Config, Kalibrierung, Hardware, NTS, Datenschutzfilter, API
+python3 -m unittest discover -s tests -v     # 854 Tests: Parser, Einstellungen, Config, Kalibrierung, Hardware, NTS, Datenschutzfilter, API, Benachrichtigungen, DNS, Clients, Uhrqualität
 docker build -t ntp-gui:test .
 tests/container-test.sh ntp-gui:test         # Integrationstest gegen das gebaute Image
 ```
 
-Der Integrationstest (114 Prüfungen) startet echte Container und prüft das, was Unittests
+Der Integrationstest (173 Prüfungen) startet echte Container und prüft das, was Unittests
 nicht abdecken: Erkennung von fehlendem `CAP_SYS_TIME`, Healthcheck, alle Endpunkte,
 Basic-Auth, gemountete Konfiguration, Verhalten ohne GPS-/PTP-Hardware, Neustart eines
 abgestürzten gpsd, eine echte NTP-Abfrage über das Netz, Einstellungen speichern samt
@@ -1380,7 +1639,8 @@ den NTS-Server mit selbst signiertem Zertifikat samt Zertifikatswechsel wie bei 
 Log-Seite, das Diagnosepaket (gültiges Archiv mit `MANIFEST.txt`, ohne Koordinaten,
 Satellitenwinkel, MAC, öffentliche IP und ohne Adresse oder Namen des Containers),
 API-Schlüssel, den Schutz vor DNS-Rebinding (fremder Host-Name → 403, `WEB_ALLOWED_HOSTS`, mit
-Login jeder Name) und die Exit-Codes beim Stoppen. Dieselbe Datei läuft in der CI gegen das gebaute Image.
+Login jeder Name), den DNS-Weiterleiter, Benachrichtigungen, Client-Verlauf und -Detail,
+Schaltsekunden, Vollbild-Uhr, den abgeschalteten Update-Hinweis und die Exit-Codes beim Stoppen. Dieselbe Datei läuft in der CI gegen das gebaute Image.
 
 Lokal ohne Container starten (setzt installiertes `chrony` voraus; als root, und der
 System-chronyd sollte gestoppt sein). `CHRONY_CONF` auf einen Scratch-Pfad zeigen
@@ -1412,6 +1672,11 @@ CSV-Zeile, „nie gehört“ ist `4294967295` und `pmc` antwortet nur, wenn die 
 * `ts2phc` (PPS direkt in die PTP-Uhr der Netzwerkkarte) wird nicht unterstützt; der
   Grandmaster-Betrieb geht immer über die Systemuhr (chrony → phc2sys).
 * Hotplug und `device_cgroup_rules` gibt es nur auf Linux-Hosts, nicht mit Docker Desktop.
+* Entprellung und offene Probleme der Benachrichtigungen sowie der Zustand des Client-Alarms
+  liegen nur im Speicher: Nach einem Neustart des Containers gibt es für ein noch offenes Problem
+  keine „behoben“-Meldung, und ein noch falsch gehender Client meldet sich einmal neu.
+* Ohne OUI-Liste im Image zeigt die Client-Detailseite keinen Hersteller (eigene Datei unter
+  `/config/oui.txt` möglich).
 * Ohne IPv6 im Docker-Netz meldet chronyd „Could not open … socket on [::]“ – harmlos,
   IPv4 funktioniert.
 
@@ -1424,7 +1689,21 @@ die Version eintragen (z. B. `1.2.0`) und starten. Der Workflow
 2. führt Unittests und den Integrationstest gegen das frisch gebaute Image aus,
 3. baut das Image für `linux/amd64` und `linux/arm64` und pusht es nach
    `ghcr.io/<owner>/ntp-gui` mit den Tags `1.0.0`, `1.0` und `latest`,
-4. legt erst danach den Git-Tag `v1.0.0` und das GitHub-Release an.
+4. erzeugt für beide Architekturen eine SBOM (SPDX, syft) und einen Schwachstellen-Bericht
+   (Grype) aus dem hochgeladenen Digest und bricht bei einer **kritischen Lücke mit verfügbarer
+   Korrektur** ab (Lücken ohne Korrektur stehen nur im Bericht),
+5. legt einen Herkunftsnachweis (SLSA Build Provenance) in der Registry ab und prüft ihn,
+6. setzt erst danach die Image-Tags, den Git-Tag `v1.0.0` und das GitHub-Release an – mit
+   `ntp-gui-<version>-<arch>.spdx.json` und `ntp-gui-<version>-<arch>-vulnerabilities.txt`.
+
+Alle Actions sind per Commit-SHA festgenagelt, das Basis-Image per Digest; Dependabot schlägt
+Updates vor. Ein Release-Build läuft ohne Cache, zieht also immer aktuelle Debian-Pakete.
+
+**Herkunft prüfen** (GitHub-CLI):
+
+```bash
+gh attestation verify oci://ghcr.io/congp20/ntp-gui:1.4.0 -R ConGp20/ntp-gui
+```
 
 Scheitert ein Schritt, entsteht kein halber Release. Bei einem privaten Repository
 ist auch das Image zunächst privat (`docker login ghcr.io` nötig); die Sichtbarkeit

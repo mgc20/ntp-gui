@@ -1,5 +1,7 @@
 # ntp-gui – Chrony (NTP) + linuxptp (PTP) + Web-Dashboard in einem Container.
-FROM debian:trixie-slim
+# Basis-Image per Digest festgenagelt: nur so kann Dependabot (.github/dependabot.yml) neue
+# Debian-Stände als Pull Request vorschlagen – ein reines „trixie-slim“ hat keine Version zum Vergleichen.
+FROM debian:trixie-slim@sha256:f6b08b09a05725f9431502d3b5714f5c4576e82c1a84fa1debe0c24a7e0c3ec4
 
 ARG DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \

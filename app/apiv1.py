@@ -50,7 +50,7 @@ endpoint("GET", "/status", "/api/status", "read",
          "Gesamtzustand: Systemuhr, Quellen, Clients, GPS, PTP, Dienste und Hinweise – "
          "dieselben Daten wie die Übersicht im Dashboard.",
          ["system", "tracking", "sources", "activity", "serverstats", "clients", "client_count",
-          "ptp", "gps", "nts_server", "services", "chrony_running", "config", "ui", "insights"])
+          "ptp", "gps", "nts_server", "services", "chrony_running", "update", "config", "ui", "insights"])
 endpoint("GET", "/history", "/api/history", "read",
          "Verlauf der Messwerte für Diagramme, auf höchstens „points“ Punkte verdichtet.",
          ["samples", "interval"],
@@ -83,7 +83,8 @@ endpoint("GET", "/gps/calibration", "/api/gps/calibration", "read",
           "bias", "spread", "suggested_offset", "suggested_delay", "series"],
          {"window": "nur die letzten so vielen Sekunden auswerten"})
 endpoint("GET", "/events", "/api/events", "read",
-         "Ereignisprotokoll (Quellenwechsel, Fix verloren, Neustarts, Änderungen), neueste zuerst.",
+         "Ereignisprotokoll (Quellenwechsel, Fix verloren, Neustarts, Änderungen), neueste zuerst. "
+         "Client-Alarme tragen im Titel nur die Adresse; display_title nennt den aktuellen eigenen Namen.",
          ["events"],
          {"since": "ab Unix-Zeit", "until": "bis Unix-Zeit", "kinds": "Arten, mit Komma getrennt",
           "level": "Mindeststufe: info, warn oder crit", "limit": "höchstens so viele (1–5000)"})

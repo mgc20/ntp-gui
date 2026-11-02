@@ -4,6 +4,174 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), die Versionen folgen
 [Semantic Versioning](https://semver.org/lang/de/).
 
+## [1.4.0] – 2026-11-02
+
+### Hinzugefügt
+- **Benachrichtigungen:** Der Server meldet sich, wenn etwas passiert – über **ntfy**,
+  **Gotify**, **Webhook** (JSON, optional mit HMAC-SHA256-Signatur im Header
+  `X-NTPGUI-Signature`) oder **Apprise-API** (E-Mail, Telegram, Matrix, Signal und über 100
+  weitere Dienste über einen Zusatz-Container). Neue Seite „Benachrichtigungen“: Kanäle
+  anlegen, Filter nach Stufe und Art, „Testnachricht senden“, Zustellstand je Kanal. Ohne
+  angelegten Kanal verlässt nichts den Server.
+  - Gleiche Meldungen werden **entprellt** (Standard: höchstens alle 15 min je Art und
+    Gerät/Dienst). Ist ein Problem vorbei, kommt „behoben“ mit Dauer („GPS-Fix wieder da –
+    Dauer 40 min“); als „behoben“ zählen nur echte Gegenstücke. Ein zurückgehaltenes Problem,
+    das am Ende der Sperrzeit noch besteht, wird nachgeholt. „Kritisch“ geht immer sofort
+    hinaus – auch nach einer Warnung oder direkt nach einem „behoben“.
+  - Klappt die Zustellung nicht, versucht der Server es nach 30 s, 2 min und 10 min erneut;
+    danach wird die Nachricht verworfen und das steht im Ereignisprotokoll (neue Art
+    „Benachrichtigung“). Je Kanal gilt ein Limit (Standard 30 je Stunde), jeder Kanal hat einen
+    eigenen Thread, jede Zustellung eine Gesamtfrist von 10 s (Namensauflösung, Verbindung und
+    Antwort zusammen). Nach einem Neustart werden schon zugestellte Meldungen nicht noch einmal
+    verschickt.
+  - `https://ntfy.sh/<thema>` wird erkannt; bei ntfy, Gotify und Apprise wird eine Adresse mit
+    `?…` abgelehnt.
+  - Neue Einstellung „Adresse des Dashboards (für Links)“ (`NOTIFY_DASHBOARD_URL`): Nachrichten
+    verlinken dann direkt auf die passende Seite.
+- **Eigene DNS-Server für ntp-gui:** Unter Einstellungen → „DNS für ntp-gui“ stellst du ein,
+  worüber ntp-gui selbst Namen auflöst: System-DNS (Standard, wie bisher), eigene DNS-Server
+  (klassisches DNS an feste IP-Adressen), DNS-over-TLS oder DNS-over-HTTPS (`DNS_MODE`,
+  `DNS_SERVERS`, `DNS_DOT`, `DNS_DOH`, `DNS_PIN`, `DNS_FALLBACK`). So läuft chronyd nicht mehr in
+  eine Schleife, wenn AdGuard Home oder Pi-hole Zeitserver-Namen wie pool.ntp.org auf ntp-gui
+  umschreibt. Dafür startet ein kleiner Weiterleiter nur auf 127.0.0.1 im Container, und
+  `/etc/resolv.conf` zeigt darauf. Das Original wird gesichert und beim Zurückschalten, beim
+  Beenden und nach einem Absturz zurückgeschrieben.
+  - DoT/DoH prüfen das Zertifikat des Servers. Optional trägst du feste Adressen ein
+    (z. B. `dns.quad9.net=9.9.9.9`) – nötig, wenn der Container keinen anderen DNS hat
+    (`dns: 127.0.0.1`); ein eigener Hinweis sagt das. Antwortet keiner deiner Server, fragt
+    ntp-gui den ursprünglichen DNS des Containers (abschaltbar; Antworten daraus bleiben nur
+    5 s im Cache) und meldet das als Ereignis der neuen Art „DNS“.
+  - Ein einzelner langsamer Name schaltet einen Server nicht ab; erst drei
+    Zeitüberschreitungen in Folge oder ein harter Fehler zählen als Ausfall. DoH hat eine harte
+    Frist je Anfrage, auch gegen Server, die ihre Antwort Byte für Byte tröpfeln lassen.
+  - Neuer Hinweis „Schleife durch DNS-Umschreibung“: erscheint, wenn eine eigene Zeitquelle
+    per DNS auf ntp-gui selbst zeigt, und empfiehlt einen eigenen DNS-Modus.
+  - Zeitserver erzwingen: Die Firewall-Anleitungen (UniFi, OPNsense/pfSense, MikroTik,
+    OpenWrt, nftables) enthalten jetzt eine optionale „DNS-Umleitung per Firewall“ (Port 53
+    auf AdGuard/Pi-hole), mit Pflicht-Ausnahme für ntp-gui.
+- **Clients im Detail:**
+  - **Verlauf je Client:** 7 Tage Abweichung, Poll-Feld, NTP-Version und tatsächlicher
+    Abstand der Anfragen (höchstens alle 2 min ein Punkt). Erste und letzte Sichtung überstehen
+    Neustarts.
+  - **Detailseite je Gerät** (`#/clients/<adresse>`, ein Klick in der Client-Liste): Diagramm
+    der Abweichung (1 h bis 7 Tage), Abstand der Anfragen und Poll, „messbar“ mit Begründung,
+    VLAN, erste/letzte Sichtung, Name aus dem Reverse-DNS, MAC-Adresse (nur wenn das Gerät im
+    selben Netz steht) und Hersteller, falls eine OUI-Liste vorhanden ist (`/config/oui.txt`).
+  - **Vermutete Client-Software** (Windows/w32time, systemd-timesyncd, chrony/NTPsec/OpenNTPD,
+    ntpd, SNTP/IoT, Apple) – begründet und klar als Vermutung gekennzeichnet.
+  - **Eigene Namen und Notizen** für Geräte (nur Admins): bleiben lokal, erscheinen in Liste,
+    Überblick und Ereignisanzeige. Gespeicherte Ereignisse nennen nur die Adresse; im
+    Diagnosepaket und in Benachrichtigungen wird nie ein Name verschickt, Notizen werden nie
+    exportiert.
+  - **Netzüberblick** auf der Clients-Seite: Verteilung der Abweichungen (< 1 ms … > 1 s,
+    falsche Uhr), die fünf Geräte mit der größten Abweichung, verstummte Geräte und Geräte, die
+    öfter als alle 8 s fragen (kurze Schwälle wie ntpd-iburst zählen nicht).
+  - **„Aktiv nachmessen“:** eine einzelne NTP-Anfrage an ein bekanntes Gerät im LAN zeigt bei
+    Routern, NAS und manchen Kameras Abweichung und Laufzeit, auch wenn sie ihre Sendezeit
+    verschleiern. Pro Gerät höchstens alle 30 s, insgesamt höchstens 10 pro Minute; nicht für
+    link-lokale IPv6-Adressen.
+  - **Alarm bei falsch gehender Client-Uhr:** neue Einstellung `CLIENTS_ALARM_MS` (Standard
+    aus). Gemeldet wird nach zwei Messungen in Folge über der Schwelle („Uhr von … weicht um …
+    ab“, Art Clients), „wieder im Rahmen“ erst unter der halben Schwelle.
+  - Neue Einstellung `CLIENTS_RDNS` (Standard **aus**): Reverse-DNS nur für private Adressen,
+    nur beim Öffnen der Detailseite, nie über DoT/DoH und nie, wenn ein beteiligter DNS-Server
+    öffentlich ist.
+- **Neue Seite „Uhrqualität“** (Navigation nach PTP):
+  - **Temperatur wird aufgezeichnet** (nur messen, noch kein Temperaturausgleich): Thermalzonen
+    (Raspberry Pi `cpu-thermal`), Sensorchips am PC (`k10temp`, `coretemp`, `x86_pkg_temp`) und
+    DS18B20 am 1-Wire-Bus werden selbst gefunden. Streudiagramm Temperatur ↔ Frequenz,
+    Temperatur- und Frequenzverlauf, Spanne, Messdauer und Zusammenhang (r). Nach 1–3 Tagen mit
+    Tag-/Nacht-Wechsel siehst du, ob sich ein Temperaturausgleich lohnt – den Vorschlag dafür
+    bringt 1.5. Neue Einstellung **Temperatursensor** (`TEMP_SENSOR`, Standard `auto`, `off` =
+    aus); der Hardware-Check listet alle gefundenen Sensoren; ein Sensor ohne plausiblen Wert
+    (z. B. DS18B20 auf 85 °C) wird als „liefert keinen Wert“ gemeldet.
+  - **Schaltsekunden-Übersicht:** TAI−UTC, letzte Schaltsekunde, Ablaufdatum der
+    `leap-seconds.list` mit verbleibenden Tagen, SHA-1-Prüfsumme und Leap-Status von chrony –
+    immer für die Datei, die chrony wirklich liest. Läuft die Liste in weniger als 60 Tagen ab
+    (oder ist sie abgelaufen oder verändert), erscheint der Hinweis „Image zu alt – Update
+    einspielen“ und ein Ereignis „Schaltsekunde“. ntp-gui lädt die Liste bewusst nicht selbst
+    aus dem Internet.
+- **Vollbild-Uhr unter `/clock`** für Wandmonitor und Tablet: große Ortszeit und UTC, Datum,
+  Kalenderwoche und ein Statusband (Ampel, Genauigkeit, Art der Quelle). Die Anzeige wird wie
+  bei NTP mit vier Zeitstempeln an die Serveruhr angeglichen (fünf Messungen, kürzeste Laufzeit
+  gewinnt) – die Uhr des Tablets ist egal. Hell, Dunkel und Rotlicht, Wake Lock (wo der Browser
+  es erlaubt), Taste F für Vollbild, graue Ampel nach 10 s ohne Verbindung. Erreichbar über das
+  neue Uhr-Symbol oben rechts. Neue Einstellung **Vollbild-Uhr ohne Anmeldung**
+  (`CLOCK_PUBLIC`, Standard aus): nur `/clock` und `/api/v1/time` ohne Passwort – mit Uhrzeit,
+  Ampel, Genauigkeit und Art der Quelle, ohne Namen, Adressen oder Einstellungen.
+- **Update-Hinweis (opt-in, Standard aus):** Einmal am Tag zu einer zufälligen Uhrzeit fragt
+  ntp-gui bei GitHub nach der neuesten Version (`releases/latest`) und vergleicht sie lokal.
+  Ist eine neuere da, erscheinen ein Banner und in der Übersicht ein Hinweis mit Release-Titel,
+  Link zu den Release-Notizen und der Markierung „Achtung beim Update“, wenn der Release-Text
+  „BREAKING“ oder „Achtung“ enthält. Kein Download, kein automatisches Update; für
+  Automatisierung Diun oder What's up Docker. Einschalten unter Einstellungen → Dashboard →
+  „Update-Hinweis“ oder `UPDATE_CHECK=true`. Ehrlich gesagt: GitHub sieht dann einmal am Tag
+  deine öffentliche IP-Adresse (grob ortbar) und dass dort vermutlich ntp-gui läuft.
+- **Grafana-Dashboard** `docs/grafana/ntp-gui.json` und **Prometheus-Alarmregeln**
+  `docs/prometheus/alerts.yml` (nicht synchron, Abweichung zu groß, keine Quelle, GPS ohne
+  Fix, PPS weg, Dienst gestört, NTS-Zertifikat und Schaltsekunden-Liste laufen ab, neue
+  Version). Ein Test stellt sicher, dass jede verwendete Metrik in `/metrics` existiert.
+- **Anleitungen für Integrationen** unter `docs/integrationen/`: Home Assistant, Homepage und
+  Glance, Uptime Kuma, Grafana/Prometheus.
+- **Übersicht:** Die Kachel „Systemuhr“ zeigt Temperatur (wenn ein Sensor aufzeichnet) und
+  wie lange die Schaltsekunden-Liste noch gilt; die Kachel „Dienste“ zeigt den DNS-Weiterleiter,
+  den DNS-Modus und den Zustand der Benachrichtigungen.
+- **Neue Metriken:** `ntpgui_max_error_seconds`, `ntpgui_sources`, `ntpgui_sources_usable`,
+  `ntpgui_info{version}`, `ntpgui_service_enabled`, `ntpgui_temperature_celsius`,
+  `ntpgui_leapseconds_list_days_left`, `ntpgui_tai_utc_offset_seconds`; mit Update-Hinweis
+  `ntpgui_update_available` und `ntpgui_update_check_last_success_timestamp_seconds`.
+- **Neue API-Endpunkte** (alle auch unter `/api/v1`, beschrieben in `GET /api/v1`):
+  `/notify/status` (Leserecht, nur Kennung, Art und Zustellstand), `/notify`,
+  `/notify/channels`, `/notify/channels/delete`, `/notify/test` (Verwaltungsrecht), `/dns`,
+  `/clients/overview`, `/clients/detail?ip=…`, `/clients/meta` und `/clients/probe`
+  (Verwaltungsrecht), `/temperature`, `/leap`, `/time`, `/update`. `/api/v1/status` hat neu
+  `dns`, `leap`, `notify` und `update`, `/clients/offsets` liefert zusätzlich `names`,
+  `/events` zusätzlich `display_title`.
+
+### Geändert
+- Alarm `NtpGuiServiceDown` und Grafana-Kachel „Dienste gestört“ zählen nur Dienste, die laut
+  Einstellungen laufen sollen (`ntpgui_service_enabled`) – absichtlich gestoppte Dienste lösen
+  keinen Alarm aus.
+- Das Update-Banner liegt nicht in der klebenden Kopfzeile und ist auf dem Handy kompakt.
+- Im Diagramm-Kopf steht bei Zeiträumen über einem Tag auch das Datum („Verlauf ab …“).
+
+### Sicherheit
+- **Datenschutz bei Benachrichtigungen:** Jede Nachricht läuft durch den Datenschutzfilter
+  (neuer Zweck `notify` mit eigener Feldliste). Hinaus gehen nur Titel, Text, Stufe, Art und
+  Zeit – keine Koordinaten (auch nicht mit Nullen am Ende wie „52.5200, 13.4050“), keine
+  öffentlichen IP-Adressen, keine eigenen Hostnamen, keine Ereignisdaten, keine Client-Namen.
+  Kann die Liste eigener Namen nicht ermittelt werden, wird nicht gesendet. Weiterleitungen
+  werden nie befolgt, Proxys aus der Umgebung nicht benutzt, Antworten höchstens 64 KiB.
+- Benachrichtigungs-Tokens werden nur als „gesetzt“ angezeigt, stehen nie im Ereignisprotokoll
+  oder Diagnosepaket und gehen nie an ein geändertes Ziel (Art, Host, Port oder Schema
+  geändert ⇒ Token neu eingeben). Über `http://` nur an Adressen im eigenen Netz. Adressen mit
+  Pfad (Webhook-IDs) zeigen Dashboard und API nur gekürzt.
+- Update-Hinweis: Die Anfrage an GitHub ist fest verdrahtet (eigener Filterzweck
+  `update_check`): User-Agent nur „ntp-gui“, ohne Version und Kennung, keine Daten der Instanz,
+  keine Weiterleitungen, Gesamtfrist 20 s, Antwort höchstens 512 KiB. Ausgeschaltet gibt es
+  keinerlei Netzzugriff.
+- DNS für ntp-gui: Loopback-Adressen auf Port 53 (auch `::ffff:127.0.0.1`) sind als
+  DNS-Server abgelehnt; API-Schlüssel mit Leserecht sehen DoH-Adressen nur gekürzt (sie können
+  eine Konto-Kennung enthalten, z. B. bei NextDNS). Status, Ereignisse und Diagnosepaket nennen
+  nur den Servernamen.
+- Clients: MAC-Adressen verlassen die Instanz nie; Namen und Notizen lehnen unsichtbare und
+  Bidi-Steuerzeichen ab; „private Adresse“ heißt genau RFC 1918, CGNAT, Link-lokal, ULA,
+  Loopback (6to4, Teredo, NAT64 zählen nicht). Der Client-Verlauf ist auch insgesamt begrenzt
+  (höchstens 2 Mio. Messpunkte), wechselnde Absenderadressen können `/data` nicht füllen.
+- Vollbild-Uhr ohne Anmeldung: Anonyme Anfragen an `/clock` und `/api/v1/time` unterliegen dem
+  Schutz vor DNS-Rebinding; `/api/v1/time` fragt chrony höchstens einmal pro Sekunde ab.
+- Diagnosepaket: Seriennummern von DS18B20-Fühlern werden entfernt.
+- **Lieferkette:** Jeder Release bringt je Architektur (amd64, arm64) eine SBOM (SPDX) und einen
+  Schwachstellen-Bericht (Grype) mit, beide aus dem veröffentlichten Digest; der Release bricht
+  bei einer kritischen Lücke mit verfügbarer Korrektur ab. Herkunftsnachweis (SLSA Build
+  Provenance) am Image, prüfbar mit `gh attestation verify`. Alle GitHub Actions per
+  Commit-SHA festgenagelt, OIDC-Token nur im eigenen Job, Release-Builds ohne Cache,
+  Basis-Image per Digest festgenagelt; Dependabot schlägt Updates für Actions und Basis-Image
+  vor. Image-Tags werden erst nach Scan und Nachweis gesetzt.
+- Integrations-Doku: Hinweis, dass der API-Schlüssel über HTTP im Klartext reist – HTTPS über
+  einen Reverse-Proxy oder ein vertrauenswürdiges Netz nutzen, je Integration ein eigener
+  Lese-Schlüssel.
+
 ## [1.3.2] – 2026-11-02
 
 ### Geändert
@@ -340,6 +508,7 @@ Erste Veröffentlichung.
 - CI mit Unittests und Integrationstest gegen das gebaute Image; Release-Workflow,
   der das Image für amd64 und arm64 nach ghcr.io veröffentlicht.
 
+[1.4.0]: https://github.com/ConGp20/ntp-gui/compare/v1.3.2...v1.4.0
 [1.3.2]: https://github.com/ConGp20/ntp-gui/compare/v1.3.1...v1.3.2
 [1.3.1]: https://github.com/ConGp20/ntp-gui/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/ConGp20/ntp-gui/compare/v1.2.0...v1.3.0

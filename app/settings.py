@@ -39,6 +39,8 @@ SECTIONS = [
     ("ntp", "Zeitquellen (NTP)", "Woher dieser Server selbst seine Zeit bezieht."),
     ("lan", "Zeitserver für das LAN", "Wer diesen Server fragen darf und wie er antwortet."),
     ("nts", "NTS (Network Time Security)", "Kryptografisch abgesicherte Zeit – als Client und optional als Server."),
+    ("dns", "DNS für ntp-gui", "Über welche DNS-Server ntp-gui selbst die Namen seiner Zeitquellen auflöst – "
+            "gegen Schleifen, wenn der DNS im LAN Zeitserver-Namen auf ntp-gui umschreibt."),
     ("gps", "GPS / GNSS", "Ein GPS-Empfänger als eigene Referenzuhr (Stratum 0)."),
     ("ptp", "PTP (IEEE 1588)", "Präzisionszeit über das Netzwerk – braucht passende Hardware."),
     ("web", "Dashboard", "Darstellung, Verlauf und Zugriffsschutz."),
@@ -207,6 +209,56 @@ def _as_public_name(value: Any) -> str:
     return _as_host(text)
 
 
+_URL_PATH_RE = re.compile(r"^[A-Za-z0-9._~!$&'()*+,;=:@%/-]*$")
+_URL_PORT_RE = re.compile(r"^\d{1,5}$")
+
+
+def http_url_ok(text: str, max_len: int = 300) -> bool:
+    """http(s)-URL ohne Zugangsdaten, Leer- und Steuerzeichen, mit gültigem Host.
+
+    Für Ziele ausgehender Verbindungen (Benachrichtigungen) und Links. Zugangsdaten
+    in der URL („user:pass@“) sind verboten: Sie würden unmaskiert in der Oberfläche
+    stehen – dafür gibt es eigene, maskierte Felder.
+    """
+    if not isinstance(text, str) or not text or len(text) > max_len:
+        return False
+    match = re.match(r"^(https?)://([^/?#]+)([^?#]*)(\?[^#]*)?(#.*)?$", text)
+    if not match:
+        return False
+    netloc, path = match.group(2), match.group(3)
+    query, fragment = (match.group(4) or "")[1:], (match.group(5) or "")[1:]
+    if "@" in netloc:
+        return False
+    if netloc.startswith("["):
+        host, _, rest = netloc[1:].partition("]")
+        port = rest[1:] if rest.startswith(":") else ("" if not rest else None)
+        try:
+            ipaddress.IPv6Address(host)
+        except ValueError:
+            return False
+    else:
+        host, _, port = netloc.partition(":")
+        try:
+            ipaddress.IPv4Address(host)
+        except ValueError:
+            if not _HOST_RE.match(host):
+                return False
+    if port is None or (port and not (_URL_PORT_RE.match(port) and 0 < int(port) < 65536)):
+        return False
+    return all(_URL_PATH_RE.match(part) for part in (path, query, fragment))
+
+
+def _as_link_url(value: Any) -> str:
+    """Leer oder http(s)-URL (Adresse des Dashboards für Links in Benachrichtigungen)."""
+    text = str(value if value is not None else "").strip()
+    if not text:
+        return ""
+    if not http_url_ok(text):
+        raise ValidationError("http:// oder https:// mit Hostname bzw. IP, ohne Leerzeichen und ohne "
+                              "Benutzer/Passwort, z. B. http://zeitserver.lan:8080/")
+    return text
+
+
 MAX_HOSTNAMES = 50
 
 
@@ -232,6 +284,121 @@ def _as_host_list(value: Any) -> list[str]:
     if len(names) > MAX_HOSTNAMES:
         raise ValidationError(f"Höchstens {MAX_HOSTNAMES} Namen")
     return names
+
+
+MAX_DNS_SERVERS = 8
+_DNS_PORT_RE = re.compile(r"^\d{1,5}$")
+
+
+def _list_items(value: Any) -> list[str]:
+    items = value if isinstance(value, list) else re.split(r"[,\s]+", str(value or ""))
+    return [str(item if item is not None else "").strip() for item in items if str(item or "").strip()]
+
+
+def _dns_port(text: str) -> int:
+    if not _DNS_PORT_RE.match(text) or not 0 < int(text) < 65536:
+        raise ValidationError(f"„{text}“ ist kein gültiger Port")
+    return int(text)
+
+
+def _as_dns_servers(value: Any) -> list[str]:
+    """DNS-Server als IP-Adresse, optional mit Port: 9.9.9.9, 9.9.9.9:5353, [2620:fe::fe]:53."""
+    out: list[str] = []
+    for item in _list_items(value):
+        text, port = item, 53
+        if item.startswith("["):
+            host, _, rest = item[1:].partition("]")
+            if rest and not rest.startswith(":"):
+                raise ValidationError(f"„{item}“: IPv6 mit Port als [Adresse]:Port schreiben")
+            text, port = host, (_dns_port(rest[1:]) if rest else 53)
+        elif item.count(":") == 1:
+            text, _, raw_port = item.partition(":")
+            port = _dns_port(raw_port)
+        try:
+            addr = ipaddress.ip_address(text)
+        except ValueError:
+            raise ValidationError(f"„{item}“ ist keine IP-Adresse – hier nur Adressen, z. B. 9.9.9.9 "
+                                  "(Namen bräuchten selbst wieder DNS)") from None
+        if addr.version == 6 and addr.ipv4_mapped:
+            addr = addr.ipv4_mapped  # ::ffff:127.0.0.1 ist 127.0.0.1
+        if addr.is_unspecified or addr.is_multicast:
+            raise ValidationError(f"„{item}“ ist keine Unicast-Adresse")
+        if addr.is_loopback and port == 53:
+            raise ValidationError(f"„{item}“ zeigt auf den Weiterleiter von ntp-gui selbst (Loopback, Port 53) "
+                                  "– das wäre eine Schleife")
+        norm = str(addr) if port == 53 else (f"[{addr}]:{port}" if addr.version == 6 else f"{addr}:{port}")
+        if norm not in out:
+            out.append(norm)
+    if len(out) > MAX_DNS_SERVERS:
+        raise ValidationError(f"Höchstens {MAX_DNS_SERVERS} Server")
+    return out
+
+
+def _as_dot_servers(value: Any) -> list[str]:
+    """DNS-over-TLS-Server als Name[:Port], z. B. dns.quad9.net oder one.one.one.one:853."""
+    out: list[str] = []
+    for item in _list_items(value):
+        host, port = item.lower().rstrip("."), None
+        if host.startswith("["):
+            inner, _, rest = host[1:].partition("]")
+            host, port = inner, (_dns_port(rest[1:]) if rest.startswith(":") else None)
+        elif host.count(":") == 1:
+            host, _, raw_port = host.partition(":")
+            port = _dns_port(raw_port)
+        try:
+            addr = ipaddress.ip_address(host)
+        except ValueError:
+            if not _HOST_RE.match(host) or "." not in host:
+                raise ValidationError(f"„{item}“ ist kein gültiger Servername, z. B. dns.quad9.net") from None
+            norm = host
+        else:
+            norm = f"[{addr}]" if addr.version == 6 else str(addr)
+        if port and port != 853:
+            norm = f"{norm}:{port}"
+        if norm not in out:
+            out.append(norm)
+    if len(out) > MAX_DNS_SERVERS:
+        raise ValidationError(f"Höchstens {MAX_DNS_SERVERS} Server")
+    return out
+
+
+def _as_doh_urls(value: Any) -> list[str]:
+    """DNS-over-HTTPS-Adressen (RFC 8484), nur https://, z. B. https://dns.quad9.net/dns-query."""
+    out: list[str] = []
+    for item in _list_items(value):
+        text = item[:-len("{?dns}")] if item.endswith("{?dns}") else item
+        if not text.lower().startswith("https://") or not http_url_ok(text):
+            raise ValidationError(f"„{item}“: https:// mit Servername und Pfad erwartet, ohne Benutzer/Passwort, "
+                                  "z. B. https://dns.quad9.net/dns-query")
+        if "#" in text:
+            raise ValidationError(f"„{item}“: kein #-Anteil erlaubt")
+        if text not in out:
+            out.append(text)
+    if len(out) > MAX_DNS_SERVERS:
+        raise ValidationError(f"Höchstens {MAX_DNS_SERVERS} Server")
+    return out
+
+
+def _as_dns_pins(value: Any) -> list[str]:
+    """Feste Adressen für DoT/DoH-Server: name=IP, z. B. dns.quad9.net=9.9.9.9."""
+    out: list[str] = []
+    for item in _list_items(value):
+        name, sep, ip = item.partition("=")
+        name = name.strip().lower().rstrip(".")
+        if not sep or not _HOST_RE.match(name) or "." not in name:
+            raise ValidationError(f"„{item}“: Format Name=IP, z. B. dns.quad9.net=9.9.9.9")
+        try:
+            addr = ipaddress.ip_address(ip.strip().strip("[]"))
+        except ValueError:
+            raise ValidationError(f"„{item}“: „{ip}“ ist keine IP-Adresse") from None
+        if addr.is_unspecified or addr.is_multicast or addr.is_loopback:
+            raise ValidationError(f"„{item}“: keine brauchbare Adresse")
+        norm = f"{name}={addr}"
+        if norm not in out:
+            out.append(norm)
+    if len(out) > 2 * MAX_DNS_SERVERS:
+        raise ValidationError(f"Höchstens {2 * MAX_DNS_SERVERS} Einträge")
+    return out
 
 
 def _as_network_list(value: Any) -> list[str]:
@@ -331,6 +498,20 @@ def _as_leapseclist(value: Any) -> str:
     if (not re.match(r"^/[A-Za-z0-9_./+-]{1,200}$", text) or ".." in text
             or not text.startswith(LEAPSECLIST_ROOTS)):
         raise ValidationError("Pfad muss unter /usr/share/zoneinfo/ oder /config/ liegen")
+    return text
+
+
+_TEMP_SENSOR_RE = re.compile(r"^(auto|off|thermal:[A-Za-z0-9_.+-]{1,40}(:\d{1,2})?"
+                             r"|hwmon:[A-Za-z0-9_.+-]{1,40}:temp\d{1,2}(:\d{1,2})?"
+                             r"|w1:28-[0-9a-f]{12})$")
+
+
+def _as_temp_sensor(value: Any) -> str:
+    """„auto“, „off“ oder eine Kennung aus thermal.discover() – nie ein Pfad."""
+    text = str(value if value is not None else "").strip() or "auto"
+    if not _TEMP_SENSOR_RE.match(text):
+        raise ValidationError("„auto“, „off“ oder eine Sensor-Kennung aus dem Hardware-Check "
+                              "(z. B. thermal:cpu-thermal, hwmon:k10temp:temp1, w1:28-…)")
     return text
 
 
@@ -494,6 +675,25 @@ SCHEMA: list[dict] = [
                 "danebenliegt – rein passiv, es wird nichts an die Geräte gesendet. So siehst "
                 "du, welche Geräte deinen Server wirklich nutzen und ob ihre Uhr stimmt. Die "
                 "Werte bleiben auf dieser Instanz. Wirkt ohne Neustart."),
+    _field("clients_alarm_ms", "lan", "Alarm, wenn eine Client-Uhr abweicht", "int", 0,
+           _as_number(int, 0, 86_400_000), env="CLIENTS_ALARM_MS", restart=RESTART_NONE,
+           advanced=True, unit="ms", placeholder="0 = aus",
+           help="Ab dieser Abweichung (in Millisekunden) schreibt ntp-gui ein Ereignis „Uhr von … "
+                "weicht um … ab“ – das kann eine Benachrichtigung auslösen. Zählt erst, wenn zwei "
+                "Messungen hintereinander darüber liegen; „wieder im Rahmen“ meldet es erst unter "
+                "der Hälfte der Schwelle, damit ein Gerät an der Grenze nicht ständig hin und her "
+                "meldet. 0 = aus. Sinnvoll sind etwa 1000 ms (Uhr geht eine Sekunde falsch)."),
+    _field("clients_rdns", "lan", "Namen der Clients per DNS nachschlagen", "bool", False, _as_bool,
+           env="CLIENTS_RDNS", restart=RESTART_NONE, advanced=True,
+           help="Zeigt auf der Detailseite eines Geräts seinen Namen aus dem DNS (Reverse-DNS, "
+                "z. B. „nas.fritz.box“). Standard: aus – die Frage verrät die Adresse deines Geräts "
+                "an den DNS-Server. Eingeschaltet fragt ntp-gui nur nach privaten LAN-Adressen, nur "
+                "beim Öffnen der Detailseite und nur, wenn jeder DNS-Server, über den die Frage gehen "
+                "kann, selbst eine private Adresse hat (System-DNS aus /etc/resolv.conf bzw. eigene "
+                "Server samt Rückfall). Bei DoT/DoH oder einem öffentlichen Server (Docker trägt z. B. "
+                "8.8.8.8 ein) wird nicht gefragt. Ein lokaler Zwischen-Resolver (127.0.0.53, "
+                "127.0.0.11) zählt als privat – wohin er weiterfragt, kann ntp-gui nicht sehen. "
+                "Der Name bleibt auf dieser Instanz."),
     _field("enforce_hostnames", "lan", "Weitere Namen für „Zeitserver erzwingen“", "hostlist",
            [], _as_host_list, env="ENFORCE_HOSTNAMES", restart=RESTART_NONE, advanced=True,
            placeholder="z. B. time.example.com",
@@ -542,6 +742,57 @@ SCHEMA: list[dict] = [
            help="Auf diesem TCP-Port nimmt chrony den TLS-Schlüsselaustausch (NTS-KE) an. "
                 "Standard ist 4460 – Clients erwarten ihn dort. Nur ändern, wenn ein Reverse "
                 "Proxy außen 4460 annimmt und intern an einen anderen Port weiterreicht."),
+
+    # --- DNS für ntp-gui ----------------------------------------------------
+    _field("dns_mode", "dns", "DNS für ntp-gui", "select", "system",
+           _as_choice("system", "servers", "dot", "doh"), env="DNS_MODE",
+           options=[("system", "System-DNS des Containers (Standard)"),
+                    ("servers", "Eigene DNS-Server (klassisches DNS)"),
+                    ("dot", "DNS-over-TLS (DoT)"), ("doh", "DNS-over-HTTPS (DoH)")],
+           help="Woher ntp-gui selbst Namen wie pool.ntp.org auflöst. „System-DNS“ ändert nichts. "
+                "Die anderen Modi starten einen kleinen Weiterleiter auf 127.0.0.1 im Container und "
+                "stellen /etc/resolv.conf darauf um – chronyd, NTS und die Prüfung „Zeitserver erzwingen“ "
+                "fragen dann deine Server statt des DNS im LAN. Wichtig, wenn AdGuard Home oder Pi-hole "
+                "Zeitserver-Namen auf ntp-gui umschreibt: Sonst fragt chronyd sich selbst. DoT und DoH "
+                "laufen verschlüsselt über 853/tcp bzw. 443/tcp und sind damit auch von einer "
+                "DNS-Umleitung per Firewall (Port 53) nicht betroffen. Steht in der Compose-Datei "
+                "„dns: 127.0.0.1“, gibt es keinen System-DNS mehr: Dann bei DoT/DoH die Server unter "
+                "„Feste Adressen“ eintragen oder „Eigene DNS-Server“ mit IP-Adressen nehmen."),
+    _field("dns_servers", "dns", "DNS-Server (IP-Adressen)", "hostlist", [], _as_dns_servers,
+           env="DNS_SERVERS", placeholder="z. B. 9.9.9.9 oder 1.1.1.1",
+           help="Für den Modus „Eigene DNS-Server“: IP-Adressen, optional mit Port (9.9.9.9:53, "
+                "[2620:fe::fe]:53). Nur Adressen, keine Namen – die bräuchten selbst wieder DNS. "
+                "Der Reihe nach gefragt; antwortet einer nicht, kommt der nächste dran. Achtung: "
+                "Leitet die Firewall Port 53 auf AdGuard/Pi-hole um, braucht ntp-gui dort eine Ausnahme "
+                "– oder du nimmst DoT/DoH."),
+    _field("dns_dot", "dns", "DNS-over-TLS-Server", "hostlist", [], _as_dot_servers,
+           env="DNS_DOT", placeholder="z. B. dns.quad9.net",
+           help="Für den Modus DoT: Servername, optional mit Port (Standard 853), z. B. dns.quad9.net, "
+                "one.one.one.one oder dns.digitale-gesellschaft.ch. Das Zertifikat wird gegen die "
+                "Zertifizierungsstellen des Systems und den Namen geprüft. Die Adresse des Servers "
+                "ermittelt ntp-gui über den System-DNS – oder du trägst sie unter „Feste Adressen“ "
+                "ein. Pflicht bei „dns: 127.0.0.1“ in der Compose-Datei: Dann fragte der System-DNS "
+                "wieder ntp-gui selbst, und der Name bliebe unauflösbar."),
+    _field("dns_doh", "dns", "DNS-over-HTTPS-Adressen", "hostlist", [], _as_doh_urls,
+           env="DNS_DOH", placeholder="z. B. https://dns.quad9.net/dns-query",
+           help="Für den Modus DoH: vollständige https-Adresse nach RFC 8484, z. B. "
+                "https://dns.quad9.net/dns-query oder https://cloudflare-dns.com/dns-query. ntp-gui "
+                "schickt die Anfrage per POST, folgt keiner Weiterleitung und nutzt keinen Proxy. Steht "
+                "im Pfad eine Konto-Kennung (z. B. NextDNS), zeigen Status, Ereignisse, Diagnose und "
+                "API-Schlüssel mit Leserecht nur den Servernamen. Bei „dns: 127.0.0.1“ in der "
+                "Compose-Datei den Servernamen unter „Feste Adressen“ eintragen – sonst ist er "
+                "nicht auflösbar."),
+    _field("dns_pin", "dns", "Feste Adressen für DoT/DoH", "hostlist", [], _as_dns_pins,
+           env="DNS_PIN", advanced=True, placeholder="z. B. dns.quad9.net=9.9.9.9",
+           help="Optional, je Zeile Name=IP, z. B. dns.quad9.net=9.9.9.9. Dann fragt ntp-gui für den "
+                "Verbindungsaufbau keinen System-DNS – sinnvoll, wenn der DNS im LAN unzuverlässig ist "
+                "oder selbst umgeleitet wird. Das Zertifikat wird weiter gegen den Namen geprüft."),
+    _field("dns_fallback", "dns", "Rückfall auf den System-DNS", "bool", True, _as_bool,
+           env="DNS_FALLBACK", advanced=True,
+           help="Antwortet keiner deiner Server, fragt ntp-gui den ursprünglichen DNS des Containers "
+                "und meldet das als Ereignis – lieber eine Antwort mit Schleifenrisiko als gar keine "
+                "Zeitquelle. Aus: Dann bleibt die Anfrage unbeantwortet, und nichts geht unverschlüsselt "
+                "hinaus – sinnvoll, wenn DoT/DoH aus Datenschutzgründen gewählt ist."),
 
     # --- GPS ---------------------------------------------------------------
     _field("gps_enable", "gps", "GPS verwenden", "bool", False, _as_bool, env="GPS_ENABLE",
@@ -742,10 +993,39 @@ SCHEMA: list[dict] = [
     _field("web_refresh_seconds", "web", "Aktualisierung", "float", 5.0,
            _as_number(float, 1.0, 300.0), env="WEB_REFRESH_SECONDS", unit="s",
            restart=RESTART_NONE, help="Wie oft das Dashboard neue Werte holt."),
+    _field("notify_dashboard_url", "web", "Adresse des Dashboards (für Links)", "text", "",
+           _as_link_url, env="NOTIFY_DASHBOARD_URL", restart=RESTART_NONE, advanced=True,
+           placeholder="z. B. http://zeitserver.lan:8080/",
+           help="Wenn gesetzt, hängt jede Benachrichtigung einen Link auf die passende Seite dieses "
+                "Dashboards an – ein Tipp auf dem Handy führt direkt zur GPS- oder Quellen-Seite. "
+                "Leer = kein Link. Der Link wird nicht gefiltert, weil du ihn selbst einträgst; trag "
+                "deshalb nur eine Adresse ein, die die Empfänger sehen dürfen."),
     _field("history_interval", "web", "Messintervall für Diagramme", "float", 10.0,
            _as_number(float, 2.0, 600.0), env="HISTORY_INTERVAL", unit="s",
            restart=RESTART_NONE, advanced=True,
            help="Alle wie viele Sekunden ein Messpunkt für die Verlaufsdiagramme entsteht."),
+    _field("temp_sensor", "web", "Temperatursensor", "text", "auto", _as_temp_sensor,
+           env="TEMP_SENSOR", restart=RESTART_NONE, advanced=True, placeholder="auto",
+           help="Welcher Sensor zu jedem Messpunkt die Temperatur liefert (Seite „Uhrqualität“). "
+                "„auto“ nimmt den Chip neben dem Quarz (Raspberry Pi: cpu-thermal, PC: x86_pkg_temp, "
+                "k10temp, coretemp), sonst einen DS18B20 am 1-Wire-Bus. „off“ schaltet die Aufzeichnung "
+                "ab. Die möglichen Kennungen listet der Hardware-Check. Wirkt ohne Neustart."),
+    _field("clock_public", "web", "Vollbild-Uhr ohne Anmeldung", "bool", False, _as_bool,
+           env="CLOCK_PUBLIC", restart=RESTART_NONE, advanced=True,
+           help="Macht /clock und /api/v1/time auch ohne Passwort erreichbar – praktisch für einen "
+                "Wandmonitor oder ein altes Tablet. Sichtbar werden nur Uhrzeit, Ampel, Genauigkeit "
+                "und die Art der Quelle (GPS, NTP …), keine Einstellungen, Namen oder Adressen. "
+                "Aus = die Uhr ist wie das Dashboard geschützt. Ohne Anmeldung gilt der Schutz vor "
+                "DNS-Rebinding: nur IP-Adressen, lokale Namen und WEB_ALLOWED_HOSTS. Wirkt ohne Neustart."),
+    _field("update_check", "web", "Update-Hinweis (fragt GitHub)", "bool", False, _as_bool,
+           env="UPDATE_CHECK", restart=RESTART_NONE,
+           help="Fragt einmal am Tag zu einer zufälligen Uhrzeit bei GitHub nach der neuesten "
+                "ntp-gui-Version und zeigt „Neue Version x.y.z verfügbar“ samt Link zu den "
+                "Release-Notizen. Gesendet wird nur eine feste Anfrage mit dem User-Agent „ntp-gui“ – "
+                "ohne Version, ohne Kennung, ohne Daten dieser Instanz. Ehrlich gesagt: GitHub sieht "
+                "dabei einmal am Tag deine öffentliche IP-Adresse (grob ortbar) und dass hier "
+                "vermutlich ntp-gui läuft. Darum ist der Hinweis aus, bis du ihn einschaltest. Kein "
+                "Download, kein automatisches Update. Wirkt ohne Neustart."),
 ]
 
 
@@ -1010,12 +1290,29 @@ def reset(keys: list[str]) -> dict[str, Any]:
     return {"changed": changed, "restart": restart}
 
 
-def public_schema() -> dict:
-    """Schema + aktuelle Werte für das Dashboard (ohne Funktionen und Geheimnisse)."""
+# Werte, die keine Geheimnisse sind, aber Konto-Kennungen enthalten können (NextDNS-ID im
+# DoH-Pfad): API-Schlüssel mit Leserecht sehen sie nur gekürzt.
+MASKED_FOR_READ = ("dns_doh",)
+
+
+def _mask_value(key: str, value: Any) -> Any:
+    if key == "dns_doh" and isinstance(value, list):
+        import dnsfwd
+        return [dnsfwd.doh_label(str(item)) for item in value]
+    return value
+
+
+def public_schema(masked: bool = False) -> dict:
+    """Schema + aktuelle Werte für das Dashboard (ohne Funktionen und Geheimnisse).
+    masked=True (API-Schlüssel mit Leserecht): MASKED_FOR_READ nur gekürzt."""
     eff = effective()
     fields = []
     for field in SCHEMA:
         entry = eff[field["key"]]
+        if masked and field["key"] in MASKED_FOR_READ:
+            entry = dict(entry, value=_mask_value(field["key"], entry["value"]),
+                         env=_mask_value(field["key"], entry["env"]) if entry["env"] is not None else None,
+                         error="Wert ungültig (Einzelheiten nur mit Admin-Recht)" if entry["error"] else None)
         fields.append({
             "key": field["key"], "section": field["section"], "label": field["label"],
             "type": field["type"], "help": field["help"], "advanced": field["advanced"],
@@ -1108,10 +1405,19 @@ def set_credentials(user: str, password: str | None) -> None:
         _write_file(data)
 
 
-def export_values() -> dict:
-    """Die im Dashboard gespeicherten Werte (ohne Passwort) – zum Sichern."""
+def export_values(masked: bool = False) -> dict:
+    """Die im Dashboard gespeicherten Werte (ohne Passwort) – zum Sichern. masked=True (API-Schlüssel
+    mit Leserecht): MASKED_FOR_READ gekürzt und unter „masked“ vermerkt – beim Import übersprungen."""
     with _LOCK:
-        return {"schema": SCHEMA_VERSION, "values": dict(_load_file().get("values", {}))}
+        values = dict(_load_file().get("values", {}))
+    out: dict[str, Any] = {"schema": SCHEMA_VERSION, "values": values}
+    if masked:
+        hidden = [key for key in MASKED_FOR_READ if key in values]
+        for key in hidden:
+            values[key] = _mask_value(key, values[key])
+        if hidden:
+            out["masked"] = hidden
+    return out
 
 
 # ---------------------------------------------------------------------------
