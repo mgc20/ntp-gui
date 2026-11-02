@@ -82,7 +82,9 @@ export const HELP_UHR = {
       + "und zu um eine **Schaltsekunde** angepasst (23:59:60 am 30. Juni oder 31. Dezember). Ob eine kommt, "
       + "kündigt das IERS in Paris im **Bulletin C** rund sechs Monate vorher an; die Datei leap-seconds.list "
       + "fasst alle Ankündigungen zusammen. chrony liest sie, kündigt eine Schaltsekunde an seine Clients an und "
-      + "fügt sie zum richtigen Zeitpunkt ein. Seit 2017 gab es keine mehr.",
+      + "fügt sie zum richtigen Zeitpunkt ein. Seit 2017 gab es keine mehr. Die Zahlen hier stammen aus der Datei, "
+      + "die chrony wirklich liest. Ist die Einstellung „Schaltsekunden-Liste“ leer, steht hier „abgeschaltet“; "
+      + "nutzt chrony eine „right/“-Zeitzone, ist die Liste nur zur Information und ihr Ablauf löst keinen Hinweis aus.",
   },
   leap_tai_utc: {
     title: "TAI − UTC",
@@ -148,7 +150,10 @@ export const HELP_UHR = {
       + "willst (und einen API-Schlüssel in der Adresse solltest du nie verwenden: der landet in Proxy- und "
       + "Browser-Logs). Sichtbar ist dann nur Uhrzeit, Ampel, Genauigkeit und die Art der Quelle (GPS, NTP …) – "
       + "keine Namen, Adressen oder Einstellungen. Es ist trotzdem die erste offene Seite neben /healthz: Lass "
-      + "es aus, wenn das Dashboard aus dem Internet erreichbar ist.",
+      + "es aus, wenn das Dashboard aus dem Internet erreichbar ist. Wer sich anmeldet, sieht auf /api/v1/time "
+      + "zusätzlich den Namen der Quelle. Für Anfragen ohne Anmeldung gilt der Schutz vor DNS-Rebinding: Sie werden "
+      + "nur über IP-Adressen, einteilige oder lokale Namen (*.local, *.lan …) und WEB_ALLOWED_HOSTS beantwortet – "
+      + "sonst könnte jede Webseite, die jemand im LAN öffnet, den Zustand deines Servers abfragen.",
   },
 };
 

@@ -1015,7 +1015,8 @@ SCHEMA: list[dict] = [
            help="Macht /clock und /api/v1/time auch ohne Passwort erreichbar – praktisch für einen "
                 "Wandmonitor oder ein altes Tablet. Sichtbar werden nur Uhrzeit, Ampel, Genauigkeit "
                 "und die Art der Quelle (GPS, NTP …), keine Einstellungen, Namen oder Adressen. "
-                "Aus = die Uhr ist wie das Dashboard geschützt. Wirkt ohne Neustart."),
+                "Aus = die Uhr ist wie das Dashboard geschützt. Ohne Anmeldung gilt der Schutz vor "
+                "DNS-Rebinding: nur IP-Adressen, lokale Namen und WEB_ALLOWED_HOSTS. Wirkt ohne Neustart."),
     _field("update_check", "web", "Update-Hinweis (fragt GitHub)", "bool", False, _as_bool,
            env="UPDATE_CHECK", restart=RESTART_NONE,
            help="Fragt einmal am Tag zu einer zufälligen Uhrzeit bei GitHub nach der neuesten "

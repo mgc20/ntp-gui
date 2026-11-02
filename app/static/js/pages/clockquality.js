@@ -70,12 +70,17 @@ function temperatureSection(ctx, data) {
       + "die Grundlage für einen Temperaturausgleich ab 1.5. Hier wird nur gemessen, nichts verstellt." },
   el("div", { class: "stat-row" },
     tile({ label: "Sensor", help: "temp_sensor", value: sensor.name || "–", note: data.setting === "auto" ? "automatisch gewählt" : "eingestellt", tone: "muted" }),
-    tile({ label: "Temperatur jetzt", help: "temp_now", value: isNum(data.celsius) ? fmtFixed(data.celsius, 1) : "–", unit: "°C", tone: "muted" }),
+    tile({ label: "Temperatur jetzt", help: "temp_now", value: isNum(data.celsius) ? fmtFixed(data.celsius, 1) : "–", unit: "°C",
+      note: data.reason === "no_value" ? "kein Wert – wird nicht aufgezeichnet" : null, tone: data.reason === "no_value" ? "warn" : "muted" }),
     tile({ label: "Spanne", help: "temp_span", value: isNum(summary.span_k) ? fmtFixed(summary.span_k, 1) : "–", unit: "K",
       note: isNum(summary.temp_min) ? `${fmtC(summary.temp_min)} … ${fmtC(summary.temp_max)}` : null, tone }),
     tile({ label: "Messdauer", help: "temp_duration", value: fmtDays(summary.days), note: `${fmtNumber(summary.count || 0, 0)} Punkte`, tone }),
     tile({ label: "Zusammenhang r", help: "temp_correlation", value: isNum(r) ? fmtFixed(r, 2) : "–",
       note: !isNum(r) ? "zu wenige Punkte" : Math.abs(r) >= 0.5 ? "deutlich" : Math.abs(r) >= 0.2 ? "schwach" : "kaum", tone: "muted" })),
+  data.reason === "no_value"
+    ? el("p", { class: "hw-note" }, rich("Der gewählte Sensor liefert gerade **keinen plausiblen Wert** (−40 bis 125 °C) – "
+      + "neue Messpunkte bekommen keine Temperatur. Der **Hardware-Check** zeigt alle Sensoren und ihre Werte."))
+    : null,
   el("p", { class: "hw-note" }, rich(readiness(summary)))));
 
   const scatter = el("div", { class: "chart-host" });
@@ -116,28 +121,47 @@ function fmtDate(iso) {
 function leapSection(info_, status) {
   if (!info_) return card("Schaltsekunden", { help: "leap_overview" }, emptyNote("lädt …"));
   const chrony = info_.chrony_leap || status?.tracking?.leap_status;
+  const chronyRow = ["Leap-Status von chrony", CHRONY_LEAP[chrony] || chrony || "–", "leap"];
+  if (info_.reason === "disabled") {
+    return card("Schaltsekunden", { help: "leap_overview", badge: badge("abgeschaltet", "warn") },
+      emptyNote("chrony kennt keine Schaltsekunden – die Einstellung „Schaltsekunden-Liste“ ist leer. Der Server kündigt "
+        + "dann keine Schaltsekunde an und fügt sie nicht ein; er und seine Clients lägen danach eine Sekunde daneben, "
+        + "bis sie nachregeln. Standard ist /usr/share/zoneinfo/leap-seconds.list (Einstellungen → Zeitquellen, erweitert)."),
+      kv([chronyRow, ["Datei", "keine", "leap_source"]]));
+  }
+  const tz = info_.reason === "tz" ? info_.leapsectz : null;
   if (!info_.available) {
+    if (tz) {
+      return card("Schaltsekunden", { help: "leap_overview", badge: badge(`Zeitzone ${tz}`, "muted") },
+        emptyNote(`chrony liest Schaltsekunden aus der Zeitzone ${tz}. Die Liste ${info_.path} wäre nur zur Information da `
+          + `und ist nicht lesbar: ${info_.error || "unbekannter Fehler"}.`),
+        kv([chronyRow, ["Datei", `Zeitzone ${tz}`, "leap_source"]]));
+    }
     return card("Schaltsekunden", { help: "leap_overview", badge: badge("Liste fehlt", "warn") },
       emptyNote(`Die Schaltsekunden-Liste ${info_.path} ist nicht lesbar: ${info_.error || "unbekannter Fehler"}.`),
-      kv([["Leap-Status von chrony", CHRONY_LEAP[chrony] || chrony || "–", "leap"], ["Datei", info_.path, "leap_source"]]));
+      kv([chronyRow, ["Datei", info_.path, "leap_source"]]));
   }
   const days = info_.days_left;
-  const expiryTone = info_.expired ? "crit" : info_.reason === "expiring" ? "warn" : "good";
+  const listReason = tz ? info_.list_reason : info_.reason;
+  const expiryTone = tz ? "muted" : info_.expired ? "crit" : listReason === "expiring" ? "warn" : "good";
   const expiryText = info_.expired ? `abgelaufen seit ${-days} Tagen` : `noch ${days} Tage`;
   const hash = info_.hash_ok === true ? badge("stimmt", "good") : info_.hash_ok === false ? badge("stimmt nicht", "crit") : badge("keine Prüfsumme in der Datei", "muted");
   const last = info_.last_leap_date
     ? `${fmtDate(info_.last_leap_date)} (${info_.last_leap_delta > 0 ? "+" : "−"}1 s)` : "–";
-  const headBadge = info_.level === "warn" ? badge(info_.reason === "hash" ? "Prüfsumme falsch" : "Image zu alt", "warn") : badge("aktuell", "good");
-  return card("Schaltsekunden", { help: "leap_overview", badge: headBadge,
-    sub: "Aus der leap-seconds.list im Image (Paket tzdata) – ntp-gui lädt sie nicht selbst nach." },
+  const headBadge = tz ? badge(`Zeitzone ${tz}`, "muted")
+    : info_.level === "warn" ? badge(info_.reason === "hash" ? "Prüfsumme falsch" : "Image zu alt", "warn") : badge("aktuell", "good");
+  const sub = tz
+    ? `chrony liest Schaltsekunden aus der Zeitzone ${tz} – die Liste unten ist nur zur Information; ihr Ablaufdatum spielt für chrony keine Rolle.`
+    : "Aus der leap-seconds.list im Image (Paket tzdata) – ntp-gui lädt sie nicht selbst nach.";
+  return card("Schaltsekunden", { help: "leap_overview", badge: headBadge, sub },
   kv([
     ["TAI − UTC", isNum(info_.tai_utc) ? `${info_.tai_utc} s` : "–", "leap_tai_utc"],
     ["Letzte Schaltsekunde", last, "leap_last"],
     ["Angekündigt", info_.next_leap_date ? `${fmtDate(info_.next_leap_date)} (${info_.next_leap_delta > 0 ? "+" : "−"}1 s)` : "keine", "leap_next"],
     ["Liste gültig bis", el("span", {}, `${fmtDate(info_.expires_date)} `, badge(expiryText, expiryTone)), "leap_expiry"],
     ["Prüfsumme (SHA-1)", hash, "leap_hash"],
-    ["Leap-Status von chrony", CHRONY_LEAP[chrony] || chrony || "–", "leap"],
-    ["Datei", info_.leapsectz ? `${info_.path} (chrony nutzt die Zeitzone ${info_.leapsectz})` : info_.path, "leap_source"],
+    chronyRow,
+    ["Datei", tz ? `${info_.path} (chrony nutzt die Zeitzone ${tz})` : info_.path, "leap_source"],
     ["Zukunft der Schaltsekunde", "spätestens 2035 abgeschafft (CGPM 2022)", "leap_future"],
   ]));
 }

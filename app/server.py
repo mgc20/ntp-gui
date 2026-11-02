@@ -20,7 +20,10 @@ Schutz der schreibenden Routen:
     werden nur Anfragen an IP-Adressen, localhost, den eigenen Hostnamen,
     lokale Namen (*.local, *.lan, *.home.arpa, *.internal …), den
     NTS-Namen und WEB_ALLOWED_HOSTS beantwortet (host_allowed). Mit Passwort
-    schützt die Anmeldung, dann gilt jeder Name. /healthz ist immer offen.
+    schützt die Anmeldung, dann gilt jeder Name. /healthz ist immer offen;
+  * clock_public: /clock, /api/v1/time und ihre vier statischen Dateien
+    antworten ohne Anmeldung (nur Zeit und Ampel) – die Host-Prüfung gilt für
+    diese anonymen Anfragen trotzdem, auch wenn ein Passwort gesetzt ist.
 """
 
 from __future__ import annotations
@@ -623,9 +626,26 @@ def _update_status() -> dict:
 # Refids, die als Art der Quelle öffentlich gezeigt werden dürfen (eigene Refids sind Einstellungen).
 KNOWN_REFIDS = {"GPS": "GPS", "PPS": "GPS + PPS", "NMEA": "GPS", "GNSS": "GNSS", "PHC": "PTP", "PTP": "PTP",
                 "SHM0": "GPS", "SHM1": "GPS + PPS", "DCF": "DCF77"}
+# chrony vergibt ohne „refid“ den Treibernamen plus Nummer (PHC0, PHC1 …) – so schreibt confgen den PHC-Refclock.
+_DRIVER_REFID = re.compile(r"^(PHC|SHM|PPS|SOCK)(\d+)$")
+_DRIVER_KIND = {"PHC": "PTP", "SHM": "GPS", "PPS": "GPS + PPS", "SOCK": "GPS"}
 
 
-def clock_status(tracking: dict) -> dict:
+def source_kind(ref: str, cfg: dict | None = None) -> str:
+    """Art einer Stratum-1-Quelle aus ihrer Refid – nie die Refid selbst (eigene Namen sind Einstellungen)."""
+    ref = str(ref or "").strip().upper()
+    if ref in KNOWN_REFIDS:
+        return KNOWN_REFIDS[ref]
+    match = _DRIVER_REFID.match(ref)
+    if match:
+        return _DRIVER_KIND[match.group(1)]
+    gps_refid = str((cfg or {}).get("gps_refid") or "").strip().upper()
+    if gps_refid and ref == gps_refid:
+        return "GPS"   # confgen: refclock SHM … refid <gps_refid>; PPS hat immer die Refid „PPS“
+    return "Referenzuhr"
+
+
+def clock_status(tracking: dict, cfg: dict | None = None) -> dict:
     """Ampel und Quelle für /clock – ohne Namen, Adressen oder Einstellungen."""
     running = bool(tracking)
     synced = bool(tracking.get("synchronised"))
@@ -642,17 +662,41 @@ def clock_status(tracking: dict) -> dict:
     elif not synced:
         kind, level = None, "warn"
     else:
-        ref = str(tracking.get("ref_name") or "").strip().upper()
-        kind = KNOWN_REFIDS.get(ref, "Referenzuhr") if stratum == 1 else "NTP"
+        kind = source_kind(tracking.get("ref_name"), cfg) if stratum == 1 else "NTP"
         level = "good" if accuracy is None or accuracy < 0.1 else "warn"
     return {"synchronised": synced, "running": running, "level": level, "accuracy": accuracy,
             "stratum": stratum, "leap": tracking.get("leap_status") or None, "source_kind": kind}
 
 
+CLOCK_CACHE_SECONDS = 1.0
+_CLOCK_CACHE: dict = {"t": None, "tracking": None}
+_CLOCK_CACHE_LOCK = threading.Lock()
+
+
+def _clock_tracking() -> dict:
+    """chronyc tracking für /api/v1/time, höchstens einmal je Sekunde.
+
+    Viele Wanduhren (je 5 Anfragen pro Abgleich plus Status alle 5 s) und – mit
+    clock_public – Anfragen ohne Anmeldung sollen nicht je einen chronyc-Prozess
+    starten. t1/t2 bleiben pro Anfrage; nur der Status ist bis zu 1 s alt.
+    """
+    with _CLOCK_CACHE_LOCK:
+        now = time.monotonic()
+        if _CLOCK_CACHE["t"] is not None and now - _CLOCK_CACHE["t"] < CLOCK_CACHE_SECONDS:
+            return _CLOCK_CACHE["tracking"]
+        tracking = chrony.tracking()
+        _CLOCK_CACHE.update(t=time.monotonic(), tracking=tracking)
+        return tracking
+
+
 def time_payload(received: float, public: bool) -> dict:
     """Antwort von /api/v1/time. t2 wird so spät wie möglich genommen."""
-    tracking = chrony.tracking()
-    out = clock_status(tracking)
+    tracking = _clock_tracking()
+    try:
+        cfg = settings.values()
+    except Exception:
+        cfg = {}
+    out = clock_status(tracking, cfg)
     out.update(t1=received, public=public,
                source=None if public else (str(tracking.get("ref_name") or "") or None))
     out["t2"] = time.time()
@@ -765,7 +809,8 @@ def build_metrics() -> str:
         _metric(lines, "ntpgui_temperature_celsius", last.get("celsius"),
                 "Temperature of the selected sensor (Uhrqualitaet, last history sample)")
     leap_info = leap.status(settings.values(), tracking)
-    if leap_info.get("available"):
+    if leap_info.get("available") and leap_info.get("source") == "list":
+        # Nur die Datei, die chrony wirklich liest – sonst meldet die Metrik ein Ablaufdatum ohne Bedeutung.
         _metric(lines, "ntpgui_leapseconds_list_days_left", leap_info.get("days_left"),
                 "Days until leap-seconds.list expires (negative = expired)")
         _metric(lines, "ntpgui_tai_utc_offset_seconds", leap_info.get("tai_utc"), "TAI-UTC from leap-seconds.list")
@@ -1093,8 +1138,16 @@ class Handler(BaseHTTPRequestHandler):
         received = time.time()   # t1 für /api/v1/time – so früh wie möglich
         path, index = self._api_path(self.path)
         if path in CLOCK_PUBLIC_PATHS and self._clock_public():
+            # Wer gültig angemeldet ist, bekommt die volle Antwort (mit Quellennamen); sonst die
+            # öffentliche – nie 401. Ohne Anmeldung gilt auch hier die Host-Prüfung (DNS-Rebinding).
+            ident = self._identity()
+            full = (ident is not None and ident.get("kind") != "open"
+                    and self._scope_ok(ident, "GET", path))
+            if not full and not self._host_ok({"kind": "open"}):
+                return
             try:
-                self._route_clock(path, received, public=True)
+                # Ohne Passwort ist ohnehin alles offen – dann auch der Quellenname.
+                self._route_clock(path, received, public=not (full or (ident or {}).get("kind") == "open"))
             except BrokenPipeError:
                 pass
             return

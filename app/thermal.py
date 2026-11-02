@@ -197,7 +197,13 @@ def choose(sensors: list[dict[str, Any]], setting: str | None) -> dict[str, Any]
 
 
 def public(sensor: dict[str, Any] | None) -> dict[str, Any] | None:
-    """Sensor für API/Hardware-Check – ohne Pfad und ohne DS18B20-Seriennummer im Namen."""
+    """Sensor für API/Hardware-Check – ohne Dateipfad.
+
+    Achtung: id („w1:28-<Seriennummer>“) und label enthalten bei einem DS18B20 die volle
+    1-Wire-Seriennummer – die Einstellung temp_sensor braucht sie. Anonymisiert ist das
+    erst im Diagnosepaket (egress/diagnostics); wer diese Felder nach außen gibt, muss
+    sie selbst durch den Egress-Filter schicken.
+    """
     if not sensor:
         return None
     out = {k: sensor.get(k) for k in ("id", "kind", "name", "label", "celsius")}
@@ -245,12 +251,17 @@ class Monitor:
             reason = "none"
         elif sensor is None:
             reason = "missing" if setting != "auto" else "no_value"
+        celsius = read(sensor) if sensor else None
+        if sensor is not None and celsius is None:
+            # Sensor da, aber kein plausibler Wert (DS18B20 hängt z. B. auf 85 °C) – dann wird nichts
+            # aufgezeichnet. available bleibt true: der Sensor ist gewählt, ältere Werte gibt es evtl.
+            reason = "no_value"
         return {
             "available": sensor is not None,
             "setting": setting,
             "reason": reason,
             "sensor": public(sensor),
-            "celsius": read(sensor) if sensor else None,
+            "celsius": celsius,
             "candidates": [public(s) for s in sensors],
         }
 

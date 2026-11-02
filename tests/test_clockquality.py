@@ -164,6 +164,14 @@ class ThermalDiscoverTest(unittest.TestCase):
             self.assertFalse(status["available"])
             self.assertEqual(status["reason"], "none")
 
+    def test_selected_sensor_without_value(self):
+        self.sys.w1("28-0316a2794bff", temperature=85000)  # DS18B20 hängt auf dem Einschaltwert
+        with mock.patch.dict(os.environ, {"NTPGUI_SYS_ROOT": str(self.sys.root)}):
+            status = thermal.Monitor().status("w1:28-0316a2794bff")
+        self.assertTrue(status["available"])
+        self.assertIsNone(status["celsius"])
+        self.assertEqual(status["reason"], "no_value", "nicht als „wird aufgezeichnet“ melden")
+
     def test_setting_validation(self):
         for good in ("auto", "off", "", "thermal:cpu-thermal", "hwmon:k10temp:temp1", "hwmon:nvme:temp2:2",
                      "w1:28-0316a2794bff"):
@@ -302,6 +310,63 @@ class LeapParseTest(unittest.TestCase):
         self.assertEqual(info["tai_utc"], 37)
 
 
+class LeapSourceTest(unittest.TestCase):
+    """UQ-1: Zahlen und Warnungen nur für die Datei, die chrony wirklich liest."""
+
+    def test_error_never_quotes_file_content(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        secret = Path(tmp.name) / "nts.key"
+        secret.write_text("webhook_token=SuperSecretValue123456789 more\n", encoding="ascii")
+        info = leap.status(path=str(secret))
+        self.assertFalse(info["available"])
+        self.assertNotIn("SuperSecret", info["error"])
+        self.assertNotIn("webhook", info["error"])
+        self.assertIn("Zeile 1", info["error"])
+        with self.assertRaises(leap.LeapFileError) as ctx:
+            leap.parse("#@ 4023129600\n# Kommentar\ngeheim=wert 1\n")
+        self.assertNotIn("geheim", str(ctx.exception))
+        self.assertIn("Zeile 3", str(ctx.exception))
+
+    def test_empty_setting_is_disabled(self):
+        info = leap.status({"leapseclist": "", "leapsectz": ""}, {"leap_status": "Normal"}, now=NOW)
+        self.assertEqual((info["source"], info["reason"], info["level"]), ("none", "disabled", "warn"))
+        self.assertFalse(info["available"])
+        self.assertIsNone(info["path"])
+        self.assertNotIn("days_left", info, "keine Zahlen einer Datei, die chrony nicht liest")
+        self.assertEqual(leap.insights(info), [])
+        watch = leap.Watch(lambda *a: self.fail("kein Ereignis"), lambda since: [])
+        self.assertFalse(watch.check(info, NOW))
+
+    def test_leapsectz_makes_list_informational(self):
+        exists = lambda p: p == os.path.join(leap.ZONEINFO, "right/UTC")  # noqa: E731
+        with mock.patch.object(leap, "DEFAULT_PATH", str(LEAP_EXPIRED)):
+            info = leap.status({"leapseclist": "", "leapsectz": "right/UTC"}, now=NOW, exists=exists)
+        self.assertEqual((info["source"], info["leapsectz"]), ("tz", "right/UTC"))
+        self.assertTrue(info["available"])
+        self.assertEqual((info["level"], info["reason"], info["list_reason"]), ("info", "tz", "expired"))
+        self.assertEqual(leap.insights(info), [], "abgelaufene Liste, die chrony ignoriert: kein Hinweis")
+        watch = leap.Watch(lambda *a: self.fail("kein Ereignis"), lambda since: [])
+        self.assertFalse(watch.check(info, NOW))
+        # Zone fehlt im Image → confgen nimmt die Liste, also gilt sie auch hier.
+        info = leap.status({"leapseclist": str(LEAP_EXPIRED), "leapsectz": "right/UTC"}, now=NOW,
+                           exists=lambda p: False)
+        self.assertEqual((info["source"], info["reason"]), ("list", "expired"))
+        self.assertTrue(leap.insights(info))
+
+    def test_matches_confgen_rule(self):
+        import confgen
+        cases = [{"leapseclist": "/a.list", "leapsectz": ""}, {"leapseclist": "", "leapsectz": ""},
+                 {"leapseclist": "/a.list", "leapsectz": "right/UTC"}, {"leapseclist": "", "leapsectz": "right/UTC"}]
+        for zone_exists in (True, False):
+            exists = lambda p, z=zone_exists: True if p == "/a.list" else z  # noqa: E731
+            for cfg in cases:
+                directive = confgen.leap_directive(cfg, warn=lambda *a: None, exists=exists)
+                source, detail = leap.chrony_source(cfg, exists)
+                expected = {"tz": f"leapsectz {detail}", "list": f"leapseclist {detail}", "none": None}[source]
+                self.assertEqual(directive, expected, (cfg, zone_exists))
+
+
 class LeapWatchTest(unittest.TestCase):
     def test_expired_file_emits_leap_warn_once(self):
         emitted, recent = [], []
@@ -354,6 +419,12 @@ class ClockStatusTest(unittest.TestCase):
         self.assertAlmostEqual(out["accuracy"], 2.1e-5)
         own = server.clock_status({**gps, "ref_name": "XYZ1"})
         self.assertEqual(own["source_kind"], "Referenzuhr", "eigene Refid wird nicht verraten")
+        for ref in ("PHC0", "PHC1", "phc2"):
+            self.assertEqual(server.clock_status({**gps, "ref_name": ref})["source_kind"], "PTP", ref)
+        gnss = server.clock_status({**gps, "ref_name": "GNS1"}, {"gps_refid": "GNS1"})
+        self.assertEqual(gnss["source_kind"], "GPS", "eigene gps_refid ist GPS")
+        self.assertEqual(server.clock_status({**gps, "ref_name": "GNS1"}, {"gps_refid": "GPS"})["source_kind"],
+                         "Referenzuhr")
         ntp = server.clock_status({**gps, "stratum": 3, "ref_name": "ptbtime1.ptb.de", "root_delay": 0.02})
         self.assertEqual(ntp["source_kind"], "NTP")
         bad = server.clock_status({**gps, "stratum": 3, "root_delay": 0.4})
@@ -395,11 +466,16 @@ class ClockHttpTest(unittest.TestCase):
         server.AUTH_CACHE.clear()
         cls.tmp.cleanup()
 
-    def request(self, path, auth=False):
+    def setUp(self):
+        server._CLOCK_CACHE.update(t=None, tracking=None)
+
+    def request(self, path, auth=False, host="example.com"):
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
-        headers = {"Host": "example.com"}
-        if auth:
+        headers = {"Host": host}
+        if auth is True:
             headers["Authorization"] = "Basic " + base64.b64encode(b"admin:geheim123").decode()
+        elif auth:
+            headers["Authorization"] = "Basic " + base64.b64encode(auth.encode()).decode()
         conn.request("GET", path, headers=headers)
         resp = conn.getresponse()
         body = resp.read()
@@ -427,7 +503,7 @@ class ClockHttpTest(unittest.TestCase):
     def test_public_clock_shows_only_time(self):
         self.set_public(True)
         before = time.time()
-        status, body = self.request("/api/v1/time")
+        status, body = self.request("/api/v1/time", host="uhr.local")
         self.assertEqual(status, 200)
         payload = json.loads(body)
         self.assertTrue(before <= payload["t1"] <= payload["t2"] <= time.time())
@@ -436,11 +512,41 @@ class ClockHttpTest(unittest.TestCase):
         self.assertEqual(payload["source_kind"], "NTP")
         self.assertNotIn(b"fritz", body)
         for path in ("/clock", "/static/app.css", "/static/clock.css", "/static/js/clock.js", "/static/js/clocksync.js"):
-            self.assertEqual(self.request(path)[0], 200, path)
+            self.assertEqual(self.request(path, host="uhr.local")[0], 200, path)
         # Alles andere bleibt geschützt.
         for path in ("/", "/api/status", "/api/v1/status", "/static/js/app.js", "/api/leap", "/api/temperature",
                      "/metrics", "/static/index.html"):
-            self.assertEqual(self.request(path)[0], 401, path)
+            self.assertEqual(self.request(path, host="uhr.local")[0], 401, path)
+
+    def test_public_clock_logged_in_gets_source(self):
+        self.set_public(True)
+        status, body = self.request("/api/v1/time", auth=True)
+        self.assertEqual(status, 200)
+        payload = json.loads(body)
+        self.assertFalse(payload["public"])
+        self.assertEqual(payload["source"], "nas.fritz.box", "angemeldet: mit Quellennamen")
+        status, body = self.request("/api/v1/time", auth="admin:falsch", host="uhr.local")
+        self.assertEqual(status, 200, "falsches Passwort: öffentliche Antwort, kein 401")
+        self.assertTrue(json.loads(body)["public"])
+        self.assertIsNone(json.loads(body)["source"])
+
+    def test_public_clock_keeps_host_check(self):
+        self.set_public(True)
+        for path in ("/api/v1/time", "/clock", "/static/js/clock.js"):
+            self.assertEqual(self.request(path, host="evil.example")[0], 403, path)
+        self.assertEqual(self.request("/api/v1/time", host="192.168.1.5")[0], 200)
+        self.assertEqual(self.request("/api/v1/time", auth=True, host="evil.example")[0], 200,
+                         "angemeldet schützt das Passwort")
+
+    def test_time_status_is_cached(self):
+        self.set_public(False)
+        with mock.patch.object(server.chrony, "tracking", return_value=dict(self.TRACKING)) as tracking:
+            for _ in range(5):
+                self.assertEqual(self.request("/api/v1/time", auth=True)[0], 200)
+            self.assertEqual(tracking.call_count, 1, "höchstens ein chronyc je Sekunde")
+            server._CLOCK_CACHE["t"] -= 2
+            self.request("/api/v1/time", auth=True)
+            self.assertEqual(tracking.call_count, 2)
 
     def test_v1_description(self):
         status, body = self.request("/api/v1", auth=True)
@@ -479,11 +585,21 @@ class MetricsTest(unittest.TestCase):
                 mock.patch.object(server.gps, "status", return_value={"enabled": False}), \
                 mock.patch.object(server.ptp, "status", return_value={"enabled": False}), \
                 mock.patch.object(server.thermal.MONITOR, "last", {"t": time.time(), "celsius": 42.5}), \
-                mock.patch.object(server.leap, "file_path", return_value=str(LEAP_REAL)):
+                mock.patch.object(server.leap, "chrony_source", return_value=("list", str(LEAP_REAL))):
             text = server.build_metrics()
         self.assertIn("ntpgui_temperature_celsius 42.5", text)
         self.assertIn("ntpgui_tai_utc_offset_seconds 37", text)
         self.assertIn("ntpgui_leapseconds_list_days_left", text)
+        with mock.patch.object(server.chrony, "tracking", return_value={}), \
+                mock.patch.object(server.chrony, "detailed_sources", return_value=[]), \
+                mock.patch.object(server.chrony, "serverstats", return_value={}), \
+                mock.patch.object(server.chrony, "clients", return_value=[]), \
+                mock.patch.object(server.chrony, "nts_server_status", return_value={"enabled": False}), \
+                mock.patch.object(server.gps, "status", return_value={"enabled": False}), \
+                mock.patch.object(server.ptp, "status", return_value={"enabled": False}), \
+                mock.patch.object(server.leap, "chrony_source", return_value=("none", None)):
+            self.assertNotIn("ntpgui_leapseconds_list_days_left", server.build_metrics(),
+                             "chrony liest keine Liste – kein Ablaufdatum melden")
         with mock.patch.object(server.chrony, "tracking", return_value={}), \
                 mock.patch.object(server.chrony, "detailed_sources", return_value=[]), \
                 mock.patch.object(server.chrony, "serverstats", return_value={}), \

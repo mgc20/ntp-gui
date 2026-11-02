@@ -331,6 +331,8 @@ function temperatureCard(report) {
   const chosen = temp.sensor?.id;
   const note = !rows.length
     ? "Keine Temperatursensoren sichtbar – typisch für VMs und Docker Desktop. Die Seite **Uhrqualität** zeigt dann „nicht verfügbar“."
+    : temp.available && temp.reason === "no_value"
+      ? `Eingestellt ist **${temp.sensor.label || temp.sensor.id}**, aber er liefert gerade keinen plausiblen Wert – es wird nichts aufgezeichnet. Ein DS18B20, der dauerhaft 85 °C meldet, bekommt meist zu wenig Strom (4,7-kΩ-Widerstand prüfen); sonst in den Einstellungen „auto“ wählen.`
     : temp.available
       ? `Aufgezeichnet wird **${temp.sensor.label || temp.sensor.id}** (Einstellung „${temp.setting}“). Die Kennung eines anderen Sensors kannst du in den Einstellungen unter „Temperatursensor“ eintragen.`
       : "Der eingestellte Sensor liefert keinen Wert – in den Einstellungen „auto“ wählen oder eine Kennung aus der Tabelle eintragen.";

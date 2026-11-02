@@ -47,7 +47,7 @@ def parse(text: str) -> dict[str, Any]:
     hash_words: list[int] | None = None
     entries: list[tuple[int, int]] = []
     digits: list[str] = []
-    for raw in text.splitlines():
+    for lineno, raw in enumerate(text.splitlines(), start=1):
         line = raw.strip()
         if not line:
             continue
@@ -73,7 +73,9 @@ def parse(text: str) -> dict[str, Any]:
             continue
         fields = line.split("#", 1)[0].split()
         if len(fields) < 2 or not fields[0].isdigit() or not fields[1].lstrip("-").isdigit():
-            raise LeapFileError(f"Unerwartete Zeile: {line[:60]}")
+            # Nie den Inhalt zitieren: der Pfad ist einstellbar (/config/…), und die
+            # Meldung landet in /api/leap – sonst ließe sich so eine fremde Datei lesen.
+            raise LeapFileError(f"Unerwartete Zeile {lineno} – keine leap-seconds.list?")
         entries.append((int(fields[0]), int(fields[1])))
         digits += fields[:2]
     if not entries:
@@ -170,20 +172,57 @@ def file_path(cfg: dict | None) -> str:
     return path or DEFAULT_PATH
 
 
+ZONEINFO = "/usr/share/zoneinfo"
+
+
+def chrony_source(cfg: dict | None, exists: Callable[[str], bool] = os.path.exists) -> tuple[str, str | None]:
+    """Woher chrony Schaltsekunden kennt – dieselbe Regel wie confgen.leap_directive.
+
+    ("tz", Zone): eine vorhandene leapsectz-Zone hat Vorrang, die Liste ist dann nur Information;
+    ("list", Pfad): chrony liest diese Datei (fehlt sie, meldet status() „missing“);
+    ("none", None): Einstellung leer – chrony kennt keine Schaltsekunden.
+    """
+    cfg = cfg or {}
+    tz = str(cfg.get("leapsectz") or "").strip()
+    if tz and exists(os.path.join(ZONEINFO, tz)):
+        return "tz", tz
+    path = str(cfg.get("leapseclist") or "").strip()
+    return ("list", path) if path else ("none", None)
+
+
 def status(cfg: dict | None = None, tracking: dict | None = None, now: float | None = None,
-           path: str | None = None) -> dict[str, Any]:
-    """Alles für die Seite und /api/leap. Wirft nie."""
-    path = path or file_path(cfg)
-    out: dict[str, Any] = {"path": path, "available": False, "error": None,
-                           "configured": bool((cfg or {}).get("leapseclist")),
-                           "leapsectz": str((cfg or {}).get("leapsectz") or "") or None,
+           path: str | None = None, exists: Callable[[str], bool] = os.path.exists) -> dict[str, Any]:
+    """Alles für die Seite und /api/leap. Wirft nie.
+
+    Kennzahlen, Ablaufwarnung (insights/Watch) und Metrik gelten nur für die Datei,
+    die chrony wirklich liest (source == "list"). Nutzt chrony eine Zeitzone, wird die
+    Liste nur zur Information gezeigt (level "info", reason "tz"); ist die Einstellung
+    leer, gibt es keine Zahlen (reason "disabled").
+    """
+    if path:
+        source, detail = "list", path
+    else:
+        source, detail = chrony_source(cfg, exists)
+    shown = detail if source == "list" else (file_path(cfg) if source == "tz" else None)
+    out: dict[str, Any] = {"path": shown, "source": source, "available": False, "error": None,
+                           "configured": source == "list",
+                           "leapsectz": detail if source == "tz" else None,
                            "chrony_leap": (tracking or {}).get("leap_status") or None,
                            "warn_days": WARN_DAYS, "level": "unknown", "reason": None}
-    parsed, error = _load(path)
+    if source == "none":
+        out.update(level="warn", reason="disabled")
+        return out
+    parsed, error = _load(shown)
     if parsed is None:
-        out.update(error=error, level="warn", reason="missing")
+        if source == "tz":
+            out.update(error=error, level="info", reason="tz")
+        else:
+            out.update(error=error, level="warn", reason="missing")
         return out
     out.update(evaluate(parsed, now), available=True)
+    if source == "tz":
+        # chrony liest die Datei nicht – ihr Ablauf ist kein Grund für Hinweis oder Ereignis.
+        out.update(list_level=out["level"], list_reason=out["reason"], level="info", reason="tz")
     return out
 
 

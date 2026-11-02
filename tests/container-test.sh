@@ -306,6 +306,9 @@ check "clock_public: /api/v1/time ohne Login"  200 "$(http http://127.0.0.1:1808
 check "clock_public: Status bleibt geschützt"  401 "$(http http://127.0.0.1:18081/api/v1/status)"
 check "clock_public: kein Quellenname ohne Login" None \
   "$(curl -s --max-time 10 http://127.0.0.1:18081/api/v1/time | python3 -c "import json,sys; print(json.load(sys.stdin).get('source'))" 2>/dev/null)"
+check "clock_public: fremder Host ohne Login: 403" 403 "$(http -H 'Host: attacker.example' http://127.0.0.1:18081/api/v1/time)"
+check "clock_public: angemeldet nicht öffentlich" False \
+  "$(curl -s --max-time 10 -u 'admin:S3hr geheim' http://127.0.0.1:18081/api/v1/time | python3 -c "import json,sys; print(json.load(sys.stdin).get('public'))" 2>/dev/null)"
 
 echo
 echo "3b) API-Schlüssel und /api/v1"
