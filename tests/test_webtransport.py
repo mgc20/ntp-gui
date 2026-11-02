@@ -34,6 +34,13 @@ def headers(**values):
     return msg
 
 
+def hdrs(values):
+    msg = Message()
+    for name, value in values.items():
+        msg[name] = value
+    return msg
+
+
 TRUST_LOCAL = wt.parse_networks(["127.0.0.1/32", "::1/128"])
 
 
@@ -94,6 +101,31 @@ class ResolveTest(unittest.TestCase):
         info = wt.resolve("127.0.0.1", headers(X_Forwarded_For=chain), TRUST_LOCAL)
         self.assertEqual(info["client"], "192.168.1.5")
 
+    def test_forwarded_header_rfc7239(self):
+        trusted = wt.parse_networks(["127.0.0.1/32"])
+        info = wt.resolve("127.0.0.1", hdrs({"Forwarded": "for=192.168.1.50;proto=https"}), trusted)
+        self.assertEqual((info["client"], info["scheme"], info["proxied"]), ("192.168.1.50", "https", True))
+        info = wt.resolve("127.0.0.1", hdrs({"Forwarded": 'for=1.2.3.4;proto=http, for="[2001:db8::7]:4711";proto=HTTPS'}),
+                          trusted)
+        self.assertEqual((info["client"], info["scheme"]), ("2001:db8::7", "https"))
+        info = wt.resolve("127.0.0.1", hdrs({"Forwarded": "for=_hidden;proto=https"}), trusted)
+        self.assertEqual((info["client"], info["scheme"]), ("127.0.0.1", "https"))
+
+    def test_x_forwarded_wins_over_forwarded(self):
+        info = wt.resolve("127.0.0.1", hdrs({"X-Forwarded-Proto": "http", "Forwarded": "proto=https"}),
+                          wt.parse_networks(["127.0.0.1/32"]))
+        self.assertEqual(info["scheme"], "http")
+
+    def test_x_real_ip_alone_is_not_proxied(self):
+        trusted = wt.parse_networks(["127.0.0.1/32"])
+        info = wt.resolve("127.0.0.1", hdrs({"X-Real-IP": "192.168.1.50"}), trusted)
+        self.assertFalse(info["proxied"])
+        self.assertFalse(info["untrusted_forward"])
+        watch = wt.TransportWatch(clock=lambda: 1.0)
+        watch.note(info, "basic")
+        self.assertEqual(watch.insights(now=1.0), [])  # Proxy auf dem Host, nicht als HTTP aus dem Netz
+        self.assertTrue(wt.resolve("192.168.1.9", hdrs({"X-Real-IP": "1.2.3.4"}), [])["untrusted_forward"])
+
     def test_trust_all_is_dropped(self):
         self.assertEqual(wt.parse_networks(["0.0.0.0/0", "::/0", "kaputt"]), [])
 
@@ -126,7 +158,7 @@ class WatchTest(unittest.TestCase):
         self.assertEqual(self.keys(), [])
 
     def test_https_via_proxy_is_fine(self):
-        self.watch.note({"scheme": "https", "proxied": True}, "basic")
+        self.watch.note({"scheme": "https", "proxied": True, "peer_loopback": True}, "basic")
         self.assertEqual(self.keys(), [])
         self.assertEqual(self.watch.last_https, 1000.0)
 
@@ -147,6 +179,70 @@ class WatchTest(unittest.TestCase):
 
     def test_fresh_watch_is_quiet(self):
         self.assertEqual(wt.TransportWatch().insights(), [])
+
+    # --- Prüfbefunde ----------------------------------------------------------------------------
+
+    def test_trusted_lan_proxy_with_https_reports_plain_hop(self):
+        # NPM auf 192.168.1.2, eingetragen: Browser → NPM HTTPS, NPM → ntp-gui HTTP durchs LAN.
+        info = wt.resolve("192.168.1.2", hdrs({"X-Forwarded-For": "192.168.1.50", "X-Forwarded-Proto": "https"}),
+                          wt.parse_networks(["192.168.1.2/32"]))
+        self.assertEqual((info["scheme"], info["proxied"], info["peer_loopback"]), ("https", True, False))
+        self.watch.note(info, "key")
+        items = self.watch.insights(now=1000.0)
+        self.assertEqual([i["key"] for i in items], ["web_proxy_hop_plain"])
+        self.assertIn("unverschlüsselt", items[0]["title"])
+        self.assertIsNone(self.watch.last_https)
+
+    def test_untrusted_lan_proxy_counts_as_plain_too(self):
+        info = wt.resolve("192.168.1.50", hdrs({"X-Forwarded-For": "1.2.3.4"}), [])
+        self.watch.note(info, "basic")
+        self.assertEqual(self.keys(), ["web_plain_http", "web_proxy_untrusted"])
+
+    def test_untrusted_header_claiming_http_or_https_still_plain(self):
+        for proto in ("http", "https"):
+            with self.subTest(proto=proto):
+                watch = wt.TransportWatch(clock=lambda: 1000.0)
+                watch.note(wt.resolve("192.168.1.50", hdrs({"X-Forwarded-Proto": proto}), []), "basic")
+                self.assertIn("web_plain_http", [i["key"] for i in watch.insights(now=1000.0)])
+
+    def test_untrusted_proxy_on_loopback_only_info(self):
+        self.watch.note(wt.resolve("127.0.0.1", hdrs({"X-Forwarded-For": "192.168.1.50"}), []), "basic")
+        self.assertEqual(self.keys(), ["web_proxy_untrusted"])
+
+    def test_untrusted_hint_clears_with_first_trusted_proxied_request(self):
+        self.watch.note(wt.resolve("127.0.0.1", hdrs({"X-Forwarded-For": "192.168.1.50",
+                                                      "X-Forwarded-Proto": "https"}), []), "basic", now=1000.0)
+        self.assertEqual(self.keys(now=1000.0), ["web_proxy_untrusted"])
+        trusted = wt.parse_networks(["127.0.0.1/32"])
+        for step in range(1, 721):  # eine Stunde lang alle 5 s über den nun eingetragenen Proxy
+            self.watch.note(wt.resolve("127.0.0.1", hdrs({"X-Forwarded-For": "192.168.1.50",
+                                                          "X-Forwarded-Proto": "https"}), trusted),
+                            "basic", now=1000.0 + step * 5)
+        self.assertEqual(self.keys(now=1000.0 + 3600), [])
+
+    def test_lan_proxy_untrusted_then_trusted_leaves_only_hop_hint(self):
+        headers = hdrs({"X-Forwarded-For": "192.168.1.50", "X-Forwarded-Proto": "https"})
+        self.watch.note(wt.resolve("192.168.1.2", headers, []), "basic", now=1000.0)
+        self.watch.note(wt.resolve("192.168.1.2", headers, wt.parse_networks(["192.168.1.2/32"])), "basic", now=1005.0)
+        self.assertNotIn("web_proxy_untrusted", self.keys(now=1010.0))
+        self.watch.reset()  # so ruft es der Server nach Änderung von TRUSTED_PROXIES
+        self.assertEqual(self.keys(now=1010.0), [])
+
+    def test_plain_hint_expires_after_an_hour_once_https_follows(self):
+        self.watch.note({"scheme": "http", "peer_loopback": False}, "basic", now=1000.0)
+        self.watch.note({"scheme": "https", "proxied": True, "peer_loopback": True}, "basic", now=1100.0)
+        self.assertEqual(self.keys(now=1000.0 + wt.FIXED_WINDOW - 1), ["web_plain_http"])
+        self.assertEqual(self.keys(now=1000.0 + wt.FIXED_WINDOW + 1), [])
+
+    def test_plain_hint_keeps_full_window_without_later_https(self):
+        self.watch.note({"scheme": "https", "proxied": True, "peer_loopback": True}, "basic", now=900.0)
+        self.watch.note({"scheme": "http", "peer_loopback": False}, "basic", now=1000.0)
+        self.assertEqual(self.keys(now=1000.0 + wt.FIXED_WINDOW + 1), ["web_plain_http"])
+
+    def test_hop_hint_expires_after_switch_to_local_proxy(self):
+        self.watch.note({"scheme": "https", "proxied": True, "peer_loopback": False}, "basic", now=1000.0)
+        self.watch.note({"scheme": "https", "proxied": True, "peer_loopback": True}, "basic", now=1001.0)
+        self.assertEqual(self.keys(now=1000.0 + wt.FIXED_WINDOW + 1), [])
 
 
 class SettingTest(unittest.TestCase):
@@ -259,6 +355,21 @@ class HandlerTest(unittest.TestCase):
         self.assertEqual(keys, ["web_plain_http"])
         merged = server.combine_insights(wt.WATCH.insights())
         self.assertEqual(merged[0]["action"], "settings")
+
+    def test_saving_trusted_proxies_clears_hints(self):
+        self.get("/api/v1", {"X-Forwarded-For": "192.168.1.50", "X-Forwarded-Proto": "https"})
+        self.assertEqual([i["key"] for i in wt.WATCH.insights()], ["web_proxy_untrusted"])
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        body = json.dumps({"changes": {"trusted_proxies": ["127.0.0.1/32"]}})
+        conn.request("POST", "/api/settings", body=body, headers={
+            "Authorization": "Basic " + base64.b64encode(b"admin:geheim123").decode(),
+            "Content-Type": "application/json", "X-NTP-GUI": "1",
+            "Origin": f"http://127.0.0.1:{self.port}"})
+        resp = conn.getresponse()
+        resp.read()
+        conn.close()
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(wt.WATCH.insights(), [])
 
     def test_wrong_password_is_not_noted(self):
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)

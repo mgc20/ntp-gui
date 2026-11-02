@@ -19,6 +19,106 @@ export const LANGUAGES = [
 export const REFERENCE = "de";
 const STORAGE_KEY = "ntp-gui-lang";
 
+// Notfallkatalog: Lädt de.json nicht (Netzfehler, Proxy sperrt .json, 401 beim Anmelden), stehen
+// wenigstens Navigation, Kopfzeile und Übersicht auf Deutsch da statt roher Schlüssel.
+// Muss mit de.json übereinstimmen (tests/test_i18n.py prüft das).
+export const CORE_DE = {
+  "app": {
+    "skip_link": "Zum Inhalt springen",
+    "connecting": "verbinde …",
+    "connecting_server": "Verbinde mit dem Server …",
+    "no_connection": "keine Verbindung",
+    "render_error": "Darstellungsfehler: {message}",
+    "footer": "ntp-gui {version} · aktualisiert {time} · alle {seconds} s",
+    "clock_link_title": "Vollbild-Uhr (Wandmonitor, Tablet)",
+    "clock_link_label": "Vollbild-Uhr öffnen",
+    "theme_title": "Hell / Dunkel",
+    "theme_label": "Hell oder dunkel umschalten",
+    "language_title": "Sprache: Deutsch / English",
+    "language_label": "Sprache wechseln (Language)"
+  },
+  "nav": {
+    "label": "Bereiche",
+    "overview": "Übersicht",
+    "sources": "Zeitquellen",
+    "gps": "GPS",
+    "ptp": "PTP",
+    "clockquality": "Uhrqualität",
+    "hardware": "Hardware",
+    "clients": "Clients",
+    "diagnose": "Diagnose",
+    "notify": "Benachrichtigungen",
+    "settings": "Einstellungen",
+    "help": "Hilfe"
+  },
+  "overview": {
+    "band_label": "Gesamtzustand",
+    "verdict": {
+      "check_count_one": "{count} Punkt unten prüfen",
+      "check_count_other": "{count} Punkte unten prüfen",
+      "no_issues": "keine offenen Hinweise",
+      "stratum": "Stratum {n}",
+      "warn_count_one": "{count} Hinweis",
+      "warn_count_other": "{count} Hinweise",
+      "down_title": "Zeitdienst antwortet nicht",
+      "down_text": "chronyd läuft nicht – Geräte im LAN bekommen gerade keine Zeit.",
+      "down_pill": "chronyd offline",
+      "down_pill_short": "offline",
+      "crit_title_one": "{count} Störung",
+      "crit_title_other": "{count} Störungen",
+      "crit_pill": "Störung",
+      "island_title": "Inselbetrieb",
+      "island_text": "Keine Zeitquelle erreichbar – die Uhr läuft frei weiter",
+      "island_pill_short": "Insel",
+      "syncing_title": "Synchronisiert …",
+      "syncing_text": "chrony sucht noch eine verlässliche Quelle",
+      "syncing_pill_short": "sync …",
+      "warn_title": "Synchron – mit Hinweisen",
+      "synced": "Synchron",
+      "good_title": "Alles in Ordnung",
+      "good_text": "Die Uhr ist synchron, alle Teile laufen."
+    },
+    "facts": {
+      "via": "über {source}",
+      "local_clock": "lokale Uhr",
+      "sources_used": "{used} von {total} Quellen genutzt",
+      "clients_one": "{n} Client",
+      "clients_other": "{n} Clients"
+    },
+    "kpi": {
+      "offset": "Abweichung",
+      "max_error": "Max. Fehler",
+      "max_error_note": "Fehlerschranke zu UTC",
+      "frequency": "Frequenz",
+      "requests": "Anfragen",
+      "requests_note_one": "{n} Client im LAN",
+      "requests_note_other": "{n} Clients im LAN",
+      "tone_warn": "erhöht",
+      "tone_crit": "kritisch"
+    },
+    "area": {
+      "clock": "Systemuhr",
+      "sources": "Zeitquellen",
+      "gps": "GPS",
+      "ptp": "PTP",
+      "clients": "Clients",
+      "services": "Dienste"
+    },
+    "hints": {
+      "serious_label": "Warnungen und Störungen",
+      "info_count_one": "{count} Information",
+      "info_count_other": "{count} Informationen",
+      "show": "anzeigen",
+      "hide": "ausblenden",
+      "details": "Details",
+      "less": "weniger",
+      "details_show": "Details anzeigen: {title}",
+      "details_hide": "Details ausblenden: {title}",
+      "label": "Hinweise"
+    }
+  }
+};
+
 const catalogs = new Map();   // Sprache → Objekt
 let current = REFERENCE;
 const listeners = new Set();
@@ -82,10 +182,24 @@ export function has(key) {
     || find(REFERENCE, key, { count: 2 }) !== undefined;
 }
 
-/** Übersetzung mit {platzhalter}; Rückfall: Deutsch, dann der Schlüssel selbst. */
-export function t(key, params) {
+function findCore(key, params) {
+  if (params && typeof params.count === "number") {
+    const form = lookup(CORE_DE, `${key}_${pluralForm(REFERENCE, params.count)}`) ?? lookup(CORE_DE, `${key}_other`);
+    if (form !== undefined) return form;
+  }
+  return lookup(CORE_DE, key);
+}
+
+function resolveText(key, params) {
   let text = find(current, key, params);
   if (text === undefined && current !== REFERENCE) text = find(REFERENCE, key, params);
+  if (text === undefined) text = findCore(key, params);
+  return text;
+}
+
+/** Übersetzung mit {platzhalter}; Rückfall: Deutsch, Notfallkatalog, dann der Schlüssel selbst. */
+export function t(key, params) {
+  const text = resolveText(key, params);
   if (text === undefined) return key;
   if (!params) return text;
   return text.replace(/\{(\w+)\}/g, (match, name) =>
@@ -111,7 +225,10 @@ async function load(lang) {
 export async function initI18n() {
   const stored = readStored();
   const wanted = supported(stored) ? stored : browserLanguage();
-  await load(REFERENCE);
+  // Deutsch ist der Rückfall für alles – bei einem kurzen Netzfehler lieber nochmal versuchen.
+  for (let attempt = 0; attempt < 3 && !await load(REFERENCE); attempt += 1) {
+    await new Promise((done) => setTimeout(done, 300 * (attempt + 1)));
+  }
   current = wanted !== REFERENCE && await load(wanted) ? wanted : REFERENCE;
   applyDocument();
   return current;
@@ -136,9 +253,19 @@ export function onLanguageChange(fn) { listeners.add(fn); }
 export function applyDocument(root = typeof document !== "undefined" ? document : null) {
   if (!root) return;
   if (root.documentElement) root.documentElement.lang = current;
-  for (const node of root.querySelectorAll("[data-i18n]")) node.textContent = t(node.dataset.i18n);
-  for (const node of root.querySelectorAll("[data-i18n-title]")) node.setAttribute("title", t(node.dataset.i18nTitle));
-  for (const node of root.querySelectorAll("[data-i18n-aria-label]")) node.setAttribute("aria-label", t(node.dataset.i18nAriaLabel));
+  // Unbekannter Schlüssel: den deutschen Text aus index.html stehen lassen, nie den Schlüssel zeigen.
+  for (const node of root.querySelectorAll("[data-i18n]")) {
+    const text = resolveText(node.dataset.i18n);
+    if (text !== undefined) node.textContent = text;
+  }
+  for (const node of root.querySelectorAll("[data-i18n-title]")) {
+    const text = resolveText(node.dataset.i18nTitle);
+    if (text !== undefined) node.setAttribute("title", text);
+  }
+  for (const node of root.querySelectorAll("[data-i18n-aria-label]")) {
+    const text = resolveText(node.dataset.i18nAriaLabel);
+    if (text !== undefined) node.setAttribute("aria-label", text);
+  }
 }
 
 /** Für Tests: Kataloge direkt setzen. */

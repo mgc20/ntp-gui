@@ -134,6 +134,13 @@ das Netz mit fester Adresse anlegen (`ipam`) und genau diese `/32` eintragen.
    `WEB_ACCESS_LOG=true`, solange `TRUSTED_PROXIES` leer ist). Dem NPM-Container dafür eine feste
    Adresse geben, sonst wechselt sie beim Neuerstellen.
 
+> **Strecke Proxy → ntp-gui ist unverschlüsselt.** Läuft der Proxy auf einem anderen Gerät, ist nur
+> der Weg Browser → Proxy HTTPS. Von dort gehen Passwort bzw. API-Schlüssel per einfachem HTTP durchs
+> LAN zu ntp-gui – jedes Gerät auf dieser Strecke kann mitlesen; die Firewall-Regel „Port 8080 nur
+> für den Proxy“ verhindert das nicht. Besser den Proxy auf demselben Host betreiben
+> (`WEB_BIND=127.0.0.1`), sonst die Strecke auf ein abgetrenntes, vertrauenswürdiges Netz legen.
+> ntp-gui zeigt dafür den Hinweis „Strecke Proxy → ntp-gui ist unverschlüsselt“.
+
 ### Zoraxy
 
 1. **HTTP Proxy → Neuer Proxy-Eintrag:** Matching Keyword = dein Name, Target = `ntp-gui-host:8080`,
@@ -142,6 +149,13 @@ das Netz mit fester Adresse anlegen (`ipam`) und genau diese `/32` eintragen.
    einschalten.
 3. Zoraxy setzt `X-Forwarded-For`, `X-Forwarded-Proto` und `X-Real-Ip`; ntp-gui wertet die ersten
    beiden aus. `TRUSTED_PROXIES` = Adresse des Zoraxy-Hosts.
+
+> **Strecke Proxy → ntp-gui ist unverschlüsselt.** Läuft der Proxy auf einem anderen Gerät, ist nur
+> der Weg Browser → Proxy HTTPS. Von dort gehen Passwort bzw. API-Schlüssel per einfachem HTTP durchs
+> LAN zu ntp-gui – jedes Gerät auf dieser Strecke kann mitlesen; die Firewall-Regel „Port 8080 nur
+> für den Proxy“ verhindert das nicht. Besser den Proxy auf demselben Host betreiben
+> (`WEB_BIND=127.0.0.1`), sonst die Strecke auf ein abgetrenntes, vertrauenswürdiges Netz legen.
+> ntp-gui zeigt dafür den Hinweis „Strecke Proxy → ntp-gui ist unverschlüsselt“.
 
 ### Traefik
 
@@ -166,14 +180,23 @@ Traefik überschreibt `X-Forwarded-*` aus dem Internet, solange `forwardedHeader
 Entrypoint nicht gesetzt ist, und gibt den Host unverändert weiter. `TRUSTED_PROXIES` = Adresse des
 Traefik-Hosts.
 
+> **Strecke Proxy → ntp-gui ist unverschlüsselt.** Läuft der Proxy auf einem anderen Gerät, ist nur
+> der Weg Browser → Proxy HTTPS. Von dort gehen Passwort bzw. API-Schlüssel per einfachem HTTP durchs
+> LAN zu ntp-gui – jedes Gerät auf dieser Strecke kann mitlesen; die Firewall-Regel „Port 8080 nur
+> für den Proxy“ verhindert das nicht. Besser den Proxy auf demselben Host betreiben
+> (`WEB_BIND=127.0.0.1`), sonst die Strecke auf ein abgetrenntes, vertrauenswürdiges Netz legen.
+> ntp-gui zeigt dafür den Hinweis „Strecke Proxy → ntp-gui ist unverschlüsselt“.
+
 ## Prüfen
 
 1. `https://zeitserver.lan` öffnen – das Schloss im Browser zeigt das Zertifikat.
 2. `http://<host>:8080` sollte mit `WEB_BIND=127.0.0.1` **nicht** mehr antworten.
 3. Mit `WEB_ACCESS_LOG=true` nennt das Container-Log die Adresse deines Rechners, nicht
    `127.0.0.1` – dann stimmt `TRUSTED_PROXIES`.
-4. Der Hinweis „Reverse Proxy erkannt, aber nicht eingetragen“ verschwindet nach spätestens
-   24 Stunden, wenn `TRUSTED_PROXIES` stimmt (er beschreibt, was zuletzt ankam).
+4. Die HTTPS-Hinweise der Übersicht verschwinden sofort, wenn du `TRUSTED_PROXIES` im Dashboard
+   änderst, und „Reverse Proxy erkannt, aber nicht eingetragen“ auch mit der ersten Anfrage über
+   den eingetragenen Proxy. „Dashboard über unverschlüsseltes HTTP“ bleibt nach einem letzten
+   HTTP-Zugriff noch eine Stunde stehen, wenn danach nur noch HTTPS kam – sonst 24 Stunden.
 
 **Ausstiegsplan (E9):** Wird Caddy eingestellt, tut es jeder andere Reverse Proxy aus Variante B –
 ntp-gui hängt an keinem bestimmten.

@@ -1642,6 +1642,10 @@ class Handler(BaseHTTPRequestHandler):
             self._error(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
 
     def _after_change(self, result: dict) -> dict:
+        changed = result.get("changed")
+        if isinstance(changed, (list, dict, set, tuple)) and "trusted_proxies" in changed:
+            # Neue Proxy-Liste gilt sofort – alte HTTPS-Hinweise beruhten auf der alten.
+            webtransport.WATCH.reset()
         reloaded = trigger_reload() if result.get("restart") else False
         result["reload_triggered"] = reloaded
         if result.get("restart") and not reloaded:

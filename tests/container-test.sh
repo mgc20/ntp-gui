@@ -909,7 +909,7 @@ if docker image inspect "$CADDY_IMAGE" >/dev/null 2>&1; then
   STATUS_JSON=$(curl -s --max-time 10 --cacert "$TPL_DIR/root.crt" "${RESOLVE[@]}" -u admin:geheim123 \
     https://zeitserver.lan:18095/api/status)
   contains "Status über HTTPS lesbar" "$STATUS_JSON" '"insights"'
-  if grep -q '"web_plain_http"\|"web_proxy_untrusted"' <<<"$STATUS_JSON"; then
+  if grep -q '"web_plain_http"\|"web_proxy_untrusted"\|"web_proxy_hop_plain"' <<<"$STATUS_JSON"; then
     bad "HTTPS über eingetragenen Proxy löst trotzdem einen HTTPS-Hinweis aus"
   else ok "Kein HTTPS-Hinweis bei HTTPS über eingetragenen Proxy"; fi
   ACCESS=$(docker logs "${PREFIX}-s" 2>&1 | grep '"GET /api/v1 HTTP' || true)

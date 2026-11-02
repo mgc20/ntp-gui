@@ -193,6 +193,54 @@ console.log(JSON.stringify(out));
         self.assertEqual((out["browserEn"], out["browserFr"], out["browserDe"]), ("en", "de", "de"))
         self.assertEqual(out["de"], "Übersicht")
 
+    EMPTY_SCRIPT = """
+import * as i18n from %(module)s;
+// Referenzkatalog nicht ladbar: keine Kataloge, Sprache Deutsch.
+i18n._setCatalogs({}, "de");
+const node = (attrs, text) => ({ dataset: attrs, textContent: text, attrs: {},
+  setAttribute(name, value) { this.attrs[name] = value; } });
+const keep = node({ i18n: "gibt.es.nicht" }, "Zum Inhalt springen");
+const core = node({ i18n: "nav.overview" }, "");
+const title = node({ i18nTitle: "auch.nicht" }, "");
+const root = { documentElement: {}, querySelectorAll(sel) {
+  if (sel === "[data-i18n]") return [keep, core];
+  if (sel === "[data-i18n-title]") return [title];
+  return [];
+} };
+i18n.applyDocument(root);
+console.log(JSON.stringify({
+  keep: keep.textContent, core: core.textContent, titleSet: "title" in title.attrs,
+  nav: i18n.t("nav.settings"), verdict: i18n.t("overview.verdict.synced"),
+  footer: i18n.t("app.footer", { version: "1.5.0", time: "12:00", seconds: 5 }),
+  unknown: i18n.t("gibt.es.nicht"), coreDe: i18n.CORE_DE,
+}));
+"""
+
+    def test_without_catalogs_no_raw_keys(self):
+        module = json.dumps((JS / "i18n.js").resolve().as_uri())
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / "run.mjs"
+            script.write_text(self.EMPTY_SCRIPT % {"module": module}, encoding="utf-8")
+            result = subprocess.run(["node", str(script)], capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        out = json.loads(result.stdout)
+        de = load("de")
+        self.assertEqual(out["keep"], "Zum Inhalt springen")   # HTML-Text bleibt stehen
+        self.assertEqual(out["core"], de["nav"]["overview"])  # Notfallkatalog greift
+        self.assertFalse(out["titleSet"])
+        self.assertEqual(out["nav"], de["nav"]["settings"])
+        self.assertEqual(out["verdict"], de["overview"]["verdict"]["synced"])
+        self.assertIn("1.5.0", out["footer"])
+        self.assertEqual(out["unknown"], "gibt.es.nicht")
+        # Notfallkatalog = Ausschnitt aus de.json, Wort für Wort.
+        core = flatten(out["coreDe"])
+        full = flatten(de)
+        self.assertTrue(core)
+        for key, value in core.items():
+            self.assertEqual(full.get(key), value, key)
+        for prefix in ("app.", "nav.", "overview."):
+            self.assertEqual({k for k in full if k.startswith(prefix)}, {k for k in core if k.startswith(prefix)}, prefix)
+
     def test_syntax_of_touched_modules(self):
         for name in ("i18n.js", "app.js", "pages/overview.js", "pages/settings.js", "pages/help.js", "help-web.js"):
             with self.subTest(module=name):
