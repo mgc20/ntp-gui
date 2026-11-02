@@ -14,7 +14,8 @@
 # Ereignisprotokoll, API-Schlüssel (read/admin), /api/v1, Übernahme des alten
 # Verlaufs (history.json.gz → SQLite) und passive Client-Messung im Bridge-Netz.
 # Ab 1.4: DNS für ntp-gui (Weiterleiter auf 127.0.0.1, resolv.conf, Absturz, Zurückschalten).
-# Ab 1.5: Schleifen-Erkennung bei DNS-Umschreibung ohne Ausnahme (Ereignis, Kette, Abhilfe).
+# Ab 1.5: Schleifen-Erkennung bei DNS-Umschreibung ohne Ausnahme (Ereignis, Kette, Abhilfe);
+# GPS-Sperre und Holdover-Test per chronyc selectopts (setzen, Neustart von chronyd, zurückstellen).
 set -uo pipefail
 
 IMAGE="${1:-ntp-gui:test}"
@@ -29,7 +30,8 @@ cleanup() {
   docker rm -f "${PREFIX}-a" "${PREFIX}-b" "${PREFIX}-c" "${PREFIX}-d" "${PREFIX}-e" "${PREFIX}-f" \
     "${PREFIX}-g" "${PREFIX}-h" "${PREFIX}-i" "${PREFIX}-j" >/dev/null 2>&1
   docker rm -f "${PREFIX}-k" "${PREFIX}-l" "${PREFIX}-m" "${PREFIX}-n" "${PREFIX}-o" >/dev/null 2>&1
-  docker network rm "${PREFIX}-net" >/dev/null 2>&1
+  docker rm -f "${PREFIX}-p" "${PREFIX}-q" "${PREFIX}-r" >/dev/null 2>&1
+  docker network rm "${PREFIX}-net" "${PREFIX}-net2" >/dev/null 2>&1
   docker volume rm "${PREFIX}-data" "${PREFIX}-hist" >/dev/null 2>&1
   rm -rf "$CFG_DIR" "$NTS_DIR" "$DIAG_DIR"
 }
@@ -736,6 +738,95 @@ contains "Mit eigenem DNS: „Schleife behoben“" "$(curl -s --max-time 10 'htt
 check "Keine Schleife mehr" '[]' "$(curl -s --max-time 10 http://127.0.0.1:18093/api/v1/loops | python3 -c 'import json,sys; print(json.load(sys.stdin)["loops"])' 2>/dev/null)"
 docker rm -f "${PREFIX}-n" "${PREFIX}-o" >/dev/null 2>&1
 docker network rm "$LOOPNET" >/dev/null 2>&1
+
+echo
+echo "12f) GPS-Sperre und Holdover-Test per selectopts (1.5)"
+# Zwei ntp-gui ohne eigene Quellen liefern ihre Uhr aus (Inselbetrieb, local stratum) und dienen
+# als Netzquellen/Messreferenzen; der dritte hat dazu ein GPS auf /dev/null (die SHM-Refclock
+# „GPS“ steht in chrony, liefert nur nichts). Geprüft wird, was chrony selbst meldet.
+HONET="${PREFIX}-net2"
+docker network create --subnet 172.31.78.0/24 "$HONET" >/dev/null
+for n in p q; do
+  docker run -d --name "${PREFIX}-${n}" --network "$HONET" --ip "172.31.78.1$([[ $n == p ]] && echo 1 || echo 2)" \
+    -e NTP_POOLS="" -e NTP_SERVERS="" "$IMAGE" >/dev/null
+done
+docker run -d --name "${PREFIX}-r" --network "$HONET" --ip 172.31.78.20 -p 18094:8080 \
+  -e NTP_POOLS="" -e NTP_SERVERS="172.31.78.11 172.31.78.12" -e NTP_SERVER_OPTIONS="iburst minpoll 4 maxpoll 4" \
+  -e GPS_ENABLE=true -e GPS_DEVICE=/dev/null "$IMAGE" >/dev/null
+wait_for_health http://127.0.0.1:18094/healthz 90 || true
+# effopts <quelle> -> wirksame Optionen laut chronyc selectdata, z. B. "['noselect']" (leer: "[]")
+effopts() {
+  docker exec "${PREFIX}-r" python3 -c "import sys; sys.path.insert(0, '/app'); import chrony
+print([r['effective_options'] for r in chrony.selectdata() if r['name'] == sys.argv[1]][:1] or 'fehlt')" "$1" 2>/dev/null
+}
+wait_effopts() { # wait_effopts <quelle> <erwartet> <sekunden>
+  local i
+  for ((i = 0; i < $3; i++)); do
+    [[ "$(effopts "$1")" == "$2" ]] && return 0
+    sleep 1
+  done
+  return 1
+}
+HOJSON=""
+for ((i = 0; i < 90; i++)); do
+  HOJSON=$(curl -s --max-time 10 http://127.0.0.1:18094/api/v1/holdover)
+  grep -q '"ok": true' <<<"$HOJSON" && break
+  sleep 1
+done
+contains "Holdover-Vorprüfung: zwei Messreferenzen erreichbar" "$HOJSON" '"ok": true'
+check "GPS-Refclock in chrony auswählbar" "[[]]" "$(effopts GPS)"
+check "GPS von Hand sperren" 200 "$(post -H 'Content-Type: application/json' -H 'X-NTP-GUI: 1' -d '{"action":"lock"}' http://127.0.0.1:18094/api/gnss)"
+check "chronyc selectdata: GPS noselect" "[['noselect']]" "$(effopts GPS)"
+check "Netzquelle bleibt auswählbar" "[[]]" "$(effopts 172.31.78.11)"
+# Einstellungen speichern startet chronyd neu – die Sperre muss danach wieder gesetzt werden.
+curl -s --max-time 10 -X POST -H 'Content-Type: application/json' -H 'X-NTP-GUI: 1' \
+  -d '{"changes":{"ntp_minsources":2}}' http://127.0.0.1:18094/api/settings >/dev/null
+for ((i = 0; i < 60; i++)); do
+  grep -q "minsources 2" <<<"$(docker exec "${PREFIX}-r" cat /etc/chrony/chrony.conf 2>/dev/null)" && break
+  sleep 1
+done
+if wait_effopts GPS "[['noselect']]" 60; then ok "Sperre übersteht Einstellungs-Speichern (chronyd-Neustart)"; else bad "Sperre nach Neustart weg ($(effopts GPS))"; fi
+EVENTS=$(curl -s --max-time 10 'http://127.0.0.1:18094/api/v1/events?kinds=gps' | utf)
+contains "Ereignis: GPS von Hand gesperrt" "$EVENTS" "GPS von Hand gesperrt"
+contains "Ereignis: Sperre nach Neustart erneuert" "$EVENTS" "GPS-Sperre nach Neustart von chronyd erneuert"
+check "GPS freigeben" 200 "$(post -H 'Content-Type: application/json' -H 'X-NTP-GUI: 1' -d '{"action":"unlock"}' http://127.0.0.1:18094/api/gnss)"
+check "GPS wieder auswählbar" "[[]]" "$(effopts GPS)"
+# Holdover: alle Quellen abwählen, dann abbrechen → alle wieder auswählbar.
+for ((i = 0; i < 60; i++)); do
+  grep -q '"ok": true' <<<"$(curl -s --max-time 10 http://127.0.0.1:18094/api/v1/holdover)" && break
+  sleep 1
+done
+check "Holdover-Test starten" 200 "$(post -H 'Content-Type: application/json' -H 'X-NTP-GUI: 1' \
+  -d '{"action":"start","hours":1,"include_network":true,"limit_ms":1000}' http://127.0.0.1:18094/api/holdover)"
+check "Holdover: GPS noselect" "[['noselect']]" "$(effopts GPS)"
+check "Holdover: Netzquelle noselect" "[['noselect']]" "$(effopts 172.31.78.12)"
+MEASURED=""
+for ((i = 0; i < 40; i++)); do
+  MEASURED=$(curl -s --max-time 10 http://127.0.0.1:18094/api/v1/holdover | python3 -c 'import json,sys; print((json.load(sys.stdin).get("run") or {}).get("measured"))' 2>/dev/null)
+  [[ "$MEASURED" == "2" ]] && break
+  sleep 1
+done
+check "Holdover: abgewählte Netzquellen werden weiter gemessen" 2 "$MEASURED"
+contains "Holdover-Hinweis in der Übersicht" "$(curl -s --max-time 20 http://127.0.0.1:18094/api/status)" '"key": "holdover_running"'
+check "Holdover abbrechen" 200 "$(post -H 'Content-Type: application/json' -H 'X-NTP-GUI: 1' -d '{"action":"abort"}' http://127.0.0.1:18094/api/holdover)"
+check "Nach dem Test: GPS auswählbar" "[[]]" "$(effopts GPS)"
+check "Nach dem Test: Netzquellen auswählbar" "[[]]" "$(effopts 172.31.78.11)"
+# Neustart von chronyd während des Tests → Test abgebrochen, Zustand sauber.
+post -H 'Content-Type: application/json' -H 'X-NTP-GUI: 1' -d '{"action":"start","hours":2}' http://127.0.0.1:18094/api/holdover >/dev/null
+check "Zweiter Test: Netzquelle noselect" "[['noselect']]" "$(effopts 172.31.78.11)"
+post -H 'X-NTP-GUI: 1' -H 'Content-Type: application/json' -d '{}' http://127.0.0.1:18094/api/reload >/dev/null
+HOJSON=""
+for ((i = 0; i < 90; i++)); do
+  HOJSON=$(curl -s --max-time 10 http://127.0.0.1:18094/api/v1/holdover | utf)
+  grep -q '"outcome": "restart"' <<<"$HOJSON" && break
+  sleep 1
+done
+contains "Neustart von chronyd bricht den Test ab" "$HOJSON" '"outcome": "restart"'
+contains "Kein Test mehr aktiv" "$HOJSON" '"active": false'
+check "Nach dem Abbruch: GPS auswählbar" "[[]]" "$(effopts GPS)"
+contains "Ergebnis-Satz gespeichert" "$HOJSON" "chronyd wurde neu gestartet – Test nach"
+docker rm -f "${PREFIX}-p" "${PREFIX}-q" "${PREFIX}-r" >/dev/null 2>&1
+docker network rm "$HONET" >/dev/null 2>&1
 
 echo
 echo "13) Sauberes Stoppen"

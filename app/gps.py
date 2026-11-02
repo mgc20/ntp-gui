@@ -24,6 +24,9 @@ try:
 except ValueError:
     _CACHE_TTL = 5.0
 _LOCK = threading.Lock()
+# 1.5: letzte 3D-Position nur für die Störungserkennung (gnssguard: Positionssprung). Liegt nur
+# im Speicher, steht nie in status()/API/Diagnosepaket – dort gilt weiter gps_show_position.
+_POSITION: dict[str, Any] = {}
 
 
 GNSS_SYSTEMS = {0: "GPS", 1: "SBAS", 2: "Galileo", 3: "BeiDou", 4: "IMES", 5: "QZSS",
@@ -218,7 +221,9 @@ def status() -> dict[str, Any]:
     with _LOCK:
         if _CACHE and time.time() - _CACHE_TIME < _CACHE_TTL:
             return dict(_CACHE)
-        state = parse_reports(poll_gpsd())
+        reports = poll_gpsd()
+        _remember_position(reports.get("TPV"))
+        state = parse_reports(reports)
         state["enabled"] = True
         state.setdefault("device", _setting("gps_device"))
         # Only claim PPS when the device is actually there - the entrypoint skips
@@ -236,6 +241,29 @@ def status() -> dict[str, Any]:
         _CACHE = state
         _CACHE_TIME = time.time()
         return dict(state)
+
+
+def _remember_position(tpv: Any) -> None:
+    """Merkt sich lat/lon/eph eines 3D-Fix (monotone Zeit) – nur für private_position()."""
+    if not isinstance(tpv, dict) or tpv.get("mode") != 3:
+        return
+    lat, lon, eph = tpv.get("lat"), tpv.get("lon"), tpv.get("eph")
+    if not all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in (lat, lon)):
+        return
+    _POSITION.clear()
+    _POSITION.update(lat=float(lat), lon=float(lon), mono=time.monotonic(),
+                     eph=float(eph) if isinstance(eph, (int, float)) and not isinstance(eph, bool) else None)
+
+
+def private_position(max_age: float = 30.0) -> tuple[float, float, float | None] | None:
+    """(lat, lon, eph) des letzten 3D-Fix, höchstens max_age s alt – oder None.
+
+    Nur für gnssguard (Positionssprung). Der Wert verlässt diesen Prozess nie: kein Ereignis,
+    keine API, kein Diagnosepaket – gespeichert wird höchstens die Abweichung in Metern."""
+    pos = dict(_POSITION)
+    if not pos or time.monotonic() - pos["mono"] > max_age:
+        return None
+    return pos["lat"], pos["lon"], pos["eph"]
 
 
 def summarize_pps(messages: list[dict[str, Any]]) -> dict[str, Any]:

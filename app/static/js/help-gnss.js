@@ -132,11 +132,93 @@ export const HELP_GNSS = {
     title: "Starke Satelliten",
     text: "Satelliten mit mindestens 30 dB-Hz. Davon sollten für einen stabilen Fix vier oder mehr da sein.",
   },
+  gnss_guard: {
+    title: "Störungserkennung (Jamming/Spoofing)",
+    text: "GPS lässt sich stören (**Jamming**: ein Störsender übertönt die schwachen Satellitensignale) und fälschen "
+      + "(**Spoofing**: ein Sender spielt falsche Satelliten vor – samt falscher Zeit). ntp-gui prüft laufend fünf "
+      + "Muster, die mit **jedem** Empfänger gehen, auch mit dem VK-162: Signaleinbruch aller Satelliten, unnatürlich "
+      + "gleichmäßige Signale, chronys Urteil, GPS-Zeit gegen die NTS-Quellen und Positionssprung. Gelesen wird nur aus "
+      + "gpsd und chrony; auf den Empfänger wird nichts geschrieben. **Ehrliche Grenze:** Langsames Spoofing, das die "
+      + "Zeit unterhalb der Netz-Unsicherheit (einige ms) verschiebt, ist so nicht erkennbar.",
+  },
+  gnss_stage: {
+    title: "Stufen: Hinweis, Warnung, Störung",
+    text: "**Hinweis**: ein schwaches Signal (Signaleinbruch, gleichmäßige Signale oder Falseticker) – oft harmlos: "
+      + "Schnee, ein Flugzeug, ein Lkw vor dem Fenster. **Warnung**: zwei schwache Signale zugleich. **Störung**: ein "
+      + "starkes Signal – Zeitabweichung zu den NTS-Quellen oder Positionssprung. Ein Signal zählt erst, wenn es "
+      + "mehrmals hintereinander anschlägt, und erlischt erst nach 2 bzw. 5 Minuten ohne Befund (Hysterese). Ins "
+      + "Protokoll kommt alles; benachrichtigt wird standardmäßig nur bei „Störung“ – sonst lernt man, Alarme zu "
+      + "ignorieren.",
+  },
+  gnss_cn0_drop: {
+    title: "Gleichzeitiger Signaleinbruch (C/N0)",
+    text: "Fällt die Signalstärke der meisten Satelliten **innerhalb einer Minute um 6 dB oder mehr**, ist das typisch "
+      + "für einen Störsender in der Nähe (oder etwas, das die Antenne plötzlich abdeckt). Verglichen wird jeder "
+      + "Satellit mit sich selbst vor 15–60 s; gezählt werden nur Satelliten, die vorher mindestens 20 dB-Hz hatten. "
+      + "Ein **langsamer** Abfall über Minuten bis Stunden – Schnee oder Eis auf der Antenne – zählt nicht. Allein "
+      + "ist das nur ein „Hinweis“, und es sperrt das GPS nie: Bei Fix-Verlust schaltet chrony ohnehin aufs Netz.",
+  },
+  gnss_uniform: {
+    title: "Unnatürlich gleichmäßige Signale",
+    text: "Echte Satelliten stehen verschieden hoch am Himmel – ihre Signale unterscheiden sich um viele dB. Ein "
+      + "einfacher Spoofer sendet alle Signale aus einer Antenne, sie kommen deshalb fast gleich stark an. "
+      + "Angeschlagen wird bei mindestens 6 Satelliten mit weniger als 1 dB Streuung (Spanne ≤ 3 dB).",
+  },
+  gnss_falseticker: {
+    title: "Urteil von chrony",
+    text: "chrony vergleicht alle Quellen. Liegt das GPS dauerhaft außerhalb dessen, worauf sich die übrigen Quellen "
+      + "einigen, markiert chrony es als **Falseticker** und nutzt es nicht. Das ist ein schwaches Signal: Es kann "
+      + "auch an einer zu kleinen Fehlerschranke liegen.",
+  },
+  gnss_time: {
+    title: "GPS-Zeit gegen die Netzquellen",
+    text: "Der Abstand der GPS-Zeit zum **Median von mindestens zwei NTS-Quellen** (ohne NTS: drei normale "
+      + "Netzquellen). Weil ein GPS ohne PPS einen festen Versatz und Streuung hat, zählt die Abweichung von der "
+      + "**gewohnten** Lage: Grundlinie ist der Median der letzten 30 Minuten, Schwelle das Fünffache der gewohnten "
+      + "Streuung, mindestens 20 ms. Ein Sprung von 50 ms fällt so in unter einer Minute auf. Ein starkes Signal: Es "
+      + "führt zur Stufe „Störung“ und – mit „automatisch sperren“ – zur GPS-Sperre. Eine **Abweichung** wie diese "
+      + "kann auch eine falsche NTS-Quelle bedeuten; darum zählt der Median mehrerer.",
+  },
+  gnss_position: {
+    title: "Positionssprung",
+    text: "Ein Zeitserver steht still. Springt die gemeldete Position um **mehr als 100 m** (und mehr als das Dreifache "
+      + "der vom Empfänger geschätzten Ungenauigkeit), ist das ein starkes Zeichen für Spoofing. Gezählt werden nur "
+      + "3D-Fixes. **Datenschutz:** Die Referenzposition liegt nur im Arbeitsspeicher von ntp-gui – sie wird nie "
+      + "gespeichert, nie angezeigt und nie exportiert. Hier, im Protokoll und in Benachrichtigungen steht nur die "
+      + "Abweichung in Metern (auf 10 m gerundet).",
+  },
+  gnss_mode: {
+    title: "Verhalten bei Störung",
+    text: "**Nur melden** (Standard): Ereignis im Protokoll und – ab „Störung“ – Benachrichtigung. **Automatisch "
+      + "sperren** (opt-in): bei einem starken Befund wählt ntp-gui das GPS (und PPS) per `chronyc selectopts "
+      + "+noselect` ab. Erst Praxisdaten sammeln, dann einschalten. Einstellbar unter Einstellungen → GPS.",
+  },
+  gnss_lock: {
+    title: "GPS-Sperre",
+    text: "Gesperrt heißt: chrony misst das GPS weiter, wählt es aber nicht als Zeitquelle (`selectopts +noselect`) "
+      + "und hält sich an die Netzquellen. **Automatisch** gesperrt wird nur bei starken Befunden; freigegeben wird "
+      + "nach 30 Minuten ohne Befund – höchstens dreimal hintereinander, die vierte Sperre bleibt bis zur Freigabe "
+      + "von Hand. **Von Hand** gesperrt bleibt sie, bis du sie aufhebst. Der Schalter überlebt keinen Neustart von "
+      + "chronyd – ntp-gui setzt ihn deshalb nach jedem Neustart (auch nach dem Speichern von Einstellungen) neu. "
+      + "Jede Sperre und Freigabe steht im Ereignisprotokoll.",
+  },
+  gnss_lock_reason: {
+    title: "Grund der Sperre",
+    text: "Der Befund, der zur automatischen Sperre geführt hat, oder „von Hand“.",
+  },
+  gnss_relearn: {
+    title: "Neu lernen",
+    text: "Vergisst die gelernte Position und den gewohnten Zeitabstand zum Netz. Nötig, wenn du den Empfänger "
+      + "umgestellt oder eine andere Antenne angeschlossen hast – sonst hält die Erkennung den Umzug für einen "
+      + "Positionssprung. Das Lernen dauert danach einige Minuten (Position) bzw. eine halbe Stunde (Zeit).",
+  },
 };
 
 export const HELP_GROUP_GNSS = {
-  title: "GPS ohne PPS und Empfang",
+  title: "GPS ohne PPS, Empfang und Störungen",
   keys: ["gpsq_assessment", "gpsq_fix_share", "gpsq_changes", "gpsq_cn0", "gpsq_used", "gpsq_unstet",
     "gpsq_basis", "gpsq_tips", "gpsq_role", "gpsq_bound", "gpsq_bound_mode", "gpsq_spread", "gpsq_bound_check",
-    "gpsq_antenna", "gpsq_antenna_label", "gpsq_antenna_compare", "gpsq_antenna_list", "gpsq_tracked", "gpsq_strong"],
+    "gpsq_antenna", "gpsq_antenna_label", "gpsq_antenna_compare", "gpsq_antenna_list", "gpsq_tracked", "gpsq_strong",
+    "gnss_guard", "gnss_stage", "gnss_cn0_drop", "gnss_uniform", "gnss_falseticker", "gnss_time", "gnss_position",
+    "gnss_mode", "gnss_lock", "gnss_lock_reason", "gnss_relearn"],
 };

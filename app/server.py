@@ -48,7 +48,9 @@ from urllib.parse import parse_qs, urlparse
 import apikeys
 import apiv1
 import autocal
+import gnssguard
 import gpsquality
+import holdover
 import loopguard
 import chrony
 import clientinfo
@@ -221,6 +223,25 @@ apiv1.endpoint("POST", "/gps/antenna", "/api/gps/antenna", "admin",
                "Antennen-Test steuern. Body: {\"action\": \"start\", \"label\": \"Fensterbank\", \"seconds\": 300} "
                "(60–900 s), {\"action\": \"stop\"} oder {\"action\": \"delete\", \"id\": …}.",
                ["test", "results", "comparison", "default_seconds"])
+
+apiv1.endpoint("GET", "/gnss", "/api/gnss", "read",
+               "GNSS-Störungserkennung: Stufe (ok, hinweis, warnung, stoerung), Signale (C/N0-Einbruch, gleichmäßige "
+               "Signale, Falseticker, Zeitabweichung zu den NTS-Quellen, Positionssprung in Metern) und die GPS-Sperre. "
+               "Ohne Koordinaten und Satellitenwinkel.",
+               ["enabled", "mode", "stage", "stage_label", "signals", "time", "position", "cn0", "lock"])
+apiv1.endpoint("POST", "/gnss", "/api/gnss", "admin",
+               "GPS-Sperre von Hand: {\"action\": \"lock\"} bzw. {\"action\": \"unlock\"} (chronyc selectopts), "
+               "{\"action\": \"relearn\"} lernt Referenzposition und Zeitabstand neu. Jede Aktion steht im "
+               "Ereignisprotokoll.", ["stage", "lock"])
+apiv1.endpoint("GET", "/holdover", "/api/holdover", "read",
+               "Echter Holdover-Test: läuft einer (Fortschritt, Zeitfehler gegen die Messreferenzen), Vorprüfung "
+               "und die letzten Ergebnisse („Die Uhr hält X ms in Y h“).",
+               ["active", "run", "check", "results", "defaults"])
+apiv1.endpoint("POST", "/holdover", "/api/holdover", "admin",
+               "Holdover-Test starten oder abbrechen. Body: {\"action\": \"start\", \"hours\": 2, "
+               "\"include_network\": true, \"limit_ms\": 10} (1–24 h, 1–1000 ms) oder {\"action\": \"abort\"}. "
+               "Wählt die Quellen per chronyc selectopts ab und stellt sie danach automatisch zurück.",
+               ["active", "run", "results"])
 
 apiv1.endpoint("GET", "/temperature", "/api/temperature", "read",
                "Temperatur und Frequenz: gewählter Sensor, gefundene Sensoren, Paare (Zeit, °C, ppm) aus dem "
@@ -686,7 +707,9 @@ def build_status() -> dict:
                                           service_insights(status["services"]),
                                           hardware.cached_insights(cfg),
                                           leap.insights(leap_info),
-                                          updatecheck.insights(status["update"]))
+                                          updatecheck.insights(status["update"]),
+                                          gnssguard.insights(gnssguard.GUARD.status(cfg)),
+                                          holdover.insights(holdover.TEST.status()))
     return status
 
 
@@ -1356,6 +1379,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(gpsquality.api_status(cfg, HISTORY, sources, STATE_WATCH.gps_stability()))
         elif path == "/api/gps/antenna":
             self._send_json(gpsquality.antenna_status(query.get("a"), query.get("b")))
+        elif path == "/api/gnss":
+            self._send_json(gnssguard.GUARD.status(settings.values()))
+        elif path == "/api/holdover":
+            self._send_json(holdover.api_status())
         elif path == "/api/events":
             limit = int(env_like(query.get("limit"), 500))
             since = env_like(query.get("since"), 0.0) or None
@@ -1579,6 +1606,16 @@ class Handler(BaseHTTPRequestHandler):
                     self._error(HTTPStatus.BAD_REQUEST, "action muss „reset“ sein")
             except gpsquality.QualityError as exc:
                 self._error(HTTPStatus.CONFLICT if exc.conflict else HTTPStatus.BAD_REQUEST, str(exc))
+        elif path == "/api/gnss":
+            try:
+                self._send_json(gnssguard.GUARD.action(settings.values(), data))
+            except gnssguard.GuardError as exc:
+                self._error(HTTPStatus.CONFLICT if exc.conflict else HTTPStatus.BAD_REQUEST, str(exc))
+        elif path == "/api/holdover":
+            try:
+                self._send_json(holdover.action(data))
+            except holdover.HoldoverError as exc:
+                self._error(HTTPStatus.CONFLICT if exc.conflict else HTTPStatus.BAD_REQUEST, str(exc))
         elif path == "/api/recording":
             action = "stop" if data.get("stop") else str(data.get("action", "start"))
             if action == "stop":
@@ -1671,6 +1708,8 @@ def main() -> None:
     gpsquality.configure(history=HISTORY, trigger_reload=trigger_reload)
     threading.Thread(target=collector, daemon=True, name="collector").start()
     threading.Thread(target=hardware_refresher, daemon=True, name="hardware").start()
+    # 1.5: GNSS-Störungen, GPS-Sperre und Holdover-Test im festen 10-s-Takt (eigener Thread).
+    threading.Thread(target=gnssguard.run, args=(settings.values,), daemon=True, name="gnssguard").start()
     threading.Thread(target=events_ingester, daemon=True, name="events").start()
     notify.start(VERSION)  # eigener Thread je Kanal; ohne angelegte Kanäle geht nichts hinaus
     updatecheck.start(VERSION)  # opt-in; ausgeschaltet keine Anfrage nach außen

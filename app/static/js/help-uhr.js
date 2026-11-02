@@ -5,7 +5,68 @@ export const HELP_UHR = {
     title: "Uhrqualität",
     text: "Diese Seite zeigt, was die Uhr dieses Geräts **ohne** Hilfe von außen taugen würde und was sie "
       + "langfristig beeinflusst: die Temperatur des Quarzes, die Schaltsekunden-Liste und eine große Uhr "
-      + "für den Wandmonitor. Nichts hier verändert die Zeit oder die Einstellungen von chrony.",
+      + "für den Wandmonitor. Nichts hier verändert die Zeit oder die Einstellungen von chrony – außer dem "
+      + "**Holdover-Test**, den du selbst startest und der sich danach von allein zurückstellt.",
+  },
+  holdover: {
+    title: "Holdover-Test",
+    text: "**Holdover** heißt: Wie gut hält die Uhr die Zeit, wenn alle Zeitquellen weg sind (GPS gestört, Internet "
+      + "aus)? Der Test misst das echt statt es zu schätzen: ntp-gui wählt GPS/PPS und – wenn angehakt – alle "
+      + "Netzquellen per `chronyc selectopts … +noselect` ab. chrony stellt die Uhr dann nicht mehr nach, sie läuft "
+      + "mit der zuletzt gelernten Frequenz frei. Die Netzquellen werden aber **weiter gemessen** – sie sind die "
+      + "Messlatte, ohne die Zeit zu beeinflussen. Nach der eingestellten Dauer werden alle Quellen automatisch "
+      + "wieder auswählbar, auch nach einem Neustart von ntp-gui (die Endzeit steht in der Datenbank). Jeder "
+      + "Schritt steht im Ereignisprotokoll. Startet chronyd während des Tests neu (z. B. weil du Einstellungen "
+      + "speicherst), ist der Schalter weg – der Test wird dann abgebrochen, weil das Ergebnis nicht mehr stimmt.",
+  },
+  holdover_hours: {
+    title: "Dauer des Holdover-Tests",
+    text: "1 bis 24 Stunden, Standard 2 h. Kurz zeigt die Gangabweichung des Quarzes, lang zeigt zusätzlich den "
+      + "Einfluss der Temperatur (Tag/Nacht). Ein Raspberry Pi ohne Temperaturausgleich verliert typisch einige "
+      + "Millisekunden pro Stunde – deshalb gibt es die Abbruchgrenze.",
+  },
+  holdover_limit: {
+    title: "Abbruchgrenze",
+    text: "Wird der gemessene Zeitfehler größer als diese Grenze (Standard **10 ms**), bricht der Test sofort ab und "
+      + "alle Quellen sind wieder auswählbar. So bekommen deine Clients nie eine Zeit, die weiter danebenliegt. "
+      + "Das Ergebnis lautet dann „Grenze nach … erreicht“ – auch das ist eine Aussage über die Uhr.",
+  },
+  holdover_network: {
+    title: "Auch Netzquellen abschalten",
+    text: "**An (Standard, echter Holdover):** GPS/PPS und alle Netzquellen werden abgewählt, die Uhr läuft frei. "
+      + "**Aus:** Nur GPS/PPS werden abgewählt – chrony regelt dann über das Netz weiter. Das zeigt, wie gut die "
+      + "Zeit ohne GPS ist (z. B. vor einer Antennen-Umrüstung), ist aber kein Freilauf. Die Netzquellen werden in "
+      + "beiden Fällen gemessen.",
+  },
+  holdover_refs: {
+    title: "Messreferenzen",
+    text: "Erreichbare Netzquellen, gegen die der Zeitfehler gemessen wird. Ohne mindestens **zwei** startet der "
+      + "Test nicht: Mit nur einer Quelle wäre nicht zu unterscheiden, ob die eigene Uhr oder die Quelle wandert. "
+      + "Als Ergebnis zählt der Median aller Referenzen.",
+  },
+  holdover_progress: {
+    title: "Laufender Holdover-Test",
+    text: "Seit wann der Test läuft und wie lange noch. Während des Tests stellt chrony die Uhr nicht nach – "
+      + "Clients bekommen eine etwas ungenauere Zeit; die Übersicht zeigt einen Hinweis. „Test abbrechen“ macht "
+      + "alle Quellen sofort wieder auswählbar.",
+  },
+  holdover_deviation: {
+    title: "Zeitfehler im Holdover",
+    text: "Wie weit sich die eigene Uhr seit dem Start von den Messreferenzen entfernt hat: Median der Offsets aller "
+      + "erreichbaren Netzquellen minus dem Wert beim Start. Das ist der Fehler, den die Uhr ohne Quelle aufgebaut "
+      + "hat. Die Netzquellen selbst schwanken um einige Zehntel Millisekunden – kleinere Werte sind Rauschen.",
+  },
+  holdover_drift: {
+    title: "Gangabweichung (ppm)",
+    text: "Steigung des Zeitfehlers über die Zeit: 1 ppm = 3,6 ms pro Stunde. chrony hat die Frequenz vor dem Test "
+      + "gelernt – die Gangabweichung zeigt, wie gut dieser Wert hält. Wandert sie mit der Temperatur, hilft später "
+      + "der Temperaturausgleich.",
+  },
+  holdover_result: {
+    title: "Ergebnis des Holdover-Tests",
+    text: "„Die Uhr hält X ms in Y h“: der gemessene Zeitfehler am Ende des Tests. Er gilt für die Bedingungen in der "
+      + "Zeit (Temperatur, Last) – ein zweiter Test zu einer anderen Tageszeit zeigt die Spanne. Gespeichert werden "
+      + "die letzten 20 Ergebnisse, nur auf diesem Gerät.",
   },
   temp_freq: {
     title: "Temperatur und Frequenz",
@@ -161,5 +222,7 @@ export const HELP_GROUP_UHR = {
   title: "Uhrqualität",
   keys: ["uq_page", "temp_freq", "temp_sensor", "temp_now", "temp_span", "temp_duration", "temp_correlation",
     "temp_scatter", "temp_history", "temp_candidates", "leap_overview", "leap_tai_utc", "leap_last", "leap_next",
-    "leap_expiry", "leap_hash", "leap_future", "clock_page", "clock_sync", "clock_public"],
+    "leap_expiry", "leap_hash", "leap_future", "clock_page", "clock_sync", "clock_public", "holdover", "holdover_hours",
+    "holdover_limit", "holdover_network", "holdover_refs", "holdover_progress", "holdover_deviation", "holdover_drift",
+    "holdover_result"],
 };

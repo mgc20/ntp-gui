@@ -5,6 +5,7 @@ import { stateBadge, reasonCell } from "./sources.js";
 import { axisSeconds } from "./overview.js";
 import { hardwareData, pickReceiver, accuracyLadder, PPS_PATH } from "./hardware.js";
 import { receptionCard, roleCard, antennaCard } from "./gpsquality.js";
+import { gnssCard } from "./gnss.js";
 
 const WINDOWS = [[0, "gesamter Verlauf"], [3600, "letzte Stunde"], [21600, "letzte 6 h"], [86400, "letzte 24 h"]];
 
@@ -347,6 +348,7 @@ export function render(ctx) {
     receiverCard(ctx, report),
     tiles,
     el("div", { class: "grid-2" }, receptionCard(ctx), roleCard(ctx)),
+    gnssCard(ctx),
     el("div", { class: "grid-2" }, chronyCard, facts),
     calibrationCard(ctx, gpsSource),
     satCard,

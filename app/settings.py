@@ -900,6 +900,28 @@ SCHEMA: list[dict] = [
            help="Wie lange GPS und Netzwerkquellen gemeinsam gemessen haben müssen, bevor "
                 "ein Offset vorgeschlagen oder übernommen wird. Mehrere Stunden glätten "
                 "Tagesschwankungen der Netzlaufzeit – darum ist das Ergebnis dann belastbar."),
+    _field("gnss_guard", "gps", "Störungserkennung (Jamming/Spoofing)", "select", "report",
+           _as_choice("off", "report", "lock"), env="GNSS_GUARD", restart=RESTART_NONE,
+           options=[("off", "aus – nicht prüfen"),
+                    ("report", "nur melden – Ereignis und Benachrichtigung (empfohlen)"),
+                    ("lock", "automatisch sperren – GPS bei Störung abwählen")],
+           help="ntp-gui prüft laufend, ob das GPS gestört oder gefälscht wird: gleichzeitiger "
+                "Signaleinbruch aller Satelliten, unnatürlich gleichmäßige Signale, GPS-Zeit weit "
+                "weg von den NTS-Quellen, Positionssprung. „Nur melden“ schreibt ein Ereignis. "
+                "„Automatisch sperren“ wählt das GPS bei einem starken Befund (Zeit oder Position, "
+                "nie bei reinem Signaleinbruch) per chronyc selectopts ab und gibt es nach 30 min "
+                "ohne Befund wieder frei – höchstens dreimal in Folge, danach nur von Hand. Erst "
+                "Praxisdaten sammeln, dann ggf. einschalten."),
+    _field("gnss_notify", "gps", "Störung benachrichtigen ab", "select", "stoerung",
+           _as_choice("stoerung", "warnung", "hinweis"), env="GNSS_NOTIFY", restart=RESTART_NONE,
+           advanced=True,
+           options=[("stoerung", "Störung – nur starke Befunde (empfohlen)"),
+                    ("warnung", "Warnung – auch zwei schwache Befunde zugleich"),
+                    ("hinweis", "Hinweis – jeder Befund")],
+           help="Ab welcher Stufe eine GNSS-Meldung über deine Benachrichtigungskanäle hinausgeht. "
+                "Schnee, ein Flugzeug oder ein Lkw vor dem Fenster lassen das Signal kurz "
+                "einbrechen – das ist ein „Hinweis“. Würde jeder davon gemeldet, lernt man, "
+                "Alarme zu ignorieren. Im Ereignisprotokoll steht immer alles."),
 
     # --- PTP ---------------------------------------------------------------
     _field("ptp_enable", "ptp", "PTP verwenden", "bool", False, _as_bool, env="PTP_ENABLE",

@@ -1,7 +1,8 @@
-// Seite „Uhrqualität“ (1.4): Temperatur ↔ Frequenz, Schaltsekunden, Vollbild-Uhr.
+// Seite „Uhrqualität“ (1.4): Temperatur ↔ Frequenz, Schaltsekunden, Vollbild-Uhr; ab 1.5 echter Holdover-Test.
 import { el, isNum, fmtFixed, fmtNumber, rich } from "../util.js";
 import { card, tile, kv, badge, emptyNote, info } from "../ui.js";
 import { lineChart, scatterChart, stepDecimals } from "../charts.js";
+import { holdoverCard } from "./gnss.js";
 
 const RANGES = [[86400, "1 Tag"], [3 * 86400, "3 Tage"], [7 * 86400, "7 Tage"], [30 * 86400, "30 Tage"]];
 
@@ -190,6 +191,7 @@ export function render(ctx) {
       el("h2", { class: "section-title" }, "Uhrqualität ", info("uq_page", "Uhrqualität")),
       el("span", { class: "toolbar-label", text: "Zeitraum" }),
       rangeGroup(ui.uqRange, (seconds) => { ui.uqRange = seconds; ctx.rerender(); })),
+    holdoverCard(ctx),
     ...temperatureSection(ctx, temp),
     el("div", { class: "grid-2" }, leapSection(leapInfo, ctx.status), clockSection(ctx)),
   ];

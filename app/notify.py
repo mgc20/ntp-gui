@@ -32,6 +32,8 @@ Regeln je Kanal
   Ereignis (Art „notify“) vermerkt. Ereignisse der Art „notify“ werden nie
   verschickt (keine Schleife zwischen zwei kaputten Kanälen).
 * Ratenlimit je Kanal (Standard 30 je Stunde, gleitend).
+* Ereignisse mit data.notify = false bleiben lokal (1.5: GNSS-Hinweis/-Warnung unterhalb
+  der Einstellung gnss_notify, Holdover-Test).
 
 Datenschutz
 -----------
@@ -531,6 +533,9 @@ class ChannelRouter:
     def offer(self, event: dict) -> list[dict]:
         if event.get("kind") == "notify":
             return []
+        data = event.get("data") if isinstance(event.get("data"), dict) else {}
+        if data.get("notify") is False:
+            return []  # bleibt im Protokoll, geht nicht hinaus (z. B. GNSS-„Hinweis“, Holdover-Test)
         now = self.clock()
         key = subject_key(event)
         st = self.state.setdefault(key, {"open_since": None, "notified": None, "last_sent": None,
