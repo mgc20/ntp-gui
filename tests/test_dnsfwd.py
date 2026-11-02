@@ -26,6 +26,8 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "app"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _isolation  # noqa: E402,F401 – vor jedem App-Import: Host-Pfade umlenken
 
 import dnsfwd  # noqa: E402
 import enforce  # noqa: E402
@@ -58,16 +60,27 @@ class FakeDns:
         self.rcode = rcode
         self.udp_count = 0
         self.tcp_count = 0
-        self.udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.udp.bind(("127.0.0.1", 0))
-        self.port = self.udp.getsockname()[1]
-        self.tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.tcp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.tcp.bind(("127.0.0.1", self.port))
+        # UDP-Port zufällig, TCP auf denselben Port; ist der TCP-Port belegt, neuer Versuch.
+        for _ in range(100):
+            self.udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.udp.bind(("127.0.0.1", 0))
+            self.port = self.udp.getsockname()[1]
+            self.tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.tcp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                self.tcp.bind(("127.0.0.1", self.port))
+                break
+            except OSError:
+                self.udp.close()
+                self.tcp.close()
+        else:
+            raise OSError("kein freier Port für UDP und TCP gefunden")
         self.tcp.listen(8)
         self.stop = False
-        threading.Thread(target=self._udp, daemon=True).start()
-        threading.Thread(target=self._tcp, daemon=True).start()
+        self.threads = [threading.Thread(target=self._udp, daemon=True),
+                        threading.Thread(target=self._tcp, daemon=True)]
+        for thread in self.threads:
+            thread.start()
 
     def answer(self, query: bytes) -> bytes:
         return make_answer(query, self.ip, self.ttl, 40 if self.big else 1, self.rcode)
@@ -77,6 +90,8 @@ class FakeDns:
             try:
                 data, addr = self.udp.recvfrom(65535)
             except OSError:
+                return
+            if self.stop:
                 return
             self.udp_count += 1
             threading.Thread(target=self._udp_one, args=(data, addr), daemon=True).start()
@@ -100,6 +115,9 @@ class FakeDns:
                 conn, _ = self.tcp.accept()
             except OSError:
                 return
+            if self.stop:
+                conn.close()
+                return
             threading.Thread(target=self.serve_stream, args=(conn,), daemon=True).start()
 
     def serve_stream(self, conn) -> None:
@@ -114,15 +132,69 @@ class FakeDns:
             conn.sendall(struct.pack("!H", len(reply)) + reply)
 
     def close(self) -> None:
+        # close() allein weckt kein recvfrom()/accept() in einem anderen Thread, und der Port
+        # bliebe belegt, bis der Aufruf zurückkehrt. shutdown() weckt beide.
         self.stop = True
+        for sock in (self.udp, self.tcp):
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+        for thread in self.threads:
+            thread.join(2)
         self.udp.close()
         self.tcp.close()
 
 
 def free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+    """Ein Port, der für UDP **und** TCP frei ist (der Weiterleiter bindet beide).
+
+    Nur UDP zu prüfen reichte nicht: Auf dem CI-Runner war derselbe TCP-Port belegt
+    („Address already in use“)."""
+    for _ in range(100):
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp:
+            udp.bind(("127.0.0.1", 0))
+            port = udp.getsockname()[1]
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as tcp:
+                    tcp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                    tcp.bind(("127.0.0.1", port))
+            except OSError:
+                continue
+            return port
+    raise OSError("kein freier Port für UDP und TCP gefunden")
+
+
+def start_server(testcase: unittest.TestCase, fwd: "dnsfwd.Forwarder", attempts: int = 5):
+    """dnsfwd.Server auf einem freien Port starten. Zwischen free_port() und dem Binden kann ein
+    anderer Prozess den UDP- oder TCP-Port nehmen – dann mit neuem Port wiederholen.
+    Gibt (port, server) zurück; stop() läuft als Cleanup."""
+    for attempt in range(attempts):
+        port = free_port()
+        server = dnsfwd.Server(fwd, port, hosts=("127.0.0.1",))
+        try:
+            started = server.start()
+        except OSError:
+            server.stop()
+            if attempt == attempts - 1:
+                raise
+            continue
+        testcase.addCleanup(server.stop)
+        testcase.assertEqual(started, ["127.0.0.1"])
+        return port, server
+    raise AssertionError("unreachable")
+
+
+def refusing_udp_port(testcase: unittest.TestCase) -> int:
+    """Ein UDP-Port, der belegt bleibt und trotzdem sofort ablehnt: Ein verbundener UDP-Socket
+    nimmt keine Datagramme anderer Absender an, der Kern antwortet mit ICMP „Port unerreichbar“.
+    Ein nur geschlossener Port könnte inzwischen von einem anderen Socket belegt sein (dann
+    Zeitüberschreitung statt Ablehnung)."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    testcase.addCleanup(s.close)
+    s.bind(("127.0.0.1", 0))
+    s.connect(("127.0.0.2", 1))
+    return s.getsockname()[1]
 
 
 def ask_udp(port: int, query: bytes, timeout: float = 6.0) -> bytes:
@@ -415,7 +487,7 @@ class ForwarderTest(unittest.TestCase):
         self.gate = dnsfwd.EventGate(lambda level, title, data: self.events.append((level, title, data)))
 
     def dead_port(self):
-        return free_port()  # nichts lauscht – ICMP „Port unerreichbar“ bzw. Zeitüberschreitung
+        return refusing_udp_port(self)  # reserviert, lehnt sofort ab (ICMP „Port unerreichbar“)
 
     def test_failover_to_second_upstream(self):
         fake = FakeDns()
@@ -428,7 +500,12 @@ class ForwarderTest(unittest.TestCase):
         self.assertEqual(reply[:2], query[:2])
         self.assertEqual(dnsfwd.addresses(reply, 1)[0], [ANSWER_IP])
         self.assertEqual((dead.fail, good.ok), (1, 1))
-        self.assertGreater(dead.down_until, time.time())
+        # Ausfallzeit monoton gemessen (ein Uhrsprung verlängert sie nicht), nach außen als Uhrzeit
+        self.assertGreater(dead.down_until, time.monotonic())
+        self.assertLessEqual(dead.down_until - time.monotonic(), dnsfwd.DOWN_SECONDS)
+        shown = dead.public()["down_until"] - time.time()
+        self.assertTrue(0 < shown <= dnsfwd.DOWN_SECONDS + 1, shown)
+        self.assertIs(dnsfwd.EventGate().clock, time.monotonic)
         self.assertEqual(fwd.state, "ok")
         self.assertEqual(self.events, [])  # „ok“ direkt nach dem Start ist kein Ereignis
         # Zweite Anfrage (anderer Name): ausgefallener Server wird übersprungen
@@ -506,7 +583,7 @@ class ForwarderTest(unittest.TestCase):
         system = FakeDns(ip="198.51.100.7", delay={"same": 0.3})
         self.addCleanup(system.close)
         dead = dnsfwd.PlainUpstream("127.0.0.1", self.dead_port())
-        dead.down_until = time.time() + 60
+        dead.down_until = time.monotonic() + 60
         fwd = dnsfwd.Forwarder("servers", [dead], lambda: [("127.0.0.1", system.port)])
         query = dnsfwd.build_query("same.example", 1)
         results = []
@@ -539,14 +616,14 @@ class ForwarderTest(unittest.TestCase):
     def test_self_loop_via_upstream_ends_at_once(self):
         """DNS-SEC-2: zeigt ein Upstream auf den Weiterleiter selbst, endet die Anfrage nach einem
         Umlauf mit SERVFAIL statt alle Worker zu belegen."""
-        port = free_port()
-        fwd = dnsfwd.Forwarder("servers", [dnsfwd.PlainUpstream("127.0.0.1", port)], use_fallback=False)
-        server = dnsfwd.Server(fwd, port, hosts=("127.0.0.1",))
-        server.start()
-        self.addCleanup(server.stop)
+        upstream = dnsfwd.PlainUpstream("127.0.0.1", 0)
+        fwd = dnsfwd.Forwarder("servers", [upstream], use_fallback=False)
+        port, _server = start_server(self, fwd)
+        upstream.port = port  # der Upstream ist der Weiterleiter selbst
         started = time.monotonic()
         reply = ask_udp(port, dnsfwd.build_query("pool.ntp.org", 1))
-        self.assertLess(time.monotonic() - started, 1.0)
+        # Ohne Schleifenschutz liefe die Anfrage bis zur Upstream-Zeitüberschreitung (und länger).
+        self.assertLess(time.monotonic() - started, dnsfwd.UPSTREAM_TIMEOUT - 0.3)
         self.assertEqual(dnsfwd.rcode_of(reply), dnsfwd.RCODE_SERVFAIL)
         self.assertEqual(fwd.stats["queries"], 2)
         self.assertEqual(fwd.stats["loops"], 1)
@@ -579,7 +656,7 @@ class ForwarderTest(unittest.TestCase):
             for i in range(dnsfwd.DOWN_AFTER):
                 self.assertEqual(up.down_until, 0.0)
                 fwd.resolve(dnsfwd.build_query(f"n{i}.example", 1))
-        self.assertGreater(up.down_until, time.time())
+        self.assertGreater(up.down_until, time.monotonic())
         self.assertEqual(fwd.state, "failing")
 
     def test_system_servfail_is_no_fallback_answer(self):
@@ -640,10 +717,7 @@ class ServerTest(unittest.TestCase):
         fake = FakeDns(big=big)
         self.addCleanup(fake.close)
         fwd = dnsfwd.Forwarder("servers", [dnsfwd.PlainUpstream("127.0.0.1", fake.port)], use_fallback=False)
-        port = free_port()
-        server = dnsfwd.Server(fwd, port, hosts=("127.0.0.1",))
-        self.assertEqual(server.start(), ["127.0.0.1"])
-        self.addCleanup(server.stop)
+        port, _server = start_server(self, fwd)
         return port, fake
 
     def test_udp_and_tcp(self):
@@ -791,7 +865,11 @@ class SettingsTest(unittest.TestCase):
         self.assertEqual(dnsfwd.effective_mode({"dns_mode": "doh", "dns_doh": ["https://x.example/q"]}), "doh")
 
     def test_env(self):
-        cfg = settings.values({"DNS_MODE": "servers", "DNS_SERVERS": "9.9.9.9,149.112.112.112"})
+        # Eine settings.json des Hosts (GUI-Werte schlagen Umgebungswerte) darf nicht mitspielen.
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        with mock.patch.object(settings, "SETTINGS_FILE", os.path.join(tmp, "settings.json")):
+            cfg = settings.values({"DNS_MODE": "servers", "DNS_SERVERS": "9.9.9.9,149.112.112.112"})
         self.assertEqual(cfg["dns_mode"], "servers")
         self.assertEqual(cfg["dns_servers"], ["9.9.9.9", "149.112.112.112"])
 
@@ -931,6 +1009,99 @@ class EnforceTest(unittest.TestCase):
         self.assertNotIn("rm -rf", code)
 
 
+class StatusFileTest(unittest.TestCase):
+    """Status-Datei: gleichzeitige Schreiber (Worker-Threads und Hauptschleife in serve())."""
+
+    def test_concurrent_writers_never_publish_broken_file(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        path = os.path.join(tmp, "dns.json")
+        dnsfwd.write_json(path, {"n": 0})
+        errors, bad = [], []
+        stop = threading.Event()
+
+        def writer(tag):
+            i = 0
+            while not stop.is_set():
+                i += 1
+                try:
+                    dnsfwd.write_json(path, {"w": tag, "n": i, "pad": "x" * 20000})
+                except OSError as exc:
+                    errors.append(exc)
+
+        def reader():
+            while not stop.is_set():
+                try:
+                    with open(path, encoding="utf-8") as handle:
+                        json.load(handle)
+                except ValueError:
+                    bad.append(1)
+                except OSError:
+                    pass
+
+        threads = [threading.Thread(target=writer, args=(t,)) for t in "ab"] + [threading.Thread(target=reader)]
+        for t in threads:
+            t.start()
+        time.sleep(1.0)
+        stop.set()
+        for t in threads:
+            t.join(10)
+        self.assertEqual(errors, [])
+        self.assertEqual(bad, [])
+        self.assertEqual([f for f in os.listdir(tmp) if f.endswith(".tmp")], [])
+
+    def test_private_file_mode(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        path = os.path.join(tmp, "backup")
+        dnsfwd._write_private(path, "nameserver 192.0.2.1\n")
+        self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+        self.assertEqual(Path(path).read_text(), "nameserver 192.0.2.1\n")
+
+    def test_bind_error_names_the_real_port(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        holder = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.addCleanup(holder.close)
+        holder.bind(("127.0.0.1", 0))
+        port = holder.getsockname()[1]
+        cfg = {"dns_mode": "servers", "dns_servers": ["192.0.2.1"], "dns_fallback": False}
+        with mock.patch.object(dnsfwd, "_log"):
+            rc = dnsfwd.serve(cfg=cfg, port=port, run_dir=tmp, resolv=os.path.join(tmp, "resolv.conf"),
+                              stop=threading.Event())
+        self.assertEqual(rc, 2)
+        error = dnsfwd.read_status(tmp)["error"]
+        self.assertIn(f"Port {port} auf 127.0.0.1 ist belegt", error)
+        # Wortgrenze: Ein Zufallsport wie 53348 enthält „Port 53“ als Teilzeichenkette.
+        self.assertNotRegex(error, r"\bPort 53\b")
+        self.assertNotIn("NET_BIND_SERVICE", error)
+
+
+class PortReleaseTest(unittest.TestCase):
+    """Nach close()/stop() ist der Port sofort wieder frei (keine hängenden recvfrom/accept)."""
+
+    def assert_rebindable(self, port):
+        for kind in (socket.SOCK_DGRAM, socket.SOCK_STREAM):
+            with socket.socket(socket.AF_INET, kind) as s:
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                s.bind(("127.0.0.1", port))
+
+    def test_fake_dns_close_frees_port(self):
+        fake = FakeDns()
+        fake.close()
+        for t in fake.threads:
+            self.assertFalse(t.is_alive())
+        self.assert_rebindable(fake.port)
+
+    def test_server_stop_frees_port(self):
+        fwd = dnsfwd.Forwarder("servers", [], use_fallback=False)
+        port, server = start_server(self, fwd)
+        server.stop()
+        for t in server._threads:
+            self.assertFalse(t.is_alive())
+        self.assert_rebindable(port)
+
+
 class ServeTest(unittest.TestCase):
     """serve() als Ganzes: lauscht, beantwortet, schreibt Status – ohne resolv.conf (hoher Port)."""
 
@@ -939,17 +1110,27 @@ class ServeTest(unittest.TestCase):
         self.addCleanup(fake.close)
         tmp = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
-        port = free_port()
         cfg = {"dns_mode": "servers", "dns_servers": [f"127.0.0.1:{fake.port}"], "dns_fallback": False}
-        stop = threading.Event()
-        thread = threading.Thread(target=dnsfwd.serve, kwargs={"cfg": cfg, "port": port, "run_dir": tmp,
-                                                               "resolv": os.path.join(tmp, "resolv.conf"),
-                                                               "stop": stop}, daemon=True)
-        thread.start()
-        for _ in range(50):
-            if os.path.exists(os.path.join(tmp, dnsfwd.READY_NAME)):
+        ready = os.path.join(tmp, dnsfwd.READY_NAME)
+        for attempt in range(5):
+            # Zwischen free_port() und dem Binden in serve() kann ein anderer Prozess den Port
+            # nehmen; serve() endet dann mit Status „stopped“ – neuer Versuch mit neuem Port.
+            port = free_port()
+            stop = threading.Event()
+            thread = threading.Thread(target=dnsfwd.serve, kwargs={"cfg": cfg, "port": port, "run_dir": tmp,
+                                                                   "resolv": os.path.join(tmp, "resolv.conf"),
+                                                                   "stop": stop}, daemon=True)
+            thread.start()
+            self.addCleanup(stop.set)
+            deadline = time.monotonic() + 10
+            while (not os.path.exists(ready) and thread.is_alive() and time.monotonic() < deadline):
+                time.sleep(0.02)
+            if os.path.exists(ready) or thread.is_alive():
                 break
-            time.sleep(0.05)
+            status = dnsfwd.read_status(tmp) or {}
+            if attempt == 4 or str(port) not in str(status.get("error", "")):
+                break
+        self.assertTrue(os.path.exists(ready), f"dnsfwd.serve nicht bereit: {dnsfwd.read_status(tmp)}")
         reply = ask_udp(port, dnsfwd.build_query("pool.ntp.org", 1))
         self.assertEqual(dnsfwd.addresses(reply, 1)[0], [ANSWER_IP])
         status = dnsfwd.read_status(tmp)

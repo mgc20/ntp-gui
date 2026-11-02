@@ -1,10 +1,13 @@
 """statewatch.py: chronyd nicht erreichbar ist kein Quellenwechsel (Review 2/6)."""
 
+import os
 import sys
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _isolation  # noqa: E402,F401 – vor jedem App-Import: Host-Pfade umlenken
 
 import statewatch  # noqa: E402
 

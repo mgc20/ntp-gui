@@ -48,6 +48,7 @@ import socket
 import ssl
 import struct
 import sys
+import tempfile
 import threading
 import time
 from typing import Any, Callable
@@ -444,16 +445,19 @@ class Upstream:
         self.last_error = ""
         self.last_error_t: float | None = None
         self.rtt_ms: float | None = None
-        self.down_until = 0.0
+        self.down_until = 0.0  # time.monotonic(): ein Sprung der Uhr verlängert keinen Ausfall
         self.streak = 0  # Fehlschläge in Folge
 
     def exchange(self, query: bytes, deadline: float) -> bytes:  # pragma: no cover - abstrakt
         raise NotImplementedError
 
     def public(self) -> dict:
+        # down_until ist monotonic (für die Dauer); nach außen als Uhrzeit (Epoch) wie die übrigen Zeiten.
+        left = self.down_until - time.monotonic()
         return {"label": self.label, "proto": self.proto, "ok": self.ok, "fail": self.fail,
                 "last_ok": self.last_ok, "last_error": self.last_error, "last_error_t": self.last_error_t,
-                "rtt_ms": self.rtt_ms, "down_until": self.down_until or None, "streak": self.streak}
+                "rtt_ms": self.rtt_ms, "down_until": time.time() + left if left > 0 else None,
+                "streak": self.streak}
 
 
 class PlainUpstream(Upstream):
@@ -750,13 +754,32 @@ def _write_in_place(path: str, text: str) -> None:
         handle.truncate()
 
 
+_WRITE_LOCK = threading.Lock()  # Status-Schreiber (Worker + Hauptschleife) nacheinander
+
+
+def _atomic_write(path: str, text: str, mode: int | None = None) -> None:
+    """Schreibt über eine eigene Temp-Datei je Aufruf und ersetzt dann atomar. Ein fester Name
+    „path.tmp“ ließe zwei gleichzeitige Schreiber dieselbe Datei kürzen und überschreiben
+    (halbe Datei veröffentlicht, der andere bekommt FileNotFoundError)."""
+    directory = os.path.dirname(path) or "."
+    os.makedirs(directory, exist_ok=True)
+    with _WRITE_LOCK:
+        fd, tmp = tempfile.mkstemp(dir=directory, prefix=os.path.basename(path) + ".", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(text)
+            os.chmod(tmp, 0o600 if mode is None else mode)
+            os.replace(tmp, path)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+
+
 def _write_private(path: str, text: str) -> None:
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    tmp = f"{path}.tmp"
-    with open(tmp, "w", encoding="utf-8") as handle:
-        handle.write(text)
-    os.chmod(tmp, 0o600)
-    os.replace(tmp, path)
+    _atomic_write(path, text, 0o600)
 
 
 def nameservers(text: str | None, port: int = DNS_PORT) -> list[tuple[str, int]]:
@@ -961,7 +984,7 @@ class Forwarder:
         return with_id(data, ident)
 
     def _all_down(self) -> bool:
-        now = self.clock()
+        now = time.monotonic()
         return all(u.down_until > now for u in self.upstreams)
 
     def _resolve_out(self, query: bytes, qkey: bytes) -> bytes | None:
@@ -978,7 +1001,7 @@ class Forwarder:
 
     def _resolve_tracked(self, query: bytes, upstream_query: bytes, deadline: float) -> bytes | None:
         errors: list[str] = []
-        now = self.clock()
+        now = time.monotonic()
         candidates = [u for u in self.upstreams if u.down_until <= now]
         if not candidates and not (self.use_fallback and self.fallback()):
             candidates = list(self.upstreams)
@@ -1000,7 +1023,7 @@ class Forwarder:
                     # Eine einzelne Zeitüberschreitung kann an einem langsamen Namen liegen –
                     # erst mehrere in Folge (oder ein harter Fehler) gelten als Ausfall.
                     if hard_failure(exc) or up.streak >= DOWN_AFTER:
-                        up.down_until = self.clock() + DOWN_SECONDS
+                        up.down_until = time.monotonic() + DOWN_SECONDS
                 errors.append(f"{up.label}: {text}")
                 continue
             with self._lock:
@@ -1080,6 +1103,7 @@ class Server:
         self._workers = threading.BoundedSemaphore(MAX_WORKERS)
         self._tcp = threading.BoundedSemaphore(MAX_TCP)
         self._stop = threading.Event()
+        self._threads: list[threading.Thread] = []
 
     def start(self) -> list[str]:
         """Bindet UDP+TCP auf jeder Adresse. 127.0.0.1 ist Pflicht, ::1 nur, wenn es IPv6 gibt."""
@@ -1108,12 +1132,26 @@ class Server:
                 continue
             self.sockets += [udp, tcp]
             self.listening.append(host)
-            threading.Thread(target=self._udp_loop, args=(udp,), daemon=True, name=f"dns-udp-{host}").start()
-            threading.Thread(target=self._tcp_loop, args=(tcp,), daemon=True, name=f"dns-tcp-{host}").start()
+            for target, sock, kind in ((self._udp_loop, udp, "udp"), (self._tcp_loop, tcp, "tcp")):
+                thread = threading.Thread(target=target, args=(sock,), daemon=True, name=f"dns-{kind}-{host}")
+                thread.start()
+                self._threads.append(thread)
         return list(self.listening)
 
-    def stop(self) -> None:
+    def stop(self, timeout: float = 2.0) -> None:
+        """Beendet die Schleifen und gibt den Port frei. close() allein weckt unter Linux kein
+        recvfrom()/accept() in einem anderen Thread – der Port bliebe bis dahin belegt.
+        shutdown() weckt beide (bei UDP mit ENOTCONN, das Aufwecken geschieht trotzdem)."""
         self._stop.set()
+        for sock in self.sockets:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+        end = time.monotonic() + timeout
+        for thread in self._threads:
+            if thread is not threading.current_thread():
+                thread.join(max(0.0, end - time.monotonic()))
         for sock in self.sockets:
             try:
                 sock.close()
@@ -1128,7 +1166,9 @@ class Server:
                 if self._stop.is_set():
                     return
                 continue
-            if not is_loopback(addr[0]):
+            if self._stop.is_set():
+                return
+            if not addr or not is_loopback(addr[0]):
                 continue
             if not self._workers.acquire(blocking=False):
                 self.forwarder.stats["dropped"] += 1
@@ -1156,6 +1196,9 @@ class Server:
                 if self._stop.is_set():
                     return
                 continue
+            if self._stop.is_set():
+                conn.close()
+                return
             if not is_loopback(addr[0]) or not self._tcp.acquire(blocking=False):
                 conn.close()
                 continue
@@ -1195,11 +1238,7 @@ def status_path(run_dir: str | None = None) -> str:
 
 
 def write_json(path: str, data: dict) -> None:
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    tmp = f"{path}.tmp"
-    with open(tmp, "w", encoding="utf-8") as handle:
-        json.dump(data, handle, ensure_ascii=False)
-    os.replace(tmp, path)
+    _atomic_write(path, json.dumps(data, ensure_ascii=False), 0o644)
 
 
 def emit_event(level: str, title: str, data: dict | None = None, run_dir: str | None = None) -> None:
@@ -1228,7 +1267,7 @@ class EventGate:
     """Zustandswechsel → Ereignis, je Wechsel höchstens alle EVENT_REPEAT Sekunden.
     „ok“ nach dem Start ist kein Ereignis (nur die Rückkehr aus einer Störung)."""
 
-    def __init__(self, emit: Callable[..., None] = emit_event, clock: Callable[[], float] = time.time) -> None:
+    def __init__(self, emit: Callable[..., None] = emit_event, clock: Callable[[], float] = time.monotonic) -> None:
         self.emit = emit
         self.clock = clock
         self._last: dict[tuple[str, str], float] = {}
@@ -1347,9 +1386,11 @@ def serve(cfg: dict | None = None, *, port: int | None = None, run_dir: str | No
     except OSError as exc:
         reason = exc.strerror or str(exc)
         if exc.errno == errno.EADDRINUSE:
-            reason += " – Port 53 auf 127.0.0.1 ist belegt (network_mode: host mit eigenem DNS-Server?)"
-        elif exc.errno in (errno.EACCES, errno.EPERM):
-            reason += " – Port 53 braucht NET_BIND_SERVICE (cap_drop: ALL?)"
+            reason += f" – Port {port} auf 127.0.0.1 ist belegt"
+            if port == DNS_PORT:
+                reason += " (network_mode: host mit eigenem DNS-Server?)"
+        elif exc.errno in (errno.EACCES, errno.EPERM) and port < 1024:
+            reason += f" – Port {port} braucht NET_BIND_SERVICE (cap_drop: ALL?)"
         _log(f"FEHLER: kann nicht auf 127.0.0.1:{port} lauschen: {reason}")
         try:
             write_json(status_path(run_dir), {"pid": os.getpid(), "time": time.time(), "state": "stopped",

@@ -10,14 +10,19 @@ import os
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _isolation  # noqa: E402,F401 – vor jedem App-Import: Host-Pfade umlenken
+from _support import fake_hostnames  # noqa: E402
 
 import apikeys  # noqa: E402
+import diagnostics  # noqa: E402
 import server  # noqa: E402
 import settings  # noqa: E402
 import statewatch  # noqa: E402
@@ -175,9 +180,8 @@ class HostCheckTest(unittest.TestCase):
     """DNS-Rebinding: ohne Passwort nur bekannte bzw. lokale Host-Namen."""
 
     def test_host_allowed_rules(self):
-        with mock.patch.dict(os.environ, {"WEB_ALLOWED_HOSTS": ""}), \
-                mock.patch.object(server.socket, "gethostname", return_value="ntpbox"), \
-                mock.patch.object(server.socket, "getfqdn", return_value="ntpbox.example.net"):
+        fake_hostnames(self, "ntpbox", "ntpbox.example.net")
+        with mock.patch.dict(os.environ, {"WEB_ALLOWED_HOSTS": ""}):
             for ok in ("192.0.2.5:8080", "127.0.0.1", "[::1]:8080", "[fe80::1%eth0]:80", "localhost:8080",
                        "app.localhost", "raspberrypi:8080", "ntpbox", "NTPBOX.example.net.", "pi.local",
                        "pi.lan:8080", "pi.home.arpa", "zeit.internal", "", None):
@@ -210,7 +214,41 @@ class HostCheckTest(unittest.TestCase):
         self.assertEqual(server.safe_host_for_log("evil.de/../x"), "<ungültig>")
 
 
+class HostNameCacheTest(unittest.TestCase):
+    """Regression: host_allowed() fragte bei jedem fremden Host-Kopf socket.getfqdn() – ein
+    Rückwärts-DNS, das bei langsamem Resolver Sekunden dauert und den Handler-Thread blockiert."""
+
+    def test_foreign_hosts_do_not_resolve_per_request(self):
+        hang = threading.Event()
+        calls = []
+
+        def slow_fqdn(*_args):
+            calls.append(1)
+            hang.wait(10)  # Resolver hängt
+            return "ntpbox.example.net"
+
+        fake_hostnames(self, "ntpbox", "unused")
+        self.addCleanup(hang.set)
+        with mock.patch.dict(os.environ, {"WEB_ALLOWED_HOSTS": ""}), \
+                mock.patch.object(server.socket, "getfqdn", slow_fqdn):
+            started = time.monotonic()
+            for _ in range(5):
+                self.assertFalse(server.host_allowed("rebind.evil.com"))
+            self.assertTrue(server.host_allowed("ntpbox"))  # gethostname() gilt sofort
+            self.assertLess(time.monotonic() - started, 5)  # alter Code: 5 × 10 s
+            self.assertEqual(len(calls), 1)
+            hang.set()
+            end = time.monotonic() + 10
+            while time.monotonic() < end and "ntpbox.example.net" not in diagnostics.own_hostnames():
+                time.sleep(0.02)
+            self.assertTrue(server.host_allowed("ntpbox.example.net"))
+            self.assertEqual(len(calls), 1)  # danach aus dem Cache
+
+
 class HostCheckServerTest(unittest.TestCase):
+    def setUp(self):
+        fake_hostnames(self)  # kein Rückwärts-DNS des Runners je Anfrage
+
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory()
@@ -347,6 +385,29 @@ class StateWatchTest(unittest.TestCase):
         for _ in range(3):
             self.watch.hardware({"pps": [{"dev": "/dev/pps1", "state": "never"}]})
         self.assertEqual(self.events, [])
+
+
+
+class AuthCacheClockTest(unittest.TestCase):
+    """Der Zugangs-Cache misst seine 300 s monoton: Stellt chrony die Uhr zurück, bliebe ein
+    geprüfter Zugang sonst um die Sprungweite länger gültig."""
+
+    def test_default_clock_is_monotonic(self):
+        self.assertIs(server.AuthCache().clock, time.monotonic)
+
+    def test_expires_after_300_s(self):
+        now = [100.0]
+        cache = server.AuthCache(clock=lambda: now[0])
+        calls = []
+        verify = lambda: calls.append(1) or True  # noqa: E731
+        self.assertTrue(cache.check("Basic x", verify))
+        now[0] += 299
+        self.assertTrue(cache.check("Basic x", verify))
+        self.assertEqual(len(calls), 1)
+        now[0] += 2
+        self.assertTrue(cache.check("Basic x", verify))
+        self.assertEqual(len(calls), 2)
+        self.assertFalse(cache.check("Basic y", lambda: False))
 
 
 if __name__ == "__main__":

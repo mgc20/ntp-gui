@@ -7,12 +7,16 @@ import shutil
 import sys
 import tarfile
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _isolation  # noqa: E402,F401 – vor jedem App-Import: Host-Pfade umlenken
+from _support import fake_hostnames  # noqa: E402
 
 import diagnostics  # noqa: E402
 import egress  # noqa: E402
@@ -69,6 +73,7 @@ def fake_collectors():
 
 class DiagnosticsTest(unittest.TestCase):
     def setUp(self):
+        fake_hostnames(self)  # kein Rückwärts-DNS des Runners
         self.tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.tmp)
         (self.tmp / "ntp-gui.log").write_text(LOG, encoding="utf-8")
@@ -150,14 +155,17 @@ class DiagnosticsTest(unittest.TestCase):
         self.assertIn("nichts exportiert", str(ctx.exception))
 
     def test_slow_collector_does_not_block(self):
+        hang = threading.Event()
+        self.addCleanup(hang.set)
+
         def slow(cfg, options):
-            time.sleep(5)
+            hang.wait(30)  # hängt weit länger als die Schranke unten
             return {}
         with mock.patch.dict(diagnostics.COLLECTORS, {"hardware": slow}), \
                 mock.patch.object(diagnostics, "DEADLINE", 0.3):
             start = time.monotonic()
             content = diagnostics.build(self.cfg)
-            self.assertLess(time.monotonic() - start, 2.0)
+            self.assertLess(time.monotonic() - start, 5.0)
         self.assertIn("Zeitüberschreitung", content["hardware"]["fehler"])
 
     def test_failing_collector_is_reported(self):
@@ -186,7 +194,8 @@ class DiagnosticsTest(unittest.TestCase):
             start = time.monotonic()
             content = diagnostics.build(self.cfg, ["meta", "config", "services", "logs", "history"],
                                         {"version": "1.3.0", "history": []})
-            self.assertLess(time.monotonic() - start, 3.0)
+            # build() endet nach DEADLINE; die Reserve gilt einem vollen Runner.
+            self.assertLess(time.monotonic() - start, diagnostics.DEADLINE + 2.5)
         self.assertEqual(content["meta"]["version"], "1.3.0")
         self.assertRegex(content["meta"]["utc_offset"], r"^[+-]\d\d:\d\d$")
         self.assertNotIn("timezone", content["meta"])
@@ -195,6 +204,9 @@ class DiagnosticsTest(unittest.TestCase):
 
 
 class ChronySectionTest(unittest.TestCase):
+    def setUp(self):
+        fake_hostnames(self)  # kein Rückwärts-DNS des Runners
+
     def test_tables_use_csv_mode(self):
         """Klartext-Tabellen kürzen lange Namen mit ">" – gekürzte IPv6 wären nicht sicher erkennbar."""
         for name in ("sources", "sourcestats", "selectdata", "authdata"):
@@ -309,6 +321,7 @@ class RecordingExportTest(unittest.TestCase):
     """Fehlerbericht 1.3.0: Export mit Aufzeichnung brach mit „latenz_gerundet“ ab."""
 
     def setUp(self):
+        fake_hostnames(self)  # kein Rückwärts-DNS des Runners
         self.tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.tmp)
         collectors = fake_collectors()
@@ -354,6 +367,7 @@ class WorkerTest(unittest.TestCase):
     """Server-Pfad: Filter im eigenen Prozess, Download nach der Vorschau ohne zweiten Lauf."""
 
     def setUp(self):
+        fake_hostnames(self)  # kein Rückwärts-DNS des Runners
         self.tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.tmp)
         (self.tmp / "ntp-gui.log").write_text(LOG, encoding="utf-8")
@@ -434,26 +448,49 @@ class WorkerTest(unittest.TestCase):
         import threading
         real = diagnostics._run_worker
         started = threading.Event()
+        go = threading.Event()
+        self.addCleanup(go.set)
         calls = []
 
         def slow(job):
             calls.append(1)
             started.set()
-            time.sleep(0.5)
+            go.wait(30)  # erst weiter, wenn alle anderen nachweislich warten (statt fester 0,5 s)
             return real(job)
 
+        class CountingLock:
+            """diagnostics._lock, zählt, wer schon davor steht (``arrived`` ist dann gesetzt)."""
+
+            def __init__(self):
+                self.lock, self.entered, self.cond = threading.Lock(), 0, threading.Condition()
+
+            def __enter__(self):
+                with self.cond:
+                    self.entered += 1
+                    self.cond.notify_all()
+                self.lock.acquire()
+                return self
+
+            def __exit__(self, *exc):
+                self.lock.release()
+
+        lock = CountingLock()
         results = []
-        with mock.patch.object(diagnostics, "_run_worker", side_effect=slow):
+        with mock.patch.object(diagnostics, "_run_worker", side_effect=slow), \
+                mock.patch.object(diagnostics, "_lock", lock):
             first = threading.Thread(target=lambda: results.append(
                 diagnostics.preview_locked(self.cfg, dict(self.options))))
             first.start()
-            started.wait(5)
+            self.assertTrue(started.wait(10))
             others = [threading.Thread(target=lambda: results.append(
                 diagnostics.preview_locked(self.cfg, dict(self.options)))) for _ in range(3)]
             others.append(threading.Thread(target=lambda: results.append(
                 diagnostics.bundle_locked(self.cfg, dict(self.options)))))
             for t in others:
                 t.start()
+            with lock.cond:
+                self.assertTrue(lock.cond.wait_for(lambda: lock.entered == 5, timeout=10))
+            go.set()
             for t in [first] + others:
                 t.join(30)
         self.assertEqual(len(calls), 1)

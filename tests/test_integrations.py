@@ -7,6 +7,7 @@ Update-Hinweis, PPS).
 """
 
 import json
+import os
 import random
 import re
 import shutil
@@ -19,6 +20,8 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "app"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _isolation  # noqa: E402,F401 – vor jedem App-Import: Host-Pfade umlenken
 
 import server  # noqa: E402
 import settings  # noqa: E402
@@ -65,6 +68,9 @@ def full_metrics() -> str:
             mock.patch.object(server, "services_status", return_value=SERVICES),
             mock.patch.object(server.thermal.MONITOR, "last", {"t": time.time(), "celsius": 41.0}),
             mock.patch.object(server.leap, "file_path", return_value=str(FIXTURES / "leap-seconds.list")),
+            # Die Liste aus dem Fixture, nicht die tzdata-Datei des Hosts (fehlt in schlanken Images)
+            mock.patch.object(server.leap, "chrony_source",
+                              return_value=("list", str(FIXTURES / "leap-seconds.list"))),
             mock.patch.object(server.hardware, "_REPORT", REPORT, create=True),
             mock.patch.object(updatecheck, "CHECKER", check),
         ]

@@ -7,11 +7,14 @@ Dateinamen, bekannte Zeitserver) bleibt.
 """
 
 import json
+import os
 import sys
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _isolation  # noqa: E402,F401 – vor jedem App-Import: Host-Pfade umlenken
 
 import egress  # noqa: E402
 
@@ -489,12 +492,26 @@ class ContractTest(unittest.TestCase):
                 self.assertEqual(egress.check_no_leaks(dump(clean)), [])
 
     def test_large_text_is_fast(self):
+        """Schutz vor katastrophalem Backtracking (das bräuchte Minuten). Gemessen wird die CPU-Zeit
+        dieses Threads, nicht die Wanduhr: Auf einem geteilten 2-Kern-Runner zählte sonst jeder
+        andere Prozess mit (4,4 s statt 0,9 s unter Last)."""
         import time
-        text = "\n".join(f"[chrony] 2026-11-01T10:00:{i % 60:02d}Z Selected source 192.168.1.{i % 250} "
-                         f"offset 0.000{i:04d} jitter" for i in range(5000))
-        start = time.monotonic()
-        egress.sanitize_text(text, "diagnostics")
-        self.assertLess(time.monotonic() - start, 3.0)
+
+        def lines(n, tag):
+            return "\n".join(f"[chrony] 2026-11-01T10:00:{i % 60:02d}Z Selected source 192.168.{tag}.{i % 250} "
+                             f"offset 0.000{i:04d} jitter" for i in range(n))
+
+        def cpu(text):
+            start = time.thread_time()
+            egress.sanitize_text(text, "diagnostics")
+            return time.thread_time() - start
+
+        egress.sanitize_text(lines(50, 3), "diagnostics")  # Aufwärmen (Regex-Übersetzung)
+        small = cpu(lines(500, 1))
+        large = cpu(lines(5000, 2))
+        self.assertLess(large, 5.0)
+        # Linear statt quadratisch: zehnfache Eingabe, höchstens ~30-fache Zeit (quadratisch: 100-fach).
+        self.assertLess(large, 30 * max(small, 0.01), (small, large))
 
 
 if __name__ == "__main__":

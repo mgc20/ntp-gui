@@ -496,11 +496,17 @@ def _level_rank(level: str) -> int:
 
 
 class ChannelRouter:
-    """Regeln eines Kanals. Reine Logik mit eingespeister Uhr – offer() und tick() geben Meldungen zurück."""
+    """Regeln eines Kanals. Reine Logik mit eingespeister Uhr – offer() und tick() geben Meldungen zurück.
 
-    def __init__(self, channel: dict, clock: Callable[[], float] = time.time) -> None:
+    clock (monotonic) misst Sperrzeiten, wall (Uhrzeit) die gemeldeten Dauern, die wie die
+    Ereigniszeit „t“ bewusst auf der Uhrzeit beruhen. Ein Sprung der Systemuhr (Pi ohne RTC,
+    chrony stellt die Uhr) verlängert so keine Sperrzeit."""
+
+    def __init__(self, channel: dict, clock: Callable[[], float] = time.monotonic,
+                 wall: Callable[[], float] = time.time) -> None:
         self.channel = channel
         self.clock = clock
+        self.wall = wall
         self.state: dict[str, dict] = {}
 
     def configure(self, channel: dict) -> None:
@@ -536,7 +542,7 @@ class ChannelRouter:
             # „behoben“: gehört zum offenen Problem – auch unterhalb der Mindeststufe.
             out = []
             if st["notified"] and self.channel.get("resolved", True):
-                duration = max(0.0, (event.get("t") or now) - st["open_since"])
+                duration = max(0.0, (event.get("t") or self.wall()) - st["open_since"])
                 title = f"{event.get('title') or 'Behoben'} – Dauer {fmt_duration(duration)}"
                 out.append(self._message(event, title, resolved=True, level="info", duration_s=int(duration),
                                          suppressed=st["suppressed"]))
@@ -549,7 +555,7 @@ class ChannelRouter:
         recent = st["last_sent"] is not None and now - st["last_sent"] < window
         if problem:
             if st["open_since"] is None:
-                st["open_since"] = event.get("t") or now
+                st["open_since"] = event.get("t") or self.wall()
             elif st["notified"]:
                 if _level_rank(level) > _level_rank(st["notified"]):
                     st.update(notified=level, last_sent=now, sent_level=level, resolved_sent=False)  # sofort
@@ -594,7 +600,7 @@ class ChannelRouter:
                 continue
             if st["last_sent"] is not None and now - st["last_sent"] < window:
                 continue
-            since = fmt_duration(now - st["open_since"])
+            since = fmt_duration(self.wall() - st["open_since"])
             out.append(self._message(pending, f"{pending.get('title') or ''} (besteht seit {since})",
                                      suppressed=st["suppressed"]))
             level = pending.get("level") or "warn"
@@ -1052,6 +1058,9 @@ class Notifier:
             if self.thread and self.thread.is_alive():
                 return
             self.version = version
+            # Position hier festlegen, nicht erst im Thread: sonst gälten Ereignisse zwischen start()
+            # und dem ersten Lauf des Threads als „schon gesehen“ und würden nie gemeldet.
+            self._load_position()
             events.add_listener(self.wake)
             self.thread = threading.Thread(target=self._run, daemon=True, name="notify-router")
             self.thread.start()
@@ -1159,7 +1168,6 @@ class Notifier:
         return count
 
     def _run(self) -> None:
-        self._load_position()
         while not self.stopped:
             self.wake_event.wait(POLL_SECONDS)
             self.wake_event.clear()

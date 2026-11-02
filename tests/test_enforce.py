@@ -1,13 +1,17 @@
 """Tests für „Zeitserver erzwingen“ (enforce.py): Namensliste, Snippets, Prüfung."""
 
+import os
 import socket
 import struct
 import sys
 import threading
+import time
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _isolation  # noqa: E402,F401 – vor jedem App-Import: Host-Pfade umlenken
 
 import enforce  # noqa: E402
 
@@ -167,17 +171,23 @@ class ReplyTest(unittest.TestCase):
 
         thread = threading.Thread(target=serve, daemon=True)
         thread.start()
-        silent = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        silent.bind(("127.0.0.1", 0))
-        quiet = silent.getsockname()
         try:
-            result = enforce.probe_many([("127.0.0.1", port), quiet], timeout=0.5)
+            # Großzügige Frist: probe_many endet, sobald alle geantwortet haben – auf einem vollen
+            # Runner muss der Server-Thread aber erst einmal drankommen.
+            started = time.monotonic()
+            result = enforce.probe_many([("127.0.0.1", port)], timeout=5)
         finally:
             thread.join(2)
             server.close()
-            silent.close()
         self.assertEqual(result[("127.0.0.1", port)]["stratum"], 2)
-        self.assertIsNone(result[quiet])
+        self.assertLess(time.monotonic() - started, 5)
+
+    def test_probe_many_quiet_target_times_out(self):
+        silent = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        silent.bind(("127.0.0.1", 0))
+        self.addCleanup(silent.close)
+        quiet = silent.getsockname()
+        self.assertEqual(enforce.probe_many([quiet], timeout=0.3), {quiet: None})
 
 
 class CheckTest(unittest.TestCase):
@@ -240,14 +250,26 @@ class CheckTest(unittest.TestCase):
 
     def test_rate_limit(self):
         clock = [1000.0]
-        first = self.run_check({}, {}, now=lambda: clock[0])
+        first = self.run_check({}, {}, now=lambda: clock[0], clock=lambda: clock[0])
         self.assertFalse(first["cached"])
         clock[0] += 10
-        second = self.run_check({}, {}, now=lambda: clock[0])
+        second = self.run_check({}, {}, now=lambda: clock[0], clock=lambda: clock[0])
         self.assertTrue(second["cached"])
         self.assertGreater(second["retry_after"], 0)
         clock[0] += 25
-        self.assertFalse(self.run_check({}, {}, now=lambda: clock[0])["cached"])
+        self.assertFalse(self.run_check({}, {}, now=lambda: clock[0], clock=lambda: clock[0])["cached"])
+
+    def test_rate_limit_ignores_wall_clock_step(self):
+        """Regression: Stellt chrony die Uhr zurück (Pi ohne RTC), darf das die 30-s-Sperre nicht
+        verlängern – der Abstand wird monoton gemessen, die Uhrzeit nur angezeigt."""
+        wall, mono = [2_000_000_000.0], [500.0]
+        kw = {"now": lambda: wall[0], "clock": lambda: mono[0]}
+        self.assertFalse(self.run_check({}, {}, **kw)["cached"])
+        wall[0] -= 86400  # Uhr springt einen Tag zurück
+        mono[0] += 31
+        result = self.run_check({}, {}, **kw)
+        self.assertFalse(result["cached"])
+        self.assertEqual(result["time"], wall[0])
 
     def test_never_probes_protected_names(self):
         result = self.run_check({}, {}, sources=[])

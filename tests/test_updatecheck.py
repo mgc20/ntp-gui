@@ -22,6 +22,8 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _isolation  # noqa: E402,F401 – vor jedem App-Import: Host-Pfade umlenken
 
 import egress  # noqa: E402
 import settings  # noqa: E402
@@ -357,9 +359,11 @@ class ScheduleTest(TempStore):
         """/api/status und /metrics dürfen nie auf GitHub warten (Sperre nicht während der Anfrage)."""
         started, release_fetch = threading.Event(), threading.Event()
 
+        self.addCleanup(release_fetch.set)
+
         def slow():
             started.set()
-            release_fetch.wait(5)
+            release_fetch.wait(30)  # hängt den ganzen Test über: ein Warten fiele mit ~30 s auf
             return release()
 
         check = self.checker(fetcher=slow)
@@ -367,10 +371,10 @@ class ScheduleTest(TempStore):
         worker = threading.Thread(target=check.tick, args=(T0 + 10,))
         worker.start()
         try:
-            self.assertTrue(started.wait(2))
+            self.assertTrue(started.wait(10))
             t = time.monotonic()
             status = check.status(T0 + 11)
-            self.assertLess(time.monotonic() - t, 0.5, "status() hat auf den Abruf gewartet")
+            self.assertLess(time.monotonic() - t, 5, "status() hat auf den Abruf gewartet")
             self.assertEqual(status["last_attempt"], T0 + 10)
             self.assertFalse(check.tick(T0 + 12), "kein zweiter Abruf, solange einer läuft")
         finally:
@@ -380,12 +384,14 @@ class ScheduleTest(TempStore):
 
     def test_overall_deadline(self):
         hang = threading.Event()
-        check = updatecheck.Checker("1.3.2", lambda: True, fetcher=lambda: hang.wait(5) and release(),
+        self.addCleanup(hang.set)
+        # Der Abruf hängt 30 s; die Frist (0,2 s) muss das deutlich abkürzen. Die Reserve bis 10 s
+        # gilt Thread-Wechseln und SQLite-Schreibvorgängen auf einem vollen Runner (2,2 s gesehen).
+        check = updatecheck.Checker("1.3.2", lambda: True, fetcher=lambda: hang.wait(30) and release(),
                                     state=updatecheck.Store(), rng=random.Random(1), deadline=0.2)
         t = time.monotonic()
         data = check.check(T0 + 5)
-        hang.set()
-        self.assertLess(time.monotonic() - t, 2)
+        self.assertLess(time.monotonic() - t, 10)
         self.assertIn("Zeitüberschreitung", data["error"])
         self.assertEqual(updatecheck.DEADLINE, 20.0)
 
