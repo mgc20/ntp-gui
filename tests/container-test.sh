@@ -166,6 +166,36 @@ if d['available']:
 " "$CM" 2>/dev/null; then ok "Client-Messung meldet Zustand im Bridge-Netz verständlich (available=$(python3 -c "import json,sys;print(json.loads(sys.argv[1])['available'])" "$CM" 2>/dev/null))"
 else bad "Client-Messung: unklare Antwort ($CM)"; fi
 
+# Benachrichtigungen: Webhook an ein Ziel im Container, Token nie in der Antwort, keine Weiterleitung.
+docker exec -d "${PREFIX}-a" python3 -c '
+from http.server import BaseHTTPRequestHandler, HTTPServer
+class H(BaseHTTPRequestHandler):
+    def do_POST(self):
+        body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        if self.path == "/umleitung":
+            self.send_response(302); self.send_header("Location", "http://127.0.0.1:18999/hook"); self.end_headers(); return
+        open("/tmp/notify-sink.log", "ab").write(self.path.encode() + b" " + body + b"\n")
+        self.send_response(200); self.end_headers()
+    def log_message(self, *a): pass
+HTTPServer(("127.0.0.1", 18999), H).serve_forever()'
+sleep 1
+J=(-H 'Content-Type: application/json' -H 'X-NTP-GUI: 1')
+NCH=$(curl -s --max-time 10 "${J[@]}" -d '{"name":"CT","type":"webhook","url":"http://127.0.0.1:18999/hook","secret":"CtGeheim42"}' \
+  http://127.0.0.1:18080/api/notify/channels)
+NID=$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['channel']['id'])" "$NCH" 2>/dev/null)
+check "Benachrichtigung: Kanal angelegt" 1 "$([[ -n "$NID" ]] && echo 1 || echo 0)"
+check "Benachrichtigung: ftp:// abgelehnt" 422 "$(http "${J[@]}" -d '{"name":"x","type":"webhook","url":"ftp://x.lan/"}' http://127.0.0.1:18080/api/notify/channels)"
+NTEST=$(curl -s --max-time 15 "${J[@]}" -d "{\"id\":\"$NID\"}" http://127.0.0.1:18080/api/notify/test)
+contains "Benachrichtigung: Testnachricht zugestellt" "$NTEST" '"ok": true'
+contains "Benachrichtigung: Ziel hat die Nachricht" "$(docker exec "${PREFIX}-a" cat /tmp/notify-sink.log 2>/dev/null)" '"test":true'
+check "Benachrichtigung: Token nie in der API" 0 "$(curl -s http://127.0.0.1:18080/api/notify | grep -c CtGeheim42)"
+check "Benachrichtigung: Status per /api/v1" 200 "$(http http://127.0.0.1:18080/api/v1/notify/status)"
+curl -s --max-time 10 "${J[@]}" -d "{\"id\":\"$NID\",\"url\":\"http://127.0.0.1:18999/umleitung\"}" http://127.0.0.1:18080/api/notify/channels >/dev/null
+contains "Benachrichtigung: Weiterleitung wird nicht befolgt" \
+  "$(curl -s --max-time 15 "${J[@]}" -d "{\"id\":\"$NID\"}" http://127.0.0.1:18080/api/notify/test)" 'Weiterleitung abgelehnt'
+check "Benachrichtigung: nach 302 keine zweite Anfrage" 1 "$(docker exec "${PREFIX}-a" grep -c '"test":true' /tmp/notify-sink.log)"
+http "${J[@]}" -d "{\"id\":\"$NID\"}" http://127.0.0.1:18080/api/notify/channels/delete >/dev/null
+
 echo
 echo "1c) Schutz vor DNS-Rebinding (ohne Passwort)"
 A=http://127.0.0.1:18080

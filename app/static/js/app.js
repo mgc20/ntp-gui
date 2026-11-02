@@ -9,6 +9,7 @@ import * as ptp from "./pages/ptp.js";
 import * as hardware from "./pages/hardware.js";
 import * as clients from "./pages/clients.js";
 import * as diagnose from "./pages/diagnose.js";
+import * as notify from "./pages/notify.js";
 import * as settings from "./pages/settings.js";
 import * as help from "./pages/help.js";
 
@@ -20,6 +21,7 @@ const PAGES = [
   { id: "hardware", title: "Hardware", module: hardware, history: false },
   { id: "clients", title: "Clients", module: clients, history: true },
   { id: "diagnose", title: "Diagnose", module: diagnose, history: false },
+  { id: "benachrichtigungen", title: "Benachrichtigungen", module: notify, history: false },
   { id: "einstellungen", title: "Einstellungen", module: settings },
   { id: "hilfe", title: "Hilfe", module: help },
 ];

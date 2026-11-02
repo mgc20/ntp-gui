@@ -207,6 +207,56 @@ def _as_public_name(value: Any) -> str:
     return _as_host(text)
 
 
+_URL_PATH_RE = re.compile(r"^[A-Za-z0-9._~!$&'()*+,;=:@%/-]*$")
+_URL_PORT_RE = re.compile(r"^\d{1,5}$")
+
+
+def http_url_ok(text: str, max_len: int = 300) -> bool:
+    """http(s)-URL ohne Zugangsdaten, Leer- und Steuerzeichen, mit gültigem Host.
+
+    Für Ziele ausgehender Verbindungen (Benachrichtigungen) und Links. Zugangsdaten
+    in der URL („user:pass@“) sind verboten: Sie würden unmaskiert in der Oberfläche
+    stehen – dafür gibt es eigene, maskierte Felder.
+    """
+    if not isinstance(text, str) or not text or len(text) > max_len:
+        return False
+    match = re.match(r"^(https?)://([^/?#]+)([^?#]*)(\?[^#]*)?(#.*)?$", text)
+    if not match:
+        return False
+    netloc, path = match.group(2), match.group(3)
+    query, fragment = (match.group(4) or "")[1:], (match.group(5) or "")[1:]
+    if "@" in netloc:
+        return False
+    if netloc.startswith("["):
+        host, _, rest = netloc[1:].partition("]")
+        port = rest[1:] if rest.startswith(":") else ("" if not rest else None)
+        try:
+            ipaddress.IPv6Address(host)
+        except ValueError:
+            return False
+    else:
+        host, _, port = netloc.partition(":")
+        try:
+            ipaddress.IPv4Address(host)
+        except ValueError:
+            if not _HOST_RE.match(host):
+                return False
+    if port is None or (port and not (_URL_PORT_RE.match(port) and 0 < int(port) < 65536)):
+        return False
+    return all(_URL_PATH_RE.match(part) for part in (path, query, fragment))
+
+
+def _as_link_url(value: Any) -> str:
+    """Leer oder http(s)-URL (Adresse des Dashboards für Links in Benachrichtigungen)."""
+    text = str(value if value is not None else "").strip()
+    if not text:
+        return ""
+    if not http_url_ok(text):
+        raise ValidationError("http:// oder https:// mit Hostname bzw. IP, ohne Leerzeichen und ohne "
+                              "Benutzer/Passwort, z. B. http://zeitserver.lan:8080/")
+    return text
+
+
 MAX_HOSTNAMES = 50
 
 
@@ -742,6 +792,13 @@ SCHEMA: list[dict] = [
     _field("web_refresh_seconds", "web", "Aktualisierung", "float", 5.0,
            _as_number(float, 1.0, 300.0), env="WEB_REFRESH_SECONDS", unit="s",
            restart=RESTART_NONE, help="Wie oft das Dashboard neue Werte holt."),
+    _field("notify_dashboard_url", "web", "Adresse des Dashboards (für Links)", "text", "",
+           _as_link_url, env="NOTIFY_DASHBOARD_URL", restart=RESTART_NONE, advanced=True,
+           placeholder="z. B. http://zeitserver.lan:8080/",
+           help="Wenn gesetzt, hängt jede Benachrichtigung einen Link auf die passende Seite dieses "
+                "Dashboards an – ein Tipp auf dem Handy führt direkt zur GPS- oder Quellen-Seite. "
+                "Leer = kein Link. Der Link wird nicht gefiltert, weil du ihn selbst einträgst; trag "
+                "deshalb nur eine Adresse ein, die die Empfänger sehen dürfen."),
     _field("history_interval", "web", "Messintervall für Diagramme", "float", 10.0,
            _as_number(float, 2.0, 600.0), env="HISTORY_INTERVAL", unit="s",
            restart=RESTART_NONE, advanced=True,

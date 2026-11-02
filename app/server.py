@@ -56,6 +56,7 @@ import hardware
 import history as historymod
 import insights
 import instance
+import notify
 import providers
 import ptp
 import settings
@@ -135,6 +136,22 @@ apiv1.endpoint("GET", "/enforce/check", "/api/enforce/check", "read",
                {"ip": "Adresse dieses Servers aus Sicht der Clients"})
 apiv1.endpoint("GET", "/clients/offsets", "/api/clients/offsets", "read",
                "Passiv gemessene Abweichung der Client-Uhren.", ["available", "running", "reason", "clients"])
+apiv1.endpoint("GET", "/notify", "/api/notify", "admin",
+               "Benachrichtigungen: Kanäle mit Filtern und Zustellstand. Tokens nur als „gesetzt“ "
+               "(secret_set), nie im Klartext.", ["channels", "types", "levels", "kinds", "defaults", "limits",
+                                                 "dashboard_url", "running"])
+apiv1.endpoint("GET", "/notify/status", "/api/notify/status", "read",
+               "Zustellstand je Benachrichtigungskanal (Name, Art, zuletzt gesendet, letzter Fehler) – "
+               "ohne Adressen und Tokens.", ["channels", "running"])
+apiv1.endpoint("POST", "/notify/channels", "/api/notify/channels", "admin",
+               "Benachrichtigungskanal anlegen (ohne id) oder ändern (mit id). Body: name, type "
+               "(webhook|ntfy|gotify|apprise), url, topic, secret (weglassen = behalten, \"\" = löschen), "
+               "min_level, kinds, debounce_min, rate_per_hour, resolved, enabled.", ["channel"])
+apiv1.endpoint("POST", "/notify/channels/delete", "/api/notify/channels/delete", "admin",
+               "Benachrichtigungskanal löschen. Body: {\"id\": …}.", ["ok"])
+apiv1.endpoint("POST", "/notify/test", "/api/notify/test", "admin",
+               "Testnachricht sofort über einen Kanal senden (ohne Wiederholung). Body: {\"id\": …}.",
+               ["ok", "error", "status"])
 apiv1.endpoint("GET", "/gps/autocal", "/api/gps/autocal", "read",
                "Automatische GPS-Kalibrierung: Modus, aktuelle Entscheidung, letzte Änderungen.",
                ["mode", "decision", "changes", "rollback"], {"fresh": "0 = letzte gespeicherte Entscheidung"})
@@ -979,6 +996,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(enforce.api_check(query, cfg, system_info(cfg)["addresses"], chrony.tracking()))
         elif path == "/api/clients/offsets":
             self._send_json(clientmon.status())
+        elif path == "/api/notify":
+            self._send_json(notify.api_config())
+        elif path == "/api/notify/status":
+            self._send_json(notify.api_status())
         elif path == "/api/apikeys":
             self._send_json({"keys": apikeys.list(), "auth_enabled": auth_info()["enabled"]})
         elif path == "/api/v1/instance":
@@ -1136,6 +1157,21 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(recording_status())
             else:
                 self._error(HTTPStatus.BAD_REQUEST, "action muss „start“ oder „stop“ sein")
+        elif path == "/api/notify/channels":
+            try:
+                self._send_json({"channel": notify.save_channel(data)})
+            except notify.NotifyError as exc:
+                self._error(HTTPStatus.UNPROCESSABLE_ENTITY, str(exc))
+        elif path == "/api/notify/channels/delete":
+            if not notify.delete_channel(str(data.get("id", ""))):
+                self._error(HTTPStatus.NOT_FOUND, "Diesen Kanal gibt es nicht (mehr)")
+                return
+            self._send_json({"ok": True})
+        elif path == "/api/notify/test":
+            try:
+                self._send_json(notify.send_test(str(data.get("id", ""))))
+            except notify.NotifyError as exc:
+                self._error(HTTPStatus.NOT_FOUND, str(exc))
         elif path == "/api/apikeys":
             key_id, token = apikeys.create(data.get("name"), data.get("scope"))
             entry = next((k for k in apikeys.list() if k["id"] == key_id), {})
@@ -1183,6 +1219,7 @@ def main() -> None:
     threading.Thread(target=collector, daemon=True, name="collector").start()
     threading.Thread(target=hardware_refresher, daemon=True, name="hardware").start()
     threading.Thread(target=events_ingester, daemon=True, name="events").start()
+    notify.start(VERSION)  # eigener Thread je Kanal; ohne angelegte Kanäle geht nichts hinaus
     # Folgt clientmon_enable/ntp_port ohne Neustart.
     threading.Thread(target=clientmon.watch, args=(settings.values,), daemon=True, name="clientmon-watch").start()
 

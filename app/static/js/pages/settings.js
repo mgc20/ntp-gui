@@ -29,6 +29,7 @@ export const FIELD_HELP = {
   gps_autocal: "autocal_mode", gps_autocal_max_step_ms: "autocal_step", gps_autocal_min_hours: "autocal_window",
   clientmon_enable: "clientmon",
   web_title: "web_title", web_refresh_seconds: "web_refresh", history_interval: "history_interval",
+  notify_dashboard_url: "notify_link",
   gps_device: "hw_device_path", allow_networks: "allow_networks", gps_show_position: "gps_show_position",
 };
 

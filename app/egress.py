@@ -48,7 +48,9 @@ import sys
 import threading
 from typing import Any
 
-PURPOSES = ("diagnostics", "recording", "community")
+# Zwecke: wofür etwas die Instanz verlässt. "notify" (Benachrichtigungen, 1.4) hat zusätzlich eine
+# eigene Feldliste (NOTIFY_FIELDS) – nur diese Felder einer Meldung gehen überhaupt hinaus.
+PURPOSES = ("diagnostics", "recording", "community", "notify")
 
 PUBLIC_IP = "<öffentliche-IP>"
 REMOVED = "<entfernt>"
@@ -2262,3 +2264,69 @@ def _bs_line(line: str, patterns: list[tuple[re.Pattern, str]]) -> list[tuple[st
         if not _bs_dotted_allowed(m.group(0), before):
             hits.append(("name_mit_punkt", m.group(0)))
     return [(kind, text[:80]) for kind, text in hits]
+
+
+# --- Benachrichtigungen (Zweck "notify") ---------------------------------------------
+
+# Positivliste: Feld → Typ. Alles andere einer Meldung (Ereignisdaten mit Gerätepfaden,
+# Quellen, Werten …) bleibt zu Hause. Texte laufen durch den Filter, danach beide Schranken.
+NOTIFY_FIELDS: dict[str, type] = {
+    "title": str, "text": str, "level": str, "kind": str, "time": float, "resolved": bool,
+    "duration_s": int, "test": bool, "event_id": int, "suppressed": int,
+}
+NOTIFY_LEVELS = ("info", "warn", "crit")
+NOTIFY_MAX_TEXT = 400
+_NOTIFY_KIND_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
+
+
+class NotifyLeak(ValueError):
+    """Die Schlussprüfung hat in einer Benachrichtigung etwas gefunden – nicht senden."""
+
+    def __init__(self, findings: list[dict]) -> None:
+        kinds = sorted({str(f.get("kind")) for f in findings})
+        super().__init__("Filter hat die Nachricht zurückgehalten (" + ", ".join(kinds) + ")")
+        self.findings = findings
+
+
+def notify_message(message: dict, known_names=(), known: dict | None = None) -> dict:
+    """Meldung → was hinausgehen darf: nur NOTIFY_FIELDS, Texte gefiltert, Schranken geprüft.
+
+    Wirft NotifyLeak, wenn check_no_leaks oder backstop danach noch etwas finden."""
+    sanitizer = Sanitizer("notify", known_names, known)
+    out: dict[str, Any] = {}
+    for key, kind in NOTIFY_FIELDS.items():
+        if key not in (message or {}):
+            continue
+        value = message[key]
+        if value is None:
+            continue
+        if kind is str:
+            text = " ".join(str(value).split())[:NOTIFY_MAX_TEXT]
+            if key == "level":
+                text = text if text in NOTIFY_LEVELS else "info"
+            elif key == "kind":
+                text = text if _NOTIFY_KIND_RE.match(text) else "other"
+            else:
+                text = sanitizer.text(text)
+            out[key] = text
+        elif kind is bool:
+            out[key] = bool(value)
+        elif kind is int:
+            try:
+                out[key] = int(value)
+            except (TypeError, ValueError):
+                continue
+        elif kind is float:
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                continue
+            if number == number and abs(number) < 1e12:
+                out[key] = round(number, 3)
+    findings = check_no_leaks(out)
+    if not findings:
+        rendered = json.dumps(out, ensure_ascii=False, indent=1)
+        findings = backstop({"nachricht": rendered.encode("utf-8")}, sanitizer.backstop_known())
+    if findings:
+        raise NotifyLeak(findings)
+    return out

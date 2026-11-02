@@ -27,7 +27,7 @@ from typing import Any
 import store
 
 KINDS = ("service", "reload", "settings", "source", "gps", "pps", "calibration", "cert",
-         "leap", "startup", "clients", "api", "other")
+         "leap", "startup", "clients", "api", "notify", "other")
 LEVELS = ("info", "warn", "crit")
 
 RETENTION_DAYS = 90
@@ -56,6 +56,21 @@ _SCHEMA = [
 _LOCK = threading.Lock()
 _STATE: dict[str, Any] = {"ready_for": None, "since_prune": 0}
 _PENDING: deque = deque(maxlen=500)
+_LISTENERS: list = []  # werden nach jedem erfolgreichen Schreiben aufgerufen (z. B. notify.wake)
+
+
+def add_listener(callback) -> None:
+    """callback() nach jedem gespeicherten Ereignis – muss sofort zurückkehren und darf nicht werfen."""
+    if callback not in _LISTENERS:
+        _LISTENERS.append(callback)
+
+
+def _notify_listeners() -> None:
+    for callback in list(_LISTENERS):
+        try:
+            callback()
+        except Exception:
+            pass
 
 
 def _ensure() -> None:
@@ -111,6 +126,8 @@ def emit(kind: str, level: str, title: str, data: dict | None = None,
             _PENDING.clear()
         except Exception:
             _PENDING.append(row)
+            return
+    _notify_listeners()
 
 
 def prune(now: float | None = None) -> int:
@@ -173,6 +190,33 @@ def query(since: float | None = None, until: float | None = None,
         out.append({"id": ident, "t": t, "kind": kind, "level": lvl, "title": title,
                     "data": parsed, "source": source})
     return out
+
+
+def after_id(last_id: int, limit: int = 200) -> list[dict]:
+    """Ereignisse mit id > last_id, älteste zuerst (für Abonnenten wie notify.py)."""
+    try:
+        _ensure()
+        rows = store.query("SELECT id, t, kind, level, title, data, source FROM events "
+                           "WHERE id > ? ORDER BY id LIMIT ?", (int(last_id), max(1, min(int(limit), 1000))))
+    except Exception:
+        return []
+    out = []
+    for ident, t, kind, lvl, title, data, source in rows:
+        try:
+            parsed = json.loads(data) if data else None
+        except ValueError:
+            parsed = None
+        out.append({"id": ident, "t": t, "kind": kind, "level": lvl, "title": title,
+                    "data": parsed, "source": source})
+    return out
+
+
+def max_id() -> int:
+    try:
+        _ensure()
+        return int(store.query("SELECT coalesce(max(id), 0) FROM events")[0][0])
+    except Exception:
+        return 0
 
 
 def count() -> int:
@@ -318,4 +362,6 @@ def ingest_supervisor(path: str) -> int:
         _STATE["since_prune"] += len(rows)
         if _STATE["since_prune"] >= PRUNE_EVERY:
             prune()
+        if rows:
+            _notify_listeners()
         return len(rows)

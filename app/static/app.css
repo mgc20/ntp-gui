@@ -815,3 +815,14 @@ details.enforce-names { margin-top: 10px; }
 .diag-event-filters .diag-field { flex-wrap: nowrap; }
 /* Einstellungen: Hinweis unter „Exportieren“ */
 .export-note { display: flex; align-items: flex-start; gap: 6px; margin: 12px 0 0; }
+
+/* Benachrichtigungen */
+.notify-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
+.notify-channel { border: 1px solid var(--border-soft); border-radius: 10px; padding: 10px 12px; display: grid; gap: 8px; min-width: 0; }
+.notify-channel-head { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; min-width: 0; }
+.notify-channel .kv-list { margin: 0; }
+.notify-kinds { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); border-color: color-mix(in srgb, var(--accent) 50%, var(--border)); }
+.notify-secret { display: grid; gap: 6px; }
+.notify-inline { display: inline-flex; gap: 8px; align-items: center; font-size: 13px; color: var(--ink-muted); }
+.notify-foot { margin-top: 4px; }
