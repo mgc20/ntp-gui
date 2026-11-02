@@ -658,6 +658,21 @@ SCHEMA: list[dict] = [
                 "danebenliegt – rein passiv, es wird nichts an die Geräte gesendet. So siehst "
                 "du, welche Geräte deinen Server wirklich nutzen und ob ihre Uhr stimmt. Die "
                 "Werte bleiben auf dieser Instanz. Wirkt ohne Neustart."),
+    _field("clients_alarm_ms", "lan", "Alarm, wenn eine Client-Uhr abweicht", "int", 0,
+           _as_number(int, 0, 86_400_000), env="CLIENTS_ALARM_MS", restart=RESTART_NONE,
+           advanced=True, unit="ms", placeholder="0 = aus",
+           help="Ab dieser Abweichung (in Millisekunden) schreibt ntp-gui ein Ereignis „Uhr von … "
+                "weicht um … ab“ – das kann eine Benachrichtigung auslösen. Zählt erst, wenn zwei "
+                "Messungen hintereinander darüber liegen; „wieder im Rahmen“ meldet es erst unter "
+                "der Hälfte der Schwelle, damit ein Gerät an der Grenze nicht ständig hin und her "
+                "meldet. 0 = aus. Sinnvoll sind etwa 1000 ms (Uhr geht eine Sekunde falsch)."),
+    _field("clients_rdns", "lan", "Namen der Clients per DNS nachschlagen", "bool", True, _as_bool,
+           env="CLIENTS_RDNS", restart=RESTART_NONE, advanced=True,
+           help="Zeigt auf der Detailseite eines Geräts seinen Namen aus dem DNS (Reverse-DNS, "
+                "z. B. „nas.fritz.box“). Gefragt wird nur nach privaten LAN-Adressen, nur beim "
+                "Öffnen der Detailseite und nur über den System-DNS bzw. eigene DNS-Server mit "
+                "privater Adresse – nie über DoT/DoH oder öffentliche Server, denn dann ginge die "
+                "Frage nach deinen Geräteadressen ins Internet. Der Name bleibt auf dieser Instanz."),
     _field("enforce_hostnames", "lan", "Weitere Namen für „Zeitserver erzwingen“", "hostlist",
            [], _as_host_list, env="ENFORCE_HOSTNAMES", restart=RESTART_NONE, advanced=True,
            placeholder="z. B. time.example.com",

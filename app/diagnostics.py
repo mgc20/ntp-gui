@@ -593,7 +593,17 @@ def _known_values(cfg: dict) -> dict:
         "titel": [title] if title and title not in egress.DEFAULT_TITLES else [],
         "seriennummer": _hardware_serials(),
         "schnittstelle": _interface_names(cfg),
+        "name": _client_names(),
     }
+
+
+def _client_names() -> list[str]:
+    """Selbst vergebene Namen der Clients (Clients-Detailseite) – egress ersetzt sie durch <name>."""
+    try:
+        import clientinfo
+        return clientinfo.export_names()
+    except Exception:  # noqa: BLE001
+        return []
 
 
 def _render(name: str, content: Any) -> tuple[str, str]:

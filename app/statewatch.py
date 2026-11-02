@@ -111,6 +111,8 @@ class StateWatcher:
         self._clock = clock
         self._fix = self._fix_tracker()
         self._pps: dict[str, _Tracker] = {}
+        self._clients: dict[str, dict] = {}
+        self._clients_threshold: float | None = None
 
     def _fix_tracker(self) -> _Tracker:
         return _Tracker(self._confirm, self._fix_hold, self._clock)
@@ -191,3 +193,61 @@ class StateWatcher:
             for dev in list(self._pps):
                 if dev not in seen:
                     del self._pps[dev]
+
+    # --- Client-Uhren (Alarm-Schwelle aus den Einstellungen) -------------------
+    def clients(self, clients: Any, threshold_ms: Any, label: Callable[[str], str] = str,
+                fmt: Callable[[float], str] | None = None) -> None:
+        """Meldet Client-Uhren, die um mehr als threshold_ms abweichen.
+
+        Hysterese wie bei den übrigen Zuständen: Ein Alarm entsteht erst, wenn ZWEI neue
+        Messungen hintereinander über der Schwelle liegen; „wieder im Rahmen“ erst, wenn zwei
+        Messungen unter der HÄLFTE liegen. So pendelt ein Gerät an der Grenze nicht. Gezählt
+        wird nur, wenn das Gerät wirklich neu gemessen wurde (Zähler „count“ gestiegen).
+        """
+        try:
+            threshold = float(threshold_ms or 0) / 1000.0
+        except (TypeError, ValueError):
+            threshold = 0.0
+        if not isinstance(clients, dict):
+            return
+        fmt = fmt or (lambda v: f"{v * 1000:+.1f} ms")
+        with self._lock:
+            if threshold <= 0:
+                self._clients.clear()
+                self._clients_threshold = None
+                return
+            if self._clients_threshold != threshold:
+                # Neue Schwelle: Zustände neu aufbauen, aber offene Alarme nicht doppelt melden.
+                for state in self._clients.values():
+                    state["streak"] = 0
+                self._clients_threshold = threshold
+            for ip in [ip for ip in self._clients if ip not in clients]:
+                del self._clients[ip]
+            for ip, entry in clients.items():
+                if not isinstance(entry, dict) or not entry.get("measurable"):
+                    continue
+                value = entry.get("offset")
+                count = entry.get("count")
+                if not isinstance(value, (int, float)) or isinstance(value, bool):
+                    continue
+                state = self._clients.setdefault(ip, {"alarm": False, "streak": 0, "count": None})
+                if count == state["count"]:
+                    continue  # keine neue Messung
+                state["count"] = count
+                if not state["alarm"]:
+                    over = abs(value) > threshold
+                    state["streak"] = state["streak"] + 1 if over else 0
+                    if state["streak"] >= CONFIRM:
+                        state.update(alarm=True, streak=0)
+                        self._send("clients", "warn", f"Uhr von {label(ip)} weicht um {fmt(value)} ab",
+                                   {"address": ip, "offset": value, "threshold_ms": threshold * 1000})
+                else:
+                    back = abs(value) < threshold / 2
+                    state["streak"] = state["streak"] + 1 if back else 0
+                    if state["streak"] >= CONFIRM:
+                        state.update(alarm=False, streak=0)
+                        self._send("clients", "info", f"Uhr von {label(ip)} wieder im Rahmen ({fmt(value)})",
+                                   {"address": ip, "offset": value, "threshold_ms": threshold * 1000})
+            if len(self._clients) > 5000:
+                for ip in list(self._clients)[:len(self._clients) - 5000]:
+                    del self._clients[ip]

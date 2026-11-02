@@ -534,7 +534,8 @@ def _known() -> tuple[list, dict]:
             cfg = settings.values()
             _KNOWN["names"] = diagnostics._known_names(cfg)
             title = str(cfg.get("web_title") or "").strip()
-            _KNOWN["values"] = {"titel": [title] if title and title not in egress.DEFAULT_TITLES else []}
+            _KNOWN["values"] = {"titel": [title] if title and title not in egress.DEFAULT_TITLES else [],
+                                "name": diagnostics._client_names()}
         except Exception:
             _KNOWN["names"], _KNOWN["values"] = [], {}
         _KNOWN["t"] = now

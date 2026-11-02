@@ -40,8 +40,19 @@ const state = {
 const main = document.getElementById("main");
 const nav = document.getElementById("nav");
 
+// #/<seite>/<unterpfad> – der Unterpfad (z. B. die Adresse auf #/clients/192.168.1.5) geht als
+// ctx.subpath an die Seite.
+function routeParts() {
+  const raw = window.location.hash.replace(/^#\/?/, "").split("?")[0] || "";
+  const slash = raw.indexOf("/");
+  const id = (slash < 0 ? raw : raw.slice(0, slash)).toLowerCase();
+  let sub = slash < 0 ? "" : raw.slice(slash + 1);
+  try { sub = decodeURIComponent(sub); } catch (error) { sub = ""; }
+  return { id, sub };
+}
+
 function currentPage() {
-  const id = (window.location.hash.replace(/^#\/?/, "").split("?")[0] || "").toLowerCase();
+  const { id } = routeParts();
   return PAGES.find((p) => p.id === id) || PAGES[0];
 }
 
@@ -117,6 +128,7 @@ function render() {
     history: state.history,
     range: state.range,
     uiState: state.uiState,
+    subpath: page.id ? routeParts().sub : "",
     readonly: Boolean(state.status?.ui?.readonly),
     setRange: (seconds) => { state.range = seconds; storageSet("ntp-gui-range", seconds); refresh(); },
     rerender: () => render(),

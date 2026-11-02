@@ -46,6 +46,7 @@ import apikeys
 import apiv1
 import autocal
 import chrony
+import clientinfo
 import clientmon
 import devices
 import diagnostics
@@ -142,7 +143,25 @@ apiv1.endpoint("GET", "/dns", "/api/dns", "read",
                "DoH-Adressen nur mit Servername (der Pfad kann eine Konto-Kennung enthalten).",
                ["mode", "effective_mode", "running", "state", "upstreams", "resolv", "stats"])
 apiv1.endpoint("GET", "/clients/offsets", "/api/clients/offsets", "read",
-               "Passiv gemessene Abweichung der Client-Uhren.", ["available", "running", "reason", "clients"])
+               "Passiv gemessene Abweichung der Client-Uhren, dazu eigene Namen der Geräte (names).",
+               ["available", "running", "reason", "clients", "names"])
+apiv1.endpoint("GET", "/clients/overview", "/api/clients/overview", "read",
+               "Netzüberblick: Histogramm der Abweichungen, schlechteste Geräte, verstummte und "
+               "auffällig oft fragende Geräte.",
+               ["histogram", "measured", "unmeasurable", "total", "worst", "silent", "chatty"])
+apiv1.endpoint("GET", "/clients/detail", "/api/clients/detail", "read",
+               "Ein Client im Detail: Verlauf der Abweichung (7 Tage), Poll und Abstand, Zustand mit Grund, "
+               "vermutete Software, Reverse-DNS, MAC/Hersteller (nur im selben Netz), eigener Name und Notiz.",
+               ["address", "entry", "samples", "name", "note", "rdns", "mac", "software", "measurable_reason"],
+               {"ip": "Adresse des Clients (Pflicht)", "range": "Zeitraum in Sekunden (Standard 7 Tage)"})
+apiv1.endpoint("POST", "/clients/meta", "/api/clients/meta", "admin",
+               "Eigenen Namen und Notiz eines Clients setzen. Body: {\"ip\": …, \"name\": …, \"note\": …} "
+               "(weglassen = unverändert, \"\" = löschen). Bleibt lokal; beim Export pseudonymisiert.",
+               ["ip", "name", "note"])
+apiv1.endpoint("POST", "/clients/probe", "/api/clients/probe", "admin",
+               "Aktiv nachmessen: eine NTP-Anfrage an einen bekannten Client im LAN (2 s Zeitlimit; je Gerät "
+               "alle 30 s, insgesamt 10 pro Minute). Body: {\"ip\": …}.",
+               ["ip", "answered", "offset", "rtt", "stratum", "text"])
 apiv1.endpoint("GET", "/notify", "/api/notify", "admin",
                "Benachrichtigungen: Kanäle mit Filtern und Zustellstand. Tokens nur als „gesetzt“ "
                "(secret_set), nie im Klartext.", ["channels", "types", "levels", "kinds", "defaults", "limits",
@@ -236,6 +255,7 @@ def collector() -> None:
             HISTORY.add(sample)
             HISTORY.save()
             STATE_WATCH.sample(sample)
+            client_alarms()
             autocal.maybe_tick()   # höchstens einmal pro Stunde, wirft nie
         except Exception as exc:  # ein Messfehler darf den Thread nie beenden
             print(f"[web] Messung fehlgeschlagen: {exc}", flush=True)
@@ -249,6 +269,20 @@ def collector() -> None:
         except Exception:
             interval = 10.0
         time.sleep(max(2.0, interval))
+
+
+def client_alarms() -> None:
+    """Alarm-Schwelle für Client-Uhren (clients_alarm_ms) prüfen – Ereignis „clients“."""
+    try:
+        threshold = settings.values().get("clients_alarm_ms") or 0
+        if not threshold:
+            STATE_WATCH.clients({}, 0)
+            return
+        meta = clientinfo.all_meta()
+        STATE_WATCH.clients(clientmon.status()["clients"], threshold,
+                            label=lambda ip: clientinfo.label(ip, meta), fmt=clientinfo.fmt_offset)
+    except Exception as exc:  # ein Alarm darf die Messung nie aufhalten
+        print(f"[web] Alarm für Client-Uhren nicht geprüft: {exc}", flush=True)
 
 
 HARDWARE_FIRST_DELAY = 5.0
@@ -1022,7 +1056,23 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/dns":
             self._send_json(dnsfwd.api_status(settings.values()))
         elif path == "/api/clients/offsets":
-            self._send_json(clientmon.status())
+            payload = clientmon.status()
+            payload["names"] = clientinfo.names()
+            self._send_json(payload)
+        elif path == "/api/clients/overview":
+            self._send_json(clientinfo.overview(clientmon.status()["clients"], clientinfo.all_meta()))
+        elif path == "/api/clients/detail":
+            seconds = env_like(query.get("range"), float(clientmon.SAMPLE_RETENTION))
+            seconds = max(60.0, min(seconds, float(clientmon.SAMPLE_RETENTION)))
+            try:
+                result = clientinfo.detail(query.get("ip"), settings.values(), time.time() - seconds)
+            except clientinfo.MetaError as exc:
+                self._error(HTTPStatus.BAD_REQUEST, str(exc))
+                return
+            if result is None:
+                self._error(HTTPStatus.NOT_FOUND, "Dieses Gerät ist (noch) nicht bekannt.")
+                return
+            self._send_json(result)
         elif path == "/api/notify":
             self._send_json(notify.api_config())
         elif path == "/api/notify/status":
@@ -1184,6 +1234,20 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(recording_status())
             else:
                 self._error(HTTPStatus.BAD_REQUEST, "action muss „start“ oder „stop“ sein")
+        elif path == "/api/clients/meta":
+            try:
+                result = clientinfo.set_meta(data.get("ip"), data.get("name"), data.get("note"))
+            except clientinfo.MetaError as exc:
+                self._error(HTTPStatus.UNPROCESSABLE_ENTITY, str(exc))
+                return
+            self._send_json(result)
+        elif path == "/api/clients/probe":
+            try:
+                self._send_json(clientinfo.probe(data.get("ip"), lambda ip: clientmon.client(ip) is not None))
+            except clientinfo.ProbeLimited as exc:
+                self._error(HTTPStatus.TOO_MANY_REQUESTS, str(exc), retry_after=round(exc.retry_after))
+            except clientinfo.MetaError as exc:
+                self._error(HTTPStatus.UNPROCESSABLE_ENTITY, str(exc))
         elif path == "/api/notify/channels":
             try:
                 self._send_json({"channel": notify.save_channel(data)})

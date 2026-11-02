@@ -1,7 +1,8 @@
-import { el, apiGet, fmtDuration, fmtNumber, fmtRate, fmtLogInterval, fmtSeconds, isNum, rich } from "../util.js";
+import { el, apiGet, fmtDuration, fmtNumber, fmtRate, fmtLogInterval, isNum, rich } from "../util.js";
 import { card, tile, info, badge, rangeButtons, emptyNote, toast, copyButton } from "../ui.js";
 import { lineChart, stepDecimals } from "../charts.js";
 import { requestRate } from "./overview.js";
+import { renderDetail, fmtOffset, offsetTone, fmtInterval, clientHref, STATE_TONE, STATE_SHORT } from "./clientdetail.js";
 
 // Platzhalter, wenn die LAN-Adresse nicht bekannt ist – in den Beispielen gut sichtbar.
 const IP_PLACEHOLDER = "<IP-des-Servers>";
@@ -39,22 +40,7 @@ function snippet(title, code) {
 }
 
 // --- Abweichung der Client-Uhren ---------------------------------------------
-const STATE_TONE = { ok: "good", "falsche Uhr": "crit", verschleiert: "muted", "ohne Zeitstempel": "muted" };
-const STATE_SHORT = { ok: "messbar", "falsche Uhr": "messbar", verschleiert: "verschleiert",
-  "ohne Zeitstempel": "ohne Zeitstempel" };
-
-function fmtOffset(value) {
-  if (!isNum(value)) return "–";
-  const abs = Math.abs(value);
-  if (abs >= 86400) return `${value > 0 ? "+" : "−"}${fmtDuration(abs)}`;
-  return fmtSeconds(value, 3, true);
-}
-
-function offsetTone(value) {
-  if (!isNum(value)) return "muted";
-  const abs = Math.abs(value);
-  return abs < 0.005 ? "good" : abs < 0.5 ? "warn" : "crit";
-}
+// Formatierung und Zustände teilt sich die Liste mit der Detailseite (clientdetail.js).
 
 function offsetData(ctx) {
   // Hat der Server die Messwerte in /api/status gemischt, die nehmen; sonst eigener Endpunkt.
@@ -87,6 +73,55 @@ function clientmonNote(mon) {
     return el("p", { class: "clientmon-note" }, el("span", { text: mon.reason }), " ", info("clientmon_status"));
   }
   return null;
+}
+
+// --- Netzüberblick ---------------------------------------------------------------
+const BIN_TONE = { lt1ms: "good", "1-10ms": "good", "10-100ms": "warn", "0.1-1s": "warn", gt1s: "crit", wrong: "crit" };
+
+function clientLink(item) {
+  return el("a", { href: clientHref(item.address), class: "client-link" },
+    item.name ? el("span", { text: item.name }) : el("span", { class: "mono", text: item.address }),
+    item.name ? el("span", { class: "mono client-sub", text: ` ${item.address}` }) : null);
+}
+
+function miniList(title, help, items, total, cell, empty) {
+  return el("div", { class: "net-list" },
+    el("h3", { class: "mini-head" }, el("span", { text: title }), info(help, title),
+      total > items.length ? el("span", { class: "muted", text: `(${fmtNumber(items.length)} von ${fmtNumber(total)})` }) : null),
+    items.length ? el("ul", { class: "net-items" }, items.map((item) => el("li", {}, clientLink(item), cell(item))))
+      : el("p", { class: "field-help", text: empty }));
+}
+
+function overviewCard(ctx) {
+  const data = ctx.data("clientoverview", "/api/clients/overview", 15);
+  if (data === undefined) return card("Netzüberblick", { help: "clients_overview" }, emptyNote("Lade Überblick …"));
+  if (!data || !Array.isArray(data.histogram)) {
+    return card("Netzüberblick", { help: "clients_overview" }, emptyNote("Überblick nicht verfügbar."));
+  }
+  if (!data.total) return null;
+  const max = Math.max(1, ...data.histogram.map((b) => b.count));
+  const hist = el("div", { class: "net-hist", role: "list", "aria-label": "Verteilung der Abweichungen" },
+    data.histogram.map((b) => el("div", { class: "net-bin", role: "listitem", "data-tone": BIN_TONE[b.key] || "muted",
+      "aria-label": `${b.label}: ${b.count} Geräte` },
+    el("span", { class: "net-bin-label", text: b.label }),
+    el("span", { class: "net-bin-track" }, el("span", { class: "net-bin-fill", style: `width:${(b.count / max) * 100}%` })),
+    el("span", { class: "net-bin-count", text: fmtNumber(b.count) }))));
+  return card("Netzüberblick", { help: "clients_overview",
+    sub: `${fmtNumber(data.measured)} von ${fmtNumber(data.total)} Geräten messbar`
+      + (data.unmeasurable ? ` – ${fmtNumber(data.unmeasurable)} verschleiern ihre Zeit oder senden keine.` : ".") },
+  el("div", { class: "net-grid" },
+    el("div", {},
+      el("h3", { class: "mini-head" }, el("span", { text: "Wie weit gehen die Uhren falsch?" }), info("clients_histogram")),
+      hist),
+    miniList("Größte Abweichung", "clients_worst", data.worst || [], (data.worst || []).length,
+      (item) => el("span", { class: "offset-value", "data-tone": offsetTone(item.offset), text: fmtOffset(item.offset) }),
+      "Noch kein Gerät messbar."),
+    miniList("Verstummt", "clients_silent", data.silent || [], data.silent_total || 0,
+      (item) => el("span", { class: "field-help", text: item.reason }),
+      "Alle bekannten Geräte fragen weiter."),
+    miniList("Fragt auffällig oft", "clients_chatty", data.chatty || [], data.chatty_total || 0,
+      (item) => el("span", { class: "field-help", text: `alle ${fmtInterval(item.interval)} (${fmtNumber(item.rate_per_min, 0)}/min)` }),
+      "Kein Gerät fragt öfter als alle 8 s.")));
 }
 
 // --- Zeitserver erzwingen ------------------------------------------------------
@@ -220,6 +255,7 @@ function enforceSection(ctx, ip) {
 }
 
 export function render(ctx) {
+  if (ctx.subpath) return renderDetail(ctx, ctx.subpath);
   const { status, history } = ctx;
   const clients = status.clients || [];
   const stats = status.serverstats || {};
@@ -230,6 +266,7 @@ export function render(ctx) {
   const ip = knownIp || IP_PLACEHOLDER;
   const mon = offsetData(ctx);
   const offsets = (mon && mon.clients) || {};
+  const names = (mon && mon.names) || {};
   const measured = Object.values(offsets).filter((c) => c.measurable && isNum(c.ewma));
   const worst = measured.reduce((acc, c) => (acc === null || Math.abs(c.ewma) > Math.abs(acc) ? c.ewma : acc), null);
 
@@ -246,10 +283,11 @@ export function render(ctx) {
 
   const input = el("input", { type: "search", placeholder: "Filtern …", value: ctx.uiState.clientFilter || "",
     "aria-label": "Clients filtern" });
-  const bodyRows = (needle) => rows.filter((c) => !needle || (c.address || "").toLowerCase().includes(needle))
+  const bodyRows = (needle) => rows.filter((c) => !needle || (c.address || "").toLowerCase().includes(needle)
+    || (names[c.address] || "").toLowerCase().includes(needle))
     .sort((a, b) => (lastAge(a) ?? 1e12) - (lastAge(b) ?? 1e12))
     .map((c) => el("tr", {},
-      el("td", { class: "mono", text: c.address }),
+      el("td", {}, clientLink({ address: c.address, name: names[c.address] })),
       el("td", { class: "num", text: isNum(c.ntp_packets) ? fmtNumber(c.ntp_packets)
         : isNum(offsets[c.address]?.requests) ? `${fmtNumber(offsets[c.address].requests)}*` : "–",
         title: isNum(c.ntp_packets) ? "" : "* aus der eigenen Messung – chrony kennt das Gerät seit seinem letzten Neustart nicht" }),
@@ -266,7 +304,7 @@ export function render(ctx) {
   });
   const table = el("div", { class: "table-scroll" }, el("table", {},
     el("thead", {}, el("tr", {},
-      el("th", {}, "Adresse ", info("client_address")),
+      el("th", {}, "Gerät ", info("client_address")),
       el("th", { class: "num" }, "Anfragen ", info("client_packets")),
       el("th", { class: "num" }, "Verworfen ", info("client_dropped")),
       el("th", { class: "num" }, "Intervall ", info("client_interval")),
@@ -316,6 +354,7 @@ export function render(ctx) {
     card("Geräte, die diesen Server fragen", { help: "client_packets", actions: input,
       sub: rows.length ? null : "Noch keine Anfragen. Sobald die Adresse verteilt ist, erscheinen die Geräte hier." },
       rows.length ? table : null, clientmonNote(mon)),
+    overviewCard(ctx),
     card("Anfragen pro Minute", { help: "served_rate", actions: rangeButtons(ctx.range, ctx.setRange) }, chartHost),
     setup,
     enforceSection(ctx, knownIp && isIp(knownIp) ? knownIp : null),

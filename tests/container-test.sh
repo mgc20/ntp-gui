@@ -167,6 +167,35 @@ if d['available']:
 " "$CM" 2>/dev/null; then ok "Client-Messung meldet Zustand im Bridge-Netz verständlich (available=$(python3 -c "import json,sys;print(json.loads(sys.argv[1])['available'])" "$CM" 2>/dev/null))"
 else bad "Client-Messung: unklare Antwort ($CM)"; fi
 
+# Clients 2.0: Detailseite, Netzüberblick, eigene Namen, Nachmessen nur im LAN.
+check "Clients: Netzüberblick antwortet" 200 "$(http http://127.0.0.1:18080/api/v1/clients/overview)"
+CJ=(-H 'Content-Type: application/json' -H 'X-NTP-GUI: 1')
+check "Clients: Name für ungültige Adresse abgelehnt" 422 "$(http "${CJ[@]}" -d '{"ip":"kein;ip","name":"x"}' http://127.0.0.1:18080/api/clients/meta)"
+check "Clients: Name gespeichert" 200 "$(http "${CJ[@]}" -d '{"ip":"127.0.0.1","name":"Container Selbsttest"}' http://127.0.0.1:18080/api/clients/meta)"
+contains "Clients: Name erscheint in der Liste" "$(curl -s --max-time 10 http://127.0.0.1:18080/api/clients/offsets)" 'Container Selbsttest'
+check "Clients: Nachmessen öffentlicher Adressen abgelehnt" 422 "$(http "${CJ[@]}" -d '{"ip":"8.8.8.8"}' http://127.0.0.1:18080/api/clients/probe)"
+check "Clients: Detail einer unbekannten Adresse -> 404" 404 "$(http 'http://127.0.0.1:18080/api/clients/detail?ip=192.0.2.77')"
+docker exec "${PREFIX}-a" python3 -c '
+import socket, struct, time
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(0.5)
+for _ in range(3):
+    t = time.time() + 2208988800
+    s.sendto(bytes([0x23]) + bytes(39) + struct.pack("!II", int(t), int((t % 1) * 2**32)), ("127.0.0.1", 10123))
+    try: s.recv(100)
+    except OSError: pass
+    time.sleep(0.3)' 2>/dev/null
+DETAIL=""
+for _ in 1 2 3 4 5 6; do
+  DETAIL=$(curl -s --max-time 10 'http://127.0.0.1:18080/api/clients/detail?ip=127.0.0.1')
+  grep -q '"measurable_reason"' <<<"$DETAIL" && break
+  sleep 1
+done
+if grep -q '"available": true' <<<"$CM" || grep -q '"available":true' <<<"$CM"; then
+  contains "Clients: Detailseite eines gemessenen Geräts mit Vermutung zur Software" "$DETAIL" '"software"'
+else
+  ok "Clients: Detailseite übersprungen (Messung im Container nicht verfügbar)"
+fi
+
 # Benachrichtigungen: Webhook an ein Ziel im Container, Token nie in der Antwort, keine Weiterleitung.
 docker exec -d "${PREFIX}-a" python3 -c '
 from http.server import BaseHTTPRequestHandler, HTTPServer

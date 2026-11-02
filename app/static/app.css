@@ -694,6 +694,31 @@ input[type="search"] { max-width: 320px; }
 .clientmon-note { margin: 10px 0 0; color: var(--ink-2); font-size: 13.5px; display: flex; flex-wrap: wrap;
   align-items: center; gap: 4px; }
 
+/* Clients 2.0: Links in der Liste, Netzüberblick, Detailseite */
+.client-link { display: inline-flex; flex-wrap: wrap; gap: 0 6px; align-items: baseline; overflow-wrap: anywhere; }
+.client-sub { color: var(--ink-muted); font-size: 12.5px; font-weight: 400; }
+.net-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 28px; }
+@media (max-width: 760px) { .net-grid { grid-template-columns: 1fr; } }
+.net-hist { display: grid; gap: 6px; }
+.net-bin { display: grid; grid-template-columns: 6.5em minmax(0, 1fr) 3em; gap: 10px; align-items: center; font-size: 13.5px; }
+.net-bin-label { color: var(--ink-2); white-space: nowrap; }
+.net-bin-track { height: 12px; border-radius: 4px; background: var(--surface-3); overflow: hidden; }
+.net-bin-fill { display: block; height: 100%; min-width: 0; background: var(--ink-muted); border-radius: 4px; }
+.net-bin[data-tone="good"] .net-bin-fill { background: var(--good); }
+.net-bin[data-tone="warn"] .net-bin-fill { background: var(--warn); }
+.net-bin[data-tone="crit"] .net-bin-fill { background: var(--crit); }
+.net-bin-count { text-align: right; font-variant-numeric: tabular-nums; }
+.net-items { list-style: none; margin: 0; padding: 0; }
+.net-items li { display: flex; justify-content: space-between; gap: 12px; padding: 5px 0; border-top: 1px solid var(--border-soft);
+  font-size: 13.5px; flex-wrap: wrap; }
+.net-items li:first-child { border-top: 0; }
+.client-back { margin: 0 0 8px; font-size: 14px; }
+.client-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; margin: 0 0 14px; }
+.client-title { margin: 0; font-size: 22px; overflow-wrap: anywhere; }
+.client-guess { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.client-guess-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.client-guess-reasons { margin: 4px 0 0; padding-left: 18px; color: var(--ink-2); font-size: 13px; }
+
 /* Erklärungen zum Aufklappen */
 .enforce-explain { display: grid; gap: 6px; margin-bottom: 12px; }
 .enforce-explain details, details.enforce-names { border: 1px solid var(--border-soft); border-radius: 10px;
