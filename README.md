@@ -7,7 +7,7 @@
 
 <p align="center">
   <a href="https://github.com/mgc20/ntp-gui/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/mgc20/ntp-gui/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="https://github.com/mgc20/ntp-gui/releases/latest"><img alt="Release" src="https://img.shields.io/badge/release-v1.5.0-0969da"></a>
+  <a href="https://github.com/mgc20/ntp-gui/releases/latest"><img alt="Release" src="https://img.shields.io/badge/release-v1.5.1-0969da"></a>
   <img alt="Plattformen" src="https://img.shields.io/badge/platform-amd64%20%7C%20arm64-1a7f37">
   <img alt="Image" src="https://img.shields.io/badge/image-ghcr.io-8250df">
   <a href="LICENSE"><img alt="Lizenz: MIT" src="https://img.shields.io/badge/license-MIT-59636e"></a>
@@ -933,7 +933,8 @@ Die Regeln sind bewusst vorsichtig – lieber eine Änderung zu wenig als eine f
   Netzwerkquelle (Internet weg) passiert nichts.
 - **Nur echte Abweichungen:** mindestens 1 ms und deutlich größer als die Messunsicherheit.
   Eine Korrektur in die Gegenrichtung der letzten braucht die doppelte Schwelle – so pendelt
-  der Offset nicht hin und her.
+  der Offset nicht hin und her. Hast du den Offset seitdem von Hand geändert, gilt diese Regel
+  nicht.
 - **Einmal korrigieren:** Ohne PPS (GPS als Rückfallebene, Fehlerschranke „gemessen“) wird ein
   deutlicher Versatz (ab 10 ms, über mindestens 6 h gegen mindestens zwei NTS-Quellen gemessen,
   ohne Sprung im Messzeitraum) in **einem** Schritt ganz korrigiert – etwa nach „Offset
@@ -1045,7 +1046,9 @@ ntp-gui erkennt, wenn das GPS gestört (Jamming) oder gefälscht (Spoofing) wird
 | GPS-Zeit weicht vom Median von ≥ 2 NTS-Quellen ab | stark |
 | Position springt um > 100 m | stark |
 
-Ein schwacher Befund ist ein „Hinweis“, zwei zugleich eine „Warnung“, ein starker eine „Störung“. Zeit und Position werden gegen einen langsam nachgeführten Anker geprüft (höchstens 10 ms bzw. 20 m pro Stunde) – auch ein Spoofer, der die Zeit langsam wegzieht, fällt so auf. Benachrichtigt wird standardmäßig nur bei „Störung“. Die Position verlässt das Gerät nie: Es wird nur die Abweichung in Metern genannt.
+Ein schwacher Befund ist ein „Hinweis“, zwei zugleich eine „Warnung“, ein starker eine „Störung“. Zeit und Position werden gegen einen langsam nachgeführten Anker geprüft (höchstens 10 ms bzw. 20 m pro Stunde) – auch ein Spoofer, der die Zeit langsam wegzieht, fällt so auf. Insgesamt darf der Zeitanker höchstens 30 ms von seinem Startwert (Start bzw. letzte Änderung der GPS-Einstellungen) wegwandern, danach wird es „Störung“ – so fällt auch ein Spoofer auf, der so langsam zieht, dass chrony das GPS nie verwirft. Benachrichtigt wird standardmäßig nur bei „Störung“. Die Position verlässt das Gerät nie: Es wird nur die Abweichung in Metern genannt.
+
+**Vermutlicher Kalibrierfehler statt Störung (ab 1.5.1):** Liegt das GPS seit dem Start bzw. seit einer Änderung der GPS-Einstellungen gleichbleibend neben dem Netz – typisch nach „Offset zurücksetzen“ ohne PPS, z. B. dauerhaft rund +51 ms – und verwirft chrony es deshalb als Falseticker, ist das kein Angriff, sondern ein falscher `gps_offset`. Dann bleibt es beim „Hinweis“ mit dem Rat „Offset kalibrieren“: keine Benachrichtigung, keine Sperre; im Modus „automatisch“ korrigiert die [automatische Kalibrierung](#gps-automatisch-kalibrieren) das selbst. Die Ausnahme gilt nur ohne PPS, mit NTS-Vergleich und nur, solange das GPS seit Start bzw. Änderung noch nie 15 Minuten brauchbar war. Wandert die GPS-Zeit um ≥ 20 ms von diesem Abstand weg oder liegt sie mehr als 1 s daneben, wird es wieder „Störung“. Ein Neustart macht aus einer erkannten Störung nie einen Kalibrierfehler.
 
 ```yaml
 environment:
@@ -1067,8 +1070,9 @@ Die Seite **Uhrqualität** zeigt, was die Uhr deines Servers langfristig beeinfl
   `cpu-thermal`, PC `x86_pkg_temp`/`k10temp`/`coretemp`, DS18B20 am 1-Wire-Bus); welchen ntp-gui
   nutzt, legst du mit `TEMP_SENSOR` fest (`auto`, `off` oder eine Kennung aus dem Hardware-Check,
   z. B. `w1:28-0316a2794bff`). Für eine Aussage braucht es 1–3 Tage mit Tag-/Nacht-Wechsel. In
-  VMs gibt es meist keinen Sensor. Einen Temperaturausgleich schlägt ntp-gui in einem der
-  nächsten 1.5.x-Releases vor.
+  VMs gibt es meist keinen Sensor. Einen Temperaturausgleich gibt es vorerst nicht: Mit dem
+  CPU-Sensor ist der Zusammenhang oft schwach (auf einem Raspberry Pi folgte die Frequenz eher der
+  Tageszeit als der CPU-Temperatur), siehe [Roadmap](ROADMAP.md).
 - **Schaltsekunden:** TAI−UTC, letzte Schaltsekunde und wie lange die `leap-seconds.list` im
   Image noch gilt – für die Datei, die chrony wirklich liest. Läuft sie in weniger als 60 Tagen
   ab, meldet ntp-gui „Image zu alt“ – dann `docker compose pull && docker compose up -d`.
@@ -1493,6 +1497,8 @@ Am schnellsten geht es mit der Caddy-Vorlage in `docker-compose.all-in-one.yml`:
 
 Nginx Proxy Manager, Zoraxy und Traefik gehen genauso. Die Anleitung dazu steht in [docs/integrationen/https.md](docs/integrationen/https.md). Läuft der Reverse Proxy auf einem anderen Gerät, ist nur die Strecke Browser → Proxy verschlüsselt; ntp-gui weist darauf hin. Am sichersten läuft der Proxy auf demselben Host (Caddy-Vorlage, `WEB_BIND=127.0.0.1`).
 
+**Der HTTPS-Hinweis nennt Ursache und Absender (ab 1.5.1):** „Dashboard über unverschlüsseltes HTTP mit Anmeldung“ sagt, wer ungeschützt kam (Adresse, Passwort oder API-Schlüssel, „zuletzt vor 3 h“, bis zu drei Absender) und warum: „direkt per HTTP“ (Lesezeichen auf `http://…:8080`, Home Assistant, Widget, Skript), „über den eingetragenen Proxy, aber der Browser sprach mit ihm nur HTTP“ oder „über eine Gegenstelle mit Proxy-Köpfen, die nicht in `TRUSTED_PROXIES` steht“. Schickt ein eingetragener Proxy keinen Proto-Kopf (nur `X-Forwarded-For` oder `X-Real-IP`, `Forwarded` ohne `proto=`), ist unbekannt, ob der Browser HTTPS sprach – dafür gibt es den Info-Hinweis „Eingetragener Proxy meldet nicht, ob HTTPS benutzt wurde“ mit den Köpfen, die der Proxy tatsächlich schickt, und einer Anleitung je Proxy. Ein Hinweis verschwindet 1 Stunde nach dem letzten ungeschützten Zugriff, wenn danach nur geschützte kommen, sonst nach 24 Stunden; Speichern von `TRUSTED_PROXIES` setzt ihn sofort zurück.
+
 | Variable | Standard | Bedeutung |
 |---|---|---|
 | `TRUSTED_PROXIES` | – (niemandem trauen) | Adressen deiner Reverse Proxys, z. B. `127.0.0.1/32,::1/128` für Caddy auf demselben Host. Nur von ihnen glaubt ntp-gui `X-Forwarded-For`/`-Proto` bzw. `Forwarded` (echte Client-Adresse im Zugriffsprotokoll, HTTPS-Hinweis). „all“ und `/0` sind nicht erlaubt. |
@@ -1832,7 +1838,7 @@ Updates vor. Ein Release-Build läuft ohne Cache, zieht also immer aktuelle Debi
 **Herkunft prüfen** (GitHub-CLI, sobald das Repository öffentlich ist):
 
 ```bash
-gh attestation verify oci://ghcr.io/mgc20/ntp-gui:1.5.0 -R mgc20/ntp-gui
+gh attestation verify oci://ghcr.io/mgc20/ntp-gui:1.5.1 -R mgc20/ntp-gui
 ```
 
 Scheitert ein Schritt, entsteht kein halber Release. Bei einem privaten Repository

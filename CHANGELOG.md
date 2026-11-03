@@ -4,7 +4,11 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), die Versionen folgen
 [Semantic Versioning](https://semver.org/lang/de/).
 
-## [Unveröffentlicht]
+## [1.5.1] – 2026-11-03
+
+Schwerpunkt: GPS-Automatik einfach, vorhersehbar und sichtbar (messen → einmal korrigieren →
+kleinen Drifts folgen), kein GNSS-Fehlalarm nach einer Offset-Änderung, ein HTTPS-Hinweis, der
+Ursache und Absender nennt, und der neue Image-Name `ghcr.io/mgc20/ntp-gui`.
 
 ### Achtung beim Update
 - **Neues Repository und neuer Image-Name:** ntp-gui liegt jetzt unter
@@ -26,23 +30,19 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
   aber der Browser sprach mit ihm nur HTTP“ oder „über eine Gegenstelle mit Proxy-Köpfen, die nicht
   in TRUSTED_PROXIES steht“. Der Text sagt auch, wann er verschwindet (1 Stunde nach dem letzten
   ungeschützten Zugriff, wenn danach nur geschützte kommen, sonst nach 24 Stunden).
-- **Eingetragener Proxy ohne X-Forwarded-Proto ist kein Klartext-Alarm mehr:** Schickt ein Proxy aus
-  TRUSTED_PROXIES nur X-Forwarded-For (bzw. „Forwarded“ ohne proto=), ist unbekannt, ob der Browser
-  HTTPS sprach. Dafür gibt es den eigenen Info-Hinweis „Eingetragener Proxy meldet nicht, ob HTTPS
-  benutzt wurde“ mit Anleitung für Caddy, Nginx Proxy Manager, Traefik, Zoraxy, HAProxy und Apache.
+- **Eingetragener Proxy ohne Proto-Kopf ist kein Klartext-Alarm mehr:** Schickt ein Proxy aus
+  TRUSTED_PROXIES nur X-Forwarded-For, nur X-Real-IP oder „Forwarded“ ohne proto=, ist unbekannt,
+  ob der Browser HTTPS sprach. Dafür gibt es den eigenen Info-Hinweis „Eingetragener Proxy meldet
+  nicht, ob HTTPS benutzt wurde“ – mit den Köpfen, die der Proxy tatsächlich schickt, einem
+  unbekannten Proto-Wert (z. B. „wss“) beim Namen und Anleitung für Caddy, Nginx Proxy Manager,
+  Traefik, Zoraxy, HAProxy und Apache – statt „direkt per HTTP“ mit dem Rat, nach einem Lesezeichen
+  zu suchen. Kommt eine Anmeldung vom eingetragenen Proxy ganz ohne Proxy-Köpfe, steht das dabei.
+  X-Forwarded-For plus „Forwarded: proto=https“ (HAProxy) wird erkannt. Der Hinweis gilt je Proxy:
+  Er verschwindet nur dann schon nach 1 Stunde, wenn derselbe Proxy danach den Kopf schickt.
   Speichern von TRUSTED_PROXIES setzt alle HTTPS-Hinweise weiter sofort zurück.
-- **HTTPS-Prüfung bei eingetragenem Proxy genauer:** Ein Proxy aus TRUSTED_PROXIES, der nur
-  X-Real-IP schickt, gilt nicht mehr fälschlich als „direkt per HTTP“ (mit dem Rat, nach einem
-  Lesezeichen zu suchen), sondern bekommt den Hinweis „meldet nicht, ob HTTPS benutzt wurde“ mit
-  Proxy-Anleitung; der Hinweis nennt jetzt, welche Köpfe der Proxy tatsächlich schickt, und einen
-  unbekannten Proto-Wert (z. B. „wss“) beim Namen. Kommt eine Anmeldung vom eingetragenen Proxy ganz
-  ohne Proxy-Köpfe, steht das dabei. X-Forwarded-For plus „Forwarded: proto=https“ (HAProxy) wird
-  erkannt.
 - **Proxy auf anderem Gerät ohne Proto-Kopf:** Die Strecke Proxy → ntp-gui ist dann sicher
   unverschlüsselt – dafür erscheint jetzt auch „Strecke Proxy → ntp-gui ist unverschlüsselt“, und
   der Satz „kein Hinweis auf Klartext“ steht nur noch, wenn der Proxy auf demselben Rechner läuft.
-- **Hinweis „ohne Proto-Kopf“ gilt je Proxy:** Er verschwindet nur dann schon nach 1 Stunde, wenn
-  derselbe Proxy danach den Kopf schickt – nicht, weil ein anderer Proxy oder vHost es tut.
 - **Apache-Anleitung sicher:** `RequestHeader set X-Forwarded-Proto "expr=%{REQUEST_SCHEME}"` nur im
   HTTPS-vHost statt pauschal „https“, das eine echte Klartext-Warnung verschwinden ließ.
 - **Weniger Log-Rauschen:** Netzabbrüche einzelner Verbindungen („No route to host“, „Network is
@@ -59,6 +59,8 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
   die vorher schon galt (sie steht mit dem Zeitanker in SQLite) – er macht aus einer erkannten
   Störung nie einen „Kalibrierfehler“. Nach einer „Störung“ gibt es bis zur nächsten Änderung der
   GPS-Einstellungen keine Ausnahme mehr.
+  Der Hinweistext sagt nur noch „vermutlich ein Kalibrierfehler“ (und nur mit NTS-Vergleich) und
+  rät, danach Antenne und Umgebung zu prüfen.
 - **Langsam ziehender Spoofer wird wieder erkannt:** War das GPS brauchbar und wird es ohne
   Einstellungsänderung zum Falseticker, gilt wie in 1.5.0 „Störung“ nach 5 Minuten mit ≥ 2
   NTS-Quellen. Zieht ein Spoofer so langsam (wenige ms je Stunde), dass die mitwachsende
@@ -66,17 +68,19 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
   Störungserkennung darf höchstens 30 ms von seinem Startwert (Start bzw. letzte Änderung der
   GPS-Einstellungen) wegwandern, danach wird es „Störung“ – spätestens bei rund 50 ms statt (bisher
   unentdeckt) bis 500 ms.
-  Der Hinweistext sagt nur noch „vermutlich ein Kalibrierfehler“ (und nur mit NTS-Vergleich) und
-  rät, danach Antenne und Umgebung zu prüfen.
 - **Automatische Kalibrierung rechnet keine GNSS-Störung ein:** Meldet die Störungserkennung gerade
   „Warnung“, „Störung“ oder unnatürlich gleichmäßige Signale, hält die GPS-Sperre oder gab es im
   Messzeitraum „Warnung“ oder „Störung“, wird der Offset nicht automatisch geändert. Die GPS-Seite
   zeigt dann „gesperrt wegen GNSS-Störung – erst Antenne/Umgebung prüfen“ statt eines Datums und
   lädt nicht zum Übernehmen ein; „Vorschlag übernehmen“ fragt in dieser Lage nach. Der Schritt in
   einem Zug setzt zusätzlich voraus, dass der Messzeitraum keinen Sprung enthält.
-- **Fehlerschranke steigt nicht mehr stündlich in kleinen Schritten:** Jede neue Schranke bekommt
-  25 % Reserve auf den Messwert. Bisher startete schon 1 ms mehr Streuung chronyd erneut neu
-  (± 64 → ± 80 ms eine Stunde später).
+- **Fehlerschranke ohne PPS wächst nicht mehr stündlich:** Ändert sich `gps_offset` (von Hand,
+  Zurücksetzen oder automatische Kalibrierung), zählen für die Schranke nur Messpunkte ab der
+  Änderung (plus 15 Minuten für den Neustart von chronyd) – bisher maß sie den alten Versatz mit und
+  wuchs stündlich (± 10 → 80 ms). Kleiner werden darf sie nach 5,5 Stunden Messung statt erst nach
+  12 Stunden, nicht schon nach 2 Stunden (sonst hätte jeder kleine Kalibrierschritt die Sperre
+  umgangen). Jede neue Schranke bekommt 25 % Reserve auf den Messwert; bisher startete schon 1 ms
+  mehr Streuung chronyd erneut neu (± 64 → ± 80 ms eine Stunde später).
 - **GPS ohne PPS rückt nicht vor die NTS-Quellen:** Die Fehlerschranke wird nie enger als das
   1,5-Fache der Root Distance der besten genutzten NTS-Quelle – sonst wählte chrony das NMEA-GPS
   und stellte die Uhr danach.
@@ -84,18 +88,12 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
   Zeitpunkt aus der Messschleife – die GPS-Seite nannte vorher bei jedem Aufruf einen anderen
   Messbeginn und ein wanderndes Datum. Nach einer Änderung von Hand gilt die Pendel-Sperre
   (doppelte Schwelle für die Gegenrichtung) nicht mehr, die Korrektur in einem Schritt also schon.
+  Der Kalibrier-Assistent mischt keine Werte vor und nach einer Offset-Änderung mehr – der Vorschlag
+  beruht nur auf Messungen zum eingestellten Offset.
 - **Kalibrierung hat auch Daten, solange chrony das GPS als Falseticker verwirft:** Messwerte mit
   „x“ zählen für den Offset, wenn mindestens zwei genutzte Netzquellen dagegenstehen. Vorschlag und
   schnelle Korrektur kommen so nach etwa 6 Stunden, ohne dass erst die Fehlerschranke stündlich
   über den Versatz wachsen muss.
-- **Fehlerschranke ohne PPS misst nach einer Offset-Änderung nur noch neue Werte:** Ändert sich
-  `gps_offset` (von Hand, Zurücksetzen oder automatische Kalibrierung), zählen für die Schranke nur
-  Messpunkte ab der Änderung (plus 15 Minuten für den Neustart von chronyd). Kleiner werden darf sie
-  dann nach 5,5 Stunden Messung (fast das ganze 6-h-Fenster) statt erst nach 12 Stunden – nicht schon
-  nach 2 Stunden, sonst hätte jeder kleine Kalibrierschritt die Sperre umgangen. Bisher wuchs die Schranke stündlich
-  (± 10 → 80 ms), weil sie den alten Versatz mitmaß.
-- **Kalibrier-Assistent mischt keine Werte vor und nach einer Offset-Änderung mehr** – der Vorschlag
-  beruht nur auf Messungen zum eingestellten Offset.
 
 ### Geändert
 - **Diagnosepaket enthält die aktiven Hinweise:** Neue Datei `hints.json` mit den Hinweisen, die das
@@ -879,6 +877,7 @@ Erste Veröffentlichung.
 - CI mit Unittests und Integrationstest gegen das gebaute Image; Release-Workflow,
   der das Image für amd64 und arm64 nach ghcr.io veröffentlicht.
 
+[1.5.1]: https://github.com/mgc20/ntp-gui/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/mgc20/ntp-gui/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/mgc20/ntp-gui/compare/v1.3.2...v1.4.0
 [1.3.2]: https://github.com/mgc20/ntp-gui/compare/v1.3.1...v1.3.2
