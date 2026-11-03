@@ -764,7 +764,25 @@ def build_status() -> dict:
                                           gnssguard.insights(gnssguard.GUARD.status(cfg)),
                                           holdover.insights(holdover.TEST.status()),
                                           webtransport.WATCH.insights())
+    global _last_insights
+    _last_insights = (time.monotonic(), status["insights"])
     return status
+
+
+# Diagnosepaket: die zuletzt angezeigten Hinweise (das Dashboard fragt den Status alle paar
+# Sekunden ab). Ist die Liste älter, wird der Status einmal neu gebaut.
+HINTS_MAX_AGE = 60.0
+_last_insights: tuple[float, list] | None = None
+
+
+def current_insights() -> list:
+    cached = _last_insights
+    if cached and time.monotonic() - cached[0] <= HINTS_MAX_AGE:
+        return cached[1]
+    return build_status()["insights"]
+
+
+diagnostics.set_hints_source(current_insights)
 
 
 def _leap_summary(info: dict) -> dict:

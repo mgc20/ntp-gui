@@ -72,6 +72,7 @@ CSV_COLUMNS = {
 
 SECTION_TITLES = {
     "meta": "Version, Laufzeit, Plattform",
+    "hints": "Aktive Hinweise im Dashboard (Schlüssel, Stufe, Titel, Text)",
     "config": "Erzeugte Konfiguration (chrony.conf, ptp4l.conf)",
     "chrony": "chronyc-Ausgaben (tracking, sources, sourcestats, selectdata, ntpdata, serverstats, activity, authdata)",
     "clients": "Client-Liste (pseudonymisiert)",
@@ -85,7 +86,7 @@ SECTION_TITLES = {
     "history": "Verlauf der letzten 24 h (nur Kennzahlen)",
     "recording": "Aufzeichnung der Datenquellen",
 }
-DEFAULT_SECTIONS = ["meta", "config", "chrony", "gps", "ptp", "hardware", "services", "events",
+DEFAULT_SECTIONS = ["meta", "hints", "config", "chrony", "gps", "ptp", "hardware", "services", "events",
                     "logs", "settings", "history"]
 TEXT_SECTIONS = {"config", "chrony", "logs", "recording"}
 
@@ -372,6 +373,28 @@ def _without_key_name(row: Any) -> Any:
     return row
 
 
+# Die Hinweisliste baut der Dashboard-Prozess (server.build_status); er meldet hier eine Quelle an.
+# server.py läuft als __main__ – ein Import von hier aus wäre ein zweites, leeres Exemplar.
+HINT_FIELDS = ("key", "level", "title", "text")
+_hints_source: Callable[[], Any] | None = None
+
+
+def set_hints_source(source: Callable[[], Any] | None) -> None:
+    """server.py: Funktion, die die gerade angezeigten Hinweise (status["insights"]) liefert."""
+    global _hints_source
+    _hints_source = source
+
+
+def _collect_hints(cfg: dict, options: dict) -> dict:
+    """Was das Dashboard gerade an Hinweisen zeigt – Adressen in den Texten ersetzt danach der
+    Filter wie überall (client-NN, <öffentliche-IP>)."""
+    if _hints_source is None:
+        return {"hinweis": "Hinweisliste nicht verfügbar (Paket außerhalb des Dashboards erzeugt)"}
+    items = [item for item in (_hints_source() or []) if isinstance(item, dict)]
+    return {"anzahl": len(items),
+            "hinweise": [{field: item.get(field) for field in HINT_FIELDS} for item in items]}
+
+
 def _collect_logs(cfg: dict, options: dict) -> str:
     lines = _log_lines(LOG_LINES)
     if not lines:
@@ -499,7 +522,7 @@ def _collect_recording(cfg: dict, options: dict) -> str:
 
 
 COLLECTORS: dict[str, Callable[[dict, dict], Any]] = {
-    "meta": _collect_meta, "config": _collect_config, "chrony": _collect_chrony,
+    "meta": _collect_meta, "hints": _collect_hints, "config": _collect_config, "chrony": _collect_chrony,
     "clients": _collect_clients, "gps": _collect_gps, "ptp": _collect_ptp,
     "hardware": _collect_hardware, "services": _collect_services, "events": _collect_events,
     "logs": _collect_logs, "settings": _collect_settings, "history": _collect_history,

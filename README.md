@@ -1176,7 +1176,7 @@ kein Ereignis. Gespeichert in `ntp-gui.db` für 90 Tage (höchstens 50 000 Eintr
 `/api/events?since=&kinds=&level=`.
 
 **Diagnosepaket.** Ein Klick erzeugt ein `.tar.gz` für einen Fehlerbericht: Version und
-Plattform, die erzeugte `chrony.conf`/`ptp4l.conf`, die Ausgaben von `chronyc` (tracking,
+Plattform, die gerade angezeigten Hinweise (`hints.json`, Adressen darin pseudonymisiert), die erzeugte `chrony.conf`/`ptp4l.conf`, die Ausgaben von `chronyc` (tracking,
 sources, sourcestats, selectdata, ntpdata, serverstats, activity, authdata), GPS- und
 PTP-Zustand, Hardware-Check, Dienste, die Ereignisse der letzten 7 Tage, die letzten 2000
 Log-Zeilen, die Einstellungen ohne Zugangsdaten und vom Verlauf der letzten 24 h nur

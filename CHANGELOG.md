@@ -75,6 +75,11 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
   beruht nur auf Messungen zum eingestellten Offset.
 
 ### Geändert
+- **Diagnosepaket enthält die aktiven Hinweise:** Neue Datei `hints.json` mit den Hinweisen, die das
+  Dashboard gerade zeigt (Schlüssel, Stufe, Titel, Text) – so ist im Fehlerbericht zu sehen, ob z. B.
+  „Dashboard über unverschlüsseltes HTTP“ erscheint. Wie alles im Paket läuft sie durch den
+  Datenschutzfilter: Absender-Adressen in den Texten werden zu `client-NN` bzw. `<öffentliche-IP>`,
+  Positionen werden entfernt.
 - **Automatische Kalibrierung ohne PPS deutlich schneller:** Ist das GPS die Rückfallebene
   (Fehlerschranke „gemessen“, Rolle nicht „bevorzugen“) und liegt es deutlich daneben (≥ 10 ms und
   ≥ 3 × Schwelle, gemessen über ≥ 6 h, ≥ 2 genutzte NTS-Quellen), korrigiert sie den ganzen Versatz
