@@ -118,8 +118,8 @@ class DiagnosticsTest(unittest.TestCase):
                   "data": {"lat": 48.1371543}},
                  {"level": "info", "key": "gps_calibrating", "title": "GPS wird eingemessen", "text": "Noch 3 h."},
                  "kein dict"]
+        self.addCleanup(diagnostics.set_hints_source, diagnostics._hints_source)
         diagnostics.set_hints_source(lambda: hints)
-        self.addCleanup(diagnostics.set_hints_source, None)
         with mock.patch.dict(diagnostics.COLLECTORS, {"hints": diagnostics._collect_hints}):
             result = diagnostics.preview(self.cfg, {})
             data = diagnostics.bundle(self.cfg, {})
@@ -141,6 +141,7 @@ class DiagnosticsTest(unittest.TestCase):
         self.assertIn("hints.json", members["MANIFEST.txt"])
 
     def test_hints_without_dashboard(self):
+        self.addCleanup(diagnostics.set_hints_source, diagnostics._hints_source)
         diagnostics.set_hints_source(None)
         self.assertIn("hinweis", diagnostics._collect_hints({}, {}))
 
