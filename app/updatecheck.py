@@ -1,7 +1,7 @@
 """Update-Hinweis (opt-in, Standard aus): gibt es eine neuere ntp-gui-Version?
 
 Eingeschaltet fragt ntp-gui **höchstens einmal am Tag** zu einer zufälligen Uhrzeit
-``GET https://api.github.com/repos/ConGp20/ntp-gui/releases/latest`` – mit dem festen
+``GET https://api.github.com/repos/mgc20/ntp-gui/releases/latest`` – mit dem festen
 User-Agent ``ntp-gui`` ohne Version und Kennung (egress.update_check_request, Zweck
 „update_check“). Der Vergleich mit der eigenen Version passiert lokal. Ergebnis: ein
 Hinweis „Neue Version x.y.z verfügbar“ mit Link zum Release und – wenn der Release-Text
@@ -51,7 +51,7 @@ DEADLINE = 20.0
 MAX_RESPONSE = 512 * 1024
 MAX_TITLE = 120
 MAX_NOTE = 300
-REPO_URL = "https://github.com/ConGp20/ntp-gui"
+REPO_URL = "https://github.com/mgc20/ntp-gui"
 RELEASES_URL = REPO_URL + "/releases"
 CHANGELOG_URL = REPO_URL + "/blob/main/CHANGELOG.md"
 # Markierung im Release-Text für „Achtung beim Update“ (Umbenennungen, Handarbeit nötig …).

@@ -97,7 +97,7 @@ class ParseTest(unittest.TestCase):
     def test_link_is_built_not_taken(self):
         info = updatecheck.parse_release(release())
         self.assertEqual(info["version"], "1.4.0")
-        self.assertEqual(info["url"], "https://github.com/ConGp20/ntp-gui/releases/tag/v1.4.0")
+        self.assertEqual(info["url"], "https://github.com/mgc20/ntp-gui/releases/tag/v1.4.0")
         self.assertNotIn("evil", json.dumps(info))
         self.assertFalse(info["attention"])
         self.assertEqual(info["published"], 1793527200.0)
@@ -131,7 +131,7 @@ class EgressTest(unittest.TestCase):
 
     def test_fixed_request(self):
         url, headers = egress.update_check_request()
-        self.assertEqual(url, "https://api.github.com/repos/ConGp20/ntp-gui/releases/latest")
+        self.assertEqual(url, "https://api.github.com/repos/mgc20/ntp-gui/releases/latest")
         self.assertEqual(headers["User-Agent"], "ntp-gui")
         self.assertFalse(any(ch.isdigit() for value in headers.values() for ch in value))
 
@@ -353,7 +353,7 @@ class ScheduleTest(TempStore):
         self.assertIn("Achtung beim Update", found[0]["text"])
         self.assertIn("Diun", found[0]["text"])
         self.assertNotIn("Watchtower ist", found[0]["text"].replace("Watchtower ist seit", ""))
-        self.assertTrue(found[0]["link"].startswith("https://github.com/ConGp20/ntp-gui/releases/"))
+        self.assertTrue(found[0]["link"].startswith("https://github.com/mgc20/ntp-gui/releases/"))
 
     def test_status_not_blocked_by_slow_fetch(self):
         """/api/status und /metrics dürfen nie auf GitHub warten (Sperre nicht während der Anfrage)."""

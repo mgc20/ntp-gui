@@ -6,6 +6,14 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 
 ## [Unveröffentlicht]
 
+### Achtung beim Update
+- **Neues Repository und neuer Image-Name:** ntp-gui liegt jetzt unter
+  [github.com/mgc20/ntp-gui](https://github.com/mgc20/ntp-gui), das Image unter
+  `ghcr.io/mgc20/ntp-gui`. In deiner Compose-Datei `image: ghcr.io/congp20/ntp-gui:latest` durch
+  `image: ghcr.io/mgc20/ntp-gui:latest` ersetzen – unter dem alten Namen kommen keine neuen
+  Versionen mehr. Der Update-Hinweis von 1.5.0 und älter fragt noch das alte Repository und
+  meldet deshalb nichts mehr; ab 1.5.1 fragt er das neue.
+
 ### Behoben
 - **HTTPS-Hinweis nennt Ursache und Absender:** „Dashboard über unverschlüsseltes HTTP mit Anmeldung“
   sagt jetzt, wer ungeschützt kam und warum – Adresse, Passwort/API-Schlüssel und „zuletzt vor 3 h“,
@@ -822,11 +830,11 @@ Erste Veröffentlichung.
 - CI mit Unittests und Integrationstest gegen das gebaute Image; Release-Workflow,
   der das Image für amd64 und arm64 nach ghcr.io veröffentlicht.
 
-[1.5.0]: https://github.com/ConGp20/ntp-gui/compare/v1.4.0...v1.5.0
-[1.4.0]: https://github.com/ConGp20/ntp-gui/compare/v1.3.2...v1.4.0
-[1.3.2]: https://github.com/ConGp20/ntp-gui/compare/v1.3.1...v1.3.2
-[1.3.1]: https://github.com/ConGp20/ntp-gui/compare/v1.3.0...v1.3.1
-[1.3.0]: https://github.com/ConGp20/ntp-gui/compare/v1.2.0...v1.3.0
-[1.2.0]: https://github.com/ConGp20/ntp-gui/compare/v1.1.0...v1.2.0
-[1.1.0]: https://github.com/ConGp20/ntp-gui/compare/v1.0.0...v1.1.0
-[1.0.0]: https://github.com/ConGp20/ntp-gui/releases/tag/v1.0.0
+[1.5.0]: https://github.com/mgc20/ntp-gui/compare/v1.4.0...v1.5.0
+[1.4.0]: https://github.com/mgc20/ntp-gui/compare/v1.3.2...v1.4.0
+[1.3.2]: https://github.com/mgc20/ntp-gui/compare/v1.3.1...v1.3.2
+[1.3.1]: https://github.com/mgc20/ntp-gui/compare/v1.3.0...v1.3.1
+[1.3.0]: https://github.com/mgc20/ntp-gui/compare/v1.2.0...v1.3.0
+[1.2.0]: https://github.com/mgc20/ntp-gui/compare/v1.1.0...v1.2.0
+[1.1.0]: https://github.com/mgc20/ntp-gui/compare/v1.0.0...v1.1.0
+[1.0.0]: https://github.com/mgc20/ntp-gui/releases/tag/v1.0.0

@@ -197,8 +197,8 @@ function renderHeader() {
 }
 
 // --- Update-Hinweis (opt-in) ---------------------------------------------------
-// Nur ein Link nach github.com/ConGp20/ntp-gui – der Server baut ihn aus der geprüften Versionsnummer.
-const RELEASE_LINK = /^https:\/\/github\.com\/ConGp20\/ntp-gui\/releases(\/tag\/v[0-9A-Za-z.-]+)?$/;
+// Nur ein Link nach github.com/mgc20/ntp-gui – der Server baut ihn aus der geprüften Versionsnummer.
+const RELEASE_LINK = /^https:\/\/github\.com\/mgc20\/ntp-gui\/releases(\/tag\/v[0-9A-Za-z.-]+)?$/;
 
 function renderUpdateBanner(update) {
   const banner = document.getElementById("update-banner");

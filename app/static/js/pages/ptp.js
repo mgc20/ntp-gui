@@ -66,7 +66,7 @@ function nicTable(nics, report) {
 
 const COMPOSE = `services:
   ntp-gui:
-    image: ghcr.io/congp20/ntp-gui:latest
+    image: ghcr.io/mgc20/ntp-gui:latest
     network_mode: host            # PTP braucht die echte Netzwerkkarte
     cap_add: [SYS_TIME, NET_ADMIN, NET_RAW]
     devices:

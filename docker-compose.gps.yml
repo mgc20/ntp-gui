@@ -17,7 +17,7 @@
 services:
   ntp-gui:
     build: .
-    image: ghcr.io/congp20/ntp-gui:latest
+    image: ghcr.io/mgc20/ntp-gui:latest
     container_name: ntp-gui-gps
     restart: unless-stopped
 

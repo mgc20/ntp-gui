@@ -196,7 +196,7 @@ function fmtAgo(unix) {
 }
 
 // Update-Hinweis: nur Zustand anzeigen; ein-/ausschalten über das Feld „update_check“ darunter.
-const RELEASE_LINK = /^https:\/\/github\.com\/ConGp20\/ntp-gui\/releases(\/tag\/v[0-9A-Za-z.-]+)?$/;
+const RELEASE_LINK = /^https:\/\/github\.com\/mgc20\/ntp-gui\/releases(\/tag\/v[0-9A-Za-z.-]+)?$/;
 
 function updateStatus(upd) {
   if (!upd || !upd.enabled) return null;

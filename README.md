@@ -6,8 +6,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/ConGp20/ntp-gui/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/ConGp20/ntp-gui/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="https://github.com/ConGp20/ntp-gui/releases/latest"><img alt="Release" src="https://img.shields.io/badge/release-v1.5.0-0969da"></a>
+  <a href="https://github.com/mgc20/ntp-gui/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/mgc20/ntp-gui/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/mgc20/ntp-gui/releases/latest"><img alt="Release" src="https://img.shields.io/badge/release-v1.5.0-0969da"></a>
   <img alt="Plattformen" src="https://img.shields.io/badge/platform-amd64%20%7C%20arm64-1a7f37">
   <img alt="Image" src="https://img.shields.io/badge/image-ghcr.io-8250df">
   <a href="LICENSE"><img alt="Lizenz: MIT" src="https://img.shields.io/badge/license-MIT-59636e"></a>
@@ -154,7 +154,7 @@ docker run -d --name ntp-gui \
   -e TZ=Europe/Berlin \
   -e NTP_POOLS=de.pool.ntp.org \
   -e ALLOW_NETWORKS=192.168.0.0/16 \
-  ghcr.io/congp20/ntp-gui:latest
+  ghcr.io/mgc20/ntp-gui:latest
 ```
 
 Prüfen, ob der Server antwortet (von einem Client aus – `chronyc -h` funktioniert
@@ -189,7 +189,7 @@ Zeilen dazugehören.
 ```bash
 mkdir ntp-gui && cd ntp-gui
 curl -fsSLo docker-compose.yml \
-  https://raw.githubusercontent.com/ConGp20/ntp-gui/main/docker-compose.all-in-one.yml
+  https://raw.githubusercontent.com/mgc20/ntp-gui/main/docker-compose.all-in-one.yml
 docker compose up -d
 # Dashboard: http://<host>:8080  ->  Seite „Hardware“
 ```
@@ -808,7 +808,7 @@ docker run -d --name ntp-gui \
   --device /dev/ttyACM0 \
   -e GPS_ENABLE=true -e GPS_DEVICE=/dev/ttyACM0 \
   -e ALLOW_NETWORKS=192.168.0.0/16 \
-  ghcr.io/congp20/ntp-gui:latest
+  ghcr.io/mgc20/ntp-gui:latest
 ```
 
 Das Gerät **muss** per `--device` bzw. `devices:` durchgereicht werden – ein Container
@@ -1718,7 +1718,7 @@ Beim Update musst du nichts von Hand umbauen:
 
 Ausgeschaltet (Standard) fragt ntp-gui nirgends nach. Unter **Einstellungen → Dashboard →
 Update-Hinweis** oder mit `UPDATE_CHECK=true` fragt es einmal am Tag zu einer zufälligen
-Uhrzeit `https://api.github.com/repos/ConGp20/ntp-gui/releases/latest` und vergleicht die
+Uhrzeit `https://api.github.com/repos/mgc20/ntp-gui/releases/latest` und vergleicht die
 Version lokal. Ist eine neuere da, erscheint oben ein Banner (pro Version ausblendbar) und in
 der Übersicht ein Hinweis mit Release-Titel und Link zu den Release-Notizen – markiert mit
 **„Achtung beim Update“**, wenn der Release-Text `BREAKING` oder „Achtung“ enthält. ntp-gui lädt
@@ -1818,7 +1818,7 @@ Updates vor. Ein Release-Build läuft ohne Cache, zieht also immer aktuelle Debi
 **Herkunft prüfen** (GitHub-CLI, sobald das Repository öffentlich ist):
 
 ```bash
-gh attestation verify oci://ghcr.io/congp20/ntp-gui:1.5.0 -R ConGp20/ntp-gui
+gh attestation verify oci://ghcr.io/mgc20/ntp-gui:1.5.0 -R mgc20/ntp-gui
 ```
 
 Scheitert ein Schritt, entsteht kein halber Release. Bei einem privaten Repository

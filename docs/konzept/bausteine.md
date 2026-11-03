@@ -132,7 +132,7 @@ aus Debian verschwindet. Tests in CI gegen `eclipse-mosquitto` bzw. das Debian-P
 
 ### 3.9 Update-Prüfung und Signaturen
 - Die Instanz lädt nichts herunter, braucht also nichts zu verifizieren. sigstore-python im Image widerspräche „Sicherheit durch Einfachheit“.
-- Stattdessen `actions/attest` im Release-Workflow (`id-token: write`, `attestations: write`, `packages: write`) und im README `gh attestation verify oci://ghcr.io/congp20/ntp-gui:<ver> -R ConGp20/ntp-gui`.
+- Stattdessen `actions/attest` im Release-Workflow (`id-token: write`, `attestations: write`, `packages: write`) und im README `gh attestation verify oci://ghcr.io/mgc20/ntp-gui:<ver> -R mgc20/ntp-gui`.
 
 ## 4. Quellen
 
