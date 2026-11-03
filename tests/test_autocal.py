@@ -239,6 +239,8 @@ class Harness:
         # Simulierter Supervisor: welcher Offset läuft in chronyd, klappt das Neuladen?
         self.running_offset = self.cfg["gps_offset"]
         self.reload_ok = True
+        self.hold = None             # gnssguard: Grund, nicht automatisch zu ändern (None = frei)
+        self.hold_calls = []
 
     def deps(self):
         def get_calibration(window):
@@ -264,13 +266,17 @@ class Harness:
                 self.running_offset = self.cfg["gps_offset"]
             return True
 
+        def guard_hold(since):
+            self.hold_calls.append(since)
+            return self.hold
+
         def check_active(cfg_, change):
             ok = abs(self.running_offset - cfg_["gps_offset"]) < 1e-9
             return {"active": ok, "since": None, "reason": "" if ok else "alter Offset läuft"}
 
         return {"get_calibration": get_calibration, "get_sources": lambda: self.sources,
                 "save_settings": save_settings, "trigger_reload": reload,
-                "check_active": check_active,
+                "check_active": check_active, "guard_hold": guard_hold,
                 "emit_event": lambda *a: self.events.append(a)}
 
 
@@ -879,3 +885,153 @@ class OffsetResetTimelineTest(unittest.TestCase):
         self.assertEqual(self.h.cfg["gps_offset"], 0.0526)
         status = autocal.api_status(self.h.cfg, NOW + 9 * H, fresh=False, deps=self.h.deps(), file=self.file)
         self.assertIsNone(status["manual_change"])   # jetzt von autocal gesetzt
+
+
+# ---------------------------------------------------------------------------
+# Prüfbefunde 1.5.1
+# ---------------------------------------------------------------------------
+NTS5 = [{"name": "GPS", "mode": "#", "state": "x"}] + [
+    {"name": f"nts{i}", "mode": "^", "state": "*" if i == 0 else "+", "authenticated": True} for i in range(5)]
+
+
+class ReviewTimelineCase(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.file = os.path.join(self.tmp, "autocal.json")
+        self.h = Harness(sources=NTS5)
+        self.h.cfg.update(gps_bound_mode="measured", gps_offset=0.0526, gps_select="auto")
+        self.h.running_offset = self.h.target = 0.0526
+        env = mock.patch.dict(os.environ, {"WEB_READONLY": ""})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def tick(self, now):
+        return autocal.tick(self.h.cfg, now, deps=self.h.deps(), file=self.file)
+
+    def reset_offset(self, now):
+        self.tick(now - H)
+        self.h.cfg["gps_offset"] = self.h.running_offset = 0.0
+        self.tick(now)
+
+
+class GuardHoldTest(ReviewTimelineCase):
+    """Befund: Ein Spoofer mit festem Versatz durfte nach 6 h „wegkalibriert“ werden."""
+
+    def test_stoerung_blocks_automatic_change(self):
+        self.reset_offset(NOW)
+        self.h.hold = "im Messzeitraum meldete die GNSS-Störungserkennung eine Störung"
+        d = self.tick(NOW + autocal.SETTLE_SECONDS + 6 * H + 60)
+        self.assertEqual(d["action"], "suggest", d)
+        self.assertIn("Nicht automatisch übernommen", d["reason"])
+        self.assertIn("Störung", d["reason"])
+        self.assertEqual(self.h.saved, [])
+        self.assertEqual(self.h.cfg["gps_offset"], 0.0)
+        self.assertEqual(self.h.hold_calls[-1], NOW)          # gefragt mit Beginn des Messzeitraums
+        # Ohne Störung (nur der schwache Falseticker-Hinweis) korrigiert sie.
+        self.h.hold = None
+        d = self.tick(NOW + autocal.SETTLE_SECONDS + 7 * H)
+        self.assertEqual(d["action"], "apply", d)
+        self.assertEqual(self.h.cfg["gps_offset"], 0.0526)
+
+    def test_guard_error_blocks_too(self):
+        self.reset_offset(NOW)
+        deps = self.h.deps()
+        deps["guard_hold"] = mock.Mock(side_effect=RuntimeError("weg"))
+        d = autocal.tick(self.h.cfg, NOW + autocal.SETTLE_SECONDS + 6 * H + 60, deps=deps, file=self.file)
+        self.assertEqual(d["action"], "suggest")
+        self.assertEqual(self.h.saved, [])
+
+    def test_jump_inside_window_prevents_fast_path(self):
+        d = autocal.decide(nopps(), big(half_shift=0.03), None, NOW)
+        self.assertFalse(d.get("fast"))
+        self.assertEqual(d["new_offset"], 0.005)
+        self.assertEqual(d["half_shift_ms"], 30.0)
+        d = autocal.decide(nopps(), big(half_shift=0.012), None, NOW)   # unter |Versatz|/3: steht
+        self.assertTrue(d.get("fast"))
+
+
+class PlanDateTest(ReviewTimelineCase):
+    """Befund: Nach einer Änderung von Hand innerhalb von 24 h nach einem automatischen Schritt
+    nannte der Plan „frühestens am <letzte Änderung + 24 h>“, obwohl nach 6 h 15 min korrigiert wird."""
+
+    def test_fast_plan_ignores_24h_pause(self):
+        self.h.cfg["gps_offset"] = self.h.running_offset = 0.0476   # 5 ms daneben: kleiner Schritt
+        self.tick(NOW)
+        d = self.tick(NOW + 7 * H)
+        self.assertEqual(d["action"], "apply", d)
+        self.assertFalse(d.get("fast"))
+        last_auto = NOW + 7 * H
+        self.h.cfg["gps_offset"] = self.h.running_offset = 0.0    # dann von Hand zurückgesetzt
+        self.tick(NOW + 8 * H)
+        status = autocal.api_status(self.h.cfg, NOW + 9 * H, fresh=False, deps=self.h.deps(), file=self.file)
+        self.assertEqual(status["next_change_at"], NOW + 8 * H + autocal.SETTLE_SECONDS + 6 * H)
+        self.assertIn("kleiner Schritt frühestens", status["plan"])
+        d = self.tick(NOW + 8 * H + autocal.SETTLE_SECONDS + 6 * H + 60)
+        self.assertEqual(d["action"], "apply", d)
+        self.assertTrue(d["fast"])
+        self.assertLess(NOW + 8 * H + autocal.SETTLE_SECONDS + 6 * H + 60, last_auto + autocal.AUTO_INTERVAL)
+
+
+class FalsetickerChainTest(unittest.TestCase):
+    """Ganze Kette: Verlauf mit GPS „x“ (+51 ms gegen 5 genutzte NTS-Quellen) → calibrate() →
+    reference_stats() → decide(): schnelle Korrektur, ohne dass die Fehlerschranke erst wachsen muss."""
+
+    class FakeHistory:
+        def __init__(self, samples):
+            self.samples = samples
+
+        def snapshot(self, since=None):
+            return [s for s in self.samples if since is None or s["t"] >= since]
+
+    def samples(self, end, hours, bias=0.051):
+        import random
+        rng = random.Random(5)
+        out = []
+        t = end - hours * H
+        while t <= end:
+            gps = {"o": bias + rng.gauss(0, 0.004), "s": "x", "k": "#", "r": 255}
+            net = {f"nts{i}": {"o": rng.gauss(0, 0.0005), "s": "*" if i == 0 else "+", "k": "^"} for i in range(5)}
+            out.append({"t": t, "sources": dict(net, GPS=gps)})
+            t += 60.0
+        return out
+
+    def test_x_samples_reach_fast_correction(self):
+        import time as _time
+        now = _time.time()
+        samples = self.samples(now, 7.5)
+        # Ohne die „x“-Werte gäbe es nichts zu kalibrieren (Befund).
+        self.assertEqual(history.gps_differences(samples, "GPS"), ([], []))
+        result = history.calibrate(samples, "GPS", 0.0, 0.2)
+        self.assertEqual(result["status"], "ready")
+        self.assertAlmostEqual(result["bias"], 0.051, delta=0.002)
+        self.assertLess(abs(result["half_shift"]), 0.003)
+        self.assertEqual(autocal.reference_stats(samples, "GPS")["window_median"], 5)
+        c = nopps()
+        getter = autocal.make_calibration_getter(self.FakeHistory(samples), lambda: c)
+        saved = []
+        deps = {"get_calibration": getter, "get_sources": lambda: NTS5,
+                "save_settings": lambda ch: (saved.append(ch), c.update(ch), {"restart": False})[2],
+                "trigger_reload": lambda: True, "emit_event": lambda *a: None, "guard_hold": lambda since: None,
+                "check_active": lambda cfg_, change: {"active": True, "since": None, "reason": ""}}
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, True)
+        file = os.path.join(tmp, "autocal.json")
+        with mock.patch.dict(os.environ, {"WEB_READONLY": ""}):
+            autocal.tick(c, now - 7 * H, deps=deps, file=file)
+            d = autocal.tick(c, now, deps=deps, file=file)
+        self.assertEqual(d["action"], "apply", d)
+        self.assertTrue(d["fast"])
+        self.assertAlmostEqual(c["gps_offset"], 0.051, delta=0.002)
+
+    def test_x_with_single_source_does_not_count(self):
+        sources = {"a": {"o": 0.0, "s": "*", "k": "^"}, "GPS": {"o": 0.05, "s": "x", "k": "#", "r": 255}}
+        self.assertFalse(history.calibration_usable(sources, "GPS"))
+        sources["b"] = {"o": 0.0, "s": "+", "k": "^"}
+        self.assertTrue(history.calibration_usable(sources, "GPS"))
+        sources["GPS"] = {"o": 0.05, "s": "~", "k": "#", "r": 255}
+        self.assertFalse(history.calibration_usable(sources, "GPS"))
+        sources["GPS"] = {"o": 0.05, "s": "x", "k": "#", "r": 0}
+        self.assertFalse(history.calibration_usable(sources, "GPS"))

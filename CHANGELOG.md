@@ -7,18 +7,32 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 ## [Unveröffentlicht]
 
 ### Behoben
-- **Kein GNSS-Fehlalarm mehr nach einer Offset-Änderung:** Liegt das GPS gleichbleibend neben dem
-  Netz (z. B. nach „Offset zurücksetzen“ dauerhaft rund +51 ms) und hält chrony es deshalb für einen
-  Falseticker, ist das ein Kalibrierfehler, keine Störung. Das Signal „Falseticker“ wird nur noch
-  stark („Störung“, Benachrichtigung, automatische Sperre), wenn der Zeitabgleich gegen den
-  gelernten Abstand gleichzeitig eine neue Abweichung sieht (mindestens die halbe Schwelle, Median
-  der letzten 2 Minuten) oder das GPS mehr als 1 s danebenliegt. Sonst bleibt es beim „Hinweis“ mit
-  dem Rat „Offset kalibrieren“ – auch während der Abstand nach einer Änderung neu gelernt wird.
-  Zeitsprung- und Positionserkennung bleiben unverändert.
+- **Kein GNSS-Fehlalarm mehr nach einer Offset-Änderung:** Liegt das GPS seit dem Start bzw. seit einer
+  Änderung der GPS-Einstellungen gleichbleibend neben dem Netz (z. B. nach „Offset zurücksetzen“
+  dauerhaft rund +51 ms) und hält chrony es deshalb für einen Falseticker, ist das vermutlich ein
+  Kalibrierfehler: Es bleibt beim „Hinweis“ mit dem Rat „Offset kalibrieren“ – ohne Benachrichtigung,
+  ohne Sperre, auch bei einem kleinen NMEA-Laufzeitsprung (10–15 ms). Wandert die GPS-Zeit um
+  mindestens die Zeitschwelle (≥ 20 ms) von diesem Abstand weg oder liegt sie mehr als 1 s daneben,
+  wird es wieder „Störung“. Die Ausnahme gilt nur ohne PPS und nur, solange das GPS seit Start bzw.
+  Änderung noch nie 15 Minuten brauchbar war.
+- **Langsam ziehender Spoofer wird wieder erkannt:** War das GPS brauchbar und wird es ohne
+  Einstellungsänderung zum Falseticker, gilt wie in 1.5.0 „Störung“ nach 5 Minuten mit ≥ 2
+  NTS-Quellen – auch wenn die Zeit langsamer als 10 ms/h wegzieht und der Zeitabgleich mitwandert.
+  Der Hinweistext sagt nur noch „vermutlich ein Kalibrierfehler“ (und nur mit NTS-Vergleich) und
+  rät, danach Antenne und Umgebung zu prüfen.
+- **Automatische Kalibrierung rechnet keine GNSS-Störung ein:** Meldet die Störungserkennung gerade
+  ein starkes Signal, hält die GPS-Sperre oder gab es im Messzeitraum eine „Störung“, wird der
+  Offset nicht automatisch geändert, nur vorgeschlagen. Der Schritt in einem Zug setzt zusätzlich
+  voraus, dass der Messzeitraum keinen Sprung enthält.
+- **Kalibrierung hat auch Daten, solange chrony das GPS als Falseticker verwirft:** Messwerte mit
+  „x“ zählen für den Offset, wenn mindestens zwei genutzte Netzquellen dagegenstehen. Vorschlag und
+  schnelle Korrektur kommen so nach etwa 6 Stunden, ohne dass erst die Fehlerschranke stündlich
+  über den Versatz wachsen muss.
 - **Fehlerschranke ohne PPS misst nach einer Offset-Änderung nur noch neue Werte:** Ändert sich
   `gps_offset` (von Hand, Zurücksetzen oder automatische Kalibrierung), zählen für die Schranke nur
   Messpunkte ab der Änderung (plus 15 Minuten für den Neustart von chronyd). Kleiner werden darf sie
-  dann schon nach 2 Stunden Messung statt erst nach 12 Stunden. Bisher wuchs die Schranke stündlich
+  dann nach 5,5 Stunden Messung (fast das ganze 6-h-Fenster) statt erst nach 12 Stunden – nicht schon
+  nach 2 Stunden, sonst hätte jeder kleine Kalibrierschritt die Sperre umgangen. Bisher wuchs die Schranke stündlich
   (± 10 → 80 ms), weil sie den alten Versatz mitmaß.
 - **Kalibrier-Assistent mischt keine Werte vor und nach einer Offset-Änderung mehr** – der Vorschlag
   beruht nur auf Messungen zum eingestellten Offset.
@@ -29,7 +43,9 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
   ≥ 3 × Schwelle, gemessen über ≥ 6 h, ≥ 2 genutzte NTS-Quellen), korrigiert sie den ganzen Versatz
   in einem Schritt statt 5 ms je 24 h. Mit PPS bleibt es bei kleinen Schritten.
 - **GPS-Seite sagt, was die automatische Kalibrierung als Nächstes tut**, und bietet nach einer
-  Offset-Änderung von Hand „Vorschlag übernehmen“ direkt im Hinweis an.
+  Offset-Änderung von Hand „Vorschlag übernehmen“ direkt im Hinweis an. Ohne PPS nennt der Plan das
+  Datum der schnellen Korrektur (Messbeginn + 6 h) und getrennt, wann ein kleiner Schritt frühestens
+  käme.
 - **Klarere Ereignistitel bei unstetem Empfang:** „GPS-Fix seit 10 min weg (vorher 50 Fix-Wechsel in
   2 h 31 min)“ und „GPS-Empfang wieder stetig – seit 1 h kein Fix-Wechsel (vorher …)“. Die Felder im
   Ereignis bleiben, neu ist `outcome` („ruhig“ oder „fix_weg“).

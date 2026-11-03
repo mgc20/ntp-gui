@@ -26,8 +26,10 @@ einfachere sichere Variante: **Gemessen wird nur ab der letzten Offset-Änderung
 OFFSET_SETTLE für den Neustart von chronyd) – alte Werte werden nicht umgerechnet. Den Zeitpunkt
 merkt sich note_offset() (aus der Messschleife, bei jedem Messpunkt; nur ein Vergleich im
 Speicher, geschrieben wird nur bei einer Änderung). Die 12-h-Sperre fürs Verkleinern gilt nach
-einer Offset-Änderung als erfüllt, sobald OFFSET_SHRINK_MIN (2 h) Messung danach vorliegt – die
-alte Schranke beruhte ja auf dem alten Offset. Größer wird sie wie immer höchstens stündlich.
+einer Offset-Änderung als erfüllt, sobald OFFSET_SHRINK_MIN (5,5 h, fast das ganze 6-h-Messfenster)
+Messung danach vorliegt – die alte Schranke beruhte ja auf dem alten Offset. Kürzer nicht: Sonst
+gäbe jeder kleine Kalibrierschritt die Abkürzung frei, und ruhige Nachtstunden ergäben eine zu
+kleine Schranke, die tags wieder wächst (noch ein Neustart von chronyd). Größer wird sie wie immer höchstens stündlich.
 Dieselbe Grenze nutzt der Kalibrier-Assistent (/api/gps/calibration): Er mischt keine Werte
 vor und nach einer Offset-Änderung mehr.
 
@@ -81,7 +83,7 @@ GROW_INTERVAL = 3600.0        # größer (GPS schlechter als angenommen): frühe
 SHRINK_INTERVAL = 12 * 3600.0  # kleiner: frühestens nach 12 h
 TICK_INTERVAL = 3600.0
 OFFSET_SETTLE = 900.0         # nach einer Offset-Änderung: Neustart von chronyd + Medianfilter abwarten
-OFFSET_SHRINK_MIN = 2 * 3600.0  # … und kleiner werden darf die Schranke, sobald so viel Messung danach vorliegt
+OFFSET_SHRINK_MIN = BOUND_HOURS * 3600.0 - 1800.0  # … kleiner erst mit (fast) einem ganzen Messfenster danach (5,5 h)
 OFFSET_EPS = 5e-5             # Offsets gelten als gleich (Rundung auf 0,1 ms, wie autocal)
 
 # --- Antennen-Test -----------------------------------------------------------------------
@@ -627,7 +629,7 @@ def decide(measured: dict, applied: dict | None, now: float, reset_at: float | N
                 "reason": "Das GPS streut stärker als angenommen – die Schranke wird größer."}
     if new <= current / CHANGE_FACTOR:
         last_change = max(_num((applied or {}).get("t")) or -math.inf, reset_at if reset_at is not None else -math.inf)
-        after_offset = (offset_changed_at is not None and offset_changed_at <= now
+        after_offset = (since is not None and offset_changed_at is not None and offset_changed_at <= now
                         and offset_changed_at > last_change
                         and (_num(measured.get("duration_seconds")) or 0.0) >= OFFSET_SHRINK_MIN)
         if after_offset:

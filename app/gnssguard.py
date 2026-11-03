@@ -15,18 +15,22 @@ schwach (allein nur „Hinweis“ – Schnee, Flugzeuge, ein Lkw vor dem Fenster
                  (Schnee auf der Antenne) zählt nicht.
   * uniform      unnatürlich gleichmäßiges C/N0: ≥ 6 Satelliten fast gleich stark (ein Spoofer
                  sendet alle Signale aus einer Antenne; echte Satelliten stehen verschieden hoch).
-  * falseticker  chrony markiert das GPS dauerhaft als Falseticker. Stark wird es nur mit
-                 Bestätigung durch den Zeitabgleich (1.5.1): Hält es mit ≥ 2 NTS-Quellen 5 min an
-                 UND sieht der Zeitabgleich gegen die gelernte Grundlinie eine neue Abweichung
-                 (≥ halbe Zeitschwelle) – oder liegt das GPS grob (> 1 s) neben dem Netz.
-                 Ein gleichbleibender Versatz (z. B. nach „Offset zurücksetzen“: GPS dauerhaft
-                 +51 ms neben dem Netz) ist ein Kalibrierfehler, keine Störung: Er bleibt
-                 höchstens „Hinweis“ – mit dem Rat, den Offset zu kalibrieren –, sperrt nie und
-                 benachrichtigt nur, wenn du „Hinweis – jeder Befund“ gewählt hast. Das gilt
-                 auch, solange der Zeitabstand nach einer Änderung der GPS-Einstellungen neu
-                 gelernt wird. Ein Spoofer, der schon beim Start da war und die Zeit nur um
-                 einen festen, kleinen Betrag verschiebt, ist davon nicht zu unterscheiden –
-                 ihn fängt erst ein Zeitsprung oder Positionssprung.
+  * falseticker  chrony markiert das GPS dauerhaft als Falseticker. Hält das mit ≥ 2 NTS-Quellen
+                 5 min an, zählt es als **stark** – das fängt auch einen Spoofer, der die Zeit so
+                 langsam wegzieht (< 10 ms/h), dass der Zeitanker mitwandert. Ausnahme (1.5.1,
+                 nur ohne PPS): Ist das GPS seit dem Start bzw. seit einer Änderung der
+                 GPS-Einstellungen (Offset, Gerät, Name) noch nie 15 min lang brauchbar gewesen
+                 und gleich „x“ – typisch nach „Offset zurücksetzen“: GPS dauerhaft rund +51 ms
+                 neben dem Netz –, gilt der Abstand, der dabei gemessen wird, als vermutlicher
+                 Kalibrierfehler. Solange die GPS-Zeit innerhalb der Zeitschwelle bei diesem
+                 Abstand bleibt (auch in späteren Falseticker-Phasen bis zur nächsten Änderung),
+                 bleibt es „Hinweis“ mit dem Rat, den Offset zu kalibrieren; entfernt sie sich
+                 um mindestens die Zeitschwelle (nie unter 20 ms), gilt wieder die Regel oben.
+                 Grob (> 1 s) daneben ist immer stark. Mit PPS gilt immer die Regel oben – dort
+                 ist ein bleibender Versatz von mehreren 10 ms kein Kalibrierfehler. Ein Spoofer,
+                 der schon beim Start da war oder genau nach einer Einstellungsänderung einsetzt
+                 und die Zeit nur um einen festen Betrag verschiebt, ist davon nicht zu
+                 unterscheiden – ihn fängt erst ein Zeit- oder Positionssprung.
 stark (→ „Störung“):
   * time         GPS-Zeit weicht vom Median von ≥ 2 NTS-Quellen ab (ohne NTS: ≥ 3 Netzquellen),
                  deutlich über der gewohnten Streuung. Gemessen wird gegen einen **Anker**: Er
@@ -118,9 +122,10 @@ TIME_ANCHOR_RATE = 0.010 / 3600.0   # der Anker folgt der Grundlinie höchstens 
 ANCHOR_STEP_MAX = 60.0          # je Durchgang zählt höchstens 1 min (Datenlücken schieben nicht)
 TIME_ANCHOR_SAVE_EVERY = 600.0
 TIME_ANCHOR_MAX_AGE = 7 * 86400.0   # ein gespeicherter Anker gilt höchstens eine Woche
-FALSETICKER_STRONG_S = 300.0    # Falseticker mit ≥ 2 NTS-Quellen so lange → starkes Signal …
-FALSETICKER_CONFIRM = 0.5       # … aber nur, wenn der Zeitabgleich ≥ halbe Schwelle Abweichung sieht
-FALSETICKER_RECENT = 120.0      # (Median der Abweichungen der letzten 2 min – einzelne Ausreißer zählen nicht)
+FALSETICKER_STRONG_S = 300.0    # Falseticker mit ≥ 2 NTS-Quellen so lange → starkes Signal
+FALSETICKER_SETTLED_S = 900.0   # Ausnahme „Kalibrierfehler“ nur, solange das GPS seit Start/Änderung
+                                # noch nicht so lange brauchbar war (siehe Modulbeschreibung)
+FALSETICKER_RECENT = 120.0      # Abstand GPS − Netz für den Falseticker: Median der letzten 2 min
 
 # --- Position ----------------------------------------------------------------------------------
 POS_JUMP_M = 100.0
@@ -288,13 +293,23 @@ class Detector:
         self._cn0: dict[str, deque] = {}
         self._cn0_ref: dict[str, float] = {}
         self._diffs: deque = deque()
-        self._recent_dev: deque = deque()          # (t, GPS − Netz, Abweichung vom Anker) der letzten 2 min
+        self._recent_dev: deque = deque()          # (t, GPS − Netz) der letzten 2 min
         self._positions: deque = deque()
         self.time_anchor: float | None = None      # Zeitabstand GPS − Netz, langsam nachgeführt
         self._time_anchor_t: float | None = None
         self._pos_anchor: tuple[float, float] | None = None   # nur im Speicher, nie ausgegeben
         self._pos_anchor_t: float | None = None
         self.last: dict[str, Any] = {}
+        self.pps = False                           # mit PPS gibt es keine Ausnahme „Kalibrierfehler“
+        self._reset_epoch()
+
+    def _reset_epoch(self) -> None:
+        """Neuer Abschnitt (Start, geänderte GPS-Einstellungen): Ausnahme „Kalibrierfehler“ neu prüfen."""
+        self._epoch_good = 0.0                      # so lange war das GPS seitdem brauchbar (nicht „x“)
+        self._epoch_t: float | None = None
+        self._excuse: dict[str, Any] | None = None  # {"diff": Abstand GPS − Netz beim vermuteten Kalibrierfehler}
+        self._ft_episode: float | None = None
+        self._ft_excused = False
 
     def seed_time_anchor(self, value: float) -> None:
         """Gespeicherten Zeitanker übernehmen (Neustart von ntp-gui)."""
@@ -309,6 +324,7 @@ class Detector:
         self.last.pop("time_base_median", None)
         self.time_anchor = None
         self._time_anchor_t = None
+        self._reset_epoch()
         self.signals["time"].update(False, math.inf)
         self.signals["time"].streak = 0
 
@@ -317,6 +333,7 @@ class Detector:
         self._diffs.clear()
         self._recent_dev.clear()
         self.last.pop("time_base_median", None)
+        self._reset_epoch()
         self._positions.clear()
         self.time_anchor = None
         self._time_anchor_t = None
@@ -401,7 +418,7 @@ class Detector:
         self.last["references"] = len(refs)
         self.last["ref_kind"] = kind if len(refs) >= needed else None
         if gps is None or obs.get("gps_state") == "?" or len(refs) < needed:
-            self.last["time_diff"] = self.last["time_recent_deviation"] = self.last["time_recent_diff"] = None
+            self.last["time_diff"] = self.last["time_recent_diff"] = None
             return None, {}, ""
         diff = gps - _median(refs)
         self.last["time_diff"] = diff
@@ -433,12 +450,10 @@ class Detector:
             center, threshold, baseline = 0.0, TIME_ABS_LIMIT, False
         deviation = diff - center
         cond = abs(deviation) > threshold
-        self._recent_dev.append((now, diff, deviation if baseline else None))
+        self._recent_dev.append((now, diff))
         while self._recent_dev and now - self._recent_dev[0][0] > FALSETICKER_RECENT:
             self._recent_dev.popleft()
-        devs = [d for _t, _x, d in self._recent_dev if d is not None]
-        self.last["time_recent_deviation"] = _median(devs) if baseline and len(devs) >= 3 else None
-        self.last["time_recent_diff"] = _median([x for _t, x, _d in self._recent_dev])
+        self.last["time_recent_diff"] = _median([x for _t, x in self._recent_dev])
         if not cond and not sig.active:
             self._diffs.append((now, diff))   # Grundlinie lernt nur aus unauffälligen Werten
         self.last.update(time_deviation=deviation, time_threshold=threshold, time_baseline=baseline)
@@ -494,6 +509,10 @@ class Detector:
     def update(self, obs: dict) -> dict[str, Any]:
         now = float(obs.get("t", 0.0))
         sats = obs.get("sats")
+        state = obs.get("gps_state")
+        if self._epoch_t is not None and state not in (None, "?", "x"):
+            self._epoch_good += min(ANCHOR_STEP_MAX, max(0.0, now - self._epoch_t))
+        self._epoch_t = now
         checks = {
             "cn0_drop": self._check_cn0(now, sats),
             "uniform": self._check_uniform(sats),
@@ -511,37 +530,56 @@ class Detector:
         return {"stage": self.stage(), "changes": changes}
 
     def _grade_falseticker(self, now: float) -> None:
-        """Falseticker: stark nur mit Bestätigung durch den Zeitabgleich (siehe Modulbeschreibung).
-
-        Dauerhaft (≥ 5 min), ≥ 2 NTS-Quellen als Gegenstimme UND eine neue Abweichung gegen die
-        gelernte Grundlinie (oder ein grober Fehler > 1 s) → stark. Ein gleichbleibender Versatz
-        – auch während der Zeitabstand neu gelernt wird – bleibt schwach und bekommt einen Text,
-        der sagt, was zu tun ist."""
+        """Falseticker: stark nach 5 min mit ≥ 2 NTS-Quellen – außer beim vermuteten Kalibrierfehler
+        (siehe Modulbeschreibung): ohne PPS, das GPS war seit Start/Änderung nie brauchbar, und die
+        GPS-Zeit bleibt beim dabei gemessenen Abstand. Grob (> 1 s) daneben ist immer stark."""
         ft = self.signals["falseticker"]
         if not ft.active:
             ft.strength = "weak"
+            self._ft_episode = None
             return
         last = self.last
         diff = _num(last.get("time_recent_diff"))
-        typical = _num(last.get("time_base_median")) if last.get("time_baseline") else None
-        typical = diff if typical is None else typical       # für den Text: der ruhigere Wert
-        deviation = _num(last.get("time_recent_deviation")) if last.get("time_baseline") else None
-        threshold = _num(last.get("time_threshold"))
-        jump = (deviation is not None and threshold is not None
-                and abs(deviation) >= FALSETICKER_CONFIRM * threshold)
+        limit = max(TIME_THRESHOLD_MIN, _num(last.get("time_threshold")) or 0.0)
+        if self._ft_episode != ft.since:          # neue Falseticker-Phase: einmal einordnen
+            self._ft_episode = ft.since
+            self._ft_excused = not self.pps and (self._excuse is not None
+                                                 or self._epoch_good < FALSETICKER_SETTLED_S)
+            if self._ft_excused and self._excuse is None:
+                self._excuse = {"diff": None}
+        if self._ft_excused and diff is not None:
+            if self._excuse["diff"] is None:
+                anchor = self.time_anchor
+                # Ein gespeicherter Anker (Neustart) mit anderem Abstand: kein Kalibrierfehler.
+                if anchor is not None and abs(diff - anchor) >= limit:
+                    self._ft_excused = False
+                else:
+                    self._excuse["diff"] = diff
+            elif abs(diff - self._excuse["diff"]) >= limit:
+                self._ft_excused = False          # die GPS-Zeit wandert weg: keine Ausnahme mehr
         gross = diff is not None and abs(diff) > TIME_ABS_LIMIT
         lasting = ft.since is not None and now - ft.since >= FALSETICKER_STRONG_S
-        strong = lasting and last.get("ref_kind") == "nts" and (jump or gross)
+        nts = last.get("ref_kind") == "nts"
+        strong = lasting and nts and (gross or not self._ft_excused)
         if strong:
             ft.text = (f"chrony hält das GPS seit {int((now - ft.since) // 60)} min für einen Falseticker "
-                       f"– {last.get('references')} NTS-Quellen sind sich einig, und die GPS-Zeit weicht "
-                       + (f"{fmt_ms(diff)} vom Netz ab" if gross and not jump
-                          else f"{fmt_ms(deviation)} vom gewohnten Abstand ab"))
-        elif typical is not None and abs(typical) >= TIME_THRESHOLD_MIN:
-            sign = "+" if typical > 0 else "−"
-            learning = "" if last.get("time_baseline") else " (der gewohnte Abstand wird gerade neu gelernt)"
-            ft.text = (f"GPS liegt dauerhaft rund {sign}{fmt_ms(typical)} neben dem Netz{learning} – das ist ein "
-                       "Kalibrierfehler, keine Störung; Offset kalibrieren (GPS-Seite → „GPS kalibrieren“)")
+                       f"– {last.get('references')} NTS-Quellen sind sich einig"
+                       + (f", die GPS-Zeit weicht {fmt_ms(diff)} vom Netz ab" if diff is not None else ""))
+        elif self._ft_excused and diff is not None and abs(diff) >= TIME_THRESHOLD_MIN:
+            # Für den Text der ruhigere Wert: Median der letzten 30 min, sobald es ihn gibt.
+            typical = _num(last.get("time_base_median")) if last.get("time_baseline") else None
+            diff = diff if typical is None else typical
+            sign = "+" if diff > 0 else "−"
+            where = (f"GPS liegt seit dem Start bzw. der letzten Änderung der GPS-Einstellungen gleichbleibend "
+                     f"rund {sign}{fmt_ms(diff)} neben dem Netz")
+            if nts:
+                ft.text = (f"{where} – vermutlich ein Kalibrierfehler, keine Störung: Offset kalibrieren "
+                           "(GPS-Seite → „GPS kalibrieren“); stimmt der Versatz danach nicht, Antenne und "
+                           "Umgebung prüfen")
+            else:
+                ft.text = (f"{where} – Offset kalibrieren (GPS-Seite → „GPS kalibrieren“); stimmt der Versatz "
+                           "danach nicht, Antenne und Umgebung prüfen (ohne zwei NTS-Quellen ist der Vergleich "
+                           "weniger sicher)")
         else:
             ft.text = "chrony hält das GPS für einen Falseticker (die Netzquellen sind sich einig)"
         ft.strength = "strong" if strong else "weak"
@@ -670,6 +708,8 @@ class Guard:
         self._skip_noted = False                     # „Sperre ausgelassen“ nur einmal je Episode
         self._anchor_fp: str | None = None           # GPS-Einstellungen, zu denen der Zeitanker gehört
         self._anchor_saved: float | None = None
+        self._stoerung_wall: float | None = None     # zuletzt „Störung“ (Wanduhr, für autocal)
+        self._stoerung_saved: float | None = None
 
     # --- Ereignisse --------------------------------------------------------------------------
     def _emit(self, level: str, title: str, data: dict) -> None:
@@ -929,6 +969,11 @@ class Guard:
                 self._safe_unlock("die automatische Sperre ist ausgeschaltet", select)
             return {"stage": "ok", "enabled": False}
         self._anchor_prepare(cfg)
+        try:
+            import gpsquality
+            self.detector.pps = gpsquality.has_pps(cfg)
+        except Exception:
+            self.detector.pps = False
         result = self.detector.update(obs if obs is not None else {"t": now})
         anchor = self.detector.time_anchor
         if anchor is not None and (self._anchor_saved is None or now - self._anchor_saved >= TIME_ANCHOR_SAVE_EVERY):
@@ -946,11 +991,50 @@ class Guard:
                                  "lässt sich nicht mehr prüfen" if stale
                                  else "alle Signale seit einigen Minuten unauffällig")
         self.stage = stage
+        if stage == "stoerung":
+            self._note_stoerung()
         self.calm_since = (self.calm_since or now) if stage == "ok" else None
         if stage == "ok":
             state["suppress"] = False
         self._auto_lock(cfg, mode, select, sources)
         return {"stage": stage, "enabled": True, "changes": result["changes"]}
+
+    def _note_stoerung(self) -> None:
+        """Merkt sich (in SQLite, höchstens alle 10 min geschrieben), wann zuletzt „Störung“ war."""
+        wall = self.wall()
+        self._stoerung_wall = wall
+        if self._stoerung_saved is None or wall - self._stoerung_saved >= TIME_ANCHOR_SAVE_EVERY:
+            self._stoerung_saved = wall
+            try:
+                save("last_stoerung", {"wall": wall})
+            except Exception as exc:
+                self.last_error = f"Störungszeitpunkt nicht gespeichert: {exc}"
+
+    def calibration_hold(self, since_wall: float | None) -> str | None:
+        """Darf die automatische Kalibrierung den Offset jetzt ändern? None = ja, sonst der Grund.
+
+        Nein, solange ein starkes Signal anschlägt, die GPS-Sperre gilt oder seit Beginn des
+        Messzeitraums (since_wall, Wanduhr) eine „Störung“ war – sonst könnte sie einen Spoofer,
+        der die Zeit gleichbleibend verschiebt, als Offset „einrechnen“ (der Zeitanker würde dabei
+        neu gelernt, die Sperre löste sich). Ein schwacher Hinweis (z. B. Falseticker nach
+        „Offset zurücksetzen“) hält sie nicht auf – genau den soll sie ja beheben."""
+        with self.lock:
+            try:
+                if self._lock_state().get("locked"):
+                    return "die GPS-Sperre der GNSS-Störungserkennung ist aktiv"
+            except Exception:
+                pass
+            if any(s.strength == "strong" for s in self.detector.active()):
+                return "die GNSS-Störungserkennung meldet gerade eine Störung"
+            last = self._stoerung_wall
+            if last is None:
+                try:
+                    last = _num(load("last_stoerung").get("wall"))
+                except Exception:
+                    last = None
+            if last is not None and (since_wall is None or last >= since_wall):
+                return "im Messzeitraum meldete die GNSS-Störungserkennung eine Störung"
+        return None
 
     def _finish_episode(self, why: str) -> None:
         episode = self.episode or {}

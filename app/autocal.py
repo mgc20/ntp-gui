@@ -48,6 +48,14 @@ Regeln (bewusst vorsichtig – lieber eine Änderung zu wenig als eine falsche):
      Netzquellen besser sind – ein Schritt Richtung Netz-Konsens ist dort harmlos,
      während 5 ms je Tag einen Versatz von 50 ms erst nach zehn Tagen beheben würden.
      Mit PPS (das GPS ist die Referenz) bleibt es bei den behutsamen Schritten.
+     Der Schritt in einem Zug setzt außerdem voraus, dass der Messzeitraum keinen Sprung
+     enthält (Median der ersten und der zweiten Hälfte liegen höchstens max(10 ms,
+     |Versatz|/3) auseinander).
+  6a. GNSS-Störung (1.5.1): Meldet gnssguard gerade ein starkes Signal, hält die
+     GPS-Sperre oder gab es im Messzeitraum eine „Störung“, wird nichts automatisch
+     geändert, nur vorgeschlagen. Sonst könnte ein Spoofer, der die Zeit gleichbleibend
+     verschiebt, als Offset „eingerechnet“ werden. Ein schwacher Hinweis (Falseticker
+     nach „Offset zurücksetzen“) hält sie nicht auf.
   7. Wirksamkeit: Vor jeder weiteren Änderung muss belegt sein, dass die letzte
      automatische Änderung (oder Rücknahme) wirklich läuft – laut
      RUN_DIR/reload.json (Neuladen „done“ nach der Änderung) bzw. laut dem
@@ -98,7 +106,8 @@ CAL_CACHE_SECONDS = 300.0      # api_status(fresh=True): Messung höchstens so l
 FAST_MIN_BIAS = 0.010          # ohne PPS: ganze Korrektur in einem Schritt ab 10 ms Versatz …
 FAST_FACTOR = 3.0              # … und mindestens dem Dreifachen der Schwelle,
 FAST_MIN_SECONDS = 6 * 3600.0  # … gemessen über mindestens 6 h,
-FAST_MIN_NTS = 2               # … gegen mindestens zwei genutzte NTS-Quellen
+FAST_MIN_NTS = 2               # … gegen mindestens zwei genutzte NTS-Quellen,
+FAST_MAX_SHIFT_SHARE = 1 / 3   # … ohne Sprung im Messzeitraum (Median 1. ↔ 2. Hälfte ≤ max(10 ms, |Versatz|/3))
 
 MODE_LABELS = {"off": "aus", "suggest": "vorschlagen", "auto": "automatisch"}
 MODE_TEXTS = {
@@ -175,13 +184,14 @@ def reference_stats(samples: list[dict], gps_name: str) -> dict:
     """Wie viele genutzte Netzwerkquellen hatte jede Messung im Zeitfenster?
 
     Gezählt wie in history.calibrate(): Quellen außer dem GPS mit Zustand „*“
-    oder „+“, die keine Refclock („#“) sind. Nur Messungen mit GPS-Wert zählen.
+    oder „+“, die keine Refclock („#“) sind. Nur Messungen, die auch calibrate()
+    nutzt, zählen (GPS gemessen – oder „x“ gegen ≥ 2 genutzte Netzquellen).
     """
+    import history as historymod
     counts = []
     for sample in samples or []:
         sources = sample.get("sources") or {}
-        gps = sources.get(gps_name)
-        if not _gps_measured(gps):
+        if not historymod.calibration_usable(sources, gps_name):
             continue
         counts.append(sum(1 for name, v in sources.items()
                           if name != gps_name and isinstance(v, dict) and v.get("s") in _USED_STATES
@@ -192,12 +202,6 @@ def reference_stats(samples: list[dict], gps_name: str) -> dict:
         "window_median": _median(with_ref) if with_ref else 0,
         "window_min": min(with_ref) if with_ref else 0,
     }
-
-
-def _gps_measured(gps: Any) -> bool:
-    """Wie history.gps_measured() – GPS-Wert wirklich gemessen (nicht „?“, „x“, „~“, Reach 0)."""
-    import history as historymod
-    return historymod.gps_measured(gps)
 
 
 def _is_nts(source: dict) -> bool:
@@ -373,8 +377,13 @@ def decide(cfg: dict, calibration_result: dict | None, last_change: dict | None,
                                 "ungewöhnlich groß (falsches Gerät? falsche Zeitzone im Empfänger?). "
                                 f"Automatisch wird nichts geändert; Vorschlag zum Prüfen: {target} s.")
         return suggestion
+    shift = _num(cal.get("half_shift"))
+    steady = shift is None or abs(shift) <= max(FAST_MIN_BIAS, abs(bias) * FAST_MAX_SHIFT_SHARE)
+    if shift is not None:
+        base["half_shift_ms"] = round(shift * 1000, 3)
     fast = (fast_allowed(cfg) and not reversal and abs(bias) >= max(FAST_MIN_BIAS, FAST_FACTOR * thr)
-            and duration >= FAST_MIN_SECONDS and current_nts >= FAST_MIN_NTS and window_count >= 2)
+            and duration >= FAST_MIN_SECONDS and current_nts >= FAST_MIN_NTS and window_count >= 2
+            and steady)
     if fast:
         reason = (f"Ohne PPS ist das GPS die Rückfallebene: Es lag {_signed_ms(bias)} neben "
                   f"{int(window_count)} Netzwerkquelle(n), jetzt {int(current_nts)} davon mit NTS "
@@ -574,6 +583,7 @@ _DEPS: dict[str, Callable | None] = {
     "trigger_reload": None,    # () -> bool
     "emit_event": None,        # (kind, level, title, data) -> None
     "check_active": None,      # (cfg, last_change) -> {"active", "reason", "since"}
+    "guard_hold": None,        # (since_wall) -> None oder Grund (gnssguard: Störung im Messzeitraum)
 }
 
 
@@ -627,6 +637,11 @@ def _deps(overrides: dict | None = None) -> dict:
         deps["trigger_reload"] = lambda: False
     if deps["check_active"] is None:
         deps["check_active"] = check_active
+    if deps.get("guard_hold") is None:
+        def _hold(since):
+            import gnssguard
+            return gnssguard.GUARD.calibration_hold(since)
+        deps["guard_hold"] = _hold
     return deps
 
 
@@ -721,6 +736,16 @@ def _evaluate(cfg: dict, now: float, state: dict, deps: dict, cached: bool = Fal
             pass  # ohne Quelleninfo verweigert decide() die Änderung
         cal["reference"] = reference
         decision = decide(cfg, cal, _last_auto_event(state), now)
+    if decision["action"] == "apply":
+        try:
+            hold = deps["guard_hold"](float(observed["since"]))
+        except Exception as exc:
+            hold = f"der Zustand der GNSS-Störungserkennung ist unbekannt ({exc})"
+        if hold:
+            decision.update(action="suggest", guard_hold=hold, next_change_at=None,
+                            reason=f"Nicht automatisch übernommen: {hold}. Ein Versatz während einer "
+                                   "möglichen Störung wird nie „wegkalibriert“ – prüfe Antenne und Umgebung. "
+                                   + decision["reason"])
     if decision["action"] == "apply" and _readonly():
         decision.update(action="suggest", reason=decision["reason"] + " Nicht übernommen: Die "
                         "Einstellungen sind gesperrt (WEB_READONLY).")
@@ -955,7 +980,7 @@ def _manual_change(state: dict, current: float, now: float) -> dict | None:
 
 
 def _plan(cfg: dict, mode: str, decision: dict, manual: dict | None, next_change_at: float | None,
-          fast: bool) -> str:
+          fast: bool, step_at: float | None = None) -> str:
     """Ein Satz: Was macht die automatische Kalibrierung als Nächstes? (GPS-Seite)"""
     step = _ms(max(0.0001, _cfg_float(cfg, "gps_autocal_max_step_ms", 5.0) / 1000))
     how = (f"Ohne PPS korrigiert sie einen deutlichen, über mindestens 6 h gegen mindestens zwei NTS-Quellen "
@@ -971,6 +996,9 @@ def _plan(cfg: dict, mode: str, decision: dict, manual: dict | None, next_change
     if decision.get("action") == "apply":
         return head + "Die nächste Prüfung übernimmt die Korrektur. " + how
     when = f"frühestens am {_when(next_change_at)}" if next_change_at else "nach der Mindest-Messdauer"
+    if fast and step_at:
+        when += (f" (bei deutlichem Versatz; ein kleiner Schritt frühestens am {_when(step_at)}, "
+                 "24 h nach der letzten automatischen Änderung)")
     return head + f"Nächste mögliche automatische Änderung {when}. " + how + (
         " Schneller geht es mit „Vorschlag übernehmen“ beim Kalibrier-Assistenten, sobald er genug Messdaten hat."
         if manual else "")
@@ -1001,14 +1029,20 @@ def api_status(cfg: dict | None = None, now: float | None = None, fresh: bool = 
     fast = fast_allowed(cfg)
     observed = state.get("observed") or {}
     min_seconds = _cfg_float(cfg, "gps_autocal_min_hours", 6.0) * 3600
+    step_at = None
     if mode == "auto":
         next_change_at = now
-        # Ohne PPS darf ein deutlicher Versatz ohne 24-h-Pause korrigiert werden (decide, Punkt 6).
-        if last_auto and _num(last_auto.get("t")) is not None and not decision.get("fast"):
-            next_change_at = max(now, float(last_auto["t"]) + AUTO_INTERVAL)
+        pause_at = (float(last_auto["t"]) + AUTO_INTERVAL
+                    if last_auto and _num(last_auto.get("t")) is not None else None)
+        # Ohne PPS darf ein deutlicher Versatz ohne 24-h-Pause korrigiert werden (decide, Punkt 6):
+        # dann zählt nur die Messdauer seit der letzten Änderung; die 24 h gelten nur für kleine Schritte.
+        if pause_at is not None and not fast:
+            next_change_at = max(now, pause_at)
         if _num(observed.get("since")) is not None:
             wait = max(min_seconds, FAST_MIN_SECONDS) if fast else min_seconds
             next_change_at = max(next_change_at, float(observed["since"]) + SETTLE_SECONDS + wait)
+        if fast and pause_at is not None and pause_at > next_change_at:
+            step_at = pause_at
     active = _active_auto(state)
     current = _cfg_float(cfg, "gps_offset", 0.0)
     rollback_info = {"possible": False, "reason": "Es gibt keine automatische Änderung zum Zurücknehmen."}
@@ -1027,7 +1061,7 @@ def api_status(cfg: dict | None = None, now: float | None = None, fresh: bool = 
     return {
         "fast_allowed": fast,
         "manual_change": manual,
-        "plan": _plan(cfg, mode, decision, manual, next_change_at, fast) if mode != "off" else None,
+        "plan": _plan(cfg, mode, decision, manual, next_change_at, fast, step_at) if mode != "off" else None,
         "mode": mode,
         "mode_label": MODE_LABELS[mode],
         "mode_text": MODE_TEXTS[mode],

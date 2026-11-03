@@ -65,7 +65,13 @@ export const HELP_AUTOCAL = {
       + "(mindestens 10 ms und dreimal die Schwelle), gemessen über mindestens 6 h gegen mindestens zwei "
       + "NTS-Quellen, korrigiert die Automatik den ganzen Versatz in einem Schritt. Solange die Netzquellen "
       + "besser sind, stellt chrony die Uhr ohnehin nicht nach dem GPS – mit 5 ms je Tag bräuchte ein Versatz "
-      + "von 50 ms (etwa nach „Offset zurücksetzen“) sonst zehn Tage. Mit PPS bleibt es bei kleinen Schritten.",
+      + "von 50 ms (etwa nach „Offset zurücksetzen“) sonst zehn Tage. Mit PPS bleibt es bei kleinen Schritten. "
+      + "Dafür zählen auch Messwerte, in denen chrony das GPS als Falseticker („x“) verwirft, sofern mindestens zwei "
+      + "genutzte Netzquellen dagegenstehen – sonst gäbe es genau dann keine Daten. Einen Sprung im Messzeitraum "
+      + "(erste und zweite Hälfte liegen deutlich auseinander) korrigiert sie nicht in einem Zug. **Bei einer "
+      + "GNSS-Störung nie:** Meldet die Störungserkennung gerade eine Störung, hält die GPS-Sperre oder gab es im "
+      + "Messzeitraum eine Störung, ändert die Automatik nichts, sondern schlägt nur vor – sonst würde eine "
+      + "Fälschung, die die Zeit gleichbleibend verschiebt, einfach „eingerechnet“.",
   },
   autocal_changes: {
     title: "Letzte automatische Änderungen",

@@ -100,8 +100,8 @@ export const HELP_GNSS = {
       + "deutlichen Änderung (Faktor 1,5) und frühestens nach 12 h. Jede Änderung steht im Ereignisprotokoll "
       + "und startet chronyd kurz neu. **Nach einer Offset-Änderung** (von Hand, „zurücksetzen“ oder automatische "
       + "Kalibrierung) zählen nur noch Messwerte ab der Änderung (plus 15 Minuten für den Neustart) – ältere "
-      + "passen nicht mehr zum laufenden Offset. Kleiner werden darf die Schranke dann schon, sobald 2 Stunden "
-      + "Messung nach der Änderung vorliegen, statt erst nach 12 h.",
+      + "passen nicht mehr zum laufenden Offset. Kleiner werden darf die Schranke dann schon, sobald 5,5 Stunden "
+      + "Messung nach der Änderung vorliegen (fast das ganze 6-h-Messfenster), statt erst nach 12 h.",
   },
   gpsq_bound_check: {
     title: "Letzte Prüfung",
@@ -179,16 +179,19 @@ export const HELP_GNSS = {
     title: "Urteil von chrony",
     text: "chrony vergleicht alle Quellen. Liegt das GPS dauerhaft außerhalb dessen, worauf sich die übrigen Quellen "
       + "einigen, markiert chrony es als **Falseticker** und nutzt es nicht. Kurzzeitig ist das ein schwaches Signal: Es kann "
-      + "auch an einer zu kleinen Fehlerschranke liegen. Als starkes Signal (Stufe „Störung“) zählt es nur, wenn es "
-      + "**5 Minuten** anhält, mindestens zwei **NTS-Quellen** widersprechen **und** der Zeitabgleich gleichzeitig eine "
-      + "neue Abweichung vom gewohnten Abstand sieht (mindestens die halbe Schwelle, Median der letzten 2 Minuten) – "
-      + "oder das GPS mehr als 1 s danebenliegt. Liegt das GPS dagegen **gleichbleibend** neben dem Netz (etwa "
-      + "„dauerhaft rund +51 ms“, typisch nach „Offset zurücksetzen“ oder einem Empfängerwechsel), ist das ein "
-      + "**Kalibrierfehler, keine Störung**: Es bleibt beim „Hinweis“ mit dem Rat, den Offset zu kalibrieren "
-      + "(GPS-Seite → „GPS kalibrieren“), sperrt nie und benachrichtigt nur, wenn du „Hinweis – jeder Befund“ gewählt "
-      + "hast. Dasselbe gilt, solange der gewohnte Abstand nach einer Änderung der GPS-Einstellungen neu gelernt wird. "
-      + "Grenze: Eine Fälschung, die schon beim Start da war und die Zeit nur um einen festen, kleinen Betrag "
-      + "verschiebt, sieht genauso aus wie ein Kalibrierfehler – sie fällt erst mit einem Zeit- oder Positionssprung auf.",
+      + "auch an einer zu kleinen Fehlerschranke liegen. Hält es **5 Minuten** an und widersprechen mindestens zwei "
+      + "**NTS-Quellen**, zählt es als starkes Signal (Stufe „Störung“) – das fängt auch eine Fälschung, die die Zeit "
+      + "so langsam wegzieht, dass der Zeitabgleich mitwandert. **Ausnahme ohne PPS:** War das GPS seit dem Start bzw. "
+      + "seit einer Änderung der GPS-Einstellungen (Offset, Gerät, Name) noch nie 15 Minuten lang brauchbar und gleich "
+      + "Falseticker – typisch nach „Offset zurücksetzen“: „gleichbleibend rund +51 ms“ –, ist das **vermutlich ein "
+      + "Kalibrierfehler**. Solange die GPS-Zeit bei diesem Abstand bleibt (innerhalb der Zeitschwelle, mindestens 20 ms), "
+      + "bleibt es beim „Hinweis“ mit dem Rat, den Offset zu kalibrieren (GPS-Seite → „GPS kalibrieren“; ohne PPS "
+      + "erledigt das die automatische Kalibrierung nach etwa 6 Stunden); es sperrt nie und benachrichtigt nur, wenn "
+      + "du „Hinweis – jeder Befund“ gewählt hast. Wandert die GPS-Zeit weiter weg oder liegt sie mehr als 1 s daneben, "
+      + "gilt wieder die Regel oben. Stimmt der Versatz nach dem Kalibrieren nicht, Antenne und Umgebung prüfen. Mit PPS "
+      + "gibt es diese Ausnahme nicht. Grenze: Eine Fälschung, die schon beim Start oder genau nach einer Änderung "
+      + "einsetzt und die Zeit nur um einen festen Betrag verschiebt, sieht aus wie ein Kalibrierfehler – sie fällt erst "
+      + "mit einem Zeit- oder Positionssprung auf.",
   },
   gnss_time: {
     title: "GPS-Zeit gegen die Netzquellen",

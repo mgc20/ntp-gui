@@ -299,8 +299,9 @@ class CalibrationDelayTest(unittest.TestCase):
     def test_falseticker_outliers_raise_suggested_delay(self):
         samples = SpreadTest.falseticker_samples()
         result = history.calibrate(samples, "GPS", 0.0, 0.2)
-        self.assertGreaterEqual(result["suggested_delay"], 0.12)
-        self.assertLess(abs(result["bias"]), 0.002)  # Offset weiter nur aus den brauchbaren Werten
+        self.assertGreaterEqual(result["suggested_delay"], 0.115)
+        # 1.5.1: „x“ gegen zwei genutzte Netzquellen zählt für den Offset mit – der Median bleibt robust.
+        self.assertLess(abs(result["bias"]), 0.002)
 
     def test_outliers_raise_suggested_delay(self):
         base = [{"t": T0 + i * 10, "sources": {"GPS": {"o": 0.05 + (0.06 if i % 10 == 0 else 0.0), "s": "-", "k": "#"},
@@ -887,11 +888,29 @@ class OffsetChangeTest(StoreCase):
         # 1 h nach der Korrektur: zu wenig Messung danach → noch nicht kleiner.
         early = gpsquality.tick(cfg(gps_offset=0.051), fix + 1 * H, old + [x for x in new if x["t"] <= fix + H])
         self.assertFalse(early["apply"], early)
-        # 2,5 h nach der Korrektur (≥ 2 h Messung danach), nur 3,5 h nach der letzten Anpassung.
-        decision = gpsquality.tick(cfg(gps_offset=0.051), fix + 2.5 * H, old + new)
+        new = biased_samples(fix, 6.5, 0.0)
+        # 2,5 h nach der Korrektur: früher reichte das (2 h) – jeder kleine Kalibrierschritt hätte so die
+        # 12-h-Sperre umgangen. Jetzt braucht es fast ein ganzes Messfenster (5,5 h).
+        short = gpsquality.tick(cfg(gps_offset=0.051), fix + 2.5 * H, old + [x for x in new if x["t"] <= fix + 2.5 * H])
+        self.assertFalse(short["apply"], short)
+        # 6 h nach der Korrektur (≥ 5,5 h Messung danach), nur 7 h nach der letzten Anpassung.
+        decision = gpsquality.tick(cfg(gps_offset=0.051), fix + 6 * H, old + [x for x in new if x["t"] <= fix + 6 * H])
         self.assertTrue(decision["apply"], decision)
         self.assertIn("Offset", decision["reason"])
         self.assertLessEqual(gpsquality.read_applied()["delay"], 0.03)
+
+    def test_offset_shortcut_not_when_clock_jumped_back(self):
+        measured = {"status": "measured", "delay": 0.03, "duration_seconds": 6 * H}
+        now = T0 + 20 * H
+        applied = {"delay": 0.16, "t": now + H}         # Zeitpunkt in der Zukunft: Uhr sprang zurück
+        decision = gpsquality.decide(measured, applied, now, None, now - 7 * H)
+        self.assertFalse(decision["apply"], decision)
+        # Mit plausiblem Zeitpunkt und ganzem Messfenster nach der Änderung: kleiner.
+        applied["t"] = now - 8 * H
+        self.assertTrue(gpsquality.decide(measured, applied, now, None, now - 7 * H)["apply"])
+        # Nur 2 h Messung nach einer (kleinen) Änderung reicht nicht mehr.
+        short = dict(measured, duration_seconds=2 * H)
+        self.assertFalse(gpsquality.decide(short, applied, now, None, now - 3 * H)["apply"])
 
     def test_without_offset_change_12h_rule_stays(self):
         gpsquality.note_offset(cfg(gps_offset=0.0), T0)
