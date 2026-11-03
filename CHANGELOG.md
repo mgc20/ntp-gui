@@ -132,8 +132,11 @@ Ursache und Absender nennt, und der neue Image-Name `ghcr.io/mgc20/ntp-gui`.
   Namen, über die das Dashboard ohne Passwort antworten darf (Schutz vor DNS-Rebinding, in der
   Hilfe in einfachen Worten erklärt). Gilt zusätzlich zu `WEB_ALLOWED_HOSTS`; Namen aus der
   Umgebung stehen unter dem Feld (nur lesend). Streng geprüft: Namen mit Punkt oder `*.domain`,
-  keine IP-Adressen, Ports, ganzen Endungen (`*.com`) und nicht `*` allein – den Schutz ganz
-  abschalten geht nur per `WEB_ALLOWED_HOSTS=*`. Wirkt ohne Neustart, nur mit Admin-Recht und
+  keine IP-Adressen, Ports, ganzen Endungen (`*.com`, `*.co.uk`), keine Wildcards auf DynDNS- und
+  Hosting-Domains (`*.duckdns.org`, `*.myfritz.net`, `*.github.io` – dort nur den eigenen Namen wie
+  `meinzeit.duckdns.org`), keine Namen, die auf Ziffern enden (`1.2.3`), und nicht `*` allein – den
+  Schutz ganz abschalten geht nur per `WEB_ALLOWED_HOSTS=*`. Steht so eine Wildcard in
+  `WEB_ALLOWED_HOSTS`, warnt das Log beim Start. Wirkt ohne Neustart, nur mit Admin-Recht und
   CSRF-Schutz wie jede Einstellung, Teil von Sichern/Wiederherstellen. Die Prüfung je Anfrage
   bleibt ein reiner Textvergleich ohne DNS.
 - **Compose-Vorlagen ohne Caddy:** Der auskommentierte Caddy-Dienst, das Volume `caddy-data` und
@@ -145,7 +148,9 @@ Ursache und Absender nennt, und der neue Image-Name `ghcr.io/mgc20/ntp-gui`.
   betreibt, muss nichts ändern.
 - **Versionshinweis in jeder Compose-Vorlage:** Über `image: ghcr.io/mgc20/ntp-gui:latest` steht,
   wie man die Version festhält (`:1.5` bleibt auf 1.5.x, `:1.5.1` fest) und dass das Image von
-  `ghcr.io/congp20/ntp-gui` umgezogen ist (dort keine neuen Versionen mehr).
+  `ghcr.io/congp20/ntp-gui` umgezogen ist (dort keine neuen Versionen mehr). In den Vorlagen mit
+  `build: .` steht dazu, dass der Tag nur fürs geladene Image gilt – `up --build` baut den lokalen
+  Stand.
 
 ## [1.5.0] – 2026-11-02
 

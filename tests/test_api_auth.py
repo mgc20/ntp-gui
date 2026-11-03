@@ -257,6 +257,26 @@ class HostCheckTest(unittest.TestCase):
                 self.assertIn(word, str(ctx.exception))
         with self.assertRaises(settings.ValidationError):
             settings._as_allowed_hosts([f"h{i}.example.org" for i in range(settings.MAX_ALLOWED_HOSTS + 1)])
+
+    def test_allow_list_rejects_shared_suffix_wildcards(self):
+        for bad in ("*.duckdns.org", "*.ddns.net", "*.dynv6.net", "*.myfritz.net", "*.co.uk", "*.com.au",
+                    "*.github.io", "*.no-ip.org", "*.or.at", "*.DuckDNS.org."):
+            with self.subTest(bad=bad):
+                with self.assertRaises(settings.ValidationError) as ctx:
+                    settings._as_allowed_hosts(bad)
+                self.assertIn("eigenen", str(ctx.exception))
+                self.assertIn("meinzeit.", str(ctx.exception))
+        for bad in ("1.2.3", "zeit.123", "*.10.0"):
+            with self.subTest(bad=bad):
+                with self.assertRaises(settings.ValidationError):
+                    settings._as_allowed_hosts(bad)
+        ok = settings._as_allowed_hosts("meinzeit.duckdns.org *.meinzeit.duckdns.org *.example.co.uk "
+                                        "zeit.example.co.uk *.fritz.box *.example.de 1zeit.example.org")
+        self.assertEqual(len(ok), 7)
+        self.assertTrue(settings.shared_suffix("co.uk"))
+        self.assertFalse(settings.shared_suffix("example.co.uk"))
+        with self.assertRaises(settings.ValidationError):
+            settings.validate({"web_allowed_hosts": ["*.co.uk"]})
         field = settings.FIELDS["web_allowed_hosts"]
         self.assertEqual((field["section"], field["advanced"], field["restart"], field["env"]),
                          ("web", True, settings.RESTART_NONE, None), "Env bleibt getrennt und gilt zusätzlich")

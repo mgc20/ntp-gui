@@ -647,7 +647,9 @@ class ComposeTemplateTest(unittest.TestCase):
             with self.subTest(path=path.name):
                 index = next(i for i, line in enumerate(lines)
                              if line.strip().startswith("image: ghcr.io/mgc20/ntp-gui:latest"))
-                hint = "\n".join(lines[max(0, index - 5):index])
+                hint = "\n".join(lines[max(0, index - 8):index])
+                if any(line.strip() == "build: ." for line in lines):
+                    self.assertIn("lokalen Stand", hint)  # Version im Tag gilt nur fürs geladene Image
                 self.assertIn("„:1.5“", hint)
                 self.assertIn("„:1.5.1“", hint)
                 self.assertIn("ghcr.io/congp20/ntp-gui", hint)

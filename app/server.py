@@ -1953,6 +1953,11 @@ def main() -> None:
         print("[web] WARNUNG: WEB_USER und WEB_PASSWORD müssen beide gesetzt sein – "
               "das Dashboard läuft ohne Authentifizierung.", flush=True)
 
+    for entry in settings.env_allowed_hosts():
+        if entry.startswith("*.") and settings.shared_suffix(entry[2:]):
+            print(f"[web] WARNUNG: WEB_ALLOWED_HOSTS enthält „{entry}“ – das gibt auch fremde Namen "
+                  f"unter {entry[2:]} frei (DNS-Rebinding möglich). Besser nur den eigenen Namen "
+                  f"eintragen, z. B. meinzeit.{entry[2:]}", flush=True)
     autocal.configure(history=HISTORY, trigger_reload=trigger_reload)
     gpsquality.configure(history=HISTORY, trigger_reload=trigger_reload,
                          net_distance=lambda: gpsquality.nts_distance(chrony.detailed_sources()))

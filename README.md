@@ -1461,7 +1461,7 @@ PHC-Refclock dient ihm als Referenz für Stratum und Statistik.
 | `NOTIFY_LAN_ADDRESSES` | `false` | Private LAN-Adresse eines Geräts zusätzlich zu seinem Namen in Benachrichtigungen |
 | `TRUSTED_PROXIES` | – (niemandem trauen) | Adressen deiner Reverse Proxys, siehe [HTTPS fürs Dashboard](#https-fürs-dashboard) |
 | `TEMP_SENSOR` | `auto` | Temperatursensor für die Seite [Uhrqualität](#uhrqualität-temperatur-schaltsekunden-vollbild-uhr) (`auto`, `off` oder Kennung aus dem Hardware-Check) |
-| `CLOCK_PUBLIC` | `false` | `true` = `/clock` und `/api/v1/time` ohne Anmeldung (nur Zeit und Status, Schutz vor DNS-Rebinding bleibt). Nicht einschalten, wenn das Dashboard aus dem Internet erreichbar ist |
+| `CLOCK_PUBLIC` | `false` | `true` = `/clock` und `/api/v1/time` ohne Anmeldung und über jeden Host-Namen (nur Zeit und Status; alle anderen Seiten bleiben gegen DNS-Rebinding geprüft). Nicht einschalten, wenn das Dashboard aus dem Internet erreichbar ist |
 | `UPDATE_CHECK` | `false` | Einmal am Tag bei GitHub nach einer neuen Version fragen, siehe [Update-Hinweis](#update-hinweis-opt-in) |
 
 Nur per Umgebung (sie betreffen den Start selbst oder sind Expertenwerte): `WEB_PORT`,
@@ -1534,7 +1534,9 @@ API-Schlüssel gilt jeder Name – die Anmeldung schützt dann. `/healthz` antwo
 
 **Erlaubte Namen im Dashboard (ab 1.5.1):** ein Name pro Zeile, `*.example.org` erlaubt alle
 Unternamen (und `example.org` selbst). Die Prüfung ist streng: keine IP-Adressen (die gehen
-ohnehin), keine Ports, keine ganzen Endungen (`*.com`) und nicht `*` allein – den Schutz ganz
+ohnehin), keine Ports, keine ganzen Endungen (`*.com`, `*.co.uk`), keine Wildcards auf DynDNS-
+und Hosting-Domains (`*.duckdns.org`, `*.myfritz.net`, `*.github.io` – dort trägst du nur deinen
+eigenen Namen ein, z. B. `meinzeit.duckdns.org`) und nicht `*` allein – den Schutz ganz
 abschalten geht nur bewusst mit `WEB_ALLOWED_HOSTS=*` in der Compose-Datei. Namen aus
 `WEB_ALLOWED_HOSTS` stehen unter dem Feld (nur lesend). Wirkt ohne Neustart, nur mit
 Admin-Recht änderbar und Teil von Sichern/Wiederherstellen. Bist du schon ausgesperrt: das

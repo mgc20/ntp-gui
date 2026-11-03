@@ -218,8 +218,8 @@ export const HELP_UHR = {
       + "zusätzlich den Namen der Quelle. Die Uhr antwortet über **jeden Namen**, z. B. auch über einen eigenen "
       + "DNS-Namen wie uhr.example.org – die Namensprüfung gegen DNS-Rebinding entfällt hier, weil eine fremde "
       + "Webseite darüber nur erfahren könnte, was ohnehin öffentlich ist (Zeit, Ampel, Genauigkeit, Art der "
-      + "Quelle). Den Namen der Quelle gibt es ohne Anmeldung nur über erlaubte Namen (IP-Adresse, lokale Namen, "
-      + "„Erlaubte Namen“ bzw. WEB_ALLOWED_HOSTS). Alle anderen Seiten und die übrige API bleiben geprüft.",
+      + "Quelle). Den Namen der Quelle gibt es ohne Anmeldung nur, wenn kein Passwort gesetzt ist und der Aufruf "
+      + "über einen erlaubten Namen kommt (IP-Adresse, lokale Namen, „Erlaubte Namen“ bzw. WEB_ALLOWED_HOSTS). Alle anderen Seiten und die übrige API bleiben geprüft.",
   },
 };
 

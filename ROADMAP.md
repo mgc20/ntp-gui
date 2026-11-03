@@ -86,7 +86,7 @@ Erst ein schlankes 1.5.0 ✅, dann kurze 1.5.x-Releases (Entscheidung E15).
 | GNSS-Störungen erkennen (Jamming/Spoofing) und GPS vorübergehend sperren | ★★★ | ◆◆ | 1.5.0 ✅ |
 | Clients 3: Regeln je Gerät, Gruppen/VLAN-Ansichten, Uhrgüte je Gerät, NTS für Clients, Gerätepass | ★★★ | ◆◆ | 1.5.0 ✅ |
 | Echter Holdover-Test („wie lange hält die Uhr ohne Quelle?“) | ★★ | ◆ | 1.5.0 ✅ |
-| HTTPS fürs Dashboard über Caddy-Vorlage | ★★ | ◆ | 1.5.0 ✅ |
+| HTTPS fürs Dashboard über Caddy-Vorlage (ab 1.5.1: Caddy-Beispiel als eigener Stack in docs/integrationen/https.md) | ★★ | ◆ | 1.5.0 ✅ |
 | Mehrsprachigkeit: Gerüst, dann englische Oberfläche (Weblate) | ★★★ | ◆◆◆ | Gerüst 1.5.0 ✅, Oberfläche 1.5.x |
 | u-blox-Empfänger auslesen (Firmware, Jamming-Anzeige, Fähigkeiten) | ★★ | ◆◆ | 1.5.x |
 | GPS-Automatik einfach und sichtbar: messen → einmal korrigieren → kleinen Drifts folgen; kein GNSS-Fehlalarm nach Offset-Änderung | ★★★ | ◆◆ | 1.5.1 ✅ |
