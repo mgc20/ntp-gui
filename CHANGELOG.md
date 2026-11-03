@@ -4,6 +4,12 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), die Versionen folgen
 [Semantic Versioning](https://semver.org/lang/de/).
 
+## [Unveröffentlicht]
+
+### Geändert
+- „Erlaubte Namen“ steht in Einstellungen → Dashboard jetzt direkt sichtbar und nicht mehr erst
+  hinter „Erweitert“ – neben „Vertrauenswürdige Proxys“ war es sonst kaum zu finden.
+
 ## [1.5.1] – 2026-11-03
 
 Schwerpunkt: GPS-Automatik einfach, vorhersehbar und sichtbar (messen → einmal korrigieren →

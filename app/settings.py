@@ -1192,7 +1192,7 @@ SCHEMA: list[dict] = [
                 "Browser eine falsche Adresse vorgeben. Über Anmeldung und Zugriff entscheiden die Köpfe "
                 "nie. Wirkt ohne Neustart."),
     _field("web_allowed_hosts", "web", "Erlaubte Namen", "hostlist", [], _as_allowed_hosts,
-           restart=RESTART_NONE, advanced=True, placeholder="z. B. zeit.example.org oder *.fritz.box",
+           restart=RESTART_NONE, placeholder="z. B. zeit.example.org oder *.fritz.box",
            help="Namen, über die du das Dashboard ohne Passwort öffnen darfst – zusätzlich zu IP-Adressen, "
                 "einteiligen und lokalen Namen (*.lan, *.local, *.home.arpa …), die immer gehen. Warum die "
                 "Liste? Schutz vor DNS-Rebinding: Eine fremde Webseite, die du besuchst, kann ihren eigenen "

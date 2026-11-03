@@ -279,7 +279,7 @@ class HostCheckTest(unittest.TestCase):
             settings.validate({"web_allowed_hosts": ["*.co.uk"]})
         field = settings.FIELDS["web_allowed_hosts"]
         self.assertEqual((field["section"], field["advanced"], field["restart"], field["env"]),
-                         ("web", True, settings.RESTART_NONE, None), "Env bleibt getrennt und gilt zusätzlich")
+                         ("web", False, settings.RESTART_NONE, None), "Env bleibt getrennt und gilt zusätzlich")
         self.assertIn("DNS-Rebinding", field["help"])
 
     def test_logged_host_is_cleaned(self):
