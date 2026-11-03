@@ -17,6 +17,7 @@ unverschlüsseltes HTTP ankamen, und liefert daraus einen Hinweis für die Über
 from __future__ import annotations
 
 import ipaddress
+import re
 import threading
 import time
 from typing import Any, Iterable
@@ -78,10 +79,12 @@ def _header_values(headers: Any, name: str) -> list[str]:
     return values
 
 
-# Alle Köpfe, an denen man einen Proxy erkennt (für den Hinweis „nicht eingetragen“). Ausgewertet
-# werden nur X-Forwarded-For/-Proto und – falls die fehlen – „Forwarded“ (RFC 7239). X-Real-IP
-# allein sagt nichts übers Protokoll und macht eine Anfrage darum nicht zu einer „über den Proxy“.
+# Alle Köpfe, an denen man einen Proxy erkennt. Ausgewertet werden X-Forwarded-For/-Proto, ersatzweise
+# „Forwarded“ (RFC 7239) und für die Adresse zuletzt X-Real-IP. Schickt ein eingetragener Proxy nur
+# X-Real-IP (oder gar nur „Forwarded: by=…“), kam die Anfrage trotzdem über ihn – nur sagt er nicht,
+# ob der Browser HTTPS sprach (proto_missing), statt fälschlich „direkt per HTTP“.
 FORWARD_HEADERS = ("X-Forwarded-For", "X-Forwarded-Proto", "X-Real-IP", "Forwarded")
+_PROTO_TOKEN = re.compile(r"[a-z0-9.+-]{1,16}")
 
 
 def _forwarded_elements(headers: Any) -> list[dict[str, str]]:
@@ -102,29 +105,36 @@ def resolve(peer: str, headers: Any, networks: list) -> dict[str, Any]:
 
     Rückgabe: client (Adresse als Text), peer (unmittelbare Gegenstelle), scheme ("http"/"https"),
     proxied (über einen vertrauenswürdigen Proxy), proto_missing (vertrauenswürdiger Proxy ohne
-    X-Forwarded-Proto/Forwarded proto=), untrusted_forward (Proxy-Köpfe von einer Gegenstelle, der
-    niemand traut – sie wurden ignoriert), peer_loopback.
+    brauchbares X-Forwarded-Proto/Forwarded proto=), untrusted_forward (Proxy-Köpfe von einer
+    Gegenstelle, der niemand traut – sie wurden ignoriert), peer_loopback, peer_trusted (Gegenstelle
+    steht in TRUSTED_PROXIES), forward_headers (welche Proxy-Köpfe kamen), proto_value (unbekannter
+    Proto-Wert, gekürzt; sonst "").
     """
     peer_ip = parse_ip(peer)
     peer_text = str(peer_ip) if peer_ip is not None else str(peer or "")
     info = {"client": peer_text, "peer": peer_text, "scheme": "http", "proxied": False,
             "untrusted_forward": False, "proto_missing": False,
-            "peer_loopback": bool(peer_ip is not None and peer_ip.is_loopback)}
-    has_forward = any(headers is not None and headers.get(name) for name in FORWARD_HEADERS)
+            "peer_loopback": bool(peer_ip is not None and peer_ip.is_loopback),
+            "peer_trusted": False, "forward_headers": (), "proto_value": ""}
+    sent = tuple(name for name in FORWARD_HEADERS if headers is not None and headers.get(name))
+    info["forward_headers"] = sent
     if not _trusted(peer_ip, networks):
-        info["untrusted_forward"] = has_forward
+        info["untrusted_forward"] = bool(sent)
         return info
+    info["peer_trusted"] = True
+    if not sent:
+        return info  # eingetragene Gegenstelle ganz ohne Proxy-Köpfe: ein direkter Zugriff
+    info["proxied"] = True
     xff = _header_values(headers, "X-Forwarded-For")
     xfp = [p.lower() for p in _header_values(headers, "X-Forwarded-Proto")]
-    if xff or xfp:
-        chain, protos = xff, xfp
-    else:
-        elements = _forwarded_elements(headers)
-        chain = [e["for"] for e in elements if e.get("for")]
-        protos = [e["proto"].lower() for e in elements[-1:] if e.get("proto")]
-    if not chain and not protos:
-        return info
-    info["proxied"] = True
+    elements = _forwarded_elements(headers)
+    # Jede Angabe für sich: Adresse aus X-Forwarded-For, sonst Forwarded for=, sonst X-Real-IP;
+    # Protokoll aus X-Forwarded-Proto, sonst Forwarded proto= (z. B. HAProxy mit „option forwardfor“
+    # und „option forwarded“).
+    chain = xff or [e["for"] for e in elements if e.get("for")]
+    if not chain:
+        chain = _header_values(headers, "X-Real-IP")[-1:]
+    protos = xfp or [e["proto"].lower() for e in elements[-1:] if e.get("proto")]
     client = peer_ip
     # Von rechts lesen: Rechts steht, was der nächste (vertrauenswürdige) Proxy gesehen hat. Die
     # erste Adresse, die selbst kein vertrauenswürdiger Proxy ist, ist der Browser. Alles weiter
@@ -141,6 +151,8 @@ def resolve(peer: str, headers: Any, networks: list) -> dict[str, Any]:
         info["scheme"] = protos[-1]  # vom nächsten Proxy gesetzt – dem, dem wir trauen
     else:
         info["proto_missing"] = True  # Proxy sagt nicht, wie der Browser sprach – unbekannt, nicht „http“
+        if protos:
+            info["proto_value"] = protos[-1] if _PROTO_TOKEN.fullmatch(protos[-1]) else "?"
     return info
 
 
@@ -152,6 +164,7 @@ KIND_LABEL = {"basic": "dein Passwort", "key": "ein API-Schlüssel"}
 # Warum kamen Anmeldedaten ungeschützt an? (Ursache → Satzteil im Hinweis)
 CAUSE_LABEL = {
     "direct": "direkt per HTTP",
+    "direct_proxy": "direkt per HTTP (eingetragener Proxy, aber ohne jeden Proxy-Kopf)",
     "proxy_http": "über den eingetragenen Proxy {via}, aber der Browser sprach mit ihm nur HTTP",
     "untrusted": "über {via}, das Proxy-Köpfe schickt, aber nicht in TRUSTED_PROXIES steht",
 }
@@ -162,7 +175,9 @@ PROTO_HELP = ("So schickt dein Proxy den Kopf: Caddy, Nginx Proxy Manager, Zorax
               "„proxy_set_header X-Forwarded-Proto $scheme;“). Nginx von Hand: dieselbe Zeile im "
               "location-Block. HAProxy: „http-request set-header X-Forwarded-Proto https if { ssl_fc }“ "
               "im frontend. Traefik: am Entrypoint kein „forwardedHeaders.insecure“ und keine Middleware, "
-              "die X-Forwarded-Proto entfernt. Apache: „RequestHeader set X-Forwarded-Proto https“.")
+              "die X-Forwarded-Proto entfernt. Apache: nur im <VirtualHost *:443> "
+              "„RequestHeader set X-Forwarded-Proto \"expr=%{REQUEST_SCHEME}\"“ – nie pauschal „https“, "
+              "sonst gilt auch ein HTTP-Zugriff als geschützt.")
 
 
 def ago(seconds: float) -> str:
@@ -183,13 +198,16 @@ class TransportWatch:
                      Ursache: „direct“ (direkt per HTTP), „proxy_http“ (eingetragener Proxy meldet
                      X-Forwarded-Proto: http), „untrusted“ (Proxy-Köpfe von einer nicht eingetragenen
                      Gegenstelle – die Strecke zu ntp-gui war dann sicher HTTP).
-      no_proto       eingetragener Proxy, aber ohne X-Forwarded-Proto bzw. Forwarded proto=: Ob der
-                     Browser HTTPS sprach, ist unbekannt – eigener Hinweis, kein Klartext-Alarm.
-      last_hop_plain Browser → Proxy war HTTPS, aber der Proxy sitzt auf einem anderen Gerät: Die
-                     Strecke Proxy → ntp-gui trägt die Anmeldedaten unverschlüsselt durchs LAN.
+      no_proto       eingetragener Proxy, aber ohne brauchbares X-Forwarded-Proto bzw. Forwarded
+                     proto=: Ob der Browser HTTPS sprach, ist unbekannt – eigener Hinweis.
+      last_hop_plain Der eingetragene Proxy sitzt auf einem anderen Gerät (Browser → Proxy HTTPS oder
+                     unbekannt): Die Strecke Proxy → ntp-gui trägt die Anmeldedaten sicher
+                     unverschlüsselt durchs LAN. last_hop_https: dasselbe, Browser sprach nachweislich HTTPS.
       last_https     durchgehend geschützt (Proxy auf demselben Rechner, HTTPS zum Browser).
+      last_proto     je Proxy (Gegenstelle): letzter Zugriff MIT Proto-Kopf.
     Ein Hinweis verschwindet, sobald das Problem behoben ist: Kommen danach nur noch geschützte
-    Zugriffe, gilt statt 24 Stunden nur noch FIXED_WINDOW (1 Stunde).
+    Zugriffe, gilt statt 24 Stunden nur noch FIXED_WINDOW (1 Stunde). Einträge „ohne Proto-Kopf“
+    gelten nur dann als behoben, wenn DERSELBE Proxy danach den Kopf schickt.
 
     Die Absenderadressen stehen nur im Hinweis der eigenen, angemeldeten Übersicht. Hinweise
     gehen weder in Benachrichtigungen noch ins Diagnosepaket; wer sie dorthin bringt, muss sie
@@ -201,10 +219,11 @@ class TransportWatch:
         self._lock = threading.Lock()
         self.plain: dict[tuple[str, str, str], dict[str, Any]] = {}     # (Ursache, Client, über) → Zugriff
         self.no_proto: dict[tuple[str, str], dict[str, Any]] = {}       # (Proxy, Client) → Zugriff
-        self.last_hop_plain: float | None = None    # HTTPS bis zum Proxy, danach HTTP durchs LAN
+        self.last_hop_plain: float | None = None    # Proxy auf anderem Gerät: HTTP durchs LAN zu ntp-gui
+        self.last_hop_https: float | None = None    # … und der Browser sprach nachweislich HTTPS mit ihm
         self.last_untrusted: float | None = None    # Proxy-Köpfe von einer nicht eingetragenen Gegenstelle
         self.last_https: float | None = None        # durchgehend verschlüsselt
-        self.last_proto: float | None = None        # eingetragener Proxy mit Proto-Kopf (egal welchem)
+        self.last_proto: dict[str, float] = {}      # Proxy → letzter Zugriff mit Proto-Kopf
 
     # Kompatibel zu 1.5.0 (Tests, Aufrufer): Zeitpunkt und Arten des letzten Klartext-Zugriffs.
     @property
@@ -244,26 +263,35 @@ class TransportWatch:
             if info.get("proxied"):
                 self.last_untrusted = None  # ein eingetragener Proxy ist angekommen – Hinweis erledigt
                 if not info.get("proto_missing"):
-                    self.last_proto = now
-                if info.get("scheme") == "https":
+                    if peer not in self.last_proto and len(self.last_proto) >= MAX_SOURCES:
+                        del self.last_proto[min(self.last_proto, key=self.last_proto.get)]
+                    self.last_proto[peer] = now
+                if info.get("scheme") == "https" and not info.get("proto_missing"):
                     if loopback:
                         self.last_https = now
                     else:
-                        self.last_hop_plain = now
+                        self.last_hop_plain = self.last_hop_https = now
                     return
                 if info.get("proto_missing"):
+                    if not loopback:
+                        self.last_hop_plain = now  # Proxy → ntp-gui ist sicher HTTP durchs LAN
                     self._remember(self.no_proto, (peer, client), kind, now, loopback=loopback)
+                    entry = self.no_proto[(peer, client)]
+                    entry["sent"] = tuple(info.get("forward_headers") or ())
+                    entry["value"] = str(info.get("proto_value") or "")
                     return
                 self._remember(self.plain, ("proxy_http", client, peer), kind, now)
                 return
             if loopback:
                 return  # Skript auf demselben Rechner: verlässt den Host nicht
-            self._remember(self.plain, ("direct", client, peer), kind, now)
+            cause = "direct_proxy" if info.get("peer_trusted") else "direct"
+            self._remember(self.plain, (cause, client, peer), kind, now)
 
     def reset(self) -> None:
         """Alles vergessen – nach einer Änderung von TRUSTED_PROXIES gilt die neue Lage."""
         with self._lock:
-            self.last_untrusted = self.last_https = self.last_hop_plain = self.last_proto = None
+            self.last_untrusted = self.last_https = self.last_hop_plain = self.last_hop_https = None
+            self.last_proto.clear()
             self.plain.clear()
             self.no_proto.clear()
 
@@ -287,20 +315,23 @@ class TransportWatch:
         return ("Der Hinweis verschwindet 1 Stunde nach dem letzten ungeschützten Zugriff, wenn danach "
                 "nur noch geschützte kommen, sonst 24 Stunden danach.")
 
-    def _fresh(self, table: dict, now: float, fixed: tuple) -> list[dict[str, Any]]:
-        rows = [dict(entry, key=key) for key, entry in table.items() if self._recent(entry["at"], now, fixed)]
+    def _fresh(self, table: dict, now: float, fixed) -> list[dict[str, Any]]:
+        """fixed: Zeitpunkte, die einen Eintrag als behoben gelten lassen – oder eine Funktion key → Zeitpunkte."""
+        rows = [dict(entry, key=key) for key, entry in table.items()
+                if self._recent(entry["at"], now, fixed(key) if callable(fixed) else fixed)]
         rows.sort(key=lambda e: e["at"], reverse=True)
         return rows
 
     def insights(self, trusted: list | None = None, now: float | None = None) -> list[dict[str, Any]]:
         now = self._clock() if now is None else now
         with self._lock:
-            plain_fixed = (self.last_https, self.last_hop_plain)
+            plain_fixed = (self.last_https, self.last_hop_https)
             plain = self._fresh(self.plain, now, plain_fixed)
-            # Ohne Proto-Kopf weiß niemand, ob es HTTPS war – „behoben“ ist es, sobald der Kopf kommt.
-            noproto_fixed = (self.last_https, self.last_hop_plain, self.last_proto)
-            noproto = self._fresh(self.no_proto, now, noproto_fixed)
+            # Ohne Proto-Kopf weiß niemand, ob es HTTPS war – „behoben“ ist es, sobald DERSELBE Proxy
+            # den Kopf schickt (ein anderer Proxy oder Weg sagt über diesen nichts).
+            noproto = self._fresh(self.no_proto, now, lambda key: (self.last_proto.get(key[0]),))
             hop = self._recent(self.last_hop_plain, now, (self.last_https,))
+            hop_https = self._recent(self.last_hop_https, now, (self.last_https,))
             untrusted = self._recent(self.last_untrusted, now)
         out: list[dict[str, Any]] = []
         if plain:
@@ -314,6 +345,11 @@ class TransportWatch:
             listing = "; ".join(parts) + (f" (und {more} weitere)" if more > 0 else "")
             causes = {e["key"][0] for e in plain}
             advice = []
+            if "direct_proxy" in causes:
+                advice.append("„eingetragener Proxy, aber ohne jeden Proxy-Kopf“ heißt: Entweder reicht dein "
+                              "Proxy die Anfrage ohne X-Forwarded-For/-Proto weiter – dann prüft ntp-gui das "
+                              "Protokoll nicht, und die Strecke Proxy → ntp-gui ist ohnehin HTTP –, oder ein "
+                              "Programm auf dem Proxy-Gerät ruft http://…:8080 direkt auf. " + PROTO_HELP)
             if "direct" in causes:
                 advice.append("„direkt per HTTP“ heißt: Dieses Gerät ruft http://…:8080 selbst auf – ein "
                               "Lesezeichen, eine Home-Assistant-Integration, ein Homepage-/Uptime-Kuma-Widget "
@@ -336,27 +372,46 @@ class TransportWatch:
                         + self._expiry_note(plain, plain_fixed),
             })
         if noproto:
+            shown = noproto[:SHOW_SOURCES]
             parts = [f"{self._kinds(e['kinds'])} von {e['key'][1]} über {e['key'][0]}, zuletzt {ago(now - e['at'])}"
-                     for e in noproto[:SHOW_SOURCES]]
+                     for e in shown]
+            # Je Proxy sagen, was er tatsächlich schickt (neuester Eintrag zählt).
+            what: dict[str, str] = {}
+            for e in shown:
+                proxy = e["key"][0]
+                if proxy in what:
+                    continue
+                if e.get("value"):
+                    what[proxy] = (f"{proxy} schickt X-Forwarded-Proto bzw. „Forwarded: proto=“ mit dem "
+                                   f"unbekannten Wert „{e['value']}“ (erwartet: http oder https)")
+                else:
+                    sent = ", ".join(e.get("sent") or ()) or "keine Proxy-Köpfe"
+                    what[proxy] = (f"{proxy} schickt {sent}, aber weder X-Forwarded-Proto noch "
+                                   "„Forwarded: proto=…“")
             remote = any(not e.get("loopback") for e in noproto)
-            hop_note = (" Läuft der Proxy auf einem anderen Gerät, ist die Strecke Proxy → ntp-gui ohnehin "
-                        "unverschlüsselt (Hinweis dazu erscheint, sobald der Kopf ankommt).") if remote else ""
+            if remote:
+                certainty = ("ob dein Browser mit dem Proxy HTTPS spricht, ist unbekannt. Sicher ist: Der "
+                             "Proxy läuft auf einem anderen Gerät, die Strecke Proxy → ntp-gui ist "
+                             "unverschlüsselt (siehe „Strecke Proxy → ntp-gui ist unverschlüsselt“).")
+            else:
+                certainty = ("ob dein Browser HTTPS benutzt, ist unbekannt – der Proxy läuft auf diesem "
+                             "Rechner, das ist also kein Hinweis auf Klartext, nur eine Lücke in der Prüfung.")
             out.append({
                 "level": "info", "key": "web_proxy_no_proto", "action": "settings",
                 "title": "Eingetragener Proxy meldet nicht, ob HTTPS benutzt wurde",
-                "text": f"{'; '.join(parts)}. Der Proxy steht in „Vertrauenswürdige Proxys“ und schickt "
-                        "X-Forwarded-For, aber weder X-Forwarded-Proto noch „Forwarded: proto=…“. Darum "
-                        "kann ntp-gui nicht erkennen, ob dein Browser HTTPS benutzt – das ist kein Hinweis "
-                        "auf Klartext, nur eine Lücke in der Prüfung. " + PROTO_HELP + hop_note + " "
-                        "Der Hinweis verschwindet 1 Stunde nach dem letzten Zugriff ohne Kopf, wenn danach "
-                        "nur noch Zugriffe mit Kopf kommen, sonst 24 Stunden danach.",
+                "text": f"{'; '.join(parts)}. Der Proxy steht in „Vertrauenswürdige Proxys“, aber "
+                        f"{'; '.join(what.values())}. Darum gilt: {certainty} " + PROTO_HELP + " "
+                        "Der Hinweis verschwindet 1 Stunde nach dem letzten Zugriff ohne Kopf, wenn derselbe "
+                        "Proxy danach nur noch Zugriffe mit Kopf schickt, sonst 24 Stunden danach.",
             })
         if hop:
             out.append({
                 "level": "info", "key": "web_proxy_hop_plain", "action": "settings",
                 "title": "Strecke Proxy → ntp-gui ist unverschlüsselt",
-                "text": "Dein Browser spricht HTTPS mit dem Reverse Proxy – der Proxy läuft aber auf einem "
-                        "anderen Gerät und reicht Passwort bzw. API-Schlüssel per einfachem HTTP an ntp-gui "
+                "text": ("Dein Browser spricht HTTPS mit dem Reverse Proxy – der Proxy läuft aber auf einem "
+                         "anderen Gerät und reicht" if hop_https else
+                         "Der eingetragene Reverse Proxy läuft auf einem anderen Gerät und reicht") +
+                        " Passwort bzw. API-Schlüssel per einfachem HTTP an ntp-gui "
                         "weiter. Auf dieser Strecke kann jedes Gerät dazwischen mitlesen. Am sichersten: den "
                         "Proxy auf demselben Rechner wie ntp-gui betreiben (Caddy-Vorlage in "
                         "docker-compose.all-in-one.yml) und WEB_BIND=127.0.0.1 setzen. Sonst die Strecke "

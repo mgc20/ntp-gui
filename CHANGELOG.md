@@ -27,6 +27,20 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
   HTTPS sprach. Dafür gibt es den eigenen Info-Hinweis „Eingetragener Proxy meldet nicht, ob HTTPS
   benutzt wurde“ mit Anleitung für Caddy, Nginx Proxy Manager, Traefik, Zoraxy, HAProxy und Apache.
   Speichern von TRUSTED_PROXIES setzt alle HTTPS-Hinweise weiter sofort zurück.
+- **HTTPS-Prüfung bei eingetragenem Proxy genauer:** Ein Proxy aus TRUSTED_PROXIES, der nur
+  X-Real-IP schickt, gilt nicht mehr fälschlich als „direkt per HTTP“ (mit dem Rat, nach einem
+  Lesezeichen zu suchen), sondern bekommt den Hinweis „meldet nicht, ob HTTPS benutzt wurde“ mit
+  Proxy-Anleitung; der Hinweis nennt jetzt, welche Köpfe der Proxy tatsächlich schickt, und einen
+  unbekannten Proto-Wert (z. B. „wss“) beim Namen. Kommt eine Anmeldung vom eingetragenen Proxy ganz
+  ohne Proxy-Köpfe, steht das dabei. X-Forwarded-For plus „Forwarded: proto=https“ (HAProxy) wird
+  erkannt.
+- **Proxy auf anderem Gerät ohne Proto-Kopf:** Die Strecke Proxy → ntp-gui ist dann sicher
+  unverschlüsselt – dafür erscheint jetzt auch „Strecke Proxy → ntp-gui ist unverschlüsselt“, und
+  der Satz „kein Hinweis auf Klartext“ steht nur noch, wenn der Proxy auf demselben Rechner läuft.
+- **Hinweis „ohne Proto-Kopf“ gilt je Proxy:** Er verschwindet nur dann schon nach 1 Stunde, wenn
+  derselbe Proxy danach den Kopf schickt – nicht, weil ein anderer Proxy oder vHost es tut.
+- **Apache-Anleitung sicher:** `RequestHeader set X-Forwarded-Proto "expr=%{REQUEST_SCHEME}"` nur im
+  HTTPS-vHost statt pauschal „https“, das eine echte Klartext-Warnung verschwinden ließ.
 - **Weniger Log-Rauschen:** Netzabbrüche einzelner Verbindungen („No route to host“, „Network is
   unreachable“, Zeitüberschreitung u. ä.) schreiben keinen Traceback mehr ins Log; andere Fehler
   weiterhin vollständig.

@@ -206,13 +206,23 @@ Traefik-Hosts.
      Umleitung auf HTTPS („Force SSL“) einschalten.
    - **„über …, das Proxy-Köpfe schickt, aber nicht in TRUSTED_PROXIES steht“** – Adresse eintragen.
 
-   Schickt ein **eingetragener** Proxy zwar `X-Forwarded-For`, aber weder `X-Forwarded-Proto` noch
-   `Forwarded: proto=…`, kann ntp-gui nicht erkennen, ob der Browser HTTPS benutzt. Dafür gibt es
-   den eigenen Hinweis „Eingetragener Proxy meldet nicht, ob HTTPS benutzt wurde“ (keine Warnung).
+   - **„direkt per HTTP (eingetragener Proxy, aber ohne jeden Proxy-Kopf)“** – die Anfrage kam vom
+     eingetragenen Proxy, aber ohne `X-Forwarded-For`/`-Proto`: Entweder reicht der Proxy die Köpfe
+     nicht weiter (Einstellung siehe unten), oder ein Programm auf dem Proxy-Gerät ruft
+     `http://<host>:8080` direkt auf.
+
+   Schickt ein **eingetragener** Proxy zwar `X-Forwarded-For` oder nur `X-Real-IP`, aber weder
+   `X-Forwarded-Proto` noch `Forwarded: proto=…` (oder einen unbekannten Wert), kann ntp-gui nicht
+   erkennen, ob der Browser HTTPS benutzt. Dafür gibt es den eigenen Hinweis „Eingetragener Proxy
+   meldet nicht, ob HTTPS benutzt wurde“; er nennt, welche Köpfe der Proxy tatsächlich schickt.
+   Läuft der Proxy auf einem anderen Gerät, erscheint zusätzlich „Strecke Proxy → ntp-gui ist
+   unverschlüsselt“ – diese Strecke ist dann in jedem Fall HTTP.
    Caddy, NPM, Zoraxy und Traefik setzen den Kopf von selbst; fehlt er, entfernt ihn meist eine
    eigene Regel. Nginx/NPM („Advanced“): `proxy_set_header X-Forwarded-Proto $scheme;`, HAProxy:
-   `http-request set-header X-Forwarded-Proto https if { ssl_fc }`, Apache:
-   `RequestHeader set X-Forwarded-Proto https`.
+   `http-request set-header X-Forwarded-Proto https if { ssl_fc }`, Apache: nur im
+   `<VirtualHost *:443>` `RequestHeader set X-Forwarded-Proto "expr=%{REQUEST_SCHEME}"` – nie
+   pauschal `https`, sonst gilt auch ein HTTP-Zugriff als geschützt und die Warnung verschwindet
+   zu Unrecht.
 
    Die Adressen stehen nur in der angemeldeten Übersicht – Hinweise gehen weder in
    Benachrichtigungen noch ins Diagnosepaket.
