@@ -13,6 +13,10 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
   `image: ghcr.io/mgc20/ntp-gui:latest` ersetzen – unter dem alten Namen kommen keine neuen
   Versionen mehr. Der Update-Hinweis von 1.5.0 und älter fragt noch das alte Repository und
   meldet deshalb nichts mehr; ab 1.5.1 fragt er das neue.
+- **„latest“ zeigte im neuen Repository auf 1.2.0:** Beim Umzug wurden alle alten Versions-Tags
+  neu hochgeladen; der CI-Workflow baute daraufhin jede alte Version und setzte jedes Mal
+  „latest“ – gewonnen hat, wer zuletzt fertig war. CI veröffentlicht jetzt nie mehr, nur der
+  Release-Workflow setzt „latest“ (geprüft, auf denselben Digest wie die Version).
 
 ### Behoben
 - **HTTPS-Hinweis nennt Ursache und Absender:** „Dashboard über unverschlüsseltes HTTP mit Anmeldung“

@@ -3,7 +3,9 @@ name: CI
 on:
   push:
     branches: ["**"]
-    tags: ["v*"]
+    # Keine Tags: Veröffentlicht wird nur über release.yml. Ein Tag-Push (z. B. beim Umzug in ein
+    # neues Repository mit allen alten Tags) baute sonst jede alte Version und setzte „latest“ –
+    # wer zuletzt fertig wurde, gewann.
   pull_request:
   workflow_dispatch:
 
@@ -30,20 +32,10 @@ jobs:
     needs: test
     permissions:
       contents: read
-      packages: write
+      packages: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      # QEMU wird für den linux/arm64-Anteil der Release-Builds gebraucht.
-      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
-
-      - name: In die GitHub Container Registry einloggen
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Metadaten
         id: meta
@@ -53,26 +45,22 @@ jobs:
           tags: |
             type=ref,event=branch
             type=ref,event=pr
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
             type=sha
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
 
-      # Ohne Tag wird das Image nur gebaut (Smoke-Test), nicht veröffentlicht.
-      - name: Bauen und ggf. veröffentlichen
+      # Nur bauen und testen (Smoke-Test) – nie veröffentlichen.
+      - name: Bauen
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
-          platforms: ${{ startsWith(github.ref, 'refs/tags/v') && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
-          push: ${{ startsWith(github.ref, 'refs/tags/v') }}
-          load: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+          platforms: linux/amd64
+          push: false
+          load: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
       - name: Integrationstest gegen das Image
-        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
         run: |
           set -euo pipefail
           # chrony auf dem Runner erlaubt eine echte NTP-Abfrage gegen den Container.
