@@ -380,6 +380,7 @@ def collector() -> None:
             STATE_WATCH.sample(sample)
             client_alarms()
             clients3.tick(settings.values(), events.emit)  # Regeln je Gerät, Inventar, Stundenwerte; wirft nie
+            gpsquality.note_offset(settings.values())  # Offset-Änderung merken (Schranke, Kalibrierung)
             autocal.maybe_tick()   # höchstens einmal pro Stunde, wirft nie
             gpsquality.maybe_tick(settings.values)  # Fehlerschranke GPS ohne PPS, stündlich, wirft nie
         except Exception as exc:  # ein Messfehler darf den Thread nie beenden
@@ -1487,8 +1488,13 @@ class Handler(BaseHTTPRequestHandler):
             # Ohne window die letzten 24 h: über 30 Tage SQLite-Verlauf dauert es sonst Sekunden.
             window = env_like(query.get("window", query.get("seconds")), CALIBRATION_DEFAULT_WINDOW)
             since = time.time() - window if window > 0 else None
+            # Nur Messpunkte seit der letzten Offset-Änderung: davor lief ein anderer Offset.
+            not_before = gpsquality.offset_not_before(cfg)
+            if not_before is not None and (since is None or not_before > since):
+                since = not_before
             result = historymod.calibrate(HISTORY.snapshot(since), cfg["gps_refid"],
                                           float(cfg["gps_offset"]), float(cfg["gps_delay"]))
+            result["since_offset_change"] = not_before
             # Im Modus „gemessen“ gilt nicht gps_delay, sondern die gemessene Schranke.
             self._send_json(gpsquality.annotate_calibration(result, cfg))
         elif path == "/api/gps/autocal":

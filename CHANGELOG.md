@@ -4,6 +4,36 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), die Versionen folgen
 [Semantic Versioning](https://semver.org/lang/de/).
 
+## [Unveröffentlicht]
+
+### Behoben
+- **Kein GNSS-Fehlalarm mehr nach einer Offset-Änderung:** Liegt das GPS gleichbleibend neben dem
+  Netz (z. B. nach „Offset zurücksetzen“ dauerhaft rund +51 ms) und hält chrony es deshalb für einen
+  Falseticker, ist das ein Kalibrierfehler, keine Störung. Das Signal „Falseticker“ wird nur noch
+  stark („Störung“, Benachrichtigung, automatische Sperre), wenn der Zeitabgleich gegen den
+  gelernten Abstand gleichzeitig eine neue Abweichung sieht (mindestens die halbe Schwelle, Median
+  der letzten 2 Minuten) oder das GPS mehr als 1 s danebenliegt. Sonst bleibt es beim „Hinweis“ mit
+  dem Rat „Offset kalibrieren“ – auch während der Abstand nach einer Änderung neu gelernt wird.
+  Zeitsprung- und Positionserkennung bleiben unverändert.
+- **Fehlerschranke ohne PPS misst nach einer Offset-Änderung nur noch neue Werte:** Ändert sich
+  `gps_offset` (von Hand, Zurücksetzen oder automatische Kalibrierung), zählen für die Schranke nur
+  Messpunkte ab der Änderung (plus 15 Minuten für den Neustart von chronyd). Kleiner werden darf sie
+  dann schon nach 2 Stunden Messung statt erst nach 12 Stunden. Bisher wuchs die Schranke stündlich
+  (± 10 → 80 ms), weil sie den alten Versatz mitmaß.
+- **Kalibrier-Assistent mischt keine Werte vor und nach einer Offset-Änderung mehr** – der Vorschlag
+  beruht nur auf Messungen zum eingestellten Offset.
+
+### Geändert
+- **Automatische Kalibrierung ohne PPS deutlich schneller:** Ist das GPS die Rückfallebene
+  (Fehlerschranke „gemessen“, Rolle nicht „bevorzugen“) und liegt es deutlich daneben (≥ 10 ms und
+  ≥ 3 × Schwelle, gemessen über ≥ 6 h, ≥ 2 genutzte NTS-Quellen), korrigiert sie den ganzen Versatz
+  in einem Schritt statt 5 ms je 24 h. Mit PPS bleibt es bei kleinen Schritten.
+- **GPS-Seite sagt, was die automatische Kalibrierung als Nächstes tut**, und bietet nach einer
+  Offset-Änderung von Hand „Vorschlag übernehmen“ direkt im Hinweis an.
+- **Klarere Ereignistitel bei unstetem Empfang:** „GPS-Fix seit 10 min weg (vorher 50 Fix-Wechsel in
+  2 h 31 min)“ und „GPS-Empfang wieder stetig – seit 1 h kein Fix-Wechsel (vorher …)“. Die Felder im
+  Ereignis bleiben, neu ist `outcome` („ruhig“ oder „fix_weg“).
+
 ## [1.5.0] – 2026-11-02
 
 Schwerpunkt: GPS ohne PPS als ehrliche Rückfallebene, Schleifen durch DNS-Umschreibung und

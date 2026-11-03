@@ -157,7 +157,18 @@ function autocalChanges(ctx, auto) {
     })));
 }
 
-function autocalSection(ctx) {
+// Offset von Hand geändert (z. B. „zurücksetzen“), während die automatische Kalibrierung läuft:
+// sagen, was sie als Nächstes tut, und den Kalibrier-Vorschlag mit einem Klick anbieten.
+function autocalPlan(auto, applyOffer) {
+  if (!auto.plan) return null;
+  const manual = auto.manual_change;
+  if (!manual) return el("p", { text: auto.plan });
+  const parts = [el("p", { text: auto.plan })];
+  if (applyOffer) parts.push(el("div", { class: "cal-apply" }, applyOffer()));
+  return el("div", { class: "callout" }, parts);
+}
+
+function autocalSection(ctx, applyOffer = null) {
   const auto = ctx.data("autocal", "/api/gps/autocal", 60);
   const head = el("h3", { class: "mini-head" }, "Automatische Kalibrierung ", info("autocal_mode", "Automatische Kalibrierung"));
   if (!auto) return el("div", { class: "autocal" }, head, emptyNote("Wird geladen …"));
@@ -181,6 +192,8 @@ function autocalSection(ctx) {
       auto.mode === "auto" ? ["Nächste mögliche Änderung", fmtWhen(auto.next_change_at), "autocal_next"] : null,
       auto.mode === "auto" ? ["Größter Schritt", fmtMs(auto.max_step_ms), "autocal_step"] : null,
     ]));
+    const plan = autocalPlan(auto, applyOffer);
+    if (plan) parts.push(plan);
     if (decision.action === "suggest" && isNum(decision.new_offset)) {
       parts.push(emptyNote(`Vorschlag: Offset ${decision.new_offset} s, Delay ${decision.new_delay} s – übernimm ihn oben mit „Vorschlag übernehmen“, wenn der Messzeitraum passt.`));
     }
@@ -195,6 +208,7 @@ function calibrationCard(ctx, gpsSource) {
   const windowSeconds = ctx.uiState.calWindow ?? 0;
   const cal = ctx.data("calibration", `/api/gps/calibration?window=${windowSeconds}`, 15);
   const body = [];
+  let applyOffer = null;   // „Vorschlag übernehmen“ auch im Hinweis der automatischen Kalibrierung
 
   body.push(el("p", {}, rich("Ein USB-Empfänger meldet die Zeit mit einer festen **Verspätung** (NMEA-Zeile + serielle Übertragung + USB-Puffer, typisch 20–150 ms). Der Assistent vergleicht das GPS laufend mit den genutzten Netzwerkquellen und schlägt den passenden Korrekturwert vor."), " ", info("gps_offset", "Warum ein Offset?")));
   body.push(el("div", { class: "toolbar" }, el("span", { class: "toolbar-label", text: "Messzeitraum" }),
@@ -212,6 +226,9 @@ function calibrationCard(ctx, gpsSource) {
   body.push(el("div", { class: "cal-status", "data-tone": tone },
     badge({ ready: "Vorschlag bereit", calibrated: "bereits kalibriert", preliminary: "vorläufig", insufficient: "zu wenig Daten" }[cal.status] || cal.status, tone),
     el("span", { text: cal.message })));
+  if (isNum(cal.since_offset_change)) {
+    body.push(emptyNote(`Gemessen wird nur seit der letzten Offset-Änderung (ab ${fmtWhen(cal.since_offset_change)}) – ältere Werte passen nicht mehr zum eingestellten Offset.`));
+  }
 
   if (isNum(cal.bias)) {
     // Modus „gemessen“ (ohne PPS): chrony nutzt die gemessene Schranke bzw. den Standard, nicht
@@ -238,22 +255,31 @@ function calibrationCard(ctx, gpsSource) {
     const role = el("select", { id: "cal-role", "aria-label": "Rolle des GPS" },
       [["auto", "automatisch – chrony entscheidet"], ["prefer", "bevorzugen – GPS ist erste Wahl"]].map(([value, label]) =>
         el("option", { value, selected: (cfg.gps_select || "auto") === value ? true : null, text: label })));
-    const apply = el("button", { type: "button", class: "button primary", text: "Vorschlag übernehmen",
-      disabled: ctx.readonly || cal.status === "insufficient" ? true : null });
-    apply.addEventListener("click", async () => {
-      apply.disabled = true;
-      try {
-        const changes = { gps_offset: cal.suggested_offset, gps_select: role.value };
-        if (!delayManaged) changes.gps_delay = cal.suggested_delay;
-        const result = await apiPost("/api/settings", { changes });
-        toast(result.reload_triggered ? "Übernommen – Zeitdienste starten neu" : (result.reload_note || "Gespeichert"));
-        ctx.watchReload();
-        ctx.invalidate("calibration");
-      } catch (error) {
-        toast(error.message, "crit");
-        apply.disabled = false;
-      }
-    });
+    const applyButton = (label) => {
+      const button = el("button", { type: "button", class: "button primary", text: label,
+        disabled: ctx.readonly || cal.status === "insufficient" ? true : null,
+        title: `Offset ${cal.suggested_offset} s übernehmen` });
+      button.addEventListener("click", async () => {
+        button.disabled = true;
+        try {
+          const changes = { gps_offset: cal.suggested_offset, gps_select: role.value };
+          if (!delayManaged) changes.gps_delay = cal.suggested_delay;
+          const result = await apiPost("/api/settings", { changes });
+          toast(result.reload_triggered ? "Übernommen – Zeitdienste starten neu" : (result.reload_note || "Gespeichert"));
+          ctx.watchReload();
+          ctx.invalidate("calibration");
+          ctx.invalidate("autocal");
+        } catch (error) {
+          toast(error.message, "crit");
+          button.disabled = false;
+        }
+      });
+      return button;
+    };
+    const apply = applyButton("Vorschlag übernehmen");
+    if (cal.status === "ready" && offsetChanged) {
+      applyOffer = () => applyButton(`Vorschlag übernehmen (Offset ${cal.suggested_offset} s)`);
+    }
     body.push(el("div", { class: "cal-apply" },
       el("label", { class: "inline-field" }, el("span", {}, "Rolle ", info("gps_role", "Rolle")), role), apply));
     if (delayManaged) {
@@ -285,7 +311,7 @@ function calibrationCard(ctx, gpsSource) {
       + `${delayNow} s nimmt chrony an, die GPS-Zeit könne bis zu ${fmtSeconds(delayNow / 2)} daneben liegen – die Netzwerkquellen sind viel genauer. `
       + "Der vorgeschlagene kleinere Delay macht das GPS konkurrenzfähig.")));
   }
-  body.push(autocalSection(ctx));
+  body.push(autocalSection(ctx, applyOffer));
   return card("GPS kalibrieren", { help: "gps_offset", id: "kalibrierung" }, body);
 }
 

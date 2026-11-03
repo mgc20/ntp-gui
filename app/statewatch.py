@@ -259,14 +259,17 @@ class StateWatcher:
             duration = max(0.0, (self._last_flap - self._unstet_since) if self._unstet_since is not None else 0.0)
             count = self._unstet_changes
             has_fix = bool(self._fix_fast.state)  # bestätigter Zustand, kein einzelner Messpunkt
-            info = dict(data, state="stetig", changes=count, duration_s=round(duration), fix=has_fix)
+            # data.state bleibt „stetig“ (Feld wie bisher: die Episode „unstet“ ist vorbei);
+            # outcome sagt, wie sie endete – ruhig mit Fix oder mit dauerhaft weggebliebenem Fix.
+            quiet = _fmt_span(now - self._last_flap) if self._last_flap is not None else "längerem"
+            info = dict(data, state="stetig", changes=count, duration_s=round(duration), fix=has_fix,
+                        outcome="ruhig" if has_fix else "fix_weg", quiet_s=round(now - (self._last_flap or now)))
             span = _fmt_span(duration)
             if has_fix:
-                self._send("gps", "info", f"GPS-Empfang wieder stetig – {count} Fix-Wechsel in {span}", info)
+                self._send("gps", "info", f"GPS-Empfang wieder stetig – seit {quiet} kein Fix-Wechsel "
+                                          f"(vorher {count} Fix-Wechsel in {span})", info)
             else:
-                quiet = _fmt_span(now - self._last_flap) if self._last_flap is not None else "längerem"
-                self._send("gps", "warn", f"GPS-Fix verloren – nach {count} Fix-Wechseln in {span} "
-                                          f"seit {quiet} ohne Fix", info)
+                self._send("gps", "warn", f"GPS-Fix seit {quiet} weg (vorher {count} Fix-Wechsel in {span})", info)
             self._unstet = False
             self._unstet_since = self._unstet_since_wall = None
             self._unstet_changes = 0

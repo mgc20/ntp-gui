@@ -51,7 +51,8 @@ export const HELP_AUTOCAL = {
     title: "Nächste mögliche Änderung",
     text: "Frühester Zeitpunkt für die nächste automatische Änderung: mindestens 24 h nach der letzten "
       + "Änderung oder Rücknahme und erst, wenn seit dem Neustart der Messung die Mindest-Messdauer "
-      + "vergangen ist. Ob dann wirklich geändert wird, entscheidet die Messung.",
+      + "vergangen ist. Ob dann wirklich geändert wird, entscheidet die Messung. Ohne PPS (GPS als "
+      + "Rückfallebene) entfällt die 24-h-Pause für einen deutlichen Versatz – siehe „Größter Schritt“.",
   },
   autocal_step: {
     title: "Größter Schritt",
@@ -59,7 +60,12 @@ export const HELP_AUTOCAL = {
       + "Kalibrierschritt“). Größere Abweichungen werden in mehreren Schritten über mehrere Tage abgebaut. "
       + "Liegt eine Messung einmal daneben, richtet ein kleiner Schritt wenig Schaden an. Den kleineren "
       + "Delay-Vorschlag übernimmt die Automatik erst mit dem letzten Schritt – vorher würde ein kleiner "
-      + "Delay chrony zu einem noch falschen GPS locken.",
+      + "Delay chrony zu einem noch falschen GPS locken. **Ausnahme ohne PPS:** Ist das GPS die "
+      + "Rückfallebene (Fehlerschranke „gemessen“, Rolle nicht „bevorzugen“) und liegt es deutlich daneben "
+      + "(mindestens 10 ms und dreimal die Schwelle), gemessen über mindestens 6 h gegen mindestens zwei "
+      + "NTS-Quellen, korrigiert die Automatik den ganzen Versatz in einem Schritt. Solange die Netzquellen "
+      + "besser sind, stellt chrony die Uhr ohnehin nicht nach dem GPS – mit 5 ms je Tag bräuchte ein Versatz "
+      + "von 50 ms (etwa nach „Offset zurücksetzen“) sonst zehn Tage. Mit PPS bleibt es bei kleinen Schritten.",
   },
   autocal_changes: {
     title: "Letzte automatische Änderungen",

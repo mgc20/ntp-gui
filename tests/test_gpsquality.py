@@ -624,7 +624,8 @@ class FlapReplayTest(unittest.TestCase):
         events, watch = self.run_replay(3, calm_samples=700)  # 70 min ruhig
         last = events[-1]
         self.assertEqual(last[1], "info")
-        self.assertRegex(last[2], r"^GPS-Empfang wieder stetig – \d+ Fix-Wechsel in \d+ h")
+        self.assertRegex(last[2], r"^GPS-Empfang wieder stetig – seit 1 h kein Fix-Wechsel \(vorher \d+ Fix-Wechsel in \d+ h")
+        self.assertEqual(last[3]["outcome"], "ruhig")
         self.assertEqual(last[3]["state"], "stetig")
         self.assertEqual(watch.gps_stability()["state"], "stetig")
         self.assertEqual(sum(1 for e in events if "unstet" in e[2]), 1)
@@ -643,10 +644,11 @@ class FlapReplayTest(unittest.TestCase):
             now[0] += 10
         gps_events = [e for e in events if e[0] == "gps"]
         self.assertEqual(gps_events[-1][1], "warn")
-        self.assertRegex(gps_events[-1][2], r"^GPS-Fix verloren – nach \d+ Fix-Wechseln .* seit 10 min ohne Fix$")
+        self.assertRegex(gps_events[-1][2], r"^GPS-Fix seit 10 min weg \(vorher \d+ Fix-Wechsel in .+\)$")
+        self.assertEqual(gps_events[-1][3]["outcome"], "fix_weg")
         self.assertFalse(gps_events[-1][3]["fix"])
         self.assertLessEqual(gps_events[-1][4] - lost_at, statewatch.GPS_UNSTET_LOST + 60)
-        self.assertEqual(sum(1 for e in gps_events if "verloren" in e[2]), 1)  # kein zweites Ereignis
+        self.assertEqual(sum(1 for e in gps_events if " weg " in e[2] or "verloren" in e[2]), 1)  # kein zweites
         self.assertEqual(watch.gps_stability()["state"], "stetig")
         # Fix kommt zurück → normales Ereignis (Haltezeit 60 s).
         for _ in range(10):
@@ -824,3 +826,77 @@ class ApiTest(StoreCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# =========================================================================================
+# 1.5.1: Offset-Änderung – die Schranke misst nur noch Werte zum laufenden Offset
+# =========================================================================================
+def biased_samples(start, hours, bias, step=10.0):
+    """GPS mit festem Versatz bias ± 3 ms um eine NTS-Quelle (wie outdoor_samples)."""
+    out = []
+    for i in range(int(hours * H / step)):
+        wobble = ((i * 7919) % 13 - 6) / 2000.0
+        out.append({"t": start + i * step, "gps": {"mode": 3, "used": 9, "seen": 12, "cn4": 44.0},
+                    "sources": {"GPS": {"o": bias + wobble, "s": "-", "k": "#"},
+                                "ptb": {"o": 0.0, "s": "*", "k": "^"}}})
+    return out
+
+
+class OffsetChangeTest(StoreCase):
+    def setUp(self):
+        super().setUp()
+        gpsquality._OFFSET.update({"for": None, "value": None, "since": None})
+
+    def test_note_offset_remembers_change(self):
+        self.assertIsNone(gpsquality.note_offset(cfg(gps_enable=False), T0))
+        self.assertFalse(os.path.exists(store.path()))
+        self.assertIsNone(gpsquality.note_offset(cfg(gps_offset=0.0526), T0))   # erster Aufruf: unbekannt
+        self.assertIsNone(gpsquality.note_offset(cfg(gps_offset=0.0526), T0 + 60))
+        self.assertEqual(gpsquality.note_offset(cfg(gps_offset=0.0), T0 + 120), T0 + 120)
+        self.assertEqual(gpsquality.offset_not_before(cfg(gps_offset=0.0), T0 + 200),
+                         T0 + 120 + gpsquality.OFFSET_SETTLE)
+        # Nach einem Neustart von ntp-gui aus SQLite.
+        gpsquality._OFFSET.update({"for": None, "value": None, "since": None})
+        self.assertEqual(gpsquality.note_offset(cfg(gps_offset=0.0), T0 + 300), T0 + 120)
+
+    def test_bound_measures_only_after_offset_change(self):
+        # Nutzerfall: 6 h kalibriert (Versatz 0), dann Offset zurückgesetzt → GPS +51 ms neben dem Netz.
+        gpsquality.note_offset(cfg(gps_offset=0.0526), T0)
+        before = biased_samples(T0, 6.0, 0.0)
+        change = T0 + 6 * H
+        gpsquality.note_offset(cfg(gps_offset=0.0), change)
+        after = biased_samples(change, 3.0, 0.051)
+        decision = gpsquality.tick(cfg(gps_offset=0.0), change + 3 * H, before + after)
+        measured = gpsquality.load_state()["measured"]
+        self.assertEqual(measured["status"], "measured")
+        self.assertEqual(measured["not_before"], change + gpsquality.OFFSET_SETTLE)
+        self.assertAlmostEqual(measured["median"], 0.051, delta=0.002)   # nur der neue Versatz
+        self.assertLess(measured["duration_seconds"], 3 * H)
+        self.assertTrue(decision["apply"])                                # ehrlich: ± 54 ms statt ± 100
+        self.assertGreater(gpsquality.read_applied()["delay"], 0.1)
+
+    def test_shrink_after_offset_fixed_without_12h_wait(self):
+        # Schranke wuchs wegen des Versatzes; dann korrigiert der Offset den Versatz.
+        gpsquality.note_offset(cfg(gps_offset=0.0), T0)
+        gpsquality.save_state(dict(gpsquality.load_state(),
+                                   applied={"delay": 0.16, "precision": 0.003, "t": T0 + 6 * H}))
+        fix = T0 + 7 * H
+        gpsquality.note_offset(cfg(gps_offset=0.051), fix)
+        old = biased_samples(T0, 7.0, 0.051)
+        new = biased_samples(fix, 2.5, 0.0)
+        # 1 h nach der Korrektur: zu wenig Messung danach → noch nicht kleiner.
+        early = gpsquality.tick(cfg(gps_offset=0.051), fix + 1 * H, old + [x for x in new if x["t"] <= fix + H])
+        self.assertFalse(early["apply"], early)
+        # 2,5 h nach der Korrektur (≥ 2 h Messung danach), nur 3,5 h nach der letzten Anpassung.
+        decision = gpsquality.tick(cfg(gps_offset=0.051), fix + 2.5 * H, old + new)
+        self.assertTrue(decision["apply"], decision)
+        self.assertIn("Offset", decision["reason"])
+        self.assertLessEqual(gpsquality.read_applied()["delay"], 0.03)
+
+    def test_without_offset_change_12h_rule_stays(self):
+        gpsquality.note_offset(cfg(gps_offset=0.0), T0)
+        gpsquality.save_state(dict(gpsquality.load_state(),
+                                   applied={"delay": 0.16, "precision": 0.003, "t": T0 + 4 * H}))
+        decision = gpsquality.tick(cfg(gps_offset=0.0), T0 + 7 * H, biased_samples(T0, 7.0, 0.0))
+        self.assertFalse(decision["apply"], decision)
+        self.assertIn("12 Stunden", decision["reason"])

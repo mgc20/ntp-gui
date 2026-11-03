@@ -775,3 +775,107 @@ class HelpKeysTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---------------------------------------------------------------------------
+# 1.5.1: Ohne PPS einen deutlichen Versatz in einem Schritt korrigieren
+# ---------------------------------------------------------------------------
+def nopps(**over):
+    """GPS ohne PPS als Rückfallebene mit gemessener Fehlerschranke (Nutzerfall Pi 4 + VK-162)."""
+    return cfg(gps_bound_mode="measured", gps_pps_device="", gps_pps_shm=False, gps_select="auto",
+               gps_offset=0.0, **over)
+
+
+def big(**over):
+    base = dict(bias=0.051, spread=0.004, current_offset=0.0,
+                reference=ref(window_median=5, current_network=5, current_nts=5))
+    base.update(over)
+    return cal(**base)
+
+
+class FastConvergenceTest(unittest.TestCase):
+    def test_full_correction_without_pps(self):
+        recent = {"t": NOW - 2 * H, "kind": "auto", "old_offset": -0.005, "new_offset": 0.0}
+        d = autocal.decide(nopps(), big(), recent, NOW)   # keine 24-h-Pause
+        self.assertEqual(d["action"], "apply")
+        self.assertTrue(d["fast"])
+        self.assertEqual(d["new_offset"], 0.051)
+        self.assertTrue(d["final_step"])
+        self.assertIn("in einem Schritt", d["reason"])
+
+    def test_conservative_with_pps_or_prefer_or_manual_bound(self):
+        for over in ({"gps_pps_shm": True}, {"gps_select": "prefer"}, {"gps_bound_mode": "manual"}):
+            with self.subTest(**over):
+                c = nopps()
+                c.update(over)
+                d = autocal.decide(c, big(), None, NOW)
+                self.assertEqual(d["action"], "apply")
+                self.assertFalse(d.get("fast"))
+                self.assertEqual(d["new_offset"], 0.005)
+
+    def test_needs_nts_duration_and_clear_bias(self):
+        cases = {
+            "eine NTS-Quelle": big(reference=ref(window_median=5, current_network=5, current_nts=1)),
+            "kurz gemessen": big(duration_seconds=5 * H),
+            "kleiner Versatz": big(bias=0.008),
+        }
+        for label, calibration in cases.items():
+            with self.subTest(label):
+                d = autocal.decide(nopps(gps_autocal_min_hours=4), calibration, None, NOW)
+                self.assertFalse(d.get("fast"), d)
+                self.assertLessEqual(abs(d["new_offset"] or 0.0), 0.0081)
+
+    def test_reversal_stays_careful(self):
+        last = {"t": NOW - 30 * H, "kind": "auto", "old_offset": 0.06, "new_offset": 0.0}
+        d = autocal.decide(nopps(), big(), last, NOW)
+        self.assertFalse(d.get("fast"))
+
+    def test_suggest_mode_unchanged(self):
+        d = autocal.decide(nopps(gps_autocal="suggest"), big(), None, NOW)
+        self.assertEqual(d["action"], "suggest")
+        self.assertEqual(d["new_offset"], 0.051)
+
+
+class OffsetResetTimelineTest(unittest.TestCase):
+    """Nutzerfall: Offset 0,0526 → von Hand 0. Früher 0 → 0,005 nach 7 h, Rest über ~10 Tage.
+    Jetzt: nach 6 h Messung die ganze Korrektur, und die GPS-Seite sagt vorher, was kommt."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.file = os.path.join(self.tmp, "autocal.json")
+        self.h = Harness(sources=[{"name": "GPS", "mode": "#", "state": "x"}] + [
+            {"name": f"nts{i}", "mode": "^", "state": "*" if i == 0 else "+", "authenticated": True}
+            for i in range(5)])
+        self.h.cfg.update(gps_bound_mode="measured", gps_offset=0.0526, gps_select="auto")
+        self.h.running_offset = 0.0526
+        self.h.target = 0.0526
+        env = mock.patch.dict(os.environ, {"WEB_READONLY": ""})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def tick(self, now):
+        return autocal.tick(self.h.cfg, now, deps=self.h.deps(), file=self.file)
+
+    def test_reset_then_fast_correction(self):
+        self.tick(NOW)
+        self.h.cfg["gps_offset"] = 0.0            # „Auf Standard zurücksetzen“
+        self.h.running_offset = 0.0
+        self.tick(NOW + H)
+        status = autocal.api_status(self.h.cfg, NOW + 2 * H, fresh=False, deps=self.h.deps(), file=self.file)
+        self.assertTrue(status["fast_allowed"])
+        self.assertEqual(status["manual_change"]["offset"], 0.0)
+        self.assertIn("von Hand", status["plan"])
+        self.assertIn("in einem Schritt", status["plan"])
+        self.assertIn("Vorschlag übernehmen", status["plan"])
+        self.assertEqual(status["next_change_at"], NOW + H + autocal.SETTLE_SECONDS + 6 * H)
+        d = self.tick(NOW + 5 * H)
+        self.assertEqual(d["action"], "none")
+        d = self.tick(NOW + H + autocal.SETTLE_SECONDS + 6 * H + 60)
+        self.assertEqual(d["action"], "apply", d)
+        self.assertTrue(d["fast"])
+        self.assertEqual(self.h.cfg["gps_offset"], 0.0526)
+        status = autocal.api_status(self.h.cfg, NOW + 9 * H, fresh=False, deps=self.h.deps(), file=self.file)
+        self.assertIsNone(status["manual_change"])   # jetzt von autocal gesetzt
