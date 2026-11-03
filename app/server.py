@@ -29,6 +29,7 @@ Schutz der schreibenden Routen:
 from __future__ import annotations
 
 import base64
+import errno
 import hashlib
 import hmac
 import html
@@ -1875,14 +1876,29 @@ def env_like(raw, default: float) -> float:
         return default
 
 
+# Netzfehler einer einzelnen Verbindung: Gegenstelle weg, Route weg (WLAN-Gerät schläft), Zeitüberschreitung.
+QUIET_ERRNOS = frozenset(getattr(errno, name) for name in (
+    "ECONNRESET", "EPIPE", "ECONNABORTED", "ETIMEDOUT", "EHOSTUNREACH", "ENETUNREACH", "ENETDOWN", "EHOSTDOWN")
+    if hasattr(errno, name))
+
+
+def quiet_network_error(exc: BaseException | None) -> bool:
+    """Abbruch durch das Netz (kein Programmfehler)? Dann kein Traceback ins Log."""
+    if isinstance(exc, (ConnectionResetError, BrokenPipeError, ConnectionAbortedError, TimeoutError,
+                        socket.timeout)):
+        return True
+    return isinstance(exc, OSError) and exc.errno in QUIET_ERRNOS
+
+
 class QuietHTTPServer(ThreadingHTTPServer):
     """Browser, die eine Verbindung mittendrin abbrechen (Tab zu, Reload, Handy im Standby),
     sind Alltag und kein Fehler. Ohne das hier schreibt socketserver für jeden Abbruch einen
-    vollständigen Traceback ins Log – mehrere Threads gleichzeitig und ineinander verschränkt."""
+    vollständigen Traceback ins Log – mehrere Threads gleichzeitig und ineinander verschränkt.
+    Dazu zählen auch „No route to host“ und Co.: ein Gerät, das mitten in der Antwort das WLAN
+    verlässt. Alles andere wird weiter vollständig protokolliert."""
 
     def handle_error(self, request, client_address):
-        exc = sys.exc_info()[1]
-        if isinstance(exc, (ConnectionResetError, BrokenPipeError, ConnectionAbortedError, TimeoutError)):
+        if quiet_network_error(sys.exc_info()[1]):
             return
         super().handle_error(request, client_address)
 

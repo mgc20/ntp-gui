@@ -7,6 +7,21 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 ## [Unveröffentlicht]
 
 ### Behoben
+- **HTTPS-Hinweis nennt Ursache und Absender:** „Dashboard über unverschlüsseltes HTTP mit Anmeldung“
+  sagt jetzt, wer ungeschützt kam und warum – Adresse, Passwort/API-Schlüssel und „zuletzt vor 3 h“,
+  je Absender (bis zu drei, neueste zuerst): „direkt per HTTP“ (Lesezeichen auf http://…:8080,
+  Home-Assistant-Integration, Homepage-/Uptime-Kuma-Widget, Skript), „über den eingetragenen Proxy,
+  aber der Browser sprach mit ihm nur HTTP“ oder „über eine Gegenstelle mit Proxy-Köpfen, die nicht
+  in TRUSTED_PROXIES steht“. Der Text sagt auch, wann er verschwindet (1 Stunde nach dem letzten
+  ungeschützten Zugriff, wenn danach nur geschützte kommen, sonst nach 24 Stunden).
+- **Eingetragener Proxy ohne X-Forwarded-Proto ist kein Klartext-Alarm mehr:** Schickt ein Proxy aus
+  TRUSTED_PROXIES nur X-Forwarded-For (bzw. „Forwarded“ ohne proto=), ist unbekannt, ob der Browser
+  HTTPS sprach. Dafür gibt es den eigenen Info-Hinweis „Eingetragener Proxy meldet nicht, ob HTTPS
+  benutzt wurde“ mit Anleitung für Caddy, Nginx Proxy Manager, Traefik, Zoraxy, HAProxy und Apache.
+  Speichern von TRUSTED_PROXIES setzt alle HTTPS-Hinweise weiter sofort zurück.
+- **Weniger Log-Rauschen:** Netzabbrüche einzelner Verbindungen („No route to host“, „Network is
+  unreachable“, Zeitüberschreitung u. ä.) schreiben keinen Traceback mehr ins Log; andere Fehler
+  weiterhin vollständig.
 - **Kein GNSS-Fehlalarm mehr nach einer Offset-Änderung:** Liegt das GPS seit dem Start bzw. seit einer
   Änderung der GPS-Einstellungen gleichbleibend neben dem Netz (z. B. nach „Offset zurücksetzen“
   dauerhaft rund +51 ms) und hält chrony es deshalb für einen Falseticker, ist das vermutlich ein

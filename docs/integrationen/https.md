@@ -197,6 +197,25 @@ Traefik-Hosts.
    änderst, und „Reverse Proxy erkannt, aber nicht eingetragen“ auch mit der ersten Anfrage über
    den eingetragenen Proxy. „Dashboard über unverschlüsseltes HTTP“ bleibt nach einem letzten
    HTTP-Zugriff noch eine Stunde stehen, wenn danach nur noch HTTPS kam – sonst 24 Stunden.
+5. **Hinweis bleibt trotz Proxy?** „Dashboard über unverschlüsseltes HTTP“ nennt seit 1.5.1, *wer*
+   ungeschützt kam und *warum* – mit Adresse, Art (Passwort/API-Schlüssel) und „zuletzt vor …“:
+   - **„direkt per HTTP“** – dieses Gerät ruft `http://<host>:8080` selbst auf: ein altes
+     Lesezeichen, die Home-Assistant-Integration, ein Homepage- oder Uptime-Kuma-Widget, ein Skript.
+     Auf die HTTPS-Adresse umstellen (oder `WEB_BIND=127.0.0.1`, wenn der Proxy auf demselben Host läuft).
+   - **„über den eingetragenen Proxy …, aber der Browser sprach mit ihm nur HTTP“** – beim Proxy die
+     Umleitung auf HTTPS („Force SSL“) einschalten.
+   - **„über …, das Proxy-Köpfe schickt, aber nicht in TRUSTED_PROXIES steht“** – Adresse eintragen.
+
+   Schickt ein **eingetragener** Proxy zwar `X-Forwarded-For`, aber weder `X-Forwarded-Proto` noch
+   `Forwarded: proto=…`, kann ntp-gui nicht erkennen, ob der Browser HTTPS benutzt. Dafür gibt es
+   den eigenen Hinweis „Eingetragener Proxy meldet nicht, ob HTTPS benutzt wurde“ (keine Warnung).
+   Caddy, NPM, Zoraxy und Traefik setzen den Kopf von selbst; fehlt er, entfernt ihn meist eine
+   eigene Regel. Nginx/NPM („Advanced“): `proxy_set_header X-Forwarded-Proto $scheme;`, HAProxy:
+   `http-request set-header X-Forwarded-Proto https if { ssl_fc }`, Apache:
+   `RequestHeader set X-Forwarded-Proto https`.
+
+   Die Adressen stehen nur in der angemeldeten Übersicht – Hinweise gehen weder in
+   Benachrichtigungen noch ins Diagnosepaket.
 
 **Ausstiegsplan (E9):** Wird Caddy eingestellt, tut es jeder andere Reverse Proxy aus Variante B –
 ntp-gui hängt an keinem bestimmten.
