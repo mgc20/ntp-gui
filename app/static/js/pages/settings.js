@@ -33,7 +33,7 @@ export const FIELD_HELP = {
   web_title: "web_title", web_refresh_seconds: "web_refresh", history_interval: "history_interval",
   notify_dashboard_url: "notify_link",
   temp_sensor: "temp_sensor", clock_public: "clock_public", update_check: "update_check",
-  trusted_proxies: "trusted_proxies",
+  trusted_proxies: "trusted_proxies", web_allowed_hosts: "allowed_hosts",
   dns_mode: "dns_modes", dns_servers: "dns_upstreams", dns_dot: "dns_modes", dns_doh: "dns_modes",
   dns_pin: "dns_pin", dns_fallback: "dns_fallback",
   gps_device: "hw_device_path", allow_networks: "allow_networks", gps_show_position: "gps_show_position",
@@ -423,6 +423,18 @@ export function render(ctx) {
     return list;
   }
 
+  // Zusätzliche Werte aus der Umgebung, die neben dem Dashboard-Wert gelten (nur lesend, z. B. WEB_ALLOWED_HOSTS).
+  function envExtra(field) {
+    const extra = field.env_extra;
+    const values = Array.isArray(extra?.values) ? extra.values : [];
+    if (!values.length) return null;
+    const parts = [];
+    values.forEach((v, i) => { if (i) parts.push(", "); parts.push(el("code", { text: String(v) })); });
+    return el("p", { class: "field-help", id: `env-${field.key}` },
+      el("strong", { text: `Zusätzlich aus ${extra.name} (nur in der Compose-Datei änderbar): ` }), ...parts,
+      values.includes("*") ? el("span", { text: " – „*“ schaltet die Namensprüfung ganz ab." }) : null);
+  }
+
   function fieldRow(field) {
     const error = ui.fieldErrors[field.key] || field.error;
     const sourceText = field.source === "env" && field.env ? `Umgebung (${field.env})` : SOURCE_LABEL[field.source];
@@ -436,6 +448,7 @@ export function render(ctx) {
           field.source === "gui" && !readonly ? el("button", { type: "button", class: "link", text: "zurücksetzen",
             title: "Dashboard-Wert entfernen – dann gilt wieder Umgebung bzw. Standard", onclick: () => reset(field.key) }) : null)),
       control(field),
+      envExtra(field),
       el("p", { class: "field-help" }, rich(field.help)),
       error ? el("p", { class: "field-error", role: "alert", text: error }) : null);
   }
@@ -462,7 +475,8 @@ export function render(ctx) {
     if (!sectionFields.length) continue;
     const advancedCount = sectionFields.filter((f) => f.advanced).length;
     const showAdv = ui.showAdvanced[section.key];
-    const visible = sectionFields.filter((f) => !f.advanced || showAdv || f.source === "gui" || f.source === "env");
+    const visible = sectionFields.filter((f) => !f.advanced || showAdv || f.source === "gui" || f.source === "env"
+      || (f.env_extra?.values || []).length > 0);
     const toggle = advancedCount ? el("button", { type: "button", class: "link", text: showAdv ? "Weniger anzeigen" : `Erweitert (${advancedCount})`,
       "aria-expanded": showAdv ? "true" : "false", onclick: () => { ui.showAdvanced[section.key] = !showAdv; ctx.rerender(); } }) : null;
     const helpKey = { ntp: "minsources", lan: "island", nts: "nts", dns: "dns", gps: "gps_value", ptp: "ptp_requirements", web: "settings_source" }[section.key];

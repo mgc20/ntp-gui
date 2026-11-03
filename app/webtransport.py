@@ -360,8 +360,8 @@ class TransportWatch:
             if "untrusted" in causes:
                 advice.append("Ist das dein Proxy, trag seine Adresse unter „Vertrauenswürdige Proxys“ ein.")
             if not advice or causes == {"direct"}:
-                advice.append("Noch kein Proxy? Fertige Caddy-Vorlage in docker-compose.all-in-one.yml, "
-                              "Anleitung in docs/integrationen/https.md.")
+                advice.append("Noch kein Proxy? Anleitung mit fertigem Caddy-Beispiel (eigener Stack) in "
+                              "docs/integrationen/https.md.")
             out.append({
                 "level": "warn", "key": "web_plain_http", "action": "settings",
                 "title": "Dashboard über unverschlüsseltes HTTP mit Anmeldung",
@@ -413,8 +413,8 @@ class TransportWatch:
                          "Der eingetragene Reverse Proxy läuft auf einem anderen Gerät und reicht") +
                         " Passwort bzw. API-Schlüssel per einfachem HTTP an ntp-gui "
                         "weiter. Auf dieser Strecke kann jedes Gerät dazwischen mitlesen. Am sichersten: den "
-                        "Proxy auf demselben Rechner wie ntp-gui betreiben (Caddy-Vorlage in "
-                        "docker-compose.all-in-one.yml) und WEB_BIND=127.0.0.1 setzen. Sonst die Strecke "
+                        "Proxy auf demselben Rechner wie ntp-gui betreiben (Caddy-Beispiel in "
+                        "docs/integrationen/https.md) und WEB_BIND=127.0.0.1 setzen. Sonst die Strecke "
                         "auf ein abgetrenntes, vertrauenswürdiges Netz legen und Port 8080 per Firewall nur "
                         "für den Proxy öffnen. Läuft der Proxy auf diesem Rechner in einem eigenen "
                         "Docker-Netz (z. B. 172.18.0.2), verlässt die Strecke den Host nicht – dann kannst "
@@ -429,7 +429,7 @@ class TransportWatch:
                         "ntp-gui ignoriert diese Köpfe deshalb – jeder könnte sie fälschen. Folge: Das "
                         "Zugriffsprotokoll zeigt den Proxy statt des Browsers, und ntp-gui kann nicht "
                         "erkennen, ob der Browser HTTPS benutzt. Steht dein Proxy davor, trag seine Adresse "
-                        "ein (Caddy auf demselben Host: 127.0.0.1/32 und ::1/128).",
+                        "ein (Proxy im Host-Netzwerk auf demselben Rechner: 127.0.0.1/32 und ::1/128).",
             })
         return out
 

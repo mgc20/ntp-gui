@@ -157,6 +157,11 @@ docker run -d --name ntp-gui \
   ghcr.io/mgc20/ntp-gui:latest
 ```
 
+Version festhalten statt `:latest`: `:1.5` bleibt auf 1.5.x, `:1.5.1` bleibt fest auf genau
+dieser Version (der Hinweis steht auch in jeder Compose-Vorlage). Das Image ist von
+`ghcr.io/congp20/ntp-gui` nach `ghcr.io/mgc20/ntp-gui` umgezogen; am alten Ort erscheinen
+keine neuen Versionen mehr.
+
 Prüfen, ob der Server antwortet (von einem Client aus – `chronyc -h` funktioniert
 hier nicht, weil der Kommando-Port des Containers bewusst deaktiviert ist):
 
@@ -1089,11 +1094,11 @@ Die Seite **Uhrqualität** zeigt, was die Uhr deines Servers langfristig beeinfl
 </picture>
 
 Mit `CLOCK_PUBLIC=true` sind `/clock` und `/api/v1/time` ohne Anmeldung erreichbar (nur Zeit,
-Ampel, Genauigkeit und Art der Quelle – keine Namen, Adressen oder Einstellungen). Auch dann
-antwortet ntp-gui ohne Anmeldung nur über IP-Adressen, einteilige oder lokale Namen (`*.local`,
-`*.lan`, `*.home.arpa`, `*.internal`) und `WEB_ALLOWED_HOSTS` – Schutz vor DNS-Rebinding. Für
-einen Wandmonitor, der den Server über einen eigenen DNS-Namen aufruft, diesen Namen in
-`WEB_ALLOWED_HOSTS` eintragen. Nicht einschalten, wenn das Dashboard aus dem Internet
+Ampel, Genauigkeit und Art der Quelle – keine Namen, Adressen oder Einstellungen). Ab 1.5.1
+antwortet die Uhr dann über **jeden** Namen, auch über einen eigenen DNS-Namen des
+Wandmonitors – die Namensprüfung gegen DNS-Rebinding entfällt nur hier, weil darin nichts
+Schützenswertes steht (siehe [Schutz vor DNS-Rebinding](#schutz-vor-dns-rebinding)). Alle
+anderen Seiten bleiben geprüft. Nicht einschalten, wenn das Dashboard aus dem Internet
 erreichbar ist.
 
 Neue API-Endpunkte (lesend): `/api/v1/temperature`, `/api/v1/leap`, `/api/v1/time`. Metriken:
@@ -1445,7 +1450,7 @@ PHC-Refclock dient ihm als Referenz für Stratum und Statistik.
 | `WEB_PORT` / `WEB_BIND` | `8080` / `0.0.0.0` | Adresse des Dashboards |
 | `WEB_TITLE` | `NTP / PTP Time Server` | Überschrift |
 | `WEB_USER` / `WEB_PASSWORD` | – | Beide gesetzt ⇒ HTTP Basic Auth (alternativ Passwort im Dashboard setzen) |
-| `WEB_ALLOWED_HOSTS` | – | Weitere Namen, unter denen das Dashboard **ohne Passwort** antworten darf, kommagetrennt; `*.example.org` für alle Unternamen, `*` schaltet die Prüfung ab. Siehe [Schutz vor DNS-Rebinding](#schutz-vor-dns-rebinding) |
+| `WEB_ALLOWED_HOSTS` | – | Weitere Namen, unter denen das Dashboard **ohne Passwort** antworten darf, kommagetrennt; `*.example.org` für alle Unternamen, `*` schaltet die Prüfung ab. Gilt zusätzlich zu „Erlaubte Namen“ im Dashboard (Einstellungen → Dashboard → Erweitert). Siehe [Schutz vor DNS-Rebinding](#schutz-vor-dns-rebinding) |
 | `WEB_READONLY` | `false` | Einstellungen im Dashboard sperren |
 | `WEB_REFRESH_SECONDS` | `5` | Aktualisierungsintervall im Browser |
 | `HISTORY_INTERVAL` | `10` | Messintervall des Verlaufs in Sekunden |
@@ -1488,20 +1493,19 @@ anderen Port musst du ihn nicht anpassen.
 
 ntp-gui spricht selbst nur HTTP – mit Absicht: Ein Reverse Proxy kann TLS besser, und in vielen Heimnetzen läuft schon einer. Ohne HTTPS gehen Passwort und API-Schlüssel lesbar durchs Netz. Darum zeigt die Übersicht einen Hinweis, sobald sie per HTTP aus dem Netz ankommen.
 
-Am schnellsten geht es mit der Caddy-Vorlage in `docker-compose.all-in-one.yml`:
+Am schnellsten geht es mit Caddy als eigenem Stack neben ntp-gui. Das fertige Compose-Beispiel und alle Schritte stehen in [docs/integrationen/https.md](docs/integrationen/https.md#variante-a-caddy-als-eigener-stack-fertiges-beispiel); die Compose-Vorlagen von ntp-gui enthalten bewusst keinen Caddy-Container:
 
-1. Den Block **[OPTION HTTPS mit Caddy]** einkommentieren: den Dienst `caddy`, das Volume `caddy-data` und bei ntp-gui `WEB_BIND` und `TRUSTED_PROXIES`.
-2. `zeitserver.lan` durch deinen Namen oder die feste IP-Adresse ersetzen.
-3. `docker compose up -d` ausführen. Das Dashboard ist dann unter `https://zeitserver.lan` erreichbar.
-4. Damit der Browser nicht warnt, Caddys Root-Zertifikat einmal auf deinen Geräten als vertrauenswürdig eintragen. Herausholen kannst du es mit `docker compose cp caddy:/data/caddy/pki/authorities/local/root.crt .`
+1. Bei ntp-gui `WEB_BIND=127.0.0.1` und `TRUSTED_PROXIES=127.0.0.1/32,::1/128` setzen (in `docker-compose.all-in-one.yml` der Block **[OPTION Reverse Proxy auf diesem Rechner]**).
+2. Caddy aus dem Beispiel in einem eigenen Ordner anlegen, `zeitserver.lan` durch deinen Namen oder die feste IP-Adresse ersetzen und dort `docker compose up -d` ausführen. Das Dashboard ist dann unter `https://zeitserver.lan` erreichbar.
+3. Damit der Browser nicht warnt, Caddys Root-Zertifikat einmal auf deinen Geräten als vertrauenswürdig eintragen. Herausholen kannst du es im Caddy-Ordner mit `docker compose cp caddy:/data/caddy/pki/authorities/local/root.crt .`
 
-Nginx Proxy Manager, Zoraxy und Traefik gehen genauso. Die Anleitung dazu steht in [docs/integrationen/https.md](docs/integrationen/https.md). Läuft der Reverse Proxy auf einem anderen Gerät, ist nur die Strecke Browser → Proxy verschlüsselt; ntp-gui weist darauf hin. Am sichersten läuft der Proxy auf demselben Host (Caddy-Vorlage, `WEB_BIND=127.0.0.1`).
+Nginx Proxy Manager, Zoraxy und Traefik gehen genauso. Die Anleitung dazu steht in [docs/integrationen/https.md](docs/integrationen/https.md). Läuft der Reverse Proxy auf einem anderen Gerät, ist nur die Strecke Browser → Proxy verschlüsselt; ntp-gui weist darauf hin. Am sichersten läuft der Proxy auf demselben Host (Caddy-Beispiel, `WEB_BIND=127.0.0.1`).
 
 **Der HTTPS-Hinweis nennt Ursache und Absender (ab 1.5.1):** „Dashboard über unverschlüsseltes HTTP mit Anmeldung“ sagt, wer ungeschützt kam (Adresse, Passwort oder API-Schlüssel, „zuletzt vor 3 h“, bis zu drei Absender) und warum: „direkt per HTTP“ (Lesezeichen auf `http://…:8080`, Home Assistant, Widget, Skript), „über den eingetragenen Proxy, aber der Browser sprach mit ihm nur HTTP“ oder „über eine Gegenstelle mit Proxy-Köpfen, die nicht in `TRUSTED_PROXIES` steht“. Schickt ein eingetragener Proxy keinen Proto-Kopf (nur `X-Forwarded-For` oder `X-Real-IP`, `Forwarded` ohne `proto=`), ist unbekannt, ob der Browser HTTPS sprach – dafür gibt es den Info-Hinweis „Eingetragener Proxy meldet nicht, ob HTTPS benutzt wurde“ mit den Köpfen, die der Proxy tatsächlich schickt, und einer Anleitung je Proxy. Ein Hinweis verschwindet 1 Stunde nach dem letzten ungeschützten Zugriff, wenn danach nur geschützte kommen, sonst nach 24 Stunden; Speichern von `TRUSTED_PROXIES` setzt ihn sofort zurück.
 
 | Variable | Standard | Bedeutung |
 |---|---|---|
-| `TRUSTED_PROXIES` | – (niemandem trauen) | Adressen deiner Reverse Proxys, z. B. `127.0.0.1/32,::1/128` für Caddy auf demselben Host. Nur von ihnen glaubt ntp-gui `X-Forwarded-For`/`-Proto` bzw. `Forwarded` (echte Client-Adresse im Zugriffsprotokoll, HTTPS-Hinweis). „all“ und `/0` sind nicht erlaubt. |
+| `TRUSTED_PROXIES` | – (niemandem trauen) | Adressen deiner Reverse Proxys, z. B. `127.0.0.1/32,::1/128` für einen Proxy auf demselben Host. Nur von ihnen glaubt ntp-gui `X-Forwarded-For`/`-Proto` bzw. `Forwarded` (echte Client-Adresse im Zugriffsprotokoll, HTTPS-Hinweis). „all“ und `/0` sind nicht erlaubt. |
 
 ### Sprache / Language
 
@@ -1518,13 +1522,30 @@ auf die LAN-Adresse von ntp-gui zeigen lassen und dann Log, Status und GPS-Posit
   solche Namen kann kein öffentliches DNS liefern,
 - lokale Endungen: `*.local`, `*.lan`, `*.home.arpa`, `*.internal`, `*.home`, `*.corp`,
   `*.localdomain`, `*.intranet`, `*.private`, `*.speedport.ip`,
-- den NTS-Namen (`NTS_SERVER_NAME`) und alles aus `WEB_ALLOWED_HOSTS`.
+- den NTS-Namen (`NTS_SERVER_NAME`),
+- die **erlaubten Namen**: Einstellungen → Dashboard → Erweitert → **Erlaubte Namen** und
+  `WEB_ALLOWED_HOSTS` (beide gelten zusammen).
 
 Jeder andere Name bekommt `403` mit einer Erklärung; im Log steht er einmal (bereinigt).
 **`*.fritz.box` ist absichtlich nicht dabei:** `.box` ist eine echte, öffentlich vergebene
-Endung. Öffnest du das Dashboard als `ntp.fritz.box`, trage `WEB_ALLOWED_HOSTS=*.fritz.box`
-ein oder setze ein Passwort. Mit Passwort oder API-Schlüssel gilt jeder Name – die Anmeldung
-schützt dann. `/healthz` antwortet immer.
+Endung. Öffnest du das Dashboard als `ntp.fritz.box`, trage `*.fritz.box` unter „Erlaubte
+Namen“ (oder in `WEB_ALLOWED_HOSTS`) ein oder setze ein Passwort. Mit Passwort oder
+API-Schlüssel gilt jeder Name – die Anmeldung schützt dann. `/healthz` antwortet immer.
+
+**Erlaubte Namen im Dashboard (ab 1.5.1):** ein Name pro Zeile, `*.example.org` erlaubt alle
+Unternamen (und `example.org` selbst). Die Prüfung ist streng: keine IP-Adressen (die gehen
+ohnehin), keine Ports, keine ganzen Endungen (`*.com`) und nicht `*` allein – den Schutz ganz
+abschalten geht nur bewusst mit `WEB_ALLOWED_HOSTS=*` in der Compose-Datei. Namen aus
+`WEB_ALLOWED_HOSTS` stehen unter dem Feld (nur lesend). Wirkt ohne Neustart, nur mit
+Admin-Recht änderbar und Teil von Sichern/Wiederherstellen. Bist du schon ausgesperrt: das
+Dashboard über die IP-Adresse öffnen und den Namen dort eintragen.
+
+**Vollbild-Uhr über jeden Namen (ab 1.5.1):** Ist „Vollbild-Uhr ohne Anmeldung“
+(`CLOCK_PUBLIC`) an, antworten `/clock`, ihre statischen Dateien und `/api/v1/time` über
+**jeden** Namen, auch über einen eigenen DNS-Namen ohne Eintrag. Das ist gefahrlos, weil
+darin nur steht, was ohnehin öffentlich ist: Uhrzeit, Ampel, Genauigkeit und die Art der
+Quelle (GPS, NTP …). Den Namen der Quelle gibt es ohne Anmeldung nur über einen erlaubten
+Namen. Alle anderen Seiten und die übrige API bleiben geprüft.
 
 ### DNS für ntp-gui
 
@@ -1796,7 +1817,7 @@ CSV-Zeile, „nie gehört“ ist `4294967295` und `pmc` antwortet nur, wenn die 
   NTP-Server dann nicht.
 * `chronyc clients` zählt nur, solange das Client-Log Platz hat (`CLIENTLOGLIMIT`).
 * Das Dashboard bringt kein TLS mit – für Zugriffe außerhalb des vertrauenswürdigen Netzes
-  gehört ein Reverse Proxy davor ([Caddy-Vorlage](#https-fürs-dashboard)).
+  gehört ein Reverse Proxy davor ([HTTPS fürs Dashboard](#https-fürs-dashboard)).
 * Die GNSS-Störungserkennung findet keinen Spoofer, der die Zeit langsamer als die
   Unsicherheit der Netzquellen verschiebt; ohne ≥ 2 NTS- bzw. ≥ 3 Netzquellen gibt es keine
   Zeitprüfung. Die Referenzposition wird nach einem Neustart neu gelernt.

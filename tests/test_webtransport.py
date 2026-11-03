@@ -617,31 +617,67 @@ class HandlerTest(unittest.TestCase):
 
 
 class ComposeTemplateTest(unittest.TestCase):
-    """Die Caddy-Vorlage folgt der Kommentar-Regel der Datei und ist vollständig."""
+    """Vorlagen ohne Caddy (1.5.1): Proxy-Option nach der Kommentar-Regel, Caddy nur in der Doku."""
 
     TEXT = (ROOT / "docker-compose.all-in-one.yml").read_text(encoding="utf-8")
+    DOC = (ROOT / "docs" / "integrationen" / "https.md").read_text(encoding="utf-8")
 
     def uncommented(self):
         return re.sub(r"(?m)^( +)#  ", r"\1", self.TEXT)
 
-    def test_caddy_block_present(self):
+    def test_proxy_option_present(self):
         text = self.uncommented()
-        self.assertRegex(text, r"(?m)^  caddy:\n")
-        self.assertIn('"--internal-certs"', text)
-        self.assertRegex(text, r"(?m)^  caddy-data:$")
+        self.assertIn("[OPTION Reverse Proxy auf diesem Rechner]", self.TEXT)
         self.assertRegex(text, r'(?m)^      WEB_BIND: "127\.0\.0\.1"$')
         self.assertRegex(text, r'(?m)^      TRUSTED_PROXIES: "127\.0\.0\.1/32,::1/128"$')
-        self.assertRegex(text, r"(?m)^    image: caddy:\d+\.\d+\.\d+$")  # gepinnt, nie :latest
+        self.assertIn("docs/integrationen/https.md", self.TEXT)
 
-    def test_default_file_has_no_caddy(self):
-        self.assertNotRegex(self.TEXT, r"(?m)^  caddy:")
+    def test_no_caddy_in_any_template(self):
+        for path in sorted(ROOT.glob("docker-compose*.yml")):
+            text = path.read_text(encoding="utf-8")
+            with self.subTest(path=path.name):
+                self.assertNotRegex(text, r"(?m)^\s*#?\s*caddy(-data)?:")       # weder Dienst noch Volume
+                self.assertNotRegex(text, r"(?m)image: caddy")
+                self.assertNotIn("OPTION HTTPS mit Caddy", text)
         self.assertNotRegex(self.TEXT, r"(?m)^\s+TRUSTED_PROXIES:")
 
+    def test_version_hint_in_every_template(self):
+        for path in sorted(ROOT.glob("docker-compose*.yml")):
+            lines = path.read_text(encoding="utf-8").splitlines()
+            with self.subTest(path=path.name):
+                index = next(i for i, line in enumerate(lines)
+                             if line.strip().startswith("image: ghcr.io/mgc20/ntp-gui:latest"))
+                hint = "\n".join(lines[max(0, index - 5):index])
+                self.assertIn("„:1.5“", hint)
+                self.assertIn("„:1.5.1“", hint)
+                self.assertIn("ghcr.io/congp20/ntp-gui", hint)
+                # Erklärung, nie eine einkommentierbare Zeile („#  “ nach der Einrückung)
+                self.assertNotRegex(hint, r"(?m)^ +#  ")
+
+    def test_no_stale_template_references(self):
+        files = [ROOT / "README.md", ROOT / "app" / "webtransport.py", ROOT / "app" / "settings.py",
+                 ROOT / "app" / "static" / "js" / "help-web.js", ROOT / "docs" / "integrationen" / "https.md",
+                 ROOT / "tests" / "container-test.sh"]
+        for path in files:
+            text = path.read_text(encoding="utf-8")
+            with self.subTest(path=path.name):
+                self.assertNotIn("Caddy-Vorlage", text)
+                self.assertNotIn("OPTION HTTPS mit Caddy", text)
+
+    def test_doc_has_standalone_caddy_compose(self):
+        match = re.search(r"<!-- compose-caddy[^>]*-->\n```yaml\n(.*?)\n```", self.DOC, re.S)
+        self.assertIsNotNone(match, "Caddy-Beispiel mit Markierung für den Container-Test")
+        block = match.group(1)
+        self.assertRegex(block, r"(?m)^services:\n  caddy:$")
+        self.assertRegex(block, r"(?m)^volumes:\n  caddy-data:$")
+        self.assertRegex(block, r"(?m)^    image: caddy:\d+\.\d+\.\d+$")  # gepinnt, nie :latest
+        self.assertIn('"--internal-certs"', block)
+        self.assertNotIn("depends_on", block, "eigener Stack – kein Verweis auf den ntp-gui-Dienst")
+
     def test_doc_exists_and_mentions_proxies(self):
-        doc = (ROOT / "docs" / "integrationen" / "https.md").read_text(encoding="utf-8")
         for word in ("Caddy", "Nginx Proxy Manager", "Zoraxy", "Traefik", "TRUSTED_PROXIES", "WEB_ALLOWED_HOSTS",
-                     "root.crt", "--internal-certs"):
-            self.assertIn(word, doc)
+                     "Erlaubte Namen", "root.crt", "--internal-certs"):
+            self.assertIn(word, self.DOC)
 
 
 if __name__ == "__main__":

@@ -94,6 +94,15 @@ Ursache und Absender nennt, und der neue Image-Name `ghcr.io/mgc20/ntp-gui`.
   „x“ zählen für den Offset, wenn mindestens zwei genutzte Netzquellen dagegenstehen. Vorschlag und
   schnelle Korrektur kommen so nach etwa 6 Stunden, ohne dass erst die Fehlerschranke stündlich
   über den Versatz wachsen muss.
+- **Vollbild-Uhr über jeden Namen:** Mit „Vollbild-Uhr ohne Anmeldung“ (`clock_public`) bekamen
+  `/clock` und `/api/v1/time` über einen eigenen DNS-Namen (z. B. `uhr.example.com`) ohne Passwort
+  „Zugriff über den Namen … abgelehnt“ (403), obwohl die Uhr öffentlich sein sollte. Jetzt antworten
+  `/clock`, ihre vier statischen Dateien und `/api/v1/time` dann über jeden Host-Namen ohne
+  Namensprüfung – der Inhalt ist bewusst öffentlich (Uhrzeit, Ampel, Genauigkeit, Art der Quelle).
+  Den Namen der Quelle gibt es ohne Anmeldung nur über einen erlaubten Namen; über einen fremden
+  Namen kommt immer die öffentliche Antwort ohne Namen, Adressen oder Position. Alle anderen
+  Seiten und die übrige API bleiben gegen DNS-Rebinding geprüft. Ablehnungstext, Hilfe und README
+  sagen das.
 
 ### Geändert
 - **Diagnosepaket enthält die aktiven Hinweise:** Neue Datei `hints.json` mit den Hinweisen, die das
@@ -119,6 +128,24 @@ Ursache und Absender nennt, und der neue Image-Name `ghcr.io/mgc20/ntp-gui`.
 - **Klarere Ereignistitel bei unstetem Empfang:** „GPS-Fix seit 10 min weg (vorher 50 Fix-Wechsel in
   2 h 31 min)“ und „GPS-Empfang wieder stetig – seit 1 h kein Fix-Wechsel (vorher …)“. Die Felder im
   Ereignis bleiben, neu ist `outcome` („ruhig“ oder „fix_weg“).
+- **Erlaubte Namen im Dashboard:** Einstellungen → Dashboard → Erweitert → **Erlaubte Namen** –
+  Namen, über die das Dashboard ohne Passwort antworten darf (Schutz vor DNS-Rebinding, in der
+  Hilfe in einfachen Worten erklärt). Gilt zusätzlich zu `WEB_ALLOWED_HOSTS`; Namen aus der
+  Umgebung stehen unter dem Feld (nur lesend). Streng geprüft: Namen mit Punkt oder `*.domain`,
+  keine IP-Adressen, Ports, ganzen Endungen (`*.com`) und nicht `*` allein – den Schutz ganz
+  abschalten geht nur per `WEB_ALLOWED_HOSTS=*`. Wirkt ohne Neustart, nur mit Admin-Recht und
+  CSRF-Schutz wie jede Einstellung, Teil von Sichern/Wiederherstellen. Die Prüfung je Anfrage
+  bleibt ein reiner Textvergleich ohne DNS.
+- **Compose-Vorlagen ohne Caddy:** Der auskommentierte Caddy-Dienst, das Volume `caddy-data` und
+  die Kommentare „[OPTION HTTPS mit Caddy]“ sind aus `docker-compose.all-in-one.yml` entfernt. Das
+  Caddy-Beispiel steht jetzt nur noch in `docs/integrationen/https.md` – als eigenständige
+  Compose-Datei für einen eigenen Stack neben ntp-gui. In der Vorlage bleibt
+  „[OPTION Reverse Proxy auf diesem Rechner]“ mit `WEB_BIND` und `TRUSTED_PROXIES`. Hinweise im
+  Dashboard, Hilfe und README verweisen auf die Anleitung. Wer Caddy aus der alten Vorlage
+  betreibt, muss nichts ändern.
+- **Versionshinweis in jeder Compose-Vorlage:** Über `image: ghcr.io/mgc20/ntp-gui:latest` steht,
+  wie man die Version festhält (`:1.5` bleibt auf 1.5.x, `:1.5.1` fest) und dass das Image von
+  `ghcr.io/congp20/ntp-gui` umgezogen ist (dort keine neuen Versionen mehr).
 
 ## [1.5.0] – 2026-11-02
 

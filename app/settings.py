@@ -286,6 +286,50 @@ def _as_host_list(value: Any) -> list[str]:
     return names
 
 
+MAX_ALLOWED_HOSTS = 50
+
+
+def _as_allowed_hosts(value: Any) -> list[str]:
+    """„Erlaubte Namen“ gegen DNS-Rebinding: Namen oder „*.domain“ – nie „*“ allein, keine IPs."""
+    names: list[str] = []
+    for item in _list_items(value):
+        text = item.rstrip(".").lower()
+        if text == "*":
+            raise ValidationError("„*“ würde den Schutz vor DNS-Rebinding ganz abschalten – das geht nur "
+                                  "bewusst per WEB_ALLOWED_HOSTS=* in der Compose-Datei. Besser: einzelne "
+                                  "Namen oder „*.example.org“ für alle Unternamen")
+        try:
+            ipaddress.ip_address(text.strip("[]").split("%", 1)[0])
+        except ValueError:
+            pass
+        else:
+            raise ValidationError(f"„{text}“ ist eine IP-Adresse – IP-Adressen sind immer erlaubt, "
+                                  "hier nur Namen eintragen")
+        wildcard = text.startswith("*.")
+        base = text[2:] if wildcard else text
+        if "*" in base or not _HOST_RE.match(base) or base.endswith("."):
+            raise ValidationError(f"„{text}“ ist kein gültiger Name – erlaubt sind Namen wie "
+                                  "zeit.example.org oder „*.example.org“ für alle Unternamen (ohne Port)")
+        if "." not in base:
+            if wildcard:
+                raise ValidationError(f"„{text}“ würde eine ganze Endung freigeben – mindestens "
+                                      "„*.name.endung“, z. B. *.fritz.box")
+            raise ValidationError(f"„{text}“: einteilige Namen sind ohnehin erlaubt – hier nur Namen "
+                                  "mit Punkt, z. B. zeit.example.org")
+        if text not in names:
+            names.append(text)
+    if len(names) > MAX_ALLOWED_HOSTS:
+        raise ValidationError(f"Höchstens {MAX_ALLOWED_HOSTS} Namen")
+    return names
+
+
+def env_allowed_hosts(env: dict[str, str] | None = None) -> list[str]:
+    """WEB_ALLOWED_HOSTS aus der Umgebung (gilt zusätzlich zu web_allowed_hosts, nur lesend gezeigt)."""
+    env = os.environ if env is None else env
+    return [h.strip().lower().rstrip(".") for h in str(env.get("WEB_ALLOWED_HOSTS", "")).split(",")
+            if h.strip()]
+
+
 MAX_DNS_SERVERS = 8
 _DNS_PORT_RE = re.compile(r"^\d{1,5}$")
 
@@ -1094,17 +1138,30 @@ SCHEMA: list[dict] = [
            help="Macht /clock und /api/v1/time auch ohne Passwort erreichbar – praktisch für einen "
                 "Wandmonitor oder ein altes Tablet. Sichtbar werden nur Uhrzeit, Ampel, Genauigkeit "
                 "und die Art der Quelle (GPS, NTP …), keine Einstellungen, Namen oder Adressen. "
-                "Aus = die Uhr ist wie das Dashboard geschützt. Ohne Anmeldung gilt der Schutz vor "
-                "DNS-Rebinding: nur IP-Adressen, lokale Namen und WEB_ALLOWED_HOSTS. Wirkt ohne Neustart."),
+                "Aus = die Uhr ist wie das Dashboard geschützt. Die Uhr antwortet dann über jeden Namen "
+                "(keine Prüfung gegen DNS-Rebinding nötig, weil nichts Schützenswertes darin steht); den "
+                "Namen der Quelle zeigt sie ohne Anmeldung nur über erlaubte Namen. Alle anderen Seiten "
+                "bleiben geprüft. Wirkt ohne Neustart."),
     _field("trusted_proxies", "web", "Vertrauenswürdige Proxys", "networks", [], _as_proxy_list,
            env="TRUSTED_PROXIES", restart=RESTART_NONE, advanced=True, placeholder="leer = niemandem trauen",
            help="Adressen deiner Reverse Proxys (Caddy, Nginx Proxy Manager, Zoraxy, Traefik), z. B. "
-                "127.0.0.1/32 für Caddy auf demselben Host. Nur von diesen Adressen glaubt ntp-gui die "
+                "127.0.0.1/32 für einen Proxy auf demselben Host (Anleitung: docs/integrationen/https.md). Nur von diesen Adressen glaubt ntp-gui die "
                 "Köpfe X-Forwarded-For und X-Forwarded-Proto: Dann nennt das Zugriffsprotokoll die echte "
                 "Adresse des Browsers statt des Proxys, und der HTTPS-Hinweis erkennt, ob der Browser "
                 "verschlüsselt verbunden ist. Leer (Standard) = niemandem trauen – sonst könnte jeder "
                 "Browser eine falsche Adresse vorgeben. Über Anmeldung und Zugriff entscheiden die Köpfe "
                 "nie. Wirkt ohne Neustart."),
+    _field("web_allowed_hosts", "web", "Erlaubte Namen", "hostlist", [], _as_allowed_hosts,
+           restart=RESTART_NONE, advanced=True, placeholder="z. B. zeit.example.org oder *.fritz.box",
+           help="Namen, über die du das Dashboard ohne Passwort öffnen darfst – zusätzlich zu IP-Adressen, "
+                "einteiligen und lokalen Namen (*.lan, *.local, *.home.arpa …), die immer gehen. Warum die "
+                "Liste? Schutz vor DNS-Rebinding: Eine fremde Webseite, die du besuchst, kann ihren eigenen "
+                "Namen kurz auf die Adresse deines Zeitservers zeigen lassen. Dein Browser hält das für "
+                "dieselbe Seite, und sie könnte Log, Status und Position aus deinem Netz lesen. Darum "
+                "beantwortet ntp-gui ohne Passwort nur Namen, die es kennt. Ein Name pro Zeile, "
+                "„*.example.org“ erlaubt alle Unternamen. „*“ allein (Schutz ganz aus) geht nur per "
+                "WEB_ALLOWED_HOSTS in der Compose-Datei; Namen von dort gelten zusätzlich und stehen unten. "
+                "Mit Passwort gilt ohnehin jeder Name. Wirkt ohne Neustart."),
     _field("update_check", "web", "Update-Hinweis (fragt GitHub)", "bool", False, _as_bool,
            env="UPDATE_CHECK", restart=RESTART_NONE,
            help="Fragt einmal am Tag zu einer zufälligen Uhrzeit bei GitHub nach der neuesten "
@@ -1409,6 +1466,8 @@ def public_schema(masked: bool = False) -> dict:
             "options": [{"value": v, "label": l} for v, l in (field["options"] or [])],
             "default": field["default"], "value": entry["value"], "source": entry["source"],
             "env_value": entry["env"], "error": entry["error"],
+            **({"env_extra": {"name": "WEB_ALLOWED_HOSTS", "values": env_allowed_hosts()}}
+               if field["key"] == "web_allowed_hosts" else {}),
         })
     env_only = [{"name": name, "label": label, "set": name in os.environ,
                  "value": ("••••" if "PASSWORD" in name else os.environ.get(name, ""))}
