@@ -162,7 +162,8 @@ function autocalChanges(ctx, auto) {
 function autocalPlan(auto, applyOffer) {
   if (!auto.plan) return null;
   const manual = auto.manual_change;
-  if (!manual) return el("p", { text: auto.plan });
+  // Bei einer Störungssperre nicht zum Übernehmen einladen – erst Antenne und Umgebung prüfen.
+  if (!manual || auto.decision?.guard_hold) return el("p", { text: auto.plan });
   const parts = [el("p", { text: auto.plan })];
   if (applyOffer) parts.push(el("div", { class: "cal-apply" }, applyOffer()));
   return el("div", { class: "callout" }, parts);
@@ -183,19 +184,26 @@ function autocalSection(ctx, applyOffer = null) {
     el("p", {}, settingsLink),
   ];
   if (auto.mode !== "off") {
+    const phase = auto.phase || null;
+    const held = Boolean(decision.guard_hold);
     parts.push(kv([
+      phase ? ["Phase", el("span", {}, badge(phase.label, phase.tone || "muted"), " ", phase.text || ""), "autocal_phase"] : null,
       ["Entscheidung", el("span", {}, badge(actionLabel, actionTone), " ", decision.reason || "–"), "autocal_decision"],
       isNum(decision.bias_ms) ? ["Gemessene Abweichung", `${fmtMs(decision.bias_ms, true)} (Streuung ± ${fmtMs(decision.spread_ms)})`, "autocal_bias"] : null,
       isNum(decision.threshold_ms) ? ["Schwelle", fmtMs(decision.threshold_ms), "autocal_threshold"] : null,
       decision.reference ? ["Vergleichsquellen", autocalReference(decision), "autocal_reference"] : null,
       [measuringLabel(ctx, decision.measuring_since), fmtWhen(decision.measuring_since), "autocal_window"],
-      auto.mode === "auto" ? ["Nächste mögliche Änderung", fmtWhen(auto.next_change_at), "autocal_next"] : null,
+      auto.mode === "auto" && isNum(auto.next_change_at) ? ["Nächster Schritt", fmtWhen(auto.next_change_at), "autocal_next"] : null,
       auto.mode === "auto" ? ["Größter Schritt", fmtMs(auto.max_step_ms), "autocal_step"] : null,
     ]));
     const plan = autocalPlan(auto, applyOffer);
     if (plan) parts.push(plan);
-    if (decision.action === "suggest" && isNum(decision.new_offset)) {
-      parts.push(emptyNote(`Vorschlag: Offset ${decision.new_offset} s, Delay ${decision.new_delay} s – übernimm ihn oben mit „Vorschlag übernehmen“, wenn der Messzeitraum passt.`));
+    if (held) {
+      parts.push(el("div", { class: "callout", "data-tone": "crit" },
+        el("p", { text: "Gesperrt wegen GNSS-Störung – erst Antenne und Umgebung prüfen (Karte „GNSS-Störungen“). Den gemessenen Versatz bitte nicht von Hand übernehmen: Während einer Störung könnte er von einem Spoofer stammen." })));
+    } else if (decision.action === "suggest" && isNum(decision.new_offset)) {
+      const delay = isNum(decision.new_delay) ? `, Delay ${decision.new_delay} s` : "";
+      parts.push(emptyNote(`Vorschlag: Offset ${decision.new_offset} s${delay} – übernimm ihn oben mit „Vorschlag übernehmen“, wenn der Messzeitraum passt.`));
     }
   }
   parts.push(el("h3", { class: "mini-head" }, "Letzte automatische Änderungen ", info("autocal_changes", "Änderungen")));
@@ -207,6 +215,9 @@ function calibrationCard(ctx, gpsSource) {
   const cfg = ctx.status.config || {};
   const windowSeconds = ctx.uiState.calWindow ?? 0;
   const cal = ctx.data("calibration", `/api/gps/calibration?window=${windowSeconds}`, 15);
+  // Für die Rückfrage beim Übernehmen: Meldet die Störungserkennung gerade etwas?
+  const gnssNow = ctx.data("gnss", "/api/gnss", 10);
+  const autoNow = ctx.data("autocal", "/api/gps/autocal", 60);
   const body = [];
   let applyOffer = null;   // „Vorschlag übernehmen“ auch im Hinweis der automatischen Kalibrierung
 
@@ -260,6 +271,11 @@ function calibrationCard(ctx, gpsSource) {
         disabled: ctx.readonly || cal.status === "insufficient" ? true : null,
         title: `Offset ${cal.suggested_offset} s übernehmen` });
       button.addEventListener("click", async () => {
+        const hold = autoNow?.decision?.guard_hold;
+        const disturbed = gnssNow && (["warnung", "stoerung"].includes(gnssNow.stage) || gnssNow.lock?.locked);
+        if ((hold || disturbed) && !window.confirm("Die GNSS-Störungserkennung meldet gerade eine Warnung oder Störung"
+          + (hold ? " (die automatische Kalibrierung ist deshalb gesperrt)" : "") + ". Ein Versatz während einer möglichen "
+          + "Störung kann von einem Spoofer stammen. Prüfe zuerst Antenne und Umgebung. Trotzdem übernehmen?")) return;
         button.disabled = true;
         try {
           const changes = { gps_offset: cal.suggested_offset, gps_select: role.value };

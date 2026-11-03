@@ -870,7 +870,7 @@ Streuung (nächster Abschnitt); den Offset kalibrierst du wie unten beschrieben.
 
 ### GPS ohne PPS (z. B. VK-162): Rückfallebene mit ehrlicher Fehlerschranke
 
-Ein USB-Empfänger ohne PPS liefert die Zeit nur auf einige bis einige zehn Millisekunden genau. Mit gutem Internet sind NTS-Quellen meist genauer. Ohne Internet oder mit wackeligem Mobilfunk ist das GPS dagegen die bessere oder einzige Quelle. ntp-gui macht das GPS deshalb zur **Rückfallebene**: Es misst, wie stark das GPS gegenüber deinen Netzquellen streut (letzte 6 Stunden), und gibt chrony daraus eine ehrliche Fehlerschranke. chrony nimmt dann die guten Netzquellen und übernimmt das GPS von selbst, wenn das Internet schlecht wird oder ausfällt. Bis genug gemessen ist, gilt vorsichtig ± 100 ms. Die Schranke wächst sofort mit (höchstens stündlich) und schrumpft nur deutlich und frühestens nach 12 Stunden. Jede Anpassung steht im Ereignisprotokoll. Ein eingestelltes, aber fehlendes PPS-Gerät zählt als „ohne PPS“.
+Ein USB-Empfänger ohne PPS liefert die Zeit nur auf einige bis einige zehn Millisekunden genau. Mit gutem Internet sind NTS-Quellen meist genauer. Ohne Internet oder mit wackeligem Mobilfunk ist das GPS dagegen die bessere oder einzige Quelle. ntp-gui macht das GPS deshalb zur **Rückfallebene**: Es misst, wie stark das GPS gegenüber deinen Netzquellen streut (letzte 6 Stunden), und gibt chrony daraus eine ehrliche Fehlerschranke. chrony nimmt dann die guten Netzquellen und übernimmt das GPS von selbst, wenn das Internet schlecht wird oder ausfällt. Bis genug gemessen ist, gilt vorsichtig ± 100 ms. Die Schranke wächst sofort mit (höchstens stündlich) und schrumpft nur deutlich und frühestens nach 12 Stunden; jede neue Schranke bekommt 25 % Reserve, damit leichtes Kriechen chronyd nicht stündlich neu startet. Enger als das 1,5-Fache der Root Distance deiner besten genutzten NTS-Quelle wird sie nie – sonst wählte chrony das GPS ohne PPS den Netzquellen vor. Jede Anpassung steht im Ereignisprotokoll. Ein eingestelltes, aber fehlendes PPS-Gerät zählt als „ohne PPS“.
 
 | Variable | Standard | Bedeutung |
 |---|---|---|
@@ -917,7 +917,11 @@ Offset selbst nachstellen. Einstellung **GPS → Automatische Kalibrierung** (`G
 |---|---|
 | `off` | nichts – kein Vorschlag, keine Änderung |
 | `suggest` (Standard) | Die Seite **GPS** zeigt einen Vorschlag, sobald er belastbar ist. Du übernimmst ihn per Klick. |
-| `auto` | ntp-gui stellt den Offset selbst nach – behutsam, nach festen Regeln, mit Eintrag im Ereignisprotokoll |
+| `auto` | ntp-gui stellt den Offset selbst nach – nach festen Regeln, mit Eintrag im Ereignisprotokoll |
+
+Der Ablauf im Modus `auto` ist immer derselbe, und die Seite **GPS** zeigt ihn als **Phase** samt
+nächstem Schritt: **messen** → einen deutlichen Versatz **einmal korrigieren** → danach nur noch
+**kleinen Drifts folgen**.
 
 Die Regeln sind bewusst vorsichtig – lieber eine Änderung zu wenig als eine falsche:
 
@@ -930,10 +934,20 @@ Die Regeln sind bewusst vorsichtig – lieber eine Änderung zu wenig als eine f
 - **Nur echte Abweichungen:** mindestens 1 ms und deutlich größer als die Messunsicherheit.
   Eine Korrektur in die Gegenrichtung der letzten braucht die doppelte Schwelle – so pendelt
   der Offset nicht hin und her.
-- **Kleine Schritte:** höchstens eine Änderung je 24 h, jeweils höchstens
-  `GPS_AUTOCAL_MAX_STEP_MS` (Standard 5 ms). Größere Abweichungen werden über mehrere Tage
-  abgebaut. Den Delay verkleinert ntp-gui erst beim letzten Schritt – ein kleiner Delay
-  macht das GPS für chrony attraktiver, das soll erst mit stimmendem Offset passieren.
+- **Einmal korrigieren:** Ohne PPS (GPS als Rückfallebene, Fehlerschranke „gemessen“) wird ein
+  deutlicher Versatz (ab 10 ms, über mindestens 6 h gegen mindestens zwei NTS-Quellen gemessen,
+  ohne Sprung im Messzeitraum) in **einem** Schritt ganz korrigiert – etwa nach „Offset
+  zurücksetzen“. Die passende Fehlerschranke schreibt ntp-gui im selben Neustart von chronyd mit.
+  Mit PPS oder als bevorzugte Quelle bleibt es bei Schritten von höchstens
+  `GPS_AUTOCAL_MAX_STEP_MS` (Standard 5 ms) je 24 h. Den Delay verkleinert ntp-gui dort erst beim
+  letzten Schritt – ein kleiner Delay macht das GPS für chrony attraktiver, das soll erst mit
+  stimmendem Offset passieren.
+- **Kleinen Drifts folgen:** Kleinere Abweichungen zieht die Automatik nur nach einer ganzen
+  24-h-Messung nach, höchstens einmal je 24 h. Die Netzlaufzeit schwankt im Tageslauf um einige
+  Millisekunden; ein kürzeres Fenster sähe darin eine Drift, und der Offset pendelte hin und her.
+- **Nie während einer GNSS-Störung:** Meldet die Störungserkennung im Messzeitraum eine Warnung
+  oder Störung, ist die Automatik gesperrt (Phase „gesperrt wegen GNSS-Störung“) – ein Versatz,
+  den ein Spoofer verursacht, wird so nie eingerechnet.
 - **Im Zweifel ein Mensch:** Streut die Messung über 25 ms oder liegt sie über 0,5 s daneben,
   stimmt etwas Grundsätzliches nicht (falsches Gerät, wackelige Leitung). Dann gibt es nur
   einen Vorschlag.

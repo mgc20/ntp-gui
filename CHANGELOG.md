@@ -55,16 +55,35 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
   ohne Sperre, auch bei einem kleinen NMEA-Laufzeitsprung (10–15 ms). Wandert die GPS-Zeit um
   mindestens die Zeitschwelle (≥ 20 ms) von diesem Abstand weg oder liegt sie mehr als 1 s daneben,
   wird es wieder „Störung“. Die Ausnahme gilt nur ohne PPS und nur, solange das GPS seit Start bzw.
-  Änderung noch nie 15 Minuten brauchbar war.
+  Änderung noch nie 15 Minuten brauchbar war. Ein Neustart von ntp-gui setzt nur eine Ausnahme fort,
+  die vorher schon galt (sie steht mit dem Zeitanker in SQLite) – er macht aus einer erkannten
+  Störung nie einen „Kalibrierfehler“. Nach einer „Störung“ gibt es bis zur nächsten Änderung der
+  GPS-Einstellungen keine Ausnahme mehr.
 - **Langsam ziehender Spoofer wird wieder erkannt:** War das GPS brauchbar und wird es ohne
   Einstellungsänderung zum Falseticker, gilt wie in 1.5.0 „Störung“ nach 5 Minuten mit ≥ 2
-  NTS-Quellen – auch wenn die Zeit langsamer als 10 ms/h wegzieht und der Zeitabgleich mitwandert.
+  NTS-Quellen. Zieht ein Spoofer so langsam (wenige ms je Stunde), dass die mitwachsende
+  Fehlerschranke chrony nie „x“ melden lässt, fällt er trotzdem auf: Der Zeitanker der
+  Störungserkennung darf höchstens 30 ms von seinem Startwert (Start bzw. letzte Änderung der
+  GPS-Einstellungen) wegwandern, danach wird es „Störung“ – spätestens bei rund 50 ms statt (bisher
+  unentdeckt) bis 500 ms.
   Der Hinweistext sagt nur noch „vermutlich ein Kalibrierfehler“ (und nur mit NTS-Vergleich) und
   rät, danach Antenne und Umgebung zu prüfen.
 - **Automatische Kalibrierung rechnet keine GNSS-Störung ein:** Meldet die Störungserkennung gerade
-  ein starkes Signal, hält die GPS-Sperre oder gab es im Messzeitraum eine „Störung“, wird der
-  Offset nicht automatisch geändert, nur vorgeschlagen. Der Schritt in einem Zug setzt zusätzlich
-  voraus, dass der Messzeitraum keinen Sprung enthält.
+  „Warnung“, „Störung“ oder unnatürlich gleichmäßige Signale, hält die GPS-Sperre oder gab es im
+  Messzeitraum „Warnung“ oder „Störung“, wird der Offset nicht automatisch geändert. Die GPS-Seite
+  zeigt dann „gesperrt wegen GNSS-Störung – erst Antenne/Umgebung prüfen“ statt eines Datums und
+  lädt nicht zum Übernehmen ein; „Vorschlag übernehmen“ fragt in dieser Lage nach. Der Schritt in
+  einem Zug setzt zusätzlich voraus, dass der Messzeitraum keinen Sprung enthält.
+- **Fehlerschranke steigt nicht mehr stündlich in kleinen Schritten:** Jede neue Schranke bekommt
+  25 % Reserve auf den Messwert. Bisher startete schon 1 ms mehr Streuung chronyd erneut neu
+  (± 64 → ± 80 ms eine Stunde später).
+- **GPS ohne PPS rückt nicht vor die NTS-Quellen:** Die Fehlerschranke wird nie enger als das
+  1,5-Fache der Root Distance der besten genutzten NTS-Quelle – sonst wählte chrony das NMEA-GPS
+  und stellte die Uhr danach.
+- **Offset-Änderung von Hand sofort erkannt:** Die automatische Kalibrierung nimmt den genauen
+  Zeitpunkt aus der Messschleife – die GPS-Seite nannte vorher bei jedem Aufruf einen anderen
+  Messbeginn und ein wanderndes Datum. Nach einer Änderung von Hand gilt die Pendel-Sperre
+  (doppelte Schwelle für die Gegenrichtung) nicht mehr, die Korrektur in einem Schritt also schon.
 - **Kalibrierung hat auch Daten, solange chrony das GPS als Falseticker verwirft:** Messwerte mit
   „x“ zählen für den Offset, wenn mindestens zwei genutzte Netzquellen dagegenstehen. Vorschlag und
   schnelle Korrektur kommen so nach etwa 6 Stunden, ohne dass erst die Fehlerschranke stündlich
@@ -84,14 +103,21 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
   „Dashboard über unverschlüsseltes HTTP“ erscheint. Wie alles im Paket läuft sie durch den
   Datenschutzfilter: Absender-Adressen in den Texten werden zu `client-NN` bzw. `<öffentliche-IP>`,
   Positionen werden entfernt.
-- **Automatische Kalibrierung ohne PPS deutlich schneller:** Ist das GPS die Rückfallebene
-  (Fehlerschranke „gemessen“, Rolle nicht „bevorzugen“) und liegt es deutlich daneben (≥ 10 ms und
-  ≥ 3 × Schwelle, gemessen über ≥ 6 h, ≥ 2 genutzte NTS-Quellen), korrigiert sie den ganzen Versatz
-  in einem Schritt statt 5 ms je 24 h. Mit PPS bleibt es bei kleinen Schritten.
-- **GPS-Seite sagt, was die automatische Kalibrierung als Nächstes tut**, und bietet nach einer
-  Offset-Änderung von Hand „Vorschlag übernehmen“ direkt im Hinweis an. Ohne PPS nennt der Plan das
-  Datum der schnellen Korrektur (Messbeginn + 6 h) und getrennt, wann ein kleiner Schritt frühestens
-  käme.
+- **Automatische Kalibrierung: einfacher Ablauf – messen → einmal korrigieren → kleinen Drifts
+  folgen.** Ist das GPS die Rückfallebene (ohne PPS, Fehlerschranke „gemessen“, Rolle nicht
+  „bevorzugen“) und liegt es deutlich daneben (≥ 10 ms und ≥ 3 × Schwelle, gemessen über ≥ 6 h,
+  ≥ 2 genutzte NTS-Quellen), korrigiert sie den ganzen Versatz in einem Schritt statt 5 ms je 24 h –
+  und schreibt die passende Fehlerschranke im selben Neustart von chronyd mit (nach „Offset
+  zurücksetzen“ zwei statt vier Neustarts). Mit PPS bleibt es bei kleinen Schritten. Kleinen Drifts
+  folgt sie nur nach einer ganzen 24-h-Messung: Tagesschwankungen der Netzlaufzeit ließen den Offset
+  sonst hin- und herpendeln (+2,7 ms, einen Tag später −2,8 ms).
+- **GPS-Seite zeigt die Phase der automatischen Kalibrierung** – „misst (2,1 von 6 h)“, „korrigiert
+  bei nächster Prüfung (≈ 14:05)“, „kalibriert – folgt nur kleinen Drifts“ oder „gesperrt wegen
+  GNSS-Störung“ – samt nächstem Schritt. Steht nichts an, nennt sie auch kein Datum (bisher
+  „nächste mögliche Änderung: jetzt“, bei jedem Aufruf eine Stunde später). Nach einer
+  Offset-Änderung von Hand bietet sie „Vorschlag übernehmen“ direkt im Hinweis an. Die Texte
+  (Einstellung, Hilfe, README) beschreiben den neuen Ablauf; der GNSS-Hinweis „vermutlich ein
+  Kalibrierfehler“ sagt im Modus „automatisch“, dass sie das selbst korrigiert.
 - **Klarere Ereignistitel bei unstetem Empfang:** „GPS-Fix seit 10 min weg (vorher 50 Fix-Wechsel in
   2 h 31 min)“ und „GPS-Empfang wieder stetig – seit 1 h kein Fix-Wechsel (vorher …)“. Die Felder im
   Ereignis bleiben, neu ist `outcome` („ruhig“ oder „fix_weg“).

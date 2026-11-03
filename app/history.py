@@ -744,6 +744,7 @@ def calibrate(samples: list[dict], gps_name: str, current_offset: float,
         bias=median, spread=mad, spread_p95=honest.get("p95_abs"),
         suggested_offset=round(current_offset + median, 4),
         suggested_delay=honest.get("delay", gpsquality.DEFAULT_DELAY),
+        suggested_precision=honest.get("precision"),
         series=[{"t": t, "d": d} for t, d in zip(times[-600:], diffs[-600:])],
         half_shift=_half_shift(diffs, times),
     )

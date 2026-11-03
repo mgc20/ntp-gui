@@ -1929,7 +1929,8 @@ def main() -> None:
               "das Dashboard läuft ohne Authentifizierung.", flush=True)
 
     autocal.configure(history=HISTORY, trigger_reload=trigger_reload)
-    gpsquality.configure(history=HISTORY, trigger_reload=trigger_reload)
+    gpsquality.configure(history=HISTORY, trigger_reload=trigger_reload,
+                         net_distance=lambda: gpsquality.nts_distance(chrony.detailed_sources()))
     threading.Thread(target=collector, daemon=True, name="collector").start()
     threading.Thread(target=loop_guard_runner, daemon=True, name="loopguard").start()
     threading.Thread(target=hardware_refresher, daemon=True, name="hardware").start()

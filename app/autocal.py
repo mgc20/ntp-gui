@@ -32,13 +32,19 @@ Regeln (bewusst vorsichtig – lieber eine Änderung zu wenig als eine falsche):
      10-s-Takt hängen stark zusammen (Netzlaufzeit ändert sich langsam), darum
      zählt höchstens eine Messung je 10 Minuten. Zeigt die neue Korrektur in die
      Gegenrichtung der letzten automatischen Änderung (innerhalb von 7 Tagen),
-     gilt die doppelte Schwelle – so pendelt der Offset nicht hin und her.
+     gilt die doppelte Schwelle – so pendelt der Offset nicht hin und her. Wurde der Offset seit
+     dieser Änderung von Hand verstellt, gilt das nicht (es gibt nichts umzukehren).
   5. Streuung über 25 ms oder Abweichung über 0,5 s: nichts automatisch ändern,
      nur vorschlagen – da stimmt etwas Grundsätzliches nicht (falsches Gerät,
      stark schwankende Leitung), das soll ein Mensch ansehen.
+  Ablauf (1.5.1, auf der GPS-Seite als „Phase“ sichtbar): messen → einen deutlichen
+  Versatz (≥ 10 ms und ≥ 3 × Schwelle) korrigieren → danach nur kleinen Drifts folgen.
   6. Höchstens eine automatische Änderung je 24 h (auch eine Rücknahme startet
      die 24 h neu), Schrittweite höchstens gps_autocal_max_step_ms. Größere
-     Abweichungen werden über mehrere Tage in Schritten abgebaut.
+     Abweichungen werden mit PPS über mehrere Tage in Schritten abgebaut. Einer
+     kleinen Drift (unter dem deutlichen Versatz) folgt die Automatik nur nach einer
+     ganzen 24-h-Messung (SMALL_MIN_SECONDS): Die Netzlaufzeit schwankt im Tageslauf
+     um einige ms, ein 6-h-Fenster sähe darin eine Drift, und der Offset pendelte.
      Ausnahme (1.5.1) – GPS ohne PPS als Rückfallebene (Fehlerschranke „gemessen“,
      Rolle nicht „bevorzugen“): Ist der Versatz deutlich (≥ 10 ms und ≥ 3 × Schwelle),
      über ≥ 6 h gemessen und widersprechen jetzt ≥ 2 genutzte NTS-Quellen (im
@@ -51,11 +57,12 @@ Regeln (bewusst vorsichtig – lieber eine Änderung zu wenig als eine falsche):
      Der Schritt in einem Zug setzt außerdem voraus, dass der Messzeitraum keinen Sprung
      enthält (Median der ersten und der zweiten Hälfte liegen höchstens max(10 ms,
      |Versatz|/3) auseinander).
-  6a. GNSS-Störung (1.5.1): Meldet gnssguard gerade ein starkes Signal, hält die
-     GPS-Sperre oder gab es im Messzeitraum eine „Störung“, wird nichts automatisch
-     geändert, nur vorgeschlagen. Sonst könnte ein Spoofer, der die Zeit gleichbleibend
-     verschiebt, als Offset „eingerechnet“ werden. Ein schwacher Hinweis (Falseticker
-     nach „Offset zurücksetzen“) hält sie nicht auf.
+  6a. GNSS-Störung (1.5.1): Meldet gnssguard gerade „Warnung“, „Störung“ oder unnatürlich
+     gleichmäßige Signale, hält die GPS-Sperre oder gab es im Messzeitraum (gleitend, höchstens
+     das Messfenster) „Warnung“ oder „Störung“, wird nichts automatisch geändert, nur
+     vorgeschlagen. Sonst könnte ein Spoofer, der die Zeit gleichbleibend verschiebt, als Offset
+     „eingerechnet“ werden. Ein einzelner schwacher Hinweis (Falseticker nach „Offset
+     zurücksetzen“) hält sie nicht auf.
   7. Wirksamkeit: Vor jeder weiteren Änderung muss belegt sein, dass die letzte
      automatische Änderung (oder Rücknahme) wirklich läuft – laut
      RUN_DIR/reload.json (Neuladen „done“ nach der Änderung) bzw. laut dem
@@ -67,7 +74,10 @@ Regeln (bewusst vorsichtig – lieber eine Änderung zu wenig als eine falsche):
   8. Delay: Beim letzten Schritt (Rest unter der Schwelle) wird der Delay-
      Vorschlag aus calibrate() übernommen; vorher wird der Delay nie verkleinert
      (höchstens vergrößert) – ein kleiner Delay macht das GPS chrony gegenüber
-     attraktiver, das soll erst mit stimmendem Offset passieren.
+     attraktiver, das soll erst mit stimmendem Offset passieren. Im Modus
+     „Fehlerschranke: gemessen“ (ohne PPS) gilt gps_delay nicht; dort schreibt die
+     Korrektur in einem Schritt die ehrliche Schranke um den neuen Offset gleich mit
+     (gpsquality.adopt_calibration) – ein Neustart von chronyd für beides.
 
 Datenschutz: Protokoll und Ereignisse enthalten nur Offsets, Zeiten und
 Begründungen – keine Position, keine Quellnamen, keine Adressen.
@@ -108,6 +118,7 @@ FAST_FACTOR = 3.0              # … und mindestens dem Dreifachen der Schwelle,
 FAST_MIN_SECONDS = 6 * 3600.0  # … gemessen über mindestens 6 h,
 FAST_MIN_NTS = 2               # … gegen mindestens zwei genutzte NTS-Quellen,
 FAST_MAX_SHIFT_SHARE = 1 / 3   # … ohne Sprung im Messzeitraum (Median 1. ↔ 2. Hälfte ≤ max(10 ms, |Versatz|/3))
+SMALL_MIN_SECONDS = DAY - 3600.0  # kleinen Drifts (unter dem deutlichen Versatz) nur nach (fast) 24 h Messung folgen
 
 MODE_LABELS = {"off": "aus", "suggest": "vorschlagen", "auto": "automatisch"}
 MODE_TEXTS = {
@@ -115,10 +126,11 @@ MODE_TEXTS = {
            "du trotzdem jederzeit von Hand nutzen.",
     "suggest": "ntp-gui misst laufend und zeigt dir, sobald die Messung belastbar ist, einen "
                "passenden Offset. Übernehmen musst du ihn selbst – nichts ändert sich von allein.",
-    "auto": "ntp-gui stellt den Offset selbst nach – aber nur nach genug Messdauer, nur mit "
-            "vertrauenswürdigen Netzwerkquellen als Vergleich, höchstens einmal am Tag und in "
-            "kleinen Schritten. Jede Änderung steht unten und im Ereignisprotokoll und lässt sich "
-            "zurücknehmen.",
+    "auto": "ntp-gui stellt den Offset selbst nach, immer im selben Ablauf: messen → einen deutlichen "
+            "Versatz einmal korrigieren (ohne PPS in einem Schritt, mit PPS in kleinen Schritten) → danach "
+            "nur kleinen Drifts folgen, jeweils nach einer ganzen 24-h-Messung. Nur mit vertrauenswürdigen "
+            "Netzwerkquellen als Vergleich und nie während einer GNSS-Störung. Jede Änderung steht unten und "
+            "im Ereignisprotokoll und lässt sich zurücknehmen.",
 }
 
 _LOCK = threading.RLock()
@@ -272,9 +284,10 @@ def decide(cfg: dict, calibration_result: dict | None, last_change: dict | None,
     """
     mode = _mode(cfg)
     if mode == "off":
-        return _result("none", "Die automatische Kalibrierung ist ausgeschaltet.", cfg)
+        return _result("none", "Die automatische Kalibrierung ist ausgeschaltet.", cfg, phase="off")
     if not cfg.get("gps_enable"):
-        return _result("none", "Das GPS ist nicht eingeschaltet – es gibt nichts zu kalibrieren.", cfg)
+        return _result("none", "Das GPS ist nicht eingeschaltet – es gibt nichts zu kalibrieren.", cfg,
+                       phase="off")
     cal = calibration_result if isinstance(calibration_result, dict) else {}
     status = cal.get("status")
     duration = _num(cal.get("duration_seconds")) or 0.0
@@ -284,10 +297,10 @@ def decide(cfg: dict, calibration_result: dict | None, last_change: dict | None,
     if status == "insufficient" or status is None:
         return _result("none", "Noch zu wenige gemeinsame Messungen von GPS und Netzwerkquellen. "
                        "Es braucht GPS-Werte und gleichzeitig mindestens eine genutzte Netzwerkquelle.",
-                       cfg, **base)
+                       cfg, phase="measure", **base)
     if status == "preliminary":
         return _result("none", f"Erst {_hours(duration)} gemessen – für einen belastbaren Wert "
-                       f"wartet ntp-gui mindestens {_hours(min_hours * 3600)}.", cfg, **base)
+                       f"wartet ntp-gui mindestens {_hours(min_hours * 3600)}.", cfg, phase="measure", **base)
 
     bias = _num(cal.get("bias"))
     spread = _num(cal.get("spread"))
@@ -308,14 +321,14 @@ def decide(cfg: dict, calibration_result: dict | None, last_change: dict | None,
 
     if status == "calibrated":
         return _result("none", "Das GPS ist gut kalibriert – die Abweichung liegt im Rauschen.",
-                       cfg, **base)
+                       cfg, phase="calibrated", **base)
     if status != "ready" or bias is None or spread is None:
         return _result("none", "Das Kalibrierergebnis ist unvollständig – es wird nichts geändert.",
-                       cfg, **base)
+                       cfg, phase="waiting", **base)
     if duration < min_hours * 3600:
         return _result("none", f"Erst {_hours(duration)} von {_hours(min_hours * 3600)} Mindest-"
                        "Messdauer seit der letzten Änderung – mehrere Stunden glätten Tages"
-                       "schwankungen der Netzlaufzeit.", cfg, **base)
+                       "schwankungen der Netzlaufzeit.", cfg, phase="measure", **base)
 
     # --- Vergleichsquellen -------------------------------------------------
     ref = cal.get("reference") if isinstance(cal.get("reference"), dict) else {}
@@ -326,16 +339,17 @@ def decide(cfg: dict, calibration_result: dict | None, last_change: dict | None,
                          "window_median": window_median}
     if current_network is None:
         return _result("none", "Keine Angaben zu den Netzwerkquellen – ohne geprüften Vergleich "
-                       "wird nichts geändert.", cfg, **base)
+                       "wird nichts geändert.", cfg, phase="waiting", **base)
     if current_network < 1:
         return _result("none", "Gerade ist keine Netzwerkquelle nutzbar – das GPS ist die einzige "
                        "Quelle (Internet weg?). Ohne Vergleich lässt sich die Verspätung nicht "
-                       "messen, darum bleibt alles, wie es ist.", cfg, **base)
+                       "messen, darum bleibt alles, wie es ist.", cfg, phase="waiting", **base)
     window_count = window_median if window_median is not None else current_network
     if window_count < 2 and current_nts < 1:
         return _result("none", "Als Vergleich diente nur eine einzige Netzwerkquelle ohne NTS. "
                        "Geht genau diese falsch, wäre auch die Kalibrierung falsch – nötig sind "
-                       "mindestens zwei genutzte Netzwerkquellen oder eine mit NTS.", cfg, **base)
+                       "mindestens zwei genutzte Netzwerkquellen oder eine mit NTS.", cfg, phase="waiting",
+                       **base)
 
     # --- Schwelle mit Hysterese ---------------------------------------------
     thr = threshold(spread, samples, duration)
@@ -344,7 +358,10 @@ def decide(cfg: dict, calibration_result: dict | None, last_change: dict | None,
     if last_change and last_change.get("kind", "auto") == "auto" and last_t is not None \
             and now - last_t < REVERSAL_HORIZON:
         old, new = _num(last_change.get("old_offset")), _num(last_change.get("new_offset"))
-        if old is not None and new is not None and (new - old) * bias < 0:
+        # Nur, wenn der Offset noch der der letzten automatischen Änderung ist: Wurde er seitdem
+        # von Hand verstellt, kehrt eine Korrektur nichts um, was die Automatik getan hat.
+        untouched = new is not None and abs(current - new) <= OFFSET_EPS
+        if untouched and old is not None and (new - old) * bias < 0:
             thr *= REVERSAL_FACTOR
             reversal = True
     target = round(current + bias, 4)
@@ -353,14 +370,14 @@ def decide(cfg: dict, calibration_result: dict | None, last_change: dict | None,
         extra = " (doppelte Schwelle, weil die Korrektur die letzte Änderung umkehren würde)" \
             if reversal else ""
         return _result("none", f"Die Abweichung von {_signed_ms(bias)} liegt unter der Schwelle von "
-                       f"{_ms(thr)}{extra} – keine Änderung nötig.", cfg, **base)
+                       f"{_ms(thr)}{extra} – keine Änderung nötig.", cfg, phase="calibrated", **base)
     if not (OFFSET_LIMITS[0] <= target <= OFFSET_LIMITS[1]):
         return _result("none", f"Der rechnerische Offset {target} s läge außerhalb des erlaubten "
-                       "Bereichs von −2 bis 2 s. Prüfe Gerät und Einstellungen.", cfg, **base)
+                       "Bereichs von −2 bis 2 s. Prüfe Gerät und Einstellungen.", cfg, phase="check", **base)
 
     full_step_ms = round((target - current) * 1000, 3)
     suggestion = _result("suggest", "", cfg, new_offset=target, new_delay=round(suggested_delay, 4),
-                         step_ms=full_step_ms, **base)
+                         step_ms=full_step_ms, phase="suggest", **base)
     if mode == "suggest":
         suggestion["reason"] = (f"Das GPS liegt {_signed_ms(bias)} neben den Netzwerkquellen. "
                                 f"Vorschlag: Offset {target} s – übernimm ihn mit „Vorschlag übernehmen“.")
@@ -368,40 +385,52 @@ def decide(cfg: dict, calibration_result: dict | None, last_change: dict | None,
 
     # --- Modus „automatisch“ -------------------------------------------------
     if spread > MAX_SPREAD:
-        suggestion["reason"] = (f"Die Messwerte streuen um {_ms(spread)} – zu unruhig für eine "
-                                "automatische Änderung. Vorschlag zum Prüfen: Offset "
-                                f"{target} s.")
+        suggestion.update(phase="check", reason=(
+            f"Die Messwerte streuen um {_ms(spread)} – zu unruhig für eine automatische Änderung. "
+            f"Vorschlag zum Prüfen: Offset {target} s."))
         return suggestion
     if abs(bias) > MAX_AUTO_BIAS:
-        suggestion["reason"] = (f"Eine Abweichung von {_signed_ms(bias)} ist für einen USB-Empfänger "
-                                "ungewöhnlich groß (falsches Gerät? falsche Zeitzone im Empfänger?). "
-                                f"Automatisch wird nichts geändert; Vorschlag zum Prüfen: {target} s.")
+        suggestion.update(phase="check", reason=(
+            f"Eine Abweichung von {_signed_ms(bias)} ist für einen USB-Empfänger ungewöhnlich groß "
+            "(falsches Gerät? falsche Zeitzone im Empfänger?). Automatisch wird nichts geändert; "
+            f"Vorschlag zum Prüfen: {target} s."))
         return suggestion
     shift = _num(cal.get("half_shift"))
     steady = shift is None or abs(shift) <= max(FAST_MIN_BIAS, abs(bias) * FAST_MAX_SHIFT_SHARE)
     if shift is not None:
         base["half_shift_ms"] = round(shift * 1000, 3)
-    fast = (fast_allowed(cfg) and not reversal and abs(bias) >= max(FAST_MIN_BIAS, FAST_FACTOR * thr)
-            and duration >= FAST_MIN_SECONDS and current_nts >= FAST_MIN_NTS and window_count >= 2
-            and steady)
+    # Deutlicher Versatz (z. B. nach „Offset zurücksetzen“) → korrigieren; sonst eine kleine Drift.
+    clear = abs(bias) >= max(FAST_MIN_BIAS, FAST_FACTOR * thr)
+    fast = (fast_allowed(cfg) and not reversal and clear and duration >= FAST_MIN_SECONDS
+            and current_nts >= FAST_MIN_NTS and window_count >= 2 and steady)
     if fast:
         reason = (f"Ohne PPS ist das GPS die Rückfallebene: Es lag {_signed_ms(bias)} neben "
                   f"{int(window_count)} Netzwerkquelle(n), jetzt {int(current_nts)} davon mit NTS "
                   f"(Messung über {_hours(duration)}, Schwelle {_ms(thr)}) – deutlich und belastbar. "
                   f"Darum die ganze Korrektur in einem Schritt: Offset {current} s → {target} s.")
         return _result("apply", reason, cfg, new_offset=target, new_delay=round(suggested_delay, 4),
-                       step_ms=full_step_ms, final_step=True, fast=True, **base)
+                       step_ms=full_step_ms, final_step=True, fast=True, phase="correct", **base)
+    small_min = max(min_hours * 3600, SMALL_MIN_SECONDS)
+    if not clear and duration < small_min:
+        # Kleinen Drifts nur über einen ganzen Tag folgen: Die Netzlaufzeit schwankt im Tageslauf um
+        # einige ms – ein 6-h-Fenster sähe darin eine „Drift“, und der Offset pendelte hin und her.
+        next_at = now + (small_min - duration)
+        return _result("none", f"Kleine Abweichung von {_signed_ms(bias)}. Kleinen Drifts folgt die Automatik "
+                       f"nur nach einer ganzen 24-h-Messung (sie gleicht Tagesschwankungen der Netzlaufzeit aus) "
+                       f"– bisher {_hours(duration)}, Entscheidung frühestens am {_when(next_at)}.",
+                       cfg, phase="drift_wait", next_change_at=next_at, **base)
     if last_t is not None and now - last_t < AUTO_INTERVAL:
         next_at = last_t + AUTO_INTERVAL
         return _result("none", f"Abweichung {_signed_ms(bias)}. Die letzte automatische Änderung ist "
                        f"keine 24 h her – die nächste ist frühestens am {_when(next_at)} möglich.",
-                       cfg, next_change_at=next_at, **base)
+                       cfg, phase="step_wait", next_change_at=next_at, **base)
 
     max_step = max(0.0001, _cfg_float(cfg, "gps_autocal_max_step_ms", 5.0) / 1000)
     step = math.copysign(min(abs(bias), max_step), bias)
     new_offset = round(current + step, 4)
     if abs(new_offset - current) < OFFSET_EPS:
-        return _result("none", "Der Schritt wäre kleiner als 0,1 ms – keine Änderung.", cfg, **base)
+        return _result("none", "Der Schritt wäre kleiner als 0,1 ms – keine Änderung.", cfg,
+                       phase="calibrated", **base)
     remaining = target - new_offset
     final = abs(remaining) < thr
     new_delay = suggested_delay if final else max(current_delay, suggested_delay)
@@ -410,11 +439,11 @@ def decide(cfg: dict, calibration_result: dict | None, last_change: dict | None,
                   f"(Messung über {_hours(duration)}). Offset {current} s → {new_offset} s.")
     else:
         reason = (f"Das GPS lag {_signed_ms(bias)} neben {int(window_count)} Netzwerkquelle(n). "
-                  f"Erster Teilschritt von höchstens {_ms(max_step)}: Offset {current} s → "
+                  f"Teilschritt von höchstens {_ms(max_step)}: Offset {current} s → "
                   f"{new_offset} s; der Rest folgt frühestens in 24 h nach neuer Messung.")
     return _result("apply", reason, cfg, new_offset=new_offset, new_delay=round(new_delay, 4),
                    step_ms=round((new_offset - current) * 1000, 3), final_step=final,
-                   next_change_at=now + AUTO_INTERVAL, **base)
+                   phase="correct" if clear else "follow", next_change_at=now + AUTO_INTERVAL, **base)
 
 
 # ---------------------------------------------------------------------------
@@ -477,15 +506,23 @@ def _active_auto(state: dict) -> list[dict]:
     return [c for c in state.get("changes") or [] if c.get("kind") == "auto" and not c.get("rolled_back")]
 
 
-def _observe(state: dict, offset: float, now: float) -> dict:
-    """Merkt sich den Offset; ändert er sich (auch von Hand), beginnt die Messung neu."""
+def _observe(state: dict, offset: float, now: float, changed_at: float | None = None) -> dict:
+    """Merkt sich den Offset; ändert er sich (auch von Hand), beginnt die Messung neu.
+
+    changed_at: wann sich der Offset laut Messschleife geändert hat (gpsquality.note_offset,
+    sekundengenau). Sonst zählte erst der nächste stündliche Durchgang – und jeder Aufruf der
+    GPS-Seite dazwischen nannte einen anderen Beginn der Messung."""
     observed = state.get("observed")
     if not isinstance(observed, dict) or _num(observed.get("offset")) is None \
             or _num(observed.get("since")) is None:
         observed = {"offset": offset, "since": now, "first": True}
         state["observed"] = observed
     elif abs(float(observed["offset"]) - offset) > OFFSET_EPS:
-        observed = {"offset": offset, "since": now}
+        since = now
+        changed_at = _num(changed_at)
+        if changed_at is not None and float(observed["since"]) < changed_at <= now:
+            since = changed_at
+        observed = {"offset": offset, "since": since}
         state["observed"] = observed
     return observed
 
@@ -584,6 +621,8 @@ _DEPS: dict[str, Callable | None] = {
     "emit_event": None,        # (kind, level, title, data) -> None
     "check_active": None,      # (cfg, last_change) -> {"active", "reason", "since"}
     "guard_hold": None,        # (since_wall) -> None oder Grund (gnssguard: Störung im Messzeitraum)
+    "offset_since": None,      # (cfg, now) -> Zeitpunkt der letzten Offset-Änderung (gpsquality) oder None
+    "adopt_bound": None,       # (cfg, delay, precision, distance, now) -> neue Schranke (gpsquality) oder None
 }
 
 
@@ -642,6 +681,16 @@ def _deps(overrides: dict | None = None) -> dict:
             import gnssguard
             return gnssguard.GUARD.calibration_hold(since)
         deps["guard_hold"] = _hold
+    if deps.get("offset_since") is None:
+        def _offset_since(cfg, now):
+            import gpsquality
+            return gpsquality.note_offset(cfg, now)
+        deps["offset_since"] = _offset_since
+    if deps.get("adopt_bound") is None:
+        def _adopt(cfg, delay, precision, distance, now):
+            import gpsquality
+            return gpsquality.adopt_calibration(cfg, delay, precision, distance, now)
+        deps["adopt_bound"] = _adopt
     return deps
 
 
@@ -697,7 +746,11 @@ def _verify(cfg: dict, state: dict, deps: dict, now: float) -> dict:
 def _evaluate(cfg: dict, now: float, state: dict, deps: dict, cached: bool = False) -> dict:
     """Messung holen und entscheiden – ändert nur state["observed"]/["pending"], sonst nichts."""
     offset = _cfg_float(cfg, "gps_offset", 0.0)
-    observed = _observe(state, offset, now)
+    try:
+        changed_at = deps["offset_since"](cfg, now) if cfg.get("gps_enable") else None
+    except Exception:
+        changed_at = None
+    observed = _observe(state, offset, now, changed_at)
     active = None
     if _mode(cfg) != "off" and cfg.get("gps_enable"):
         active = _verify(cfg, state, deps, now)
@@ -710,14 +763,14 @@ def _evaluate(cfg: dict, now: float, state: dict, deps: dict, cached: bool = Fal
         reason = _NOT_ACTIVE
         if active.get("reason"):
             reason += " " + str(active["reason"])
-        decision = _result("none", reason, cfg, not_active=True)
+        decision = _result("none", reason, cfg, not_active=True, phase="waiting")
     elif window < 60 and observed.get("first"):
         decision = _result("none", "Die automatische Kalibrierung hat gerade zu messen begonnen. "
-                           "Erste Entscheidung nach der Mindest-Messdauer.", cfg)
+                           "Erste Entscheidung nach der Mindest-Messdauer.", cfg, phase="measure")
     elif window < 60:
         decision = _result("none", "Der Offset wurde gerade geändert. Die Messung beginnt "
                            f"{int(SETTLE_SECONDS // 60)} Minuten danach neu, damit chrony und der "
-                           "Medianfilter sich einschwingen.", cfg)
+                           "Medianfilter sich einschwingen.", cfg, phase="measure")
     else:
         try:
             getter = deps["get_calibration"]
@@ -731,23 +784,32 @@ def _evaluate(cfg: dict, now: float, state: dict, deps: dict, cached: bool = Fal
             cal["duration_seconds"] = window  # nie mehr Messdauer als das Fenster hergibt
         reference = dict(cal.get("reference") or {})
         try:
-            reference.update(summarize_sources(deps["get_sources"](), cfg.get("gps_refid") or "GPS"))
+            sources = deps["get_sources"]()
+            reference.update(summarize_sources(sources, cfg.get("gps_refid") or "GPS"))
+            import gpsquality
+            reference["nts_distance"] = gpsquality.nts_distance(sources)
         except Exception:
             pass  # ohne Quelleninfo verweigert decide() die Änderung
         cal["reference"] = reference
         decision = decide(cfg, cal, _last_auto_event(state), now)
+        decision["suggested_precision"] = _num(cal.get("suggested_precision"))
+        decision["nts_distance"] = _num(reference.get("nts_distance"))
     if decision["action"] == "apply":
+        # Gefragt wird für den Messzeitraum (gleitend, höchstens das Fenster plus Einschwingzeit):
+        # Eine Störung darin hält die Änderung auf; eine, die vor dem Fenster lag, nicht mehr.
+        since = max(float(observed["since"]), now - window - SETTLE_SECONDS)
         try:
-            hold = deps["guard_hold"](float(observed["since"]))
+            hold = deps["guard_hold"](since)
         except Exception as exc:
             hold = f"der Zustand der GNSS-Störungserkennung ist unbekannt ({exc})"
         if hold:
-            decision.update(action="suggest", guard_hold=hold, next_change_at=None,
+            decision.update(action="suggest", guard_hold=hold, next_change_at=None, phase="hold",
                             reason=f"Nicht automatisch übernommen: {hold}. Ein Versatz während einer "
                                    "möglichen Störung wird nie „wegkalibriert“ – prüfe Antenne und Umgebung. "
                                    + decision["reason"])
     if decision["action"] == "apply" and _readonly():
-        decision.update(action="suggest", reason=decision["reason"] + " Nicht übernommen: Die "
+        decision.update(action="suggest", phase="readonly", next_change_at=None,
+                        reason=decision["reason"] + " Nicht übernommen: Die "
                         "Einstellungen sind gesperrt (WEB_READONLY).")
     decision.update(info)
     return decision
@@ -772,6 +834,7 @@ def tick(cfg: dict, now: float | None = None, deps: dict | None = None,
                       f"GPS-Kalibrierung: neuer Vorschlag {decision['new_offset']} s",
                       {"new_offset": decision["new_offset"], "new_delay": decision["new_delay"],
                        "bias_ms": decision.get("bias_ms"), "reason": decision["reason"]})
+        decision.pop("nts_distance", None)   # Laufzeit zu Servern: nur für die Schranke, nicht speichern
         state["last_decision"] = dict(decision, t=now)
         state["last_tick"] = now
         try:
@@ -789,6 +852,7 @@ def _apply(cfg: dict, decision: dict, state: dict, deps: dict, now: float) -> di
     # gps_delay bliebe dort ohne Wirkung, eine Änderung wäre nur verwirrend.
     import gpsquality
     if gpsquality.managed(cfg):
+        decision["suggested_delay_bound"] = decision.get("new_delay")
         decision["new_delay"] = None
     if decision.get("new_delay") is not None and abs(decision["new_delay"] - old_delay) > 1e-9:
         changes["gps_delay"] = decision["new_delay"]
@@ -800,6 +864,17 @@ def _apply(cfg: dict, decision: dict, state: dict, deps: dict, now: float) -> di
         _emit(deps, "calibration", "warn", "GPS-Kalibrierung: Änderung nicht gespeichert",
               {"error": str(exc)})
         return decision
+    if decision.get("fast") and gpsquality.managed(cfg):
+        # Die ehrliche Schranke um den neuen Offset gleich mitschreiben: Sonst bliebe die alte, durch
+        # den Versatz aufgeblähte Schranke stundenlang stehen, und das Verkleinern kostete einen
+        # zweiten Neustart von chronyd. Der Neustart unten übernimmt beides.
+        try:
+            bound = deps["adopt_bound"](cfg, decision.get("suggested_delay_bound"), decision.get("suggested_precision"),
+                                        decision.get("nts_distance"), now)
+        except Exception:
+            bound = None
+        if bound:
+            decision["new_bound_delay"] = bound.get("delay")
     reloaded = False
     if result.get("restart"):
         try:
@@ -979,29 +1054,113 @@ def _manual_change(state: dict, current: float, now: float) -> dict | None:
     return {"offset": offset, "since": since, "measuring_since": since + SETTLE_SECONDS}
 
 
-def _plan(cfg: dict, mode: str, decision: dict, manual: dict | None, next_change_at: float | None,
-          fast: bool, step_at: float | None = None) -> str:
-    """Ein Satz: Was macht die automatische Kalibrierung als Nächstes? (GPS-Seite)"""
+def _clock(t: float) -> str:
+    return time.strftime("%H:%M", time.localtime(t))
+
+
+PHASE_TONES = {"off": "muted", "measure": "info", "correct": "good", "follow": "good", "calibrated": "good",
+               "drift_wait": "good", "step_wait": "info", "hold": "crit", "check": "warn", "waiting": "warn",
+               "suggest": "warn", "readonly": "muted"}
+
+
+def _phase(cfg: dict, mode: str, decision: dict, observed: dict, fast: bool, next_tick_at: float | None,
+           now: float, last_auto: dict | None = None) -> dict:
+    """Wo steht die automatische Kalibrierung? Für die GPS-Seite: Abzeichen (label), ein Satz (text)
+    und der nächste Zeitpunkt (at) – oder None, wenn gerade nichts ansteht.
+
+    Der Ablauf ist immer derselbe: messen → einen deutlichen Versatz korrigieren → danach nur
+    kleinen Drifts folgen. Die Phase kommt aus decide() (decision["phase"])."""
+    key = decision.get("phase") or ("off" if mode == "off" else "waiting")
+    if decision.get("change_id") is not None and key in {"correct", "follow"}:
+        key = "measure"          # gespeicherte Entscheidung ist schon umgesetzt: jetzt wird neu gemessen
+    auto = mode == "auto"
+    at = None
+    if key == "measure":
+        min_seconds = _cfg_float(cfg, "gps_autocal_min_hours", 6.0) * 3600
+        need = max(min_seconds, FAST_MIN_SECONDS) if (fast and auto) else min_seconds
+        since = _num(observed.get("since"))
+        start = None if since is None else since + SETTLE_SECONDS
+        done = 0.0 if start is None else max(0.0, now - start)
+        label = "misst"
+        text = str(decision.get("reason") or "Misst die Abweichung GPS ↔ Netz.")
+        if start is not None and start + need > now:
+            label = f"misst ({_hours(min(done, need)).replace(' h', '')} von {_hours(need)})"
+            at = start + need
+            pause = _num((last_auto or {}).get("t"))
+            if auto and not fast and pause is not None:
+                at = max(at, pause + AUTO_INTERVAL)   # behutsame Schritte: höchstens einer je 24 h
+            what = "nächste mögliche Änderung" if auto else "ein Vorschlag"
+            if start > now:
+                text = (f"Die Messung beginnt am {_when(start)} (15 min nach der Offset-Änderung) – {what} "
+                        f"frühestens am {_when(at)}.")
+            else:
+                text = f"Misst die Abweichung GPS ↔ Netz seit {_when(start)} – {what} frühestens am {_when(at)}."
+    elif key in {"correct", "follow"}:
+        at = next_tick_at if next_tick_at is not None and next_tick_at > now else now
+        label = f"korrigiert bei nächster Prüfung (≈ {_clock(at)})"
+        text = (f"Die nächste stündliche Prüfung (≈ {_clock(at)}) stellt den Offset von "
+                f"{_cfg_float(cfg, 'gps_offset', 0.0)} s auf {decision.get('new_offset')} s, wenn die Messung "
+                "dann noch dasselbe zeigt.")
+    elif key == "calibrated":
+        label = "kalibriert – folgt nur kleinen Drifts"
+        text = ("Das GPS stimmt mit dem Netz überein. " + (
+            "Die Automatik prüft stündlich und folgt nur noch kleinen Drifts – jeweils erst nach einer ganzen "
+            "24-h-Messung, damit Tagesschwankungen der Netzlaufzeit den Offset nicht hin- und herschieben."
+            if auto else "Es gibt nichts vorzuschlagen."))
+    elif key == "drift_wait":
+        at = _num(decision.get("next_change_at"))
+        label = "kalibriert – misst kleine Drift über 24 h"
+        text = (f"Eine kleine Abweichung ({_signed_ms((decision.get('bias_ms') or 0) / 1000)}) – ob sie bleibt, "
+                "zeigt erst eine ganze 24-h-Messung" + (f": Entscheidung frühestens am {_when(at)}." if at else "."))
+    elif key == "step_wait":
+        at = _num(decision.get("next_change_at"))
+        label = "nächster Schritt" + (f" am {_when(at)}" if at else "")
+        text = "Ein Teilschritt ist gemacht; der nächste folgt frühestens 24 h nach dem letzten" + (
+            f" (am {_when(at)})." if at else ".")
+    elif key == "hold":
+        label = "gesperrt wegen GNSS-Störung"
+        text = ("Gesperrt wegen GNSS-Störung – erst Antenne und Umgebung prüfen. Ein Versatz während einer "
+                "möglichen Störung (Spoofing) wird nie automatisch eingerechnet; die Sperre endet, wenn der "
+                "Messzeitraum keine Warnung oder Störung mehr enthält.")
+    elif key == "check":
+        label = "bitte prüfen"
+        text = "Die Messung ist zu ungewöhnlich für eine automatische Änderung – bitte ansehen: " + str(
+            decision.get("reason") or "")
+    elif key == "suggest":
+        label = "Vorschlag bereit"
+        text = f"Vorschlag: Offset {decision.get('new_offset')} s – im Modus „vorschlagen“ übernimmst du ihn selbst."
+    elif key == "readonly":
+        label = "nur lesen"
+        text = "Die Einstellungen sind gesperrt (WEB_READONLY) – es wird nichts automatisch geändert."
+    elif key == "off":
+        label, text = "aus", "Die automatische Kalibrierung ist aus."
+    else:
+        label = "wartet"
+        text = str(decision.get("reason") or "Gerade ist keine Änderung möglich.")
+    return {"key": key, "label": label, "tone": PHASE_TONES.get(key, "muted"), "text": text, "at": at}
+
+
+def _plan(cfg: dict, mode: str, phase: dict, manual: dict | None, fast: bool) -> str:
+    """Ein Absatz: Was macht die automatische Kalibrierung als Nächstes, und wie arbeitet sie? (GPS-Seite)"""
     step = _ms(max(0.0001, _cfg_float(cfg, "gps_autocal_max_step_ms", 5.0) / 1000))
-    how = (f"Ohne PPS korrigiert sie einen deutlichen, über mindestens 6 h gegen mindestens zwei NTS-Quellen "
-           f"gemessenen Versatz in einem Schritt, einen kleineren in Schritten von höchstens {step} je 24 h."
-           if fast else f"Sie korrigiert in Schritten von höchstens {step} je 24 h (mit PPS oder als bevorzugte "
-                        "Quelle bewusst behutsam).")
+    min_h = _hours(_cfg_float(cfg, "gps_autocal_min_hours", 6.0) * 3600)
     head = ""
     if manual:
         head = (f"Der Offset wurde am {_when(manual['since'])} von Hand auf {manual['offset']} s gesetzt. "
                 f"Die Messung beginnt ab {_when(manual['measuring_since'])} neu. ")
     if mode == "suggest":
-        return head + "Im Modus „vorschlagen“ ändert sich nichts von allein – übernimm den Vorschlag selbst."
-    if decision.get("action") == "apply":
-        return head + "Die nächste Prüfung übernimmt die Korrektur. " + how
-    when = f"frühestens am {_when(next_change_at)}" if next_change_at else "nach der Mindest-Messdauer"
-    if fast and step_at:
-        when += (f" (bei deutlichem Versatz; ein kleiner Schritt frühestens am {_when(step_at)}, "
-                 "24 h nach der letzten automatischen Änderung)")
-    return head + f"Nächste mögliche automatische Änderung {when}. " + how + (
-        " Schneller geht es mit „Vorschlag übernehmen“ beim Kalibrier-Assistenten, sobald er genug Messdaten hat."
-        if manual else "")
+        return head + phase["text"] + " Im Modus „vorschlagen“ ändert sich nichts von allein."
+    how = (f"So arbeitet sie: messen (mindestens {_hours(max(_cfg_float(cfg, 'gps_autocal_min_hours', 6.0) * 3600, FAST_MIN_SECONDS))}) "
+           "→ einen deutlichen Versatz (ab 10 ms, gegen mindestens zwei NTS-Quellen) in einem Schritt ganz korrigieren "
+           f"→ danach nur kleinen Drifts folgen, höchstens {step} je Tag und nur nach einer ganzen 24-h-Messung."
+           if fast else
+           f"So arbeitet sie: messen (mindestens {min_h}) → in Schritten von höchstens {step} je 24 h korrigieren "
+           "(mit PPS, als bevorzugte Quelle oder mit Fehlerschranke von Hand bewusst behutsam) → danach nur kleinen "
+           "Drifts folgen, jeweils nach einer ganzen 24-h-Messung.")
+    tail = ""
+    if manual and phase["key"] not in {"hold", "check"}:
+        tail = " Schneller geht es mit „Vorschlag übernehmen“ beim Kalibrier-Assistenten, sobald er genug Messdaten hat."
+    return head + phase["text"] + " " + how + tail
 
 
 def api_status(cfg: dict | None = None, now: float | None = None, fresh: bool = False,
@@ -1022,27 +1181,15 @@ def api_status(cfg: dict | None = None, now: float | None = None, fresh: bool = 
     if fresh or not isinstance(decision, dict):
         try:
             decision = dict(_evaluate(cfg, now, state, _deps(deps), cached=True), t=now)
+            decision.pop("nts_distance", None)
         except Exception as exc:
             decision = {"action": "none", "reason": f"Prüfung fehlgeschlagen: {exc}", "t": now}
-    last_auto = _last_auto_event(state)
-    next_change_at = None
     fast = fast_allowed(cfg)
     observed = state.get("observed") or {}
-    min_seconds = _cfg_float(cfg, "gps_autocal_min_hours", 6.0) * 3600
-    step_at = None
-    if mode == "auto":
-        next_change_at = now
-        pause_at = (float(last_auto["t"]) + AUTO_INTERVAL
-                    if last_auto and _num(last_auto.get("t")) is not None else None)
-        # Ohne PPS darf ein deutlicher Versatz ohne 24-h-Pause korrigiert werden (decide, Punkt 6):
-        # dann zählt nur die Messdauer seit der letzten Änderung; die 24 h gelten nur für kleine Schritte.
-        if pause_at is not None and not fast:
-            next_change_at = max(now, pause_at)
-        if _num(observed.get("since")) is not None:
-            wait = max(min_seconds, FAST_MIN_SECONDS) if fast else min_seconds
-            next_change_at = max(next_change_at, float(observed["since"]) + SETTLE_SECONDS + wait)
-        if fast and pause_at is not None and pause_at > next_change_at:
-            step_at = pause_at
+    last_tick = _num(state.get("last_tick"))
+    next_tick_at = (last_tick + TICK_INTERVAL) if last_tick is not None else None
+    phase = _phase(cfg, mode, decision, observed, fast, next_tick_at, now, _last_auto_event(state))
+    next_change_at = phase["at"] if mode == "auto" else None
     active = _active_auto(state)
     current = _cfg_float(cfg, "gps_offset", 0.0)
     rollback_info = {"possible": False, "reason": "Es gibt keine automatische Änderung zum Zurücknehmen."}
@@ -1056,12 +1203,12 @@ def api_status(cfg: dict | None = None, now: float | None = None, fresh: bool = 
             rollback_info = {"possible": True, "change_id": newest.get("id"),
                              "restores_offset": newest.get("old_offset"),
                              "available_steps": len(active)}
-    last_tick = _num(state.get("last_tick"))
     manual = _manual_change(state, current, now)
     return {
         "fast_allowed": fast,
         "manual_change": manual,
-        "plan": _plan(cfg, mode, decision, manual, next_change_at, fast, step_at) if mode != "off" else None,
+        "phase": phase if mode != "off" else None,
+        "plan": _plan(cfg, mode, phase, manual, fast) if mode != "off" else None,
         "mode": mode,
         "mode_label": MODE_LABELS[mode],
         "mode_text": MODE_TEXTS[mode],
@@ -1073,7 +1220,7 @@ def api_status(cfg: dict | None = None, now: float | None = None, fresh: bool = 
         "decision": decision,
         "next_change_at": next_change_at,
         "last_tick": last_tick,
-        "next_tick_at": (last_tick + TICK_INTERVAL) if last_tick is not None else None,
+        "next_tick_at": next_tick_at,
         "changes": list(reversed(state.get("changes") or []))[:20],
         "rollback": rollback_info,
         "readonly": _readonly(),

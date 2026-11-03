@@ -910,13 +910,14 @@ SCHEMA: list[dict] = [
            _as_choice("off", "suggest", "auto"), env="GPS_AUTOCAL", restart=RESTART_NONE,
            options=[("off", "aus – nichts vorschlagen, nichts ändern"),
                     ("suggest", "vorschlagen – du entscheidest per Klick"),
-                    ("auto", "automatisch – behutsam selbst nachstellen")],
+                    ("auto", "automatisch – messen, einmal korrigieren, Drifts folgen")],
            help="USB-GPS-Empfänger liefern die Zeit (NMEA) mit einer festen Verspätung von "
                 "typisch 20–150 ms. ntp-gui misst sie laufend gegen deine Netzwerkquellen. "
                 "„Vorschlagen“ zeigt dir den passenden Offset, du übernimmst ihn selbst. "
-                "„Automatisch“ stellt ihn nach, aber nur in kleinen Schritten, nur nach genug "
-                "Messdauer und mit Eintrag im Ereignisprotokoll – jede Änderung lässt sich "
-                "dort zurücknehmen. Wirkt ohne Neustart; erst das Übernehmen eines neuen "
+                "„Automatisch“ stellt ihn nach: messen → einen deutlichen Versatz einmal "
+                "korrigieren → danach nur kleinen Drifts folgen (nach je 24 h Messung), nie "
+                "während einer GNSS-Störung, mit Eintrag im Ereignisprotokoll – jede Änderung "
+                "lässt sich dort zurücknehmen. Wirkt ohne Neustart; erst das Übernehmen eines neuen "
                 "Offsets startet chronyd neu."),
     _field("gps_autocal_max_step_ms", "gps", "Größter Kalibrierschritt", "float", 5.0,
            _as_number(float, 0.1, 50.0), env="GPS_AUTOCAL_MAX_STEP_MS", unit="ms",
