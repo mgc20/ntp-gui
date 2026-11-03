@@ -21,22 +21,35 @@ nötig.
 | **Host-Kopf unverändert weitergeben** (Standard bei Caddy, NPM, Zoraxy, Traefik) | ntp-gui vergleicht beim Speichern die Herkunft (`Origin`) mit dem Host. Schreibt der Proxy den Host um, lehnt ntp-gui jede Änderung ab („Anfrage abgelehnt (nur aus dem Dashboard heraus)“). |
 | **`WEB_BIND=127.0.0.1`**, wenn der Proxy auf demselben Host läuft | Dann ist das Dashboard nur noch über HTTPS erreichbar, nicht mehr nebenher über `http://host:8080`. Läuft der Proxy auf einem anderen Gerät, `WEB_BIND` lassen und Port 8080 per Firewall nur für den Proxy öffnen. |
 | **`TRUSTED_PROXIES`** = Adresse des Proxys | Nur dann glaubt ntp-gui `X-Forwarded-For` und `X-Forwarded-Proto`: Das Zugriffsprotokoll (`WEB_ACCESS_LOG=true`) nennt den Browser statt des Proxys, und der HTTPS-Hinweis erkennt den verschlüsselten Weg. Standard ist leer – **niemandem trauen**, sonst könnte jeder Browser eine falsche Adresse vorgeben. Nie ein ganzes Netz eintragen, nur den Proxy (`/32` bzw. `/128`). Über Anmeldung und Zugriff entscheiden die Köpfe nie. |
-| **`WEB_ALLOWED_HOSTS`**, wenn ohne Passwort | Ohne Passwort beantwortet ntp-gui nur IP-Adressen, einteilige Namen und lokale Endungen (`.lan`, `.local`, `.home.arpa`, `.internal` …) – Schutz vor DNS-Rebinding. Ein Name wie `zeit.example.com` muss dann in `WEB_ALLOWED_HOSTS`. Mit Passwort gilt jeder Name. |
+| **Erlaubte Namen** bzw. **`WEB_ALLOWED_HOSTS`**, wenn ohne Passwort | Ohne Passwort beantwortet ntp-gui nur IP-Adressen, einteilige Namen und lokale Endungen (`.lan`, `.local`, `.home.arpa`, `.internal` …) – Schutz vor DNS-Rebinding. Ein Name wie `zeit.example.com` muss dann unter **Einstellungen → Dashboard → Erweitert → Erlaubte Namen** oder in `WEB_ALLOWED_HOSTS` stehen (beide gelten). Mit Passwort gilt jeder Name. Die Vollbild-Uhr `/clock` mit „Vollbild-Uhr ohne Anmeldung“ antwortet über jeden Namen. |
 
 `TRUSTED_PROXIES` lässt sich auch im Dashboard setzen: **Einstellungen → Dashboard → Erweitert →
 Vertrauenswürdige Proxys**.
 
-## Variante A: Caddy als Begleiter (fertige Vorlage)
+## Variante A: Caddy als eigener Stack (fertiges Beispiel)
 
-In `docker-compose.all-in-one.yml` steht der auskommentierte Block **[OPTION HTTPS mit Caddy]**:
-ein Dienst `caddy`, das Volume `caddy-data` und bei ntp-gui die zwei Zeilen `WEB_BIND` und
-`TRUSTED_PROXIES`. Einkommentieren nach der Regel oben in der Datei (die drei Zeichen `#  `
-löschen), den Namen `zeitserver.lan` anpassen, `docker compose up -d`. Fertig ist
-`https://zeitserver.lan`.
+Caddy steht bewusst **nicht** in den Compose-Vorlagen von ntp-gui, sondern läuft als eigener Stack
+daneben – in einem eigenen Ordner, mit eigenem `docker compose up -d`. So bleiben die Vorlagen
+schlank, und Caddy lässt sich unabhängig von ntp-gui aktualisieren oder durch einen anderen Proxy
+ersetzen.
 
-Was die Vorlage tut:
+1. **Bei ntp-gui** zwei Zeilen setzen (in `docker-compose.all-in-one.yml` der Block
+   **[OPTION Reverse Proxy auf diesem Rechner]**, sonst unter `environment:` ergänzen) und ntp-gui
+   mit `docker compose up -d` neu erzeugen:
 
+   ```yaml
+         WEB_BIND: "127.0.0.1"                    # Dashboard nur noch über den Proxy
+         TRUSTED_PROXIES: "127.0.0.1/32,::1/128"  # nur Caddy auf diesem Rechner glauben
+   ```
+
+2. **Caddy** in einem eigenen Ordner anlegen, z. B. `~/caddy/docker-compose.yml`, den Namen
+   `zeitserver.lan` anpassen (DNS-Eintrag im Router/AdGuard/Pi-hole oder die feste IP-Adresse des
+   Hosts) und dort `docker compose up -d`. Fertig ist `https://zeitserver.lan`.
+
+<!-- compose-caddy: tests/container-test.sh prüft dieses Beispiel als eigenständige Compose-Datei -->
 ```yaml
+# ~/caddy/docker-compose.yml – eigener Stack neben ntp-gui
+services:
   caddy:
     image: caddy:2.10.2
     container_name: ntp-gui-caddy
@@ -45,18 +58,26 @@ Was die Vorlage tut:
     command: ["caddy", "reverse-proxy", "--from", "https://zeitserver.lan", "--to", "127.0.0.1:8080", "--internal-certs"]
     volumes:
       - caddy-data:/data        # Zertifikate und Caddys eigene Zertifizierungsstelle
+
+volumes:
+  caddy-data:
 ```
+
+Hat ntp-gui einen anderen Port (`WEB_PORT`), `127.0.0.1:8080` anpassen. Endet der Name nicht auf
+`.lan`, `.local`, `.home.arpa`, `.internal` o. Ä. und ist kein Passwort gesetzt, ihn zusätzlich
+unter **Einstellungen → Dashboard → Erweitert → Erlaubte Namen** (oder in `WEB_ALLOWED_HOSTS`)
+eintragen – Schutz vor DNS-Rebinding.
 
 Caddy setzt `X-Forwarded-For` und `X-Forwarded-Proto` selbst und überschreibt, was ein Browser
 mitschickt. Caddy belegt auf dem Host 443/tcp und 80/tcp (Umleitung auf HTTPS). Ist Port 80 schon
 belegt (Pi-hole, AdGuard Home), `"--disable-redirects"` an die Liste hängen.
 
-### Zertifikat im LAN: `--internal-certs` (Standard der Vorlage)
+### Zertifikat im LAN: `--internal-certs` (Standard im Beispiel)
 
 Caddy betreibt eine eigene kleine Zertifizierungsstelle und stellt sich das Zertifikat selbst aus –
 ohne Internet, ohne öffentlichen Namen, auch für eine IP-Adresse (`--from https://192.168.1.10`).
 Browser kennen diese Stelle zunächst nicht und warnen. Einmal pro Gerät ihr Root-Zertifikat als
-vertrauenswürdig eintragen:
+vertrauenswürdig eintragen (Befehle im Ordner des Caddy-Stacks):
 
 ```sh
 docker compose cp caddy:/data/caddy/pki/authorities/local/root.crt ./caddy-root.crt
@@ -100,7 +121,7 @@ zeit.example.com {
 Im Compose-Dienst dann `command:` entfernen, die Datei mit `- ./Caddyfile:/etc/caddy/Caddyfile:ro`
 einhängen und `CF_API_TOKEN` als Umgebungsvariable setzen (Token nur mit Recht „DNS bearbeiten“ für
 diese eine Zone). Der Name muss im LAN auf den Host zeigen (DNS-Umschreibung im Router, AdGuard
-oder Pi-hole) – und ohne Passwort in `WEB_ALLOWED_HOSTS` stehen.
+oder Pi-hole) – und ohne Passwort unter „Erlaubte Namen“ bzw. in `WEB_ALLOWED_HOSTS` stehen.
 
 **Mehrere Namen** (z. B. Name und IP): ebenfalls per Caddyfile, Namen mit Komma trennen:
 
@@ -113,11 +134,13 @@ zeitserver.lan, 192.168.1.10 {
 
 ### ntp-gui im Bridge-Netzwerk
 
-Läuft ntp-gui ausnahmsweise nicht im Host-Netzwerk, beide Dienste ins selbe Compose-Netz stellen,
-`network_mode: host` bei Caddy weglassen, `ports: ["443:443", "80:80"]` setzen und
-`--to ntp-gui:8080`. `WEB_BIND` bleibt dann `0.0.0.0` (nur den Port 8080 nicht nach außen
-veröffentlichen), und `TRUSTED_PROXIES` ist die Adresse von Caddy im Compose-Netz – am einfachsten
-das Netz mit fester Adresse anlegen (`ipam`) und genau diese `/32` eintragen.
+Läuft ntp-gui ausnahmsweise nicht im Host-Netzwerk, beide Stacks in ein gemeinsames Docker-Netz
+stellen (`docker network create proxy`, in beiden Compose-Dateien unter `networks:` als
+`external: true` eintragen), bei Caddy `network_mode: host` weglassen, `ports: ["443:443", "80:80"]`
+setzen und `--to ntp-gui:8080`. `WEB_BIND` bleibt dann `0.0.0.0` (nur den Port 8080 nicht nach
+außen veröffentlichen), und `TRUSTED_PROXIES` ist die Adresse von Caddy in diesem Netz – am
+einfachsten das Netz mit fester Adresse anlegen (`--subnet`, bei Caddy `ipv4_address`) und genau
+diese `/32` eintragen.
 
 ## Variante B: vorhandener Proxy
 
@@ -197,6 +220,35 @@ Traefik-Hosts.
    änderst, und „Reverse Proxy erkannt, aber nicht eingetragen“ auch mit der ersten Anfrage über
    den eingetragenen Proxy. „Dashboard über unverschlüsseltes HTTP“ bleibt nach einem letzten
    HTTP-Zugriff noch eine Stunde stehen, wenn danach nur noch HTTPS kam – sonst 24 Stunden.
+5. **Hinweis bleibt trotz Proxy?** „Dashboard über unverschlüsseltes HTTP“ nennt seit 1.5.1, *wer*
+   ungeschützt kam und *warum* – mit Adresse, Art (Passwort/API-Schlüssel) und „zuletzt vor …“:
+   - **„direkt per HTTP“** – dieses Gerät ruft `http://<host>:8080` selbst auf: ein altes
+     Lesezeichen, die Home-Assistant-Integration, ein Homepage- oder Uptime-Kuma-Widget, ein Skript.
+     Auf die HTTPS-Adresse umstellen (oder `WEB_BIND=127.0.0.1`, wenn der Proxy auf demselben Host läuft).
+   - **„über den eingetragenen Proxy …, aber der Browser sprach mit ihm nur HTTP“** – beim Proxy die
+     Umleitung auf HTTPS („Force SSL“) einschalten.
+   - **„über …, das Proxy-Köpfe schickt, aber nicht in TRUSTED_PROXIES steht“** – Adresse eintragen.
+
+   - **„direkt per HTTP (eingetragener Proxy, aber ohne jeden Proxy-Kopf)“** – die Anfrage kam vom
+     eingetragenen Proxy, aber ohne `X-Forwarded-For`/`-Proto`: Entweder reicht der Proxy die Köpfe
+     nicht weiter (Einstellung siehe unten), oder ein Programm auf dem Proxy-Gerät ruft
+     `http://<host>:8080` direkt auf.
+
+   Schickt ein **eingetragener** Proxy zwar `X-Forwarded-For` oder nur `X-Real-IP`, aber weder
+   `X-Forwarded-Proto` noch `Forwarded: proto=…` (oder einen unbekannten Wert), kann ntp-gui nicht
+   erkennen, ob der Browser HTTPS benutzt. Dafür gibt es den eigenen Hinweis „Eingetragener Proxy
+   meldet nicht, ob HTTPS benutzt wurde“; er nennt, welche Köpfe der Proxy tatsächlich schickt.
+   Läuft der Proxy auf einem anderen Gerät, erscheint zusätzlich „Strecke Proxy → ntp-gui ist
+   unverschlüsselt“ – diese Strecke ist dann in jedem Fall HTTP.
+   Caddy, NPM, Zoraxy und Traefik setzen den Kopf von selbst; fehlt er, entfernt ihn meist eine
+   eigene Regel. Nginx/NPM („Advanced“): `proxy_set_header X-Forwarded-Proto $scheme;`, HAProxy:
+   `http-request set-header X-Forwarded-Proto https if { ssl_fc }`, Apache: nur im
+   `<VirtualHost *:443>` `RequestHeader set X-Forwarded-Proto "expr=%{REQUEST_SCHEME}"` – nie
+   pauschal `https`, sonst gilt auch ein HTTP-Zugriff als geschützt und die Warnung verschwindet
+   zu Unrecht.
+
+   Die Adressen stehen nur in der angemeldeten Übersicht – Hinweise gehen weder in
+   Benachrichtigungen noch ins Diagnosepaket.
 
 **Ausstiegsplan (E9):** Wird Caddy eingestellt, tut es jeder andere Reverse Proxy aus Variante B –
 ntp-gui hängt an keinem bestimmten.

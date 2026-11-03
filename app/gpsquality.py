@@ -19,11 +19,29 @@ Bausteine:
   * role(cfg, sources)         welche Rolle das GPS gerade spielt (für GPS-Seite, Hardware)
   * Antennen-Test              5 Minuten messen, umstellen, erneut messen, vergleichen
 
+Offset-Änderung (1.5.1): Die Schranke misst GPS − Netz, und darin steckt der eingestellte
+gps_offset. Ändert er sich (von Hand, „Auf Standard zurücksetzen“ oder durch die automatische
+Kalibrierung), passen ältere Messpunkte nicht mehr zur laufenden Konfiguration. Gewählt ist die
+einfachere sichere Variante: **Gemessen wird nur ab der letzten Offset-Änderung** (plus
+OFFSET_SETTLE für den Neustart von chronyd) – alte Werte werden nicht umgerechnet. Den Zeitpunkt
+merkt sich note_offset() (aus der Messschleife, bei jedem Messpunkt; nur ein Vergleich im
+Speicher, geschrieben wird nur bei einer Änderung). Die 12-h-Sperre fürs Verkleinern gilt nach
+einer Offset-Änderung als erfüllt, sobald OFFSET_SHRINK_MIN (5,5 h, fast das ganze 6-h-Messfenster)
+Messung danach vorliegt – die alte Schranke beruhte ja auf dem alten Offset. Kürzer nicht: Sonst
+gäbe jeder kleine Kalibrierschritt die Abkürzung frei, und ruhige Nachtstunden ergäben eine zu
+kleine Schranke, die tags wieder wächst (noch ein Neustart von chronyd). Größer wird sie wie immer höchstens stündlich.
+Dieselbe Grenze nutzt der Kalibrier-Assistent (/api/gps/calibration): Er mischt keine Werte
+vor und nach einer Offset-Änderung mehr.
+
 Sicherheit und Umkehrbarkeit: Größer wird die Schranke, sobald die gemessene Streuung die
-eingestellte übersteigt (höchstens ein Mal je Stunde, mit etwas Reserve – das GPS ist dann
-schlechter als angenommen; eine zu kleine Schranke wäre unehrlich). Kleiner wird sie nur
-bei deutlicher Änderung (Faktor 1,5) und höchstens alle 12 h, auch nicht in den 12 h nach
-einem Zurücksetzen. Immer mit Ereignis im Protokoll. Abschalten: Einstellung
+eingestellte übersteigt (höchstens ein Mal je Stunde – das GPS ist dann schlechter als
+angenommen; eine zu kleine Schranke wäre unehrlich). Kleiner wird sie nur bei deutlicher
+Änderung (Faktor 1,5) und höchstens alle 12 h, auch nicht in den 12 h nach einem Zurücksetzen.
+Jede neue Schranke ist der Messwert mal GROW_HEADROOM (1,25): Wächst die Streuung danach um
+1 ms, startet chronyd nicht gleich wieder neu (1.5.1, vorher stieg sie stündlich in kleinen
+Schritten). Ohne PPS wird sie außerdem nie enger als 1,5 × die Root Distance der besten genutzten
+NTS-Quelle (wenn bekannt): Sonst wählte chrony das NMEA-GPS den Netzquellen vor, und die
+„Rückfallebene“ stellte die Uhr. Immer mit Ereignis im Protokoll. Abschalten: Einstellung
 gps_bound_mode = „manual“ (dann gelten gps_delay/gps_precision wie bisher), Zurücksetzen
 auf den vorsichtigen Standard über POST /api/gps/bound {"action": "reset"}.
 
@@ -64,10 +82,14 @@ DELAY_MIN = 0.02              # NMEA ohne PPS: nie enger als ± 10 ms ansetzen
 DELAY_MAX = 1.0               # Obergrenze wie die Einstellung gps_delay
 PRECISION_MIN, PRECISION_MAX = 0.001, 0.1
 CHANGE_FACTOR = 1.5           # kleiner erst ab dieser Änderung (sonst Neustart ohne Nutzen)
-GROW_HEADROOM = 1.25          # größer: mindestens um diesen Faktor – weniger Neustarts bei Kriechen
+GROW_HEADROOM = 1.25          # jede neue Schranke: Messwert × diese Reserve – Kriechen startet chronyd nicht stündlich neu
+NET_DISTANCE_FACTOR = 1.5     # ohne PPS: Schranke nie enger als 1,5 × Root Distance der besten genutzten NTS-Quelle
 GROW_INTERVAL = 3600.0        # größer (GPS schlechter als angenommen): frühestens nach 1 h
 SHRINK_INTERVAL = 12 * 3600.0  # kleiner: frühestens nach 12 h
 TICK_INTERVAL = 3600.0
+OFFSET_SETTLE = 900.0         # nach einer Offset-Änderung: Neustart von chronyd + Medianfilter abwarten
+OFFSET_SHRINK_MIN = BOUND_HOURS * 3600.0 - 1800.0  # … kleiner erst mit (fast) einem ganzen Messfenster danach (5,5 h)
+OFFSET_EPS = 5e-5             # Offsets gelten als gleich (Rundung auf 0,1 ms, wie autocal)
 
 # --- Antennen-Test -----------------------------------------------------------------------
 ANTENNA_SECONDS = 300
@@ -345,15 +367,21 @@ def spread(diffs: list[float]) -> dict[str, Any] | None:
 
 
 def measure(samples: list[dict], gps_name: str, now: float | None = None,
-            hours: float = BOUND_HOURS) -> dict[str, Any]:
-    """Streuung der letzten Stunden aus dem Verlauf (Vergleich wie beim Kalibrier-Assistenten)."""
+            hours: float = BOUND_HOURS, not_before: float | None = None) -> dict[str, Any]:
+    """Streuung der letzten Stunden aus dem Verlauf (Vergleich wie beim Kalibrier-Assistenten).
+
+    not_before: nur Messpunkte ab diesem Zeitpunkt (letzte Offset-Änderung + Einschwingzeit)."""
     import history  # spät: history importiert dieses Modul für calibrate()
     now = time.time() if now is None else now
     since = now - hours * 3600.0
+    if not_before is not None and not_before > since:
+        since = not_before
     window = [s for s in samples or [] if isinstance(s, dict) and (_num(s.get("t")) or 0) >= since]
     diffs, times = history.gps_differences(window, gps_name, for_bound=True)
     duration = (times[-1] - times[0]) if times else 0.0
     result: dict[str, Any] = {"t": now, "hours": hours, "samples": len(diffs), "duration_seconds": duration}
+    if not_before is not None:
+        result["not_before"] = not_before
     if len(diffs) < BOUND_MIN_SAMPLES or duration < BOUND_MIN_SECONDS:
         result["status"] = "insufficient"
         return result
@@ -406,6 +434,50 @@ def save_state(state: dict[str, Any]) -> None:
     store.execute("INSERT INTO gps_bound(id, json) VALUES(1, ?) "
                   "ON CONFLICT(id) DO UPDATE SET json = excluded.json",
                   (json.dumps(state, separators=(",", ":")),))
+
+
+_OFFSET: dict[str, Any] = {"for": None, "value": None, "since": None}
+
+
+def note_offset(cfg: dict, now: float | None = None) -> float | None:
+    """Merkt sich gps_offset und wann er sich zuletzt geändert hat; gibt diesen Zeitpunkt zurück.
+
+    Aufruf aus der Messschleife bei jedem Messpunkt: im Normalfall nur ein Vergleich im Speicher.
+    Geschrieben wird beim ersten Aufruf (since = None: Änderungszeit unbekannt, alle Werte zählen)
+    und wenn sich der Offset ändert. GPS aus: nichts tun (legt keine Datenbank an)."""
+    if not cfg.get("gps_enable"):
+        return None
+    now = time.time() if now is None else now
+    value = _num(cfg.get("gps_offset"))
+    value = 0.0 if value is None else value
+    with _LOCK:
+        key = store.path()
+        if _OFFSET["for"] != key:
+            stored = load_state().get("offset")
+            stored = stored if isinstance(stored, dict) else {}
+            _OFFSET.update({"for": key, "value": _num(stored.get("value")), "since": _num(stored.get("since"))})
+            if _OFFSET["value"] is None:
+                _OFFSET.update(value=value, since=None)
+                _save_offset()
+        if abs(value - float(_OFFSET["value"])) > OFFSET_EPS:
+            _OFFSET.update(value=value, since=now)
+            _save_offset()
+        return _OFFSET["since"]
+
+
+def _save_offset() -> None:
+    try:
+        state = load_state()
+        state["offset"] = {"value": _OFFSET["value"], "since": _OFFSET["since"]}
+        save_state(state)
+    except Exception:
+        pass   # dann gilt die Änderung nur im Speicher – die Messung bleibt vorsichtig
+
+
+def offset_not_before(cfg: dict, now: float | None = None) -> float | None:
+    """Ab wann Messpunkte zum eingestellten Offset passen (letzte Änderung + Einschwingzeit)."""
+    since = note_offset(cfg, now)
+    return None if since is None else since + OFFSET_SETTLE
 
 
 def read_applied(db_path: str | None = None) -> dict[str, Any] | None:
@@ -496,12 +568,15 @@ def status_hint(cfg: dict) -> dict[str, Any]:
 # Stündliche Prüfung
 # =========================================================================================
 
-_DEPS: dict[str, Any] = {"history": None, "trigger_reload": None, "emit": None}
+_DEPS: dict[str, Any] = {"history": None, "trigger_reload": None, "emit": None, "net_distance": None}
 _LAST_TICK: dict[str, Any] = {"mono": None}
 
 
 def configure(history: Any = None, trigger_reload: Callable[[], bool] | None = None,
-              emit: Callable[..., Any] | None = None) -> None:
+              emit: Callable[..., Any] | None = None, net_distance: Callable[[], float | None] | None = None) -> None:
+    """net_distance: () → kleinste Root Distance der genutzten NTS-Quellen (s) oder None."""
+    if net_distance is not None:
+        _DEPS["net_distance"] = net_distance
     if history is not None:
         _DEPS["history"] = history
     if trigger_reload is not None:
@@ -530,14 +605,56 @@ def _since(t: Any, now: float) -> float | None:
     return since if since >= 0 else None
 
 
-def decide(measured: dict, applied: dict | None, now: float, reset_at: float | None = None) -> dict[str, Any]:
+def _target(delay: float, floor: float | None = None) -> float:
+    """Schranke, die gesetzt wird: Messwert mit Reserve, nie unter dem Netz-Mindestwert."""
+    target = _ceil_ms(delay * GROW_HEADROOM)
+    if floor is not None:
+        target = max(target, floor)
+    return min(DELAY_MAX, max(DELAY_MIN, target))
+
+
+def net_floor(distance: float | None) -> float | None:
+    """Kleinster Delay ohne PPS bei dieser Root Distance (s) der besten genutzten NTS-Quelle."""
+    distance = _num(distance)
+    if distance is None or distance <= 0:
+        return None
+    return min(DELAY_MAX, _ceil_ms(2.0 * NET_DISTANCE_FACTOR * distance))
+
+
+def nts_distance(sources: Any) -> float | None:
+    """Kleinste Root Distance (s) der genutzten („*“/„+“) NTS-Quellen aus chrony.detailed_sources().
+
+    Wie chrony sie rechnet: halbe Root- plus Peer-Laufzeit und die Dispersionen. None = unbekannt."""
+    best = None
+    for src in sources or []:
+        if not isinstance(src, dict) or src.get("mode") not in {"^", "="} or src.get("state") not in {"*", "+"}:
+            continue
+        auth = src.get("auth")
+        if not (src.get("authenticated") is True
+                or (isinstance(auth, dict) and str(auth.get("mode", "")).upper() == "NTS")):
+            continue
+        ntp = src.get("ntp") if isinstance(src.get("ntp"), dict) else {}
+        parts = [_num(ntp.get(k)) for k in ("root_delay", "peer_delay", "root_dispersion", "peer_dispersion")]
+        if parts[0] is None or parts[1] is None:
+            continue
+        dist = (parts[0] + parts[1]) / 2.0 + (parts[2] or 0.0) + (parts[3] or 0.0)
+        if dist > 0 and (best is None or dist < best):
+            best = dist
+    return best
+
+
+def decide(measured: dict, applied: dict | None, now: float, reset_at: float | None = None,
+           offset_changed_at: float | None = None, floor: Any = None) -> dict[str, Any]:
     """Reine Entscheidung: neue Schranke anwenden oder nicht (mit Grund).
 
     Größer (das GPS streut stärker als die eingestellte Schranke): sofort, sobald die Messung
-    darüber liegt – höchstens einmal je Stunde. Neue Schranke dann mindestens GROW_HEADROOM ×
-    die alte, damit langsames Kriechen nicht stündlich chronyd neu startet. Kleiner: nur bei
+    darüber liegt – höchstens einmal je Stunde. Jede neue Schranke ist GROW_HEADROOM × der Messwert,
+    damit langsames Kriechen nicht stündlich chronyd neu startet; floor (Delay aus der Root
+    Distance der Netzquellen, net_floor) begrenzt das Verkleinern nach unten. Kleiner: nur bei
     deutlicher Änderung (Faktor 1,5) und frühestens 12 h nach der letzten Änderung bzw. dem
-    letzten Zurücksetzen. Sprang die Uhr zurück (Zeitpunkt in der Zukunft), gilt „unbekannt“:
+    letzten Zurücksetzen. Wurde der Offset danach geändert (offset_changed_at), gilt die Sperre
+    als erfüllt, sobald OFFSET_SHRINK_MIN Messung nach der Änderung vorliegt (measure misst dann
+    nur diese). Sprang die Uhr zurück (Zeitpunkt in der Zukunft), gilt „unbekannt“:
     größer erlaubt (die sichere Richtung), kleiner gesperrt.
     Ergebnis bei apply: delay = die neue Schranke (Delay in Sekunden)."""
     if measured.get("status") != "measured":
@@ -554,14 +671,32 @@ def decide(measured: dict, applied: dict | None, now: float, reset_at: float | N
         if since is not None and since < GROW_INTERVAL:
             return {"apply": False, "reason": "Die Streuung ist größer als die eingestellte Schranke – die nächste "
                                               "Anpassung ist frühestens eine Stunde nach der letzten möglich."}
-        target = min(DELAY_MAX, max(new, _ceil_ms(current * GROW_HEADROOM)))
+        target = _target(new)
         return {"apply": True, "delay": target,
                 "reason": "Das GPS streut stärker als angenommen – die Schranke wird größer."}
     if new <= current / CHANGE_FACTOR:
+        if callable(floor):        # erst hier abfragen: kostet einen Aufruf von chronyc
+            try:
+                floor = floor()
+            except Exception:
+                floor = None
+        target = _target(new, _num(floor))
+        if target >= current - 1e-9:
+            return {"apply": False, "reason": "Die Streuung ist kleiner geworden, aber enger als jetzt wird die "
+                                              "Schranke nicht: Sonst wäre das GPS ohne PPS „besser“ als die "
+                                              "Netzquellen und stellte die Uhr."}
+        last_change = max(_num((applied or {}).get("t")) or -math.inf, reset_at if reset_at is not None else -math.inf)
+        after_offset = (since is not None and offset_changed_at is not None and offset_changed_at <= now
+                        and offset_changed_at > last_change
+                        and (_num(measured.get("duration_seconds")) or 0.0) >= OFFSET_SHRINK_MIN)
+        if after_offset:
+            return {"apply": True, "delay": target,
+                    "reason": "Der GPS-Offset wurde geändert und die Messung seitdem zeigt weniger Streuung – "
+                              "die Schranke wird kleiner."}
         if since is None or since < SHRINK_INTERVAL:
             return {"apply": False, "reason": "Die Streuung ist kleiner geworden – kleiner wird die "
                                               "Schranke höchstens alle 12 Stunden (auch nach einem Zurücksetzen)."}
-        return {"apply": True, "delay": new,
+        return {"apply": True, "delay": target,
                 "reason": "Das GPS streut weniger als angenommen – die Schranke wird kleiner."}
     return {"apply": False, "reason": "Die gemessene Streuung passt zur eingestellten Schranke."}
 
@@ -578,7 +713,12 @@ def tick(cfg: dict, now: float | None = None, samples: list[dict] | None = None)
             if samples is None:
                 hist = _DEPS.get("history")
                 samples = hist.snapshot(now - BOUND_HOURS * 3600.0) if hist is not None else []
-            measured = measure(samples, str(cfg.get("gps_refid") or "GPS"), now)
+            offset_since = note_offset(cfg, now)
+            if offset_since is not None and offset_since > now:
+                offset_since = None          # Uhr sprang zurück: Zeitpunkt unbrauchbar
+            measured = measure(samples, str(cfg.get("gps_refid") or "GPS"), now,
+                               not_before=None if offset_since is None else offset_since + OFFSET_SETTLE)
+            state = load_state()             # note_offset kann gerade geschrieben haben
             applied = _valid_applied(state.get("applied"))
             # Zeitpunkte in der Zukunft (Uhr lief vor und wurde korrigiert): auf jetzt kürzen,
             # sonst bliebe das Verkleinern bis dahin gesperrt.
@@ -588,7 +728,7 @@ def tick(cfg: dict, now: float | None = None, samples: list[dict] | None = None)
             reset_at = _num(state.get("reset_at"))
             if reset_at is not None and reset_at > now:
                 reset_at = state["reset_at"] = now
-            decision = decide(measured, applied, now, reset_at)
+            decision = decide(measured, applied, now, reset_at, offset_since, _floor)
             state["measured"] = measured
             state["decision"] = dict(decision, t=now)
             if decision["apply"]:
@@ -612,6 +752,48 @@ def tick(cfg: dict, now: float | None = None, samples: list[dict] | None = None)
             return decision
         except Exception as exc:  # nie die Messschleife stören
             return {"apply": False, "reason": f"Prüfung fehlgeschlagen: {exc}", "error": str(exc)}
+
+
+def _floor() -> float | None:
+    """Delay-Untergrenze aus den Netzquellen (None = unbekannt: dann gilt nur DELAY_MIN)."""
+    getter = _DEPS.get("net_distance")
+    if getter is None:
+        return None
+    try:
+        return net_floor(getter())
+    except Exception:
+        return None
+
+
+def adopt_calibration(cfg: dict, delay: Any, precision: Any, distance: float | None = None,
+                      now: float | None = None) -> dict[str, Any] | None:
+    """Die automatische Kalibrierung hat den Offset in einem Schritt korrigiert (ohne PPS): die
+    ehrliche Schranke um den neuen Offset gleich mitschreiben – ohne eigenen Neustart, er folgt
+    mit dem Offset. delay: Delay-Vorschlag aus calibrate() (Streuung um den Median). Gibt die neue
+    Schranke zurück oder None (nicht verwaltet, ungültig oder kein Unterschied)."""
+    now = time.time() if now is None else now
+    delay, precision = _num(delay), _num(precision)
+    if not managed(cfg) or delay is None:
+        return None
+    with _LOCK:
+        state = load_state()
+        applied = _valid_applied(state.get("applied"))
+        current = applied["delay"] if applied else DEFAULT_DELAY
+        target = _target(delay, net_floor(distance))
+        if abs(target - current) < 1e-9:
+            return None
+        precision = min(PRECISION_MAX, max(PRECISION_MIN, precision if precision is not None else
+                                           (applied or {}).get("precision", PRECISION_MAX)))
+        state["applied"] = {"delay": target, "precision": precision, "bound": delay / 2.0, "t": now,
+                            "source": "autocal"}
+        state["decision"] = {"apply": True, "t": now, "delay": target,
+                             "reason": "Mit der Offset-Korrektur der automatischen Kalibrierung gesetzt (Streuung "
+                                       "um den neuen Offset) – im selben Neustart von chronyd."}
+        save_state(state)
+    _emit("gps", "info", f"GPS-Fehlerschranke mit der Kalibrierung angepasst: ± {fmt_ms(current / 2)} → "
+                         f"± {fmt_ms(target / 2)}",
+          {"old_delay": current, "new_delay": target, "reason": "automatische Kalibrierung", "reload_triggered": False})
+    return state["applied"]
 
 
 def maybe_tick(cfg_fn: Callable[[], dict], clock: Callable[[], float] = time.monotonic) -> dict | None:

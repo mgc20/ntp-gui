@@ -129,7 +129,7 @@ export function insightList(items, navigate) {
 }
 
 // Externer Link eines Hinweises (bisher nur Update-Hinweis): nur auf die Release-Seiten des Projekts.
-const INSIGHT_LINK = /^https:\/\/github\.com\/ConGp20\/ntp-gui\/releases(\/tag\/v[0-9A-Za-z.-]+)?$/;
+const INSIGHT_LINK = /^https:\/\/github\.com\/mgc20\/ntp-gui\/releases(\/tag\/v[0-9A-Za-z.-]+)?$/;
 
 export function insightLink(item) {
   if (!item || typeof item.link !== "string" || !INSIGHT_LINK.test(item.link)) return null;

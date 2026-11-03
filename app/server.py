@@ -19,16 +19,20 @@ Schutz der schreibenden Routen:
     LAN-Adresse zeigen und liest dann Log, Status und Position): ohne Passwort
     werden nur Anfragen an IP-Adressen, localhost, den eigenen Hostnamen,
     lokale Namen (*.local, *.lan, *.home.arpa, *.internal …), den
-    NTS-Namen und WEB_ALLOWED_HOSTS beantwortet (host_allowed). Mit Passwort
-    schützt die Anmeldung, dann gilt jeder Name. /healthz ist immer offen;
+    NTS-Namen, WEB_ALLOWED_HOSTS und die „Erlaubten Namen“ aus dem Dashboard
+    beantwortet (host_allowed). Mit Passwort schützt die Anmeldung, dann gilt
+    jeder Name. /healthz ist immer offen;
   * clock_public: /clock, /api/v1/time und ihre vier statischen Dateien
-    antworten ohne Anmeldung (nur Zeit und Ampel) – die Host-Prüfung gilt für
-    diese anonymen Anfragen trotzdem, auch wenn ein Passwort gesetzt ist.
+    antworten ohne Anmeldung und für jeden Host-Namen – der Inhalt ist bewusst
+    öffentlich (Uhrzeit, Ampel, Genauigkeit, Art der Quelle). Den Quellennamen
+    gibt es nur angemeldet oder ohne Passwort über einen erlaubten Namen; über
+    einen fremden Namen kommt immer die öffentliche Antwort.
 """
 
 from __future__ import annotations
 
 import base64
+import errno
 import hashlib
 import hmac
 import html
@@ -83,7 +87,7 @@ PTP4L_CONF = os.environ.get("PTP4L_CONF", "/etc/linuxptp/ptp4l.conf")
 RUN_DIR = os.environ.get("NTPGUI_RUN_DIR", "/run/ntp-gui")
 START_TIME = time.time()
 MAX_BODY = 64 * 1024
-VERSION = os.environ.get("NTPGUI_VERSION", "1.5.0")
+VERSION = os.environ.get("NTPGUI_VERSION", "1.5.1")
 EVENTS_INTERVAL = 5.0          # so oft liest der Server die Supervisor-Ereignisse ein
 CALIBRATION_DEFAULT_WINDOW = 86400.0  # /api/gps/calibration ohne window: letzte 24 h
 
@@ -285,7 +289,8 @@ apiv1.endpoint("GET", "/leap", "/api/leap", "read",
 apiv1.endpoint("GET", "/time", None, "read",
                "Zeit für die Vollbild-Uhr (/clock): Empfangs- (t1) und Sendezeit (t2) des Servers in Unix-Sekunden "
                "für den Abgleich mit vier Zeitstempeln, dazu Synchronstatus, Genauigkeit und Art der Quelle. "
-               "Mit „Vollbild-Uhr ohne Anmeldung“ (clock_public) ohne Login erreichbar – dann ohne Quellennamen.",
+               "Mit „Vollbild-Uhr ohne Anmeldung“ (clock_public) ohne Login und über jeden Host-Namen erreichbar – "
+               "dann ohne Quellennamen.",
                ["t1", "t2", "synchronised", "level", "accuracy", "stratum", "leap", "source_kind", "source",
                 "public"])
 
@@ -380,6 +385,7 @@ def collector() -> None:
             STATE_WATCH.sample(sample)
             client_alarms()
             clients3.tick(settings.values(), events.emit)  # Regeln je Gerät, Inventar, Stundenwerte; wirft nie
+            gpsquality.note_offset(settings.values())  # Offset-Änderung merken (Schranke, Kalibrierung)
             autocal.maybe_tick()   # höchstens einmal pro Stunde, wirft nie
             gpsquality.maybe_tick(settings.values)  # Fehlerschranke GPS ohne PPS, stündlich, wirft nie
         except Exception as exc:  # ein Messfehler darf den Thread nie beenden
@@ -762,7 +768,25 @@ def build_status() -> dict:
                                           gnssguard.insights(gnssguard.GUARD.status(cfg)),
                                           holdover.insights(holdover.TEST.status()),
                                           webtransport.WATCH.insights())
+    global _last_insights
+    _last_insights = (time.monotonic(), status["insights"])
     return status
+
+
+# Diagnosepaket: die zuletzt angezeigten Hinweise (das Dashboard fragt den Status alle paar
+# Sekunden ab). Ist die Liste älter, wird der Status einmal neu gebaut.
+HINTS_MAX_AGE = 60.0
+_last_insights: tuple[float, list] | None = None
+
+
+def current_insights() -> list:
+    cached = _last_insights
+    if cached and time.monotonic() - cached[0] <= HINTS_MAX_AGE:
+        return cached[1]
+    return build_status()["insights"]
+
+
+diagnostics.set_hints_source(current_insights)
 
 
 def _leap_summary(info: dict) -> dict:
@@ -1138,12 +1162,29 @@ def safe_host_for_log(host: str) -> str:
 
 
 def _env_allowed_hosts() -> list[str]:
-    return [h.strip().lower().rstrip(".") for h in os.environ.get("WEB_ALLOWED_HOSTS", "").split(",")
-            if h.strip()]
+    return settings.env_allowed_hosts()
 
 
-def host_allowed(header: str | None, nts_name: str = "") -> bool:
-    """Darf eine Anfrage mit diesem Host-Header ohne Anmeldung beantwortet werden?"""
+def _matches_allowed(host: str, entries) -> bool:
+    """Name gegen Einträge „name“ bzw. „*.domain“ (Domain selbst eingeschlossen)."""
+    for entry in entries:
+        entry = str(entry or "").strip().lower().rstrip(".")
+        if not entry or entry == "*":
+            continue  # „*“ zählt nur aus der Umgebung (host_allowed)
+        if entry.startswith("*."):
+            if host.endswith(entry[1:]) or host == entry[2:]:
+                return True
+        elif host == entry:
+            return True
+    return False
+
+
+def host_allowed(header: str | None, nts_name: str = "", extra=None) -> bool:
+    """Darf eine Anfrage mit diesem Host-Header ohne Anmeldung beantwortet werden?
+
+    extra: „Erlaubte Namen“ aus dem Dashboard (settings web_allowed_hosts) – gelten
+    zusätzlich zu WEB_ALLOWED_HOSTS. Kein DNS je Anfrage, nur Textvergleiche.
+    """
     if header is None or not header.strip():
         return True  # HTTP/1.0 ohne Host – das schickt kein Browser
     host = _host_name(header)
@@ -1159,28 +1200,25 @@ def host_allowed(header: str | None, nts_name: str = "") -> bool:
         return True  # einteilige Namen (raspberrypi, localhost) löst kein öffentliches DNS auf
     if host.endswith(LOCAL_HOST_SUFFIXES):
         return True
-    # Gemerkte eigene Namen: kein Rückwärts-DNS je Anfrage (ein fremder Host-Kopf hätte sonst
-    # jedes Mal einen Handler-Thread für die Dauer der DNS-Abfrage blockiert).
-    if host in diagnostics.own_hostnames(wait=1.0):
-        return True
     if nts_name and host == str(nts_name).strip().lower().rstrip("."):
         return True
-    for entry in allowed:
-        if entry.startswith("*.") and (host.endswith(entry[1:]) or host == entry[2:]):
-            return True
-        if host == entry:
-            return True
-    return False
+    if _matches_allowed(host, allowed) or _matches_allowed(host, extra or ()):
+        return True
+    # Gemerkte eigene Namen: kein Rückwärts-DNS je Anfrage (ein fremder Host-Kopf hätte sonst
+    # jedes Mal einen Handler-Thread für die Dauer der DNS-Abfrage blockiert).
+    return host in diagnostics.own_hostnames(wait=1.0)
 
 
 def host_rejection_text(host: str) -> str:
     return (f"Zugriff über den Namen „{host}“ abgelehnt. Ohne Passwort beantwortet ntp-gui nur Anfragen "
-            "an IP-Adressen, localhost, den eigenen Hostnamen, einteilige Namen und lokale Namen (*.local, "
-            "*.lan, *.home.arpa, *.internal). Das schützt vor DNS-Rebinding: Sonst könnte jede "
-            "Webseite, die du besuchst, über einen eigenen Namen Log, Status und Position aus deinem "
-            "Netz lesen. Abhilfe: den Namen in WEB_ALLOWED_HOSTS eintragen (z. B. "
-            f"WEB_ALLOWED_HOSTS={host}, mehrere mit Komma, „*.example.org“ für alle Unternamen) oder "
-            "im Dashboard bzw. per WEB_USER/WEB_PASSWORD ein Passwort setzen – dann gilt jeder Name.")
+            "an IP-Adressen, localhost, den eigenen Hostnamen, einteilige Namen, lokale Namen (*.local, "
+            "*.lan, *.home.arpa, *.internal) und erlaubte Namen. Das schützt vor DNS-Rebinding: Sonst könnte "
+            "jede Webseite, die du besuchst, über einen eigenen Namen Log, Status und Position aus deinem "
+            "Netz lesen. Abhilfe: den Namen erlauben – im Dashboard unter Einstellungen → Dashboard → "
+            "Erweitert → „Erlaubte Namen“ (über die IP-Adresse öffnen) oder per Umgebungsvariable "
+            f"WEB_ALLOWED_HOSTS={host} (mehrere mit Komma, „*.example.org“ für alle Unternamen) – oder "
+            "im Dashboard bzw. per WEB_USER/WEB_PASSWORD ein Passwort setzen, dann gilt jeder Name. "
+            "Die Vollbild-Uhr /clock ist mit „Vollbild-Uhr ohne Anmeldung“ über jeden Namen erreichbar.")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1249,17 +1287,23 @@ class Handler(BaseHTTPRequestHandler):
             return {"kind": "open"}
         return {"kind": "basic"} if self._authorised() else None
 
+    def _host_known(self) -> bool:
+        """Host-Kopf bekannt/lokal/erlaubt (host_allowed) – ohne selbst zu antworten."""
+        try:
+            cfg = settings.values()
+        except Exception:
+            cfg = {}
+        nts_name = str(cfg.get("nts_server_name") or "")
+        extra = cfg.get("web_allowed_hosts") or []
+        return host_allowed(self.headers.get("Host"), nts_name, extra if isinstance(extra, list) else [])
+
     def _host_ok(self, ident: dict) -> bool:
         """DNS-Rebinding: ohne Anmeldung nur bekannte/lokale Namen. Antwortet selbst mit 403."""
         if ident.get("kind") != "open":
             return True  # Passwort oder API-Schlüssel schützen
-        header = self.headers.get("Host")
-        try:
-            nts_name = str(settings.values().get("nts_server_name") or "")
-        except Exception:
-            nts_name = ""
-        if host_allowed(header, nts_name):
+        if self._host_known():
             return True
+        header = self.headers.get("Host")
         host = safe_host_for_log(_host_name(header or ""))
         with _REJECTED_LOCK:
             first = host not in _REJECTED_HOSTS and len(_REJECTED_HOSTS) < 1000
@@ -1267,7 +1311,8 @@ class Handler(BaseHTTPRequestHandler):
                 _REJECTED_HOSTS.add(host)
         if first:
             print(f"[web] Anfrage für unbekannten Host-Namen „{host}“ abgelehnt (Schutz vor DNS-Rebinding) – "
-                  "erlauben mit WEB_ALLOWED_HOSTS oder ein Passwort setzen.", flush=True)
+                  "erlauben unter Einstellungen → Dashboard → „Erlaubte Namen“, mit WEB_ALLOWED_HOSTS "
+                  "oder ein Passwort setzen.", flush=True)
         text = host_rejection_text(host)
         self.close_connection = True  # ein evtl. POST-Body bleibt ungelesen
         path = urlparse(self.path).path
@@ -1379,15 +1424,15 @@ class Handler(BaseHTTPRequestHandler):
         path, index = self._api_path(self.path)
         if path in CLOCK_PUBLIC_PATHS and self._clock_public():
             # Wer gültig angemeldet ist, bekommt die volle Antwort (mit Quellennamen); sonst die
-            # öffentliche – nie 401. Ohne Anmeldung gilt auch hier die Host-Prüfung (DNS-Rebinding).
+            # öffentliche – nie 401 und für jeden Host-Namen (kein 403): Die öffentliche Antwort
+            # enthält nur Zeit, Ampel, Genauigkeit und Art der Quelle, nichts, was DNS-Rebinding
+            # lohnen würde. Ohne Passwort gibt es den Quellennamen nur über einen erlaubten Namen.
             ident = self._identity()
             full = (ident is not None and ident.get("kind") != "open"
                     and self._scope_ok(ident, "GET", path))
-            if not full and not self._host_ok({"kind": "open"}):
-                return
+            open_known = (ident or {}).get("kind") == "open" and self._host_known()
             try:
-                # Ohne Passwort ist ohnehin alles offen – dann auch der Quellenname.
-                self._route_clock(path, received, public=not (full or (ident or {}).get("kind") == "open"))
+                self._route_clock(path, received, public=not (full or open_known))
             except BrokenPipeError:
                 pass
             return
@@ -1487,8 +1532,13 @@ class Handler(BaseHTTPRequestHandler):
             # Ohne window die letzten 24 h: über 30 Tage SQLite-Verlauf dauert es sonst Sekunden.
             window = env_like(query.get("window", query.get("seconds")), CALIBRATION_DEFAULT_WINDOW)
             since = time.time() - window if window > 0 else None
+            # Nur Messpunkte seit der letzten Offset-Änderung: davor lief ein anderer Offset.
+            not_before = gpsquality.offset_not_before(cfg)
+            if not_before is not None and (since is None or not_before > since):
+                since = not_before
             result = historymod.calibrate(HISTORY.snapshot(since), cfg["gps_refid"],
                                           float(cfg["gps_offset"]), float(cfg["gps_delay"]))
+            result["since_offset_change"] = not_before
             # Im Modus „gemessen“ gilt nicht gps_delay, sondern die gemessene Schranke.
             self._send_json(gpsquality.annotate_calibration(result, cfg))
         elif path == "/api/gps/autocal":
@@ -1869,14 +1919,29 @@ def env_like(raw, default: float) -> float:
         return default
 
 
+# Netzfehler einer einzelnen Verbindung: Gegenstelle weg, Route weg (WLAN-Gerät schläft), Zeitüberschreitung.
+QUIET_ERRNOS = frozenset(getattr(errno, name) for name in (
+    "ECONNRESET", "EPIPE", "ECONNABORTED", "ETIMEDOUT", "EHOSTUNREACH", "ENETUNREACH", "ENETDOWN", "EHOSTDOWN")
+    if hasattr(errno, name))
+
+
+def quiet_network_error(exc: BaseException | None) -> bool:
+    """Abbruch durch das Netz (kein Programmfehler)? Dann kein Traceback ins Log."""
+    if isinstance(exc, (ConnectionResetError, BrokenPipeError, ConnectionAbortedError, TimeoutError,
+                        socket.timeout)):
+        return True
+    return isinstance(exc, OSError) and exc.errno in QUIET_ERRNOS
+
+
 class QuietHTTPServer(ThreadingHTTPServer):
     """Browser, die eine Verbindung mittendrin abbrechen (Tab zu, Reload, Handy im Standby),
     sind Alltag und kein Fehler. Ohne das hier schreibt socketserver für jeden Abbruch einen
-    vollständigen Traceback ins Log – mehrere Threads gleichzeitig und ineinander verschränkt."""
+    vollständigen Traceback ins Log – mehrere Threads gleichzeitig und ineinander verschränkt.
+    Dazu zählen auch „No route to host“ und Co.: ein Gerät, das mitten in der Antwort das WLAN
+    verlässt. Alles andere wird weiter vollständig protokolliert."""
 
     def handle_error(self, request, client_address):
-        exc = sys.exc_info()[1]
-        if isinstance(exc, (ConnectionResetError, BrokenPipeError, ConnectionAbortedError, TimeoutError)):
+        if quiet_network_error(sys.exc_info()[1]):
             return
         super().handle_error(request, client_address)
 
@@ -1888,8 +1953,14 @@ def main() -> None:
         print("[web] WARNUNG: WEB_USER und WEB_PASSWORD müssen beide gesetzt sein – "
               "das Dashboard läuft ohne Authentifizierung.", flush=True)
 
+    for entry in settings.env_allowed_hosts():
+        if entry.startswith("*.") and settings.shared_suffix(entry[2:]):
+            print(f"[web] WARNUNG: WEB_ALLOWED_HOSTS enthält „{entry}“ – das gibt auch fremde Namen "
+                  f"unter {entry[2:]} frei (DNS-Rebinding möglich). Besser nur den eigenen Namen "
+                  f"eintragen, z. B. meinzeit.{entry[2:]}", flush=True)
     autocal.configure(history=HISTORY, trigger_reload=trigger_reload)
-    gpsquality.configure(history=HISTORY, trigger_reload=trigger_reload)
+    gpsquality.configure(history=HISTORY, trigger_reload=trigger_reload,
+                         net_distance=lambda: gpsquality.nts_distance(chrony.detailed_sources()))
     threading.Thread(target=collector, daemon=True, name="collector").start()
     threading.Thread(target=loop_guard_runner, daemon=True, name="loopguard").start()
     threading.Thread(target=hardware_refresher, daemon=True, name="hardware").start()

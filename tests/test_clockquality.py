@@ -533,13 +533,30 @@ class ClockHttpTest(unittest.TestCase):
         self.assertTrue(json.loads(body)["public"])
         self.assertIsNone(json.loads(body)["source"])
 
-    def test_public_clock_keeps_host_check(self):
+    def test_public_clock_any_host(self):
+        """1.5.1: Mit clock_public antwortet die Uhr über jeden Namen (kein 403) – nur öffentlich."""
         self.set_public(True)
-        for path in ("/api/v1/time", "/clock", "/static/js/clock.js"):
-            self.assertEqual(self.request(path, host="evil.example")[0], 403, path)
-        self.assertEqual(self.request("/api/v1/time", host="192.168.1.5")[0], 200)
-        self.assertEqual(self.request("/api/v1/time", auth=True, host="evil.example")[0], 200,
-                         "angemeldet schützt das Passwort")
+        for host in ("uhr.example.org", "evil.example", "192.168.1.5", "a" * 64 + ".evil.de"):
+            for path in sorted(server.CLOCK_PUBLIC_PATHS):
+                with self.subTest(host=host, path=path):
+                    status, body = self.request(path, host=host)
+                    self.assertEqual(status, 200)
+                    self.assertNotIn(b"fritz", body, "kein Quellenname, keine Adresse")
+            payload = json.loads(self.request("/api/v1/time", host=host)[1])
+            self.assertTrue(payload["public"])
+            self.assertIsNone(payload["source"])
+        # Alles andere bleibt geschützt, auch über fremde Namen.
+        for path in ("/", "/api/status", "/api/v1/status", "/static/js/app.js", "/api/leap", "/metrics",
+                     "/static/index.html", "/api/v1/time/../status", "/static/js/../js/app.js"):
+            self.assertEqual(self.request(path, host="evil.example")[0], 401, path)
+        status, body = self.request("/api/v1/time", auth=True, host="evil.example")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["source"], "nas.fritz.box", "angemeldet: mit Quellennamen")
+
+    def test_public_clock_off_any_host_needs_login(self):
+        self.set_public(False)
+        for path in ("/clock", "/api/v1/time", "/static/js/clock.js"):
+            self.assertEqual(self.request(path, host="evil.example")[0], 401, path)
 
     def test_time_status_is_cached(self):
         self.set_public(False)
@@ -582,6 +599,88 @@ class ClockHttpTest(unittest.TestCase):
         self.assertEqual(payload["pairs"], [[1, 40.0, -2.0]])
         self.assertEqual(payload["summary"]["count"], 1)
         hist.query.assert_called_with(86400.0, 1500)
+
+
+class ClockPublicNoPasswordTest(unittest.TestCase):
+    """clock_public ohne Passwort: über fremde Namen nur die öffentliche Antwort (DNS-Rebinding)."""
+    TRACKING = {"synchronised": True, "stratum": 1, "ref_name": "GPS", "root_delay": 0.0,
+                "root_dispersion": 0.00002, "system_time_offset": 0.0, "leap_status": "Normal"}
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        env = {k: v for k, v in os.environ.items()
+               if k not in {"WEB_USER", "WEB_PASSWORD", "WEB_ALLOWED_HOSTS", "CLOCK_PUBLIC"}}
+        env["CLOCK_PUBLIC"] = "true"
+        cls.patches = [
+            mock.patch.object(settings, "DATA_DIR", cls.tmp.name),
+            mock.patch.object(settings, "SETTINGS_FILE", os.path.join(cls.tmp.name, "settings.json")),
+            mock.patch.object(server, "RUN_DIR", cls.tmp.name),
+            mock.patch.dict(os.environ, env, clear=True),
+            mock.patch.object(server.chrony, "tracking", return_value=dict(cls.TRACKING)),
+        ]
+        for patch in cls.patches:
+            patch.start()
+        server.AUTH_CACHE.clear()
+        server._REJECTED_HOSTS.clear()
+        cls.httpd = JoiningHTTPServer(("127.0.0.1", 0), server.Handler)
+        cls.port = cls.httpd.server_address[1]
+        threading.Thread(target=cls.httpd.serve_forever, daemon=True).start()
+
+    @classmethod
+    def tearDownClass(cls):
+        stop_http_server(cls.httpd)
+        for patch in reversed(cls.patches):
+            patch.stop()
+        store.close_all()
+        cls.tmp.cleanup()
+
+    def setUp(self):
+        fake_hostnames(self)
+        server._CLOCK_CACHE.update(t=None, tracking=None)
+
+    def request(self, path, host, method="GET"):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        conn.request(method, path, headers={"Host": host})
+        resp = conn.getresponse()
+        body = resp.read()
+        conn.close()
+        return resp.status, body
+
+    def test_foreign_host_gets_public_answer(self):
+        with mock.patch("builtins.print") as printed:
+            for path in sorted(server.CLOCK_PUBLIC_PATHS):
+                with self.subTest(path=path):
+                    self.assertEqual(self.request(path, "uhr.example.org")[0], 200)
+            self.assertEqual(self.request("/api/v1/time", "uhr.example.org", "HEAD")[0], 200)
+            payload = json.loads(self.request("/api/v1/time", "uhr.example.org")[1])
+        self.assertTrue(payload["public"])
+        self.assertIsNone(payload["source"], "über einen fremden Namen nie der Quellenname")
+        self.assertEqual(payload["source_kind"], "GPS")
+        self.assertEqual(set(payload), {"synchronised", "running", "level", "accuracy", "stratum", "leap",
+                                        "source_kind", "t1", "t2", "public", "source"},
+                         "nur Zeit, Ampel, Genauigkeit und Art der Quelle")
+        self.assertFalse([c for c in printed.call_args_list if "uhr.example" in str(c)], "keine Ablehnung im Log")
+
+    def test_known_host_without_password_gets_source(self):
+        payload = json.loads(self.request("/api/v1/time", f"127.0.0.1:{self.port}")[1])
+        self.assertFalse(payload["public"])
+        self.assertEqual(payload["source"], "GPS")
+        with mock.patch.dict(os.environ, {"WEB_ALLOWED_HOSTS": "uhr.example.org"}):
+            self.assertEqual(json.loads(self.request("/api/v1/time", "uhr.example.org")[1])["source"], "GPS")
+
+    def test_other_paths_keep_host_check(self):
+        with mock.patch("builtins.print"):
+            for path in ("/", "/api/status", "/api/v1/status", "/api/v1/gps", "/api/v1/sources", "/api/logs",
+                         "/static/js/app.js", "/static/index.html", "/metrics", "/api/settings",
+                         "/api/v1/time/x", "/clock/../api/status", "/api/diagnostics/preview"):
+                with self.subTest(path=path):
+                    self.assertEqual(self.request(path, "uhr.example.org")[0], 403)
+
+    def test_clock_public_off_restores_host_check(self):
+        with mock.patch.dict(os.environ, {"CLOCK_PUBLIC": "false"}), mock.patch("builtins.print"):
+            for path in ("/clock", "/api/v1/time", "/static/js/clock.js"):
+                self.assertEqual(self.request(path, "uhr.example.org")[0], 403, path)
 
 
 class MetricsTest(unittest.TestCase):

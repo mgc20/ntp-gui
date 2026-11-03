@@ -771,23 +771,39 @@ class AnchorReplayTest(unittest.TestCase):
         self.assertIsNotNone(first(stages, t0, "stoerung"))
 
     def test_persistent_falseticker_with_nts_is_strong(self):
-        rng = random.Random(4)
-        det = gnssguard.Detector()
-        for i in range(60):
-            det.update(dict(outdoor(i * 10.0, rng), gps_state="x"))
+        # GPS war 40 min brauchbar, dann „x“ ohne Einstellungsänderung: stark nach 5 min mit NTS –
+        # auch ohne neue Abweichung im Zeitabgleich (ein langsamer Spoofer zieht den Anker mit).
+        def run(seconds, ref_kind="nts", shift=0.015, seed=4):
+            rng = random.Random(seed)
+            det = gnssguard.Detector()
+            t = 0.0
+            while t < 2400.0:
+                det.update(outdoor(t, rng))
+                t += 10.0
+            end = t + seconds
+            while t < end:
+                det.update(dict(outdoor(t, rng, time_shift=shift), gps_state="x", ref_kind=ref_kind))
+                t += 10.0
+            return det
+        det = run(600.0)
+        self.assertFalse(det.signals["time"].active)
         self.assertEqual(det.stage(), "stoerung")
         self.assertEqual(det.signals["falseticker"].strength, "strong")
         self.assertIn("NTS-Quellen", det.signals["falseticker"].text)
         # Ohne NTS bleibt es ein schwaches Signal (Hinweis).
+        self.assertEqual(run(600.0, ref_kind="ntp").stage(), "hinweis")
+        # Kurzzeitig (unter 5 min) auch mit NTS nur Hinweis.
+        self.assertEqual(run(200.0).stage(), "hinweis")
+        # Auch mit gleichem Abstand wie gelernt: Das GPS war brauchbar und ist es ohne Änderung nicht mehr.
+        self.assertEqual(run(1800.0, shift=0.0).stage(), "stoerung")
+
+    def test_falseticker_gross_error_is_strong_without_baseline(self):
+        rng = random.Random(9)
         det = gnssguard.Detector()
         for i in range(60):
-            det.update(dict(outdoor(i * 10.0, rng), gps_state="x", ref_kind="ntp"))
-        self.assertEqual(det.stage(), "hinweis")
-        # Kurzzeitig (unter 5 min) auch mit NTS nur Hinweis.
-        det = gnssguard.Detector()
-        for i in range(20):
-            det.update(dict(outdoor(i * 10.0, rng), gps_state="x"))
-        self.assertEqual(det.stage(), "hinweis")
+            det.update(dict(outdoor(i * 10.0, rng, time_shift=1.5), gps_state="x"))
+        self.assertEqual(det.stage(), "stoerung")
+        self.assertEqual(det.signals["falseticker"].strength, "strong")
 
     def test_active_signal_expires_without_data(self):
         det, _stages, _t0 = run_scenario(lambda dt: {"pos_shift": 500.0}, after_s=60.0)
@@ -1094,3 +1110,336 @@ class NotifyHintTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# =========================================================================================
+# 1.5.1: Kein Fehlalarm nach „Offset zurücksetzen“ (Diagnosepaket eines Nutzers, Pi 4 + VK-162)
+# =========================================================================================
+class OffsetResetReplayTest(LockCase):
+    """Nachgestellter Verlauf: GPS kalibriert (Offset 0,0526), dann setzt der Nutzer den Offset
+    auf 0 zurück. Ab da liegt das GPS dauerhaft rund +51 ms neben 5 NTS-Quellen, chrony markiert
+    es als Falseticker („x“). Früher: nach 5 min „GNSS-Störung“ (crit, Benachrichtigung), mit
+    gnss_guard=lock sogar die Sperre. Jetzt: höchstens „Hinweis“ mit dem Rat zu kalibrieren."""
+
+    def obs(self, t, rng, bias, state):
+        # NMEA ohne PPS: einige ms Rauschen, gelegentlich Ausreißer um ± 30 ms.
+        noise = rng.gauss(0, 0.004) + (rng.choice((-0.03, 0.03)) if rng.random() < 0.02 else 0.0)
+        refs = [0.0002 * i + rng.gauss(0, 0.0005) for i in range(5)]
+        return {"t": t, "mode": 3, "sats": None, "gps_offset": bias + noise, "gps_state": state,
+                "refs": refs, "ref_kind": "nts"}
+
+    def run_timeline(self, cfg_mode):
+        guard = self.guard()
+        rng = random.Random(11)
+        before = dict(CFG, gnss_guard=cfg_mode, gnss_notify="stoerung", gps_offset=0.0526)
+        after = dict(before, gps_offset=0.0)
+        for cfg, bias, state, seconds in ((before, 0.0, "+", 3 * 3600), (after, 0.051, "x", 8 * 3600)):
+            end = self.mono[0] + seconds
+            while self.mono[0] < end:
+                self.mono[0] += 10.0
+                self.wall[0] += 10.0
+                guard.tick(cfg, obs=self.obs(self.mono[0], rng, bias, state), select=self.chrony.select())
+        return guard
+
+    def test_constant_bias_after_offset_reset_is_no_alarm(self):
+        guard = self.run_timeline("report")
+        self.assertTrue(any("neu gelernt" in e[2] for e in self.events))
+        self.assertFalse([e for e in self.events if e[1] == "crit"], self.events)
+        self.assertFalse([e for e in self.events if (e[3] or {}).get("notify")])
+        self.assertNotEqual(guard.stage, "stoerung")
+        ft = guard.detector.signals["falseticker"]
+        self.assertTrue(ft.active)
+        self.assertEqual(ft.strength, "weak")
+        self.assertIn("Kalibrierfehler", ft.text)
+        self.assertRegex(ft.text, r"rund \+5[01] ms")
+        hints = [e for e in self.events if e[2].startswith("GNSS-Hinweis")]
+        self.assertTrue(hints and all(e[1] == "info" for e in hints))
+
+    def test_constant_bias_never_locks(self):
+        guard = self.run_timeline("lock")
+        self.assertNotIn("GPS", self.chrony.effective)
+        self.assertFalse([c for c in self.chrony.calls if c[1] == "+"])
+        self.assertFalse(guard.lock_status()["locked"])
+
+    def test_real_jump_after_relearn_still_detected(self):
+        guard = self.run_timeline("report")
+        rng = random.Random(12)
+        cfg = dict(CFG, gnss_guard="report", gps_offset=0.0)
+        end = self.mono[0] + 600
+        while self.mono[0] < end:   # Spoofer zieht die Zeit um weitere 80 ms weg
+            self.mono[0] += 10.0
+            self.wall[0] += 10.0
+            guard.tick(cfg, obs=self.obs(self.mono[0], rng, 0.131, "x"), select=self.chrony.select())
+        self.assertEqual(guard.stage, "stoerung")
+        self.assertTrue([e for e in self.events if e[1] == "crit"])
+
+
+# =========================================================================================
+class FalsetickerReviewTest(unittest.TestCase):
+    """Prüfbefunde zu 1.5.1: Ausnahme „Kalibrierfehler“ nur für einen Versatz, der seit dem Start
+    bzw. seit einer Änderung der GPS-Einstellungen besteht – kein Fehlalarm durch einen kleinen
+    NMEA-Laufzeitsprung, aber ein langsamer Spoofer (< 10 ms/h) wird wieder erkannt."""
+
+    @staticmethod
+    def biased(t, rng, bias, state="x", ref_kind="nts", nrefs=5):
+        noise = rng.gauss(0, 0.004)
+        refs = [0.0002 * i + rng.gauss(0, 0.0005) for i in range(nrefs)]
+        return {"t": t, "mode": 3, "sats": None, "gps_offset": bias + noise, "gps_state": state,
+                "refs": refs, "ref_kind": ref_kind}
+
+    def run_bias(self, shift_ms, pps=False, after_reset=True, ref_kind="nts"):
+        """GPS +51 ms (Offset zurückgesetzt) und „x“; nach 2 h ein Laufzeitsprung für 15 min."""
+        rng = random.Random(21)
+        det = gnssguard.Detector()
+        det.pps = pps
+        t = 0.0
+        if after_reset:     # vorher brauchbar, dann neue Einstellungen
+            while t < 3 * 3600:
+                det.update(self.biased(t, rng, 0.0, "+", ref_kind))
+                t += 10.0
+            det.reset_time()
+        start, worst = t, "ok"
+        while t < start + 2 * 3600 + 900:
+            extra = shift_ms / 1000.0 if t >= start + 2 * 3600 else 0.0
+            stage = det.update(self.biased(t, rng, 0.051 + extra, "x", ref_kind))["stage"]
+            worst = max(worst, stage, key=gnssguard.stage_rank)
+            t += 10.0
+        return det, worst
+
+    def test_latency_step_during_constant_bias_is_no_alarm(self):
+        for shift in (0, 8, 11, 13, 15):
+            det, worst = self.run_bias(shift)
+            self.assertEqual(worst, "hinweis", shift)
+            self.assertFalse(det.signals["time"].active, shift)
+            self.assertEqual(det.signals["falseticker"].strength, "weak", shift)
+
+    def test_constant_bias_at_start_is_no_alarm(self):
+        _det, worst = self.run_bias(0, after_reset=False)
+        self.assertEqual(worst, "hinweis")
+
+    def test_with_pps_constant_bias_is_stoerung(self):
+        det, worst = self.run_bias(0, pps=True)
+        self.assertEqual(worst, "stoerung")
+        self.assertEqual(det.signals["falseticker"].strength, "strong")
+
+    def test_hint_text_softened_and_nts_only(self):
+        det, _ = self.run_bias(0)
+        text = det.signals["falseticker"].text
+        self.assertIn("vermutlich ein Kalibrierfehler", text)
+        self.assertIn("Antenne und Umgebung", text)
+        self.assertNotIn("das ist ein Kalibrierfehler", text)
+        self.assertRegex(text, r"rund \+5[01] ms")
+        det, _ = self.run_bias(0, ref_kind="ntp")
+        text = det.signals["falseticker"].text
+        self.assertNotIn("Kalibrierfehler", text)
+        self.assertIn("Offset kalibrieren", text)
+
+    def test_wandering_away_from_excused_bias_is_stoerung(self):
+        # In der Ausnahme: die GPS-Zeit wandert langsam (5 ms/h) vom gemessenen Abstand weg.
+        rng = random.Random(22)
+        det = gnssguard.Detector()
+        t, worst = 0.0, "ok"
+        while t < 10 * 3600:
+            drift = 0.005 * max(0.0, t - 3600) / 3600
+            stage = det.update(self.biased(t, rng, 0.051 + drift, "x"))["stage"]
+            worst = max(worst, stage, key=gnssguard.stage_rank)
+            if worst == "stoerung":
+                break
+            t += 10.0
+        self.assertEqual(worst, "stoerung")
+        self.assertLess(t, 10 * 3600)
+
+    def test_slow_drag_below_anchor_rate_detected(self):
+        # Befund: Spoofer zieht langsamer als der Anker (10 ms/h) – chrony macht das GPS ab ~20 ms „x“.
+        for rate_ms_h in (5.0, 9.0):
+            rng = random.Random(3)
+            det = gnssguard.Detector()
+            t = 0.0
+            while t < 2400:
+                det.update(outdoor(t, rng))
+                t += 10.0
+            start, found = t, None
+            while t < start + 20 * 3600:
+                shift = rate_ms_h / 1000.0 / 3600.0 * (t - start)
+                state = "x" if shift > 0.02 else "+"
+                if det.update(dict(outdoor(t, rng, time_shift=shift), gps_state=state))["stage"] == "stoerung":
+                    found = shift
+                    break
+                t += 10.0
+            self.assertIsNotNone(found, rate_ms_h)
+            self.assertLess(found, 0.03, rate_ms_h)
+
+
+class CalibrationHoldTest(LockCase):
+    """autocal fragt gnssguard, bevor es den Offset ändert (Befund: Spoofer „wegkalibrieren“)."""
+
+    def test_no_hold_when_quiet_or_weak_hint(self):
+        guard = self.baseline(self.guard(), dict(CFG, gnss_guard="report"))
+        self.assertIsNone(guard.calibration_hold(self.wall[0] - 3600))
+
+    def test_hold_during_and_after_stoerung(self):
+        cfg = dict(CFG, gnss_guard="report")
+        guard = self.baseline(self.guard(), cfg)
+        start = self.wall[0]
+        self.feed(guard, 600, True, cfg)
+        self.assertEqual(guard.stage, "stoerung")
+        self.assertIn("Störung", guard.calibration_hold(start - 3600))
+        self.feed(guard, 3600, False, cfg)
+        self.assertEqual(guard.stage, "ok")
+        # Die Störung lag im Messzeitraum → weiter nur vorschlagen …
+        self.assertIn("Messzeitraum", guard.calibration_hold(start - 3600))
+        # … ein Messzeitraum, der erst danach beginnt, ist frei.
+        self.assertIsNone(guard.calibration_hold(self.wall[0]))
+        # Auch nach einem Neustart von ntp-gui (gespeichert).
+        fresh = self.guard()
+        self.assertIn("Messzeitraum", fresh.calibration_hold(start - 3600))
+
+    def test_hold_while_locked(self):
+        guard = self.baseline(self.guard())
+        self.feed(guard, 600, True)
+        self.assertTrue(guard.lock_status()["locked"])
+        self.assertIsNotNone(guard.calibration_hold(self.wall[0]))
+
+
+# =========================================================================================
+# Zweite Prüfrunde 1.5.1: Neustart, sehr langsames Wegziehen, Sperre der Kalibrierung
+# =========================================================================================
+def slow_obs(t, d, state):
+    return {"t": t, "gps_state": state, "gps_offset": d, "refs": [0.001, -0.001, 0.0], "ref_kind": "nts"}
+
+
+def drive(det, t0, t1, shift, state, step=16.0):
+    t, worst = t0, "ok"
+    while t < t1:
+        d = shift(t)
+        worst = max(worst, det.update(slow_obs(t, d, state(d)))["stage"], key=gnssguard.stage_rank)
+        t += step
+    return worst
+
+
+class RestartKeepsVerdictTest(unittest.TestCase):
+    """Befund: Ein Neustart von ntp-gui stufte einen erkannten langsamen Spoofer zum „Kalibrierfehler“ herab."""
+
+    RATE = 0.008 / 3600.0
+
+    def spoofed(self):
+        det = gnssguard.Detector()
+        worst = drive(det, 0, 4 * 3600, lambda t: self.RATE * t if t > 1800 else 0.0, lambda d: "x" if abs(d) > 0.025 else "*")
+        self.assertEqual(worst, "stoerung")
+        return det
+
+    def test_seeded_anchor_from_running_detector_keeps_stoerung(self):
+        record = self.spoofed().anchor_record()
+        self.assertIsNone(record["excuse"])
+        self.assertGreaterEqual(record["epoch_good"], gnssguard.FALSETICKER_SETTLED_S)
+        fresh = gnssguard.Detector()
+        fresh.seed_time_anchor(record["value"], record["start"], record["epoch_good"], record["excuse"])
+        t = 4 * 3600
+        drive(fresh, t, t + 1800, lambda t: self.RATE * t, lambda d: "x" if abs(d) > 0.025 else "*")
+        self.assertEqual(fresh.stage(), "stoerung")
+        self.assertNotIn("Kalibrierfehler", fresh.signals["falseticker"].text)
+
+    def test_legacy_anchor_without_epoch_counts_as_settled(self):
+        anchor = self.spoofed().time_anchor
+        fresh = gnssguard.Detector()
+        fresh.seed_time_anchor(anchor)                 # Eintrag von vor dieser Prüfrunde: nur der Wert
+        t = 4 * 3600
+        drive(fresh, t, t + 1800, lambda t: self.RATE * t, lambda d: "x" if abs(d) > 0.025 else "*")
+        self.assertEqual(fresh.stage(), "stoerung")
+
+    def test_stored_excuse_survives_restart(self):
+        # Nutzerfall: Offset zurückgesetzt, GPS gleichbleibend +51 ms und „x“ – nach einem Neustart
+        # bleibt es beim Hinweis „vermutlich ein Kalibrierfehler“.
+        det = gnssguard.Detector()
+        worst = drive(det, 0, 2 * 3600, lambda t: 0.051, lambda d: "x")
+        self.assertEqual(worst, "hinweis")
+        record = det.anchor_record()
+        self.assertAlmostEqual(record["excuse"], 0.051, delta=0.002)
+        fresh = gnssguard.Detector()
+        fresh.seed_time_anchor(record["value"], record["start"], record["epoch_good"], record["excuse"])
+        worst = drive(fresh, 2 * 3600, 4 * 3600, lambda t: 0.051, lambda d: "x")
+        self.assertEqual(worst, "hinweis")
+        self.assertIn("Kalibrierfehler", fresh.signals["falseticker"].text)
+
+    def test_no_excuse_after_stoerung_in_same_epoch(self):
+        det = gnssguard.Detector()
+        drive(det, 0, 3600, lambda t: 0.051, lambda d: "x")
+        self.assertEqual(det.stage(), "hinweis")
+        # Position springt (starkes Signal) → Störung; danach gilt die Ausnahme in diesem Abschnitt nicht mehr.
+        det.signals["position"].active = True
+        det.update(slow_obs(3600, 0.051, "x"))
+        det.signals["position"].active = False
+        self.assertIsNone(det.anchor_record()["excuse"])
+        worst = drive(det, 3610, 3 * 3600, lambda t: 0.051, lambda d: "x")
+        self.assertEqual(worst, "stoerung")
+
+
+class SlowDragGrowingBoundTest(unittest.TestCase):
+    """Befund: Ohne PPS wächst die Fehlerschranke vor einem langsamen Spoofer her, chrony meldet nie „x“,
+    und der Anker wanderte mit – jetzt darf er höchstens 30 ms vom Startwert weg."""
+
+    def test_drag_without_falseticker_detected(self):
+        for rate_ms_h in (2.0, 6.0):
+            with self.subTest(rate=rate_ms_h):
+                rng = random.Random(4)
+                det = gnssguard.Detector()
+                t, found = 0.0, None
+                while t < 60 * 3600:
+                    shift = rate_ms_h / 1000.0 / 3600.0 * max(0.0, t - 2400)
+                    if det.update(dict(outdoor(t, rng, time_shift=shift), gps_state="+"))["stage"] == "stoerung":
+                        found = shift
+                        break
+                    t += 30.0
+                self.assertIsNotNone(found, rate_ms_h)
+                self.assertLess(found, 0.060, rate_ms_h)       # früher: unentdeckt bis ~500 ms
+                self.assertIn("gewandert", det.signals["time"].text)
+
+    def test_daily_swing_stays_quiet(self):
+        import math
+        rng = random.Random(6)
+        det = gnssguard.Detector()
+        t, worst = 0.0, "ok"
+        while t < 72 * 3600:
+            swing = 0.008 * math.sin(2 * math.pi * t / 86400)
+            worst = max(worst, det.update(dict(outdoor(t, rng, time_shift=swing)))["stage"], key=gnssguard.stage_rank)
+            t += 30.0
+        self.assertEqual(worst, "ok")
+
+
+class CalibrationHoldWarnungTest(LockCase):
+    """Befund: „Warnung“ (zwei schwache Signale) erlaubte die Ein-Schritt-Korrektur."""
+
+    def test_warnung_and_uniform_hold(self):
+        cfg = dict(CFG, gnss_guard="report")
+        guard = self.baseline(self.guard(), cfg)
+        start = self.wall[0]
+        self.assertIsNone(guard.calibration_hold(start - 3600))
+        guard.detector.signals["uniform"].active = True
+        self.assertIn("gleichmäßige", guard.calibration_hold(start - 3600))
+        guard.detector.signals["falseticker"].active = True
+        self.assertIn("Warnung", guard.calibration_hold(start - 3600))
+        guard.stage = "warnung"
+        guard._note_alarm()
+        guard.detector.signals["uniform"].active = guard.detector.signals["falseticker"].active = False
+        self.assertIn("eine Warnung", guard.calibration_hold(start - 3600))
+        self.assertIsNone(guard.calibration_hold(self.wall[0] + 1))     # Messzeitraum danach: frei
+        fresh = self.guard()                                           # gespeichert: gilt nach Neustart
+        self.assertIn("eine Warnung", fresh.calibration_hold(start - 3600))
+
+    def test_restart_mid_excuse_through_guard(self):
+        guard = self.guard()
+        rng = random.Random(11)
+        cfg = dict(CFG, gnss_guard="report", gps_offset=0.0, gps_autocal="auto")
+        for _ in range(int(2 * 3600 / 10)):
+            self.mono[0] += 10.0
+            self.wall[0] += 10.0
+            guard.tick(cfg, obs=OffsetResetReplayTest.obs(None, self.mono[0], rng, 0.051, "x"), select=self.chrony.select())
+        self.assertEqual(guard.stage, "hinweis")
+        self.assertIn("automatische Kalibrierung", guard.detector.signals["falseticker"].text)
+        fresh = self.guard()
+        for _ in range(int(3600 / 10)):
+            self.mono[0] += 10.0
+            self.wall[0] += 10.0
+            fresh.tick(cfg, obs=OffsetResetReplayTest.obs(None, self.mono[0], rng, 0.051, "x"), select=self.chrony.select())
+        self.assertEqual(fresh.stage, "hinweis")
+        self.assertFalse([e for e in self.events if e[1] == "crit"])

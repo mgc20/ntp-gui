@@ -642,7 +642,27 @@ def _net_offsets(sources: dict, gps_name: str, states: set[str]) -> list[float]:
             and math.isfinite(v.get("o"))]
 
 
-def gps_differences(samples: list[dict], gps_name: str, for_bound: bool = False) -> tuple[list[float], list[float]]:
+CONSENSUS_SOURCES = 2   # „x“-Werte zählen für den Offset, wenn so viele genutzte Netzquellen dagegenstehen
+
+
+def calibration_usable(sources: dict, gps_name: str) -> bool:
+    """Taugt der GPS-Wert dieses Messpunkts für die Offset-Kalibrierung?
+
+    Wie gps_measured(), aber ein „x“ (Falschgeber) zählt mit, wenn mindestens CONSENSUS_SOURCES
+    genutzte Netzquellen („*“/„+“) im selben Messpunkt den Vergleich liefern (1.5.1). Genau dann
+    ist das GPS ja wegen eines bleibenden Versatzes „x“ – ließe man diese Werte weg, hätte der
+    Kalibrier-Assistent keine Daten, bis die Fehlerschranke über den Versatz gewachsen ist. Der
+    Median bleibt robust gegen einzelne Ausreißer; „~“ (zu unruhig) zählt weiter nicht."""
+    gps = (sources or {}).get(gps_name)
+    if gps_measured(gps):
+        return True
+    if not isinstance(gps, dict) or gps.get("s") != "x" or not _gps_has_data(gps):
+        return False
+    return len(_net_offsets(sources, gps_name, {"*", "+"})) >= CONSENSUS_SOURCES
+
+
+def gps_differences(samples: list[dict], gps_name: str, for_bound: bool = False,
+                    consensus_x: bool = False) -> tuple[list[float], list[float]]:
     """Differenzen GPS − Mittel der genutzten Netzwerkquellen („*“/„+“) je Messpunkt.
 
     Grundlage für den Kalibrier-Assistenten (Median = Verspätung) und für die ehrliche
@@ -652,7 +672,10 @@ def gps_differences(samples: list[dict], gps_name: str, for_bound: bool = False)
     (siehe _gps_has_data). Gibt es keine genutzte Netzquelle – etwa weil chrony gerade das
     GPS gewählt hat und die Netzquellen darum als „-“ führt –, dienen die übrigen
     erreichbaren Netzquellen („-“) als Vergleich. Sonst fiele die Messung genau dann aus,
-    wenn das GPS gewinnt, und die (kleine) Schranke bliebe eingefroren."""
+    wenn das GPS gewinnt, und die (kleine) Schranke bliebe eingefroren.
+
+    consensus_x=True (Offset-Kalibrierung): „x“ zählt mit, wenn ≥ 2 genutzte Netzquellen
+    dagegenstehen (siehe calibration_usable)."""
     diffs, times = [], []
     valid = _gps_has_data if for_bound else gps_measured
     for sample in samples:
@@ -660,7 +683,7 @@ def gps_differences(samples: list[dict], gps_name: str, for_bound: bool = False)
             continue
         sources = sample.get("sources") or {}
         gps = sources.get(gps_name)
-        if not valid(gps):
+        if not (valid(gps) or (consensus_x and calibration_usable(sources, gps_name))):
             continue  # GPS ohne Daten („?“, Reach 0 …) – sonst zählte 0 − Netz als Verspätung
         reference = _net_offsets(sources, gps_name, {"*", "+"})
         if not reference and for_bound:
@@ -670,6 +693,18 @@ def gps_differences(samples: list[dict], gps_name: str, for_bound: bool = False)
         diffs.append(gps["o"] - sum(reference) / len(reference))
         times.append(sample["t"])
     return diffs, times
+
+
+def _half_shift(diffs: list[float], times: list[float]) -> float | None:
+    """Median der zweiten minus Median der ersten Hälfte des Messzeitraums (Sprung im Fenster?)."""
+    if len(diffs) < 20 or not times:
+        return None
+    middle = (times[0] + times[-1]) / 2
+    first = [d for d, t in zip(diffs, times) if t <= middle]
+    second = [d for d, t in zip(diffs, times) if t > middle]
+    if len(first) < 10 or len(second) < 10:
+        return None
+    return _median(second) - _median(first)
 
 
 def calibrate(samples: list[dict], gps_name: str, current_offset: float,
@@ -682,7 +717,7 @@ def calibrate(samples: list[dict], gps_name: str, current_offset: float,
     um ihren Wert nach vorn: neuer Offset = aktueller Offset + gemessene
     Differenz.
     """
-    diffs, times = gps_differences(samples, gps_name)
+    diffs, times = gps_differences(samples, gps_name, consensus_x=True)
 
     result: dict[str, Any] = {
         "samples": len(diffs), "current_offset": current_offset,
@@ -709,7 +744,9 @@ def calibrate(samples: list[dict], gps_name: str, current_offset: float,
         bias=median, spread=mad, spread_p95=honest.get("p95_abs"),
         suggested_offset=round(current_offset + median, 4),
         suggested_delay=honest.get("delay", gpsquality.DEFAULT_DELAY),
+        suggested_precision=honest.get("precision"),
         series=[{"t": t, "d": d} for t, d in zip(times[-600:], diffs[-600:])],
+        half_shift=_half_shift(diffs, times),
     )
     if result["duration_seconds"] < 1800:
         result.update(status="preliminary",

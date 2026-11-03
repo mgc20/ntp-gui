@@ -7,9 +7,21 @@ export const HELP_AUTOCAL = {
     text: "Ein USB-GPS meldet die Zeit mit einer festen Verspätung. ntp-gui misst sie laufend gegen deine "
       + "Netzwerkquellen. **Aus**: nichts passiert, der Assistent oben bleibt nutzbar. **Vorschlagen**: du "
       + "siehst einen passenden Offset, sobald die Messung belastbar ist, und übernimmst ihn selbst. "
-      + "**Automatisch**: ntp-gui stellt den Offset behutsam selbst nach – höchstens einmal am Tag, in kleinen "
-      + "Schritten, nur mit vertrauenswürdigem Vergleich, und jede Änderung lässt sich zurücknehmen. "
+      + "**Automatisch**: ntp-gui stellt den Offset selbst nach, immer im selben Ablauf: **messen** (mindestens "
+      + "6 h) → einen deutlichen Versatz **einmal korrigieren** (ohne PPS in einem Schritt, mit PPS in Schritten "
+      + "von höchstens 5 ms je Tag) → danach nur noch **kleinen Drifts folgen**, jeweils erst nach einer ganzen "
+      + "24-h-Messung. Nur mit vertrauenswürdigem Vergleich, nie während einer GNSS-Störung, und jede Änderung "
+      + "lässt sich zurücknehmen. Wo sie gerade steht, zeigt „Phase“. "
       + "Umstellen kannst du das in den Einstellungen unter GPS.",
+  },
+  autocal_phase: {
+    title: "Phase",
+    text: "Wo die automatische Kalibrierung gerade steht: **misst** (seit der letzten Offset-Änderung, mit "
+      + "Fortschritt), **korrigiert bei nächster Prüfung** (die stündliche Prüfung stellt den Offset um), "
+      + "**kalibriert – folgt nur kleinen Drifts** (alles gut; kleine Abweichungen werden erst nach einer "
+      + "ganzen 24-h-Messung nachgezogen, damit Tagesschwankungen der Netzlaufzeit den Offset nicht hin- und "
+      + "herschieben), **gesperrt wegen GNSS-Störung** (erst Antenne und Umgebung prüfen), **wartet** (z. B. "
+      + "keine Netzwerkquelle als Vergleich) oder **bitte prüfen** (Messung zu ungewöhnlich für eine Automatik).",
   },
   autocal_decision: {
     title: "Aktuelle Entscheidung",
@@ -48,18 +60,30 @@ export const HELP_AUTOCAL = {
       + "Bevor etwas vorgeschlagen oder geändert wird, muss die eingestellte Mindest-Messdauer erreicht sein.",
   },
   autocal_next: {
-    title: "Nächste mögliche Änderung",
-    text: "Frühester Zeitpunkt für die nächste automatische Änderung: mindestens 24 h nach der letzten "
-      + "Änderung oder Rücknahme und erst, wenn seit dem Neustart der Messung die Mindest-Messdauer "
-      + "vergangen ist. Ob dann wirklich geändert wird, entscheidet die Messung.",
+    title: "Nächster Schritt",
+    text: "Wann die Automatik frühestens wieder etwas tun kann – passend zur Phase: Ende der Mindest-"
+      + "Messdauer, die nächste stündliche Prüfung (Korrektur steht an), das Ende der 24-h-Messung für eine "
+      + "kleine Drift oder 24 h nach dem letzten Teilschritt. Ob dann wirklich geändert wird, entscheidet die "
+      + "Messung. Ist das GPS kalibriert oder gesperrt, steht hier nichts – dann steht nichts an.",
   },
   autocal_step: {
     title: "Größter Schritt",
     text: "So weit darf eine automatische Änderung den Offset höchstens verschieben (Einstellung „Größter "
-      + "Kalibrierschritt“). Größere Abweichungen werden in mehreren Schritten über mehrere Tage abgebaut. "
+      + "Kalibrierschritt“). Mit PPS werden größere Abweichungen in mehreren Schritten über mehrere Tage abgebaut. "
       + "Liegt eine Messung einmal daneben, richtet ein kleiner Schritt wenig Schaden an. Den kleineren "
       + "Delay-Vorschlag übernimmt die Automatik erst mit dem letzten Schritt – vorher würde ein kleiner "
-      + "Delay chrony zu einem noch falschen GPS locken.",
+      + "Delay chrony zu einem noch falschen GPS locken. **Ausnahme ohne PPS:** Ist das GPS die "
+      + "Rückfallebene (Fehlerschranke „gemessen“, Rolle nicht „bevorzugen“) und liegt es deutlich daneben "
+      + "(mindestens 10 ms und dreimal die Schwelle), gemessen über mindestens 6 h gegen mindestens zwei "
+      + "NTS-Quellen, korrigiert die Automatik den ganzen Versatz in einem Schritt. Solange die Netzquellen "
+      + "besser sind, stellt chrony die Uhr ohnehin nicht nach dem GPS – mit 5 ms je Tag bräuchte ein Versatz "
+      + "von 50 ms (etwa nach „Offset zurücksetzen“) sonst zehn Tage. Mit PPS bleibt es bei kleinen Schritten. "
+      + "Dafür zählen auch Messwerte, in denen chrony das GPS als Falseticker („x“) verwirft, sofern mindestens zwei "
+      + "genutzte Netzquellen dagegenstehen – sonst gäbe es genau dann keine Daten. Einen Sprung im Messzeitraum "
+      + "(erste und zweite Hälfte liegen deutlich auseinander) korrigiert sie nicht in einem Zug. **Bei einer "
+      + "GNSS-Störung nie:** Meldet die Störungserkennung gerade eine Warnung oder Störung, hält die GPS-Sperre "
+      + "oder gab es im Messzeitraum eine Warnung oder Störung, ändert die Automatik nichts – sonst würde eine "
+      + "Fälschung, die die Zeit gleichbleibend verschiebt, einfach „eingerechnet“.",
   },
   autocal_changes: {
     title: "Letzte automatische Änderungen",
@@ -78,6 +102,6 @@ export const HELP_AUTOCAL = {
 
 export const HELP_GROUP_AUTOCAL = {
   title: "Automatische GPS-Kalibrierung",
-  keys: ["autocal_mode", "autocal_decision", "autocal_bias", "autocal_threshold", "autocal_reference",
+  keys: ["autocal_mode", "autocal_phase", "autocal_decision", "autocal_bias", "autocal_threshold", "autocal_reference",
     "autocal_window", "autocal_next", "autocal_step", "autocal_changes", "autocal_rollback"],
 };

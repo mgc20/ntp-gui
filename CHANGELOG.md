@@ -4,6 +4,154 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), die Versionen folgen
 [Semantic Versioning](https://semver.org/lang/de/).
 
+## [1.5.1] – 2026-11-03
+
+Schwerpunkt: GPS-Automatik einfach, vorhersehbar und sichtbar (messen → einmal korrigieren →
+kleinen Drifts folgen), kein GNSS-Fehlalarm nach einer Offset-Änderung, ein HTTPS-Hinweis, der
+Ursache und Absender nennt, und der neue Image-Name `ghcr.io/mgc20/ntp-gui`.
+
+### Achtung beim Update
+- **Neues Repository und neuer Image-Name:** ntp-gui liegt jetzt unter
+  [github.com/mgc20/ntp-gui](https://github.com/mgc20/ntp-gui), das Image unter
+  `ghcr.io/mgc20/ntp-gui`. In deiner Compose-Datei `image: ghcr.io/congp20/ntp-gui:latest` durch
+  `image: ghcr.io/mgc20/ntp-gui:latest` ersetzen – unter dem alten Namen kommen keine neuen
+  Versionen mehr. Der Update-Hinweis von 1.5.0 und älter fragt noch das alte Repository und
+  meldet deshalb nichts mehr; ab 1.5.1 fragt er das neue.
+- **„latest“ zeigte im neuen Repository auf 1.2.0:** Beim Umzug wurden alle alten Versions-Tags
+  neu hochgeladen; der CI-Workflow baute daraufhin jede alte Version und setzte jedes Mal
+  „latest“ – gewonnen hat, wer zuletzt fertig war. CI veröffentlicht jetzt nie mehr, nur der
+  Release-Workflow setzt „latest“ (geprüft, auf denselben Digest wie die Version).
+
+### Behoben
+- **HTTPS-Hinweis nennt Ursache und Absender:** „Dashboard über unverschlüsseltes HTTP mit Anmeldung“
+  sagt jetzt, wer ungeschützt kam und warum – Adresse, Passwort/API-Schlüssel und „zuletzt vor 3 h“,
+  je Absender (bis zu drei, neueste zuerst): „direkt per HTTP“ (Lesezeichen auf http://…:8080,
+  Home-Assistant-Integration, Homepage-/Uptime-Kuma-Widget, Skript), „über den eingetragenen Proxy,
+  aber der Browser sprach mit ihm nur HTTP“ oder „über eine Gegenstelle mit Proxy-Köpfen, die nicht
+  in TRUSTED_PROXIES steht“. Der Text sagt auch, wann er verschwindet (1 Stunde nach dem letzten
+  ungeschützten Zugriff, wenn danach nur geschützte kommen, sonst nach 24 Stunden).
+- **Eingetragener Proxy ohne Proto-Kopf ist kein Klartext-Alarm mehr:** Schickt ein Proxy aus
+  TRUSTED_PROXIES nur X-Forwarded-For, nur X-Real-IP oder „Forwarded“ ohne proto=, ist unbekannt,
+  ob der Browser HTTPS sprach. Dafür gibt es den eigenen Info-Hinweis „Eingetragener Proxy meldet
+  nicht, ob HTTPS benutzt wurde“ – mit den Köpfen, die der Proxy tatsächlich schickt, einem
+  unbekannten Proto-Wert (z. B. „wss“) beim Namen und Anleitung für Caddy, Nginx Proxy Manager,
+  Traefik, Zoraxy, HAProxy und Apache – statt „direkt per HTTP“ mit dem Rat, nach einem Lesezeichen
+  zu suchen. Kommt eine Anmeldung vom eingetragenen Proxy ganz ohne Proxy-Köpfe, steht das dabei.
+  X-Forwarded-For plus „Forwarded: proto=https“ (HAProxy) wird erkannt. Der Hinweis gilt je Proxy:
+  Er verschwindet nur dann schon nach 1 Stunde, wenn derselbe Proxy danach den Kopf schickt.
+  Speichern von TRUSTED_PROXIES setzt alle HTTPS-Hinweise weiter sofort zurück.
+- **Proxy auf anderem Gerät ohne Proto-Kopf:** Die Strecke Proxy → ntp-gui ist dann sicher
+  unverschlüsselt – dafür erscheint jetzt auch „Strecke Proxy → ntp-gui ist unverschlüsselt“, und
+  der Satz „kein Hinweis auf Klartext“ steht nur noch, wenn der Proxy auf demselben Rechner läuft.
+- **Apache-Anleitung sicher:** `RequestHeader set X-Forwarded-Proto "expr=%{REQUEST_SCHEME}"` nur im
+  HTTPS-vHost statt pauschal „https“, das eine echte Klartext-Warnung verschwinden ließ.
+- **Weniger Log-Rauschen:** Netzabbrüche einzelner Verbindungen („No route to host“, „Network is
+  unreachable“, Zeitüberschreitung u. ä.) schreiben keinen Traceback mehr ins Log; andere Fehler
+  weiterhin vollständig.
+- **Kein GNSS-Fehlalarm mehr nach einer Offset-Änderung:** Liegt das GPS seit dem Start bzw. seit einer
+  Änderung der GPS-Einstellungen gleichbleibend neben dem Netz (z. B. nach „Offset zurücksetzen“
+  dauerhaft rund +51 ms) und hält chrony es deshalb für einen Falseticker, ist das vermutlich ein
+  Kalibrierfehler: Es bleibt beim „Hinweis“ mit dem Rat „Offset kalibrieren“ – ohne Benachrichtigung,
+  ohne Sperre, auch bei einem kleinen NMEA-Laufzeitsprung (10–15 ms). Wandert die GPS-Zeit um
+  mindestens die Zeitschwelle (≥ 20 ms) von diesem Abstand weg oder liegt sie mehr als 1 s daneben,
+  wird es wieder „Störung“. Die Ausnahme gilt nur ohne PPS und nur, solange das GPS seit Start bzw.
+  Änderung noch nie 15 Minuten brauchbar war. Ein Neustart von ntp-gui setzt nur eine Ausnahme fort,
+  die vorher schon galt (sie steht mit dem Zeitanker in SQLite) – er macht aus einer erkannten
+  Störung nie einen „Kalibrierfehler“. Nach einer „Störung“ gibt es bis zur nächsten Änderung der
+  GPS-Einstellungen keine Ausnahme mehr.
+  Der Hinweistext sagt nur noch „vermutlich ein Kalibrierfehler“ (und nur mit NTS-Vergleich) und
+  rät, danach Antenne und Umgebung zu prüfen.
+- **Langsam ziehender Spoofer wird wieder erkannt:** War das GPS brauchbar und wird es ohne
+  Einstellungsänderung zum Falseticker, gilt wie in 1.5.0 „Störung“ nach 5 Minuten mit ≥ 2
+  NTS-Quellen. Zieht ein Spoofer so langsam (wenige ms je Stunde), dass die mitwachsende
+  Fehlerschranke chrony nie „x“ melden lässt, fällt er trotzdem auf: Der Zeitanker der
+  Störungserkennung darf höchstens 30 ms von seinem Startwert (Start bzw. letzte Änderung der
+  GPS-Einstellungen) wegwandern, danach wird es „Störung“ – spätestens bei rund 50 ms statt (bisher
+  unentdeckt) bis 500 ms.
+- **Automatische Kalibrierung rechnet keine GNSS-Störung ein:** Meldet die Störungserkennung gerade
+  „Warnung“, „Störung“ oder unnatürlich gleichmäßige Signale, hält die GPS-Sperre oder gab es im
+  Messzeitraum „Warnung“ oder „Störung“, wird der Offset nicht automatisch geändert. Die GPS-Seite
+  zeigt dann „gesperrt wegen GNSS-Störung – erst Antenne/Umgebung prüfen“ statt eines Datums und
+  lädt nicht zum Übernehmen ein; „Vorschlag übernehmen“ fragt in dieser Lage nach. Der Schritt in
+  einem Zug setzt zusätzlich voraus, dass der Messzeitraum keinen Sprung enthält.
+- **Fehlerschranke ohne PPS wächst nicht mehr stündlich:** Ändert sich `gps_offset` (von Hand,
+  Zurücksetzen oder automatische Kalibrierung), zählen für die Schranke nur Messpunkte ab der
+  Änderung (plus 15 Minuten für den Neustart von chronyd) – bisher maß sie den alten Versatz mit und
+  wuchs stündlich (± 10 → 80 ms). Kleiner werden darf sie nach 5,5 Stunden Messung statt erst nach
+  12 Stunden, nicht schon nach 2 Stunden (sonst hätte jeder kleine Kalibrierschritt die Sperre
+  umgangen). Jede neue Schranke bekommt 25 % Reserve auf den Messwert; bisher startete schon 1 ms
+  mehr Streuung chronyd erneut neu (± 64 → ± 80 ms eine Stunde später).
+- **GPS ohne PPS rückt nicht vor die NTS-Quellen:** Die Fehlerschranke wird nie enger als das
+  1,5-Fache der Root Distance der besten genutzten NTS-Quelle – sonst wählte chrony das NMEA-GPS
+  und stellte die Uhr danach.
+- **Offset-Änderung von Hand sofort erkannt:** Die automatische Kalibrierung nimmt den genauen
+  Zeitpunkt aus der Messschleife – die GPS-Seite nannte vorher bei jedem Aufruf einen anderen
+  Messbeginn und ein wanderndes Datum. Nach einer Änderung von Hand gilt die Pendel-Sperre
+  (doppelte Schwelle für die Gegenrichtung) nicht mehr, die Korrektur in einem Schritt also schon.
+  Der Kalibrier-Assistent mischt keine Werte vor und nach einer Offset-Änderung mehr – der Vorschlag
+  beruht nur auf Messungen zum eingestellten Offset.
+- **Kalibrierung hat auch Daten, solange chrony das GPS als Falseticker verwirft:** Messwerte mit
+  „x“ zählen für den Offset, wenn mindestens zwei genutzte Netzquellen dagegenstehen. Vorschlag und
+  schnelle Korrektur kommen so nach etwa 6 Stunden, ohne dass erst die Fehlerschranke stündlich
+  über den Versatz wachsen muss.
+- **Vollbild-Uhr über jeden Namen:** Mit „Vollbild-Uhr ohne Anmeldung“ (`clock_public`) bekamen
+  `/clock` und `/api/v1/time` über einen eigenen DNS-Namen (z. B. `uhr.example.com`) ohne Passwort
+  „Zugriff über den Namen … abgelehnt“ (403), obwohl die Uhr öffentlich sein sollte. Jetzt antworten
+  `/clock`, ihre vier statischen Dateien und `/api/v1/time` dann über jeden Host-Namen ohne
+  Namensprüfung – der Inhalt ist bewusst öffentlich (Uhrzeit, Ampel, Genauigkeit, Art der Quelle).
+  Den Namen der Quelle gibt es ohne Anmeldung nur über einen erlaubten Namen; über einen fremden
+  Namen kommt immer die öffentliche Antwort ohne Namen, Adressen oder Position. Alle anderen
+  Seiten und die übrige API bleiben gegen DNS-Rebinding geprüft. Ablehnungstext, Hilfe und README
+  sagen das.
+
+### Geändert
+- **Diagnosepaket enthält die aktiven Hinweise:** Neue Datei `hints.json` mit den Hinweisen, die das
+  Dashboard gerade zeigt (Schlüssel, Stufe, Titel, Text) – so ist im Fehlerbericht zu sehen, ob z. B.
+  „Dashboard über unverschlüsseltes HTTP“ erscheint. Wie alles im Paket läuft sie durch den
+  Datenschutzfilter: Absender-Adressen in den Texten werden zu `client-NN` bzw. `<öffentliche-IP>`,
+  Positionen werden entfernt.
+- **Automatische Kalibrierung: einfacher Ablauf – messen → einmal korrigieren → kleinen Drifts
+  folgen.** Ist das GPS die Rückfallebene (ohne PPS, Fehlerschranke „gemessen“, Rolle nicht
+  „bevorzugen“) und liegt es deutlich daneben (≥ 10 ms und ≥ 3 × Schwelle, gemessen über ≥ 6 h,
+  ≥ 2 genutzte NTS-Quellen), korrigiert sie den ganzen Versatz in einem Schritt statt 5 ms je 24 h –
+  und schreibt die passende Fehlerschranke im selben Neustart von chronyd mit (nach „Offset
+  zurücksetzen“ zwei statt vier Neustarts). Mit PPS bleibt es bei kleinen Schritten. Kleinen Drifts
+  folgt sie nur nach einer ganzen 24-h-Messung: Tagesschwankungen der Netzlaufzeit ließen den Offset
+  sonst hin- und herpendeln (+2,7 ms, einen Tag später −2,8 ms).
+- **GPS-Seite zeigt die Phase der automatischen Kalibrierung** – „misst (2,1 von 6 h)“, „korrigiert
+  bei nächster Prüfung (≈ 14:05)“, „kalibriert – folgt nur kleinen Drifts“ oder „gesperrt wegen
+  GNSS-Störung“ – samt nächstem Schritt. Steht nichts an, nennt sie auch kein Datum (bisher
+  „nächste mögliche Änderung: jetzt“, bei jedem Aufruf eine Stunde später). Nach einer
+  Offset-Änderung von Hand bietet sie „Vorschlag übernehmen“ direkt im Hinweis an. Die Texte
+  (Einstellung, Hilfe, README) beschreiben den neuen Ablauf; der GNSS-Hinweis „vermutlich ein
+  Kalibrierfehler“ sagt im Modus „automatisch“, dass sie das selbst korrigiert.
+- **Klarere Ereignistitel bei unstetem Empfang:** „GPS-Fix seit 10 min weg (vorher 50 Fix-Wechsel in
+  2 h 31 min)“ und „GPS-Empfang wieder stetig – seit 1 h kein Fix-Wechsel (vorher …)“. Die Felder im
+  Ereignis bleiben, neu ist `outcome` („ruhig“ oder „fix_weg“).
+- **Erlaubte Namen im Dashboard:** Einstellungen → Dashboard → Erweitert → **Erlaubte Namen** –
+  Namen, über die das Dashboard ohne Passwort antworten darf (Schutz vor DNS-Rebinding, in der
+  Hilfe in einfachen Worten erklärt). Gilt zusätzlich zu `WEB_ALLOWED_HOSTS`; Namen aus der
+  Umgebung stehen unter dem Feld (nur lesend). Streng geprüft: Namen mit Punkt oder `*.domain`,
+  keine IP-Adressen, Ports, ganzen Endungen (`*.com`, `*.co.uk`), keine Wildcards auf DynDNS- und
+  Hosting-Domains (`*.duckdns.org`, `*.myfritz.net`, `*.github.io` – dort nur den eigenen Namen wie
+  `meinzeit.duckdns.org`), keine Namen, die auf Ziffern enden (`1.2.3`), und nicht `*` allein – den
+  Schutz ganz abschalten geht nur per `WEB_ALLOWED_HOSTS=*`. Steht so eine Wildcard in
+  `WEB_ALLOWED_HOSTS`, warnt das Log beim Start. Wirkt ohne Neustart, nur mit Admin-Recht und
+  CSRF-Schutz wie jede Einstellung, Teil von Sichern/Wiederherstellen. Die Prüfung je Anfrage
+  bleibt ein reiner Textvergleich ohne DNS.
+- **Compose-Vorlagen ohne Caddy:** Der auskommentierte Caddy-Dienst, das Volume `caddy-data` und
+  die Kommentare „[OPTION HTTPS mit Caddy]“ sind aus `docker-compose.all-in-one.yml` entfernt. Das
+  Caddy-Beispiel steht jetzt nur noch in `docs/integrationen/https.md` – als eigenständige
+  Compose-Datei für einen eigenen Stack neben ntp-gui. In der Vorlage bleibt
+  „[OPTION Reverse Proxy auf diesem Rechner]“ mit `WEB_BIND` und `TRUSTED_PROXIES`. Hinweise im
+  Dashboard, Hilfe und README verweisen auf die Anleitung. Wer Caddy aus der alten Vorlage
+  betreibt, muss nichts ändern.
+- **Versionshinweis in jeder Compose-Vorlage:** Über `image: ghcr.io/mgc20/ntp-gui:latest` steht,
+  wie man die Version festhält (`:1.5` bleibt auf 1.5.x, `:1.5.1` fest) und dass das Image von
+  `ghcr.io/congp20/ntp-gui` umgezogen ist (dort keine neuen Versionen mehr). In den Vorlagen mit
+  `build: .` steht dazu, dass der Tag nur fürs geladene Image gilt – `up --build` baut den lokalen
+  Stand.
+
 ## [1.5.0] – 2026-11-02
 
 Schwerpunkt: GPS ohne PPS als ehrliche Rückfallebene, Schleifen durch DNS-Umschreibung und
@@ -761,11 +909,12 @@ Erste Veröffentlichung.
 - CI mit Unittests und Integrationstest gegen das gebaute Image; Release-Workflow,
   der das Image für amd64 und arm64 nach ghcr.io veröffentlicht.
 
-[1.5.0]: https://github.com/ConGp20/ntp-gui/compare/v1.4.0...v1.5.0
-[1.4.0]: https://github.com/ConGp20/ntp-gui/compare/v1.3.2...v1.4.0
-[1.3.2]: https://github.com/ConGp20/ntp-gui/compare/v1.3.1...v1.3.2
-[1.3.1]: https://github.com/ConGp20/ntp-gui/compare/v1.3.0...v1.3.1
-[1.3.0]: https://github.com/ConGp20/ntp-gui/compare/v1.2.0...v1.3.0
-[1.2.0]: https://github.com/ConGp20/ntp-gui/compare/v1.1.0...v1.2.0
-[1.1.0]: https://github.com/ConGp20/ntp-gui/compare/v1.0.0...v1.1.0
-[1.0.0]: https://github.com/ConGp20/ntp-gui/releases/tag/v1.0.0
+[1.5.1]: https://github.com/mgc20/ntp-gui/compare/v1.5.0...v1.5.1
+[1.5.0]: https://github.com/mgc20/ntp-gui/compare/v1.4.0...v1.5.0
+[1.4.0]: https://github.com/mgc20/ntp-gui/compare/v1.3.2...v1.4.0
+[1.3.2]: https://github.com/mgc20/ntp-gui/compare/v1.3.1...v1.3.2
+[1.3.1]: https://github.com/mgc20/ntp-gui/compare/v1.3.0...v1.3.1
+[1.3.0]: https://github.com/mgc20/ntp-gui/compare/v1.2.0...v1.3.0
+[1.2.0]: https://github.com/mgc20/ntp-gui/compare/v1.1.0...v1.2.0
+[1.1.0]: https://github.com/mgc20/ntp-gui/compare/v1.0.0...v1.1.0
+[1.0.0]: https://github.com/mgc20/ntp-gui/releases/tag/v1.0.0

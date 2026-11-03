@@ -111,7 +111,7 @@ class StoreCase(unittest.TestCase):
         self.addCleanup(self._cleanup)
 
     def _cleanup(self):
-        gpsquality._DEPS.update(history=None, trigger_reload=None, emit=None)
+        gpsquality._DEPS.update(history=None, trigger_reload=None, emit=None, net_distance=None)
         store.close_all()
         settings.DATA_DIR = self.saved
         shutil.rmtree(self.tmp, ignore_errors=True)
@@ -299,8 +299,9 @@ class CalibrationDelayTest(unittest.TestCase):
     def test_falseticker_outliers_raise_suggested_delay(self):
         samples = SpreadTest.falseticker_samples()
         result = history.calibrate(samples, "GPS", 0.0, 0.2)
-        self.assertGreaterEqual(result["suggested_delay"], 0.12)
-        self.assertLess(abs(result["bias"]), 0.002)  # Offset weiter nur aus den brauchbaren Werten
+        self.assertGreaterEqual(result["suggested_delay"], 0.115)
+        # 1.5.1: „x“ gegen zwei genutzte Netzquellen zählt für den Offset mit – der Median bleibt robust.
+        self.assertLess(abs(result["bias"]), 0.002)
 
     def test_outliers_raise_suggested_delay(self):
         base = [{"t": T0 + i * 10, "sources": {"GPS": {"o": 0.05 + (0.06 if i % 10 == 0 else 0.0), "s": "-", "k": "#"},
@@ -389,16 +390,16 @@ class DecideTest(unittest.TestCase):
         d = gpsquality.decide(self.measured(0.058), applied, T0 + 2 * H)
         self.assertTrue(d["apply"], d)
         self.assertGreaterEqual(d["delay"], 0.058)
-        # Mit Reserve: kleines Kriechen startet chronyd nicht jede Stunde neu.
+        # Mit Reserve auf dem Messwert: kleines Kriechen startet chronyd nicht jede Stunde neu.
         d = gpsquality.decide(self.measured(0.122), {"delay": 0.12, "precision": 0.01, "t": T0}, T0 + 2 * H)
         self.assertTrue(d["apply"])
-        self.assertEqual(d["delay"], 0.15)
+        self.assertEqual(d["delay"], 0.153)
 
     def test_grow_above_default(self):
         # Befund: ± 145 ms gemessen, der Standard ± 100 ms blieb für immer.
         d = gpsquality.decide(self.measured(0.29), None, T0)
         self.assertTrue(d["apply"], d)
-        self.assertEqual(d["delay"], 0.29)
+        self.assertEqual(d["delay"], 0.363)                # 0,29 × 1,25, aufgerundet
         self.assertEqual(gpsquality.decide(self.measured(1.0), {"delay": 0.9, "precision": 0.01, "t": T0},
                                            T0 + 2 * H)["delay"], gpsquality.DELAY_MAX)
 
@@ -624,7 +625,8 @@ class FlapReplayTest(unittest.TestCase):
         events, watch = self.run_replay(3, calm_samples=700)  # 70 min ruhig
         last = events[-1]
         self.assertEqual(last[1], "info")
-        self.assertRegex(last[2], r"^GPS-Empfang wieder stetig – \d+ Fix-Wechsel in \d+ h")
+        self.assertRegex(last[2], r"^GPS-Empfang wieder stetig – seit 1 h kein Fix-Wechsel \(vorher \d+ Fix-Wechsel in \d+ h")
+        self.assertEqual(last[3]["outcome"], "ruhig")
         self.assertEqual(last[3]["state"], "stetig")
         self.assertEqual(watch.gps_stability()["state"], "stetig")
         self.assertEqual(sum(1 for e in events if "unstet" in e[2]), 1)
@@ -643,10 +645,11 @@ class FlapReplayTest(unittest.TestCase):
             now[0] += 10
         gps_events = [e for e in events if e[0] == "gps"]
         self.assertEqual(gps_events[-1][1], "warn")
-        self.assertRegex(gps_events[-1][2], r"^GPS-Fix verloren – nach \d+ Fix-Wechseln .* seit 10 min ohne Fix$")
+        self.assertRegex(gps_events[-1][2], r"^GPS-Fix seit 10 min weg \(vorher \d+ Fix-Wechsel in .+\)$")
+        self.assertEqual(gps_events[-1][3]["outcome"], "fix_weg")
         self.assertFalse(gps_events[-1][3]["fix"])
         self.assertLessEqual(gps_events[-1][4] - lost_at, statewatch.GPS_UNSTET_LOST + 60)
-        self.assertEqual(sum(1 for e in gps_events if "verloren" in e[2]), 1)  # kein zweites Ereignis
+        self.assertEqual(sum(1 for e in gps_events if " weg " in e[2] or "verloren" in e[2]), 1)  # kein zweites
         self.assertEqual(watch.gps_stability()["state"], "stetig")
         # Fix kommt zurück → normales Ereignis (Haltezeit 60 s).
         for _ in range(10):
@@ -824,3 +827,173 @@ class ApiTest(StoreCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# =========================================================================================
+# 1.5.1: Offset-Änderung – die Schranke misst nur noch Werte zum laufenden Offset
+# =========================================================================================
+def biased_samples(start, hours, bias, step=10.0):
+    """GPS mit festem Versatz bias ± 3 ms um eine NTS-Quelle (wie outdoor_samples)."""
+    out = []
+    for i in range(int(hours * H / step)):
+        wobble = ((i * 7919) % 13 - 6) / 2000.0
+        out.append({"t": start + i * step, "gps": {"mode": 3, "used": 9, "seen": 12, "cn4": 44.0},
+                    "sources": {"GPS": {"o": bias + wobble, "s": "-", "k": "#"},
+                                "ptb": {"o": 0.0, "s": "*", "k": "^"}}})
+    return out
+
+
+class OffsetChangeTest(StoreCase):
+    def setUp(self):
+        super().setUp()
+        gpsquality._OFFSET.update({"for": None, "value": None, "since": None})
+
+    def test_note_offset_remembers_change(self):
+        self.assertIsNone(gpsquality.note_offset(cfg(gps_enable=False), T0))
+        self.assertFalse(os.path.exists(store.path()))
+        self.assertIsNone(gpsquality.note_offset(cfg(gps_offset=0.0526), T0))   # erster Aufruf: unbekannt
+        self.assertIsNone(gpsquality.note_offset(cfg(gps_offset=0.0526), T0 + 60))
+        self.assertEqual(gpsquality.note_offset(cfg(gps_offset=0.0), T0 + 120), T0 + 120)
+        self.assertEqual(gpsquality.offset_not_before(cfg(gps_offset=0.0), T0 + 200),
+                         T0 + 120 + gpsquality.OFFSET_SETTLE)
+        # Nach einem Neustart von ntp-gui aus SQLite.
+        gpsquality._OFFSET.update({"for": None, "value": None, "since": None})
+        self.assertEqual(gpsquality.note_offset(cfg(gps_offset=0.0), T0 + 300), T0 + 120)
+
+    def test_bound_measures_only_after_offset_change(self):
+        # Nutzerfall: 6 h kalibriert (Versatz 0), dann Offset zurückgesetzt → GPS +51 ms neben dem Netz.
+        gpsquality.note_offset(cfg(gps_offset=0.0526), T0)
+        before = biased_samples(T0, 6.0, 0.0)
+        change = T0 + 6 * H
+        gpsquality.note_offset(cfg(gps_offset=0.0), change)
+        after = biased_samples(change, 3.0, 0.051)
+        decision = gpsquality.tick(cfg(gps_offset=0.0), change + 3 * H, before + after)
+        measured = gpsquality.load_state()["measured"]
+        self.assertEqual(measured["status"], "measured")
+        self.assertEqual(measured["not_before"], change + gpsquality.OFFSET_SETTLE)
+        self.assertAlmostEqual(measured["median"], 0.051, delta=0.002)   # nur der neue Versatz
+        self.assertLess(measured["duration_seconds"], 3 * H)
+        self.assertTrue(decision["apply"])                                # ehrlich: ± 54 ms statt ± 100
+        self.assertGreater(gpsquality.read_applied()["delay"], 0.1)
+
+    def test_shrink_after_offset_fixed_without_12h_wait(self):
+        # Schranke wuchs wegen des Versatzes; dann korrigiert der Offset den Versatz.
+        gpsquality.note_offset(cfg(gps_offset=0.0), T0)
+        gpsquality.save_state(dict(gpsquality.load_state(),
+                                   applied={"delay": 0.16, "precision": 0.003, "t": T0 + 6 * H}))
+        fix = T0 + 7 * H
+        gpsquality.note_offset(cfg(gps_offset=0.051), fix)
+        old = biased_samples(T0, 7.0, 0.051)
+        new = biased_samples(fix, 2.5, 0.0)
+        # 1 h nach der Korrektur: zu wenig Messung danach → noch nicht kleiner.
+        early = gpsquality.tick(cfg(gps_offset=0.051), fix + 1 * H, old + [x for x in new if x["t"] <= fix + H])
+        self.assertFalse(early["apply"], early)
+        new = biased_samples(fix, 6.5, 0.0)
+        # 2,5 h nach der Korrektur: früher reichte das (2 h) – jeder kleine Kalibrierschritt hätte so die
+        # 12-h-Sperre umgangen. Jetzt braucht es fast ein ganzes Messfenster (5,5 h).
+        short = gpsquality.tick(cfg(gps_offset=0.051), fix + 2.5 * H, old + [x for x in new if x["t"] <= fix + 2.5 * H])
+        self.assertFalse(short["apply"], short)
+        # 6 h nach der Korrektur (≥ 5,5 h Messung danach), nur 7 h nach der letzten Anpassung.
+        decision = gpsquality.tick(cfg(gps_offset=0.051), fix + 6 * H, old + [x for x in new if x["t"] <= fix + 6 * H])
+        self.assertTrue(decision["apply"], decision)
+        self.assertIn("Offset", decision["reason"])
+        self.assertLessEqual(gpsquality.read_applied()["delay"], 0.03)
+
+    def test_offset_shortcut_not_when_clock_jumped_back(self):
+        measured = {"status": "measured", "delay": 0.03, "duration_seconds": 6 * H}
+        now = T0 + 20 * H
+        applied = {"delay": 0.16, "t": now + H}         # Zeitpunkt in der Zukunft: Uhr sprang zurück
+        decision = gpsquality.decide(measured, applied, now, None, now - 7 * H)
+        self.assertFalse(decision["apply"], decision)
+        # Mit plausiblem Zeitpunkt und ganzem Messfenster nach der Änderung: kleiner.
+        applied["t"] = now - 8 * H
+        self.assertTrue(gpsquality.decide(measured, applied, now, None, now - 7 * H)["apply"])
+        # Nur 2 h Messung nach einer (kleinen) Änderung reicht nicht mehr.
+        short = dict(measured, duration_seconds=2 * H)
+        self.assertFalse(gpsquality.decide(short, applied, now, None, now - 3 * H)["apply"])
+
+    def test_without_offset_change_12h_rule_stays(self):
+        gpsquality.note_offset(cfg(gps_offset=0.0), T0)
+        gpsquality.save_state(dict(gpsquality.load_state(),
+                                   applied={"delay": 0.16, "precision": 0.003, "t": T0 + 4 * H}))
+        decision = gpsquality.tick(cfg(gps_offset=0.0), T0 + 7 * H, biased_samples(T0, 7.0, 0.0))
+        self.assertFalse(decision["apply"], decision)
+        self.assertIn("12 Stunden", decision["reason"])
+
+
+# =========================================================================================
+# Zweite Prüfrunde 1.5.1: weniger Neustarts, Schranke mit der Kalibrierung, Untergrenze aus dem Netz
+# =========================================================================================
+class BoundCreepTest(unittest.TestCase):
+    def measured(self, delay):
+        return {"status": "measured", "delay": delay, "precision": 0.01, "bound": delay / 2}
+
+    def test_one_ms_creep_does_not_restart_hourly(self):
+        # Nutzerfall: gemessen 0,128 → eine Stunde später 0,130 ergab früher ± 64 → ± 80 ms (zweiter Neustart).
+        first = gpsquality.decide(self.measured(0.128), None, T0)
+        self.assertEqual(first["delay"], 0.16)
+        applied = {"delay": first["delay"], "precision": 0.01, "t": T0}
+        for creep in (0.130, 0.140, 0.159):
+            self.assertFalse(gpsquality.decide(self.measured(creep), applied, T0 + H + 1)["apply"], creep)
+        self.assertTrue(gpsquality.decide(self.measured(0.161), applied, T0 + H + 1)["apply"])
+
+    def test_shrink_keeps_headroom(self):
+        applied = {"delay": 0.2, "precision": 0.01, "t": T0}
+        d = gpsquality.decide(self.measured(0.026), applied, T0 + 13 * H)
+        self.assertEqual(d["delay"], 0.033)
+        applied = {"delay": d["delay"], "precision": 0.01, "t": T0 + 13 * H}
+        self.assertFalse(gpsquality.decide(self.measured(0.029), applied, T0 + 15 * H)["apply"])
+
+
+class NetFloorTest(StoreCase):
+    def measured(self, delay):
+        return {"status": "measured", "delay": delay, "precision": 0.01, "bound": delay / 2}
+
+    def test_never_tighter_than_nts(self):
+        applied = {"delay": 0.2, "precision": 0.01, "t": T0}
+        # Beste NTS-Quelle 20 ms Root Distance → Delay mindestens 2 × 1,5 × 20 ms = 60 ms.
+        floor = gpsquality.net_floor(0.020)
+        self.assertEqual(floor, 0.06)
+        d = gpsquality.decide(self.measured(0.024), applied, T0 + 13 * H, floor=floor)
+        self.assertEqual(d["delay"], 0.06)
+        d = gpsquality.decide(self.measured(0.024), {"delay": 0.06, "precision": 0.01, "t": T0}, T0 + 13 * H,
+                              floor=lambda: 0.06)
+        self.assertFalse(d["apply"])
+        self.assertIn("Netzquellen", d["reason"])
+        self.assertIsNone(gpsquality.net_floor(None))
+
+    def test_nts_distance_from_sources(self):
+        def src(state, auth, root_delay, peer_delay, mode="^"):
+            return {"mode": mode, "state": state, "authenticated": auth,
+                    "ntp": {"root_delay": root_delay, "peer_delay": peer_delay, "root_dispersion": 0.0005,
+                            "peer_dispersion": 0.0005}}
+        sources = [src("*", True, 0.0, 0.030), src("+", True, 0.002, 0.016), src("+", False, 0.0, 0.002),
+                   src("-", True, 0.0, 0.001), {"mode": "#", "state": "*", "name": "GPS"}]
+        self.assertAlmostEqual(gpsquality.nts_distance(sources), 0.010)
+        self.assertIsNone(gpsquality.nts_distance([src("+", False, 0.0, 0.002)]))
+        self.assertIsNone(gpsquality.nts_distance(None))
+
+    def test_tick_asks_for_floor_only_when_shrinking(self):
+        calls = []
+        gpsquality.configure(net_distance=lambda: calls.append(1) or 0.05)
+        samples = vk162_samples(loops=5)
+        now = samples[-1]["t"] + 1
+        decision = gpsquality.tick(cfg(), now, samples)
+        self.assertEqual(calls, [1])
+        self.assertTrue(decision["apply"], decision)
+        self.assertGreaterEqual(gpsquality.read_applied()["delay"], 0.15)   # 2 × 1,5 × 50 ms
+
+
+class AdoptCalibrationTest(StoreCase):
+    def test_writes_bound_without_own_restart(self):
+        gpsquality.save_state({"applied": {"delay": 0.16, "precision": 0.003, "t": T0}})
+        bound = gpsquality.adopt_calibration(cfg(), 0.024, 0.004, None, T0 + 6 * H)
+        self.assertEqual(bound["delay"], 0.03)
+        self.assertEqual(gpsquality.read_applied()["delay"], 0.03)
+        self.assertEqual(self.reloads, [])                     # der Neustart kommt mit dem Offset
+        self.assertIn("mit der Kalibrierung", self.events[-1][2])
+        # Mit Untergrenze aus dem Netz, und nicht bei PPS / Schranke von Hand.
+        self.assertEqual(gpsquality.adopt_calibration(cfg(), 0.024, 0.004, 0.02, T0 + 7 * H)["delay"], 0.06)
+        self.assertIsNone(gpsquality.adopt_calibration(cfg(gps_pps_shm=True), 0.024, 0.004, None, T0))
+        self.assertIsNone(gpsquality.adopt_calibration(cfg(gps_bound_mode="manual"), 0.024, 0.004, None, T0))
+        self.assertIsNone(gpsquality.adopt_calibration(cfg(), None, 0.004, None, T0))

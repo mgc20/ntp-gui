@@ -105,7 +105,7 @@ class DecideTest(unittest.TestCase):
         self.assertAlmostEqual(d["step_ms"], -5.0)
 
     def test_final_step_takes_delay(self):
-        d = autocal.decide(cfg(), cal(bias=0.003), None, NOW)
+        d = autocal.decide(cfg(), cal(bias=0.003, duration_seconds=24 * H), None, NOW)
         self.assertEqual(d["action"], "apply")
         self.assertAlmostEqual(d["new_offset"], 0.053)
         self.assertTrue(d["final_step"])
@@ -126,8 +126,12 @@ class DecideTest(unittest.TestCase):
         self.assertAlmostEqual(thr, 3 * 0.02 / (48 ** 0.5))
         d = autocal.decide(cfg(), cal(bias=0.006, spread=0.02), None, NOW)
         self.assertEqual(d["action"], "none")
+        self.assertEqual(d["phase"], "calibrated")
+        # Über der Schwelle, aber kein deutlicher Versatz: einer kleinen Drift folgt sie erst nach 24 h.
         d = autocal.decide(cfg(), cal(bias=0.010, spread=0.02), None, NOW)
-        self.assertEqual(d["action"], "apply")
+        self.assertEqual((d["action"], d["phase"]), ("none", "drift_wait"))
+        self.assertEqual(autocal.decide(cfg(), cal(bias=0.010, spread=0.02, duration_seconds=24 * H), None,
+                                        NOW)["action"], "apply")
         # Wenige Messungen: samples begrenzt n_eff.
         self.assertAlmostEqual(autocal.threshold(0.01, 4, 10 * H), 3 * 0.01 / 2)
 
@@ -144,15 +148,16 @@ class DecideTest(unittest.TestCase):
 
     def test_reversal_hysteresis(self):
         last = {"t": NOW - 2 * autocal.DAY, "kind": "auto", "old_offset": 0.045, "new_offset": 0.05}
+        day = {"duration_seconds": 24 * H, "spread": 0.0005}
         # Gegenrichtung: 1,5 ms < 2 × 1 ms
-        d = autocal.decide(cfg(), cal(bias=-0.0015, spread=0.0005), last, NOW)
+        d = autocal.decide(cfg(), cal(bias=-0.0015, **day), last, NOW)
         self.assertEqual(d["action"], "none")
         self.assertIn("doppelte", d["reason"])
         # Gleiche Richtung: 1,5 ms ≥ 1 ms
-        self.assertEqual(autocal.decide(cfg(), cal(bias=0.0015, spread=0.0005), last, NOW)["action"], "apply")
+        self.assertEqual(autocal.decide(cfg(), cal(bias=0.0015, **day), last, NOW)["action"], "apply")
         # Nach 7 Tagen keine Hysterese mehr.
         last["t"] = NOW - 8 * autocal.DAY
-        self.assertEqual(autocal.decide(cfg(), cal(bias=-0.0015, spread=0.0005), last, NOW)["action"], "apply")
+        self.assertEqual(autocal.decide(cfg(), cal(bias=-0.0015, **day), last, NOW)["action"], "apply")
 
     def test_suggest_mode_gives_full_target(self):
         d = autocal.decide(cfg(gps_autocal="suggest"), cal(), None, NOW)
@@ -239,6 +244,10 @@ class Harness:
         # Simulierter Supervisor: welcher Offset läuft in chronyd, klappt das Neuladen?
         self.running_offset = self.cfg["gps_offset"]
         self.reload_ok = True
+        self.hold = None             # gnssguard: Grund, nicht automatisch zu ändern (None = frei)
+        self.hold_calls = []
+        self.offset_since = None     # gpsquality.note_offset: wann der Offset zuletzt geändert wurde
+        self.bounds = []             # gpsquality.adopt_calibration: mitgeschriebene Schranken
 
     def deps(self):
         def get_calibration(window):
@@ -264,13 +273,23 @@ class Harness:
                 self.running_offset = self.cfg["gps_offset"]
             return True
 
+        def guard_hold(since):
+            self.hold_calls.append(since)
+            return self.hold
+
         def check_active(cfg_, change):
             ok = abs(self.running_offset - cfg_["gps_offset"]) < 1e-9
             return {"active": ok, "since": None, "reason": "" if ok else "alter Offset läuft"}
 
+        def adopt_bound(cfg_, delay, precision, distance, now):
+            self.bounds.append({"delay": delay, "precision": precision, "distance": distance, "t": now,
+                                "reloads_before": self.reloads})
+            return {"delay": delay}
+
         return {"get_calibration": get_calibration, "get_sources": lambda: self.sources,
                 "save_settings": save_settings, "trigger_reload": reload,
-                "check_active": check_active,
+                "check_active": check_active, "guard_hold": guard_hold,
+                "offset_since": lambda cfg_, now: self.offset_since, "adopt_bound": adopt_bound,
                 "emit_event": lambda *a: self.events.append(a)}
 
 
@@ -394,18 +413,18 @@ class TickTest(unittest.TestCase):
         self.assertEqual(self.h.reloads, 0)
 
     def test_delay_on_final_step(self):
-        self.h.calibration = cal(bias=0.003)
+        self.h.calibration = cal(bias=0.003, duration_seconds=24 * H)
         self.tick(NOW)
-        self.tick(NOW + 7 * H)
+        self.tick(NOW + 25 * H)
         self.assertEqual(self.h.saved, [{"gps_offset": 0.053, "gps_delay": 0.012}])
 
     def test_measured_bound_keeps_delay(self):
         # 1.5 (E16): ohne PPS mit „Fehlerschranke: gemessen“ setzt gpsquality den Delay –
         # die Kalibrierung ändert dann nur den Offset.
         self.h.cfg["gps_bound_mode"] = "measured"
-        self.h.calibration = cal(bias=0.003)
+        self.h.calibration = cal(bias=0.003, duration_seconds=24 * H)
         self.tick(NOW)
-        self.tick(NOW + 7 * H)
+        self.tick(NOW + 25 * H)
         self.assertEqual(self.h.saved, [{"gps_offset": 0.053}])
 
     def test_corrupt_state_file(self):
@@ -464,6 +483,7 @@ class RollbackTest(unittest.TestCase):
 
     def test_undo_several_restores_delay(self):
         self.h.target = 0.058
+        self.h.calibration = cal(duration_seconds=24 * H)   # kleine Abweichungen: ganze 24-h-Messung
         self.run_changes(2)  # 0.05 → 0.055 (Delay bleibt) → 0.058 (letzter Schritt: Delay 0.012)
         self.assertEqual(self.h.cfg["gps_delay"], 0.012)
         result = self.rollback(2)
@@ -575,7 +595,7 @@ class VerifyActiveTest(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, True)
         self.file = os.path.join(self.tmp, "autocal.json")
         self.h = Harness()
-        self.h.target = 0.062  # echte Verspätung: braucht mehrere 5-ms-Schritte
+        self.h.target = 0.075  # echte Verspätung: braucht mehrere 5-ms-Schritte
         env = mock.patch.dict(os.environ, {"WEB_READONLY": ""})
         env.start()
         self.addCleanup(env.stop)
@@ -775,3 +795,357 @@ class HelpKeysTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---------------------------------------------------------------------------
+# 1.5.1: Ohne PPS einen deutlichen Versatz in einem Schritt korrigieren
+# ---------------------------------------------------------------------------
+def nopps(**over):
+    """GPS ohne PPS als Rückfallebene mit gemessener Fehlerschranke (Nutzerfall Pi 4 + VK-162)."""
+    return cfg(gps_bound_mode="measured", gps_pps_device="", gps_pps_shm=False, gps_select="auto",
+               gps_offset=0.0, **over)
+
+
+def big(**over):
+    base = dict(bias=0.051, spread=0.004, current_offset=0.0,
+                reference=ref(window_median=5, current_network=5, current_nts=5))
+    base.update(over)
+    return cal(**base)
+
+
+class FastConvergenceTest(unittest.TestCase):
+    def test_full_correction_without_pps(self):
+        recent = {"t": NOW - 2 * H, "kind": "auto", "old_offset": -0.005, "new_offset": 0.0}
+        d = autocal.decide(nopps(), big(), recent, NOW)   # keine 24-h-Pause
+        self.assertEqual(d["action"], "apply")
+        self.assertTrue(d["fast"])
+        self.assertEqual(d["new_offset"], 0.051)
+        self.assertTrue(d["final_step"])
+        self.assertIn("in einem Schritt", d["reason"])
+
+    def test_conservative_with_pps_or_prefer_or_manual_bound(self):
+        for over in ({"gps_pps_shm": True}, {"gps_select": "prefer"}, {"gps_bound_mode": "manual"}):
+            with self.subTest(**over):
+                c = nopps()
+                c.update(over)
+                d = autocal.decide(c, big(), None, NOW)
+                self.assertEqual(d["action"], "apply")
+                self.assertFalse(d.get("fast"))
+                self.assertEqual(d["new_offset"], 0.005)
+
+    def test_needs_nts_duration_and_clear_bias(self):
+        cases = {
+            "eine NTS-Quelle": big(reference=ref(window_median=5, current_network=5, current_nts=1)),
+            "kurz gemessen": big(duration_seconds=5 * H),
+            "kleiner Versatz": big(bias=0.008),
+        }
+        for label, calibration in cases.items():
+            with self.subTest(label):
+                d = autocal.decide(nopps(gps_autocal_min_hours=4), calibration, None, NOW)
+                self.assertFalse(d.get("fast"), d)
+                self.assertLessEqual(abs(d["new_offset"] or 0.0), 0.0081)
+
+    def test_reversal_stays_careful(self):
+        last = {"t": NOW - 30 * H, "kind": "auto", "old_offset": 0.06, "new_offset": 0.0}
+        d = autocal.decide(nopps(), big(), last, NOW)
+        self.assertFalse(d.get("fast"))
+
+    def test_suggest_mode_unchanged(self):
+        d = autocal.decide(nopps(gps_autocal="suggest"), big(), None, NOW)
+        self.assertEqual(d["action"], "suggest")
+        self.assertEqual(d["new_offset"], 0.051)
+
+
+class OffsetResetTimelineTest(unittest.TestCase):
+    """Nutzerfall: Offset 0,0526 → von Hand 0. Früher 0 → 0,005 nach 7 h, Rest über ~10 Tage.
+    Jetzt: nach 6 h Messung die ganze Korrektur, und die GPS-Seite sagt vorher, was kommt."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.file = os.path.join(self.tmp, "autocal.json")
+        self.h = Harness(sources=[{"name": "GPS", "mode": "#", "state": "x"}] + [
+            {"name": f"nts{i}", "mode": "^", "state": "*" if i == 0 else "+", "authenticated": True}
+            for i in range(5)])
+        self.h.cfg.update(gps_bound_mode="measured", gps_offset=0.0526, gps_select="auto")
+        self.h.running_offset = 0.0526
+        self.h.target = 0.0526
+        env = mock.patch.dict(os.environ, {"WEB_READONLY": ""})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def tick(self, now):
+        return autocal.tick(self.h.cfg, now, deps=self.h.deps(), file=self.file)
+
+    def test_reset_then_fast_correction(self):
+        self.tick(NOW)
+        self.h.cfg["gps_offset"] = 0.0            # „Auf Standard zurücksetzen“
+        self.h.running_offset = 0.0
+        self.tick(NOW + H)
+        status = autocal.api_status(self.h.cfg, NOW + 2 * H, fresh=False, deps=self.h.deps(), file=self.file)
+        self.assertTrue(status["fast_allowed"])
+        self.assertEqual(status["manual_change"]["offset"], 0.0)
+        self.assertIn("von Hand", status["plan"])
+        self.assertIn("in einem Schritt", status["plan"])
+        self.assertIn("Vorschlag übernehmen", status["plan"])
+        self.assertEqual(status["next_change_at"], NOW + H + autocal.SETTLE_SECONDS + 6 * H)
+        d = self.tick(NOW + 5 * H)
+        self.assertEqual(d["action"], "none")
+        d = self.tick(NOW + H + autocal.SETTLE_SECONDS + 6 * H + 60)
+        self.assertEqual(d["action"], "apply", d)
+        self.assertTrue(d["fast"])
+        self.assertEqual(self.h.cfg["gps_offset"], 0.0526)
+        status = autocal.api_status(self.h.cfg, NOW + 9 * H, fresh=False, deps=self.h.deps(), file=self.file)
+        self.assertIsNone(status["manual_change"])   # jetzt von autocal gesetzt
+
+
+# ---------------------------------------------------------------------------
+# Prüfbefunde 1.5.1
+# ---------------------------------------------------------------------------
+NTS5 = [{"name": "GPS", "mode": "#", "state": "x"}] + [
+    {"name": f"nts{i}", "mode": "^", "state": "*" if i == 0 else "+", "authenticated": True} for i in range(5)]
+
+
+class ReviewTimelineCase(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.file = os.path.join(self.tmp, "autocal.json")
+        self.h = Harness(sources=NTS5)
+        self.h.cfg.update(gps_bound_mode="measured", gps_offset=0.0526, gps_select="auto")
+        self.h.running_offset = self.h.target = 0.0526
+        env = mock.patch.dict(os.environ, {"WEB_READONLY": ""})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def tick(self, now):
+        return autocal.tick(self.h.cfg, now, deps=self.h.deps(), file=self.file)
+
+    def reset_offset(self, now):
+        self.tick(now - H)
+        self.h.cfg["gps_offset"] = self.h.running_offset = 0.0
+        self.tick(now)
+
+
+class GuardHoldTest(ReviewTimelineCase):
+    """Befund: Ein Spoofer mit festem Versatz durfte nach 6 h „wegkalibriert“ werden."""
+
+    def test_stoerung_blocks_automatic_change(self):
+        self.reset_offset(NOW)
+        self.h.hold = "im Messzeitraum meldete die GNSS-Störungserkennung eine Störung"
+        d = self.tick(NOW + autocal.SETTLE_SECONDS + 6 * H + 60)
+        self.assertEqual(d["action"], "suggest", d)
+        self.assertIn("Nicht automatisch übernommen", d["reason"])
+        self.assertIn("Störung", d["reason"])
+        self.assertEqual(self.h.saved, [])
+        self.assertEqual(self.h.cfg["gps_offset"], 0.0)
+        self.assertEqual(self.h.hold_calls[-1], NOW)          # gefragt mit Beginn des Messzeitraums
+        # Ohne Störung (nur der schwache Falseticker-Hinweis) korrigiert sie.
+        self.h.hold = None
+        d = self.tick(NOW + autocal.SETTLE_SECONDS + 7 * H)
+        self.assertEqual(d["action"], "apply", d)
+        self.assertEqual(self.h.cfg["gps_offset"], 0.0526)
+
+    def test_guard_error_blocks_too(self):
+        self.reset_offset(NOW)
+        deps = self.h.deps()
+        deps["guard_hold"] = mock.Mock(side_effect=RuntimeError("weg"))
+        d = autocal.tick(self.h.cfg, NOW + autocal.SETTLE_SECONDS + 6 * H + 60, deps=deps, file=self.file)
+        self.assertEqual(d["action"], "suggest")
+        self.assertEqual(self.h.saved, [])
+
+    def test_jump_inside_window_prevents_fast_path(self):
+        d = autocal.decide(nopps(), big(half_shift=0.03), None, NOW)
+        self.assertFalse(d.get("fast"))
+        self.assertEqual(d["new_offset"], 0.005)
+        self.assertEqual(d["half_shift_ms"], 30.0)
+        d = autocal.decide(nopps(), big(half_shift=0.012), None, NOW)   # unter |Versatz|/3: steht
+        self.assertTrue(d.get("fast"))
+
+
+class PlanDateTest(ReviewTimelineCase):
+    """Befund: Nach einer Änderung von Hand innerhalb von 24 h nach einem automatischen Schritt
+    nannte der Plan „frühestens am <letzte Änderung + 24 h>“, obwohl nach 6 h 15 min korrigiert wird."""
+
+    def test_fast_plan_ignores_24h_pause(self):
+        self.h.cfg["gps_offset"] = self.h.running_offset = 0.0476   # 5 ms daneben: kleine Drift
+        self.h.calibration = cal(duration_seconds=24 * H)
+        self.tick(NOW)
+        d = self.tick(NOW + 7 * H)
+        self.assertEqual((d["action"], d["phase"]), ("none", "drift_wait"))   # erst nach 24 h Messung
+        d = self.tick(NOW + 25 * H)
+        self.assertEqual(d["action"], "apply", d)
+        self.assertFalse(d.get("fast"))
+        last_auto = NOW + 25 * H
+        self.h.cfg["gps_offset"] = self.h.running_offset = 0.0    # dann von Hand zurückgesetzt
+        self.tick(NOW + 26 * H)
+        status = autocal.api_status(self.h.cfg, NOW + 27 * H, fresh=False, deps=self.h.deps(), file=self.file)
+        self.assertEqual(status["next_change_at"], NOW + 26 * H + autocal.SETTLE_SECONDS + 6 * H)
+        self.assertEqual(status["phase"]["key"], "measure")
+        self.assertIn("in einem Schritt", status["plan"])
+        d = self.tick(NOW + 26 * H + autocal.SETTLE_SECONDS + 6 * H + 60)
+        self.assertEqual(d["action"], "apply", d)
+        self.assertTrue(d["fast"])
+        self.assertLess(NOW + 26 * H + autocal.SETTLE_SECONDS + 6 * H + 60, last_auto + autocal.AUTO_INTERVAL)
+
+
+class FalsetickerChainTest(unittest.TestCase):
+    """Ganze Kette: Verlauf mit GPS „x“ (+51 ms gegen 5 genutzte NTS-Quellen) → calibrate() →
+    reference_stats() → decide(): schnelle Korrektur, ohne dass die Fehlerschranke erst wachsen muss."""
+
+    class FakeHistory:
+        def __init__(self, samples):
+            self.samples = samples
+
+        def snapshot(self, since=None):
+            return [s for s in self.samples if since is None or s["t"] >= since]
+
+    def samples(self, end, hours, bias=0.051):
+        import random
+        rng = random.Random(5)
+        out = []
+        t = end - hours * H
+        while t <= end:
+            gps = {"o": bias + rng.gauss(0, 0.004), "s": "x", "k": "#", "r": 255}
+            net = {f"nts{i}": {"o": rng.gauss(0, 0.0005), "s": "*" if i == 0 else "+", "k": "^"} for i in range(5)}
+            out.append({"t": t, "sources": dict(net, GPS=gps)})
+            t += 60.0
+        return out
+
+    def test_x_samples_reach_fast_correction(self):
+        import time as _time
+        now = _time.time()
+        samples = self.samples(now, 7.5)
+        # Ohne die „x“-Werte gäbe es nichts zu kalibrieren (Befund).
+        self.assertEqual(history.gps_differences(samples, "GPS"), ([], []))
+        result = history.calibrate(samples, "GPS", 0.0, 0.2)
+        self.assertEqual(result["status"], "ready")
+        self.assertAlmostEqual(result["bias"], 0.051, delta=0.002)
+        self.assertLess(abs(result["half_shift"]), 0.003)
+        self.assertEqual(autocal.reference_stats(samples, "GPS")["window_median"], 5)
+        c = nopps()
+        getter = autocal.make_calibration_getter(self.FakeHistory(samples), lambda: c)
+        saved = []
+        deps = {"get_calibration": getter, "get_sources": lambda: NTS5,
+                "save_settings": lambda ch: (saved.append(ch), c.update(ch), {"restart": False})[2],
+                "trigger_reload": lambda: True, "emit_event": lambda *a: None, "guard_hold": lambda since: None,
+                "offset_since": lambda cfg_, now: None, "adopt_bound": lambda *a: None,
+                "check_active": lambda cfg_, change: {"active": True, "since": None, "reason": ""}}
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, True)
+        file = os.path.join(tmp, "autocal.json")
+        with mock.patch.dict(os.environ, {"WEB_READONLY": ""}):
+            autocal.tick(c, now - 7 * H, deps=deps, file=file)
+            d = autocal.tick(c, now, deps=deps, file=file)
+        self.assertEqual(d["action"], "apply", d)
+        self.assertTrue(d["fast"])
+        self.assertAlmostEqual(c["gps_offset"], 0.051, delta=0.002)
+
+    def test_x_with_single_source_does_not_count(self):
+        sources = {"a": {"o": 0.0, "s": "*", "k": "^"}, "GPS": {"o": 0.05, "s": "x", "k": "#", "r": 255}}
+        self.assertFalse(history.calibration_usable(sources, "GPS"))
+        sources["b"] = {"o": 0.0, "s": "+", "k": "^"}
+        self.assertTrue(history.calibration_usable(sources, "GPS"))
+        sources["GPS"] = {"o": 0.05, "s": "~", "k": "#", "r": 255}
+        self.assertFalse(history.calibration_usable(sources, "GPS"))
+        sources["GPS"] = {"o": 0.05, "s": "x", "k": "#", "r": 0}
+        self.assertFalse(history.calibration_usable(sources, "GPS"))
+
+
+# ---------------------------------------------------------------------------
+# Zweite Prüfrunde 1.5.1: einfach, vorhersagbar, sichtbar
+# ---------------------------------------------------------------------------
+class SecondReviewTest(ReviewTimelineCase):
+    def test_fast_step_writes_bound_in_same_restart(self):
+        self.h.calibration = cal(suggested_delay=0.024, suggested_precision=0.004)
+        self.reset_offset(NOW)
+        d = self.tick(NOW + autocal.SETTLE_SECONDS + 6 * H + 60)
+        self.assertTrue(d["fast"], d)
+        self.assertEqual(len(self.h.bounds), 1)
+        bound = self.h.bounds[0]
+        self.assertEqual((bound["delay"], bound["precision"]), (0.024, 0.004))
+        self.assertEqual(bound["reloads_before"], self.h.reloads - 1)     # vor dem einen Neustart geschrieben
+        self.assertEqual(self.h.saved, [{"gps_offset": 0.0526}])           # gps_delay bleibt unberührt
+
+    def test_small_step_leaves_bound_alone(self):
+        self.h.cfg["gps_offset"] = self.h.running_offset = 0.0476
+        self.h.calibration = cal(duration_seconds=24 * H)
+        self.tick(NOW)
+        self.assertEqual(self.tick(NOW + 25 * H)["action"], "apply")
+        self.assertEqual(self.h.bounds, [])
+
+    def test_measurement_starts_at_exact_change_time(self):
+        self.tick(NOW)
+        self.h.cfg["gps_offset"] = self.h.running_offset = 0.0
+        self.h.offset_since = NOW + 60                 # laut Messschleife: Änderung um NOW + 1 min
+        seen = set()
+        for dt in (120, 1200, 3000):
+            s = autocal.api_status(self.h.cfg, NOW + dt, fresh=True, deps=self.h.deps(), file=self.file)
+            seen.add((s["manual_change"]["since"], s["next_change_at"]))
+        self.assertEqual(seen, {(NOW + 60, NOW + 60 + autocal.SETTLE_SECONDS + 6 * H)})
+
+    def test_steady_state_has_no_next_change(self):
+        self.h.calibration = cal(status="calibrated", bias=0.0002)
+        self.tick(NOW)
+        for hours in (17, 18, 19):
+            s = autocal.api_status(self.h.cfg, NOW + hours * H, fresh=True, deps=self.h.deps(), file=self.file)
+            self.assertEqual(s["phase"]["key"], "calibrated")
+            self.assertIn("kleinen Drifts", s["phase"]["label"])
+            self.assertIsNone(s["next_change_at"])
+            self.assertNotIn("frühestens", s["plan"])
+
+    def test_daily_swing_does_not_ping_pong(self):
+        # Offset stimmt, die Differenz GPS − Netz schwankt im Tageslauf ± 3 ms: 6-h-Fenster sehen eine
+        # „Drift“, das 24-h-Fenster nicht. Früher: +2,7 ms nach 7 h, −2,8 ms einen Tag später.
+        self.tick(NOW)
+        for hours, bias, window in ((7, 0.0027, 6.8), (13, -0.0025, 12.0), (20, 0.002, 19.0), (31, 0.0003, 24)):
+            self.h.calibration = cal(bias=bias, spread=0.002, duration_seconds=window * H, current_offset=0.0526)
+            self.h.target = None
+            d = self.tick(NOW + hours * H)
+            self.assertEqual(d["action"], "none", (hours, d["reason"]))
+        self.assertEqual(self.h.saved, [])
+
+    def test_manual_change_lifts_reversal_rule(self):
+        last = {"t": NOW - 30 * H, "kind": "auto", "old_offset": 0.0476, "new_offset": 0.0526}
+        d = autocal.decide(dict(nopps(), gps_offset=0.1), big(bias=-0.0474, current_offset=0.1), last, NOW)
+        self.assertEqual(d["action"], "apply")
+        self.assertTrue(d["fast"])
+        # Ohne Änderung von Hand bleibt die Gegenrichtung behutsam.
+        d = autocal.decide(dict(nopps(), gps_offset=0.0526), big(bias=-0.0474, current_offset=0.0526), last, NOW)
+        self.assertFalse(d.get("fast"))
+
+    def test_guard_hold_shows_no_date_and_no_offer(self):
+        self.reset_offset(NOW)
+        self.h.hold = "im Messzeitraum meldete die GNSS-Störungserkennung eine Störung"
+        s = autocal.api_status(self.h.cfg, NOW + autocal.SETTLE_SECONDS + 7 * H, fresh=True, deps=self.h.deps(),
+                               file=self.file)
+        self.assertEqual(s["decision"]["guard_hold"], self.h.hold)
+        self.assertEqual(s["phase"]["key"], "hold")
+        self.assertIn("Antenne", s["phase"]["text"])
+        self.assertIsNone(s["next_change_at"])
+        self.assertNotIn("Vorschlag übernehmen", s["plan"])
+        self.assertNotIn("frühestens", s["plan"])
+
+    def test_guard_asked_for_sliding_window(self):
+        self.tick(NOW)
+        self.h.calibration = cal(duration_seconds=24 * H)
+        self.h.target = 0.0726                       # 20 ms daneben
+        self.h.hold = "Test"
+        self.tick(NOW + 40 * H)
+        self.assertEqual(self.h.hold_calls[-1], NOW + 40 * H - autocal.DAY - autocal.SETTLE_SECONDS)
+
+    def test_phase_measure_then_correct(self):
+        self.reset_offset(NOW)
+        s = autocal.api_status(self.h.cfg, NOW + 3 * H, fresh=True, deps=self.h.deps(), file=self.file)
+        self.assertEqual(s["phase"]["key"], "measure")
+        self.assertRegex(s["phase"]["label"], r"misst \(2,8 von 6,0 h\)")
+        s = autocal.api_status(self.h.cfg, NOW + autocal.SETTLE_SECONDS + 6 * H + 60, fresh=True,
+                               deps=self.h.deps(), file=self.file)
+        self.assertEqual(s["phase"]["key"], "correct")
+        self.assertIn("korrigiert bei nächster Prüfung", s["phase"]["label"])
+        self.assertIsNotNone(s["next_change_at"])
+        self.assertEqual(self.h.saved, [])                  # Anzeige ändert nichts

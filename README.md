@@ -6,8 +6,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/ConGp20/ntp-gui/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/ConGp20/ntp-gui/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="https://github.com/ConGp20/ntp-gui/releases/latest"><img alt="Release" src="https://img.shields.io/badge/release-v1.5.0-0969da"></a>
+  <a href="https://github.com/mgc20/ntp-gui/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/mgc20/ntp-gui/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/mgc20/ntp-gui/releases/latest"><img alt="Release" src="https://img.shields.io/badge/release-v1.5.1-0969da"></a>
   <img alt="Plattformen" src="https://img.shields.io/badge/platform-amd64%20%7C%20arm64-1a7f37">
   <img alt="Image" src="https://img.shields.io/badge/image-ghcr.io-8250df">
   <a href="LICENSE"><img alt="Lizenz: MIT" src="https://img.shields.io/badge/license-MIT-59636e"></a>
@@ -154,8 +154,13 @@ docker run -d --name ntp-gui \
   -e TZ=Europe/Berlin \
   -e NTP_POOLS=de.pool.ntp.org \
   -e ALLOW_NETWORKS=192.168.0.0/16 \
-  ghcr.io/congp20/ntp-gui:latest
+  ghcr.io/mgc20/ntp-gui:latest
 ```
+
+Version festhalten statt `:latest`: `:1.5` bleibt auf 1.5.x, `:1.5.1` bleibt fest auf genau
+dieser Version (der Hinweis steht auch in jeder Compose-Vorlage). Das Image ist von
+`ghcr.io/congp20/ntp-gui` nach `ghcr.io/mgc20/ntp-gui` umgezogen; am alten Ort erscheinen
+keine neuen Versionen mehr.
 
 Prüfen, ob der Server antwortet (von einem Client aus – `chronyc -h` funktioniert
 hier nicht, weil der Kommando-Port des Containers bewusst deaktiviert ist):
@@ -189,7 +194,7 @@ Zeilen dazugehören.
 ```bash
 mkdir ntp-gui && cd ntp-gui
 curl -fsSLo docker-compose.yml \
-  https://raw.githubusercontent.com/ConGp20/ntp-gui/main/docker-compose.all-in-one.yml
+  https://raw.githubusercontent.com/mgc20/ntp-gui/main/docker-compose.all-in-one.yml
 docker compose up -d
 # Dashboard: http://<host>:8080  ->  Seite „Hardware“
 ```
@@ -808,7 +813,7 @@ docker run -d --name ntp-gui \
   --device /dev/ttyACM0 \
   -e GPS_ENABLE=true -e GPS_DEVICE=/dev/ttyACM0 \
   -e ALLOW_NETWORKS=192.168.0.0/16 \
-  ghcr.io/congp20/ntp-gui:latest
+  ghcr.io/mgc20/ntp-gui:latest
 ```
 
 Das Gerät **muss** per `--device` bzw. `devices:` durchgereicht werden – ein Container
@@ -870,7 +875,7 @@ Streuung (nächster Abschnitt); den Offset kalibrierst du wie unten beschrieben.
 
 ### GPS ohne PPS (z. B. VK-162): Rückfallebene mit ehrlicher Fehlerschranke
 
-Ein USB-Empfänger ohne PPS liefert die Zeit nur auf einige bis einige zehn Millisekunden genau. Mit gutem Internet sind NTS-Quellen meist genauer. Ohne Internet oder mit wackeligem Mobilfunk ist das GPS dagegen die bessere oder einzige Quelle. ntp-gui macht das GPS deshalb zur **Rückfallebene**: Es misst, wie stark das GPS gegenüber deinen Netzquellen streut (letzte 6 Stunden), und gibt chrony daraus eine ehrliche Fehlerschranke. chrony nimmt dann die guten Netzquellen und übernimmt das GPS von selbst, wenn das Internet schlecht wird oder ausfällt. Bis genug gemessen ist, gilt vorsichtig ± 100 ms. Die Schranke wächst sofort mit (höchstens stündlich) und schrumpft nur deutlich und frühestens nach 12 Stunden. Jede Anpassung steht im Ereignisprotokoll. Ein eingestelltes, aber fehlendes PPS-Gerät zählt als „ohne PPS“.
+Ein USB-Empfänger ohne PPS liefert die Zeit nur auf einige bis einige zehn Millisekunden genau. Mit gutem Internet sind NTS-Quellen meist genauer. Ohne Internet oder mit wackeligem Mobilfunk ist das GPS dagegen die bessere oder einzige Quelle. ntp-gui macht das GPS deshalb zur **Rückfallebene**: Es misst, wie stark das GPS gegenüber deinen Netzquellen streut (letzte 6 Stunden), und gibt chrony daraus eine ehrliche Fehlerschranke. chrony nimmt dann die guten Netzquellen und übernimmt das GPS von selbst, wenn das Internet schlecht wird oder ausfällt. Bis genug gemessen ist, gilt vorsichtig ± 100 ms. Die Schranke wächst sofort mit (höchstens stündlich) und schrumpft nur deutlich und frühestens nach 12 Stunden; jede neue Schranke bekommt 25 % Reserve, damit leichtes Kriechen chronyd nicht stündlich neu startet. Enger als das 1,5-Fache der Root Distance deiner besten genutzten NTS-Quelle wird sie nie – sonst wählte chrony das GPS ohne PPS den Netzquellen vor. Jede Anpassung steht im Ereignisprotokoll. Ein eingestelltes, aber fehlendes PPS-Gerät zählt als „ohne PPS“.
 
 | Variable | Standard | Bedeutung |
 |---|---|---|
@@ -917,7 +922,11 @@ Offset selbst nachstellen. Einstellung **GPS → Automatische Kalibrierung** (`G
 |---|---|
 | `off` | nichts – kein Vorschlag, keine Änderung |
 | `suggest` (Standard) | Die Seite **GPS** zeigt einen Vorschlag, sobald er belastbar ist. Du übernimmst ihn per Klick. |
-| `auto` | ntp-gui stellt den Offset selbst nach – behutsam, nach festen Regeln, mit Eintrag im Ereignisprotokoll |
+| `auto` | ntp-gui stellt den Offset selbst nach – nach festen Regeln, mit Eintrag im Ereignisprotokoll |
+
+Der Ablauf im Modus `auto` ist immer derselbe, und die Seite **GPS** zeigt ihn als **Phase** samt
+nächstem Schritt: **messen** → einen deutlichen Versatz **einmal korrigieren** → danach nur noch
+**kleinen Drifts folgen**.
 
 Die Regeln sind bewusst vorsichtig – lieber eine Änderung zu wenig als eine falsche:
 
@@ -929,11 +938,22 @@ Die Regeln sind bewusst vorsichtig – lieber eine Änderung zu wenig als eine f
   Netzwerkquelle (Internet weg) passiert nichts.
 - **Nur echte Abweichungen:** mindestens 1 ms und deutlich größer als die Messunsicherheit.
   Eine Korrektur in die Gegenrichtung der letzten braucht die doppelte Schwelle – so pendelt
-  der Offset nicht hin und her.
-- **Kleine Schritte:** höchstens eine Änderung je 24 h, jeweils höchstens
-  `GPS_AUTOCAL_MAX_STEP_MS` (Standard 5 ms). Größere Abweichungen werden über mehrere Tage
-  abgebaut. Den Delay verkleinert ntp-gui erst beim letzten Schritt – ein kleiner Delay
-  macht das GPS für chrony attraktiver, das soll erst mit stimmendem Offset passieren.
+  der Offset nicht hin und her. Hast du den Offset seitdem von Hand geändert, gilt diese Regel
+  nicht.
+- **Einmal korrigieren:** Ohne PPS (GPS als Rückfallebene, Fehlerschranke „gemessen“) wird ein
+  deutlicher Versatz (ab 10 ms, über mindestens 6 h gegen mindestens zwei NTS-Quellen gemessen,
+  ohne Sprung im Messzeitraum) in **einem** Schritt ganz korrigiert – etwa nach „Offset
+  zurücksetzen“. Die passende Fehlerschranke schreibt ntp-gui im selben Neustart von chronyd mit.
+  Mit PPS oder als bevorzugte Quelle bleibt es bei Schritten von höchstens
+  `GPS_AUTOCAL_MAX_STEP_MS` (Standard 5 ms) je 24 h. Den Delay verkleinert ntp-gui dort erst beim
+  letzten Schritt – ein kleiner Delay macht das GPS für chrony attraktiver, das soll erst mit
+  stimmendem Offset passieren.
+- **Kleinen Drifts folgen:** Kleinere Abweichungen zieht die Automatik nur nach einer ganzen
+  24-h-Messung nach, höchstens einmal je 24 h. Die Netzlaufzeit schwankt im Tageslauf um einige
+  Millisekunden; ein kürzeres Fenster sähe darin eine Drift, und der Offset pendelte hin und her.
+- **Nie während einer GNSS-Störung:** Meldet die Störungserkennung im Messzeitraum eine Warnung
+  oder Störung, ist die Automatik gesperrt (Phase „gesperrt wegen GNSS-Störung“) – ein Versatz,
+  den ein Spoofer verursacht, wird so nie eingerechnet.
 - **Im Zweifel ein Mensch:** Streut die Messung über 25 ms oder liegt sie über 0,5 s daneben,
   stimmt etwas Grundsätzliches nicht (falsches Gerät, wackelige Leitung). Dann gibt es nur
   einen Vorschlag.
@@ -1031,7 +1051,9 @@ ntp-gui erkennt, wenn das GPS gestört (Jamming) oder gefälscht (Spoofing) wird
 | GPS-Zeit weicht vom Median von ≥ 2 NTS-Quellen ab | stark |
 | Position springt um > 100 m | stark |
 
-Ein schwacher Befund ist ein „Hinweis“, zwei zugleich eine „Warnung“, ein starker eine „Störung“. Zeit und Position werden gegen einen langsam nachgeführten Anker geprüft (höchstens 10 ms bzw. 20 m pro Stunde) – auch ein Spoofer, der die Zeit langsam wegzieht, fällt so auf. Benachrichtigt wird standardmäßig nur bei „Störung“. Die Position verlässt das Gerät nie: Es wird nur die Abweichung in Metern genannt.
+Ein schwacher Befund ist ein „Hinweis“, zwei zugleich eine „Warnung“, ein starker eine „Störung“. Zeit und Position werden gegen einen langsam nachgeführten Anker geprüft (höchstens 10 ms bzw. 20 m pro Stunde) – auch ein Spoofer, der die Zeit langsam wegzieht, fällt so auf. Insgesamt darf der Zeitanker höchstens 30 ms von seinem Startwert (Start bzw. letzte Änderung der GPS-Einstellungen) wegwandern, danach wird es „Störung“ – so fällt auch ein Spoofer auf, der so langsam zieht, dass chrony das GPS nie verwirft. Benachrichtigt wird standardmäßig nur bei „Störung“. Die Position verlässt das Gerät nie: Es wird nur die Abweichung in Metern genannt.
+
+**Vermutlicher Kalibrierfehler statt Störung (ab 1.5.1):** Liegt das GPS seit dem Start bzw. seit einer Änderung der GPS-Einstellungen gleichbleibend neben dem Netz – typisch nach „Offset zurücksetzen“ ohne PPS, z. B. dauerhaft rund +51 ms – und verwirft chrony es deshalb als Falseticker, ist das kein Angriff, sondern ein falscher `gps_offset`. Dann bleibt es beim „Hinweis“ mit dem Rat „Offset kalibrieren“: keine Benachrichtigung, keine Sperre; im Modus „automatisch“ korrigiert die [automatische Kalibrierung](#gps-automatisch-kalibrieren) das selbst. Die Ausnahme gilt nur ohne PPS, mit NTS-Vergleich und nur, solange das GPS seit Start bzw. Änderung noch nie 15 Minuten brauchbar war. Wandert die GPS-Zeit um ≥ 20 ms von diesem Abstand weg oder liegt sie mehr als 1 s daneben, wird es wieder „Störung“. Ein Neustart macht aus einer erkannten Störung nie einen Kalibrierfehler.
 
 ```yaml
 environment:
@@ -1053,8 +1075,9 @@ Die Seite **Uhrqualität** zeigt, was die Uhr deines Servers langfristig beeinfl
   `cpu-thermal`, PC `x86_pkg_temp`/`k10temp`/`coretemp`, DS18B20 am 1-Wire-Bus); welchen ntp-gui
   nutzt, legst du mit `TEMP_SENSOR` fest (`auto`, `off` oder eine Kennung aus dem Hardware-Check,
   z. B. `w1:28-0316a2794bff`). Für eine Aussage braucht es 1–3 Tage mit Tag-/Nacht-Wechsel. In
-  VMs gibt es meist keinen Sensor. Einen Temperaturausgleich schlägt ntp-gui in einem der
-  nächsten 1.5.x-Releases vor.
+  VMs gibt es meist keinen Sensor. Einen Temperaturausgleich gibt es vorerst nicht: Mit dem
+  CPU-Sensor ist der Zusammenhang oft schwach (auf einem Raspberry Pi folgte die Frequenz eher der
+  Tageszeit als der CPU-Temperatur), siehe [Roadmap](ROADMAP.md).
 - **Schaltsekunden:** TAI−UTC, letzte Schaltsekunde und wie lange die `leap-seconds.list` im
   Image noch gilt – für die Datei, die chrony wirklich liest. Läuft sie in weniger als 60 Tagen
   ab, meldet ntp-gui „Image zu alt“ – dann `docker compose pull && docker compose up -d`.
@@ -1071,11 +1094,11 @@ Die Seite **Uhrqualität** zeigt, was die Uhr deines Servers langfristig beeinfl
 </picture>
 
 Mit `CLOCK_PUBLIC=true` sind `/clock` und `/api/v1/time` ohne Anmeldung erreichbar (nur Zeit,
-Ampel, Genauigkeit und Art der Quelle – keine Namen, Adressen oder Einstellungen). Auch dann
-antwortet ntp-gui ohne Anmeldung nur über IP-Adressen, einteilige oder lokale Namen (`*.local`,
-`*.lan`, `*.home.arpa`, `*.internal`) und `WEB_ALLOWED_HOSTS` – Schutz vor DNS-Rebinding. Für
-einen Wandmonitor, der den Server über einen eigenen DNS-Namen aufruft, diesen Namen in
-`WEB_ALLOWED_HOSTS` eintragen. Nicht einschalten, wenn das Dashboard aus dem Internet
+Ampel, Genauigkeit und Art der Quelle – keine Namen, Adressen oder Einstellungen). Ab 1.5.1
+antwortet die Uhr dann über **jeden** Namen, auch über einen eigenen DNS-Namen des
+Wandmonitors – die Namensprüfung gegen DNS-Rebinding entfällt nur hier, weil darin nichts
+Schützenswertes steht (siehe [Schutz vor DNS-Rebinding](#schutz-vor-dns-rebinding)). Alle
+anderen Seiten bleiben geprüft. Nicht einschalten, wenn das Dashboard aus dem Internet
 erreichbar ist.
 
 Neue API-Endpunkte (lesend): `/api/v1/temperature`, `/api/v1/leap`, `/api/v1/time`. Metriken:
@@ -1176,7 +1199,7 @@ kein Ereignis. Gespeichert in `ntp-gui.db` für 90 Tage (höchstens 50 000 Eintr
 `/api/events?since=&kinds=&level=`.
 
 **Diagnosepaket.** Ein Klick erzeugt ein `.tar.gz` für einen Fehlerbericht: Version und
-Plattform, die erzeugte `chrony.conf`/`ptp4l.conf`, die Ausgaben von `chronyc` (tracking,
+Plattform, die gerade angezeigten Hinweise (`hints.json`, Adressen darin pseudonymisiert), die erzeugte `chrony.conf`/`ptp4l.conf`, die Ausgaben von `chronyc` (tracking,
 sources, sourcestats, selectdata, ntpdata, serverstats, activity, authdata), GPS- und
 PTP-Zustand, Hardware-Check, Dienste, die Ereignisse der letzten 7 Tage, die letzten 2000
 Log-Zeilen, die Einstellungen ohne Zugangsdaten und vom Verlauf der letzten 24 h nur
@@ -1427,7 +1450,7 @@ PHC-Refclock dient ihm als Referenz für Stratum und Statistik.
 | `WEB_PORT` / `WEB_BIND` | `8080` / `0.0.0.0` | Adresse des Dashboards |
 | `WEB_TITLE` | `NTP / PTP Time Server` | Überschrift |
 | `WEB_USER` / `WEB_PASSWORD` | – | Beide gesetzt ⇒ HTTP Basic Auth (alternativ Passwort im Dashboard setzen) |
-| `WEB_ALLOWED_HOSTS` | – | Weitere Namen, unter denen das Dashboard **ohne Passwort** antworten darf, kommagetrennt; `*.example.org` für alle Unternamen, `*` schaltet die Prüfung ab. Siehe [Schutz vor DNS-Rebinding](#schutz-vor-dns-rebinding) |
+| `WEB_ALLOWED_HOSTS` | – | Weitere Namen, unter denen das Dashboard **ohne Passwort** antworten darf, kommagetrennt; `*.example.org` für alle Unternamen, `*` schaltet die Prüfung ab. Gilt zusätzlich zu „Erlaubte Namen“ im Dashboard (Einstellungen → Dashboard → Erweitert). Siehe [Schutz vor DNS-Rebinding](#schutz-vor-dns-rebinding) |
 | `WEB_READONLY` | `false` | Einstellungen im Dashboard sperren |
 | `WEB_REFRESH_SECONDS` | `5` | Aktualisierungsintervall im Browser |
 | `HISTORY_INTERVAL` | `10` | Messintervall des Verlaufs in Sekunden |
@@ -1438,7 +1461,7 @@ PHC-Refclock dient ihm als Referenz für Stratum und Statistik.
 | `NOTIFY_LAN_ADDRESSES` | `false` | Private LAN-Adresse eines Geräts zusätzlich zu seinem Namen in Benachrichtigungen |
 | `TRUSTED_PROXIES` | – (niemandem trauen) | Adressen deiner Reverse Proxys, siehe [HTTPS fürs Dashboard](#https-fürs-dashboard) |
 | `TEMP_SENSOR` | `auto` | Temperatursensor für die Seite [Uhrqualität](#uhrqualität-temperatur-schaltsekunden-vollbild-uhr) (`auto`, `off` oder Kennung aus dem Hardware-Check) |
-| `CLOCK_PUBLIC` | `false` | `true` = `/clock` und `/api/v1/time` ohne Anmeldung (nur Zeit und Status, Schutz vor DNS-Rebinding bleibt). Nicht einschalten, wenn das Dashboard aus dem Internet erreichbar ist |
+| `CLOCK_PUBLIC` | `false` | `true` = `/clock` und `/api/v1/time` ohne Anmeldung und über jeden Host-Namen (nur Zeit und Status; alle anderen Seiten bleiben gegen DNS-Rebinding geprüft). Nicht einschalten, wenn das Dashboard aus dem Internet erreichbar ist |
 | `UPDATE_CHECK` | `false` | Einmal am Tag bei GitHub nach einer neuen Version fragen, siehe [Update-Hinweis](#update-hinweis-opt-in) |
 
 Nur per Umgebung (sie betreffen den Start selbst oder sind Expertenwerte): `WEB_PORT`,
@@ -1470,18 +1493,19 @@ anderen Port musst du ihn nicht anpassen.
 
 ntp-gui spricht selbst nur HTTP – mit Absicht: Ein Reverse Proxy kann TLS besser, und in vielen Heimnetzen läuft schon einer. Ohne HTTPS gehen Passwort und API-Schlüssel lesbar durchs Netz. Darum zeigt die Übersicht einen Hinweis, sobald sie per HTTP aus dem Netz ankommen.
 
-Am schnellsten geht es mit der Caddy-Vorlage in `docker-compose.all-in-one.yml`:
+Am schnellsten geht es mit Caddy als eigenem Stack neben ntp-gui. Das fertige Compose-Beispiel und alle Schritte stehen in [docs/integrationen/https.md](docs/integrationen/https.md#variante-a-caddy-als-eigener-stack-fertiges-beispiel); die Compose-Vorlagen von ntp-gui enthalten bewusst keinen Caddy-Container:
 
-1. Den Block **[OPTION HTTPS mit Caddy]** einkommentieren: den Dienst `caddy`, das Volume `caddy-data` und bei ntp-gui `WEB_BIND` und `TRUSTED_PROXIES`.
-2. `zeitserver.lan` durch deinen Namen oder die feste IP-Adresse ersetzen.
-3. `docker compose up -d` ausführen. Das Dashboard ist dann unter `https://zeitserver.lan` erreichbar.
-4. Damit der Browser nicht warnt, Caddys Root-Zertifikat einmal auf deinen Geräten als vertrauenswürdig eintragen. Herausholen kannst du es mit `docker compose cp caddy:/data/caddy/pki/authorities/local/root.crt .`
+1. Bei ntp-gui `WEB_BIND=127.0.0.1` und `TRUSTED_PROXIES=127.0.0.1/32,::1/128` setzen (in `docker-compose.all-in-one.yml` der Block **[OPTION Reverse Proxy auf diesem Rechner]**).
+2. Caddy aus dem Beispiel in einem eigenen Ordner anlegen, `zeitserver.lan` durch deinen Namen oder die feste IP-Adresse ersetzen und dort `docker compose up -d` ausführen. Das Dashboard ist dann unter `https://zeitserver.lan` erreichbar.
+3. Damit der Browser nicht warnt, Caddys Root-Zertifikat einmal auf deinen Geräten als vertrauenswürdig eintragen. Herausholen kannst du es im Caddy-Ordner mit `docker compose cp caddy:/data/caddy/pki/authorities/local/root.crt .`
 
-Nginx Proxy Manager, Zoraxy und Traefik gehen genauso. Die Anleitung dazu steht in [docs/integrationen/https.md](docs/integrationen/https.md). Läuft der Reverse Proxy auf einem anderen Gerät, ist nur die Strecke Browser → Proxy verschlüsselt; ntp-gui weist darauf hin. Am sichersten läuft der Proxy auf demselben Host (Caddy-Vorlage, `WEB_BIND=127.0.0.1`).
+Nginx Proxy Manager, Zoraxy und Traefik gehen genauso. Die Anleitung dazu steht in [docs/integrationen/https.md](docs/integrationen/https.md). Läuft der Reverse Proxy auf einem anderen Gerät, ist nur die Strecke Browser → Proxy verschlüsselt; ntp-gui weist darauf hin. Am sichersten läuft der Proxy auf demselben Host (Caddy-Beispiel, `WEB_BIND=127.0.0.1`).
+
+**Der HTTPS-Hinweis nennt Ursache und Absender (ab 1.5.1):** „Dashboard über unverschlüsseltes HTTP mit Anmeldung“ sagt, wer ungeschützt kam (Adresse, Passwort oder API-Schlüssel, „zuletzt vor 3 h“, bis zu drei Absender) und warum: „direkt per HTTP“ (Lesezeichen auf `http://…:8080`, Home Assistant, Widget, Skript), „über den eingetragenen Proxy, aber der Browser sprach mit ihm nur HTTP“ oder „über eine Gegenstelle mit Proxy-Köpfen, die nicht in `TRUSTED_PROXIES` steht“. Schickt ein eingetragener Proxy keinen Proto-Kopf (nur `X-Forwarded-For` oder `X-Real-IP`, `Forwarded` ohne `proto=`), ist unbekannt, ob der Browser HTTPS sprach – dafür gibt es den Info-Hinweis „Eingetragener Proxy meldet nicht, ob HTTPS benutzt wurde“ mit den Köpfen, die der Proxy tatsächlich schickt, und einer Anleitung je Proxy. Ein Hinweis verschwindet 1 Stunde nach dem letzten ungeschützten Zugriff, wenn danach nur geschützte kommen, sonst nach 24 Stunden; Speichern von `TRUSTED_PROXIES` setzt ihn sofort zurück.
 
 | Variable | Standard | Bedeutung |
 |---|---|---|
-| `TRUSTED_PROXIES` | – (niemandem trauen) | Adressen deiner Reverse Proxys, z. B. `127.0.0.1/32,::1/128` für Caddy auf demselben Host. Nur von ihnen glaubt ntp-gui `X-Forwarded-For`/`-Proto` bzw. `Forwarded` (echte Client-Adresse im Zugriffsprotokoll, HTTPS-Hinweis). „all“ und `/0` sind nicht erlaubt. |
+| `TRUSTED_PROXIES` | – (niemandem trauen) | Adressen deiner Reverse Proxys, z. B. `127.0.0.1/32,::1/128` für einen Proxy auf demselben Host. Nur von ihnen glaubt ntp-gui `X-Forwarded-For`/`-Proto` bzw. `Forwarded` (echte Client-Adresse im Zugriffsprotokoll, HTTPS-Hinweis). „all“ und `/0` sind nicht erlaubt. |
 
 ### Sprache / Language
 
@@ -1498,13 +1522,32 @@ auf die LAN-Adresse von ntp-gui zeigen lassen und dann Log, Status und GPS-Posit
   solche Namen kann kein öffentliches DNS liefern,
 - lokale Endungen: `*.local`, `*.lan`, `*.home.arpa`, `*.internal`, `*.home`, `*.corp`,
   `*.localdomain`, `*.intranet`, `*.private`, `*.speedport.ip`,
-- den NTS-Namen (`NTS_SERVER_NAME`) und alles aus `WEB_ALLOWED_HOSTS`.
+- den NTS-Namen (`NTS_SERVER_NAME`),
+- die **erlaubten Namen**: Einstellungen → Dashboard → Erweitert → **Erlaubte Namen** und
+  `WEB_ALLOWED_HOSTS` (beide gelten zusammen).
 
 Jeder andere Name bekommt `403` mit einer Erklärung; im Log steht er einmal (bereinigt).
 **`*.fritz.box` ist absichtlich nicht dabei:** `.box` ist eine echte, öffentlich vergebene
-Endung. Öffnest du das Dashboard als `ntp.fritz.box`, trage `WEB_ALLOWED_HOSTS=*.fritz.box`
-ein oder setze ein Passwort. Mit Passwort oder API-Schlüssel gilt jeder Name – die Anmeldung
-schützt dann. `/healthz` antwortet immer.
+Endung. Öffnest du das Dashboard als `ntp.fritz.box`, trage `*.fritz.box` unter „Erlaubte
+Namen“ (oder in `WEB_ALLOWED_HOSTS`) ein oder setze ein Passwort. Mit Passwort oder
+API-Schlüssel gilt jeder Name – die Anmeldung schützt dann. `/healthz` antwortet immer.
+
+**Erlaubte Namen im Dashboard (ab 1.5.1):** ein Name pro Zeile, `*.example.org` erlaubt alle
+Unternamen (und `example.org` selbst). Die Prüfung ist streng: keine IP-Adressen (die gehen
+ohnehin), keine Ports, keine ganzen Endungen (`*.com`, `*.co.uk`), keine Wildcards auf DynDNS-
+und Hosting-Domains (`*.duckdns.org`, `*.myfritz.net`, `*.github.io` – dort trägst du nur deinen
+eigenen Namen ein, z. B. `meinzeit.duckdns.org`) und nicht `*` allein – den Schutz ganz
+abschalten geht nur bewusst mit `WEB_ALLOWED_HOSTS=*` in der Compose-Datei. Namen aus
+`WEB_ALLOWED_HOSTS` stehen unter dem Feld (nur lesend). Wirkt ohne Neustart, nur mit
+Admin-Recht änderbar und Teil von Sichern/Wiederherstellen. Bist du schon ausgesperrt: das
+Dashboard über die IP-Adresse öffnen und den Namen dort eintragen.
+
+**Vollbild-Uhr über jeden Namen (ab 1.5.1):** Ist „Vollbild-Uhr ohne Anmeldung“
+(`CLOCK_PUBLIC`) an, antworten `/clock`, ihre statischen Dateien und `/api/v1/time` über
+**jeden** Namen, auch über einen eigenen DNS-Namen ohne Eintrag. Das ist gefahrlos, weil
+darin nur steht, was ohnehin öffentlich ist: Uhrzeit, Ampel, Genauigkeit und die Art der
+Quelle (GPS, NTP …). Den Namen der Quelle gibt es ohne Anmeldung nur über einen erlaubten
+Namen. Alle anderen Seiten und die übrige API bleiben geprüft.
 
 ### DNS für ntp-gui
 
@@ -1718,7 +1761,7 @@ Beim Update musst du nichts von Hand umbauen:
 
 Ausgeschaltet (Standard) fragt ntp-gui nirgends nach. Unter **Einstellungen → Dashboard →
 Update-Hinweis** oder mit `UPDATE_CHECK=true` fragt es einmal am Tag zu einer zufälligen
-Uhrzeit `https://api.github.com/repos/ConGp20/ntp-gui/releases/latest` und vergleicht die
+Uhrzeit `https://api.github.com/repos/mgc20/ntp-gui/releases/latest` und vergleicht die
 Version lokal. Ist eine neuere da, erscheint oben ein Banner (pro Version ausblendbar) und in
 der Übersicht ein Hinweis mit Release-Titel und Link zu den Release-Notizen – markiert mit
 **„Achtung beim Update“**, wenn der Release-Text `BREAKING` oder „Achtung“ enthält. ntp-gui lädt
@@ -1776,7 +1819,7 @@ CSV-Zeile, „nie gehört“ ist `4294967295` und `pmc` antwortet nur, wenn die 
   NTP-Server dann nicht.
 * `chronyc clients` zählt nur, solange das Client-Log Platz hat (`CLIENTLOGLIMIT`).
 * Das Dashboard bringt kein TLS mit – für Zugriffe außerhalb des vertrauenswürdigen Netzes
-  gehört ein Reverse Proxy davor ([Caddy-Vorlage](#https-fürs-dashboard)).
+  gehört ein Reverse Proxy davor ([HTTPS fürs Dashboard](#https-fürs-dashboard)).
 * Die GNSS-Störungserkennung findet keinen Spoofer, der die Zeit langsamer als die
   Unsicherheit der Netzquellen verschiebt; ohne ≥ 2 NTS- bzw. ≥ 3 Netzquellen gibt es keine
   Zeitprüfung. Die Referenzposition wird nach einem Neustart neu gelernt.
@@ -1818,7 +1861,7 @@ Updates vor. Ein Release-Build läuft ohne Cache, zieht also immer aktuelle Debi
 **Herkunft prüfen** (GitHub-CLI, sobald das Repository öffentlich ist):
 
 ```bash
-gh attestation verify oci://ghcr.io/congp20/ntp-gui:1.5.0 -R ConGp20/ntp-gui
+gh attestation verify oci://ghcr.io/mgc20/ntp-gui:1.5.1 -R mgc20/ntp-gui
 ```
 
 Scheitert ein Schritt, entsteht kein halber Release. Bei einem privaten Repository

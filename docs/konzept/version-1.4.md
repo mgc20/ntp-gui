@@ -150,9 +150,9 @@ Doku-Ideen unten. MQTT, Allan, Temperatur-Fit und Verbund werden 1.4.x bzw. 1.5.
 
 ### 7. Update-Hinweis (opt-in) und Attestations 🔒
 
-- **Was:** einmal täglich zu zufälliger Uhrzeit `GET https://api.github.com/repos/ConGp20/ntp-gui/releases/latest`, User-Agent `ntp-gui` ohne Version und Kennung, Vergleich lokal. Anzeige: neue Version, Changelog-Link, Markierung „Achtung beim Update“. **Kein automatisches Update, kein Download.** Für Automatisierung: Verweis auf Diun bzw. WUD (nicht Watchtower – seit 17.12.2025 archiviert).
+- **Was:** einmal täglich zu zufälliger Uhrzeit `GET https://api.github.com/repos/mgc20/ntp-gui/releases/latest`, User-Agent `ntp-gui` ohne Version und Kennung, Vergleich lokal. Anzeige: neue Version, Changelog-Link, Markierung „Achtung beim Update“. **Kein automatisches Update, kein Download.** Für Automatisierung: Verweis auf Diun bzw. WUD (nicht Watchtower – seit 17.12.2025 archiviert).
 - **Datenschutz ehrlich:** GitHub sieht dabei täglich die öffentliche IP (grob ortbar per GeoIP) und dass dort vermutlich ntp-gui läuft. Technisch unvermeidbar, darum opt-in und genau so in der Vorschau.
-- **Release-Workflow:** `actions/attest` mit `push-to-registry: true`; README zeigt `gh attestation verify oci://ghcr.io/congp20/ntp-gui:<ver> -R ConGp20/ntp-gui`. Keine Verifikation in der Instanz (sigstore-python wäre eine große Abhängigkeit für nichts).
+- **Release-Workflow:** `actions/attest` mit `push-to-registry: true`; README zeigt `gh attestation verify oci://ghcr.io/mgc20/ntp-gui:<ver> -R mgc20/ntp-gui`. Keine Verifikation in der Instanz (sigstore-python wäre eine große Abhängigkeit für nichts).
 - **Abnahme:** genau eine Anfrage pro Tag gegen einen Mock; Header ohne Version/ID; abgeschaltet → null Netzzugriffe (Socket-Monkeypatch); CI verifiziert die Attestation nach dem Push.
 
 ### 8. Grafana-Dashboard und Alarmregeln

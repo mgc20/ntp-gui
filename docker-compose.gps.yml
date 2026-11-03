@@ -17,7 +17,13 @@
 services:
   ntp-gui:
     build: .
-    image: ghcr.io/congp20/ntp-gui:latest
+    # Version festhalten statt „:latest“: „:1.5“ bleibt auf 1.5.x (nur
+    # Fehlerbehebungen), „:1.5.1“ bleibt fest auf genau dieser Version.
+    # Gilt für das geladene Image – mit „build: .“ (docker compose build bzw.
+    # up --build) baust du stattdessen den lokalen Stand unter diesem Namen.
+    # Umgezogen: Früher hieß das Image ghcr.io/congp20/ntp-gui – dort kommen
+    # keine neuen Versionen mehr, bitte auf ghcr.io/mgc20/ntp-gui umstellen.
+    image: ghcr.io/mgc20/ntp-gui:latest
     container_name: ntp-gui-gps
     restart: unless-stopped
 

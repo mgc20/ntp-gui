@@ -16,7 +16,8 @@
 # Ab 1.4: DNS für ntp-gui (Weiterleiter auf 127.0.0.1, resolv.conf, Absturz, Zurückschalten).
 # Ab 1.5: Schleifen-Erkennung bei DNS-Umschreibung ohne Ausnahme (Ereignis, Kette, Abhilfe);
 # GPS-Sperre und Holdover-Test per chronyc selectopts (setzen, Neustart von chronyd, zurückstellen).
-# HTTPS per Caddy-Vorlage: gültiges Compose, Dashboard nur noch über HTTPS, X-Forwarded-For vom Proxy.
+# HTTPS per Caddy-Beispiel aus docs/integrationen/https.md (eigener Stack): gültiges Compose,
+# Dashboard nur noch über HTTPS, X-Forwarded-For vom Proxy. Ab 1.5.1: /clock über jeden Namen.
 set -uo pipefail
 
 IMAGE="${1:-ntp-gui:test}"
@@ -301,6 +302,30 @@ for _ in $(seq 1 10); do
 done
 contains "Log nennt den abgewiesenen Namen nur bereinigt" "$(docker exec "${PREFIX}-a" tail -n 50 /run/ntp-gui/ntp-gui.log 2>/dev/null)" "<ungültig>"
 check "Diagnose-Vorschau trotz fremdem Log-Eintrag" 200 "$(http --max-time 30 "$A/api/diagnostics/preview")"
+# 1.5.1: „Erlaubte Namen“ im Dashboard – wirkt sofort, streng geprüft, „*“ nur per Umgebung.
+check "Erlaubte Namen: speichern" 200 \
+  "$(http "${J[@]}" -d '{"changes":{"web_allowed_hosts":["wanduhr.example.org","*.mein-dorf.example"]}}' "$A/api/settings")"
+check "Erlaubte Namen: Name sofort erlaubt"  200 "$(http -H 'Host: wanduhr.example.org' "$A/api/status")"
+check "Erlaubte Namen: *.domain erlaubt"     200 "$(http -H 'Host: pi.mein-dorf.example:18080' "$A/api/status")"
+check "Erlaubte Namen: anderer Name weiter 403" 403 "$(http -H 'Host: attacker.example' "$A/api/status")"
+check "Erlaubte Namen: „*“ abgelehnt"        422 "$(http "${J[@]}" -d '{"changes":{"web_allowed_hosts":["*"]}}' "$A/api/settings")"
+check "Erlaubte Namen: Speichern über fremden Namen 403" 403 \
+  "$(http "${J[@]}" -H 'Host: attacker.example' -d '{"changes":{"web_allowed_hosts":["attacker.example"]}}' "$A/api/settings")"
+contains "Erlaubte Namen: im Export" "$(curl -s --max-time 10 "$A/api/settings/export")" '"wanduhr.example.org"'
+http "${J[@]}" -d '{"keys":["web_allowed_hosts"]}' "$A/api/settings/reset" >/dev/null
+check "Erlaubte Namen: nach Zurücksetzen wieder 403" 403 "$(http -H 'Host: wanduhr.example.org' "$A/api/status")"
+# 1.5.1: Mit clock_public antwortet die Uhr über jeden Namen – ohne Quellennamen; alles andere bleibt geprüft.
+http "${J[@]}" -d '{"changes":{"clock_public":true}}' "$A/api/settings" >/dev/null
+check "clock_public: /clock über fremden Namen"        200 "$(http -H 'Host: wanduhr.example.org' "$A/clock")"
+check "clock_public: clock.js über fremden Namen"      200 "$(http -H 'Host: wanduhr.example.org' "$A/static/js/clock.js")"
+check "clock_public: /api/v1/time über fremden Namen"  200 "$(http -H 'Host: wanduhr.example.org' "$A/api/v1/time")"
+check "clock_public: fremder Name ohne Quellennamen" "None True" \
+  "$(curl -s --max-time 10 -H 'Host: wanduhr.example.org' "$A/api/v1/time" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('source'), d.get('public'))" 2>/dev/null)"
+check "clock_public: Dashboard über fremden Namen 403" 403 "$(http -H 'Host: wanduhr.example.org' "$A/")"
+check "clock_public: app.js über fremden Namen 403"    403 "$(http -H 'Host: wanduhr.example.org' "$A/static/js/app.js")"
+check "clock_public: Status über fremden Namen 403"    403 "$(http -H 'Host: wanduhr.example.org' "$A/api/v1/status")"
+http "${J[@]}" -d '{"keys":["clock_public"]}' "$A/api/settings/reset" >/dev/null
+check "clock_public aus: /clock über fremden Namen 403" 403 "$(http -H 'Host: wanduhr.example.org' "$A/clock")"
 
 echo
 echo "2) NTP-Dienst im Netz"
@@ -341,7 +366,8 @@ check "clock_public: /api/v1/time ohne Login"  200 "$(http http://127.0.0.1:1808
 check "clock_public: Status bleibt geschützt"  401 "$(http http://127.0.0.1:18081/api/v1/status)"
 check "clock_public: kein Quellenname ohne Login" None \
   "$(curl -s --max-time 10 http://127.0.0.1:18081/api/v1/time | python3 -c "import json,sys; print(json.load(sys.stdin).get('source'))" 2>/dev/null)"
-check "clock_public: fremder Host ohne Login: 403" 403 "$(http -H 'Host: attacker.example' http://127.0.0.1:18081/api/v1/time)"
+check "clock_public: fremder Host ohne Login: 200 (öffentlich)" 200 "$(http -H 'Host: attacker.example' http://127.0.0.1:18081/api/v1/time)"
+check "clock_public: fremder Host, Status weiter 401" 401 "$(http -H 'Host: attacker.example' http://127.0.0.1:18081/api/v1/status)"
 check "clock_public: angemeldet nicht öffentlich" False \
   "$(curl -s --max-time 10 -u 'admin:S3hr geheim' http://127.0.0.1:18081/api/v1/time | python3 -c "import json,sys; print(json.load(sys.stdin).get('public'))" 2>/dev/null)"
 
@@ -855,31 +881,40 @@ docker rm -f "${PREFIX}-p" "${PREFIX}-q" "${PREFIX}-r" >/dev/null 2>&1
 docker network rm "$HONET" >/dev/null 2>&1
 
 echo
-echo "12g) HTTPS per Caddy-Vorlage: Dashboard nur über HTTPS (1.5)"
+echo "12g) HTTPS per Caddy-Beispiel aus docs/integrationen/https.md (1.5, eigener Stack ab 1.5.1)"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TPL_DIR="$(mktemp -d)"
 # Die Kommentar-Regel der Datei: „#  “ hinter der Einrückung löschen = alles einkommentiert.
 sed -E 's/^( +)#  /\1/' "$REPO_ROOT/docker-compose.all-in-one.yml" > "$TPL_DIR/docker-compose.yml"
+# Das Caddy-Beispiel der Doku (Block nach der Markierung „compose-caddy“) als eigene Compose-Datei.
+awk '/<!-- compose-caddy/{f=1; next} f && /^```yaml/{p=1; next} p && /^```/{exit} p' \
+  "$REPO_ROOT/docs/integrationen/https.md" > "$TPL_DIR/caddy-compose.yml"
 if docker compose version >/dev/null 2>&1; then
   if docker compose -f "$REPO_ROOT/docker-compose.all-in-one.yml" config -q 2>/dev/null; then
     ok "Vorlage wie ausgeliefert ist gültiges Compose"
   else bad "Vorlage wie ausgeliefert ist kein gültiges Compose"; fi
   if TPL_CFG=$(docker compose -f "$TPL_DIR/docker-compose.yml" config 2>&1); then
-    ok "Vorlage mit allen Optionen (inkl. Caddy) ist gültiges Compose"
-    contains "Caddy-Dienst in der Vorlage" "$TPL_CFG" "--internal-certs"
+    ok "Vorlage mit allen Optionen ist gültiges Compose"
     contains "TRUSTED_PROXIES in der Vorlage" "$TPL_CFG" "TRUSTED_PROXIES: 127.0.0.1/32,::1/128"
+    if grep -q "caddy" <<<"$TPL_CFG"; then bad "Vorlage enthält noch einen Caddy-Dienst"
+    else ok "Vorlage ohne Caddy-Dienst (Caddy nur in der Doku)"; fi
   else bad "Vorlage mit allen Optionen ist kein gültiges Compose: $TPL_CFG"; fi
+  if CADDY_CFG=$(docker compose -f "$TPL_DIR/caddy-compose.yml" config 2>&1); then
+    ok "Caddy-Beispiel der Doku ist eigenständiges, gültiges Compose"
+    contains "Caddy-Beispiel mit internen Zertifikaten" "$CADDY_CFG" "--internal-certs"
+  else bad "Caddy-Beispiel der Doku ist kein gültiges Compose: $CADDY_CFG"; fi
 else
   echo "  – docker compose fehlt, Compose-Prüfung übersprungen"
 fi
-CADDY_IMAGE="${CADDY_IMAGE:-$(sed -nE 's/^ *#  +image: (caddy:[0-9.]+)$/\1/p' "$REPO_ROOT/docker-compose.all-in-one.yml" | head -1)}"
+CADDY_IMAGE="${CADDY_IMAGE:-$(sed -nE 's/^ +image: (caddy:[0-9.]+)$/\1/p' "$TPL_DIR/caddy-compose.yml" | head -1)}"
+CADDY_IMAGE="${CADDY_IMAGE:-caddy:2.10.2}"
 if ! docker image inspect "$CADDY_IMAGE" >/dev/null 2>&1; then
   docker pull -q "$CADDY_IMAGE" >/dev/null 2>&1 \
     || { docker pull -q "mirror.gcr.io/library/$CADDY_IMAGE" >/dev/null 2>&1 \
          && docker tag "mirror.gcr.io/library/$CADDY_IMAGE" "$CADDY_IMAGE"; }
 fi
 if docker image inspect "$CADDY_IMAGE" >/dev/null 2>&1; then
-  # Wie die Vorlage: Caddy im selben Netz-Namensraum wie ntp-gui (dort: Host-Netzwerk), ntp-gui nur an 127.0.0.1.
+  # Wie das Beispiel: Caddy im selben Netz-Namensraum wie ntp-gui (dort: Host-Netzwerk), ntp-gui nur an 127.0.0.1.
   docker run -d --name "${PREFIX}-s" -p 18095:443 -p 18096:8080 \
     -e WEB_BIND=127.0.0.1 -e TRUSTED_PROXIES="127.0.0.1/32,::1/128" -e WEB_ACCESS_LOG=true \
     -e WEB_USER=admin -e WEB_PASSWORD=geheim123 \
@@ -909,7 +944,7 @@ if docker image inspect "$CADDY_IMAGE" >/dev/null 2>&1; then
   STATUS_JSON=$(curl -s --max-time 10 --cacert "$TPL_DIR/root.crt" "${RESOLVE[@]}" -u admin:geheim123 \
     https://zeitserver.lan:18095/api/status)
   contains "Status über HTTPS lesbar" "$STATUS_JSON" '"insights"'
-  if grep -q '"web_plain_http"\|"web_proxy_untrusted"\|"web_proxy_hop_plain"' <<<"$STATUS_JSON"; then
+  if grep -q '"web_plain_http"\|"web_proxy_untrusted"\|"web_proxy_hop_plain"\|"web_proxy_no_proto"' <<<"$STATUS_JSON"; then
     bad "HTTPS über eingetragenen Proxy löst trotzdem einen HTTPS-Hinweis aus"
   else ok "Kein HTTPS-Hinweis bei HTTPS über eingetragenen Proxy"; fi
   ACCESS=$(docker logs "${PREFIX}-s" 2>&1 | grep '"GET /api/v1 HTTP' || true)

@@ -4,7 +4,7 @@ export const HELP_UPDATE = {
   update_check: {
     title: "Update-Hinweis",
     text: "Eingeschaltet fragt ntp-gui **einmal am Tag** zu einer zufälligen Uhrzeit bei GitHub nach, welche Version "
-      + "die neueste ist (`api.github.com/repos/ConGp20/ntp-gui/releases/latest`), und vergleicht sie hier im Container "
+      + "die neueste ist (`api.github.com/repos/mgc20/ntp-gui/releases/latest`), und vergleicht sie hier im Container "
       + "mit der installierten. Ist eine neuere da, erscheint oben ein Banner und in der Übersicht ein Hinweis mit Link "
       + "zu den Release-Notizen. Die zufällige Uhrzeit verteilt die Anfragen vieler Installationen über den Tag; ist sie "
       + "beim Einschalten für heute schon vorbei, kommt die erste Prüfung innerhalb einer Minute. "
@@ -40,7 +40,7 @@ export const HELP_UPDATE = {
   update_latest: {
     title: "Neueste Version auf GitHub",
     text: "Was GitHub bei der letzten erfolgreichen Prüfung als neuestes Release nannte, mit Titel. Vorabversionen "
-      + "(Release Candidates) zählen nicht. Der Link führt immer zu `github.com/ConGp20/ntp-gui/releases` – er wird "
+      + "(Release Candidates) zählen nicht. Der Link führt immer zu `github.com/mgc20/ntp-gui/releases` – er wird "
       + "aus der Versionsnummer gebaut, nie aus der Antwort übernommen.",
   },
   update_last: {

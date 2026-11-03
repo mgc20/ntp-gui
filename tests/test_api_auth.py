@@ -204,6 +204,84 @@ class HostCheckTest(unittest.TestCase):
         with mock.patch.dict(os.environ, {"WEB_ALLOWED_HOSTS": "*.fritz.box"}):
             self.assertTrue(server.host_allowed("pi.fritz.box"))
 
+    def test_dashboard_allow_list_merges_with_env(self):
+        """1.5.1: „Erlaubte Namen“ aus dem Dashboard gelten zusätzlich zu WEB_ALLOWED_HOSTS."""
+        fake_hostnames(self, "ntpbox", "ntpbox.example.net")
+        extra = ["uhr.example.org", "*.mein-dorf.us"]
+        with mock.patch.dict(os.environ, {"WEB_ALLOWED_HOSTS": "zeit.example.org"}):
+            self.assertTrue(server.host_allowed("uhr.example.org:8080", extra=extra))
+            self.assertTrue(server.host_allowed("UHR.example.org.", extra=extra))
+            self.assertTrue(server.host_allowed("pi.mein-dorf.us", extra=extra))
+            self.assertTrue(server.host_allowed("mein-dorf.us", extra=extra))
+            self.assertTrue(server.host_allowed("zeit.example.org", extra=extra), "Umgebung gilt weiter")
+            self.assertFalse(server.host_allowed("evil-mein-dorf.us", extra=extra))
+            self.assertFalse(server.host_allowed("l.example.com", extra=extra))
+            self.assertFalse(server.host_allowed("attacker.example", extra=extra))
+            self.assertFalse(server.host_allowed("uhr.example.org"), "ohne Dashboard-Eintrag")
+        with mock.patch.dict(os.environ, {"WEB_ALLOWED_HOSTS": ""}):
+            # „*“ zählt nur aus der Umgebung – ein (z. B. von Hand in settings.json geschriebenes) „*“ nicht.
+            self.assertFalse(server.host_allowed("attacker.example", extra=["*", "", None]))
+
+    def test_dashboard_allow_list_needs_no_dns(self):
+        """host_allowed bleibt schnell: kein DNS je Anfrage, auch nicht für Dashboard-Einträge."""
+        fake_hostnames(self, "ntpbox", "ntpbox.example.net")
+        self.assertIn("ntpbox.example.net", diagnostics.own_hostnames(wait=5.0))  # Hintergrund-Abfrage fertig
+
+        def no_dns(*_args, **_kwargs):
+            raise AssertionError("DNS-Abfrage in host_allowed")
+
+        with mock.patch.dict(os.environ, {"WEB_ALLOWED_HOSTS": ""}), \
+                mock.patch.object(server.socket, "getaddrinfo", no_dns), \
+                mock.patch.object(server.socket, "gethostbyname", no_dns), \
+                mock.patch.object(server.socket, "getfqdn", no_dns):
+            started = time.monotonic()
+            for _ in range(2000):
+                server.host_allowed("rebind.evil.com", extra=["zeit.example.org", "*.mein-dorf.us"])
+            self.assertLess(time.monotonic() - started, 2.0)
+
+    def test_allow_list_validation(self):
+        ok = settings._as_allowed_hosts("Zeit.Example.org., *.fritz.box\nzeit.example.org  uhr.example.org")
+        self.assertEqual(ok, ["zeit.example.org", "*.fritz.box", "uhr.example.org"])
+        self.assertEqual(settings._as_allowed_hosts([]), [])
+        self.assertEqual(settings._as_allowed_hosts(""), [])
+        for bad, word in (("*", "WEB_ALLOWED_HOSTS=*"), ("*.com", "Endung"), ("192.168.1.5", "IP-Adresse"),
+                          ("::1", "IP-Adresse"), ("[fe80::1]", "IP-Adresse"), ("raspberrypi", "einteilig"),
+                          ("zeit.example.org:8080", "kein gültiger"), ("*.*.example.org", "kein gültiger"),
+                          ("zeit.*.example.org", "kein gültiger"), ("evil.example/x", "kein gültiger"),
+                          ("http://zeit.example.org", "kein gültiger"), ("-bad.example.org", "kein gültiger"),
+                          ("a" * 64 + ".example.org", "kein gültiger"), ("zeit .example.org", "einteilig"),
+                          ("<script>.example.org", "kein gültiger"), ("zeit_ex.example.org", "kein gültiger")):
+            with self.subTest(bad=bad):
+                with self.assertRaises(settings.ValidationError) as ctx:
+                    settings._as_allowed_hosts(bad)
+                self.assertIn(word, str(ctx.exception))
+        with self.assertRaises(settings.ValidationError):
+            settings._as_allowed_hosts([f"h{i}.example.org" for i in range(settings.MAX_ALLOWED_HOSTS + 1)])
+
+    def test_allow_list_rejects_shared_suffix_wildcards(self):
+        for bad in ("*.duckdns.org", "*.ddns.net", "*.dynv6.net", "*.myfritz.net", "*.co.uk", "*.com.au",
+                    "*.github.io", "*.no-ip.org", "*.or.at", "*.DuckDNS.org."):
+            with self.subTest(bad=bad):
+                with self.assertRaises(settings.ValidationError) as ctx:
+                    settings._as_allowed_hosts(bad)
+                self.assertIn("eigenen", str(ctx.exception))
+                self.assertIn("meinzeit.", str(ctx.exception))
+        for bad in ("1.2.3", "zeit.123", "*.10.0"):
+            with self.subTest(bad=bad):
+                with self.assertRaises(settings.ValidationError):
+                    settings._as_allowed_hosts(bad)
+        ok = settings._as_allowed_hosts("meinzeit.duckdns.org *.meinzeit.duckdns.org *.example.co.uk "
+                                        "zeit.example.co.uk *.fritz.box *.example.de 1zeit.example.org")
+        self.assertEqual(len(ok), 7)
+        self.assertTrue(settings.shared_suffix("co.uk"))
+        self.assertFalse(settings.shared_suffix("example.co.uk"))
+        with self.assertRaises(settings.ValidationError):
+            settings.validate({"web_allowed_hosts": ["*.co.uk"]})
+        field = settings.FIELDS["web_allowed_hosts"]
+        self.assertEqual((field["section"], field["advanced"], field["restart"], field["env"]),
+                         ("web", True, settings.RESTART_NONE, None), "Env bleibt getrennt und gilt zusätzlich")
+        self.assertIn("DNS-Rebinding", field["help"])
+
     def test_logged_host_is_cleaned(self):
         """Der Host-Header landet im Log – überlang oder mit fremden Zeichen nur als <ungültig>."""
         self.assertEqual(server.safe_host_for_log("attacker.example"), "attacker.example")
@@ -327,6 +405,56 @@ class HostCheckServerTest(unittest.TestCase):
         with mock.patch.dict(os.environ, {"WEB_ALLOWED_HOSTS": "zeit.example.org"}), mock.patch("builtins.print"):
             self.assertEqual(self.request("GET", "/api/v1/instance", "zeit.example.org:8080")[0], 200)
             self.assertEqual(self.request("GET", "/api/v1/instance", "attacker.example")[0], 403)
+
+    def test_dashboard_allow_list_end_to_end(self):
+        """Erlaubte Namen: speichern (Admin + CSRF), sofort wirksam, Env nur lesend, Export/Import."""
+        self.addCleanup(settings.reset, ["web_allowed_hosts"])
+        local = f"127.0.0.1:{self.port}"
+        gui = {"X-NTP-GUI": "1"}
+        with mock.patch("builtins.print"):
+            self.assertEqual(self.request("GET", "/api/v1/instance", "uhr.example.org")[0], 403)
+            # CSRF: ohne X-NTP-GUI kein Speichern; über einen fremden Namen erst recht nicht.
+            self.assertEqual(self.request("POST", "/api/settings", local, {},
+                                          {"changes": {"web_allowed_hosts": ["uhr.example.org"]}})[0], 403)
+            self.assertEqual(self.request("POST", "/api/settings", "uhr.example.org", gui,
+                                          {"changes": {"web_allowed_hosts": ["uhr.example.org"]}})[0], 403)
+            # Lese-Schlüssel darf nicht schreiben.
+            self.assertEqual(self.request("POST", "/api/v1/settings", local,
+                                          {"Authorization": f"Bearer {self.key}"},
+                                          {"values": {"web_allowed_hosts": ["uhr.example.org"]}})[0], 403)
+            status, raw, _ = self.request("POST", "/api/settings", local, gui, {"changes": {"web_allowed_hosts": ["*"]}})
+            self.assertEqual(status, 422)
+            self.assertIn("web_allowed_hosts", json.loads(raw)["fields"])
+            status, raw, _ = self.request("POST", "/api/settings", local, gui,
+                                          {"changes": {"web_allowed_hosts": ["Uhr.example.org", "*.dorf.example"]}})
+            self.assertEqual(status, 200, raw)
+            self.assertFalse(json.loads(raw).get("restart"), "wirkt ohne Neustart")
+            self.assertEqual(self.request("GET", "/api/v1/instance", "uhr.example.org")[0], 200)
+            self.assertEqual(self.request("GET", "/api/v1/instance", "pi.dorf.example:8080")[0], 200)
+            self.assertEqual(self.request("GET", "/api/v1/instance", "attacker.example")[0], 403)
+            with mock.patch.dict(os.environ, {"WEB_ALLOWED_HOSTS": "zeit.example.org,*.fritz.box"}):
+                self.assertEqual(self.request("GET", "/api/v1/instance", "zeit.example.org")[0], 200)
+                self.assertEqual(self.request("GET", "/api/v1/instance", "uhr.example.org")[0], 200)
+                status, raw, _ = self.request("GET", "/api/settings", local)
+                field = next(f for f in json.loads(raw)["fields"] if f["key"] == "web_allowed_hosts")
+                self.assertEqual(field["value"], ["uhr.example.org", "*.dorf.example"])
+                self.assertEqual(field["source"], "gui")
+                self.assertEqual(field["env_extra"], {"name": "WEB_ALLOWED_HOSTS",
+                                                      "values": ["zeit.example.org", "*.fritz.box"]})
+            status, raw, _ = self.request("GET", "/api/settings/export", local)
+            exported = json.loads(raw)
+            self.assertEqual(exported["values"]["web_allowed_hosts"], ["uhr.example.org", "*.dorf.example"])
+            settings.reset(["web_allowed_hosts"])
+            self.assertEqual(self.request("GET", "/api/v1/instance", "uhr.example.org")[0], 403)
+            status, raw, _ = self.request("POST", "/api/settings/import", local, gui, exported)
+            self.assertEqual(status, 200, raw)
+            self.assertEqual(self.request("GET", "/api/v1/instance", "uhr.example.org")[0], 200)
+            # Import mit „*“ wird wie Speichern abgelehnt.
+            bad = {"schema": exported["schema"], "values": {"web_allowed_hosts": ["*"]}}
+            self.assertEqual(self.request("POST", "/api/settings/import", local, gui, bad)[0], 422)
+            status, raw, _ = self.request("GET", "/api/v1/instance", "attacker.example")
+            self.assertEqual(status, 403)
+            self.assertIn("Erlaubte Namen", json.loads(raw)["error"])
 
     def test_api_key_works_with_any_host(self):
         status, _, _ = self.request("GET", "/api/v1/instance", "ntp.example.org",

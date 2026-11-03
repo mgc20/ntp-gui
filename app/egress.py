@@ -2444,7 +2444,7 @@ def notify_device_message(message: dict, known_names=(), known: dict | None = No
 # Die einzige Anfrage des Update-Hinweises: fest verdrahtet, ohne Daten der Instanz. Der
 # User-Agent nennt bewusst weder Version noch Kennung – GitHub sieht so nur „irgendein
 # ntp-gui“ und die öffentliche IP-Adresse (die lässt sich technisch nicht verbergen).
-UPDATE_CHECK_URL = "https://api.github.com/repos/ConGp20/ntp-gui/releases/latest"
+UPDATE_CHECK_URL = "https://api.github.com/repos/mgc20/ntp-gui/releases/latest"
 UPDATE_CHECK_HEADERS: dict[str, str] = {
     "User-Agent": "ntp-gui",
     "Accept": "application/vnd.github+json",

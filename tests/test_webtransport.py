@@ -55,8 +55,10 @@ class ResolveTest(unittest.TestCase):
 
     def test_plain_request_without_headers(self):
         info = wt.resolve("192.168.1.5", headers(), TRUST_LOCAL)
-        self.assertEqual(info, {"client": "192.168.1.5", "scheme": "http", "proxied": False,
-                                "untrusted_forward": False, "peer_loopback": False})
+        self.assertEqual(info, {"client": "192.168.1.5", "peer": "192.168.1.5", "scheme": "http",
+                                "proxied": False, "untrusted_forward": False, "proto_missing": False,
+                                "peer_loopback": False, "peer_trusted": False, "forward_headers": (),
+                                "proto_value": ""})
 
     def test_trusted_proxy_gives_browser_address_and_scheme(self):
         info = wt.resolve("127.0.0.1", headers(X_Forwarded_For="192.168.1.50", X_Forwarded_Proto="https"), TRUST_LOCAL)
@@ -117,14 +119,17 @@ class ResolveTest(unittest.TestCase):
                           wt.parse_networks(["127.0.0.1/32"]))
         self.assertEqual(info["scheme"], "http")
 
-    def test_x_real_ip_alone_is_not_proxied(self):
+    def test_x_real_ip_alone_is_proxied_without_proto(self):
         trusted = wt.parse_networks(["127.0.0.1/32"])
         info = wt.resolve("127.0.0.1", hdrs({"X-Real-IP": "192.168.1.50"}), trusted)
-        self.assertFalse(info["proxied"])
+        self.assertEqual((info["proxied"], info["proto_missing"], info["client"]), (True, True, "192.168.1.50"))
         self.assertFalse(info["untrusted_forward"])
         watch = wt.TransportWatch(clock=lambda: 1.0)
         watch.note(info, "basic")
-        self.assertEqual(watch.insights(now=1.0), [])  # Proxy auf dem Host, nicht als HTTP aus dem Netz
+        items = watch.insights(now=1.0)
+        self.assertEqual([i["key"] for i in items], ["web_proxy_no_proto"])  # Proxy auf dem Host
+        self.assertIn("kein Hinweis auf Klartext", items[0]["text"])
+        self.assertIn("127.0.0.1 schickt X-Real-IP, aber weder", items[0]["text"])
         self.assertTrue(wt.resolve("192.168.1.9", hdrs({"X-Real-IP": "1.2.3.4"}), [])["untrusted_forward"])
 
     def test_trust_all_is_dropped(self):
@@ -244,6 +249,185 @@ class WatchTest(unittest.TestCase):
         self.watch.note({"scheme": "https", "proxied": True, "peer_loopback": False}, "basic", now=1000.0)
         self.watch.note({"scheme": "https", "proxied": True, "peer_loopback": True}, "basic", now=1001.0)
         self.assertEqual(self.keys(now=1000.0 + wt.FIXED_WINDOW + 1), [])
+
+    # --- 1.5.1: Ursache und Absender ------------------------------------------------------------
+
+    def test_direct_plain_names_client_kind_and_age(self):
+        info = wt.resolve("192.168.1.30", hdrs({}), wt.parse_networks(["192.168.1.2/32"]))
+        self.watch.note(info, "key", now=1000.0)
+        item = self.watch.insights(now=1000.0 + 3 * 3600)[0]
+        self.assertEqual(item["key"], "web_plain_http")
+        self.assertIn("ein API-Schlüssel von 192.168.1.30 direkt per HTTP", item["text"])
+        self.assertIn("zuletzt vor 3 h", item["text"])
+        self.assertIn("Home-Assistant", item["text"])
+        self.assertIn("1 Stunde", item["text"])
+        self.assertIn("24 Stunden", item["text"])
+
+    def test_trusted_lan_proxy_without_proto_is_own_hint_not_plain(self):
+        # Fall aus einem Diagnosepaket: Proxy auf anderem Gerät, eingetragen, schickt nur X-Forwarded-For.
+        trusted = wt.parse_networks(["192.168.1.2/32"])
+        info = wt.resolve("192.168.1.2", hdrs({"X-Forwarded-For": "192.168.1.50"}), trusted)
+        self.assertEqual((info["proxied"], info["proto_missing"]), (True, True))
+        self.watch.note(info, "basic", now=1000.0)
+        items = self.watch.insights(now=1000.0)
+        # Proxy auf anderem Gerät: die Strecke Proxy → ntp-gui ist sicher HTTP – Hop-Hinweis gleich mit.
+        self.assertEqual([i["key"] for i in items], ["web_proxy_no_proto", "web_proxy_hop_plain"])
+        self.assertEqual(items[0]["level"], "info")
+        self.assertIn("192.168.1.50 über 192.168.1.2", items[0]["text"])
+        self.assertNotIn("kein Hinweis auf Klartext", items[0]["text"])
+        self.assertIn("Strecke Proxy → ntp-gui ist unverschlüsselt", items[0]["text"])
+        self.assertTrue(items[1]["text"].startswith("Der eingetragene Reverse Proxy läuft auf einem anderen"))
+        for name in ("Caddy", "Nginx Proxy Manager", "Traefik", "Zoraxy", "HAProxy", "X-Forwarded-Proto $scheme"):
+            self.assertIn(name, items[0]["text"])
+        self.assertNotIn("Ungeschützt angekommen", items[0]["text"])
+        self.assertIsNone(self.watch.last_plain)
+
+    def test_forwarded_header_without_proto_is_no_proto(self):
+        info = wt.resolve("127.0.0.1", hdrs({"Forwarded": "for=192.168.1.50"}), wt.parse_networks(["127.0.0.1/32"]))
+        self.assertTrue(info["proto_missing"])
+        self.watch.note(info, "basic")
+        self.assertEqual(self.keys(), ["web_proxy_no_proto"])
+
+    def test_no_proto_hint_clears_once_header_arrives(self):
+        trusted = wt.parse_networks(["192.168.1.2/32"])
+        self.watch.note(wt.resolve("192.168.1.2", hdrs({"X-Forwarded-For": "192.168.1.50"}), trusted),
+                        "basic", now=1000.0)
+        self.watch.note(wt.resolve("192.168.1.2", hdrs({"X-Forwarded-For": "192.168.1.50",
+                                                        "X-Forwarded-Proto": "https"}), trusted),
+                        "basic", now=1100.0)
+        self.assertEqual(self.keys(now=1200.0), ["web_proxy_no_proto", "web_proxy_hop_plain"])
+        self.assertEqual(self.keys(now=1000.0 + wt.FIXED_WINDOW + 1), ["web_proxy_hop_plain"])
+
+    # --- 1.5.1: Prüfbefunde „web“ -----------------------------------------------------------------
+
+    def test_lan_proxy_with_only_x_real_ip_is_no_proto_not_direct(self):
+        trusted = wt.parse_networks(["192.168.1.5/32"])
+        info = wt.resolve("192.168.1.5", hdrs({"X-Real-IP": "192.168.1.30"}), trusted)
+        self.watch.note(info, "basic", now=1000.0)
+        items = self.watch.insights(now=1000.0)
+        self.assertEqual([i["key"] for i in items], ["web_proxy_no_proto", "web_proxy_hop_plain"])
+        self.assertIn("dein Passwort von 192.168.1.30 über 192.168.1.5", items[0]["text"])
+        self.assertIn("192.168.1.5 schickt X-Real-IP, aber weder X-Forwarded-Proto", items[0]["text"])
+        self.assertIn("X-Forwarded-Proto $scheme", items[0]["text"])
+        self.assertNotIn("direkt per HTTP", " ".join(i["text"] for i in items))
+
+    def test_trusted_peer_without_any_header_is_labelled(self):
+        trusted = wt.parse_networks(["192.168.1.5/32"])
+        info = wt.resolve("192.168.1.5", hdrs({}), trusted)
+        self.assertEqual((info["proxied"], info["peer_trusted"]), (False, True))
+        self.watch.note(info, "basic", now=1000.0)
+        item = self.watch.insights(now=1000.0)[0]
+        self.assertEqual((item["key"], item["level"]), ("web_plain_http", "warn"))
+        self.assertIn("von 192.168.1.5 direkt per HTTP (eingetragener Proxy, aber ohne jeden Proxy-Kopf)",
+                      item["text"])
+        self.assertIn("X-Forwarded-Proto $scheme", item["text"])
+
+    def test_xff_with_forwarded_proto_uses_forwarded_proto(self):
+        # HAProxy mit „option forwardfor“ und „option forwarded“
+        trusted = wt.parse_networks(["192.168.1.5/32"])
+        info = wt.resolve("192.168.1.5", hdrs({"X-Forwarded-For": "192.168.1.30",
+                                               "Forwarded": "for=192.168.1.30;proto=https"}), trusted)
+        self.assertEqual((info["scheme"], info["proto_missing"], info["client"]), ("https", False, "192.168.1.30"))
+
+    def test_unknown_proto_value_named(self):
+        trusted = wt.parse_networks(["192.168.1.5/32"])
+        info = wt.resolve("192.168.1.5", hdrs({"X-Forwarded-For": "192.168.1.30",
+                                               "X-Forwarded-Proto": "wss"}), trusted)
+        self.assertEqual((info["proto_missing"], info["proto_value"]), (True, "wss"))
+        self.watch.note(info, "basic", now=1000.0)
+        text = self.watch.insights(now=1000.0)[0]["text"]
+        self.assertIn("mit dem unbekannten Wert „wss“", text)
+        self.assertNotIn("aber weder X-Forwarded-Proto", text)
+        odd = wt.resolve("192.168.1.5", hdrs({"X-Forwarded-For": "192.168.1.30",
+                                              "X-Forwarded-Proto": "<b>x</b>"}), trusted)
+        self.assertEqual(odd["proto_value"], "?")
+
+    def test_other_proxy_with_header_does_not_clear_no_proto(self):
+        trusted = wt.parse_networks(["192.168.1.5/32", "127.0.0.1/32"])
+        self.watch.note(wt.resolve("192.168.1.5", hdrs({"X-Forwarded-For": "192.168.1.30"}), trusted),
+                        "basic", now=1000.0)
+        self.watch.note(wt.resolve("127.0.0.1", hdrs({"X-Forwarded-For": "192.168.1.31",
+                                                      "X-Forwarded-Proto": "https"}), trusted), "basic", now=1100.0)
+        later = 1000.0 + wt.FIXED_WINDOW + 1
+        self.assertIn("web_proxy_no_proto", self.keys(now=later))
+        # Erst wenn DERSELBE Proxy den Kopf schickt, gilt es als behoben.
+        self.watch.note(wt.resolve("192.168.1.5", hdrs({"X-Forwarded-For": "192.168.1.30",
+                                                        "X-Forwarded-Proto": "https"}), trusted), "basic", now=1200.0)
+        self.assertNotIn("web_proxy_no_proto", self.keys(now=later))
+
+    def test_no_proto_does_not_clear_direct_plain(self):
+        trusted = wt.parse_networks(["192.168.1.5/32"])
+        self.watch.note(wt.resolve("192.168.1.40", hdrs({}), trusted), "key", now=1000.0)
+        self.watch.note(wt.resolve("192.168.1.5", hdrs({"X-Forwarded-For": "192.168.1.30"}), trusted),
+                        "basic", now=1100.0)
+        self.assertIn("web_plain_http", self.keys(now=1000.0 + wt.FIXED_WINDOW + 1))
+
+    def test_apache_help_is_conditional(self):
+        self.assertIn("expr=%{REQUEST_SCHEME}", wt.PROTO_HELP)
+        self.assertNotIn("RequestHeader set X-Forwarded-Proto https", wt.PROTO_HELP)
+
+    def test_proxy_reporting_http_names_browser_and_proxy(self):
+        trusted = wt.parse_networks(["127.0.0.1/32"])
+        self.watch.note(wt.resolve("127.0.0.1", hdrs({"X-Forwarded-For": "192.168.1.50",
+                                                      "X-Forwarded-Proto": "http"}), trusted), "basic")
+        text = self.watch.insights(now=1000.0)[0]["text"]
+        self.assertIn("dein Passwort von 192.168.1.50 über den eingetragenen Proxy 127.0.0.1", text)
+        self.assertIn("Force SSL", text)
+
+    def test_untrusted_proxy_named_as_cause(self):
+        self.watch.note(wt.resolve("192.168.1.2", hdrs({"X-Forwarded-For": "192.168.1.50"}), []), "basic")
+        items = self.watch.insights(now=1000.0)
+        self.assertEqual([i["key"] for i in items], ["web_plain_http", "web_proxy_untrusted"])
+        self.assertIn("über 192.168.1.2, das Proxy-Köpfe schickt", items[0]["text"])
+        self.assertNotIn("192.168.1.50", items[0]["text"])  # Kopf unbeglaubigt – nicht nennen
+
+    def test_lan_proxy_https_plus_direct_bookmark_both_named(self):
+        # Proxy liefert HTTPS (Hop-Hinweis), aber ein anderes Gerät nutzt noch http://ip:8080.
+        trusted = wt.parse_networks(["192.168.1.2/32"])
+        self.watch.note(wt.resolve("192.168.1.2", hdrs({"X-Forwarded-For": "192.168.1.50",
+                                                        "X-Forwarded-Proto": "https"}), trusted), "basic", now=1000.0)
+        self.watch.note(wt.resolve("192.168.1.40", hdrs({}), trusted), "key", now=1001.0)
+        items = self.watch.insights(now=1002.0)
+        self.assertEqual([i["key"] for i in items], ["web_plain_http", "web_proxy_hop_plain"])
+        self.assertIn("192.168.1.40 direkt per HTTP", items[0]["text"])
+        self.assertNotIn("192.168.1.50", items[0]["text"])
+
+    def test_several_sources_newest_first_and_capped(self):
+        for i in range(wt.MAX_SOURCES + 3):
+            self.watch.note({"client": f"192.168.1.{100 + i}", "peer": f"192.168.1.{100 + i}"}, "basic",
+                            now=1000.0 + i)
+        self.assertEqual(len(self.watch.plain), wt.MAX_SOURCES)
+        text = self.watch.insights(now=1100.0)[0]["text"]
+        newest = f"192.168.1.{100 + wt.MAX_SOURCES + 2}"
+        self.assertLess(text.index(newest), text.index(f"192.168.1.{100 + wt.MAX_SOURCES + 1}"))
+        self.assertIn(f"(und {wt.MAX_SOURCES - wt.SHOW_SOURCES} weitere)", text)
+
+    def test_expiry_note_after_protected_access(self):
+        self.watch.note({"client": "192.168.1.30"}, "basic", now=1000.0)
+        self.watch.note({"scheme": "https", "proxied": True, "peer_loopback": True}, "basic", now=1100.0)
+        self.assertIn("nur noch geschützte Zugriffe", self.watch.insights(now=1200.0)[0]["text"])
+
+    def test_reset_forgets_sources(self):
+        self.watch.note({"client": "192.168.1.30"}, "basic")
+        self.watch.note(wt.resolve("192.168.1.2", hdrs({"X-Forwarded-For": "192.168.1.50"}),
+                                   wt.parse_networks(["192.168.1.2/32"])), "basic")
+        self.watch.reset()
+        self.assertEqual(self.keys(), [])
+        self.assertEqual((self.watch.plain, self.watch.no_proto), ({}, {}))
+
+    def test_addresses_pseudonymised_if_hint_ever_leaves_through_egress(self):
+        import egress
+        self.watch.note({"client": "192.168.1.30", "peer": "192.168.1.30"}, "key")
+        self.watch.note({"proxied": True, "proto_missing": True, "client": "192.168.1.50",
+                         "peer": "192.168.1.2"}, "basic")
+        clean, _ = egress.sanitize(self.watch.insights(now=1000.0), "diagnostics")
+        self.assertNotIn("192.168.", json.dumps(clean))
+        self.assertEqual(egress.check_no_leaks(clean), [])
+
+    def test_ago(self):
+        self.assertEqual(wt.ago(10), "gerade eben")
+        self.assertEqual(wt.ago(12 * 60), "vor 12 min")
+        self.assertEqual(wt.ago(3 * 3600), "vor 3 h")
 
 
 class SettingTest(unittest.TestCase):
@@ -371,6 +555,29 @@ class HandlerTest(unittest.TestCase):
         self.assertEqual(resp.status, 200)
         self.assertEqual(wt.WATCH.insights(), [])
 
+    def test_trusted_proxy_without_proto_is_not_plain_warning(self):
+        self.trust_local()
+        self.get("/api/v1", {"X-Forwarded-For": "192.168.1.50"})
+        items = wt.WATCH.insights()
+        self.assertEqual([i["key"] for i in items], ["web_proxy_no_proto"])
+        self.assertIn("192.168.1.50 über 127.0.0.1", items[0]["text"])
+
+    def test_saving_trusted_proxies_clears_no_proto_hint(self):
+        self.trust_local()
+        self.get("/api/v1", {"X-Forwarded-For": "192.168.1.50"})
+        self.assertTrue(wt.WATCH.no_proto)
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        body = json.dumps({"changes": {"trusted_proxies": ["::1/128"]}})
+        conn.request("POST", "/api/settings", body=body, headers={
+            "Authorization": "Basic " + base64.b64encode(b"admin:geheim123").decode(),
+            "Content-Type": "application/json", "X-NTP-GUI": "1",
+            "Origin": f"http://127.0.0.1:{self.port}"})
+        resp = conn.getresponse()
+        resp.read()
+        conn.close()
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(wt.WATCH.insights(), [])
+
     def test_wrong_password_is_not_noted(self):
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
         conn.request("GET", "/api/v1", headers={
@@ -410,31 +617,69 @@ class HandlerTest(unittest.TestCase):
 
 
 class ComposeTemplateTest(unittest.TestCase):
-    """Die Caddy-Vorlage folgt der Kommentar-Regel der Datei und ist vollständig."""
+    """Vorlagen ohne Caddy (1.5.1): Proxy-Option nach der Kommentar-Regel, Caddy nur in der Doku."""
 
     TEXT = (ROOT / "docker-compose.all-in-one.yml").read_text(encoding="utf-8")
+    DOC = (ROOT / "docs" / "integrationen" / "https.md").read_text(encoding="utf-8")
 
     def uncommented(self):
         return re.sub(r"(?m)^( +)#  ", r"\1", self.TEXT)
 
-    def test_caddy_block_present(self):
+    def test_proxy_option_present(self):
         text = self.uncommented()
-        self.assertRegex(text, r"(?m)^  caddy:\n")
-        self.assertIn('"--internal-certs"', text)
-        self.assertRegex(text, r"(?m)^  caddy-data:$")
+        self.assertIn("[OPTION Reverse Proxy auf diesem Rechner]", self.TEXT)
         self.assertRegex(text, r'(?m)^      WEB_BIND: "127\.0\.0\.1"$')
         self.assertRegex(text, r'(?m)^      TRUSTED_PROXIES: "127\.0\.0\.1/32,::1/128"$')
-        self.assertRegex(text, r"(?m)^    image: caddy:\d+\.\d+\.\d+$")  # gepinnt, nie :latest
+        self.assertIn("docs/integrationen/https.md", self.TEXT)
 
-    def test_default_file_has_no_caddy(self):
-        self.assertNotRegex(self.TEXT, r"(?m)^  caddy:")
+    def test_no_caddy_in_any_template(self):
+        for path in sorted(ROOT.glob("docker-compose*.yml")):
+            text = path.read_text(encoding="utf-8")
+            with self.subTest(path=path.name):
+                self.assertNotRegex(text, r"(?m)^\s*#?\s*caddy(-data)?:")       # weder Dienst noch Volume
+                self.assertNotRegex(text, r"(?m)image: caddy")
+                self.assertNotIn("OPTION HTTPS mit Caddy", text)
         self.assertNotRegex(self.TEXT, r"(?m)^\s+TRUSTED_PROXIES:")
 
+    def test_version_hint_in_every_template(self):
+        for path in sorted(ROOT.glob("docker-compose*.yml")):
+            lines = path.read_text(encoding="utf-8").splitlines()
+            with self.subTest(path=path.name):
+                index = next(i for i, line in enumerate(lines)
+                             if line.strip().startswith("image: ghcr.io/mgc20/ntp-gui:latest"))
+                hint = "\n".join(lines[max(0, index - 8):index])
+                if any(line.strip() == "build: ." for line in lines):
+                    self.assertIn("lokalen Stand", hint)  # Version im Tag gilt nur fürs geladene Image
+                self.assertIn("„:1.5“", hint)
+                self.assertIn("„:1.5.1“", hint)
+                self.assertIn("ghcr.io/congp20/ntp-gui", hint)
+                # Erklärung, nie eine einkommentierbare Zeile („#  “ nach der Einrückung)
+                self.assertNotRegex(hint, r"(?m)^ +#  ")
+
+    def test_no_stale_template_references(self):
+        files = [ROOT / "README.md", ROOT / "app" / "webtransport.py", ROOT / "app" / "settings.py",
+                 ROOT / "app" / "static" / "js" / "help-web.js", ROOT / "docs" / "integrationen" / "https.md",
+                 ROOT / "tests" / "container-test.sh"]
+        for path in files:
+            text = path.read_text(encoding="utf-8")
+            with self.subTest(path=path.name):
+                self.assertNotIn("Caddy-Vorlage", text)
+                self.assertNotIn("OPTION HTTPS mit Caddy", text)
+
+    def test_doc_has_standalone_caddy_compose(self):
+        match = re.search(r"<!-- compose-caddy[^>]*-->\n```yaml\n(.*?)\n```", self.DOC, re.S)
+        self.assertIsNotNone(match, "Caddy-Beispiel mit Markierung für den Container-Test")
+        block = match.group(1)
+        self.assertRegex(block, r"(?m)^services:\n  caddy:$")
+        self.assertRegex(block, r"(?m)^volumes:\n  caddy-data:$")
+        self.assertRegex(block, r"(?m)^    image: caddy:\d+\.\d+\.\d+$")  # gepinnt, nie :latest
+        self.assertIn('"--internal-certs"', block)
+        self.assertNotIn("depends_on", block, "eigener Stack – kein Verweis auf den ntp-gui-Dienst")
+
     def test_doc_exists_and_mentions_proxies(self):
-        doc = (ROOT / "docs" / "integrationen" / "https.md").read_text(encoding="utf-8")
         for word in ("Caddy", "Nginx Proxy Manager", "Zoraxy", "Traefik", "TRUSTED_PROXIES", "WEB_ALLOWED_HOSTS",
-                     "root.crt", "--internal-certs"):
-            self.assertIn(word, doc)
+                     "Erlaubte Namen", "root.crt", "--internal-certs"):
+            self.assertIn(word, self.DOC)
 
 
 if __name__ == "__main__":

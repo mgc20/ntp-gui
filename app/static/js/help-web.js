@@ -6,15 +6,15 @@ export const HELP_WEB = {
     text: "ntp-gui spricht selbst nur HTTP – mit Absicht: Eigenes TLS im Python-Server hätte Fallstricke "
       + "(ein langsamer Handshake blockiert, Zertifikatswechsel), und die meisten Heimnetze haben schon einen "
       + "Reverse Proxy. Ohne HTTPS gehen Passwort (Basic-Auth) und API-Schlüssel **lesbar** durchs Netz. "
-      + "Fertige Vorlage: der auskommentierte Block **[OPTION HTTPS mit Caddy]** in `docker-compose.all-in-one.yml` – "
+      + "Anleitung mit fertigem Compose-Beispiel für Caddy als eigenen Stack: `docs/integrationen/https.md` – "
       + "Caddy holt sich das Zertifikat selbst: im LAN von seiner eigenen Zertifizierungsstelle (`--internal-certs`, "
       + "deren Root-Zertifikat du einmal auf deinen Geräten als vertrauenswürdig einträgst), mit öffentlichem Namen "
       + "per Let's Encrypt. Dazu `WEB_BIND=127.0.0.1`, damit das Dashboard nur noch über den Proxy erreichbar ist, "
-      + "und `TRUSTED_PROXIES=127.0.0.1/32,::1/128`. Nginx Proxy Manager, Zoraxy und Traefik gehen genauso – die "
-      + "Anleitung steht in `docs/integrationen/https.md`. Wichtig bei allen: den Host-Kopf unverändert weitergeben, "
+      + "und `TRUSTED_PROXIES=127.0.0.1/32,::1/128`. Nginx Proxy Manager, Zoraxy und Traefik gehen genauso – "
+      + "ebenfalls in `docs/integrationen/https.md`. Wichtig bei allen: den Host-Kopf unverändert weitergeben, "
       + "sonst lehnt ntp-gui das Speichern ab (Schutz gegen fremde Seiten). Öffnest du das Dashboard über einen "
-      + "Namen, der nicht auf .lan, .local, .home.arpa o. Ä. endet, und ohne Passwort, trag ihn in "
-      + "`WEB_ALLOWED_HOSTS` ein. Kommt ein Passwort oder Schlüssel per einfachem HTTP aus dem Netz an, zeigt die "
+      + "Namen, der nicht auf .lan, .local, .home.arpa o. Ä. endet, und ohne Passwort, trag ihn unter "
+      + "**Erlaubte Namen** ein (oder in `WEB_ALLOWED_HOSTS`). Kommt ein Passwort oder Schlüssel per einfachem HTTP aus dem Netz an, zeigt die "
       + "Übersicht einen Hinweis (Aufrufe vom Rechner selbst über 127.0.0.1 zählen nicht).",
   },
   trusted_proxies: {
@@ -27,9 +27,29 @@ export const HELP_WEB = {
       + "Wofür es gut ist: Das Zugriffsprotokoll (`WEB_ACCESS_LOG`) nennt den Browser statt des Proxys, und der "
       + "HTTPS-Hinweis erkennt, ob der Browser verschlüsselt verbunden ist. Wofür **nicht**: Anmeldung, Schutz vor "
       + "DNS-Rebinding und die Prüfung der Herkunft beim Speichern hängen nie an diesen Köpfen. "
-      + "Caddy im Host-Netzwerk auf demselben Rechner: `127.0.0.1/32,::1/128`. Proxy auf einem anderen Gerät: "
+      + "Proxy im Host-Netzwerk auf demselben Rechner: `127.0.0.1/32,::1/128`. Proxy auf einem anderen Gerät: "
       + "dessen feste LAN-Adresse, z. B. `192.168.1.2/32` – nicht das ganze Netz, sonst könnte jedes Gerät im LAN "
       + "eine falsche Adresse vorgeben.",
+  },
+  allowed_hosts: {
+    title: "Erlaubte Namen (Schutz vor DNS-Rebinding)",
+    text: "**Was ist DNS-Rebinding?** Eine fremde Webseite, die du im Browser öffnest, lässt ihren eigenen Namen "
+      + "(z. B. `boese.example`) für einen Moment auf die Adresse deines Zeitservers im LAN zeigen. Der Browser "
+      + "glaubt, er spreche noch mit derselben Seite, und lässt sie die Antworten lesen – Log, Status, Quellen und "
+      + "GPS-Position. Das Einzige, woran ntp-gui das erkennt: Im Kopf `Host` steht der fremde Name. "
+      + "Darum beantwortet ntp-gui **ohne Passwort** nur Namen, die es kennt: IP-Adressen, `localhost`, den eigenen "
+      + "Hostnamen, einteilige Namen (`raspberrypi`), lokale Endungen (`.lan`, `.local`, `.home.arpa`, `.internal` …), "
+      + "den NTS-Namen und die Namen hier. Andere Namen bekommen „Zugriff abgelehnt“. "
+      + "Eintragen: einen Namen pro Zeile, z. B. `zeit.example.org`; `*.example.org` erlaubt alle Unternamen "
+      + "(und `example.org` selbst). Nicht erlaubt: `*` allein, ganze Endungen (`*.com`, `*.co.uk`), Wildcards auf "
+      + "DynDNS- und Hosting-Domains (`*.duckdns.org`, `*.myfritz.net`, `*.github.io` – dort kann sich jeder einen "
+      + "Namen holen; trag nur deinen eigenen ein, z. B. `meinzeit.duckdns.org`), IP-Adressen (die gehen "
+      + "immer) und Ports. Den Schutz **ganz** abschalten geht nur bewusst mit `WEB_ALLOWED_HOSTS=*` in der "
+      + "Compose-Datei. Namen aus `WEB_ALLOWED_HOSTS` gelten zusätzlich; sie stehen unter dem Feld und lassen "
+      + "sich nur in der Compose-Datei ändern. "
+      + "Mit Passwort ist die Liste egal – dann schützt die Anmeldung, und jeder Name geht. Die Vollbild-Uhr "
+      + "`/clock` mit „Vollbild-Uhr ohne Anmeldung“ antwortet ohnehin über jeden Namen. Wirkt sofort, ohne Neustart. "
+      + "Tipp: Wurdest du schon abgelehnt, öffne das Dashboard über die IP-Adresse und trag den Namen hier ein.",
   },
   ui_language: {
     title: "Sprache des Dashboards",
@@ -45,5 +65,5 @@ export const HELP_WEB = {
 
 export const HELP_GROUP_WEB = {
   title: "HTTPS, Proxy und Sprache",
-  keys: ["https_proxy", "trusted_proxies", "ui_language"],
+  keys: ["https_proxy", "trusted_proxies", "allowed_hosts", "ui_language"],
 };

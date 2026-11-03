@@ -290,5 +290,21 @@ class RefresherTest(unittest.TestCase):
             server.hardware_refresher(stop)
 
 
+class HintsForDiagnosticsTest(unittest.TestCase):
+    def test_registered_and_cached(self):
+        import diagnostics
+        self.assertIs(diagnostics._hints_source, server.current_insights)
+        fresh = [{"key": "web_plain_http", "level": "warn", "title": "t", "text": "x"}]
+        with mock.patch.object(server, "_last_insights", (server.time.monotonic(), fresh)), \
+                mock.patch.object(server, "build_status") as build:
+            self.assertEqual(server.current_insights(), fresh)
+            build.assert_not_called()
+        stale = (server.time.monotonic() - server.HINTS_MAX_AGE - 1, fresh)
+        with mock.patch.object(server, "_last_insights", stale), \
+                mock.patch.object(server, "build_status", return_value={"insights": []}) as build:
+            self.assertEqual(server.current_insights(), [])
+            build.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()

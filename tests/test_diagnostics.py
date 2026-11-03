@@ -88,7 +88,7 @@ class DiagnosticsTest(unittest.TestCase):
         result = diagnostics.preview(self.cfg, {"include_clients": True, "include_recording": True})
         self.assertTrue(result["ok"])
         names = [s["name"] for s in result["sections"]]
-        self.assertEqual(names, ["meta", "config", "chrony", "clients", "gps", "ptp", "hardware", "services",
+        self.assertEqual(names, ["meta", "hints", "config", "chrony", "clients", "gps", "ptp", "hardware", "services",
                                  "events", "logs", "settings", "history", "recording"])
         text = json.dumps(result["content"], ensure_ascii=False)
         for secret in ("48.137", "11.576", "mueller", "Müllers", "192.168.178.1 ", "192.168.178.23",
@@ -108,6 +108,42 @@ class DiagnosticsTest(unittest.TestCase):
         for section in result["sections"]:
             self.assertGreater(section["size"], 0)
             self.assertIn("title", section)
+
+    def test_hints_section_pseudonymises_addresses(self):
+        hints = [{"level": "warn", "key": "web_plain_http", "action": "settings",
+                  "title": "Dashboard über unverschlüsseltes HTTP mit Anmeldung",
+                  "text": "Ungeschützt angekommen: Anmeldung von 192.168.1.40 direkt per HTTP, zuletzt vor "
+                          "2 min; Anmeldung von 84.150.12.7 über 10.0.0.2 ohne Proxy-Kopf. Standort 48.1371543, "
+                          "11.5761249 bei zeit.mueller-family.de",
+                  "data": {"lat": 48.1371543}},
+                 {"level": "info", "key": "gps_calibrating", "title": "GPS wird eingemessen", "text": "Noch 3 h."},
+                 "kein dict"]
+        self.addCleanup(diagnostics.set_hints_source, diagnostics._hints_source)
+        diagnostics.set_hints_source(lambda: hints)
+        with mock.patch.dict(diagnostics.COLLECTORS, {"hints": diagnostics._collect_hints}):
+            result = diagnostics.preview(self.cfg, {})
+            data = diagnostics.bundle(self.cfg, {})
+        section = result["content"]["hints"]
+        self.assertEqual(section["anzahl"], 2)
+        self.assertEqual([h["key"] for h in section["hinweise"]], ["web_plain_http", "gps_calibrating"])
+        self.assertEqual(set(section["hinweise"][0]), {"key", "level", "title", "text"})
+        text = section["hinweise"][0]["text"]
+        for secret in ("192.168.1.40", "84.150.12.7", "10.0.0.2", "48.137", "11.576", "mueller"):
+            self.assertNotIn(secret, text, secret)
+        self.assertRegex(text, r"von client-\d+ direkt per HTTP")
+        self.assertIn("<öffentliche-IP>", text)
+        self.assertEqual(egress.check_no_leaks(result["content"]), [])
+        with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
+            members = {Path(m.name).name: tar.extractfile(m).read().decode("utf-8") for m in tar.getmembers()}
+        self.assertIn("hints.json", members)
+        self.assertIn("web_plain_http", members["hints.json"])
+        self.assertNotIn("84.150.12.7", members["hints.json"])
+        self.assertIn("hints.json", members["MANIFEST.txt"])
+
+    def test_hints_without_dashboard(self):
+        self.addCleanup(diagnostics.set_hints_source, diagnostics._hints_source)
+        diagnostics.set_hints_source(None)
+        self.assertIn("hinweis", diagnostics._collect_hints({}, {}))
 
     def test_clients_only_on_request(self):
         result = diagnostics.preview(self.cfg, {})

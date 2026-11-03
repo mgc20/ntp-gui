@@ -215,9 +215,11 @@ export const HELP_UHR = {
       + "Browser-Logs). Sichtbar ist dann nur Uhrzeit, Ampel, Genauigkeit und die Art der Quelle (GPS, NTP …) – "
       + "keine Namen, Adressen oder Einstellungen. Es ist trotzdem die erste offene Seite neben /healthz: Lass "
       + "es aus, wenn das Dashboard aus dem Internet erreichbar ist. Wer sich anmeldet, sieht auf /api/v1/time "
-      + "zusätzlich den Namen der Quelle. Für Anfragen ohne Anmeldung gilt der Schutz vor DNS-Rebinding: Sie werden "
-      + "nur über IP-Adressen, einteilige oder lokale Namen (*.local, *.lan …) und WEB_ALLOWED_HOSTS beantwortet – "
-      + "sonst könnte jede Webseite, die jemand im LAN öffnet, den Zustand deines Servers abfragen.",
+      + "zusätzlich den Namen der Quelle. Die Uhr antwortet über **jeden Namen**, z. B. auch über einen eigenen "
+      + "DNS-Namen wie uhr.example.org – die Namensprüfung gegen DNS-Rebinding entfällt hier, weil eine fremde "
+      + "Webseite darüber nur erfahren könnte, was ohnehin öffentlich ist (Zeit, Ampel, Genauigkeit, Art der "
+      + "Quelle). Den Namen der Quelle gibt es ohne Anmeldung nur, wenn kein Passwort gesetzt ist und der Aufruf "
+      + "über einen erlaubten Namen kommt (IP-Adresse, lokale Namen, „Erlaubte Namen“ bzw. WEB_ALLOWED_HOSTS). Alle anderen Seiten und die übrige API bleiben geprüft.",
   },
 };
 
