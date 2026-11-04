@@ -864,7 +864,14 @@ check "Holdover abbrechen" 200 "$(post -H 'Content-Type: application/json' -H 'X
 check "Nach dem Test: GPS auswählbar" "[[]]" "$(effopts GPS)"
 check "Nach dem Test: Netzquellen auswählbar" "[[]]" "$(effopts 172.31.78.11)"
 # Neustart von chronyd während des Tests → Test abgebrochen, Zustand sauber.
-post -H 'Content-Type: application/json' -H 'X-NTP-GUI: 1' -d '{"action":"start","hours":2}' http://127.0.0.1:18094/api/holdover >/dev/null
+# 1.5.3: Ein neuer Test startet erst RESTART_PAUSE (10 s) nach dem letzten (409 bis dahin).
+SECOND=""
+for ((i = 0; i < 30; i++)); do
+  SECOND=$(post -H 'Content-Type: application/json' -H 'X-NTP-GUI: 1' -d '{"action":"start","hours":2}' http://127.0.0.1:18094/api/holdover)
+  [[ "$SECOND" == 200 ]] && break
+  sleep 1
+done
+check "Zweiter Test startet nach kurzer Pause" 200 "$SECOND"
 check "Zweiter Test: Netzquelle noselect" "[['noselect']]" "$(effopts 172.31.78.11)"
 post -H 'X-NTP-GUI: 1' -H 'Content-Type: application/json' -d '{}' http://127.0.0.1:18094/api/reload >/dev/null
 HOJSON=""

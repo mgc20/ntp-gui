@@ -736,17 +736,22 @@ def tick(cfg: dict, now: float | None = None, samples: list[dict] | None = None)
                 reset_at = state["reset_at"] = now
             decision = decide(measured, applied, now, reset_at, offset_since, _floor,
                               defer_shrink=_autocal_corrects_first(cfg, measured))
-            state["measured"] = measured
-            state["decision"] = dict(decision, t=now)
             if decision["apply"]:
                 old = applied["delay"] if applied else DEFAULT_DELAY
                 new_delay = float(decision.get("delay", measured["delay"]))
+                # 1.5.3: Ein Neustart von chronyd bräche einen laufenden Holdover-Test ab – warten.
+                if _holdover_defers(f"GPS-Fehlerschranke ± {fmt_ms(old / 2)} → ± {fmt_ms(new_delay / 2)}"):
+                    decision = {"apply": False, "deferred": "holdover", "delay": new_delay,
+                                "reason": f"{decision['reason']} Zurückgestellt bis zum Ende des Holdover-Tests "
+                                          "(ein Neustart von chronyd bräche ihn ab)."}
+            state["measured"] = measured
+            state["decision"] = dict(decision, t=now)
+            if decision["apply"]:
                 state["applied"] = {"delay": new_delay, "precision": measured["precision"],
                                     "bound": measured["bound"], "samples": measured["samples"],
                                     "hours": measured["hours"], "t": now}
                 save_state(state)
-                trigger = _DEPS.get("trigger_reload")
-                reloaded = bool(trigger()) if trigger else False
+                reloaded = _automatic_reload(_DEPS.get("trigger_reload"))
                 decision["reload_triggered"] = reloaded
                 _emit("gps", "info",
                       f"GPS-Fehlerschranke angepasst: ± {fmt_ms(old / 2)} → ± {fmt_ms(new_delay / 2)}",
@@ -759,6 +764,33 @@ def tick(cfg: dict, now: float | None = None, samples: list[dict] | None = None)
             return decision
         except Exception as exc:  # nie die Messschleife stören
             return {"apply": False, "reason": f"Prüfung fehlgeschlagen: {exc}", "error": str(exc)}
+
+
+def _holdover_defers(what: str) -> bool:
+    """True, wenn ein Holdover-Test läuft (dann wartet die Änderung; ein Ereignis je Test)."""
+    try:
+        import holdover
+        return holdover.defer("gps_bound", what)
+    except Exception:
+        return False
+
+
+def _automatic_reload(trigger: Callable[[], bool] | None) -> bool:
+    """Neustart für die Automatik: Hat gerade ein Holdover-Test begonnen (nach der Prüfung oben), folgt
+    er erst nach dessen Ende – unter derselben Sperre geprüft wie der Start des Tests."""
+    try:
+        import holdover
+        return holdover.reload_or_defer(trigger)
+    except Exception:
+        return bool(trigger()) if trigger else False
+
+
+def _holdover_resumed() -> bool:
+    try:
+        import holdover
+        return holdover.resume("gps_bound")
+    except Exception:
+        return False
 
 
 AUTOCAL_FIRST_BIAS = 0.010    # wie autocal.FAST_MIN_BIAS: ab diesem Versatz korrigiert autocal in einem Schritt
@@ -854,7 +886,8 @@ def maybe_tick(cfg_fn: Callable[[], dict], clock: Callable[[], float] = time.mon
     """Aus der Messschleife: höchstens einmal je TICK_INTERVAL."""
     mono = clock()
     last = _LAST_TICK["mono"]
-    if last is not None and mono - last < TICK_INTERVAL:
+    # Nach einem Holdover-Test, der eine Änderung zurückgestellt hat: gleich jetzt nachholen.
+    if last is not None and mono - last < TICK_INTERVAL and not _holdover_resumed():
         return None
     _LAST_TICK["mono"] = mono
     try:

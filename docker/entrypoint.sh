@@ -53,6 +53,11 @@ NTS_WATCH=""            # Zertifikat + Schlüssel des NTS-Servers (von confgen)
 NTS_CERT_SIG=""         # Stand beim letzten (Neu-)Laden von chronyd
 NTS_CERT_PENDING=""     # erkannte Änderung, die noch auf Stabilität wartet
 NEXT_NTS_CERT=0
+NTS_CERT_DEFERRED=0     # erneuertes Zertifikat wartet auf das Ende eines Holdover-Tests
+# 1.5.3: Läuft ein Holdover-Test, nennt das Dashboard in RUN_DIR/reload.hold eine Unix-Zeit (alle
+# ~10 s verlängert). Bis dahin startet der Supervisor chronyd nicht von sich aus neu (Hotplug,
+# NTS-Zertifikat) – sonst bräche der Test ab. Was du speicherst (reload.request), wirkt weiter sofort.
+RELOAD_HOLD_NOTED=""    # schon gemeldete Zurückstellungen (je Grund ein Ereignis)
 
 LOGTEE_PID=""     # logtee.py (Prozess-Substitution), siehe start_logtee
 LOG_OUT_FD=""
@@ -252,6 +257,7 @@ apply_config() {
   NTS_WATCH="${NTPGUI_NTS_WATCH:-}"
   NTS_CERT_SIG="$(file_signature $NTS_WATCH)"
   NTS_CERT_PENDING=""
+  NTS_CERT_DEFERRED=0   # chronyd startet danach ohnehin neu und lädt das aktuelle Zertifikat
 }
 
 # mtime, Größe und Inode jeder Datei (stat -L folgt Symlinks wie live/ → archive/
@@ -587,12 +593,39 @@ restart_service() {  # restart_service <dienst>
   fi
 }
 
+# hold_active -> 0 = RUN_DIR/reload.hold nennt eine Zeit in der Zukunft (Holdover-Test läuft).
+hold_active() {
+  local hold_until=""
+  if [[ -f "${RUN_DIR}/reload.hold" ]]; then
+    read -r hold_until < "${RUN_DIR}/reload.hold" 2>/dev/null || hold_until=""
+  fi
+  [[ "$hold_until" =~ ^[0-9]{1,12}$ ]] && (( hold_until >= $(now) ))
+}
+
+# reload_held <grund> [stufe] [hinweis] -> 0 = automatischen Neustart zurückstellen (Holdover-Test
+# läuft). Je Grund und Test ein Ereignis.
+reload_held() {
+  if ! hold_active; then
+    RELOAD_HOLD_NOTED=""
+    return 1
+  fi
+  if [[ "$RELOAD_HOLD_NOTED" != *"|$1|"* ]]; then
+    RELOAD_HOLD_NOTED+="|$1|"
+    log main "$1 – zurückgestellt bis zum Ende des Holdover-Tests.${3:+ $3}"
+    "${EMIT_EVENT:-:}" reload "${2:-info}" "$1 – zurückgestellt bis zum Ende des Holdover-Tests${3:+. $3}" reason=holdover
+  fi
+  return 0
+}
+
 # Geräte, die beim Start fehlten, aufgetaucht? GPS-Empfänger ab- und wieder
 # angesteckt (neuer Geräteknoten)? Dann Konfiguration neu erzeugen – wie SIGHUP.
 check_hotplug() {
   local path id
   for path in $HOTPLUG_PATHS; do
     if [[ -e "$path" ]]; then
+      # Zurückgestellt: nur das Neuladen auslassen – die Prüfung „GPS-Gerät verschwunden“ unten läuft weiter.
+      if reload_held "Gerät ${path} ist jetzt vorhanden – Neustart der Zeitdienste"; then break; fi
+      write_status running "Gerät ${path} ist jetzt vorhanden"
       log main "Gerät ${path} ist jetzt vorhanden – Konfiguration wird neu geladen."
       "${EMIT_EVENT:-:}" reload info "Gerät ${path} ist jetzt vorhanden – Konfiguration wird neu geladen" \
         reason=hotplug device="$path"
@@ -610,6 +643,8 @@ check_hotplug() {
         GPS_DEV_GONE=1
       fi
     elif [[ "$id" != "$GPS_DEV_ID" ]]; then
+      if reload_held "GPS-Gerät ${NTPGUI_GPS_DEVICE} neu angesteckt – Neustart der Zeitdienste"; then return 0; fi
+      write_status running "GPS-Gerät neu angesteckt"
       log gps "${NTPGUI_GPS_DEVICE} wurde neu angesteckt – Konfiguration wird neu geladen."
       "${EMIT_EVENT:-:}" gps info "GPS-Gerät ${NTPGUI_GPS_DEVICE} wurde neu angesteckt" \
         reason=hotplug device="$NTPGUI_GPS_DEVICE"
@@ -660,6 +695,9 @@ while true; do
   # „$( … )“ brachte den bash-Parser durcheinander und beendete den Container). Datei zuerst
   # löschen: Kommt während des Neuladens eine neue Anforderung, folgt ein weiterer Durchgang.
   if [[ -e "${RUN_DIR}/reload.request" ]]; then
+    # Zuerst „running“ vermerken, dann die Anforderung löschen: Ein Holdover-Test, der genau jetzt
+    # startet, sieht so immer eins von beiden und wartet (holdover.reload_busy).
+    write_status running "Neustart angefordert"
     rm -f "${RUN_DIR}/reload.request"
     RELOAD_REQUESTED=1
   fi
@@ -692,6 +730,14 @@ while true; do
     check_hotplug
   fi
   if (( NOW >= NEXT_NTS_CERT )) && check_nts_cert "$NOW"; then
+    NTS_CERT_DEFERRED=1
+  fi
+  if [[ -n "$RELOAD_HOLD_NOTED" ]] && ! hold_active; then RELOAD_HOLD_NOTED=""; fi
+  # Zertifikat: als Warnung – bis zum Ende bietet chronyd das bisherige an (wurde der Schlüssel
+  # kompromittiert oder ist das alte abgelaufen, den Test abbrechen).
+  if (( NTS_CERT_DEFERRED )) && ! reload_held "NTS-Zertifikat erneuert – Neustart von chronyd" warn \
+       "Bis dahin bietet chronyd das bisherige Zertifikat an – brich den Test ab, wenn das neue sofort gelten soll"; then
+    NTS_CERT_DEFERRED=0
     log nts "Zertifikat erneuert – chronyd lädt neu"
     reload_chronyd
   fi

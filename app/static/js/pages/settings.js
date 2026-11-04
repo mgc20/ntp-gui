@@ -282,13 +282,18 @@ export function render(ctx) {
   // Entwürfe für Felder, die der Server nicht (mehr) kennt, zählen nicht.
   const changedKeys = () => Object.keys(ui.draft).filter((k) => k in byKey && !same(ui.draft[k], byKey[k].value));
 
+  // 1.5.3: Läuft ein Holdover-Test, bricht jeder Neustart von chronyd ihn ab – vorher nachfragen.
+  const holdoverActive = () => Boolean(ctx.status?.holdover_active);
+  const confirmHoldover = () => !holdoverActive() || window.confirm(
+    "Gerade läuft ein Holdover-Test. Speichern startet chronyd neu und bricht den Test ab " +
+    "(das Ergebnis bis jetzt bleibt erhalten). Trotzdem speichern?");
   const saveBar = el("div", { class: "save-bar", hidden: true });
   const updateBar = () => {
     const changed = changedKeys();
     saveBar.hidden = changed.length === 0;
     const restart = changed.some((k) => byKey[k].restart === "services");
     saveBar.replaceChildren(
-      el("span", { text: `${changed.length} ${changed.length === 1 ? "Änderung" : "Änderungen"}${restart ? " · Zeitdienste starten danach neu (wenige Sekunden)" : ""}` }),
+      el("span", { text: `${changed.length} ${changed.length === 1 ? "Änderung" : "Änderungen"}${restart ? " · Zeitdienste starten danach neu (wenige Sekunden)" : ""}${restart && holdoverActive() ? " – bricht den laufenden Holdover-Test ab" : ""}` }),
       el("div", { class: "save-actions" },
         el("button", { type: "button", class: "button", text: "Verwerfen", onclick: () => { ui.draft = {}; ui.fieldErrors = {}; ctx.rerender(); } }),
         el("button", { type: "button", class: "button primary", text: "Speichern", onclick: save })));
@@ -301,6 +306,7 @@ export function render(ctx) {
 
   async function save() {
     const changes = Object.fromEntries(changedKeys().map((k) => [k, ui.draft[k]]));
+    if (Object.keys(changes).some((k) => byKey[k]?.restart === "services") && !confirmHoldover()) return;
     try {
       const result = await apiPost("/api/settings", { changes });
       ui.draft = {}; ui.fieldErrors = {};
@@ -317,6 +323,7 @@ export function render(ctx) {
   }
 
   async function reset(key) {
+    if (byKey[key]?.restart === "services" && !confirmHoldover()) return;
     try {
       const result = await apiPost("/api/settings/reset", { keys: [key] });
       delete ui.draft[key];
@@ -527,6 +534,7 @@ export function render(ctx) {
   fileInput.addEventListener("change", async () => {
     const file = fileInput.files[0];
     if (!file) return;
+    if (!confirmHoldover()) { fileInput.value = ""; return; }
     try {
       const data = JSON.parse(await file.text());
       const result = await apiPost("/api/settings/import", data.values ? { values: data.values, schema: data.schema ?? 1 } : { values: data });

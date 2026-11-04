@@ -87,7 +87,7 @@ PTP4L_CONF = os.environ.get("PTP4L_CONF", "/etc/linuxptp/ptp4l.conf")
 RUN_DIR = os.environ.get("NTPGUI_RUN_DIR", "/run/ntp-gui")
 START_TIME = time.time()
 MAX_BODY = 64 * 1024
-VERSION = os.environ.get("NTPGUI_VERSION", "1.5.2")
+VERSION = os.environ.get("NTPGUI_VERSION", "1.5.3")
 EVENTS_INTERVAL = 5.0          # so oft liest der Server die Supervisor-Ereignisse ein
 CALIBRATION_DEFAULT_WINDOW = 86400.0  # /api/gps/calibration ohne window: letzte 24 h
 
@@ -752,6 +752,11 @@ def build_status() -> dict:
         status["gps_summary"] = None
     leap_info = leap.status(cfg, tracking)
     status["leap"] = _leap_summary(leap_info)
+    # 1.5.3: Einstellungsseite fragt nach, bevor Speichern chronyd neu startet (bräche den Test ab).
+    try:
+        status["holdover_active"] = holdover.TEST.running()
+    except Exception:
+        status["holdover_active"] = False
     status["notify"] = _notify_summary()
     status["insights"] = combine_insights(insights.build(status, cfg),
                                           loopguard.insights(LOOP_GUARD.loops()),
@@ -1958,6 +1963,9 @@ def main() -> None:
             print(f"[web] WARNUNG: WEB_ALLOWED_HOSTS enthält „{entry}“ – das gibt auch fremde Namen "
                   f"unter {entry[2:]} frei (DNS-Rebinding möglich). Besser nur den eigenen Namen "
                   f"eintragen, z. B. meinzeit.{entry[2:]}", flush=True)
+    # 1.5.3: Folgen eines laufenden Holdover-Tests (keine Quelle ausgewählt …) nur als „info“, ohne Meldung.
+    events.add_filter(holdover.event_filter)
+    holdover.configure(trigger_reload=trigger_reload)
     autocal.configure(history=HISTORY, trigger_reload=trigger_reload)
     gpsquality.configure(history=HISTORY, trigger_reload=trigger_reload,
                          net_distance=lambda: gpsquality.nts_distance(chrony.detailed_sources()))

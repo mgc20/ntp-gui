@@ -210,6 +210,9 @@ function runningBlock(ctx, run) {
       ["Abbruch ab", `± ${ms(run.limit_ms, 0)}`, "holdover_limit"],
       ["Endet", when((run.started || 0) + (run.hours || 0) * 3600), "holdover_hours"],
     ]),
+    (run.deferred || []).length
+      ? el("p", { class: "muted", text: `Zurückgestellt bis zum Ende des Tests (ein Neustart von chronyd bräche ihn ab): ${run.deferred.join("; ")}.` })
+      : null,
     host,
     el("div", { class: "button-row" }, abort));
 }
