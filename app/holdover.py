@@ -27,12 +27,27 @@ Sicherheit (alles umkehrbar, mit Zeitlimit, Ereignis und Zustand in SQLite):
     Pool-Mitglied – die ist auswählbar und würde die Uhr wieder stellen), wird sie sofort mit
     abgewählt (Ereignis); geht das nicht, endet der Test als „ungültig“
 Clients bekommen während des Tests eine ungenauere Zeit – darauf weist die Oberfläche hin.
+
+Automatiken warten (1.5.3): Jeder Neustart von chronyd bräche den Test ab (Rückmeldung: die
+automatische Anpassung der GPS-Fehlerschranke beendete einen 6-h-Test nach 4 h 35 min). Darum
+stellen gpsquality (Schranke) und autocal (Offset) ihre Änderung zurück, solange ein Test läuft
+(`defer`), und holen sie nach dessen Ende im nächsten Durchgang nach (`resume`). Der Supervisor
+stellt Neustarts nach Gerätewechsel (Hotplug) und erneuertem NTS-Zertifikat zurück, solange
+RUN_DIR/reload.hold eine Zeit in der Zukunft nennt (alle 10 s um HOLD_TTL verlängert – stirbt das
+Dashboard, läuft die Sperre von selbst ab). Was du selbst speicherst, startet chronyd weiter sofort
+neu (und bricht den Test ab); die Einstellungsseite fragt vorher nach.
+
+Ereignisse, die der Test selbst verursacht (keine Quelle mehr ausgewählt, Quellenwechsel,
+„Schleife beendet – Quelle antwortet nicht“, „GPS-Sperre ausgelassen: keine andere Quelle“),
+macht `event_filter` während des Tests und kurz danach (EVENT_GRACE) zu „info“ ohne
+Benachrichtigung, mit dem Vermerk „(Holdover-Test)“.
 """
 
 from __future__ import annotations
 
 import json
 import math
+import os
 import threading
 import time
 from typing import Any, Callable
@@ -47,6 +62,10 @@ MIN_REFS = 2
 POINT_EVERY = 60.0
 KEEP_RESULTS = 20
 CHART_POINTS = 300
+DEFER_TEXT = "zurückgestellt bis zum Ende des Holdover-Tests"
+HOLD_FILE = "reload.hold"       # für den Supervisor: automatische Neustarts zurückstellen bis …
+HOLD_TTL = 120.0                # … jetzt + so viel; der Test verlängert alle ~10 s
+EVENT_GRACE = 900.0             # so lange nach dem Ende zählen Quellenwechsel noch zum Test
 
 _SCHEMA = [
     """
@@ -144,10 +163,32 @@ def _default_emit(kind: str, level: str, title: str, data: dict) -> None:
     events.emit(kind, level, title, data)
 
 
+def _hold_path() -> str:
+    return os.path.join(os.environ.get("NTPGUI_RUN_DIR", "/run/ntp-gui"), HOLD_FILE)
+
+
+def _write_hold(until: float | None) -> None:
+    """Sperre für automatische Neustarts im Supervisor setzen (until: Unix-Zeit) bzw. aufheben (None)."""
+    path = _hold_path()
+    try:
+        if until is None:
+            if os.path.exists(path):
+                os.remove(path)
+            return
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path + ".tmp", "w", encoding="utf-8") as handle:
+            handle.write(f"{int(until)}\n")
+        os.replace(path + ".tmp", path)
+    except OSError:
+        pass
+
+
 class HoldoverTest:
-    def __init__(self, emit: Callable[..., Any] | None = None, wall: Callable[[], float] = time.time) -> None:
+    def __init__(self, emit: Callable[..., Any] | None = None, wall: Callable[[], float] = time.time,
+                 hold: Callable[[float | None], None] | None = None) -> None:
         self._emit_fn = emit
         self.wall = wall
+        self._hold = hold or _write_hold
         self.lock = threading.RLock()
         self._state: dict[str, Any] | None = None
         self.last_error: str | None = None
@@ -261,6 +302,7 @@ class HoldoverTest:
                 conn.execute("DELETE FROM holdover_points")
                 conn.execute("INSERT INTO holdover_points(t, dev) VALUES(?, 0)", (now,))
             self._save()
+            self._refresh_hold()
             what = "GPS/PPS und alle Netzquellen" if include else "GPS/PPS"
             self._emit("info", f"Holdover-Test gestartet: {fmt_span(hours * 3600)} ohne {what} – chrony misst "
                                "weiter, stellt die Uhr aber nicht. Clients bekommen in der Zeit eine ungenauere Zeit.",
@@ -314,7 +356,12 @@ class HoldoverTest:
                 conn.execute("DELETE FROM holdover_points")
         except Exception as exc:
             self.last_error = f"Ergebnis nicht gespeichert: {exc}"
-        self._state = {"active": False, "changed": failed, "last_result": now}
+        deferred = state.get("deferred") if isinstance(state.get("deferred"), dict) else {}
+        self._state = {"active": False, "changed": failed, "last_result": now, "resume": sorted(deferred)}
+        try:
+            self._hold(None)
+        except Exception:
+            pass
         if failed:
             # Freigabe noch offen (chronyd antwortet nicht) – beim nächsten Durchgang erneut.
             self._state.update(release_pending=True)
@@ -325,10 +372,13 @@ class HoldoverTest:
                  "invalid": "Holdover-Test ungültig",
                  "restart": "Holdover-Test abgebrochen (chronyd neu gestartet)",
                  "aborted": "Holdover-Test abgebrochen"}[outcome]
-        self._emit(level, f"{title}: {sentence}. Alle Quellen sind wieder auswählbar."
-                   if not failed else f"{title}: {sentence}. Freigabe wird erneut versucht.",
+        later = (f" Zurückgestellt und jetzt nachgeholt: {'; '.join(str(v) for v in deferred.values())}."
+                 if deferred else "")
+        self._emit(level, (f"{title}: {sentence}. Alle Quellen sind wieder auswählbar."
+                           if not failed else f"{title}: {sentence}. Freigabe wird erneut versucht.") + later,
                    {"outcome": outcome, "deviation_ms": result["deviation_ms"], "duration_s": result["duration_s"],
-                    "drift_ppm": result["drift_ppm"], "released": len(released)})
+                    "drift_ppm": result["drift_ppm"], "released": len(released),
+                    "resumed": sorted(deferred)})
         return result
 
     def abort(self, select: dict[str, dict] | None = None) -> dict[str, Any]:
@@ -357,6 +407,10 @@ class HoldoverTest:
                 self._save()
             return None
         if not state.get("active"):
+            try:
+                self._hold(None)     # übrig gebliebene Sperre (Absturz) – der Supervisor darf wieder
+            except Exception:
+                pass
             if select and selectctl.held(OWNER):
                 # Haltertabelle sagt „hält noch“, der Test läuft aber nicht (Absturz zwischen zwei
                 # Schreibvorgängen): freigeben, sonst bliebe eine Quelle dauerhaft abgewählt.
@@ -365,6 +419,7 @@ class HoldoverTest:
                     self._emit("info", f"Holdover-Test: übrig gebliebene Abwahl aufgehoben ({', '.join(released)})",
                                {"released": len(released)})
             return None
+        self._refresh_hold()
         if not select:
             return None   # chronyd antwortet gerade nicht – Neustart erkennt der nächste Durchgang
         if selectctl.lost(OWNER, state.get("changed") or [], select):
@@ -436,6 +491,68 @@ class HoldoverTest:
                            "des Tests aufgenommen (z. B. Ersatz für ein Pool-Mitglied)", {"targets": len(new)})
         return ""
 
+    # --- Automatiken warten ------------------------------------------------------------------------
+    def _refresh_hold(self) -> None:
+        try:
+            self._hold(time.time() + HOLD_TTL)   # echte Uhr: der Supervisor vergleicht mit date +%s
+        except Exception:
+            pass
+
+    def _peek(self) -> dict[str, Any]:
+        """Zustand ohne auf die Sperre zu warten (der Test-Thread hält sie auch während chronyc-Aufrufen).
+        Ein Lesen der Referenz ist atomar; nur beim allerersten Mal wird geladen."""
+        state = self._state
+        if state is None:
+            with self.lock:
+                state = self.state()
+        return state
+
+    def running(self) -> bool:
+        return bool(self._peek().get("active"))
+
+    def defer(self, who: str, what: str) -> bool:
+        """Eine Automatik (who) will chronyd neu starten, um `what` zu übernehmen. True: Test läuft –
+        zurückstellen (ein Ereignis je Automatik und Test); nach dem Ende liefert resume(who) True."""
+        with self.lock:
+            state = self.state()
+            if not state.get("active"):
+                return False
+            deferred = state.get("deferred") if isinstance(state.get("deferred"), dict) else {}
+            first = who not in deferred
+            if deferred.get(who) != what:
+                deferred[who] = what
+                state["deferred"] = deferred
+                try:
+                    self._save()
+                except Exception as exc:
+                    self.last_error = str(exc)
+            if first:
+                self._emit("info", f"{what} – {DEFER_TEXT}: Ein Neustart von chronyd bräche den Test ab. "
+                                   "Wird danach automatisch nachgeholt.", {"deferred": who})
+            return True
+
+    def resume(self, who: str) -> bool:
+        """True genau einmal nach dem Ende eines Tests, während dessen `who` zurückgestellt war."""
+        with self.lock:
+            state = self.state()
+            pending = state.get("resume") if isinstance(state.get("resume"), list) else []
+            if state.get("active") or who not in pending:
+                return False
+            state["resume"] = [p for p in pending if p != who]
+            try:
+                self._save()
+            except Exception as exc:
+                self.last_error = str(exc)
+            return True
+
+    def caused_by_test(self) -> bool:
+        """Läuft ein Test oder ist er gerade erst zu Ende (Quellen werden wieder ausgewählt)?"""
+        state = self._peek()
+        if state.get("active"):
+            return True
+        ended = _num(state.get("last_result"))
+        return ended is not None and 0.0 <= self.wall() - ended <= EVENT_GRACE
+
     # --- Anzeige ---------------------------------------------------------------------------------
     def results(self) -> list[dict]:
         try:
@@ -474,6 +591,8 @@ class HoldoverTest:
                     "include_network": state.get("include_network"), "limit_ms": state.get("limit_ms"),
                     "targets": len(state.get("targets") or []), "references": len(state.get("refs") or []),
                     "measured": state.get("measured"),
+                    "deferred": [str(v) for v in (state.get("deferred") or {}).values()]
+                    if isinstance(state.get("deferred"), dict) else [],
                     "deviation_ms": round(float(state.get("last_dev") or 0.0) * 1000.0, 3),
                     "max_abs_ms": round(float(state.get("max_abs") or 0.0) * 1000.0, 3),
                     "drift_ppm": None if slope_ppm(points) is None else round(slope_ppm(points), 3),
@@ -485,6 +604,46 @@ class HoldoverTest:
 
 
 TEST = HoldoverTest()
+
+
+def defer(who: str, what: str) -> bool:
+    """Für Automatiken (gpsquality, autocal): True = Holdover-Test läuft, Neustart zurückstellen. Wirft nie."""
+    try:
+        return TEST.defer(who, what)
+    except Exception:
+        return False
+
+
+def resume(who: str) -> bool:
+    """Für Automatiken: True einmal nach dem Test, wenn `who` zurückgestellt war → jetzt prüfen. Wirft nie."""
+    try:
+        return TEST.resume(who)
+    except Exception:
+        return False
+
+
+# Ereignisse, die ein Holdover-Test selbst auslöst (Kennzeichen in data.subject bzw. Art):
+TEST_SUBJECTS = {"gps-sperre-ausgelassen"}
+NOTE = " (Holdover-Test)"
+
+
+def event_filter(kind: str, level: str, title: str, data: dict | None) -> tuple[str, str, dict | None]:
+    """events.add_filter: Folgen des Tests (Quelle abgewählt/gewechselt, keine Quelle, Schleife „antwortet
+    nicht“, GPS-Sperre ausgelassen) während des Tests und EVENT_GRACE danach als „info“ ohne
+    Benachrichtigung. Eine erkannte Schleife (crit) bleibt, was sie ist. Wirft nie."""
+    try:
+        info = data if isinstance(data, dict) else {}
+        if info.get("subject") == "holdover" or info.get("holdover_test"):
+            return level, title, data
+        ours = (kind == "source" and level != "crit") or (str(info.get("subject") or "") in TEST_SUBJECTS)
+        if not ours or not TEST.caused_by_test():
+            return level, title, data
+        out = dict(info, notify=False, holdover_test=True)
+        if level != "info":
+            out["original_level"] = level
+        return "info", (title if title.endswith(NOTE) else title + NOTE), out
+    except Exception:
+        return level, title, data
 
 
 def action(data: dict) -> dict[str, Any]:

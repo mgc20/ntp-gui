@@ -450,9 +450,45 @@ kill "$old"
     def test_watchdog_uses_reload_chronyd_for_certs(self):
         text = (ROOT / "docker" / "entrypoint.sh").read_text(encoding="utf-8")
         block = text[text.index('check_nts_cert "$NOW"'):]
-        block = block[:block.index("\n  fi")]
+        block = block[:block.index("\n  fi", block.index("NTS_CERT_DEFERRED )) &&"))]
         self.assertIn("reload_chronyd", block)
         self.assertNotIn("reload_services", block)
+        # 1.5.3: erst nach dem Ende eines Holdover-Tests (reload.hold)
+        self.assertIn('reload_held "NTS-Zertifikat erneuert', block)
+
+    def test_reload_held_follows_hold_file(self):
+        """1.5.3: reload.hold mit einer Zeit in der Zukunft stellt automatische Neustarts zurück –
+        ein Ereignis je Grund; abgelaufen, kaputt oder fehlend → frei."""
+        self.FUNCS = ("reload_held",)
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        out = self.run_bash(f"""
+RUN_DIR={tmp}; RELOAD_HOLD_NOTED=""
+emit_stub() {{ echo "EVENT:$2"; }}; EMIT_EVENT=emit_stub
+reload_held "A" && echo held || echo frei
+echo 1100 > "$RUN_DIR/reload.hold"
+reload_held "A" && echo held || echo frei
+reload_held "A" && echo held || echo frei
+echo 999 > "$RUN_DIR/reload.hold"
+reload_held "A" && echo held || echo frei
+echo kaputt > "$RUN_DIR/reload.hold"
+reload_held "A" && echo held || echo frei
+""")
+        self.assertEqual(out, ["frei", "EVENT:info", "held", "held", "frei", "frei"])
+
+    def test_hotplug_reload_waits_for_holdover(self):
+        self.FUNCS = ("reload_held", "check_hotplug")
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        out = self.run_bash(f"""
+RUN_DIR={tmp}; RELOAD_HOLD_NOTED=""; HOTPLUG_PATHS="{tmp}"; GPS_DEV_GONE=0
+reload_services() {{ echo NEUSTART; }}
+echo 1100 > "$RUN_DIR/reload.hold"
+check_hotplug; echo runde1
+rm "$RUN_DIR/reload.hold"
+check_hotplug; echo runde2
+""")
+        self.assertEqual(out, ["runde1", "NEUSTART", "runde2"])
 
 if __name__ == "__main__":
     unittest.main()

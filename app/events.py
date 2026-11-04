@@ -57,6 +57,28 @@ _LOCK = threading.Lock()
 _STATE: dict[str, Any] = {"ready_for": None, "since_prune": 0}
 _PENDING: deque = deque(maxlen=500)
 _LISTENERS: list = []  # werden nach jedem erfolgreichen Schreiben aufgerufen (z. B. notify.wake)
+_FILTERS: list = []    # (kind, level, title, data) -> (level, title, data), z. B. holdover.event_filter
+
+
+def add_filter(callback) -> None:
+    """callback(kind, level, title, data) -> (level, title, data) vor dem Schreiben – darf Stufe, Titel
+    und Daten anpassen (z. B. Folgen eines laufenden Holdover-Tests als „info“). Fehler werden ignoriert."""
+    if callback not in _FILTERS:
+        _FILTERS.append(callback)
+
+
+def remove_filter(callback) -> None:
+    if callback in _FILTERS:
+        _FILTERS.remove(callback)
+
+
+def _filtered(kind: Any, level: Any, title: Any, data: Any) -> tuple:
+    for callback in list(_FILTERS):
+        try:
+            level, title, data = callback(kind, level, title, data)
+        except Exception:
+            pass
+    return level, title, data
 
 
 def add_listener(callback) -> None:
@@ -116,6 +138,7 @@ def emit(kind: str, level: str, title: str, data: dict | None = None,
          source: str = "web") -> None:
     """Ein Ereignis festhalten. Wirft nie."""
     try:
+        level, title, data = _filtered(kind, level, title, data)
         row = _clean(kind, level, title, data, source)
     except Exception:
         return

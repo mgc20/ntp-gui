@@ -701,6 +701,8 @@ _DEPS: dict[str, Callable | None] = {
     "adopt_bound": None,       # (cfg, delay, precision, distance, now) -> neue Schranke (gpsquality) oder None
     "measure_reset": None,     # () -> Zeitpunkt (Wanduhr) des letzten „Neu lernen“ (gnssguard) oder None
     "forget_bound": None,      # (cfg, now) -> True, wenn die Schranke auf den Standard zurückging (gpsquality)
+    "holdover_defer": None,    # (what) -> True, wenn ein Holdover-Test läuft: Änderung zurückstellen
+    "holdover_resume": None,   # () -> True einmal nach einem Test, der eine Änderung zurückgestellt hat
 }
 
 
@@ -775,12 +777,30 @@ def _deps(overrides: dict | None = None) -> dict:
             import gpsquality
             return gpsquality.forget_bound(cfg, now)
         deps["forget_bound"] = _forget
+    if deps.get("holdover_defer") is None:
+        def _defer(what):
+            import holdover
+            return holdover.defer("autocal", what)
+        deps["holdover_defer"] = _defer
+    if deps.get("holdover_resume") is None:
+        def _resume():
+            import holdover
+            return holdover.resume("autocal")
+        deps["holdover_resume"] = _resume
     if deps.get("adopt_bound") is None:
         def _adopt(cfg, delay, precision, distance, now):
             import gpsquality
             return gpsquality.adopt_calibration(cfg, delay, precision, distance, now)
         deps["adopt_bound"] = _adopt
     return deps
+
+
+def _holdover_defers(deps: dict, decision: dict, cfg: dict) -> bool:
+    what = f"GPS-Offset {_cfg_float(cfg, 'gps_offset', 0.0)} s → {decision.get('new_offset')} s"
+    try:
+        return bool(deps["holdover_defer"](what))
+    except Exception:
+        return False
 
 
 def _emit(deps: dict, kind: str, level: str, title: str, data: dict) -> None:
@@ -922,6 +942,12 @@ def tick(cfg: dict, now: float | None = None, deps: dict | None = None,
     with _LOCK:
         state = load(file)
         decision = _evaluate(cfg, now, state, deps)
+        if decision["action"] == "apply" and _holdover_defers(deps, decision, cfg):
+            # 1.5.3: Der neue Offset braucht einen Neustart von chronyd – der bräche einen laufenden
+            # Holdover-Test ab. Warten; nach dem Test prüft maybe_tick sofort erneut.
+            decision.update(action="none", deferred="holdover",
+                            reason="Zurückgestellt bis zum Ende des Holdover-Tests (ein Neustart von chronyd "
+                                   "bräche ihn ab). " + decision["reason"])
         if decision["action"] == "apply":
             decision = _apply(cfg, decision, state, deps, now)
         elif decision["action"] == "suggest":
@@ -1020,6 +1046,14 @@ def _next_id(state: dict) -> int:
 _LAST_TICK = {"t": None}
 
 
+def _resumed() -> bool:
+    """Nach einem Holdover-Test, der eine Änderung zurückgestellt hat: gleich jetzt prüfen."""
+    try:
+        return bool(_deps()["holdover_resume"]())
+    except Exception:
+        return False
+
+
 def maybe_tick(cfg: dict | None = None, now: float | None = None) -> dict | None:
     """Für die Messschleife: führt tick() höchstens einmal pro TICK_INTERVAL aus.
 
@@ -1035,7 +1069,7 @@ def maybe_tick(cfg: dict | None = None, now: float | None = None) -> dict | None
             last = None
         _LAST_TICK["t"] = last if last is not None else now - TICK_INTERVAL
         last = _LAST_TICK["t"]
-    if now - last < TICK_INTERVAL and now >= last:
+    if now - last < TICK_INTERVAL and now >= last and not _resumed():
         return None
     _LAST_TICK["t"] = now
     try:

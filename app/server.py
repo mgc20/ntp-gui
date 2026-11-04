@@ -752,6 +752,11 @@ def build_status() -> dict:
         status["gps_summary"] = None
     leap_info = leap.status(cfg, tracking)
     status["leap"] = _leap_summary(leap_info)
+    # 1.5.3: Einstellungsseite fragt nach, bevor Speichern chronyd neu startet (bräche den Test ab).
+    try:
+        status["holdover_active"] = holdover.TEST.running()
+    except Exception:
+        status["holdover_active"] = False
     status["notify"] = _notify_summary()
     status["insights"] = combine_insights(insights.build(status, cfg),
                                           loopguard.insights(LOOP_GUARD.loops()),
@@ -1958,6 +1963,8 @@ def main() -> None:
             print(f"[web] WARNUNG: WEB_ALLOWED_HOSTS enthält „{entry}“ – das gibt auch fremde Namen "
                   f"unter {entry[2:]} frei (DNS-Rebinding möglich). Besser nur den eigenen Namen "
                   f"eintragen, z. B. meinzeit.{entry[2:]}", flush=True)
+    # 1.5.3: Folgen eines laufenden Holdover-Tests (keine Quelle ausgewählt …) nur als „info“, ohne Meldung.
+    events.add_filter(holdover.event_filter)
     autocal.configure(history=HISTORY, trigger_reload=trigger_reload)
     gpsquality.configure(history=HISTORY, trigger_reload=trigger_reload,
                          net_distance=lambda: gpsquality.nts_distance(chrony.detailed_sources()))

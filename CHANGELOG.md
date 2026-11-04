@@ -4,6 +4,31 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), die Versionen folgen
 [Semantic Versioning](https://semver.org/lang/de/).
 
+## [Unveröffentlicht]
+
+Schwerpunkt: Ein Holdover-Test läuft bis zum Ende – keine Automatik startet chronyd mehr dazwischen.
+
+### Behoben
+- **Holdover-Test wird von Automatiken nicht mehr abgebrochen** (Rückmeldung: 6-h-Test ohne GPS und
+  Netzquellen, nach 4 h 35 min abgebrochen, weil die automatische Anpassung der GPS-Fehlerschranke
+  chronyd neu startete). Solange ein Test läuft, stellen die Fehlerschranke (gpsquality) und die
+  automatische Kalibrierung (Offset) ihre Änderung zurück; der Supervisor wartet ebenso mit dem Neustart
+  nach einem Gerätewechsel (Hotplug) und nach einem erneuerten NTS-Zertifikat. Im Protokoll steht je
+  Automatik ein Ereignis „… – zurückgestellt bis zum Ende des Holdover-Tests“, die Seite Uhrqualität
+  zeigt es beim laufenden Test. Nach dem Ende (fertig, Grenze oder Abbruch) holt ntp-gui die Änderung im
+  nächsten Durchgang nach, nicht erst eine Stunde später. Die Sperre für den Supervisor
+  (`RUN_DIR/reload.hold`) verlängert das Dashboard alle 10 s; stirbt es, läuft sie nach 2 min ab.
+- **Keine Warnung mehr durch den eigenen Test:** „Keine Zeitquelle mehr ausgewählt“, Quellenwechsel,
+  „Schleife beendet – die Quelle antwortet derzeit nicht“ und „GPS-Sperre ausgelassen: keine andere
+  Zeitquelle“ während eines Holdover-Tests und bis 15 min danach stehen als „info“ mit dem Vermerk
+  „(Holdover-Test)“ im Protokoll und gehen nicht als Benachrichtigung hinaus. Eine erkannte Schleife,
+  ein verlorener GPS-Fix oder ein nicht erreichbarer chronyd bleiben echte Warnungen.
+
+### Geändert
+- **Einstellungen während eines Holdover-Tests:** Was du selbst speicherst, startet die Zeitdienste weiter
+  sofort neu und bricht den Test damit ab – die Einstellungsseite fragt vorher nach (Speichern,
+  Zurücksetzen eines Felds, Import), und die Speicherleiste sagt es dazu.
+
 ## [1.5.2] – 2026-11-04
 
 Schwerpunkt: Die GPS-Automatik läuft ab Werk und ohne Zutun – messen, einmal korrigieren,
