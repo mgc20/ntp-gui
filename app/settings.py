@@ -23,6 +23,7 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import math
 import os
 import re
 import secrets
@@ -1709,14 +1710,35 @@ def _migrate_3_4(data: dict) -> list[dict]:
             return []
     except ValidationError:
         return []
-    return [_note(
-        "4-gps-autocal", 4, "GPS-Kalibrierung: jetzt automatisch",
-        "Die automatische GPS-Kalibrierung steht jetzt standardmäßig auf „automatisch“ (vorher "
-        "„vorschlagen“). ntp-gui misst die Verspätung deines Empfängers gegen die Netzwerkquellen und "
-        "stellt den Offset selbst nach – nie während einer GNSS-Störung, jede Änderung steht im "
-        "Ereignisprotokoll und lässt sich auf der GPS-Seite zurücknehmen. Du musst nichts tun. Lieber "
-        "selbst entscheiden: Einstellungen → GPS → „Automatische Kalibrierung“ auf „vorschlagen“.",
-        ["gps_autocal"])]
+    text = ("Die automatische GPS-Kalibrierung steht jetzt standardmäßig auf „automatisch“ (vorher "
+            "„vorschlagen“). ntp-gui misst die Verspätung deines Empfängers gegen die Netzwerkquellen und "
+            "stellt den Offset selbst nach – nie während einer GNSS-Störung, jede Änderung steht im "
+            "Ereignisprotokoll und lässt sich auf der GPS-Seite zurücknehmen. Du musst nichts tun. Lieber "
+            "selbst entscheiden: Einstellungen → GPS → „Automatische Kalibrierung“ auf „vorschlagen“.")
+    # Ein bewusst gesetzter Offset (z. B. gegen ein asymmetrisches Netz) – ausdrücklich nennen. GPS_OFFSET=0.0
+    # aus den Compose-Vorlagen ist keine eigene Wahl.
+    keys = ["gps_autocal"]
+    env_offset = _offset_value(os.environ.get("GPS_OFFSET"))
+    if env_offset:
+        text += (f" Achtung: Du setzt GPS_OFFSET={os.environ['GPS_OFFSET'].strip()} in der Compose-Datei. Ändert die "
+                 "Automatik den Offset, gilt der Wert aus der Oberfläche, und GPS_OFFSET wirkt nicht mehr. Hast du "
+                 "den Wert bewusst gewählt, stell die Kalibrierung auf „vorschlagen“.")
+        keys.append("gps_offset")
+    elif _offset_value(stored.get("gps_offset")):
+        text += (f" Dein gespeicherter Offset ({stored['gps_offset']} s) ist der Ausgangspunkt; die Automatik "
+                 "verstellt ihn nur, wenn die Messung deutlich etwas anderes zeigt. Hast du ihn bewusst anders "
+                 "gewählt (z. B. wegen eines asymmetrischen Netzes), stell die Kalibrierung auf „vorschlagen“.")
+        keys.append("gps_offset")
+    return [_note("4-gps-autocal", 4, "GPS-Kalibrierung: jetzt automatisch", text, keys)]
+
+
+def _offset_value(value: Any) -> float:
+    """Ein gesetzter GPS-Offset als Zahl (0.0, wenn leer, 0 oder ungültig)."""
+    try:
+        number = float(str(value).strip()) if value not in (None, "") else 0.0
+    except ValueError:
+        return 0.0
+    return number if math.isfinite(number) else 0.0
 
 
 MIGRATIONS: dict[int, Callable[[dict], list[dict]]] = {

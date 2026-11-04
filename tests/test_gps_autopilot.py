@@ -59,6 +59,8 @@ class Sim:
 
     LATENCY = 0.051
     SWING = 0.004
+    NETS = 5                 # genutzte Netzquellen …
+    NTS = True               # … mit NTS (False: pool.ntp.org oder PTB über reines NTP)
 
     def __init__(self, tmp, pps=False, seed=7):
         self.tmp = tmp
@@ -128,11 +130,10 @@ class Sim:
     def emit(self, kind, level, title, data=None, **_):
         self.events.append({"t": self.now, "kind": kind, "level": level, "title": title, "data": data or {}})
 
-    @staticmethod
-    def sources():
-        return [{"name": f"nts{i}", "mode": "^", "state": "*" if i == 0 else "+", "authenticated": True,
+    def sources(self):
+        return [{"name": f"nts{i}", "mode": "^", "state": "*" if i == 0 else "+", "authenticated": self.NTS,
                  "reach": 255, "ntp": {"root_delay": 0.010, "peer_delay": 0.008, "root_dispersion": 0.001,
-                                       "peer_dispersion": 0.0005}} for i in range(5)]
+                                       "peer_dispersion": 0.0005}} for i in range(self.NETS)]
 
     # --- ein Messpunkt je Minute --------------------------------------------------------------------
     def latency(self):
@@ -149,12 +150,14 @@ class Sim:
             self.fix = False
         elif not self.fix and self.rng.random() < 0.5:
             self.fix = True
-        nets = {f"nts{i}": self.rng.gauss(0.0, 0.0005) for i in range(5)}
-        net_mid = sorted(nets.values())[2]
+        nets = {f"nts{i}": self.rng.gauss(0.0, 0.0005) for i in range(self.NETS)}
+        net_mid = sorted(nets.values())[self.NETS // 2]
         sats = {k: v + self.rng.gauss(0.0, 1.5) for k, v in self.base_cn0.items()}
         mode = 3 if self.fix else 1
         sources = {name: {"o": o, "s": "*" if name == "nts0" else "+", "k": "^"} for name, o in nets.items()}
-        obs = {"t": self.now, "refs": list(nets.values()), "ref_kind": "nts"}
+        obs = {"t": self.now, "refs": list(nets.values()), "ref_kind": "nts" if self.NTS else "ntp"}
+        if "GPS_PPS_SHM" in self.env:
+            obs["pps_state"] = "*"                       # chrony nutzt das PPS
         if off:
             sources["GPS"] = {"o": 0.0, "s": "?", "k": "#", "r": 0}
             obs.update(gps_state="?")
@@ -200,6 +203,7 @@ class Sim:
 
 class _SimCase(unittest.TestCase):
     PPS = False
+    SIM = Sim
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
@@ -224,7 +228,7 @@ class _SimCase(unittest.TestCase):
             settings._CACHE.update(mtime=None, data=None)
             shutil.rmtree(self.tmp, ignore_errors=True)
         self.addCleanup(cleanup)
-        self.sim = Sim(self.tmp, pps=self.PPS)
+        self.sim = self.SIM(self.tmp, pps=self.PPS)
 
     def changes(self):
         return [c for c in autocal.load()["changes"] if c.get("kind") == "auto"]
@@ -317,6 +321,51 @@ class FreshInstallWithPpsTest(_SimCase):
         self.assertEqual(len(sim.restarts), len(changes))
         self.assert_quiet()
         self.assertIn(sim.status()["phase"]["key"], {"measure", "step_wait"})
+
+
+class PoolSim(Sim):
+    NETS = 4
+    NTS = False
+
+
+class FreshInstallPoolWithoutNtsTest(_SimCase):
+    """Prüfbefund 1.5.2: Standardquellen (pool.ntp.org, vier Server ohne NTS) – vorher kroch der Offset
+    10–24 Tage lang mit rund zwei Neustarts von chronyd pro Tag."""
+
+    SIM = PoolSim
+
+    def test_one_step_after_twelve_hours(self):
+        sim = self.sim
+        sim.run_until(T0 + 3 * DAY)
+        changes = self.changes()
+        steps = [round((c["new_offset"] - c["old_offset"]) * 1000, 1) for c in changes]
+        print(f"\n[sim pool ohne NTS] Änderungen nach h: {[round((c['t'] - T0) / H, 1) for c in changes]}, "
+              f"Schritte ms: {steps}, Neustarts: {[(round((t - T0) / H, 1), w) for t, w in sim.restarts]}")
+        self.assertTrue(changes and changes[0]["t"] <= T0 + 14 * H, steps)
+        self.assertGreater(abs(steps[0]), 40.0)                            # in einem Schritt
+        self.assertLess(abs(sim.cfg["gps_offset"] - Sim.LATENCY), 0.003)
+        self.assertLessEqual(len(sim.restarts), 3)
+        self.assert_quiet()
+
+
+class PpsLateNmeaSim(Sim):
+    LATENCY = 0.120
+
+
+class PpsWithLateNmeaTest(_SimCase):
+    """Prüfbefund 1.5.2: PPS genutzt, NMEA 120 ms spät – vorher „Störung“ mit Benachrichtigung und
+    dauerhafte Sperre der Automatik (gegenseitige Blockade)."""
+
+    PPS = True
+    SIM = PpsLateNmeaSim
+
+    def test_no_stoerung_and_no_hold(self):
+        sim = self.sim
+        sim.run_until(T0 + 2 * DAY)
+        crit = [e for e in sim.events if e["level"] == "crit"]
+        self.assertEqual(crit, [])
+        self.assertTrue(self.changes())                                    # die Automatik arbeitet
+        self.assertNotEqual(sim.status()["phase"]["key"], "hold")
 
 
 if __name__ == "__main__":

@@ -1188,13 +1188,16 @@ class FalsetickerReviewTest(unittest.TestCase):
     NMEA-Laufzeitsprung, aber ein langsamer Spoofer (< 10 ms/h) wird wieder erkannt."""
 
     @staticmethod
-    def biased(t, rng, bias, state="x", ref_kind="nts", nrefs=5):
+    def biased(t, rng, bias, state="x", ref_kind="nts", nrefs=5, pps_state=None):
         noise = rng.gauss(0, 0.004)
         refs = [0.0002 * i + rng.gauss(0, 0.0005) for i in range(nrefs)]
-        return {"t": t, "mode": 3, "sats": None, "gps_offset": bias + noise, "gps_state": state,
-                "refs": refs, "ref_kind": ref_kind}
+        obs = {"t": t, "mode": 3, "sats": None, "gps_offset": bias + noise, "gps_state": state,
+               "refs": refs, "ref_kind": ref_kind}
+        if pps_state is not None:
+            obs["pps_state"] = pps_state
+        return obs
 
-    def run_bias(self, shift_ms, pps=False, after_reset=True, ref_kind="nts"):
+    def run_bias(self, shift_ms, pps=False, after_reset=True, ref_kind="nts", pps_state=None, bias=0.051):
         """GPS +51 ms (Offset zurückgesetzt) und „x“; nach 2 h ein Laufzeitsprung für 15 min."""
         rng = random.Random(21)
         det = gnssguard.Detector()
@@ -1202,13 +1205,13 @@ class FalsetickerReviewTest(unittest.TestCase):
         t = 0.0
         if after_reset:     # vorher brauchbar, dann neue Einstellungen
             while t < 3 * 3600:
-                det.update(self.biased(t, rng, 0.0, "+", ref_kind))
+                det.update(self.biased(t, rng, 0.0, "+", ref_kind, pps_state=pps_state))
                 t += 10.0
             det.reset_time()
         start, worst = t, "ok"
         while t < start + 2 * 3600 + 900:
             extra = shift_ms / 1000.0 if t >= start + 2 * 3600 else 0.0
-            stage = det.update(self.biased(t, rng, 0.051 + extra, "x", ref_kind))["stage"]
+            stage = det.update(self.biased(t, rng, bias + extra, "x", ref_kind, pps_state=pps_state))["stage"]
             worst = max(worst, stage, key=gnssguard.stage_rank)
             t += 10.0
         return det, worst
@@ -1228,6 +1231,24 @@ class FalsetickerReviewTest(unittest.TestCase):
         det, worst = self.run_bias(0, pps=True)
         self.assertEqual(worst, "stoerung")
         self.assertEqual(det.signals["falseticker"].strength, "strong")
+        det, worst = self.run_bias(0, pps=True, pps_state="x")        # PPS selbst verworfen: Störung
+        self.assertEqual(worst, "stoerung")
+
+    def test_with_used_pps_nmea_latency_is_only_a_hint(self):
+        """Prüfbefund 1.5.2: u-blox mit PPS, NMEA 120 ms spät – keine gegenseitige Blockade mit der Automatik."""
+        for after_reset in (True, False):
+            det, worst = self.run_bias(0, pps=True, pps_state="*", bias=0.120, after_reset=after_reset)
+            self.assertEqual(worst, "hinweis", after_reset)
+            self.assertEqual(det.signals["falseticker"].strength, "weak")
+            self.assertIn("PPS", det.signals["falseticker"].text)
+        det, worst = self.run_bias(0, pps=True, pps_state="+", bias=0.7)   # ≥ 0,5 s: Sekunde unsicher
+        self.assertEqual(worst, "stoerung")
+
+    def test_observation_reports_pps_state(self):
+        obs = gnssguard.observation(0.0, {}, [
+            {"name": "GPS", "mode": "#", "state": "x", "reach": 255, "offset": 0.12},
+            {"name": "PPS", "mode": "#", "state": "*", "reach": 255, "offset": 0.00001}], {}, "GPS")
+        self.assertEqual((obs["gps_state"], obs["pps_state"]), ("x", "*"))
 
     def test_hint_text_softened_and_nts_only(self):
         det, _ = self.run_bias(0)

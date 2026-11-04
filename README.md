@@ -955,9 +955,13 @@ Die Regeln sind bewusst vorsichtig – lieber eine Änderung zu wenig als eine f
   der Offset nicht hin und her. Hast du den Offset seitdem von Hand geändert, gilt diese Regel
   nicht.
 - **Einmal korrigieren:** Ohne PPS (GPS als Rückfallebene, Fehlerschranke „gemessen“) wird ein
-  deutlicher Versatz (ab 10 ms, über mindestens 6 h gegen mindestens zwei NTS-Quellen gemessen,
-  ohne Sprung im Messzeitraum) in **einem** Schritt ganz korrigiert – etwa nach „Offset
-  zurücksetzen“. Die passende Fehlerschranke schreibt ntp-gui im selben Neustart von chronyd mit;
+  deutlicher Versatz (ab 10 ms, über mindestens 6 h gegen mindestens zwei NTS-Quellen gemessen –
+  ohne NTS über mindestens 12 h gegen mindestens drei Netzquellen –, ohne Sprung im Messzeitraum)
+  in **einem** Schritt ganz korrigiert – etwa nach „Offset zurücksetzen“. Fehlen die Quellen dafür
+  nur gerade (wackelige Verbindung), wartet die Automatik bis zu 24 h Messung, statt vorher einen
+  Teilschritt zu machen. Nach **Rückgängig** korrigiert sie nie mehr in einem Zug, nur noch in
+  kleinen Schritten – bis du den Offset von Hand änderst, einen anderen Empfänger einstellst oder
+  „Neu lernen“ drückst; soll sie gar nichts mehr ändern, stell sie auf `suggest`. Die passende Fehlerschranke schreibt ntp-gui im selben Neustart von chronyd mit;
   bis dahin bleibt sie beim vorsichtigen Standard, statt vorher noch einmal neu zu starten.
   Mit PPS oder als bevorzugte Quelle bleibt es bei Schritten von höchstens
   `GPS_AUTOCAL_MAX_STEP_MS` (Standard 5 ms) je 24 h. Den Delay verkleinert ntp-gui dort erst beim
@@ -970,7 +974,9 @@ Die Regeln sind bewusst vorsichtig – lieber eine Änderung zu wenig als eine f
   oder Störung, ist die Automatik gesperrt (Phase „gesperrt wegen GNSS-Störung“) – ein Versatz,
   den ein Spoofer verursacht, wird so nie eingerechnet. Hast du selbst Empfänger oder Antenne
   gewechselt, bestätigst du das mit **Neu lernen** (Karte „GNSS-Störungen“); die Automatik misst
-  dann neu und korrigiert selbst.
+  dann neu und korrigiert selbst – in einem Schritt erst nach einer ganzen 24-h-Messung ohne
+  Störung. Mit PPS nummeriert die NMEA-Zeile nur die Sekunden: Liegt sie bei genutztem PPS unter
+  0,5 s neben dem Netz, ist ihr Falseticker nur ein Hinweis, keine Störung.
 - **Im Zweifel ein Mensch:** Streut die Messung über 25 ms oder liegt sie über 0,5 s daneben,
   stimmt etwas Grundsätzliches nicht (falsches Gerät, wackelige Leitung). Dann gibt es nur
   einen Vorschlag.
@@ -1065,7 +1071,7 @@ ntp-gui erkennt, wenn das GPS gestört (Jamming) oder gefälscht (Spoofing) wird
 |---|---|
 | Signale fast aller Satelliten brechen in einer Minute um ≥ 6 dB ein | schwach |
 | Alle Satelliten fast gleich stark | schwach |
-| chrony hält das GPS für falsch | schwach (5 min lang bei ≥ 2 NTS-Quellen: stark) |
+| chrony hält das GPS für falsch | schwach (5 min lang bei ≥ 2 NTS-Quellen: stark; mit genutztem PPS und NMEA unter 0,5 s daneben: schwach) |
 | GPS-Zeit weicht vom Median von ≥ 2 NTS-Quellen ab | stark |
 | Position springt um > 100 m | stark |
 

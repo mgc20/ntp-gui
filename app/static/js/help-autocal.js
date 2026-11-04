@@ -77,7 +77,10 @@ export const HELP_AUTOCAL = {
       + "Delay chrony zu einem noch falschen GPS locken. **Ausnahme ohne PPS:** Ist das GPS die "
       + "Rückfallebene (Fehlerschranke „gemessen“, Rolle nicht „bevorzugen“) und liegt es deutlich daneben "
       + "(mindestens 10 ms und dreimal die Schwelle), gemessen über mindestens 6 h gegen mindestens zwei "
-      + "NTS-Quellen, korrigiert die Automatik den ganzen Versatz in einem Schritt. Solange die Netzquellen "
+      + "NTS-Quellen (ohne NTS: über 12 h gegen mindestens drei Netzquellen), korrigiert die Automatik den ganzen "
+      + "Versatz in einem Schritt; fehlen die Quellen nur kurz, wartet sie damit bis zu 24 h, statt vorher einen "
+      + "Teilschritt zu machen. Nach „Neu lernen“ bei den GNSS-Störungen kommt dieser Schritt erst nach einer "
+      + "ganzen 24-h-Messung ohne Störung. Solange die Netzquellen "
       + "besser sind, stellt chrony die Uhr ohnehin nicht nach dem GPS – mit 5 ms je Tag bräuchte ein Versatz "
       + "von 50 ms (etwa nach „Offset zurücksetzen“) sonst zehn Tage. Mit PPS bleibt es bei kleinen Schritten. "
       + "Dafür zählen auch Messwerte, in denen chrony das GPS als Falseticker („x“) verwirft, sofern mindestens zwei "
@@ -96,8 +99,10 @@ export const HELP_AUTOCAL = {
   autocal_rollback: {
     title: "Rückgängig",
     text: "Stellt den Offset (und ggf. den Delay) auf den Wert vor der letzten automatischen Änderung "
-      + "zurück; chrony startet dafür kurz neu. Danach wartet die Automatik wieder mindestens 24 h und korrigiert "
-      + "auch einen deutlichen Versatz dann nur noch in kleinen Schritten. Soll "
+      + "zurück, ohne PPS auch die mitgesetzte Fehlerschranke (auf den vorsichtigen Standard); chrony startet "
+      + "dafür einmal kurz neu. Danach wartet die Automatik wieder mindestens 24 h und korrigiert auch einen "
+      + "deutlichen Versatz nie mehr in einem Zug, nur noch in kleinen Schritten – bis du den Offset von Hand "
+      + "änderst, einen anderen Empfänger einstellst oder „Neu lernen“ drückst. Soll "
       + "sie gar nicht mehr ändern, stell den Modus auf „vorschlagen“. Wurde der Offset seitdem von Hand "
       + "geändert, geht Rückgängig nicht – sonst würde es deine Änderung überschreiben.",
   },

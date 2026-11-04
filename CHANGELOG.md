@@ -20,12 +20,32 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
   „Offset kalibrieren“, wo die Automatik das ohnehin tut („GPS widerspricht den anderen Quellen“ ist im
   Modus „automatisch“ nur noch ein Info-Hinweis). Ein anderer Empfänger in den Einstellungen (Gerät, Name,
   PPS) startet die Messung von selbst neu, ebenso „Neu lernen“ bei den GNSS-Störungen – Störungsmeldungen
-  davor halten die Automatik dann nicht mehr bis zu 24 h auf. Bei einer GNSS-Störung sagt die GPS-Seite
-  genau, was zu tun ist.
+  davor zählen dann nicht mehr; in einem Schritt korrigiert die Automatik danach erst nach einer ganzen
+  24-h-Messung ohne Störung (ein Spoofer, den man für einen Antennenwechsel hält, wird so nicht nach 6 h
+  eingerechnet). Bei einer GNSS-Störung sagt die GPS-Seite genau, was zu tun ist.
 - **Ein Neustart von chronyd weniger:** Steht die Korrektur eines deutlichen Versatzes an, verkleinert
   ntp-gui die Fehlerschranke nicht vorher noch einmal – sie kommt im selben Neustart mit dem neuen Offset.
-- **Nach „Rückgängig“ keine Korrektur in einem Zug:** 24 h Pause, danach nur kleine Schritte – vorher
-  konnte die Automatik eine gerade zurückgenommene Änderung schon nach gut 6 h wiederholen.
+- **Nach „Rückgängig“ nie mehr eine Korrektur in einem Zug:** 24 h Pause, danach nur kleine Schritte –
+  bis du den Offset von Hand änderst, einen anderen Empfänger einstellst oder „Neu lernen“ drückst. Vorher
+  konnte die Automatik eine zurückgenommene Änderung nach 6 h (bzw. jeden Tag aufs Neue) ganz wiederholen.
+  „Rückgängig“ setzt ohne PPS auch die mit der Korrektur gesetzte Fehlerschranke auf den vorsichtigen
+  Standard zurück, im selben Neustart von chronyd; die Meldung sagt, dass „vorschlagen“ die Automatik stoppt.
+- **Korrektur in einem Schritt auch ohne NTS:** Mit den Standardquellen (`pool.ntp.org`) oder PTB über
+  reines NTP gab es sie nie – der Offset kroch 10–24 Tage lang mit rund zwei Neustarts von chronyd pro Tag.
+  Jetzt reichen auch drei genutzte Netzquellen ohne NTS, gemessen über 12 h. `docker-compose.gps.yml` nennt
+  dafür drei PTB-Server statt zwei. Fehlen die Quellen nur kurz (wackelige NTS-Verbindung), wartet die
+  Automatik bis zu 24 h, statt vorher einen 5-ms-Teilschritt (mit Neustart) zu machen.
+- **Fehlerschranke im selben Neustart:** Ohne PPS schreibt jeder automatische Schritt die Schranke mit (nach
+  einem Teilschritt samt dem Rest des Versatzes) – kein eigener Neustart „Fehlerschranke“ mehr kurz danach.
+- **PPS mit später NMEA-Zeile:** Liegt die NMEA-Zeile (z. B. 120 ms) neben dem Netz, während chrony das PPS
+  nutzt, ist ihr Falseticker nur ein Hinweis – vorher eine „Störung“ mit Benachrichtigung, die die Automatik
+  dauerhaft sperrte, sodass sie den Versatz nie beheben konnte.
+- „GPS widerspricht den anderen Quellen“ ist im Modus „automatisch“ nur dann ein Info-Hinweis, wenn die
+  Automatik gerade misst oder korrigiert – nicht bei einer Sperre wegen GNSS-Störung, bei „bitte prüfen“
+  oder mit `WEB_READONLY`.
+- Der Update-Hinweis nennt einen selbst gesetzten Offset (`GPS_OFFSET` ≠ 0 in der Compose-Datei oder ein
+  gespeicherter Wert): Die Automatik verstellt ihn, ein GUI-Wert hat Vorrang vor `GPS_OFFSET`; wer ihn bewusst
+  gewählt hat, stellt auf „vorschlagen“.
 - „Erlaubte Namen“ steht in Einstellungen → Dashboard jetzt direkt sichtbar und nicht mehr erst
   hinter „Erweitert“ – neben „Vertrauenswürdige Proxys“ war es sonst kaum zu finden.
 

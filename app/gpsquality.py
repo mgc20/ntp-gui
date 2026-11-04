@@ -775,10 +775,12 @@ def _autocal_corrects_first(cfg: dict, measured: dict) -> bool:
         import autocal
         if not autocal.fast_allowed(cfg):
             return False
-        phase = (autocal.load().get("last_decision") or {}).get("phase")
+        state = autocal.load()
+        phase = (state.get("last_decision") or {}).get("phase")
     except Exception:
         return False
-    return phase in {"measure", "correct"}
+    # Nach einer Rücknahme korrigiert autocal nie mehr in einem Schritt – dann nicht auf sie warten.
+    return phase in {"measure", "correct"} and not state.get("no_fast")
 
 
 def _floor() -> float | None:
@@ -821,6 +823,31 @@ def adopt_calibration(cfg: dict, delay: Any, precision: Any, distance: float | N
                          f"± {fmt_ms(target / 2)}",
           {"old_delay": current, "new_delay": target, "reason": "automatische Kalibrierung", "reload_triggered": False})
     return state["applied"]
+
+
+def forget_bound(cfg: dict, now: float | None = None) -> bool:
+    """„Rückgängig“ bei der automatischen Kalibrierung: Die mit der Korrektur gesetzte Schranke passt nicht
+    zum alten Offset – zurück auf den vorsichtigen Standard (± 100 ms). Ohne eigenen Neustart (er folgt mit
+    dem Offset) und ohne 12-h-Sperre fürs Verkleinern: Die nächste Messung nach dem Offset darf sie wieder
+    setzen. True, wenn sich die Schranke geändert hat."""
+    now = time.time() if now is None else now
+    if not managed(cfg):
+        return False
+    with _LOCK:
+        state = load_state()
+        applied = _valid_applied(state.get("applied"))
+        if not applied:
+            return False
+        state["applied"] = None
+        state["decision"] = {"apply": True, "t": now, "delay": DEFAULT_DELAY,
+                             "reason": "Die automatische Kalibrierung wurde zurückgenommen – die Schranke gilt wieder "
+                                       "vorsichtig (Standard), bis neu gemessen ist."}
+        save_state(state)
+    _emit("gps", "info", f"GPS-Fehlerschranke mit der Rücknahme zurückgesetzt: ± {fmt_ms(applied['delay'] / 2)} → "
+                         f"± {fmt_ms(DEFAULT_DELAY / 2)}",
+          {"old_delay": applied["delay"], "new_delay": DEFAULT_DELAY, "reason": "Rücknahme der Kalibrierung",
+           "reload_triggered": False})
+    return True
 
 
 def maybe_tick(cfg_fn: Callable[[], dict], clock: Callable[[], float] = time.monotonic) -> dict | None:

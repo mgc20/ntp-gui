@@ -188,8 +188,11 @@ export const HELP_GNSS = {
       + "bleibt es beim „Hinweis“ mit dem Rat, den Offset zu kalibrieren (GPS-Seite → „GPS kalibrieren“; ohne PPS "
       + "erledigt das die automatische Kalibrierung nach etwa 6 Stunden); es sperrt nie und benachrichtigt nur, wenn "
       + "du „Hinweis – jeder Befund“ gewählt hast. Wandert die GPS-Zeit weiter weg oder liegt sie mehr als 1 s daneben, "
-      + "gilt wieder die Regel oben. Stimmt der Versatz nach dem Kalibrieren nicht, Antenne und Umgebung prüfen. Mit PPS "
-      + "gibt es diese Ausnahme nicht. Grenze: Eine Fälschung, die schon beim Start oder genau nach einer Änderung "
+      + "gilt wieder die Regel oben. Stimmt der Versatz nach dem Kalibrieren nicht, Antenne und Umgebung prüfen. **Mit "
+      + "PPS** gibt es diese Ausnahme nicht; dort nummeriert die NMEA-Zeile nur die Sekunden, die Zeit kommt vom PPS. "
+      + "Nutzt chrony die PPS-Quelle und liegt die NMEA-Zeit unter 0,5 s neben dem Netz, bleibt ihr Falseticker ein "
+      + "Hinweis. Eine Fälschung verschiebt auch das PPS – dann ist die PPS-Quelle selbst nicht mehr genutzt, und es "
+      + "gilt die Regel oben. Grenze: Eine Fälschung, die schon beim Start oder genau nach einer Änderung "
       + "einsetzt und die Zeit nur um einen festen Betrag verschiebt, sieht aus wie ein Kalibrierfehler – sie fällt erst "
       + "mit einem Zeit- oder Positionssprung auf.",
   },
