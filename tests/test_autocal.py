@@ -248,6 +248,8 @@ class Harness:
         self.hold_calls = []
         self.offset_since = None     # gpsquality.note_offset: wann der Offset zuletzt geändert wurde
         self.bounds = []             # gpsquality.adopt_calibration: mitgeschriebene Schranken
+        self.relearn = None          # gnssguard.relearned_at: letztes „Neu lernen“ (Wanduhr)
+        self.forgotten = []          # gpsquality.forget_bound: Schranke mit der Rücknahme zurückgesetzt
 
     def deps(self):
         def get_calibration(window):
@@ -290,6 +292,8 @@ class Harness:
                 "save_settings": save_settings, "trigger_reload": reload,
                 "check_active": check_active, "guard_hold": guard_hold,
                 "offset_since": lambda cfg_, now: self.offset_since, "adopt_bound": adopt_bound,
+                "measure_reset": lambda: self.relearn,
+                "forget_bound": lambda cfg_, now: self.forgotten.append((now, self.reloads)) or True,
                 "emit_event": lambda *a: self.events.append(a)}
 
 
@@ -341,7 +345,7 @@ class TickTest(unittest.TestCase):
         self.assertEqual(len(st["changes"]), 1)
         change = st["changes"][0]
         self.assertEqual((change["old_offset"], change["new_offset"], change["kind"]), (0.05, 0.055, "auto"))
-        self.assertEqual(st["observed"], {"offset": 0.055, "since": NOW + 7 * H})
+        self.assertEqual((st["observed"]["offset"], st["observed"]["since"]), (0.055, NOW + 7 * H))
         self.assertEqual(self.h.events[-1][0], "calibration")
         self.assertEqual(self.h.events[-1][1], "info")
         # Sofort danach: Messung neu – keine weitere Änderung.
@@ -1071,12 +1075,24 @@ class SecondReviewTest(ReviewTimelineCase):
         self.assertEqual(bound["reloads_before"], self.h.reloads - 1)     # vor dem einen Neustart geschrieben
         self.assertEqual(self.h.saved, [{"gps_offset": 0.0526}])           # gps_delay bleibt unberührt
 
-    def test_small_step_leaves_bound_alone(self):
+    def test_small_step_writes_bound_in_same_restart(self):
+        # Prüfbefund 1.5.2: auch ein kleiner Schritt schreibt die Schranke mit – kein eigener Neustart dafür.
         self.h.cfg["gps_offset"] = self.h.running_offset = 0.0476
         self.h.calibration = cal(duration_seconds=24 * H)
         self.tick(NOW)
-        self.assertEqual(self.tick(NOW + 25 * H)["action"], "apply")
-        self.assertEqual(self.h.bounds, [])
+        d = self.tick(NOW + 25 * H)
+        self.assertEqual(d["action"], "apply")
+        self.assertFalse(d.get("fast"))
+        self.assertEqual([(b["delay"], b["reloads_before"]) for b in self.h.bounds], [(0.012, self.h.reloads - 1)])
+
+    def test_partial_step_bound_covers_the_rest(self):
+        self.h.cfg["gps_offset"] = self.h.running_offset = 0.0326     # 20 ms daneben, Schritt 5 ms
+        self.h.calibration = cal(duration_seconds=24 * H)
+        self.h.cfg["gps_select"] = "prefer"                            # kein Schritt in einem Zug
+        self.tick(NOW)
+        d = self.tick(NOW + 25 * H)
+        self.assertEqual(d["step_ms"], 5.0)
+        self.assertAlmostEqual(self.h.bounds[0]["delay"], 0.012 + 2 * 0.015, places=6)
 
     def test_measurement_starts_at_exact_change_time(self):
         self.tick(NOW)
@@ -1149,3 +1165,154 @@ class SecondReviewTest(ReviewTimelineCase):
         self.assertIn("korrigiert bei nächster Prüfung", s["phase"]["label"])
         self.assertIsNotNone(s["next_change_at"])
         self.assertEqual(self.h.saved, [])                  # Anzeige ändert nichts
+
+
+# ---------------------------------------------------------------------------
+# 1.5.2 (E19): ohne Zutun – Gerätewechsel, „Neu lernen“, Rücknahme
+# ---------------------------------------------------------------------------
+class HandsFreeTest(ReviewTimelineCase):
+    def test_device_change_restarts_measurement(self):
+        self.tick(NOW)
+        self.tick(NOW + 10 * H)
+        self.h.cfg["gps_device"] = "/dev/ttyUSB0"               # anderer Empfänger
+        d = self.tick(NOW + 11 * H)
+        st = autocal.load(self.file)
+        self.assertEqual(st["observed"]["since"], NOW + 11 * H)
+        self.assertEqual(st["observed"]["why"], "device")
+        self.assertIn("Empfänger wurde geändert", d["reason"])
+        s = autocal.api_status(self.h.cfg, NOW + 12 * H, fresh=False, deps=self.h.deps(), file=self.file)
+        self.assertIsNone(s["manual_change"])                    # kein „von Hand gesetzt“
+        self.assertIn("Empfänger", s["plan"])
+        # Neuer Empfänger, andere Verspätung: nach gut 6 h in einem Schritt korrigiert.
+        self.h.target = 0.0726
+        self.h.cfg["gps_offset"] = self.h.running_offset = 0.0526
+        d = self.tick(NOW + 11 * H + autocal.SETTLE_SECONDS + 6 * H + 60)
+        self.assertEqual(d["action"], "apply", d)
+        self.assertTrue(d["fast"])
+        self.assertEqual(self.h.cfg["gps_offset"], 0.0726)
+
+    def test_state_from_1_5_1_without_fingerprint_does_not_restart(self):
+        autocal.save({"observed": {"offset": 0.0526, "since": NOW - 30 * H}}, self.file)
+        self.tick(NOW)
+        st = autocal.load(self.file)
+        self.assertEqual(st["observed"]["since"], NOW - 30 * H)
+        self.assertEqual(st["observed"]["fp"], autocal.device_fingerprint(self.h.cfg))
+
+    def test_relearn_restarts_measurement_and_lifts_old_alarm(self):
+        self.tick(NOW)
+        self.h.relearn = NOW + 5 * H                              # Empfänger gewechselt, „Neu lernen“
+        self.h.target = 0.0726
+        self.tick(NOW + 6 * H)
+        st = autocal.load(self.file)
+        self.assertEqual((st["observed"]["since"], st["observed"]["why"]), (NOW + 5 * H, "relearn"))
+        d = self.tick(NOW + 5 * H + autocal.SETTLE_SECONDS + 6 * H + 60)
+        # Prüfbefund: in einem Zug erst nach einer ganzen 24-h-Messung ohne Störung, kein Teilschritt vorher.
+        self.assertEqual((d["action"], d["phase"]), ("none", "measure"), d)
+        self.assertIn("Neu lernen", d["reason"])
+        self.h.calibration = cal(duration_seconds=23.5 * H)
+        d = self.tick(NOW + 5 * H + autocal.SETTLE_SECONDS + 23 * H + 60)
+        self.assertEqual(d["action"], "apply", d)
+        self.assertTrue(d["fast"])
+        self.assertEqual(self.h.hold_calls[-1], NOW + 5 * H)      # Störungen vor dem Neulernen zählen nicht
+        # Ein späterer Aufruf mit demselben Zeitpunkt startet nichts neu.
+        self.tick(NOW + 40 * H)
+        self.assertNotEqual(autocal.load(self.file)["observed"].get("why"), "relearn")
+
+    def test_relearn_in_future_is_ignored(self):
+        self.tick(NOW)
+        self.h.relearn = NOW + 50 * H                             # Uhr sprang zurück
+        self.tick(NOW + 2 * H)
+        self.assertEqual(autocal.load(self.file)["observed"]["since"], NOW)
+
+    def test_no_fast_step_after_rollback(self):
+        last = {"t": NOW - 7 * H, "kind": "rollback", "old_offset": 0.051, "new_offset": 0.0}
+        d = autocal.decide(nopps(), big(), last, NOW, rolled_back=True)
+        self.assertFalse(d.get("fast"))
+        self.assertEqual(d["action"], "none")                     # 24 h Pause nach der Rücknahme
+        d = autocal.decide(nopps(), big(), dict(last, t=NOW - 25 * H), NOW, rolled_back=True)
+        self.assertFalse(d.get("fast"))                           # Prüfbefund: auch später nie in einem Zug
+        self.assertEqual(d["step_ms"], 5.0)                       # nur kleine Schritte
+        self.assertTrue(autocal.decide(nopps(), big(), dict(last, t=NOW - 25 * H), NOW).get("fast"))
+
+    def test_rollback_is_respected_for_days(self):
+        """Prüfbefund 1.5.2: Eine Rücknahme wurde nach 24 h wieder voll überfahren – jeden Tag aufs Neue."""
+        self.h.calibration = cal(suggested_delay=0.024)
+        self.reset_offset(NOW)
+        t = NOW + autocal.SETTLE_SECONDS + 6 * H + 60
+        d = self.tick(t)
+        self.assertTrue(d["fast"], d)
+        self.tick(t + H)
+        r = autocal.rollback(1, cfg=self.h.cfg, now=t + H + 60, deps=self.h.deps(), file=self.file)
+        self.assertEqual(self.h.cfg["gps_offset"], 0.0)
+        self.assertEqual(len(self.h.forgotten), 1)                 # Schranke zurück auf den Standard …
+        self.assertEqual(self.h.forgotten[0][1], self.h.reloads - 1)   # … im selben Neustart
+        self.assertTrue(r["change"].get("bound_reset"))
+        self.assertIn("vorschlagen", r["change"]["reason"])
+        steps = []
+        for k in range(2, 24 * 5):
+            d = self.tick(t + k * H)
+            self.assertFalse(d.get("fast"), (k, d))
+            if d["action"] == "apply":
+                steps.append(d["step_ms"])
+        self.assertTrue(steps)
+        self.assertTrue(all(abs(s) <= 5.0 for s in steps), steps)  # nur behutsame Schritte, höchstens 1 je Tag
+        self.assertLessEqual(len(steps), 5)
+        # Von Hand geändert: Die Rücknahme ist erledigt, ein deutlicher Versatz geht wieder in einem Zug.
+        t2 = t + 24 * 5 * H
+        self.h.cfg["gps_offset"] = self.h.running_offset = 0.0
+        self.tick(t2)
+        self.assertIsNone(autocal.load(self.file)["no_fast"])
+        d = self.tick(t2 + autocal.SETTLE_SECONDS + 6 * H + 60)
+        self.assertTrue(d.get("fast"), d)
+
+    def test_hold_text_says_what_to_do(self):
+        self.reset_offset(NOW)
+        self.h.hold = "die GNSS-Störungserkennung meldet gerade eine Störung"
+        s = autocal.api_status(self.h.cfg, NOW + autocal.SETTLE_SECONDS + 7 * H, fresh=True, deps=self.h.deps(),
+                               file=self.file)
+        self.assertIn("Neu lernen", s["phase"]["text"])
+        self.assertIn("Antenne", s["phase"]["text"])
+
+    def test_auto_mode_text_needs_no_click(self):
+        self.assertIn("nichts tun", autocal.MODE_TEXTS["auto"])
+
+
+# ---------------------------------------------------------------------------
+# Prüfbefunde 1.5.2: ohne NTS, wackelige Quellen
+# ---------------------------------------------------------------------------
+class PlainSourcesTest(unittest.TestCase):
+    """Standardquellen (pool.ntp.org) und PTB über reines NTP: kein NTS – trotzdem in einem Zug."""
+
+    def plain(self, n, hours, **over):
+        return big(duration_seconds=hours * H,
+                   reference=ref(window_median=n, current_network=n, current_nts=0), **over)
+
+    def test_three_plain_sources_fast_after_12h(self):
+        d = autocal.decide(nopps(), self.plain(4, 12.5), None, NOW)
+        self.assertTrue(d.get("fast"), d)
+        self.assertEqual(d["new_offset"], 0.051)
+        self.assertIn("genutzt", d["reason"])
+
+    def test_plain_sources_wait_instead_of_partial_step(self):
+        d = autocal.decide(nopps(), self.plain(4, 7), None, NOW)
+        self.assertEqual((d["action"], d["phase"]), ("none", "measure"), d)
+        self.assertIn("drei ohne", d["reason"])
+        self.assertIsNotNone(d["next_change_at"])
+
+    def test_two_plain_sources_small_steps_after_a_day(self):
+        self.assertEqual(autocal.decide(nopps(), self.plain(2, 12.5), None, NOW)["action"], "none")
+        d = autocal.decide(nopps(), self.plain(2, 23.5), None, NOW)
+        self.assertEqual((d["action"], d["step_ms"]), ("apply", 5.0))
+        self.assertFalse(d.get("fast"))
+
+    def test_flaky_nts_waits(self):
+        # Gerade weniger als zwei NTS-Quellen, im Messzeitraum aber genug: warten statt 5-ms-Teilschritt.
+        d = autocal.decide(nopps(), big(duration_seconds=7 * H,
+                                        reference=ref(window_median=5, current_network=1, current_nts=1)), None, NOW)
+        self.assertEqual((d["action"], d["phase"]), ("none", "measure"), d)
+        d = autocal.decide(nopps(), big(duration_seconds=8 * H), None, NOW)
+        self.assertTrue(d.get("fast"))
+
+    def test_manual_bound_never_fast(self):
+        d = autocal.decide(cfg(gps_offset=0.0), self.plain(4, 12.5), None, NOW)
+        self.assertFalse(d.get("fast"))

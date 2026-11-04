@@ -23,6 +23,7 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import math
 import os
 import re
 import secrets
@@ -919,8 +920,8 @@ SCHEMA: list[dict] = [
     _field("gps_offset", "gps", "Offset (Korrektur)", "float", 0.0, _as_number(float, -2.0, 2.0),
            env="GPS_OFFSET", unit="s",
            help="Gleicht die feste Verspätung aus, mit der ein Empfänger die Zeit meldet. Bei "
-                "USB-Empfängern typisch 0,02–0,15 s. Den richtigen Wert misst der "
-                "Kalibrier-Assistent auf der GPS-Seite."),
+                "USB-Empfängern typisch 0,02–0,15 s. Den richtigen Wert misst und setzt die "
+                "automatische Kalibrierung selbst (GPS-Seite → „GPS kalibrieren“ zeigt den Stand)."),
     _field("gps_delay", "gps", "Angenommene Unsicherheit (Delay)", "float", 0.2,
            _as_number(float, 0.0001, 1.0), env="GPS_DELAY", unit="s",
            help="Wie stark chrony dem GPS misstraut. 0,2 s ist vorsichtig für unkalibrierte "
@@ -989,19 +990,19 @@ SCHEMA: list[dict] = [
            env="GPS_SHOW_POSITION", restart=RESTART_NONE,
            help="Zeigt Koordinaten im Dashboard und in der API. Standardmäßig aus, weil die "
                 "Position den Standort verrät."),
-    _field("gps_autocal", "gps", "Automatische Kalibrierung", "select", "suggest",
+    _field("gps_autocal", "gps", "Automatische Kalibrierung", "select", "auto",
            _as_choice("off", "suggest", "auto"), env="GPS_AUTOCAL", restart=RESTART_NONE,
-           options=[("off", "aus – nichts vorschlagen, nichts ändern"),
+           options=[("auto", "automatisch – messen, einmal korrigieren, Drifts folgen (Standard)"),
                     ("suggest", "vorschlagen – du entscheidest per Klick"),
-                    ("auto", "automatisch – messen, einmal korrigieren, Drifts folgen")],
+                    ("off", "aus – nichts vorschlagen, nichts ändern")],
            help="USB-GPS-Empfänger liefern die Zeit (NMEA) mit einer festen Verspätung von "
                 "typisch 20–150 ms. ntp-gui misst sie laufend gegen deine Netzwerkquellen. "
-                "„Vorschlagen“ zeigt dir den passenden Offset, du übernimmst ihn selbst. "
-                "„Automatisch“ stellt ihn nach: messen → einen deutlichen Versatz einmal "
-                "korrigieren → danach nur kleinen Drifts folgen (nach je 24 h Messung), nie "
-                "während einer GNSS-Störung, mit Eintrag im Ereignisprotokoll – jede Änderung "
-                "lässt sich dort zurücknehmen. Wirkt ohne Neustart; erst das Übernehmen eines neuen "
-                "Offsets startet chronyd neu."),
+                "„Automatisch“ (Standard ab 1.5.2) stellt den Offset ohne dein Zutun nach: messen → "
+                "einen deutlichen Versatz einmal korrigieren → danach nur kleinen Drifts folgen "
+                "(nach je 24 h Messung), nie während einer GNSS-Störung, mit Eintrag im "
+                "Ereignisprotokoll – jede Änderung lässt sich dort zurücknehmen. „Vorschlagen“ zeigt "
+                "dir nur den passenden Offset, du übernimmst ihn selbst. Wirkt ohne Neustart; erst "
+                "das Übernehmen eines neuen Offsets startet chronyd neu."),
     _field("gps_autocal_max_step_ms", "gps", "Größter Kalibrierschritt", "float", 5.0,
            _as_number(float, 0.1, 50.0), env="GPS_AUTOCAL_MAX_STEP_MS", unit="ms",
            restart=RESTART_NONE, advanced=True,
@@ -1192,7 +1193,7 @@ SCHEMA: list[dict] = [
                 "Browser eine falsche Adresse vorgeben. Über Anmeldung und Zugriff entscheiden die Köpfe "
                 "nie. Wirkt ohne Neustart."),
     _field("web_allowed_hosts", "web", "Erlaubte Namen", "hostlist", [], _as_allowed_hosts,
-           restart=RESTART_NONE, advanced=True, placeholder="z. B. zeit.example.org oder *.fritz.box",
+           restart=RESTART_NONE, placeholder="z. B. zeit.example.org oder *.fritz.box",
            help="Namen, über die du das Dashboard ohne Passwort öffnen darfst – zusätzlich zu IP-Adressen, "
                 "einteiligen und lokalen Namen (*.lan, *.local, *.home.arpa …), die immer gehen. Warum die "
                 "Liste? Schutz vor DNS-Rebinding: Eine fremde Webseite, die du besuchst, kann ihren eigenen "
@@ -1623,7 +1624,7 @@ def export_values(masked: bool = False) -> dict:
 # Neue Migration: Funktion _migrate_<N-1>_<N>(data) -> list[dict] schreiben,
 # in MIGRATIONS eintragen, SCHEMA_VERSION erhöhen, Test ergänzen.
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 MAX_NOTES = 50
 
 
@@ -1693,9 +1694,57 @@ def _migrate_2_3(data: dict) -> list[dict]:
         ["leapsectz", "leapseclist"])]
 
 
+def _migrate_3_4(data: dict) -> list[dict]:
+    """1.5.2: Die automatische GPS-Kalibrierung ist standardmäßig an („auto“ statt „suggest“).
+
+    Daten ändern sich nicht: Wer „vorschlagen“ oder „aus“ ausdrücklich gespeichert hat (oder
+    GPS_AUTOCAL setzt), behält es – der Standard gilt nur, wo nichts gespeichert ist. Für diese
+    Nutzer mit GPS nur ein Hinweis, damit die erste automatische Änderung nicht überrascht.
+    """
+    stored = data.get("values")
+    if not isinstance(stored, dict) or "gps_autocal" in stored or "GPS_AUTOCAL" in os.environ:
+        return []
+    gps = stored.get("gps_enable", os.environ.get("GPS_ENABLE", ""))
+    try:
+        if not _as_bool(gps):
+            return []
+    except ValidationError:
+        return []
+    text = ("Die automatische GPS-Kalibrierung steht jetzt standardmäßig auf „automatisch“ (vorher "
+            "„vorschlagen“). ntp-gui misst die Verspätung deines Empfängers gegen die Netzwerkquellen und "
+            "stellt den Offset selbst nach – nie während einer GNSS-Störung, jede Änderung steht im "
+            "Ereignisprotokoll und lässt sich auf der GPS-Seite zurücknehmen. Du musst nichts tun. Lieber "
+            "selbst entscheiden: Einstellungen → GPS → „Automatische Kalibrierung“ auf „vorschlagen“.")
+    # Ein bewusst gesetzter Offset (z. B. gegen ein asymmetrisches Netz) – ausdrücklich nennen. GPS_OFFSET=0.0
+    # aus den Compose-Vorlagen ist keine eigene Wahl.
+    keys = ["gps_autocal"]
+    env_offset = _offset_value(os.environ.get("GPS_OFFSET"))
+    if env_offset:
+        text += (f" Achtung: Du setzt GPS_OFFSET={os.environ['GPS_OFFSET'].strip()} in der Compose-Datei. Ändert die "
+                 "Automatik den Offset, gilt der Wert aus der Oberfläche, und GPS_OFFSET wirkt nicht mehr. Hast du "
+                 "den Wert bewusst gewählt, stell die Kalibrierung auf „vorschlagen“.")
+        keys.append("gps_offset")
+    elif _offset_value(stored.get("gps_offset")):
+        text += (f" Dein gespeicherter Offset ({stored['gps_offset']} s) ist der Ausgangspunkt; die Automatik "
+                 "verstellt ihn nur, wenn die Messung deutlich etwas anderes zeigt. Hast du ihn bewusst anders "
+                 "gewählt (z. B. wegen eines asymmetrischen Netzes), stell die Kalibrierung auf „vorschlagen“.")
+        keys.append("gps_offset")
+    return [_note("4-gps-autocal", 4, "GPS-Kalibrierung: jetzt automatisch", text, keys)]
+
+
+def _offset_value(value: Any) -> float:
+    """Ein gesetzter GPS-Offset als Zahl (0.0, wenn leer, 0 oder ungültig)."""
+    try:
+        number = float(str(value).strip()) if value not in (None, "") else 0.0
+    except ValueError:
+        return 0.0
+    return number if math.isfinite(number) else 0.0
+
+
 MIGRATIONS: dict[int, Callable[[dict], list[dict]]] = {
     2: _migrate_1_2,
     3: _migrate_2_3,
+    4: _migrate_3_4,
 }
 
 

@@ -131,7 +131,7 @@ function lockBlock(ctx, g) {
     const relearn = el("button", { type: "button", class: "button", text: "Neu lernen", disabled,
       title: "Referenzposition und gewohnten Zeitabstand vergessen – nach einem Umzug des Empfängers" });
     relearn.addEventListener("click", () => {
-      if (!window.confirm("Position und Zeitabstand neu lernen? Nötig, wenn du den Empfänger umgestellt hast.")) return;
+      if (!window.confirm("Position und Zeitabstand neu lernen? Nötig, wenn du Empfänger, Antenne oder USB-Port gewechselt oder den Empfänger umgestellt hast. Die automatische GPS-Kalibrierung misst danach ebenfalls neu und übernimmt den neuen Abstand selbst – bei einer echten Störung (Spoofing) deshalb nicht drücken.")) return;
       post(ctx, "/api/gnss", { action: "relearn" }, relearn, "Wird neu gelernt", "gnss");
     });
     buttons.push(relearn, info("gnss_relearn", "Neu lernen"));

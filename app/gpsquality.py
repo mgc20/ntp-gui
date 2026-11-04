@@ -644,7 +644,7 @@ def nts_distance(sources: Any) -> float | None:
 
 
 def decide(measured: dict, applied: dict | None, now: float, reset_at: float | None = None,
-           offset_changed_at: float | None = None, floor: Any = None) -> dict[str, Any]:
+           offset_changed_at: float | None = None, floor: Any = None, defer_shrink: bool = False) -> dict[str, Any]:
     """Reine Entscheidung: neue Schranke anwenden oder nicht (mit Grund).
 
     Größer (das GPS streut stärker als die eingestellte Schranke): sofort, sobald die Messung
@@ -656,6 +656,9 @@ def decide(measured: dict, applied: dict | None, now: float, reset_at: float | N
     als erfüllt, sobald OFFSET_SHRINK_MIN Messung nach der Änderung vorliegt (measure misst dann
     nur diese). Sprang die Uhr zurück (Zeitpunkt in der Zukunft), gilt „unbekannt“:
     größer erlaubt (die sichere Richtung), kleiner gesperrt.
+    defer_shrink (1.5.2): Die automatische Kalibrierung korrigiert gleich einen deutlichen Versatz und
+    schreibt die Schranke dabei mit (adopt_calibration) – kleiner wird sie dann nicht vorher noch
+    einmal; das spart einen Neustart von chronyd. Größer (die sichere Richtung) bleibt erlaubt.
     Ergebnis bei apply: delay = die neue Schranke (Delay in Sekunden)."""
     if measured.get("status") != "measured":
         return {"apply": False, "reason": "Noch zu wenig gemeinsame Messungen von GPS und Netzquellen."}
@@ -675,6 +678,9 @@ def decide(measured: dict, applied: dict | None, now: float, reset_at: float | N
         return {"apply": True, "delay": target,
                 "reason": "Das GPS streut stärker als angenommen – die Schranke wird größer."}
     if new <= current / CHANGE_FACTOR:
+        if defer_shrink:
+            return {"apply": False, "reason": "Die automatische Kalibrierung korrigiert zuerst den Versatz des GPS "
+                                              "und setzt die Schranke dabei mit – im selben Neustart von chronyd."}
         if callable(floor):        # erst hier abfragen: kostet einen Aufruf von chronyc
             try:
                 floor = floor()
@@ -728,7 +734,8 @@ def tick(cfg: dict, now: float | None = None, samples: list[dict] | None = None)
             reset_at = _num(state.get("reset_at"))
             if reset_at is not None and reset_at > now:
                 reset_at = state["reset_at"] = now
-            decision = decide(measured, applied, now, reset_at, offset_since, _floor)
+            decision = decide(measured, applied, now, reset_at, offset_since, _floor,
+                              defer_shrink=_autocal_corrects_first(cfg, measured))
             state["measured"] = measured
             state["decision"] = dict(decision, t=now)
             if decision["apply"]:
@@ -752,6 +759,28 @@ def tick(cfg: dict, now: float | None = None, samples: list[dict] | None = None)
             return decision
         except Exception as exc:  # nie die Messschleife stören
             return {"apply": False, "reason": f"Prüfung fehlgeschlagen: {exc}", "error": str(exc)}
+
+
+AUTOCAL_FIRST_BIAS = 0.010    # wie autocal.FAST_MIN_BIAS: ab diesem Versatz korrigiert autocal in einem Schritt
+
+
+def _autocal_corrects_first(cfg: dict, measured: dict) -> bool:
+    """Steht eine Korrektur der automatischen Kalibrierung in einem Schritt an (Modus „automatisch“, ohne
+    PPS als Rückfallebene, deutlicher Versatz, autocal misst oder korrigiert gerade)? Dann bringt sie die
+    Schranke mit (adopt_calibration), und ein Verkleinern vorher wäre nur ein zusätzlicher Neustart."""
+    median = _num(measured.get("median")) if isinstance(measured, dict) else None
+    if median is None or abs(median) < AUTOCAL_FIRST_BIAS or cfg.get("gps_autocal") != "auto":
+        return False
+    try:
+        import autocal
+        if not autocal.fast_allowed(cfg):
+            return False
+        state = autocal.load()
+        phase = (state.get("last_decision") or {}).get("phase")
+    except Exception:
+        return False
+    # Nach einer Rücknahme korrigiert autocal nie mehr in einem Schritt – dann nicht auf sie warten.
+    return phase in {"measure", "correct"} and not state.get("no_fast")
 
 
 def _floor() -> float | None:
@@ -794,6 +823,31 @@ def adopt_calibration(cfg: dict, delay: Any, precision: Any, distance: float | N
                          f"± {fmt_ms(target / 2)}",
           {"old_delay": current, "new_delay": target, "reason": "automatische Kalibrierung", "reload_triggered": False})
     return state["applied"]
+
+
+def forget_bound(cfg: dict, now: float | None = None) -> bool:
+    """„Rückgängig“ bei der automatischen Kalibrierung: Die mit der Korrektur gesetzte Schranke passt nicht
+    zum alten Offset – zurück auf den vorsichtigen Standard (± 100 ms). Ohne eigenen Neustart (er folgt mit
+    dem Offset) und ohne 12-h-Sperre fürs Verkleinern: Die nächste Messung nach dem Offset darf sie wieder
+    setzen. True, wenn sich die Schranke geändert hat."""
+    now = time.time() if now is None else now
+    if not managed(cfg):
+        return False
+    with _LOCK:
+        state = load_state()
+        applied = _valid_applied(state.get("applied"))
+        if not applied:
+            return False
+        state["applied"] = None
+        state["decision"] = {"apply": True, "t": now, "delay": DEFAULT_DELAY,
+                             "reason": "Die automatische Kalibrierung wurde zurückgenommen – die Schranke gilt wieder "
+                                       "vorsichtig (Standard), bis neu gemessen ist."}
+        save_state(state)
+    _emit("gps", "info", f"GPS-Fehlerschranke mit der Rücknahme zurückgesetzt: ± {fmt_ms(applied['delay'] / 2)} → "
+                         f"± {fmt_ms(DEFAULT_DELAY / 2)}",
+          {"old_delay": applied["delay"], "new_delay": DEFAULT_DELAY, "reason": "Rücknahme der Kalibrierung",
+           "reload_triggered": False})
+    return True
 
 
 def maybe_tick(cfg_fn: Callable[[], dict], clock: Callable[[], float] = time.monotonic) -> dict | None:

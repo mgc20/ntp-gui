@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
@@ -473,6 +474,33 @@ class InsightTests(unittest.TestCase):
         self.assertIn("gps_falseticker", self.keys(status))
         status["sources"][1]["select_state"] = "not_combined"
         self.assertIn("gps_uncal", self.keys(status))
+
+    def test_gps_hints_in_auto_mode_need_no_click(self):
+        status = {
+            "chrony_running": True,
+            "tracking": {"synchronised": True, "stratum": 2},
+            "sources": [
+                {"mode": "^", "name": "a", "state": "*", "reach": 255},
+                {"mode": "#", "name": "GPS", "reach": 255, "select_state": "falseticker", "offset": 0.051},
+            ],
+            "gps": {"enabled": True, "running": True, "has_fix": True},
+            "ui": {"storage": {"persistent": True}, "auth": {"enabled": True}},
+        }
+        auto = dict(self.CFG, gps_autocal="auto")
+        with mock.patch.object(insights, "_autocal_corrects", return_value=True):
+            items = {i["key"]: i for i in insights.build(status, auto)}
+        self.assertEqual(items["gps_falseticker"]["level"], "info")
+        self.assertIn("nichts tun", items["gps_falseticker"]["text"])
+        # Prüfbefund: gesperrt (GNSS-Störung), „bitte prüfen“, WEB_READONLY – keine Entwarnung.
+        with mock.patch.object(insights, "_autocal_corrects", return_value=False):
+            items = {i["key"]: i for i in insights.build(status, auto)}
+        self.assertEqual(items["gps_falseticker"]["level"], "warn")
+        self.assertNotIn("nichts tun", items["gps_falseticker"]["text"])
+        status["sources"][1]["select_state"] = "large_distance"
+        items = {i["key"]: i for i in insights.build(status, auto)}
+        self.assertNotIn("übernehmen", items["gps_distance"]["text"])
+        manual = {i["key"]: i for i in insights.build(status, dict(self.CFG, gps_autocal="suggest"))}
+        self.assertIn("übernehmen", manual["gps_distance"]["text"])
 
     def test_unreachable_and_island(self):
         status = {

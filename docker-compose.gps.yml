@@ -53,11 +53,14 @@ services:
       # Mit echtem PPS-Signal zusätzlich aktivieren:
       # GPS_PPS_DEVICE: "/dev/pps0"
 
-      # Zwei Internet-Quellen als Plausibilitätsprüfung und als Rückfallebene,
+      # Drei Internet-Quellen als Plausibilitätsprüfung und als Rückfallebene,
       # falls der Empfänger den Fix verliert. chrony erkennt damit auch einen
-      # fehlerhaften GPS-Fix (Falseticker).
+      # fehlerhaften GPS-Fix (Falseticker); mit drei Quellen korrigiert die
+      # automatische GPS-Kalibrierung einen deutlichen Versatz in einem Schritt.
+      # Mit NTS (TCP-Port 4460 nach außen muss offen sein) stattdessen:
+      # NTP_NTS_SERVERS: "ptbtime1.ptb.de,ptbtime2.ptb.de,ptbtime3.ptb.de"
       NTP_POOLS: ""
-      NTP_SERVERS: "ptbtime1.ptb.de,ptbtime2.ptb.de"
+      NTP_SERVERS: "ptbtime1.ptb.de,ptbtime2.ptb.de,ptbtime3.ptb.de"
       # Sollen sie ausschliesslich zur Kontrolle dienen, nie zur Synchronisation:
       # NTP_SERVER_OPTIONS: "iburst noselect"
 

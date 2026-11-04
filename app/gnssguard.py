@@ -30,8 +30,12 @@ schwach (allein nur „Hinweis“ – Schnee, Flugzeuge, ein Lkw vor dem Fenster
                  galt (sie steht mit dem Zeitanker in SQLite); ein Neustart macht aus einem
                  erkannten Spoofer nie einen „Kalibrierfehler“. Nach einer „Störung“ im selben
                  Abschnitt gibt es keine Ausnahme mehr.
-                 Grob (> 1 s) daneben ist immer stark. Mit PPS gilt immer die Regel oben – dort
-                 ist ein bleibender Versatz von mehreren 10 ms kein Kalibrierfehler. Ein Spoofer,
+                 Grob (> 1 s) daneben ist immer stark. Mit PPS (1.5.2): Die NMEA-Zeile nummeriert
+                 nur die Sekunden, die Zeit kommt vom PPS. Nutzt chrony die PPS-Quelle („*“/„+“)
+                 und liegt die NMEA-Zeit unter 0,5 s neben dem Netz, bleibt ihr Falseticker
+                 schwach – eine NMEA-Verspätung über der Fehlerschranke ist dann keine Störung,
+                 und die Automatik bleibt nicht gesperrt. Ein Spoofer verschiebt auch das PPS;
+                 dann ist die PPS-Quelle selbst nicht mehr genutzt und es gilt die Regel oben. Ein Spoofer,
                  der schon beim Start da war oder genau nach einer Einstellungsänderung einsetzt
                  und die Zeit nur um einen festen Betrag verschiebt, ist davon nicht zu
                  unterscheiden – ihn fängt erst ein Zeit- oder Positionssprung.
@@ -136,6 +140,8 @@ FALSETICKER_STRONG_S = 300.0    # Falseticker mit ≥ 2 NTS-Quellen so lange →
 FALSETICKER_SETTLED_S = 900.0   # Ausnahme „Kalibrierfehler“ nur, solange das GPS seit Start/Änderung
                                 # noch nicht so lange brauchbar war (siehe Modulbeschreibung)
 FALSETICKER_RECENT = 120.0      # Abstand GPS − Netz für den Falseticker: Median der letzten 2 min
+PPS_REFID = "PPS"               # refid der PPS-Zeile (confgen)
+PPS_NMEA_LIMIT = 0.5            # mit genutztem PPS: NMEA nur Sekundennummerierung, solange < 0,5 s daneben
 
 # --- Position ----------------------------------------------------------------------------------
 POS_JUMP_M = 100.0
@@ -312,6 +318,7 @@ class Detector:
         self._pos_anchor_t: float | None = None
         self.last: dict[str, Any] = {}
         self.pps = False                           # mit PPS gibt es keine Ausnahme „Kalibrierfehler“
+        self._pps_ok = False                       # mit PPS: NMEA-Falseticker nur Sekundennummerierung
         self.autocal = "off"                       # Modus der automatischen Kalibrierung (nur für den Text)
         self._reset_epoch()
 
@@ -558,6 +565,7 @@ class Detector:
         if self._epoch_t is not None and state not in (None, "?", "x"):
             self._epoch_good += min(ANCHOR_STEP_MAX, max(0.0, now - self._epoch_t))
         self._epoch_t = now
+        self.last["pps_state"] = obs.get("pps_state")
         checks = {
             "cn0_drop": self._check_cn0(now, sats),
             "uniform": self._check_uniform(sats),
@@ -611,8 +619,21 @@ class Detector:
         gross = diff is not None and abs(diff) > TIME_ABS_LIMIT
         lasting = ft.since is not None and now - ft.since >= FALSETICKER_STRONG_S
         nts = last.get("ref_kind") == "nts"
-        strong = lasting and nts and (gross or not self._ft_excused)
-        if strong:
+        # Mit PPS: Die Zeit kommt vom (genutzten) PPS, die NMEA-Zeile nummeriert nur die Sekunden. Ohne
+        # frischen Messwert (kurz kein Fix) gilt die letzte Einordnung weiter.
+        if not self.pps:
+            self._pps_ok = False
+        elif diff is not None:
+            self._pps_ok = last.get("pps_state") in {"*", "+"} and abs(diff) < PPS_NMEA_LIMIT
+        pps_ok = self._pps_ok
+        strong = lasting and nts and not pps_ok and (gross or not self._ft_excused)
+        if pps_ok:
+            ft.text = ("Die NMEA-Zeit liegt " + (f"{fmt_ms(diff)} " if diff is not None else "")
+                       + "neben dem Netz, die Zeit kommt aber vom PPS (genutzt) – "
+                       "die NMEA-Zeile nummeriert nur die Sekunden, das ist keine Störung"
+                       + ("; die automatische Kalibrierung gleicht den Offset nach und nach an" if self.autocal == "auto"
+                          else "; mit kalibriertem Offset verschwindet der Hinweis"))
+        elif strong:
             ft.text = (f"chrony hält das GPS seit {int((now - ft.since) // 60)} min für einen Falseticker "
                        f"– {last.get('references')} NTS-Quellen sind sich einig"
                        + (f", die GPS-Zeit weicht {fmt_ms(diff)} vom Netz ab" if diff is not None else ""))
@@ -683,6 +704,9 @@ def observation(now: float, gps_state: dict | None, sources: list[dict] | None, 
         if src.get("mode") == "#" and name == refid:
             obs["gps_offset"] = _num(src.get("offset"))
             obs["gps_state"] = state if src.get("reach") else "?"
+            continue
+        if src.get("mode") == "#" and name == PPS_REFID:
+            obs["pps_state"] = state if src.get("reach") else "?"
             continue
         if src.get("mode") not in {"^", "="}:
             continue
@@ -764,6 +788,8 @@ class Guard:
         self._alarm_wall: float | None = None        # zuletzt „Warnung“/„Störung“ (Wanduhr, für autocal)
         self._alarm_stage: str | None = None         # höchste Stufe dabei
         self._alarm_saved: float | None = None
+        self._relearn_wall: float | None = None      # letztes „Neu lernen“ (Wanduhr, für autocal)
+        self._relearn_loaded = False
 
     # --- Ereignisse --------------------------------------------------------------------------
     def _emit(self, level: str, title: str, data: dict) -> None:
@@ -1093,6 +1119,20 @@ class Guard:
             wall, stage = legacy, "stoerung"
         return wall, stage if stage in STAGES else "stoerung"
 
+    def relearned_at(self) -> float | None:
+        """Wann zuletzt „Neu lernen“ gedrückt wurde (Wanduhr) oder None. Die automatische Kalibrierung
+        beginnt dort ihre Messung neu: Ein Mensch hat bestätigt, dass der neue Abstand GPS ↔ Netz echt
+        ist (Empfänger oder Antenne gewechselt) – ohne das hielte eine Störung davor sie bis zu 24 h auf,
+        und das Messfenster mischte alten und neuen Abstand."""
+        with self.lock:
+            if not self._relearn_loaded:
+                self._relearn_loaded = True
+                try:
+                    self._relearn_wall = _num(load("relearn").get("wall"))
+                except Exception:
+                    self._relearn_wall = None
+            return self._relearn_wall
+
     def calibration_hold(self, since_wall: float | None) -> str | None:
         """Darf die automatische Kalibrierung den Offset jetzt ändern? None = ja, sonst der Grund.
 
@@ -1212,6 +1252,11 @@ class Guard:
             with self.lock:
                 self.detector.reset_baselines()
                 self._store_anchor(None)
+                self._relearn_wall, self._relearn_loaded = self.wall(), True
+                try:
+                    save("relearn", {"wall": self._relearn_wall})
+                except Exception as exc:
+                    self.last_error = f"Zeitpunkt von „Neu lernen“ nicht gespeichert: {exc}"
                 if self.stage != "ok":
                     self._finish_episode("Grundlinien neu gelernt")
                 self._emit("info", "GNSS-Störungserkennung lernt Position und Zeitabstand neu",

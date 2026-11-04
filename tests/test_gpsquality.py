@@ -409,6 +409,12 @@ class DecideTest(unittest.TestCase):
         self.assertTrue(gpsquality.decide(self.measured(0.2), applied, T0)["apply"])
         self.assertFalse(gpsquality.decide(self.measured(0.03), applied, T0)["apply"])
 
+    def test_defer_shrink_only_blocks_shrinking(self):
+        d = gpsquality.decide(self.measured(0.04), None, T0, defer_shrink=True)
+        self.assertFalse(d["apply"])
+        self.assertIn("automatische Kalibrierung", d["reason"])
+        self.assertTrue(gpsquality.decide(self.measured(0.3), None, T0, defer_shrink=True)["apply"])
+
     def test_no_shrink_after_reset(self):
         self.assertFalse(gpsquality.decide(self.measured(0.04), None, T0 + H, reset_at=T0)["apply"])
         self.assertTrue(gpsquality.decide(self.measured(0.3), None, T0 + H, reset_at=T0)["apply"])
@@ -997,3 +1003,12 @@ class AdoptCalibrationTest(StoreCase):
         self.assertIsNone(gpsquality.adopt_calibration(cfg(gps_pps_shm=True), 0.024, 0.004, None, T0))
         self.assertIsNone(gpsquality.adopt_calibration(cfg(gps_bound_mode="manual"), 0.024, 0.004, None, T0))
         self.assertIsNone(gpsquality.adopt_calibration(cfg(), None, 0.004, None, T0))
+
+    def test_forget_bound_on_rollback(self):
+        gpsquality.save_state({"applied": {"delay": 0.032, "precision": 0.003, "t": T0}})
+        self.assertFalse(gpsquality.forget_bound(cfg(gps_pps_shm=True), T0 + H))   # mit PPS: nicht verwaltet
+        self.assertTrue(gpsquality.forget_bound(cfg(), T0 + H))
+        self.assertIsNone(gpsquality.read_applied())                              # zurück auf ± 100 ms
+        self.assertEqual(self.reloads, [])                                         # Neustart kommt mit dem Offset
+        self.assertIn("Rücknahme", self.events[-1][2])
+        self.assertFalse(gpsquality.forget_bound(cfg(), T0 + 2 * H))               # nichts mehr zu tun

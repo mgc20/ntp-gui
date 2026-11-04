@@ -569,7 +569,7 @@ export const HELP = {
       + "Baudrate **ziemlich konstant**, typisch 20–150 ms. chrony kann sie nicht selbst "
       + "erkennen. Der Offset gleicht sie aus: Man lässt das GPS einige Stunden neben guten "
       + "Internet-Servern laufen, misst die mittlere Differenz und trägt sie als Offset ein. "
-      + "Das macht der Kalibrier-Assistent automatisch.",
+      + "Das macht die automatische Kalibrierung selbst (Standard ab 1.5.2) – nach gut 6 Stunden Messung.",
   },
   gps_delay: {
     title: "Angenommene Unsicherheit (Delay)",
@@ -585,8 +585,11 @@ export const HELP = {
   gps_recalibrate: {
     title: "Wann neu kalibrieren?",
     text: "Nach einem Wechsel von Empfänger, USB-Port/Hub, Firmware oder Baudrate. Sonst bleibt "
-      + "der Wert über Monate stabil. Der Assistent misst laufend weiter – zeigt er eine "
-      + "Abweichung über ~2 ms, lohnt sich ein neuer Vorschlag.",
+      + "der Wert über Monate stabil. Im Modus „automatisch“ (Standard) erledigt das ntp-gui selbst: "
+      + "Ein anderes Gerät in den Einstellungen startet die Messung neu, eine gleichbleibende Abweichung "
+      + "danach korrigiert sie von selbst. Meldet die GNSS-Störungserkennung nach dem Wechsel eine "
+      + "Störung, dort „Neu lernen“ drücken. Im Modus „vorschlagen“ misst der Assistent laufend weiter – "
+      + "zeigt er eine Abweichung über ~2 ms, lohnt sich ein neuer Vorschlag.",
   },
   fix: {
     title: "Fix",
