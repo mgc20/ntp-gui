@@ -4,7 +4,7 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), die Versionen folgen
 [Semantic Versioning](https://semver.org/lang/de/).
 
-## [Unveröffentlicht]
+## [1.5.3] – 2026-11-04
 
 Schwerpunkt: Ein Holdover-Test läuft bis zum Ende – keine Automatik startet chronyd mehr dazwischen.
 
@@ -22,12 +22,29 @@ Schwerpunkt: Ein Holdover-Test läuft bis zum Ende – keine Automatik startet c
   „Schleife beendet – die Quelle antwortet derzeit nicht“ und „GPS-Sperre ausgelassen: keine andere
   Zeitquelle“ während eines Holdover-Tests und bis 15 min danach stehen als „info“ mit dem Vermerk
   „(Holdover-Test)“ im Protokoll und gehen nicht als Benachrichtigung hinaus. Eine erkannte Schleife,
-  ein verlorener GPS-Fix oder ein nicht erreichbarer chronyd bleiben echte Warnungen.
+  ein verlorener GPS-Fix oder ein nicht erreichbarer chronyd bleiben echte Warnungen. Beim Test nur ohne
+  GPS gilt das nur für Wechsel von oder zu GPS/PPS: Fallen dabei die Netzquellen aus, bleibt „Keine
+  Zeitquelle mehr ausgewählt“ eine Warnung mit Benachrichtigung. „GPS-Sperre ausgelassen“ ist nur während
+  des Tests ein Vermerk und kommt danach erneut, wenn die Lage bleibt.
+- **Teststart und Neustart treffen sich nicht mehr:** Ist gerade ein Neustart der Zeitdienste angefordert
+  oder läuft er, lehnt der Start des Tests mit „in ein paar Sekunden“ ab, statt nach wenigen Sekunden
+  als „abgebrochen (chronyd neu gestartet)“ zu enden. Hat eine Automatik gerade gespeichert, als der Test
+  begann, folgt ihr Neustart nach dem Ende. Ein neuer Test startet erst kurz nach dem letzten, damit
+  Zurückgestelltes nicht immer weiter verschoben wird.
+- **Frist auch bei hängendem chronyd:** Antwortet chronyd zum Ende nicht, endet der Test trotzdem; die
+  Sperre für Automatiken reicht nie länger als 2 min über das geplante Ende hinaus.
+- **Erneuertes NTS-Zertifikat:** Das Zurückstellen steht als Warnung im Protokoll (bis zum Ende bietet
+  chronyd das bisherige an – Test abbrechen, wenn das neue sofort gelten soll). Ein Neustart von Hand
+  lädt es mit; kein zweiter Neustart danach. Ein zurückgestellter Gerätewechsel verzögert die Warnung
+  „GPS-Gerät verschwunden“ nicht mehr.
 
 ### Geändert
 - **Einstellungen während eines Holdover-Tests:** Was du selbst speicherst, startet die Zeitdienste weiter
   sofort neu und bricht den Test damit ab – die Einstellungsseite fragt vorher nach (Speichern,
-  Zurücksetzen eines Felds, Import), und die Speicherleiste sagt es dazu.
+  Zurücksetzen eines Felds, Import), und die Speicherleiste sagt es dazu. Ebenso die Knöpfe „Offset
+  übernehmen“, „Zurücknehmen“ (Kalibrierung) und „Fehlerschranke zurücksetzen“.
+- Das Ende-Ereignis sagt „Zurückgestellt, wird jetzt erneut geprüft: …“ – die Automatik entscheidet auf
+  frischen Messwerten, ob die Änderung noch nötig ist.
 
 ## [1.5.2] – 2026-11-04
 
@@ -982,6 +999,7 @@ Erste Veröffentlichung.
 - CI mit Unittests und Integrationstest gegen das gebaute Image; Release-Workflow,
   der das Image für amd64 und arm64 nach ghcr.io veröffentlicht.
 
+[1.5.3]: https://github.com/mgc20/ntp-gui/compare/v1.5.2...v1.5.3
 [1.5.2]: https://github.com/mgc20/ntp-gui/compare/v1.5.1...v1.5.2
 [1.5.1]: https://github.com/mgc20/ntp-gui/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/mgc20/ntp-gui/compare/v1.4.0...v1.5.0

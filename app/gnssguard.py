@@ -760,6 +760,15 @@ def save(key: str, value: dict[str, Any]) -> None:
 # Wächter: Erkennung + Ereignisse + Sperre
 # =========================================================================================
 
+def _holdover_running() -> bool:
+    """Läuft gerade ein Holdover-Test (er wählt GPS selbst ab)? Wirft nie."""
+    try:
+        import holdover
+        return holdover.TEST.running()
+    except Exception:
+        return False
+
+
 def _default_emit(kind: str, level: str, title: str, data: dict) -> None:
     import events
     events.emit(kind, level, title, data)
@@ -781,7 +790,7 @@ class Guard:
         self.last_tick: float | None = None
         self.enabled = False
         self.other_sources: int | None = None       # andere auswählbare Netzquellen (letzte Prüfung)
-        self._skip_noted = False                     # „Sperre ausgelassen“ nur einmal je Episode
+        self._skip_noted: bool | str = False         # „Sperre ausgelassen“ nur einmal je Episode („holdover“: im Test)
         self._anchor_fp: str | None = None           # GPS-Einstellungen, zu denen der Zeitanker gehört
         self._anchor_saved: float | None = None
         self._anchor_saved_key: tuple = (None,)
@@ -1193,8 +1202,11 @@ class Guard:
                 self.other_sources = (None if sources is None else
                                       self.count_others(select, sources, set(self.targets(select, refid))))
             if self.other_sources is None or self.other_sources < AUTO_LOCK_MIN_OTHERS:
+                testing = _holdover_running()
+                if self._skip_noted == "holdover" and not testing:
+                    self._skip_noted = False   # während des Tests nur als „info“ gemeldet – jetzt ernst
                 if not self._skip_noted:
-                    self._skip_noted = True
+                    self._skip_noted = "holdover" if testing else True
                     have = "unbekannt (chronyd antwortet nicht)" if self.other_sources is None else self.other_sources
                     self._emit("warn", f"GPS-Sperre ausgelassen: keine andere Zeitquelle – ohne GPS liefe die Uhr frei "
                                        f"(andere auswählbare Netzquellen: {have}, nötig: {AUTO_LOCK_MIN_OTHERS})",

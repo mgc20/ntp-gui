@@ -18,11 +18,14 @@ export const HELP_UHR = {
       + "wieder auswählbar, auch nach einem Neustart von ntp-gui (die Endzeit steht in der Datenbank). Jeder "
       + "Schritt steht im Ereignisprotokoll. Startet chronyd während des Tests neu (z. B. weil du Einstellungen "
       + "speicherst), ist der Schalter weg – der Test wird dann abgebrochen, weil das Ergebnis nicht mehr stimmt. "
-      + "Die Einstellungsseite fragt deshalb vorher nach. **Automatiken warten:** Fehlerschranke und Kalibrierung "
-      + "des GPS, Gerätewechsel und ein erneuertes NTS-Zertifikat starten chronyd während des Tests nicht neu – "
-      + "sie stehen als „zurückgestellt bis zum Ende des Holdover-Tests“ im Protokoll und werden danach "
-      + "nachgeholt. Dass während des Tests keine Quelle ausgewählt ist, steht nur als Info im Protokoll "
-      + "(„Holdover-Test“) und löst keine Benachrichtigung aus.",
+      + "Die Einstellungsseite und die Knöpfe auf den GPS-Seiten fragen deshalb vorher nach. **Automatiken warten:** "
+      + "Fehlerschranke und Kalibrierung des GPS, Gerätewechsel und ein erneuertes NTS-Zertifikat starten chronyd "
+      + "während des Tests nicht neu – sie stehen als „zurückgestellt bis zum Ende des Holdover-Tests“ im Protokoll "
+      + "und werden danach erneut geprüft. Ein erneuertes Zertifikat meldet sich dabei als Warnung: Bis zum Ende "
+      + "bietet chronyd das bisherige an – brich den Test ab, wenn das neue sofort gelten soll. Startet gerade ein "
+      + "Neustart der Zeitdienste, wartet der Start des Tests ein paar Sekunden. Dass während des Tests keine "
+      + "Quelle ausgewählt ist, steht nur als Info im Protokoll („Holdover-Test“) und löst keine Benachrichtigung "
+      + "aus – beim Test nur ohne GPS bleibt ein Ausfall der Netzquellen aber eine echte Warnung.",
   },
   holdover_hours: {
     title: "Dauer des Holdover-Tests",

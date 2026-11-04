@@ -1,7 +1,7 @@
 // GPS ohne PPS und schwacher Empfang (1.5): Empfangsbewertung, Rolle des GPS mit ehrlicher
 // Fehlerschranke und Antennen-Test. Daten: GET /api/gps/quality und /api/gps/antenna.
 // Alles landet als Text im DOM (el/textContent) – auch die Namen der Messungen.
-import { el, fmtNumber, isNum, rich, apiPost } from "../util.js";
+import { el, fmtNumber, isNum, rich, apiPost, holdoverNote } from "../util.js";
 import { card, kv, info, badge, emptyNote, toast } from "../ui.js";
 
 const LEVEL = {
@@ -74,7 +74,7 @@ const SOURCE_LABEL = {
 };
 
 async function resetBound(ctx, button) {
-  if (!window.confirm("Fehlerschranke auf den vorsichtigen Standard (± 100 ms) zurücksetzen? chrony startet dafür kurz neu.")) return;
+  if (!window.confirm(`Fehlerschranke auf den vorsichtigen Standard (± 100 ms) zurücksetzen? chrony startet dafür kurz neu.${holdoverNote(ctx)}`)) return;
   button.disabled = true;
   try {
     const result = await apiPost("/api/gps/bound", { action: "reset" });

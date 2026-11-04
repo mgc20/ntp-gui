@@ -751,8 +751,7 @@ def tick(cfg: dict, now: float | None = None, samples: list[dict] | None = None)
                                     "bound": measured["bound"], "samples": measured["samples"],
                                     "hours": measured["hours"], "t": now}
                 save_state(state)
-                trigger = _DEPS.get("trigger_reload")
-                reloaded = bool(trigger()) if trigger else False
+                reloaded = _automatic_reload(_DEPS.get("trigger_reload"))
                 decision["reload_triggered"] = reloaded
                 _emit("gps", "info",
                       f"GPS-Fehlerschranke angepasst: ± {fmt_ms(old / 2)} → ± {fmt_ms(new_delay / 2)}",
@@ -774,6 +773,16 @@ def _holdover_defers(what: str) -> bool:
         return holdover.defer("gps_bound", what)
     except Exception:
         return False
+
+
+def _automatic_reload(trigger: Callable[[], bool] | None) -> bool:
+    """Neustart für die Automatik: Hat gerade ein Holdover-Test begonnen (nach der Prüfung oben), folgt
+    er erst nach dessen Ende – unter derselben Sperre geprüft wie der Start des Tests."""
+    try:
+        import holdover
+        return holdover.reload_or_defer(trigger)
+    except Exception:
+        return bool(trigger()) if trigger else False
 
 
 def _holdover_resumed() -> bool:

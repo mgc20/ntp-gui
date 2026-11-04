@@ -1,4 +1,4 @@
-import { el, fmtSeconds, fmtDuration, fmtNumber, isNum, rich, apiPost } from "../util.js";
+import { el, fmtSeconds, fmtDuration, fmtNumber, isNum, rich, apiPost, holdoverNote } from "../util.js";
 import { card, tile, kv, info, badge, emptyNote, toast } from "../ui.js";
 import { lineChart, skyPlot, snrBars } from "../charts.js";
 import { stateBadge, reasonCell } from "./sources.js";
@@ -107,7 +107,7 @@ function autocalReference(decision) {
 }
 
 async function rollbackAutocal(ctx, button, change) {
-  const text = `Offset von ${change.new_offset} s auf ${change.old_offset} s zurücksetzen? chrony startet dafür kurz neu.`;
+  const text = `Offset von ${change.new_offset} s auf ${change.old_offset} s zurücksetzen? chrony startet dafür kurz neu.${holdoverNote(ctx)}`;
   if (!window.confirm(text)) return;
   button.disabled = true;
   try {
@@ -279,6 +279,7 @@ function calibrationCard(ctx, gpsSource) {
         if ((hold || disturbed) && !window.confirm("Die GNSS-Störungserkennung meldet gerade eine Warnung oder Störung"
           + (hold ? " (die automatische Kalibrierung ist deshalb gesperrt)" : "") + ". Ein Versatz während einer möglichen "
           + "Störung kann von einem Spoofer stammen. Prüfe zuerst Antenne und Umgebung. Trotzdem übernehmen?")) return;
+        if (holdoverNote(ctx) && !window.confirm(`Offset ${cal.suggested_offset} s übernehmen? chrony startet dafür kurz neu.${holdoverNote(ctx)}`)) return;
         button.disabled = true;
         try {
           const changes = { gps_offset: cal.suggested_offset, gps_select: role.value };

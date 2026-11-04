@@ -143,6 +143,13 @@ export async function apiPost(path, body) {
   return data;
 }
 
+// 1.5.3: Läuft ein Holdover-Test, bricht jeder Neustart von chronyd ihn ab – Zusatz für Rückfragen.
+export function holdoverNote(ctx) {
+  return ctx?.status?.holdover_active
+    ? " Achtung: Gerade läuft ein Holdover-Test – der Neustart bricht ihn ab (das Ergebnis bis jetzt bleibt erhalten)."
+    : "";
+}
+
 export function storageGet(key, fallback) {
   try { return JSON.parse(window.localStorage.getItem(key)) ?? fallback; } catch (error) { return fallback; }
 }

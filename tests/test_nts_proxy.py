@@ -459,7 +459,7 @@ kill "$old"
     def test_reload_held_follows_hold_file(self):
         """1.5.3: reload.hold mit einer Zeit in der Zukunft stellt automatische Neustarts zurück –
         ein Ereignis je Grund; abgelaufen, kaputt oder fehlend → frei."""
-        self.FUNCS = ("reload_held",)
+        self.FUNCS = ("hold_active", "reload_held")
         tmp = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
         out = self.run_bash(f"""
@@ -477,11 +477,12 @@ reload_held "A" && echo held || echo frei
         self.assertEqual(out, ["frei", "EVENT:info", "held", "held", "frei", "frei"])
 
     def test_hotplug_reload_waits_for_holdover(self):
-        self.FUNCS = ("reload_held", "check_hotplug")
+        self.FUNCS = ("hold_active", "reload_held", "check_hotplug")
         tmp = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
         out = self.run_bash(f"""
 RUN_DIR={tmp}; RELOAD_HOLD_NOTED=""; HOTPLUG_PATHS="{tmp}"; GPS_DEV_GONE=0
+write_status() {{ :; }}
 reload_services() {{ echo NEUSTART; }}
 echo 1100 > "$RUN_DIR/reload.hold"
 check_hotplug; echo runde1
@@ -489,6 +490,50 @@ rm "$RUN_DIR/reload.hold"
 check_hotplug; echo runde2
 """)
         self.assertEqual(out, ["runde1", "NEUSTART", "runde2"])
+
+    def test_hotplug_hold_still_reports_vanished_gps(self):
+        """Prüfbefund: Ein zurückgestellter Hotplug-Neustart darf die Warnung „GPS-Gerät verschwunden“
+        nicht bis nach dem Test verschieben."""
+        self.FUNCS = ("hold_active", "reload_held", "check_hotplug")
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        out = self.run_bash(f"""
+RUN_DIR={tmp}; RELOAD_HOLD_NOTED=""; HOTPLUG_PATHS="{tmp}"; GPS_DEV_GONE=0
+declare -A SVC_STATE=([gpsd]=running); NTPGUI_GPS_DEVICE={tmp}/fehlt
+emit_stub() {{ echo "EVENT:$1:$2"; }}; EMIT_EVENT=emit_stub
+write_status() {{ :; }}
+device_id() {{ :; }}
+reload_services() {{ echo NEUSTART; }}
+echo 9999999999 > "$RUN_DIR/reload.hold"
+check_hotplug; echo fertig
+""")
+        self.assertEqual(out, ["EVENT:reload:info", "EVENT:gps:warn", "fertig"])
+
+    def test_reload_held_level_and_hint(self):
+        """Zertifikat: Stufe und Hinweis werden durchgereicht; RELOAD_HOLD_NOTED fällt mit der Sperre."""
+        self.FUNCS = ("hold_active", "reload_held")
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        out = self.run_bash(f"""
+RUN_DIR={tmp}; RELOAD_HOLD_NOTED=""
+emit_stub() {{ echo "EVENT:$2:${{3// /_}}"; }}; EMIT_EVENT=emit_stub
+echo 9999999999 > "$RUN_DIR/reload.hold"
+reload_held "Z" warn "Test abbrechen" && echo held
+rm "$RUN_DIR/reload.hold"
+hold_active || echo frei
+""")
+        self.assertEqual(out, ["EVENT:warn:Z_–_zurückgestellt_bis_zum_Ende_des_Holdover-Tests._Test_abbrechen",
+                               "held", "frei"])
+
+    def test_apply_config_clears_deferred_cert(self):
+        """Prüfbefund: Ein Neustart von Hand lädt das erneuerte Zertifikat mit – kein zweiter Neustart danach."""
+        text = (ROOT / "docker" / "entrypoint.sh").read_text(encoding="utf-8")
+        block = text[text.index("apply_config() {"):]
+        block = block[:block.index("\n}")]
+        self.assertIn("NTS_CERT_DEFERRED=0", block)
+        loop = text[text.index('if [[ -e "${RUN_DIR}/reload.request" ]]; then'):]
+        loop = loop[:loop.index("fi")]
+        self.assertLess(loop.index("write_status running"), loop.index("rm -f"))
 
 if __name__ == "__main__":
     unittest.main()

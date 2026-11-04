@@ -703,6 +703,7 @@ _DEPS: dict[str, Callable | None] = {
     "forget_bound": None,      # (cfg, now) -> True, wenn die Schranke auf den Standard zurückging (gpsquality)
     "holdover_defer": None,    # (what) -> True, wenn ein Holdover-Test läuft: Änderung zurückstellen
     "holdover_resume": None,   # () -> True einmal nach einem Test, der eine Änderung zurückgestellt hat
+    "holdover_reload": None,   # (trigger) -> Neustart jetzt oder (Test hat gerade begonnen) nach dem Test
 }
 
 
@@ -782,6 +783,11 @@ def _deps(overrides: dict | None = None) -> dict:
             import holdover
             return holdover.defer("autocal", what)
         deps["holdover_defer"] = _defer
+    if deps.get("holdover_reload") is None:
+        def _reload(trigger):
+            import holdover
+            return holdover.reload_or_defer(trigger)
+        deps["holdover_reload"] = _reload
     if deps.get("holdover_resume") is None:
         def _resume():
             import holdover
@@ -1006,7 +1012,7 @@ def _apply(cfg: dict, decision: dict, state: dict, deps: dict, now: float) -> di
     reloaded = False
     if result.get("restart"):
         try:
-            reloaded = bool(deps["trigger_reload"]())
+            reloaded = bool(deps["holdover_reload"](deps["trigger_reload"]))
         except Exception:
             reloaded = False
         if not reloaded:

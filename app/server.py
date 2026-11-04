@@ -87,7 +87,7 @@ PTP4L_CONF = os.environ.get("PTP4L_CONF", "/etc/linuxptp/ptp4l.conf")
 RUN_DIR = os.environ.get("NTPGUI_RUN_DIR", "/run/ntp-gui")
 START_TIME = time.time()
 MAX_BODY = 64 * 1024
-VERSION = os.environ.get("NTPGUI_VERSION", "1.5.2")
+VERSION = os.environ.get("NTPGUI_VERSION", "1.5.3")
 EVENTS_INTERVAL = 5.0          # so oft liest der Server die Supervisor-Ereignisse ein
 CALIBRATION_DEFAULT_WINDOW = 86400.0  # /api/gps/calibration ohne window: letzte 24 h
 
@@ -1965,6 +1965,7 @@ def main() -> None:
                   f"eintragen, z. B. meinzeit.{entry[2:]}", flush=True)
     # 1.5.3: Folgen eines laufenden Holdover-Tests (keine Quelle ausgewählt …) nur als „info“, ohne Meldung.
     events.add_filter(holdover.event_filter)
+    holdover.configure(trigger_reload=trigger_reload)
     autocal.configure(history=HISTORY, trigger_reload=trigger_reload)
     gpsquality.configure(history=HISTORY, trigger_reload=trigger_reload,
                          net_distance=lambda: gpsquality.nts_distance(chrony.detailed_sources()))

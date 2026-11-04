@@ -21,6 +21,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
@@ -926,6 +927,20 @@ class NoOtherSourceTest(LockCase):
         self.assertEqual(len(skipped), 1)                  # einmal je Episode, nicht jede 10 s
         self.assertEqual(skipped[0][1], "warn")
         self.assertEqual(guard.lock_status()["other_sources"], 0)
+
+    def test_skip_note_during_holdover_comes_again_after_test(self):
+        """Prüfbefund 1.5.3: Während eines Holdover-Tests ist „Sperre ausgelassen“ nur ein Vermerk –
+        besteht die Lage danach weiter, kommt die Warnung noch einmal (nicht „einmal je Episode verbraucht“)."""
+        running = [True]
+        with mock.patch.object(gnssguard, "_holdover_running", lambda: running[0]):
+            guard = self.baseline(self.guard())
+            self.feed(guard, 600, True)
+            self.assertEqual(len([e for e in self.events if e[2].startswith("GPS-Sperre ausgelassen")]), 1)
+            running[0] = False
+            self.feed(guard, 60, True)
+            self.feed(guard, 60, True)
+        skipped = [e for e in self.events if e[2].startswith("GPS-Sperre ausgelassen")]
+        self.assertEqual(len(skipped), 2)
 
     def test_manual_lock_needs_force(self):
         guard = self.guard()

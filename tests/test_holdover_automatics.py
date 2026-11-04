@@ -115,7 +115,7 @@ class BoundWaitsForHoldoverTest(Case):
         self.assertEqual(result["duration_s"], 6 * 3600)
         self.assertIsNone(self.holds[-1])                              # Supervisor-Sperre aufgehoben
         self.assertEqual(self.chrony.effective, set())
-        self.assertIn("Zurückgestellt und jetzt nachgeholt: GPS-Fehlerschranke", self.events_of("source")[-1][2])
+        self.assertIn("Zurückgestellt, wird jetzt erneut geprüft: GPS-Fehlerschranke", self.events_of("source")[-1][2])
 
         # Nächster Durchgang der Messschleife: gpsquality prüft sofort (nicht erst nach einer Stunde).
         calls = []
@@ -157,6 +157,116 @@ class BoundWaitsForHoldoverTest(Case):
             self.wall[0] += 2 * H + 60
             fresh.tick({}, self.chrony.select())
             self.assertTrue(holdover.resume("autocal"))
+
+
+class ReviewFindingsTest(Case):
+    """Prüfbefunde zu 1.5.3: Teststart-Wettlauf, Frist bei hängendem chronyd, Tests direkt hintereinander."""
+
+    def test_start_refused_while_reload_requested_or_running(self):
+        self.test.busy = lambda: "Ein Neustart der Zeitdienste ist angefordert"
+        with self.assertRaises(holdover.HoldoverError) as ctx:
+            self.start(hours=2)
+        self.assertTrue(ctx.exception.conflict)
+        self.assertIn("in ein paar Sekunden", str(ctx.exception))
+        self.assertFalse(self.test.running())
+        self.assertIsNone(self.holds[-1])              # Sperre wieder weg
+        self.assertEqual(self.chrony.effective, set())   # nichts abgewählt
+        self.test.busy = lambda: ""
+        self.start(hours=2)
+        self.assertTrue(self.test.running())
+
+    def test_reload_busy_reads_request_and_status(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        with mock.patch.dict(os.environ, {"NTPGUI_RUN_DIR": tmp}):
+            self.assertEqual(holdover.reload_busy(1000.0), "")
+            open(os.path.join(tmp, "reload.request"), "w").close()
+            self.assertIn("angefordert", holdover.reload_busy(1000.0))
+            os.remove(os.path.join(tmp, "reload.request"))
+            with open(os.path.join(tmp, "reload.json"), "w", encoding="utf-8") as handle:
+                handle.write('{"state": "running", "message": "x", "time": 990}')
+            self.assertIn("starten gerade neu", holdover.reload_busy(1000.0))
+            self.assertEqual(holdover.reload_busy(990.0 + holdover.RELOAD_RUNNING_MAX + 1), "")   # veraltet
+            with open(os.path.join(tmp, "reload.json"), "w", encoding="utf-8") as handle:
+                handle.write('{"state": "done", "message": "x", "time": 990}')
+            self.assertEqual(holdover.reload_busy(1000.0), "")
+
+    def test_automatic_reload_right_after_start_waits_for_end(self):
+        """Wettlauf: gpsquality fragt defer() (noch kein Test), der Test startet, dann käme der Neustart –
+        er wird unter der Sperre noch einmal geprüft und folgt erst nach dem Ende."""
+        fired = []
+        holdover.configure(trigger_reload=lambda: fired.append(self.wall[0]) or True)
+        self.addCleanup(holdover.configure, None)
+        samples = vk162_samples(loops=5)
+
+        def defer_then_start(what):
+            self.start(hours=2)          # genau zwischen Prüfung und Neustart
+            return False
+
+        with mock.patch.object(gpsquality, "_holdover_defers", defer_then_start):
+            decision = gpsquality.tick(gq_cfg(), samples[-1]["t"] + 1, samples)
+        self.assertTrue(decision["apply"])
+        self.assertTrue(decision["reload_triggered"])          # vorgemerkt
+        self.assertEqual(self.reloads, [])                     # aber jetzt kein Neustart
+        self.assertTrue(self.test.running())
+        self.assertEqual(len([t for t in self.titles() if t.startswith("Neustart der Zeitdienste – zurückgestellt")]), 1)
+        result = self.run_until(self.wall[0] + 2 * H + 60)
+        self.assertEqual(result["outcome"], "done")
+        self.assertEqual(len(fired), 1)                        # nach dem Ende genau einmal
+        self.assertIn("Ein zurückgestellter Neustart der Zeitdienste folgt jetzt", self.events_of("source")[-1][2])
+
+    def events_of(self, kind):
+        return [e for e in self.events if e[0] == kind]
+
+    def test_deadline_applies_while_chronyd_hangs(self):
+        self.start(hours=1)
+        self.wall[0] += 3 * H
+        result = self.test.tick({}, {})                         # chronyd antwortet nicht
+        self.assertIsNotNone(result)
+        self.assertEqual(result["outcome"], "done")
+        self.assertFalse(self.test.running())
+        self.assertIsNone(self.holds[-1])
+        self.assertTrue(self.test.state().get("release_pending"))
+        self.test.tick({}, self.chrony.select())                # chronyd wieder da → freigegeben
+        self.assertEqual(self.chrony.effective, set())
+
+    def test_hold_never_much_longer_than_deadline(self):
+        import time as _time
+        self.start(hours=1)
+        self.wall[0] += 1 * H - 10                              # 10 s vor der Frist
+        self.test.tick({}, None)
+        self.assertLessEqual(self.holds[-1], _time.time() + 10 + holdover.HOLD_TTL + 1)
+        self.wall[0] += 3 * H                                   # weit danach (chronyd hängt, noch ein Durchgang)
+        self.test._refresh_hold()
+        self.assertLessEqual(self.holds[-1], _time.time() + holdover.HOLD_TTL + 1)
+
+    def test_back_to_back_tests_keep_deferred_changes(self):
+        self.start(hours=1)
+        holdover.defer("gps_bound", "GPS-Fehlerschranke ± 16 ms → ± 22 ms")
+        self.test.abort(self.chrony.select())
+        with self.assertRaises(holdover.HoldoverError):          # sofort danach: Pause
+            self.start(hours=1)
+        self.wall[0] += holdover.RESTART_PAUSE + 1
+        with self.assertRaises(holdover.HoldoverError) as ctx:   # Zurückgestelltes noch nicht geprüft
+            self.start(hours=1)
+        self.assertIn("nachgeholt", str(ctx.exception))
+        self.wall[0] += holdover.RESUME_WAIT
+        self.start(hours=1)                                      # Automatik aus? Dann übernehmen
+        self.assertFalse(holdover.resume("gps_bound"))           # nicht während des Tests
+        self.test.abort(self.chrony.select())
+        self.assertTrue(holdover.resume("gps_bound"))            # nach dem zweiten Test
+
+    def test_unconfirmed_state_after_container_restart_defers_quietly(self):
+        self.start(hours=2)
+        self.chrony.restart()                                    # Container neu: chronyd vergaß die Abwahl
+        fresh = holdover.HoldoverTest(emit=lambda *a: self.events.append(a), wall=lambda: self.wall[0],
+                                      hold=self.holds.append)
+        with mock.patch.object(holdover, "TEST", fresh):
+            self.assertTrue(holdover.defer("gps_bound", "GPS-Fehlerschranke ± 16 ms → ± 22 ms"))
+            self.assertEqual([t for t in self.titles() if "zurückgestellt" in t], [])
+            self.assertEqual(fresh.tick({}, self.chrony.select())["outcome"], "restart")
+            self.assertTrue(holdover.resume("gps_bound"))
+            self.assertIn("wird jetzt erneut geprüft", self.events_of("source")[-1][2])
 
 
 class AutocalWaitsForHoldoverTest(unittest.TestCase):
@@ -271,6 +381,33 @@ class NoWarningFromOwnTestTest(Case):
         self.assertEqual(f("source", "warn", "Holdover-Test abgebrochen (Grenze)", own),
                          ("warn", "Holdover-Test abgebrochen (Grenze)", own))
 
+    def test_gps_only_test_keeps_real_network_loss(self):
+        """Prüfbefund: Test nur ohne GPS – die Netzquellen stellen weiter die Uhr. Fallen sie aus, ist
+        „keine Zeitquelle“ ein echter Ausfall und bleibt eine Warnung mit Meldung."""
+        self.test.start({"action": "start", "hours": 2, "include_network": False, "limit_ms": 80})
+        f = holdover.event_filter
+        self.assertEqual(f("source", "warn", "Keine Zeitquelle mehr ausgewählt", {"from": "192.0.2.1"})[0], "warn")
+        self.assertEqual(f("source", "warn", "Keine Zeitquelle mehr ausgewählt", {"from": "GPS"})[0], "warn")
+        level, _t, data = f("source", "info", "Zeitquelle gewechselt: GPS → 192.0.2.1", {"from": "GPS", "to": "192.0.2.1"})
+        self.assertEqual((level, data["notify"]), ("info", False))
+        level, _t, data = f("source", "info", "Zeitquelle gewechselt: 192.0.2.1 → 192.0.2.2",
+                            {"from": "192.0.2.1", "to": "192.0.2.2"})
+        self.assertNotIn("holdover_test", data)
+        self.assertEqual(f("source", "info", "Schleife bei x beendet – die Quelle antwortet derzeit nicht",
+                           {"state": "resolved", "address": "192.0.2.9"})[2].get("notify"), None)
+        # Nach dem Test (Nachlauf) gilt dasselbe.
+        self.test.abort(self.chrony.select())
+        self.assertEqual(f("source", "warn", "Keine Zeitquelle mehr ausgewählt", {"from": "192.0.2.1"})[0], "warn")
+        self.assertEqual(f("source", "info", "Zeitquelle ausgewählt: GPS", {"to": "GPS"})[2]["notify"], False)
+
+    def test_skip_note_only_while_test_runs(self):
+        f = holdover.event_filter
+        skip = ("gps", "warn", "GPS-Sperre ausgelassen: keine andere Zeitquelle", {"subject": "gps-sperre-ausgelassen"})
+        self.start(hours=1)
+        self.assertEqual(f(*skip)[0], "info")
+        self.test.abort(self.chrony.select())
+        self.assertEqual(f(*skip)[0], "warn")                   # kein 15-min-Nachlauf
+
     def test_without_test_nothing_changes(self):
         self.assertEqual(holdover.event_filter("source", "warn", "Keine Zeitquelle mehr ausgewählt", {}),
                          ("warn", "Keine Zeitquelle mehr ausgewählt", {}))
@@ -280,6 +417,10 @@ class WiringTest(unittest.TestCase):
     def test_server_registers_filter_and_status_flag(self):
         text = (Path(__file__).resolve().parents[1] / "app" / "server.py").read_text(encoding="utf-8")
         self.assertIn("events.add_filter(holdover.event_filter)", text)
+        self.assertIn("holdover.configure(trigger_reload=trigger_reload)", text)
+        pages = Path(__file__).resolve().parents[1] / "app" / "static" / "js" / "pages"
+        for name in ("gps.js", "gpsquality.js"):
+            self.assertIn("holdoverNote(ctx)", (pages / name).read_text(encoding="utf-8"), name)
         self.assertIn('status["holdover_active"]', text)
         js = (Path(__file__).resolve().parents[1] / "app" / "static" / "js" / "pages" / "settings.js").read_text(
             encoding="utf-8")
