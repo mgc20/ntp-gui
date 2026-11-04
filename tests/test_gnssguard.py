@@ -868,6 +868,13 @@ class ReviewGuardTest(LockCase):
         self.assertIsNone(gnssguard.load("time_anchor").get("value"))
         self.assertIsNone(guard.detector.time_anchor)
 
+    def test_relearn_time_is_kept_for_autocal(self):
+        guard = self.baseline(self.guard())
+        self.assertIsNone(guard.relearned_at())
+        guard.action(CFG, {"action": "relearn"})
+        self.assertEqual(guard.relearned_at(), self.wall[0])
+        self.assertEqual(self.guard().relearned_at(), self.wall[0])   # übersteht einen Neustart
+
     def test_stale_episode_ends_and_lock_releases(self):
         guard = self.baseline(self.guard())
         self.feed(guard, 60, True)

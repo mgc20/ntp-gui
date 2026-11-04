@@ -246,7 +246,9 @@ export const HELP_GNSS = {
     text: "Vergisst die gelernte Position und den gewohnten Zeitabstand zum Netz. Nötig, wenn du den Empfänger "
       + "umgestellt oder eine andere Antenne angeschlossen hast – sonst hält die Erkennung den Umzug für einen "
       + "Positionssprung. Das Lernen dauert danach einige Minuten. Achtung: Was zum Zeitpunkt des Neulernens "
-      + "empfangen wird, gilt danach als normal – bei einem laufenden Befund also erst die Ursache klären.",
+      + "empfangen wird, gilt danach als normal – bei einem laufenden Befund also erst die Ursache klären. "
+      + "Auch die automatische GPS-Kalibrierung beginnt ihre Messung dort neu: Störungsmeldungen davor halten sie "
+      + "nicht mehr auf, und den neuen Abstand (anderer Empfänger, andere Verspätung) übernimmt sie nach gut 6 h selbst.",
   },
 };
 

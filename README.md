@@ -902,8 +902,10 @@ genutzten Netzwerkquellen (Median der Differenz, robuste Streuung) und schlägt 
 - **Delay** = etwa die sechsfache Streuung (mindestens 5 ms, höchstens 0,2 s),
 - **Rolle**: automatisch, bevorzugt (`prefer`) oder nur beobachten (`noselect`).
 
-Vorgehen: GPS mit Internetquellen **einige Stunden** mitlaufen lassen (ab 30 Minuten gibt es
-einen vorläufigen Wert), dann **Vorschlag übernehmen**. chrony startet neu, die Abweichung im
+Seit 1.5.2 musst du dafür nichts tun: Die [automatische Kalibrierung](#gps-automatisch-kalibrieren)
+ist standardmäßig an und übernimmt den Wert nach gut 6 Stunden selbst. Von Hand (Modus
+„vorschlagen“ oder wenn du nicht warten willst): GPS mit Internetquellen **einige Stunden**
+mitlaufen lassen (ab 30 Minuten gibt es einen vorläufigen Wert), dann **Vorschlag übernehmen**. chrony startet neu, die Abweichung im
 Diagramm pendelt danach um 0 und das GPS wird *kombiniert* oder *ausgewählt*. Neu
 kalibrieren nur nach einem Wechsel von Empfänger, USB-Port, Baudrate oder Firmware.
 
@@ -915,14 +917,25 @@ Sekunden, `?seconds=` geht ebenso; ohne Angabe die letzten 24 h, `window=0` den 
 ### GPS automatisch kalibrieren
 
 Die Verspätung eines USB-GPS ist fest, aber nicht für immer: Firmware, USB-Port oder Baudrate
-ändern sie. Damit du nicht daran denken musst, misst ntp-gui laufend weiter und kann den
-Offset selbst nachstellen. Einstellung **GPS → Automatische Kalibrierung** (`GPS_AUTOCAL`):
+ändern sie. Damit du nicht daran denken musst, misst ntp-gui laufend weiter und stellt den
+Offset selbst nach. Einstellung **GPS → Automatische Kalibrierung** (`GPS_AUTOCAL`):
 
 | Modus | Was passiert |
 |---|---|
+| `auto` (Standard ab 1.5.2) | ntp-gui stellt den Offset selbst nach – nach festen Regeln, mit Eintrag im Ereignisprotokoll. Du musst nichts tun. |
+| `suggest` | Die Seite **GPS** zeigt einen Vorschlag, sobald er belastbar ist. Du übernimmst ihn per Klick. |
 | `off` | nichts – kein Vorschlag, keine Änderung |
-| `suggest` (Standard) | Die Seite **GPS** zeigt einen Vorschlag, sobald er belastbar ist. Du übernimmst ihn per Klick. |
-| `auto` | ntp-gui stellt den Offset selbst nach – nach festen Regeln, mit Eintrag im Ereignisprotokoll |
+
+Was das bei einer frischen Installation heißt (USB-GPS ohne PPS, mehrere NTS-Quellen): Die ersten
+gut 6 Stunden misst ntp-gui nur; das GPS läuft mit der vorsichtigen Fehlerschranke (± 100 ms) als
+Rückfallebene mit. Dann korrigiert es den Versatz (typisch 20–150 ms) in einem Schritt und schreibt
+im selben Neustart von chronyd die gemessene Fehlerschranke mit. Spätestens nach einem Tag gleicht
+es den Tagesgang der Netzlaufzeit aus (ein kleiner Schritt). Danach ändert sich nur noch etwas,
+wenn sich die Verspätung wirklich ändert. Ein Neustart des Containers unterbricht die Messung nicht,
+ein GPS-Ausfall auch nicht; stellst du in den Einstellungen einen anderen Empfänger ein (Gerät, Name,
+PPS), beginnt die Messung von selbst neu. Selbst entscheiden musst du nur bei einer **GNSS-Störung**
+– die Seite **GPS** sagt dann genau, was zu tun ist (Empfänger oder Antenne gewechselt → bei den
+GNSS-Störungen **Neu lernen**; sonst Antenne und Umgebung prüfen).
 
 Der Ablauf im Modus `auto` ist immer derselbe, und die Seite **GPS** zeigt ihn als **Phase** samt
 nächstem Schritt: **messen** → einen deutlichen Versatz **einmal korrigieren** → danach nur noch
@@ -932,7 +945,8 @@ Die Regeln sind bewusst vorsichtig – lieber eine Änderung zu wenig als eine f
 
 - **Genug Messdauer:** erst nach `GPS_AUTOCAL_MIN_HOURS` (Standard 6 h) gemeinsamer Messung
   von GPS und Netzwerkquellen. Mehrere Stunden glätten Tagesschwankungen der Netzlaufzeit.
-  Nach jeder Offset-Änderung (auch von Hand) beginnt die Messung neu.
+  Nach jeder Offset-Änderung (auch von Hand), einem anderen Empfänger und „Neu lernen“ bei den
+  GNSS-Störungen beginnt die Messung neu.
 - **Vertrauenswürdige Referenz:** mindestens zwei genutzte Netzwerkquellen oder eine genutzte
   NTS-Quelle. Eine einzelne ungeschützte Quelle könnte selbst danebenliegen. Ohne
   Netzwerkquelle (Internet weg) passiert nichts.
@@ -943,7 +957,8 @@ Die Regeln sind bewusst vorsichtig – lieber eine Änderung zu wenig als eine f
 - **Einmal korrigieren:** Ohne PPS (GPS als Rückfallebene, Fehlerschranke „gemessen“) wird ein
   deutlicher Versatz (ab 10 ms, über mindestens 6 h gegen mindestens zwei NTS-Quellen gemessen,
   ohne Sprung im Messzeitraum) in **einem** Schritt ganz korrigiert – etwa nach „Offset
-  zurücksetzen“. Die passende Fehlerschranke schreibt ntp-gui im selben Neustart von chronyd mit.
+  zurücksetzen“. Die passende Fehlerschranke schreibt ntp-gui im selben Neustart von chronyd mit;
+  bis dahin bleibt sie beim vorsichtigen Standard, statt vorher noch einmal neu zu starten.
   Mit PPS oder als bevorzugte Quelle bleibt es bei Schritten von höchstens
   `GPS_AUTOCAL_MAX_STEP_MS` (Standard 5 ms) je 24 h. Den Delay verkleinert ntp-gui dort erst beim
   letzten Schritt – ein kleiner Delay macht das GPS für chrony attraktiver, das soll erst mit
@@ -953,7 +968,9 @@ Die Regeln sind bewusst vorsichtig – lieber eine Änderung zu wenig als eine f
   Millisekunden; ein kürzeres Fenster sähe darin eine Drift, und der Offset pendelte hin und her.
 - **Nie während einer GNSS-Störung:** Meldet die Störungserkennung im Messzeitraum eine Warnung
   oder Störung, ist die Automatik gesperrt (Phase „gesperrt wegen GNSS-Störung“) – ein Versatz,
-  den ein Spoofer verursacht, wird so nie eingerechnet.
+  den ein Spoofer verursacht, wird so nie eingerechnet. Hast du selbst Empfänger oder Antenne
+  gewechselt, bestätigst du das mit **Neu lernen** (Karte „GNSS-Störungen“); die Automatik misst
+  dann neu und korrigiert selbst.
 - **Im Zweifel ein Mensch:** Streut die Messung über 25 ms oder liegt sie über 0,5 s daneben,
   stimmt etwas Grundsätzliches nicht (falsches Gerät, wackelige Leitung). Dann gibt es nur
   einen Vorschlag.
@@ -961,7 +978,8 @@ Die Regeln sind bewusst vorsichtig – lieber eine Änderung zu wenig als eine f
 **Rücknahme:** Jede automatische Änderung steht mit Grund in der Tabelle auf der Seite **GPS**
 und im Ereignisprotokoll. **Rückgängig** stellt den vorigen Offset wieder her
 (`POST /api/gps/autocal/rollback`). Hast du den Offset seitdem von Hand geändert, verweigert
-ntp-gui die Rücknahme, statt deine Änderung zu überschreiben. Eine übernommene Änderung
+ntp-gui die Rücknahme, statt deine Änderung zu überschreiben. Nach einer Rücknahme wartet die
+Automatik 24 h und korrigiert danach nur noch in kleinen Schritten. Eine übernommene Änderung
 startet chronyd kurz neu. Mit `WEB_READONLY=true` ändert auch die Automatik nichts.
 
 **Kein Schritt auf unbestätigter Grundlage:** Bevor die Automatik erneut stellt, prüft sie, ob
@@ -1324,7 +1342,7 @@ unverändert übernommen und alle NTP-Variablen ignoriert.
 | `GPS_PPS_SHM` | `false` | PPS stattdessen über gpsd (SHM-Segment `GPS_PPS_SHM_UNIT`, Standard `1`) |
 | `GPS_WAIT_SECONDS` | `10` | So lange auf das Gerät warten (USB taucht nach dem Boot verzögert auf) |
 | `GPS_SHOW_POSITION` | `false` | Koordinaten im Dashboard anzeigen |
-| `GPS_AUTOCAL` | `suggest` | Automatische Kalibrierung: `off`, `suggest` (vorschlagen) oder `auto`, siehe [GPS automatisch kalibrieren](#gps-automatisch-kalibrieren) |
+| `GPS_AUTOCAL` | `auto` | Automatische Kalibrierung: `auto` (Standard ab 1.5.2), `suggest` (vorschlagen) oder `off`, siehe [GPS automatisch kalibrieren](#gps-automatisch-kalibrieren) |
 | `GPS_AUTOCAL_MAX_STEP_MS` | `5.0` | Größter automatischer Kalibrierschritt in ms (0,1–50) |
 | `GPS_AUTOCAL_MIN_HOURS` | `6.0` | Mindest-Messdauer in Stunden, bevor vorgeschlagen oder geändert wird (0,5–168) |
 | `GPS_REFCLOCK_OPTIONS` | – | Zusätzliche chrony-Refclock-Optionen |

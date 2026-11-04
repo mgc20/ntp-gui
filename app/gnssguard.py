@@ -764,6 +764,8 @@ class Guard:
         self._alarm_wall: float | None = None        # zuletzt „Warnung“/„Störung“ (Wanduhr, für autocal)
         self._alarm_stage: str | None = None         # höchste Stufe dabei
         self._alarm_saved: float | None = None
+        self._relearn_wall: float | None = None      # letztes „Neu lernen“ (Wanduhr, für autocal)
+        self._relearn_loaded = False
 
     # --- Ereignisse --------------------------------------------------------------------------
     def _emit(self, level: str, title: str, data: dict) -> None:
@@ -1093,6 +1095,20 @@ class Guard:
             wall, stage = legacy, "stoerung"
         return wall, stage if stage in STAGES else "stoerung"
 
+    def relearned_at(self) -> float | None:
+        """Wann zuletzt „Neu lernen“ gedrückt wurde (Wanduhr) oder None. Die automatische Kalibrierung
+        beginnt dort ihre Messung neu: Ein Mensch hat bestätigt, dass der neue Abstand GPS ↔ Netz echt
+        ist (Empfänger oder Antenne gewechselt) – ohne das hielte eine Störung davor sie bis zu 24 h auf,
+        und das Messfenster mischte alten und neuen Abstand."""
+        with self.lock:
+            if not self._relearn_loaded:
+                self._relearn_loaded = True
+                try:
+                    self._relearn_wall = _num(load("relearn").get("wall"))
+                except Exception:
+                    self._relearn_wall = None
+            return self._relearn_wall
+
     def calibration_hold(self, since_wall: float | None) -> str | None:
         """Darf die automatische Kalibrierung den Offset jetzt ändern? None = ja, sonst der Grund.
 
@@ -1212,6 +1228,11 @@ class Guard:
             with self.lock:
                 self.detector.reset_baselines()
                 self._store_anchor(None)
+                self._relearn_wall, self._relearn_loaded = self.wall(), True
+                try:
+                    save("relearn", {"wall": self._relearn_wall})
+                except Exception as exc:
+                    self.last_error = f"Zeitpunkt von „Neu lernen“ nicht gespeichert: {exc}"
                 if self.stage != "ok":
                     self._finish_episode("Grundlinien neu gelernt")
                 self._emit("info", "GNSS-Störungserkennung lernt Position und Zeitabstand neu",

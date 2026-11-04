@@ -5,14 +5,15 @@ export const HELP_AUTOCAL = {
   autocal_mode: {
     title: "Automatische Kalibrierung",
     text: "Ein USB-GPS meldet die Zeit mit einer festen Verspätung. ntp-gui misst sie laufend gegen deine "
-      + "Netzwerkquellen. **Aus**: nichts passiert, der Assistent oben bleibt nutzbar. **Vorschlagen**: du "
-      + "siehst einen passenden Offset, sobald die Messung belastbar ist, und übernimmst ihn selbst. "
-      + "**Automatisch**: ntp-gui stellt den Offset selbst nach, immer im selben Ablauf: **messen** (mindestens "
+      + "Netzwerkquellen. **Automatisch** (Standard ab 1.5.2, du musst nichts tun): ntp-gui stellt den Offset selbst "
+      + "nach, immer im selben Ablauf: **messen** (mindestens "
       + "6 h) → einen deutlichen Versatz **einmal korrigieren** (ohne PPS in einem Schritt, mit PPS in Schritten "
       + "von höchstens 5 ms je Tag) → danach nur noch **kleinen Drifts folgen**, jeweils erst nach einer ganzen "
       + "24-h-Messung. Nur mit vertrauenswürdigem Vergleich, nie während einer GNSS-Störung, und jede Änderung "
-      + "lässt sich zurücknehmen. Wo sie gerade steht, zeigt „Phase“. "
-      + "Umstellen kannst du das in den Einstellungen unter GPS.",
+      + "lässt sich zurücknehmen. Ein anderer Empfänger (Gerät in den Einstellungen) oder „Neu lernen“ bei den "
+      + "GNSS-Störungen startet die Messung von selbst neu. Wo sie gerade steht, zeigt „Phase“. **Vorschlagen**: du "
+      + "siehst einen passenden Offset, sobald die Messung belastbar ist, und übernimmst ihn selbst. **Aus**: nichts "
+      + "passiert, der Assistent oben bleibt nutzbar. Umstellen kannst du das in den Einstellungen unter GPS.",
   },
   autocal_phase: {
     title: "Phase",
@@ -20,7 +21,8 @@ export const HELP_AUTOCAL = {
       + "Fortschritt), **korrigiert bei nächster Prüfung** (die stündliche Prüfung stellt den Offset um), "
       + "**kalibriert – folgt nur kleinen Drifts** (alles gut; kleine Abweichungen werden erst nach einer "
       + "ganzen 24-h-Messung nachgezogen, damit Tagesschwankungen der Netzlaufzeit den Offset nicht hin- und "
-      + "herschieben), **gesperrt wegen GNSS-Störung** (erst Antenne und Umgebung prüfen), **wartet** (z. B. "
+      + "herschieben), **gesperrt wegen GNSS-Störung** (hier entscheidest du: Empfänger oder Antenne gewechselt → "
+      + "„Neu lernen“ bei den GNSS-Störungen; sonst Antenne und Umgebung prüfen), **wartet** (z. B. "
       + "keine Netzwerkquelle als Vergleich) oder **bitte prüfen** (Messung zu ungewöhnlich für eine Automatik).",
   },
   autocal_decision: {
@@ -94,7 +96,8 @@ export const HELP_AUTOCAL = {
   autocal_rollback: {
     title: "Rückgängig",
     text: "Stellt den Offset (und ggf. den Delay) auf den Wert vor der letzten automatischen Änderung "
-      + "zurück; chrony startet dafür kurz neu. Danach wartet die Automatik wieder mindestens 24 h. Soll "
+      + "zurück; chrony startet dafür kurz neu. Danach wartet die Automatik wieder mindestens 24 h und korrigiert "
+      + "auch einen deutlichen Versatz dann nur noch in kleinen Schritten. Soll "
       + "sie gar nicht mehr ändern, stell den Modus auf „vorschlagen“. Wurde der Offset seitdem von Hand "
       + "geändert, geht Rückgängig nicht – sonst würde es deine Änderung überschreiben.",
   },

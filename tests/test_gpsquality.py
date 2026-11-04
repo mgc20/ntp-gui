@@ -409,6 +409,12 @@ class DecideTest(unittest.TestCase):
         self.assertTrue(gpsquality.decide(self.measured(0.2), applied, T0)["apply"])
         self.assertFalse(gpsquality.decide(self.measured(0.03), applied, T0)["apply"])
 
+    def test_defer_shrink_only_blocks_shrinking(self):
+        d = gpsquality.decide(self.measured(0.04), None, T0, defer_shrink=True)
+        self.assertFalse(d["apply"])
+        self.assertIn("automatische Kalibrierung", d["reason"])
+        self.assertTrue(gpsquality.decide(self.measured(0.3), None, T0, defer_shrink=True)["apply"])
+
     def test_no_shrink_after_reset(self):
         self.assertFalse(gpsquality.decide(self.measured(0.04), None, T0 + H, reset_at=T0)["apply"])
         self.assertTrue(gpsquality.decide(self.measured(0.3), None, T0 + H, reset_at=T0)["apply"])

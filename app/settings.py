@@ -919,8 +919,8 @@ SCHEMA: list[dict] = [
     _field("gps_offset", "gps", "Offset (Korrektur)", "float", 0.0, _as_number(float, -2.0, 2.0),
            env="GPS_OFFSET", unit="s",
            help="Gleicht die feste Verspätung aus, mit der ein Empfänger die Zeit meldet. Bei "
-                "USB-Empfängern typisch 0,02–0,15 s. Den richtigen Wert misst der "
-                "Kalibrier-Assistent auf der GPS-Seite."),
+                "USB-Empfängern typisch 0,02–0,15 s. Den richtigen Wert misst und setzt die "
+                "automatische Kalibrierung selbst (GPS-Seite → „GPS kalibrieren“ zeigt den Stand)."),
     _field("gps_delay", "gps", "Angenommene Unsicherheit (Delay)", "float", 0.2,
            _as_number(float, 0.0001, 1.0), env="GPS_DELAY", unit="s",
            help="Wie stark chrony dem GPS misstraut. 0,2 s ist vorsichtig für unkalibrierte "
@@ -989,19 +989,19 @@ SCHEMA: list[dict] = [
            env="GPS_SHOW_POSITION", restart=RESTART_NONE,
            help="Zeigt Koordinaten im Dashboard und in der API. Standardmäßig aus, weil die "
                 "Position den Standort verrät."),
-    _field("gps_autocal", "gps", "Automatische Kalibrierung", "select", "suggest",
+    _field("gps_autocal", "gps", "Automatische Kalibrierung", "select", "auto",
            _as_choice("off", "suggest", "auto"), env="GPS_AUTOCAL", restart=RESTART_NONE,
-           options=[("off", "aus – nichts vorschlagen, nichts ändern"),
+           options=[("auto", "automatisch – messen, einmal korrigieren, Drifts folgen (Standard)"),
                     ("suggest", "vorschlagen – du entscheidest per Klick"),
-                    ("auto", "automatisch – messen, einmal korrigieren, Drifts folgen")],
+                    ("off", "aus – nichts vorschlagen, nichts ändern")],
            help="USB-GPS-Empfänger liefern die Zeit (NMEA) mit einer festen Verspätung von "
                 "typisch 20–150 ms. ntp-gui misst sie laufend gegen deine Netzwerkquellen. "
-                "„Vorschlagen“ zeigt dir den passenden Offset, du übernimmst ihn selbst. "
-                "„Automatisch“ stellt ihn nach: messen → einen deutlichen Versatz einmal "
-                "korrigieren → danach nur kleinen Drifts folgen (nach je 24 h Messung), nie "
-                "während einer GNSS-Störung, mit Eintrag im Ereignisprotokoll – jede Änderung "
-                "lässt sich dort zurücknehmen. Wirkt ohne Neustart; erst das Übernehmen eines neuen "
-                "Offsets startet chronyd neu."),
+                "„Automatisch“ (Standard ab 1.5.2) stellt den Offset ohne dein Zutun nach: messen → "
+                "einen deutlichen Versatz einmal korrigieren → danach nur kleinen Drifts folgen "
+                "(nach je 24 h Messung), nie während einer GNSS-Störung, mit Eintrag im "
+                "Ereignisprotokoll – jede Änderung lässt sich dort zurücknehmen. „Vorschlagen“ zeigt "
+                "dir nur den passenden Offset, du übernimmst ihn selbst. Wirkt ohne Neustart; erst "
+                "das Übernehmen eines neuen Offsets startet chronyd neu."),
     _field("gps_autocal_max_step_ms", "gps", "Größter Kalibrierschritt", "float", 5.0,
            _as_number(float, 0.1, 50.0), env="GPS_AUTOCAL_MAX_STEP_MS", unit="ms",
            restart=RESTART_NONE, advanced=True,
@@ -1623,7 +1623,7 @@ def export_values(masked: bool = False) -> dict:
 # Neue Migration: Funktion _migrate_<N-1>_<N>(data) -> list[dict] schreiben,
 # in MIGRATIONS eintragen, SCHEMA_VERSION erhöhen, Test ergänzen.
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 MAX_NOTES = 50
 
 
@@ -1693,9 +1693,36 @@ def _migrate_2_3(data: dict) -> list[dict]:
         ["leapsectz", "leapseclist"])]
 
 
+def _migrate_3_4(data: dict) -> list[dict]:
+    """1.5.2: Die automatische GPS-Kalibrierung ist standardmäßig an („auto“ statt „suggest“).
+
+    Daten ändern sich nicht: Wer „vorschlagen“ oder „aus“ ausdrücklich gespeichert hat (oder
+    GPS_AUTOCAL setzt), behält es – der Standard gilt nur, wo nichts gespeichert ist. Für diese
+    Nutzer mit GPS nur ein Hinweis, damit die erste automatische Änderung nicht überrascht.
+    """
+    stored = data.get("values")
+    if not isinstance(stored, dict) or "gps_autocal" in stored or "GPS_AUTOCAL" in os.environ:
+        return []
+    gps = stored.get("gps_enable", os.environ.get("GPS_ENABLE", ""))
+    try:
+        if not _as_bool(gps):
+            return []
+    except ValidationError:
+        return []
+    return [_note(
+        "4-gps-autocal", 4, "GPS-Kalibrierung: jetzt automatisch",
+        "Die automatische GPS-Kalibrierung steht jetzt standardmäßig auf „automatisch“ (vorher "
+        "„vorschlagen“). ntp-gui misst die Verspätung deines Empfängers gegen die Netzwerkquellen und "
+        "stellt den Offset selbst nach – nie während einer GNSS-Störung, jede Änderung steht im "
+        "Ereignisprotokoll und lässt sich auf der GPS-Seite zurücknehmen. Du musst nichts tun. Lieber "
+        "selbst entscheiden: Einstellungen → GPS → „Automatische Kalibrierung“ auf „vorschlagen“.",
+        ["gps_autocal"])]
+
+
 MIGRATIONS: dict[int, Callable[[dict], list[dict]]] = {
     2: _migrate_1_2,
     3: _migrate_2_3,
+    4: _migrate_3_4,
 }
 
 

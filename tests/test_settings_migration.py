@@ -122,7 +122,7 @@ class MigrationTest(_Base):
 class NewFieldsTest(_Base):
     def test_defaults(self):
         values = settings.values({})
-        self.assertEqual(values["gps_autocal"], "suggest")
+        self.assertEqual(values["gps_autocal"], "auto")          # ab 1.5.2 (E19)
         self.assertEqual(values["gps_autocal_max_step_ms"], 5.0)
         self.assertEqual(values["gps_autocal_min_hours"], 6.0)
         self.assertIs(values["clientmon_enable"], True)
@@ -155,6 +155,52 @@ class NewFieldsTest(_Base):
             self.assertTrue(settings.FIELDS[key]["help"], key)
         result = settings.save({"gps_autocal": "off", "clientmon_enable": False})
         self.assertFalse(result["restart"])
+
+
+class AutocalDefaultTest(_Base):
+    """1.5.2 (E19): „automatisch“ ist Standard – eine ausdrücklich gespeicherte Wahl bleibt."""
+
+    def test_old_default_becomes_auto_with_note(self):
+        self.write({"schema": 3, "values": {"gps_enable": True, "gps_offset": 0.05}})
+        values = settings.values({})
+        self.assertEqual(values["gps_autocal"], "auto")
+        self.assertEqual(settings.effective({})["gps_autocal"]["source"], "default")
+        notes = settings.migration_notes()
+        self.assertEqual([n["id"] for n in notes], ["4-gps-autocal"])
+        self.assertIn("vorschlagen", notes[0]["text"])
+        self.assertNotIn("gps_autocal", self.stored()["values"])     # nichts hineingeschrieben
+        self.assertEqual(self.stored()["schema"], settings.SCHEMA_VERSION)
+
+    def test_stored_choice_is_kept(self):
+        for choice in ("suggest", "off"):
+            self.write({"schema": 3, "values": {"gps_enable": True, "gps_autocal": choice}})
+            self.assertEqual(settings.values({})["gps_autocal"], choice)
+            self.assertEqual(settings.migration_notes(), [])
+            self.assertEqual(self.stored()["values"]["gps_autocal"], choice)
+
+    def test_env_still_overrides_default_and_no_note(self):
+        os.environ["GPS_AUTOCAL"] = "suggest"
+        self.write({"schema": 3, "values": {"gps_enable": True}})
+        self.assertEqual(settings.values()["gps_autocal"], "suggest")
+        self.assertEqual(settings.migration_notes(), [])
+
+    def test_no_note_without_gps(self):
+        self.write({"schema": 3, "values": {"web_title": "x"}})
+        self.assertEqual(settings.values({})["gps_autocal"], "auto")
+        self.assertEqual(settings.migration_notes(), [])
+        os.environ["GPS_ENABLE"] = "true"                          # GPS nur per Compose-Datei an
+        self.write({"schema": 3, "values": {"web_title": "x"}})
+        self.assertEqual([n["id"] for n in settings.migration_notes()], ["4-gps-autocal"])
+
+    def test_fresh_install_has_no_file_and_no_note(self):
+        self.assertEqual(settings.values({"GPS_ENABLE": "true"})["gps_autocal"], "auto")
+        self.assertFalse(os.path.exists(settings.SETTINGS_FILE))
+        self.assertEqual(settings.migration_notes(), [])
+
+    def test_saving_other_fields_never_stores_the_default(self):
+        self.write({"schema": 3, "values": {"gps_enable": True}})
+        settings.save({"web_title": "Zeit"})
+        self.assertNotIn("gps_autocal", self.stored()["values"])
 
 
 class LeapMigrationTest(unittest.TestCase):

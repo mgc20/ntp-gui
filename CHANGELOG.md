@@ -6,7 +6,26 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 
 ## [Unveröffentlicht]
 
+### Achtung beim Update
+- **Die GPS-Kalibrierung läuft jetzt automatisch** (`GPS_AUTOCAL=auto` ist der neue Standard, Entscheidung
+  E19). Das betrifft alle mit GPS, die den Modus nie selbst eingestellt haben – also den alten Standard
+  „vorschlagen“ hatten. Wer „vorschlagen“ oder „aus“ ausdrücklich gespeichert hat oder `GPS_AUTOCAL` in der
+  Compose-Datei setzt, behält das. Nach dem Update misst ntp-gui (die Messung der letzten Stunden zählt mit)
+  und stellt den Offset selbst nach; jede Änderung steht im Ereignisprotokoll und lässt sich auf der
+  GPS-Seite zurücknehmen. Zurück zum Klick: Einstellungen → GPS → „Automatische Kalibrierung“ auf
+  „vorschlagen“ oder `GPS_AUTOCAL=suggest`.
+
 ### Geändert
+- **GPS-Automatik ohne Zutun:** „Automatisch“ ist Standard; Hinweise und Hilfetexte sagen nicht mehr
+  „Offset kalibrieren“, wo die Automatik das ohnehin tut („GPS widerspricht den anderen Quellen“ ist im
+  Modus „automatisch“ nur noch ein Info-Hinweis). Ein anderer Empfänger in den Einstellungen (Gerät, Name,
+  PPS) startet die Messung von selbst neu, ebenso „Neu lernen“ bei den GNSS-Störungen – Störungsmeldungen
+  davor halten die Automatik dann nicht mehr bis zu 24 h auf. Bei einer GNSS-Störung sagt die GPS-Seite
+  genau, was zu tun ist.
+- **Ein Neustart von chronyd weniger:** Steht die Korrektur eines deutlichen Versatzes an, verkleinert
+  ntp-gui die Fehlerschranke nicht vorher noch einmal – sie kommt im selben Neustart mit dem neuen Offset.
+- **Nach „Rückgängig“ keine Korrektur in einem Zug:** 24 h Pause, danach nur kleine Schritte – vorher
+  konnte die Automatik eine gerade zurückgenommene Änderung schon nach gut 6 h wiederholen.
 - „Erlaubte Namen“ steht in Einstellungen → Dashboard jetzt direkt sichtbar und nicht mehr erst
   hinter „Erweitert“ – neben „Vertrauenswürdige Proxys“ war es sonst kaum zu finden.
 

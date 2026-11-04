@@ -344,25 +344,35 @@ def build(status: dict[str, Any], cfg: dict[str, Any]) -> list[dict[str, Any]]:
         elif refclock:
             state = refclock.get("select_state")
             offset = refclock.get("offset")
+            # Modus „automatisch“ (Standard ab 1.5.2): ntp-gui kalibriert selbst – kein Klick nötig.
+            auto = cfg.get("gps_autocal") == "auto"
             if state == "falseticker":
-                add("warn", "GPS widerspricht den anderen Quellen",
+                add("info" if auto else "warn", "GPS widerspricht den anderen Quellen",
                     f"Die GPS-Zeit weicht um {_ms(offset)} von den Netzwerkquellen ab. Das ist "
-                    "fast immer die feste Verspätung des USB-Empfängers. Lösung: GPS kalibrieren.",
+                    "fast immer die feste Verspätung des USB-Empfängers. "
+                    + ("Die automatische Kalibrierung misst und korrigiert sie selbst (nach gut 6 h Messung) – "
+                       "du musst nichts tun; den Stand zeigt die GPS-Seite unter „GPS kalibrieren“."
+                       if auto else "Lösung: GPS kalibrieren."),
                     action="gps", key="gps_falseticker")
             elif state in {"large_distance", "distance"}:
                 add("info", "GPS wird nur beobachtet, nicht genutzt",
-                    f"chrony bewertet das GPS als zu unsicher: Die angenommene Unsicherheit "
-                    f"(Delay {cfg.get('gps_delay')} s) ist viel größer als die der "
-                    f"Netzwerkquellen. Mit Internet ist das unkritisch. Soll das GPS mitzählen, "
-                    f"im Kalibrier-Assistenten Offset und Delay übernehmen.",
+                    "chrony bewertet das GPS als zu unsicher: Die angenommene Unsicherheit "
+                    "ist viel größer als die der Netzwerkquellen. Mit Internet ist das unkritisch"
+                    + (" und ohne PPS so gewollt: Das GPS ist die Rückfallebene und springt ein, wenn das "
+                       "Internet ausfällt. Offset und Fehlerschranke stellt ntp-gui selbst nach."
+                       if auto else ". Soll das GPS mitzählen, im Kalibrier-Assistenten Offset und Delay "
+                       "übernehmen."),
                     action="gps", key="gps_distance")
             elif state in {"best", "combined"}:
                 add("ok", "GPS wird genutzt",
                     f"Das GPS fließt in die Zeit ein (Abweichung {_ms(offset)}).", key="gps_used")
             if abs(offset or 0) > 0.02 and state in {"best", "combined", "not_combined"}:
                 add("info", "GPS-Offset noch nicht kalibriert",
-                    f"Das GPS liegt {_ms(offset)} neben der Systemzeit. Der Assistent auf der "
-                    "GPS-Seite misst den richtigen Korrekturwert.", action="gps", key="gps_uncal")
+                    f"Das GPS liegt {_ms(offset)} neben der Systemzeit. "
+                    + ("Die automatische Kalibrierung misst den richtigen Korrekturwert und stellt ihn selbst "
+                       "ein – den Stand zeigt die GPS-Seite." if auto else
+                       "Der Assistent auf der GPS-Seite misst den richtigen Korrekturwert."),
+                    action="gps", key="gps_uncal")
 
     ptp = status.get("ptp") or {}
     if ptp.get("enabled") and not ptp.get("running"):

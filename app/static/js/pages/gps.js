@@ -200,7 +200,7 @@ function autocalSection(ctx, applyOffer = null) {
     if (plan) parts.push(plan);
     if (held) {
       parts.push(el("div", { class: "callout", "data-tone": "crit" },
-        el("p", { text: "Gesperrt wegen GNSS-Störung – erst Antenne und Umgebung prüfen (Karte „GNSS-Störungen“). Den gemessenen Versatz bitte nicht von Hand übernehmen: Während einer Störung könnte er von einem Spoofer stammen." })));
+        el("p", { text: "Gesperrt wegen GNSS-Störung – hier entscheidest du. Empfänger, Antenne oder USB-Port gewechselt? Dann Karte „GNSS-Störungen“ → „Neu lernen“: Die Automatik misst danach neu und korrigiert selbst. Sonst den gemessenen Versatz bitte nicht von Hand übernehmen, sondern Antenne und Umgebung prüfen – während einer Störung könnte er von einem Spoofer stammen." })));
     } else if (decision.action === "suggest" && isNum(decision.new_offset)) {
       const delay = isNum(decision.new_delay) ? `, Delay ${decision.new_delay} s` : "";
       parts.push(emptyNote(`Vorschlag: Offset ${decision.new_offset} s${delay} – übernimm ihn oben mit „Vorschlag übernehmen“, wenn der Messzeitraum passt.`));
@@ -237,6 +237,9 @@ function calibrationCard(ctx, gpsSource) {
   body.push(el("div", { class: "cal-status", "data-tone": tone },
     badge({ ready: "Vorschlag bereit", calibrated: "bereits kalibriert", preliminary: "vorläufig", insufficient: "zu wenig Daten" }[cal.status] || cal.status, tone),
     el("span", { text: cal.message })));
+  if (autoNow?.mode === "auto" && cal.status === "ready" && !autoNow.decision?.guard_hold) {
+    body.push(emptyNote("Du musst nichts tun: Die automatische Kalibrierung übernimmt den Wert selbst (Stand unten unter „Automatische Kalibrierung“). „Vorschlag übernehmen“ brauchst du nur, wenn du nicht warten willst."));
+  }
   if (isNum(cal.since_offset_change)) {
     body.push(emptyNote(`Gemessen wird nur seit der letzten Offset-Änderung (ab ${fmtWhen(cal.since_offset_change)}) – ältere Werte passen nicht mehr zum eingestellten Offset.`));
   }
@@ -301,7 +304,9 @@ function calibrationCard(ctx, gpsSource) {
     if (delayManaged) {
       body.push(emptyNote("Den Delay (die Fehlerschranke) misst ntp-gui im Modus „gemessen“ selbst – „Übernehmen“ setzt nur Offset und Rolle. Delay von Hand: Einstellungen → GPS → „Fehlerschranke ohne PPS: von Hand“."));
     }
-    body.push(emptyNote("Nach dem Übernehmen startet chrony neu (die Messhistorie bleibt erhalten). Die Abweichung im Diagramm sollte danach um 0 schwanken. Neu kalibrieren nach einem Wechsel von Empfänger, USB-Port oder Firmware."));
+    body.push(emptyNote(autoNow?.mode === "auto"
+      ? "Nach dem Übernehmen startet chrony neu (die Messhistorie bleibt erhalten). Die Abweichung im Diagramm sollte danach um 0 schwanken. Nach einem Wechsel von Empfänger, USB-Port oder Firmware misst die Automatik neu und korrigiert selbst."
+      : "Nach dem Übernehmen startet chrony neu (die Messhistorie bleibt erhalten). Die Abweichung im Diagramm sollte danach um 0 schwanken. Neu kalibrieren nach einem Wechsel von Empfänger, USB-Port oder Firmware."));
 
     const host = el("div", { class: "chart-host" });
     body.push(host);

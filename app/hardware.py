@@ -1084,7 +1084,9 @@ def build_matrix(cfg: dict, rep: dict, ctx: dict) -> tuple[list[dict], list[str]
                              f"Internet schlecht wird oder ausfällt (Fehlerschranke ± {role['bound'] * 1000:.0f} ms).")
             rows.append(_row("gps_usb", title_usb, "ok",
                              f"Empfänger {label} ({main['interface']}) liefert Zeit über NMEA – "
-                             "Genauigkeit 1–10 ms nach Kalibrierung (GPS-Seite → „GPS kalibrieren“)."
+                             "Genauigkeit 1–10 ms nach Kalibrierung ("
+                             + ("macht ntp-gui selbst, Stand: GPS-Seite → „GPS kalibrieren“)."
+                                if cfg.get("gps_autocal") == "auto" else "GPS-Seite → „GPS kalibrieren“).")
                              + role_text, accuracy="1–10 ms", active=True))
 
     # --- GPS + PPS -----------------------------------------------------------
