@@ -4,7 +4,10 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), die Versionen folgen
 [Semantic Versioning](https://semver.org/lang/de/).
 
-## [Unveröffentlicht]
+## [1.5.2] – 2026-11-04
+
+Schwerpunkt: Die GPS-Automatik läuft ab Werk und ohne Zutun – messen, einmal korrigieren,
+nur kleinen Drifts folgen.
 
 ### Achtung beim Update
 - **Die GPS-Kalibrierung läuft jetzt automatisch** (`GPS_AUTOCAL=auto` ist der neue Standard, Entscheidung
@@ -954,6 +957,7 @@ Erste Veröffentlichung.
 - CI mit Unittests und Integrationstest gegen das gebaute Image; Release-Workflow,
   der das Image für amd64 und arm64 nach ghcr.io veröffentlicht.
 
+[1.5.2]: https://github.com/mgc20/ntp-gui/compare/v1.5.1...v1.5.2
 [1.5.1]: https://github.com/mgc20/ntp-gui/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/mgc20/ntp-gui/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/mgc20/ntp-gui/compare/v1.3.2...v1.4.0
