@@ -4,6 +4,37 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), die Versionen folgen
 [Semantic Versioning](https://semver.org/lang/de/).
 
+## [Unveröffentlicht]
+
+Schwerpunkt: GPS bei schwachem Empfang ruhig – keine Positions-Fehlalarme, weniger Ereignisse, stabile
+Fehlerschranke (Rückmeldung: Diagnosepaket 1.5.3, VK-162 drinnen ohne PPS, GPS nur Rückfallebene).
+
+### Behoben
+- **Kein Fehlalarm „GNSS-Störung: Position um 160 m gesprungen“ mehr bei schwachem Empfang.** Für den
+  Positionssprung zählen nur noch verlässliche Fixe – 3D, mindestens 5 genutzte Satelliten, HDOP höchstens 4
+  (ohne HDOP: eph höchstens 50 m) –, für die Referenz wie für den Vergleich; 2D-Fixe und schlechte
+  Geometrie werden ignoriert. Ein Sprung zählt erst, wenn er über mindestens 5 gute Fixe und 50 s anhält.
+  Ein echter Spoofer (sauberes Signal, gute Geometrie, bleibender Sprung) wird weiter in unter einer
+  Minute erkannt. Replay der Fix-Folge aus dem Paket (4 Tage, Positionsstreuung nach HDOP): vorher rund 40
+  Störungen, jetzt keine.
+- **Weniger GPS-Ereignisse bei schwachem Empfang.** Gilt der Empfang als schwach (Episode „unstet“ oder
+  die 24-h-Bewertung meldet häufige Fix-Wechsel – auch gleich nach einem Neustart), merkt sich ntp-gui das
+  24 h lang. So lange gibt es keine Einzelmeldungen „GPS-Fix verloren/wieder da“ mehr, sondern höchstens
+  eine Info-Zeile je Stunde: „GPS-Fix 7-mal verloren in der letzten Stunde, zusammen 23 min ohne Fix“
+  (flattert es weiter, wächst das Fenster bis 6 h). „GPS-Empfang unstet“ ist nur noch eine Info ohne
+  Benachrichtigung; „GPS-Fix seit 10 min weg“ entfällt. Eine Warnung (mit Benachrichtigung) gibt es nur,
+  wenn der Fix eine Stunde am Stück fehlt **und** das GPS gebraucht wird (keine brauchbare Netzquelle,
+  GPS/PPS ausgewählt oder PPS eingerichtet); sonst steht das als Info im Protokoll. Bei gutem Empfang
+  bleibt jeder Fix-Verlust eine Warnung. Replay: vorher rund 100 GPS-Ereignisse in 4 Tagen (über die
+  Hälfte „warn“), jetzt rund 20, alle „info“.
+- **Hinweis „GPS hat noch keinen Fix“ passt zur Lage.** Gab es vor kurzem noch einen Fix, heißt er „GPS
+  gerade ohne Fix – schwacher Empfang, kommt und geht“ und nennt, wann der letzte Fix war. Tragen die
+  Netzquellen die Zeit (und ist kein PPS eingerichtet), ist er nur noch eine Info statt einer Warnung.
+- **GPS-Fehlerschranke pendelt nicht mehr** (Paket: ± 22 → ± 12 ms nach einer ruhigen Nacht, 15 h später
+  wieder ± 22 ms, jedes Mal ein Neustart von chronyd). Kleiner wird sie nur noch, wenn die gemessene
+  Streuung höchstens 0,6 × die jetzige Schranke ist und auch die Messung der letzten 48 h (nicht nur 6 h)
+  mit Reserve hineinpasst. Größer wird sie wie bisher sofort, höchstens einmal je Stunde.
+
 ## [1.5.3] – 2026-11-04
 
 Schwerpunkt: Ein Holdover-Test läuft bis zum Ende – keine Automatik startet chronyd mehr dazwischen.

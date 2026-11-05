@@ -370,7 +370,8 @@ def collect_sample() -> dict:
 
 
 # Erkennt Quellenwechsel, GPS-Fix verloren/wieder da und PPS-Ausfälle → Ereignisprotokoll.
-STATE_WATCH = statewatch.StateWatcher(events.emit)
+# 1.5.4: Schwacher Empfang laut 24-h-Bewertung gilt gleich nach dem Start – keine Einzelmeldungen.
+STATE_WATCH = statewatch.StateWatcher(events.emit, weak_reception=lambda: gpsquality.reception_weak(HISTORY))
 
 
 def collector() -> None:

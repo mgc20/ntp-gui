@@ -883,7 +883,7 @@ Ein USB-Empfänger ohne PPS liefert die Zeit nur auf einige bis einige zehn Mill
 
 „Nur beobachten“ (`GPS_SELECT=noselect`) bleibt möglich, ist aber nie Standard: Dann nutzt chrony das GPS auch bei einem Internetausfall nicht. Damit die Rückfallebene greift, muss „Mindestzahl Quellen“ (`NTP_MINSOURCES`) auf 1 stehen – die GPS-Seite warnt sonst.
 
-Die GPS-Seite zeigt außerdem eine **Empfangsbewertung über 24 Stunden** (Ampel mit Begründung, auch in der Übersicht), fasst Fix-Flattern zu einem Ereignis „unstet“ zusammen und bietet einen **Antennen-Test** („5 Minuten messen“, umstellen, vergleichen). Der Antennen-Test bleibt auf deinem Gerät, ohne Satellitenwinkel. Praxistipps stehen im ⓘ: USB-Verlängerung ans Fenster, USB-3-Buchsen stören das GPS-Band, Wärmeschutzglas dämpft stark.
+Die GPS-Seite zeigt außerdem eine **Empfangsbewertung über 24 Stunden** (Ampel mit Begründung, auch in der Übersicht), fasst Fix-Flattern zu einem Ereignis „unstet“ zusammen (ab 1.5.4: bei schwachem Empfang 24 h lang keine Einzelmeldungen „verloren/wieder da“, höchstens eine Info-Zeile je Stunde; eine Warnung nur, wenn der Fix eine Stunde fehlt und das GPS gebraucht wird) und bietet einen **Antennen-Test** („5 Minuten messen“, umstellen, vergleichen). Der Antennen-Test bleibt auf deinem Gerät, ohne Satellitenwinkel. Praxistipps stehen im ⓘ: USB-Verlängerung ans Fenster, USB-3-Buchsen stören das GPS-Band, Wärmeschutzglas dämpft stark.
 
 API (lesen): `GET /api/v1/gps/quality`, `GET /api/v1/gps/antenna`.
 API (admin): `POST /api/v1/gps/antenna` (`start`/`stop`/`delete`), `POST /api/v1/gps/bound` (`{"action":"reset"}`).
@@ -1073,7 +1073,7 @@ ntp-gui erkennt, wenn das GPS gestört (Jamming) oder gefälscht (Spoofing) wird
 | Alle Satelliten fast gleich stark | schwach |
 | chrony hält das GPS für falsch | schwach (5 min lang bei ≥ 2 NTS-Quellen: stark; mit genutztem PPS und NMEA unter 0,5 s daneben: schwach) |
 | GPS-Zeit weicht vom Median von ≥ 2 NTS-Quellen ab | stark |
-| Position springt um > 100 m | stark |
+| Position springt um > 100 m – nur verlässliche Fixe (3D, ≥ 5 Satelliten, HDOP ≤ 4), ≥ 50 s anhaltend (ab 1.5.4) | stark |
 
 Ein schwacher Befund ist ein „Hinweis“, zwei zugleich eine „Warnung“, ein starker eine „Störung“. Zeit und Position werden gegen einen langsam nachgeführten Anker geprüft (höchstens 10 ms bzw. 20 m pro Stunde) – auch ein Spoofer, der die Zeit langsam wegzieht, fällt so auf. Insgesamt darf der Zeitanker höchstens 30 ms von seinem Startwert (Start bzw. letzte Änderung der GPS-Einstellungen) wegwandern, danach wird es „Störung“ – so fällt auch ein Spoofer auf, der so langsam zieht, dass chrony das GPS nie verwirft. Benachrichtigt wird standardmäßig nur bei „Störung“. Die Position verlässt das Gerät nie: Es wird nur die Abweichung in Metern genannt.
 

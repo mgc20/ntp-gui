@@ -37,10 +37,20 @@ GPS_FIX_HOLD = 60.0
 GPS_FLAP_WINDOW = 1800.0
 GPS_FLAP_ENTER = 6
 GPS_FLAP_CALM = 3600.0
-# Während „unstet“: Bleibt der Fix so lange am Stück weg, ist er verloren – das meldet ein
-# Abschlussereignis sofort und nicht erst nach GPS_FLAP_CALM (sonst käme die Warnung samt
-# Benachrichtigung eine Stunde zu spät).
+# Während „unstet“: Bleibt der Fix so lange am Stück weg, endet die Episode (still – was dann
+# zählt, entscheidet GPS_LONG_LOST).
 GPS_UNSTET_LOST = 10 * GPS_FIX_HOLD
+# 1.5.4: Schwacher Empfang (Episode „unstet“, oder die 24-h-Empfangsbewertung sagt „Fix kommt und
+# geht“) wird für GPS_WEAK_MEMORY seit dem letzten Fix-Wechsel gemerkt. So lange gibt es keine
+# Einzelmeldungen „verloren/wieder da“, sondern höchstens EINE Info-Zeile je Stunde
+# („GPS-Fix 7-mal verloren in der letzten Stunde, zusammen 23 min ohne Fix“). Eine Warnung gibt es
+# nur, wenn der Fix GPS_LONG_LOST am Stück fehlt UND das GPS gerade gebraucht wird (keine
+# brauchbare Netzquelle, GPS/PPS ausgewählt oder PPS eingerichtet) – sonst eine stille Info.
+GPS_WEAK_MEMORY = 24 * 3600.0
+GPS_SUMMARY_INTERVAL = 3600.0
+GPS_SUMMARY_MAX = 6 * 3600.0   # flattert es Stunde um Stunde weiter, verdoppelt sich das Fenster bis 6 h
+GPS_LONG_LOST = 3600.0
+GPS_GAP_MAX = 300.0     # größere Lücken zwischen Messpunkten zählen nicht als Zeit ohne Fix
 
 
 def _fmt_span(seconds: float) -> str:
@@ -119,6 +129,22 @@ def _fix(sample: dict) -> bool | None:
     return isinstance(mode, (int, float)) and not isinstance(mode, bool) and mode >= 2
 
 
+def gps_matters(sample: dict) -> bool:
+    """Braucht chrony das GPS gerade? Ja, wenn eine Refclock (GPS/PPS) ausgewählt ist, eine
+    PPS-Refclock eingerichtet ist oder keine Netzquelle brauchbar („*“/„+“) ist."""
+    net_ok = False
+    for name, src in (sample.get("sources") or {}).items():
+        if not isinstance(src, dict):
+            continue
+        state = src.get("s")
+        if src.get("k") == "#":
+            if state == "*" or "PPS" in str(name).upper():
+                return True
+        elif state in ("*", "+"):
+            net_ok = True
+    return not net_ok
+
+
 def _extra(data_for: Callable[[str], dict] | None, ip: str) -> dict:
     if data_for is None:
         return {}
@@ -134,7 +160,9 @@ class StateWatcher:
                  gps_fix_hold: float | None = None, clock: Callable[[], float] = time.monotonic,
                  flap_window: float | None = None, flap_enter: int | None = None,
                  flap_calm: float | None = None, wall: Callable[[], float] = time.time,
-                 unstet_lost: float | None = None) -> None:
+                 unstet_lost: float | None = None, weak_reception: Callable[[], bool] | None = None,
+                 summary_interval: float | None = None, long_lost: float | None = None,
+                 weak_memory: float | None = None) -> None:
         self._emit = emit
         self._confirm = confirm
         self._lock = threading.Lock()
@@ -148,6 +176,11 @@ class StateWatcher:
         self._flap_enter = GPS_FLAP_ENTER if flap_enter is None else max(2, int(flap_enter))
         self._flap_calm = GPS_FLAP_CALM if flap_calm is None else flap_calm
         self._unstet_lost = GPS_UNSTET_LOST if unstet_lost is None else unstet_lost
+        self._weak_reception = weak_reception
+        self._summary_interval = GPS_SUMMARY_INTERVAL if summary_interval is None else summary_interval
+        self._summary_max = max(self._summary_interval, GPS_SUMMARY_MAX * self._summary_interval / GPS_SUMMARY_INTERVAL)
+        self._long_lost = GPS_LONG_LOST if long_lost is None else long_lost
+        self._weak_memory = GPS_WEAK_MEMORY if weak_memory is None else weak_memory
         self._flap_reset()
         self._pps: dict[str, _Tracker] = {}
         self._clients: dict[str, dict] = {}
@@ -163,7 +196,18 @@ class StateWatcher:
         self._unstet_since: float | None = None      # monotonic
         self._unstet_since_wall: float | None = None
         self._unstet_changes = 0
+        self._unstet_announced = False                # Beginn der Episode wurde gemeldet
         self._last_flap: float | None = None
+        self._weak_last: float | None = None          # schwacher Empfang zuletzt gesehen (monotonic)
+        self._last_t: float | None = None             # letzter Messpunkt (Zeit ohne Fix aufsummieren)
+        self._last_fix_t: float | None = None         # zuletzt mit (schnell bestätigtem) Fix
+        self._lost_since: float | None = None         # Fix (schnell bestätigt) weg seit
+        self._loss_reported = False                   # Verlust wurde einzeln gemeldet („GPS-Fix verloren“)
+        self._long_level: str | None = None           # Meldung „seit 1 h ohne Fix“ gesendet (Stufe)
+        self._sum_start: float | None = None          # Stundenzusammenfassung: Beginn des Fensters
+        self._sum_losses = 0
+        self._sum_nofix = 0.0
+        self._sum_window = getattr(self, "_summary_interval", GPS_SUMMARY_INTERVAL)
 
     def _send(self, kind: str, level: str, title: str, data: dict | None = None) -> None:
         try:
@@ -217,63 +261,158 @@ class StateWatcher:
             if self._unstet:  # die offene Episode „unstet“ sauber beenden
                 self._send("gps", "info",
                            f"GPS ausgeschaltet – Empfang war unstet ({self._unstet_changes} Fix-Wechsel)",
-                           {"state": "aus", "changes": self._unstet_changes})
+                           {"state": "aus", "changes": self._unstet_changes, "notify": False})
             self._fix = self._fix_tracker()
             self._flap_reset()
             return
         gps = sample.get("gps") or {}
         data = {"mode": gps.get("mode"), "used": gps.get("used")}
-        self._flap_update(fix, data)
-        changed, _old = self._fix.update(fix)
-        if self._unstet or not changed:
-            return  # im Zustand „unstet“ keine Einzelmeldungen – die Zählung steht im Abschluss
-        if fix:
-            self._send("gps", "info", "GPS-Fix wieder da", data)
-        else:
-            self._send("gps", "warn", "GPS-Fix verloren", data)
-
-    def _flap_update(self, fix: bool, data: dict) -> None:
         now = self._clock()
+        self._flap_update(fix, data, now)
+        self._outage_update(sample, data, now)
+        self._summary_update(now)
+        changed, _old = self._fix.update(fix)
+        if not changed:
+            return
+        if fix:
+            # „wieder da“ gehört zu einem einzeln gemeldeten „verloren“ – auch bei schwachem Empfang,
+            # sonst bliebe das Problem in den Benachrichtigungen offen.
+            if self._loss_reported:
+                self._loss_reported = False
+                self._send("gps", "info", "GPS-Fix wieder da", data)
+            return
+        if self._unstet or self._weak(now, ask=True):
+            return  # schwacher Empfang: keine Einzelmeldungen, höchstens eine Zeile je Stunde (_summary_update)
+        self._send("gps", "warn", "GPS-Fix verloren", data)
+        self._loss_reported = True
+
+    def _weak(self, now: float, ask: bool = False) -> bool:
+        """Schwacher Empfang: Episode „unstet“, in den letzten 24 h gesehen oder (ask) laut 24-h-Bewertung."""
+        if self._unstet:
+            return True
+        if self._weak_last is not None and now - self._weak_last < self._weak_memory:
+            return True
+        if ask and self._weak_reception is not None:
+            try:
+                weak = bool(self._weak_reception())
+            except Exception:  # Bewertung nie kritisch
+                weak = False
+            if weak:
+                self._weak_last = now
+                return True
+        return False
+
+    def _flap_update(self, fix: bool, data: dict, now: float) -> None:
         changed, _old = self._fix_fast.update(fix)
         if changed:
             self._flaps.append(now)
             self._last_flap = now
             if self._unstet:
                 self._unstet_changes += 1
+            if self._weak(now, ask=not fix):   # bei einem Verlust auch die 24-h-Bewertung fragen
+                self._weak_last = now
+            if not fix:
+                self._sum_losses += 1
         while self._flaps and now - self._flaps[0] > self._flap_window:
             self._flaps.popleft()
         if not self._unstet:
             if len(self._flaps) >= self._flap_enter:
+                fresh = not self._weak(now)
                 self._unstet = True
+                self._weak_last = now
                 self._unstet_since, self._unstet_since_wall = now, self._wall()
                 self._unstet_changes = len(self._flaps)
-                minutes = max(1, round(self._flap_window / 60))
-                self._send("gps", "warn",
-                           f"GPS-Empfang unstet: Fix kam und ging {len(self._flaps)}-mal in {minutes} min",
-                           dict(data, state="unstet", changes=len(self._flaps), window_s=self._flap_window))
+                self._unstet_announced = fresh
+                if fresh:  # ab 1.5.4 nur Info – und nur, wenn der schwache Empfang neu ist
+                    minutes = max(1, round(self._flap_window / 60))
+                    self._send("gps", "info",
+                               f"GPS-Empfang unstet: Fix kam und ging {len(self._flaps)}-mal in {minutes} min",
+                               dict(data, state="unstet", changes=len(self._flaps), window_s=self._flap_window,
+                                    notify=False, resolves=False))
             return
         calm = self._last_flap is not None and now - self._last_flap >= self._flap_calm
         lost = (self._last_flap is not None and self._fix_fast.state is False
                 and now - self._last_flap >= self._unstet_lost)
-        if calm or lost:
+        if calm and self._fix_fast.state and self._unstet_announced:
             duration = max(0.0, (self._last_flap - self._unstet_since) if self._unstet_since is not None else 0.0)
             count = self._unstet_changes
-            has_fix = bool(self._fix_fast.state)  # bestätigter Zustand, kein einzelner Messpunkt
-            # data.state bleibt „stetig“ (Feld wie bisher: die Episode „unstet“ ist vorbei);
-            # outcome sagt, wie sie endete – ruhig mit Fix oder mit dauerhaft weggebliebenem Fix.
-            quiet = _fmt_span(now - self._last_flap) if self._last_flap is not None else "längerem"
-            info = dict(data, state="stetig", changes=count, duration_s=round(duration), fix=has_fix,
-                        outcome="ruhig" if has_fix else "fix_weg", quiet_s=round(now - (self._last_flap or now)))
-            span = _fmt_span(duration)
-            if has_fix:
-                self._send("gps", "info", f"GPS-Empfang wieder stetig – seit {quiet} kein Fix-Wechsel "
-                                          f"(vorher {count} Fix-Wechsel in {span})", info)
-            else:
-                self._send("gps", "warn", f"GPS-Fix seit {quiet} weg (vorher {count} Fix-Wechsel in {span})", info)
+            quiet = _fmt_span(now - self._last_flap)
+            info = dict(data, state="stetig", changes=count, duration_s=round(duration), fix=True,
+                        outcome="ruhig", quiet_s=round(now - self._last_flap), notify=False, resolves=False)
+            self._send("gps", "info", f"GPS-Empfang wieder stetig – seit {quiet} kein Fix-Wechsel "
+                                      f"(vorher {count} Fix-Wechsel in {_fmt_span(duration)})", info)
+        if calm or lost:
+            # Fix dauerhaft weg: Episode still beenden – ob das eine Meldung wert ist, entscheidet
+            # _outage_update (erst nach GPS_LONG_LOST und nur, wenn das GPS gebraucht wird).
             self._unstet = False
             self._unstet_since = self._unstet_since_wall = None
             self._unstet_changes = 0
             self._flaps.clear()
+
+    def _outage_update(self, sample: dict, data: dict, now: float) -> None:
+        """Zeit ohne Fix aufsummieren; lange Ausfälle bei schwachem Empfang einmal melden."""
+        state = self._fix_fast.state if self._fix_fast.known else None
+        if self._last_t is not None and state is False:
+            dt = now - self._last_t
+            if 0 < dt <= GPS_GAP_MAX:
+                self._sum_nofix += dt
+        self._last_t = now
+        if state:
+            self._last_fix_t = now
+        if state is False:
+            if self._lost_since is None:
+                self._lost_since = now
+            if (self._long_level is None and not self._loss_reported
+                    and now - self._lost_since >= self._long_lost):
+                span = _fmt_span(now - self._lost_since)
+                info = dict(data, outcome="fix_weg", lost_s=round(now - self._lost_since))
+                if gps_matters(sample):
+                    self._long_level = "warn"
+                    self._send("gps", "warn", f"GPS seit {span} ohne Fix – und gerade gebraucht "
+                                              "(keine brauchbare Netzquelle oder GPS/PPS ausgewählt)", info)
+                else:
+                    self._long_level = "info"
+                    self._send("gps", "info", f"GPS seit {span} ohne Fix – die Netzquellen tragen die Zeit, "
+                                              "das GPS ist nur Rückfallebene", dict(info, notify=False, resolves=False))
+            return
+        if state and self._lost_since is not None:
+            if self._long_level is not None:
+                span = _fmt_span(now - self._lost_since)
+                extra = {} if self._long_level == "warn" else {"notify": False}
+                self._send("gps", "info", f"GPS-Fix wieder da nach {span} ohne Fix",
+                           dict(data, lost_s=round(now - self._lost_since), **extra))
+            self._lost_since = None
+            self._long_level = None
+
+    def _summary_update(self, now: float) -> None:
+        """Bei schwachem Empfang: eine Info-Zeile je Fenster statt Einzelmeldungen. Das Fenster ist
+        1 h; flattert es weiter, verdoppelt es sich bis 6 h (höchstens rund 6 Zeilen am Tag), nach
+        einem ruhigen Fenster beginnt es wieder bei 1 h."""
+        if not self._weak(now):
+            self._sum_start = None
+            self._sum_losses, self._sum_nofix = 0, 0.0
+            self._sum_window = self._summary_interval
+            return
+        if self._sum_start is None:   # Fenster beginnt mit dem schwachen Empfang (Zähler: nur dieser Messpunkt)
+            self._sum_start = now
+            return
+        if now - self._sum_start < self._sum_window:
+            return
+        if self._sum_losses > 0:
+            window = now - self._sum_start
+            when = ("in der letzten Stunde" if window < 1.1 * GPS_SUMMARY_INTERVAL
+                    else f"in den letzten {_fmt_span(window)}")
+            nofix = self._sum_nofix
+            gone = "unter 1 min" if nofix < 60 else _fmt_span(nofix)
+            self._send("gps", "info",
+                       f"GPS-Fix {self._sum_losses}-mal verloren {when}, zusammen {gone} ohne Fix",
+                       {"state": "schwach", "losses": self._sum_losses, "nofix_s": round(nofix),
+                        "window_s": round(window), "notify": False, "resolves": False})
+            self._sum_window = min(self._summary_max, self._sum_window * 2)
+        else:
+            self._sum_window = self._summary_interval
+        self._sum_start = now
+        self._sum_losses, self._sum_nofix = 0, 0.0
 
     def gps_stability(self) -> dict:
         """Zustand des Fix für die GPS-Seite: stetig / unstet / unbekannt (GPS aus, noch keine Werte)."""
@@ -282,10 +421,13 @@ class StateWatcher:
                 state = "unbekannt"
             else:
                 state = "unstet" if self._unstet else "stetig"
+            now = self._clock()
+            last_fix = None if self._last_fix_t is None else max(0.0, now - self._last_fix_t)
             return {"state": state, "changes_window": len(self._flaps), "window_s": self._flap_window,
                     "enter_at": self._flap_enter, "calm_s": self._flap_calm,
                     "unstet_since": self._unstet_since_wall, "unstet_changes": self._unstet_changes,
-                    "fix": self._fix_fast.state if self._fix_fast.known else None}
+                    "fix": self._fix_fast.state if self._fix_fast.known else None,
+                    "weak": self._weak(now), "last_fix_s": None if last_fix is None else round(last_fix)}
 
     # --- Hardware-Bericht ----------------------------------------------------
     def hardware(self, report: Any) -> None:

@@ -42,9 +42,13 @@ export const HELP_GNSS = {
       + "Dann gibt es **ein** Ereignis „GPS-Empfang unstet“ mit Zählung statt Dutzender Paare „verloren/wieder "
       + "da“. Die Folge für chrony: Das GPS ist oft unbrauchbar, chrony stellt die Uhr dann nach den "
       + "Netzwerkquellen – **das ist richtig so**. Nach einer Stunde ohne Wechsel kommt ein Abschlussereignis "
-      + "mit der Zahl der Wechsel; bleibt der Fix **10 Minuten am Stück weg**, meldet ein Abschlussereignis "
-      + "„GPS-Fix seit 10 min weg (vorher N Fix-Wechsel in …)“ das sofort. Bei **stetig** steht dahinter, wie viele Fix-Wechsel es in der letzten "
-      + "halben Stunde trotzdem gab (unter sechs).",
+      + "mit der Zahl der Wechsel. **Ab 1.5.4** merkt sich ntp-gui den schwachen Empfang 24 Stunden lang (auch nach "
+      + "einem Neustart, aus der 24-h-Bewertung): So lange gibt es keine Einzelmeldungen „verloren/wieder da“, "
+      + "sondern höchstens eine Info-Zeile je Stunde, z. B. „GPS-Fix 7-mal verloren in der letzten Stunde, "
+      + "zusammen 23 min ohne Fix“ – flattert es weiter, wird das Fenster bis 6 Stunden länger. Eine **Warnung** "
+      + "gibt es nur, wenn der Fix **eine Stunde am Stück** fehlt **und** das GPS gebraucht wird (keine brauchbare "
+      + "Netzquelle, GPS/PPS ausgewählt oder PPS eingerichtet); sonst steht das als Info im Protokoll. Bei "
+      + "**stetig** steht dahinter, wie viele Fix-Wechsel es in der letzten halben Stunde trotzdem gab (unter sechs).",
   },
   gpsq_basis: {
     title: "Datenbasis",
@@ -96,8 +100,10 @@ export const HELP_GNSS = {
       + "mindestens der Median plus dreimal die robuste Streuung (MAD). Ein noch nicht kalibrierter Versatz "
       + "zählt mit – er ist genauso ein Fehler wie Rauschen. Gemessen wird stündlich. **Größer** wird die "
       + "Schranke, sobald die Streuung sie übersteigt (höchstens einmal je Stunde, mit etwas Reserve, damit "
-      + "chronyd nicht ständig neu startet) – eine zu kleine Schranke wäre unehrlich. **Kleiner** nur bei einer "
-      + "deutlichen Änderung (Faktor 1,5) und frühestens nach 12 h. Jede Änderung steht im Ereignisprotokoll "
+      + "chronyd nicht ständig neu startet) – eine zu kleine Schranke wäre unehrlich. **Kleiner** nur, wenn die "
+      + "neue Schranke höchstens 0,6 × die jetzige ist, auch die Streuung der **letzten 48 Stunden** (nicht nur "
+      + "der letzten 6) mit Reserve hineinpasst – sonst pendelte sie nach einer ruhigen Nacht hin und her –, "
+      + "und frühestens nach 12 h. Jede Änderung steht im Ereignisprotokoll "
       + "und startet chronyd kurz neu. **Nach einer Offset-Änderung** (von Hand, „zurücksetzen“ oder automatische "
       + "Kalibrierung) zählen nur noch Messwerte ab der Änderung (plus 15 Minuten für den Neustart) – ältere "
       + "passen nicht mehr zum laufenden Offset. Kleiner werden darf die Schranke dann schon, sobald 5,5 Stunden "
@@ -215,7 +221,11 @@ export const HELP_GNSS = {
     title: "Positionssprung",
     text: "Ein Zeitserver steht still. Springt die gemeldete Position um **mehr als 100 m** (und mehr als das Dreifache "
       + "der vom Empfänger geschätzten Ungenauigkeit), ist das ein starkes Zeichen für Spoofing. Gezählt werden nur "
-      + "3D-Fixes. Die Referenz folgt einem echten Umzug höchstens 20 m pro Stunde und bleibt während eines Sprungs "
+      + "**verlässliche** Fixe – 3D, mindestens 5 genutzte Satelliten, HDOP höchstens 4 (ohne HDOP: geschätzte "
+      + "Ungenauigkeit höchstens 50 m) –, für die Referenz wie für den Vergleich, und der Sprung muss über "
+      + "mindestens 5 solche Fixe und 50 Sekunden anhalten. Drinnen (2D/3D im Wechsel, 3–4 Satelliten, HDOP 5–20) "
+      + "streut die Position um 100 m und mehr – das ist kein Spoofing; ein Spoofer liefert dagegen ein sauberes "
+      + "Signal mit guter Geometrie und fällt weiter auf. Die Referenz folgt einem echten Umzug höchstens 20 m pro Stunde und bleibt während eines Sprungs "
       + "eingefroren – ein langsames Wegziehen fällt so ebenfalls auf. Fehlen nach einem Befund die Daten (kein "
       + "3D-Fix, GPS unerreichbar), erlischt er nach 10 Minuten mit „keine Messwerte mehr“. **Datenschutz:** Die Referenzposition liegt nur im Arbeitsspeicher von ntp-gui – sie wird nie "
       + "gespeichert, nie angezeigt und nie exportiert. Hier, im Protokoll und in Benachrichtigungen steht nur die "

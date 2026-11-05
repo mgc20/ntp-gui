@@ -35,8 +35,10 @@ vor und nach einer Offset-Änderung mehr.
 
 Sicherheit und Umkehrbarkeit: Größer wird die Schranke, sobald die gemessene Streuung die
 eingestellte übersteigt (höchstens ein Mal je Stunde – das GPS ist dann schlechter als
-angenommen; eine zu kleine Schranke wäre unehrlich). Kleiner wird sie nur bei deutlicher
-Änderung (Faktor 1,5) und höchstens alle 12 h, auch nicht in den 12 h nach einem Zurücksetzen.
+angenommen; eine zu kleine Schranke wäre unehrlich). Kleiner wird sie nur, wenn die neue Schranke
+≤ 0,6 × die jetzige ist und auch die Messung der letzten 48 h mit Reserve hineinpasst (1.5.4,
+sonst pendelte sie nach einer ruhigen Nacht), und höchstens alle 12 h, auch nicht in den 12 h
+nach einem Zurücksetzen.
 Jede neue Schranke ist der Messwert mal GROW_HEADROOM (1,25): Wächst die Streuung danach um
 1 ms, startet chronyd nicht gleich wieder neu (1.5.1, vorher stieg sie stündlich in kleinen
 Schritten). Ohne PPS wird sie außerdem nie enger als 1,5 × die Root Distance der besten genutzten
@@ -81,7 +83,9 @@ DEFAULT_DELAY = 0.2           # unbekannte Streuung: vorsichtig (± 100 ms)
 DELAY_MIN = 0.02              # NMEA ohne PPS: nie enger als ± 10 ms ansetzen
 DELAY_MAX = 1.0               # Obergrenze wie die Einstellung gps_delay
 PRECISION_MIN, PRECISION_MAX = 0.001, 0.1
-CHANGE_FACTOR = 1.5           # kleiner erst ab dieser Änderung (sonst Neustart ohne Nutzen)
+SHRINK_RATIO = 0.6            # 1.5.4: kleiner nur, wenn die neue Schranke ≤ 0,6 × die jetzige ist …
+SHRINK_CHECK_HOURS = 48.0     # … und das 95-%-Maß der letzten 48 h (nicht nur 6 h) mit Reserve hineinpasst
+SHRINK_CHECK_HEADROOM = 1.1   # Reserve dafür (die neue Schranke selbst hat schon GROW_HEADROOM auf den 6 h)
 GROW_HEADROOM = 1.25          # jede neue Schranke: Messwert × diese Reserve – Kriechen startet chronyd nicht stündlich neu
 NET_DISTANCE_FACTOR = 1.5     # ohne PPS: Schranke nie enger als 1,5 × Root Distance der besten genutzten NTS-Quelle
 GROW_INTERVAL = 3600.0        # größer (GPS schlechter als angenommen): frühestens nach 1 h
@@ -644,14 +648,15 @@ def nts_distance(sources: Any) -> float | None:
 
 
 def decide(measured: dict, applied: dict | None, now: float, reset_at: float | None = None,
-           offset_changed_at: float | None = None, floor: Any = None, defer_shrink: bool = False) -> dict[str, Any]:
+           offset_changed_at: float | None = None, floor: Any = None, defer_shrink: bool = False,
+           long: Any = None) -> dict[str, Any]:
     """Reine Entscheidung: neue Schranke anwenden oder nicht (mit Grund).
 
     Größer (das GPS streut stärker als die eingestellte Schranke): sofort, sobald die Messung
     darüber liegt – höchstens einmal je Stunde. Jede neue Schranke ist GROW_HEADROOM × der Messwert,
     damit langsames Kriechen nicht stündlich chronyd neu startet; floor (Delay aus der Root
     Distance der Netzquellen, net_floor) begrenzt das Verkleinern nach unten. Kleiner: nur bei
-    deutlicher Änderung (Faktor 1,5) und frühestens 12 h nach der letzten Änderung bzw. dem
+    deutlicher Änderung (siehe long) und frühestens 12 h nach der letzten Änderung bzw. dem
     letzten Zurücksetzen. Wurde der Offset danach geändert (offset_changed_at), gilt die Sperre
     als erfüllt, sobald OFFSET_SHRINK_MIN Messung nach der Änderung vorliegt (measure misst dann
     nur diese). Sprang die Uhr zurück (Zeitpunkt in der Zukunft), gilt „unbekannt“:
@@ -659,6 +664,10 @@ def decide(measured: dict, applied: dict | None, now: float, reset_at: float | N
     defer_shrink (1.5.2): Die automatische Kalibrierung korrigiert gleich einen deutlichen Versatz und
     schreibt die Schranke dabei mit (adopt_calibration) – kleiner wird sie dann nicht vorher noch
     einmal; das spart einen Neustart von chronyd. Größer (die sichere Richtung) bleibt erlaubt.
+    long (1.5.4): Messung über SHRINK_CHECK_HOURS (dict oder Funktion, erst beim Verkleinern
+    abgefragt). Kleiner wird die Schranke nur, wenn die gemessene ≤ SHRINK_RATIO × die jetzige ist
+    UND auch die 48-h-Messung mit Reserve in die neue Schranke passt – sonst pendelte sie (Paket 1.5.3:
+    ± 22 → ± 12 ms nach einer ruhigen Nacht, 15 h später wieder ± 22 ms, je ein Neustart von chronyd).
     Ergebnis bei apply: delay = die neue Schranke (Delay in Sekunden)."""
     if measured.get("status") != "measured":
         return {"apply": False, "reason": "Noch zu wenig gemeinsame Messungen von GPS und Netzquellen."}
@@ -677,7 +686,7 @@ def decide(measured: dict, applied: dict | None, now: float, reset_at: float | N
         target = _target(new)
         return {"apply": True, "delay": target,
                 "reason": "Das GPS streut stärker als angenommen – die Schranke wird größer."}
-    if new <= current / CHANGE_FACTOR:
+    if new <= SHRINK_RATIO * current + 1e-9:
         if defer_shrink:
             return {"apply": False, "reason": "Die automatische Kalibrierung korrigiert zuerst den Versatz des GPS "
                                               "und setzt die Schranke dabei mit – im selben Neustart von chronyd."}
@@ -691,6 +700,16 @@ def decide(measured: dict, applied: dict | None, now: float, reset_at: float | N
             return {"apply": False, "reason": "Die Streuung ist kleiner geworden, aber enger als jetzt wird die "
                                               "Schranke nicht: Sonst wäre das GPS ohne PPS „besser“ als die "
                                               "Netzquellen und stellte die Uhr."}
+        if callable(long):         # erst hier: liest 48 h Verlauf
+            try:
+                long = long()
+            except Exception:
+                long = None
+        if (isinstance(long, dict) and long.get("status") == "measured" and _num(long.get("delay")) is not None
+                and float(long["delay"]) * SHRINK_CHECK_HEADROOM > target + 1e-9):
+            return {"apply": False, "reason": "Die Streuung der letzten Stunden ist kleiner, aber über 48 Stunden "
+                                              "passt die engere Schranke nicht mit Reserve – sie bleibt, damit "
+                                              "sie nicht hin und her springt (jedes Mal ein Neustart von chronyd)."}
         last_change = max(_num((applied or {}).get("t")) or -math.inf, reset_at if reset_at is not None else -math.inf)
         after_offset = (since is not None and offset_changed_at is not None and offset_changed_at <= now
                         and offset_changed_at > last_change
@@ -716,8 +735,9 @@ def tick(cfg: dict, now: float | None = None, samples: list[dict] | None = None)
             if not managed(cfg):
                 return {"apply": False, "reason": "Die Fehlerschranke wird nicht gemessen (PPS, GPS aus "
                                                   "oder Modus „von Hand“)."}
+            hist = _DEPS.get("history")
+            given = samples
             if samples is None:
-                hist = _DEPS.get("history")
                 samples = hist.snapshot(now - BOUND_HOURS * 3600.0) if hist is not None else []
             offset_since = note_offset(cfg, now)
             if offset_since is not None and offset_since > now:
@@ -734,8 +754,16 @@ def tick(cfg: dict, now: float | None = None, samples: list[dict] | None = None)
             reset_at = _num(state.get("reset_at"))
             if reset_at is not None and reset_at > now:
                 reset_at = state["reset_at"] = now
+            not_before = None if offset_since is None else offset_since + OFFSET_SETTLE
+
+            def long() -> dict:   # nur beim Verkleinern: 48 h Verlauf lesen
+                rows = given if given is not None else (
+                    hist.snapshot(now - SHRINK_CHECK_HOURS * 3600.0) if hist is not None else [])
+                return measure(rows, str(cfg.get("gps_refid") or "GPS"), now, hours=SHRINK_CHECK_HOURS,
+                               not_before=not_before)
+
             decision = decide(measured, applied, now, reset_at, offset_since, _floor,
-                              defer_shrink=_autocal_corrects_first(cfg, measured))
+                              defer_shrink=_autocal_corrects_first(cfg, measured), long=long)
             if decision["apply"]:
                 old = applied["delay"] if applied else DEFAULT_DELAY
                 new_delay = float(decision.get("delay", measured["delay"]))
@@ -1270,6 +1298,19 @@ def _cached_assessment(history: Any, now: float, clock: Callable[[], float] = ti
     return assessment
 
 
+def reception_weak(history: Any = None, now: float | None = None) -> bool:
+    """Sagt die 24-h-Bewertung „der Fix kommt und geht“? (1.5.4, statewatch: dann keine Einzelmeldungen
+    „GPS-Fix verloren/wieder da“, sondern eine Zusammenfassung – auch gleich nach einem Neustart.)"""
+    try:
+        assessment = _cached_assessment(history, time.time() if now is None else now)
+    except Exception:
+        return False
+    for reason in assessment.get("reasons") or []:
+        if reason.get("key") == "changes" or (reason.get("key") == "fix" and reason.get("level") == "red"):
+            return True
+    return False
+
+
 def overview(cfg: dict, history: Any = None, sources: Any = None, stability: dict | None = None,
              now: float | None = None, clock: Callable[[], float] = time.monotonic) -> dict[str, Any] | None:
     """Kurzfassung für die Übersicht (/api/status → gps_summary): Rolle, Empfangsampel, unstet.
@@ -1295,6 +1336,8 @@ def overview(cfg: dict, history: Any = None, sources: Any = None, stability: dic
         "sentence": assessment.get("sentence") if assessment.get("available") else None,
         "stability": stab,
         "unstet_changes": (stability or {}).get("unstet_changes") if stab == "unstet" else None,
+        # 1.5.4: für den Hinweis „GPS gerade ohne Fix“ – schwacher Empfang, Fix kam vor kurzem noch
+        "weak": bool((stability or {}).get("weak")), "last_fix_s": (stability or {}).get("last_fix_s"),
     }
 
 
