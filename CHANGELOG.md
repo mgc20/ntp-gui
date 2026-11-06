@@ -51,9 +51,13 @@ ganzen Verlauf, hängende HTTP-Verbindungen, Holdover-Frist, „GPS gesperrt, Uh
   vorher 4,8 s, Prozess bis 1,2 GB, Messschleife bis 0,64 s blockiert; jetzt 7 Tage 0,95 s, 24 h 0,11 s, unter 3 ms.
 - **Hängende HTTP-Verbindungen halten keinen Thread mehr fest.** Ein Client, der eine Content-Length
   ankündigt und weniger schickt, eine still offene Keep-alive-Verbindung oder einer, der die Köpfe
-  tröpfchenweise schickt, blockierte bisher einen Thread für immer. Jetzt gilt je Lese-/Schreibvorgang
-  eine Frist von 30 s (auch für den Leerlauf zwischen zwei Anfragen) und für Anfragezeile, Köpfe und Body
-  zusammen 60 s. Eine abgeschnittene Anfrage wird nicht ausgeführt.
+  tröpfchenweise schickt, blockierte bisher einen Thread für immer. Jetzt schließt ntp-gui eine
+  Keep-alive-Verbindung nach 125 s Leerlauf – länger als die Verbindungs-Pools gängiger Reverse Proxys
+  (Caddy 2 min, nginx 60 s), sonst gäbe es dort sporadisch 502 –, und Anfragezeile, Köpfe und Body müssen
+  ab ihrem ersten Byte in 60 s ankommen. Eine abgeschnittene Anfrage wird nicht ausgeführt; auch eine
+  vollständig gelesene, deren Frist genau im selben Moment abläuft, verliert ihre Antwort nicht mehr.
+  Antworten gehen in Stücken von 64 KiB hinaus, die Frist gilt je Stück: Ein großes Diagnosepaket oder
+  `/api/history` über eine langsame Mobil- oder VPN-Verbindung bricht nicht mehr still ab.
 - **Holdover-Test: Frist auf der monotonen Uhr.** Ein Sprung der Wanduhr verlängert oder verkürzt den
   Test nicht mehr. Gespeichert und angezeigt wird die Frist weiter als Uhrzeit; nach einem Neustart
   rechnet ntp-gui die Restzeit einmal daraus um – nie länger als die ganze Testdauer.
@@ -66,7 +70,11 @@ ganzen Verlauf, hängende HTTP-Verbindungen, Holdover-Frist, „GPS gesperrt, Uh
   an – mit Rückfrage, was das heißt. Eingetragen wird genau die Adresse, die ntp-gui selbst als
   Gegenstelle gesehen hat, nie ein Netz; der Knopf schickt nur eine Kennung, die Adresse nimmt der Server
   aus seiner eigenen Liste. Nur mit Admin-Recht (Passwort oder Admin-Schlüssel), mit demselben
-  CSRF-Schutz wie jede Einstellung; API-Schlüssel mit Leserecht sehen den Knopf nicht. Danach beginnt die
+  CSRF-Schutz wie jede Einstellung; API-Schlüssel mit Leserecht sehen den Knopf nicht – und ihre Anfragen
+  schlagen auch keine Adresse dafür vor, ein Gerät mit Lese-Schlüssel kann sich also nicht selbst als
+  Proxy anbieten. Der am längsten gesehene Proxy steht zuerst, ein Neuling verdrängt ihn nicht. Ist die
+  Adresse das Gateway des Container-Netzes (rootless Docker/Podman, userland-proxy, manche NAS – dann
+  kommen dort womöglich alle Zugriffe an), warnen Hinweis und Rückfrage davor. Danach beginnt die
   HTTPS-Prüfung neu. API: `POST /api/v1/web/proxies/trust`.
 - **Warnung bei zu breiten Proxy-Einträgen:** Ein Eintrag in „Vertrauenswürdige Proxys“ breiter als /24
   (IPv4) bzw. /64 (IPv6) wird gespeichert, aber beim Speichern und mit einem Hinweis in der Übersicht

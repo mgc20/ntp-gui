@@ -17,6 +17,7 @@ import os
 import shutil
 import socket
 import sys
+import socketserver
 import tempfile
 import threading
 import time
@@ -109,6 +110,48 @@ class TrustFixHintTest(unittest.TestCase):
             self.untrusted(f"192.168.1.{i + 10}")
         self.assertEqual(len(self.watch.untrusted), wt.MAX_SOURCES)
         self.assertEqual(len(self.by_key()["web_proxy_untrusted"]["fixes"]), wt.SHOW_SOURCES)
+
+    def test_readonly_key_cannot_offer_its_address(self):
+        info = wt.resolve("192.168.1.66", _headers({"X-Forwarded-For": "10.0.0.1"}), [])
+        self.watch.note(info, "key", can_admin=False)
+        hint = self.by_key()["web_proxy_untrusted"]
+        self.assertNotIn("fixes", hint)
+        self.assertNotIn("192.168.1.66", hint["text"])
+        self.assertEqual(self.watch.untrusted, {})
+
+    def test_older_proxy_stays_first(self):
+        self.untrusted("192.168.1.7")
+        self.now[0] += 60
+        self.untrusted("192.168.1.99")
+        fixes = self.by_key()["web_proxy_untrusted"]["fixes"]
+        self.assertEqual([f["address"] for f in fixes], ["192.168.1.7", "192.168.1.99"])
+        self.now[0] += 60
+        self.untrusted("192.168.1.99")  # neuer Zugriff ändert die Reihenfolge nicht
+        fixes = self.by_key()["web_proxy_untrusted"]["fixes"]
+        self.assertEqual(fixes[0]["address"], "192.168.1.7")
+
+    def test_gateway_peer_warns(self):
+        with mock.patch.object(wt, "default_gateways", return_value=frozenset({"172.17.0.1"})):
+            self.untrusted("172.17.0.1")
+            self.untrusted("192.168.1.7")
+            hint = self.by_key()["web_proxy_untrusted"]
+            by_addr = {f["address"]: f for f in hint["fixes"]}
+            self.assertIn("Gateway des Container-Netzes", by_addr["172.17.0.1"]["confirm"])
+            self.assertNotIn("Gateway", by_addr["192.168.1.7"]["confirm"])
+            self.assertIn("172.17.0.1 ist das Gateway", hint["text"])
+
+    def test_route_gateways_parsed(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            v4 = Path(tmp, "route")
+            v4.write_text("Iface\tDestination\tGateway\n"
+                          "eth0\t00000000\t010011AC\t0003\n"
+                          "eth0\t000011AC\t00000000\t0001\n")
+            v6 = Path(tmp, "ipv6_route")
+            v6.write_text("0" * 32 + " 00 " + "0" * 32 + " 00 fe800000000000000000000000000001 "
+                          "00000400 00000001 00000000 00000003 eth0\n")
+            self.assertEqual(wt._route_gateways(str(v4), str(v6)), {"172.17.0.1", "fe80::1"})
+            self.assertEqual(wt._route_gateways(str(Path(tmp, "fehlt")), str(Path(tmp, "fehlt"))), set())
 
     def test_fix_never_in_diagnostics_fields(self):
         import diagnostics
@@ -540,6 +583,58 @@ class HTTPTimeoutTest(unittest.TestCase):
             resp.read()
             self.assertIn(resp.status, (200, 503))
         conn.close()
+
+    def test_idle_keepalive_not_cut_by_read_deadline(self):
+        # Leerlauf zählt nicht zur Lesefrist (1,5 s): nach 2 s Pause geht die nächste Anfrage noch.
+        with mock.patch.object(server.Handler, "timeout", 5.0):
+            conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+            self.addCleanup(conn.close)
+            conn.request("GET", "/healthz")
+            conn.getresponse().read()
+            time.sleep(2.0)
+            conn.request("GET", "/healthz")
+            resp = conn.getresponse()
+            resp.read()
+            self.assertIn(resp.status, (200, 503))
+
+    def test_slow_reader_gets_whole_body(self):
+        a, b = socket.socketpair()
+        self.addCleanup(a.close)
+        self.addCleanup(b.close)
+        a.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 16384)
+        b.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 16384)
+        a.settimeout(0.5)
+        handler = server.Handler.__new__(server.Handler)
+        handler.wfile = socketserver._SocketWriter(a)  # wie StreamRequestHandler (wbufsize=0)
+        body = os.urandom(3 * 1024 * 1024)
+        got = bytearray()
+
+        def reader():
+            while len(got) < len(body):
+                chunk = b.recv(65536)
+                if not chunk:
+                    break
+                got.extend(chunk)
+                time.sleep(0.01)
+
+        thread = threading.Thread(target=reader)
+        thread.start()
+        t0 = time.monotonic()
+        handler._write_body(body)
+        thread.join(30)
+        self.assertGreater(time.monotonic() - t0, 0.5)  # länger als die Socket-Frist
+        self.assertEqual(bytes(got), body)
+
+    def test_disarm_reports_reaped(self):
+        reaper = server._Reaper()
+        a, b = socket.socketpair()
+        self.addCleanup(a.close)
+        self.addCleanup(b.close)
+        reaper._thread = object()
+        reaper.arm(a, 0)
+        reaper.reap(now=time.monotonic() + 1)
+        self.assertTrue(reaper.disarm(a))
+        self.assertFalse(reaper.disarm(a))
 
     def test_reaper_only_while_reading(self):
         reaper = server._Reaper()

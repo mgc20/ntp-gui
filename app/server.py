@@ -1246,8 +1246,12 @@ def host_rejection_text(host: str) -> str:
 
 # 1.5.4: Fristen je Verbindung. Ohne sie hielt ein Client, der Content-Length ankündigt und weniger
 # schickt, oder eine still offene Keep-alive-Verbindung einen Thread für immer.
-REQUEST_IDLE_TIMEOUT = 30.0   # Socket-Frist je Lese-/Schreibvorgang – auch Leerlauf zwischen Anfragen
-REQUEST_READ_DEADLINE = 60.0  # Anfragezeile + Köpfe + Body zusammen, ab Beginn des Wartens
+# Leerlauf zwischen Anfragen und Frist je Socket-Vorgang. Länger als die Verbindungs-Pools gängiger
+# Reverse Proxys (Caddy 2 min, nginx keepalive_timeout 60 s): Schließt ntp-gui eine Verbindung, die der
+# Proxy gerade wiederverwendet, bekommt der Browser ein 502 – bei POST ohne neuen Versuch.
+REQUEST_IDLE_TIMEOUT = 125.0
+REQUEST_READ_DEADLINE = 60.0  # Anfragezeile + Köpfe + Body zusammen, ab dem ersten Byte der Anfrage
+WRITE_CHUNK = 64 * 1024       # Antwort in Stücken: die Socket-Frist gilt je sendall(), nicht je Antwort
 
 
 class _Reaper:
@@ -1270,10 +1274,14 @@ class _Reaper:
                 self._thread = threading.Thread(target=self._run, daemon=True, name="http-reaper")
                 self._thread.start()
 
-    def disarm(self, conn) -> None:
+    def disarm(self, conn) -> bool:
+        """Frist aufheben. Gibt zurück, ob sie die Verbindung schon geschlossen hatte – Prüfen und
+        Aufheben in einem Schritt, sonst könnte die Frist genau dazwischen zuschlagen."""
         with self._lock:
             self._due.pop(conn, None)
+            reaped = id(conn) in self._reaped
             self._reaped.discard(id(conn))
+            return reaped
 
     def was_reaped(self, conn) -> bool:
         """Hat die Frist diese Verbindung geschlossen? Dann ist, was gelesen wurde, unvollständig –
@@ -1313,6 +1321,15 @@ class Handler(BaseHTTPRequestHandler):
     timeout = REQUEST_IDLE_TIMEOUT  # StreamRequestHandler.setup(): settimeout() auf der Verbindung
 
     def handle_one_request(self) -> None:
+        # Leerlauf (bis REQUEST_IDLE_TIMEOUT) ohne Frist abwarten; die Lesefrist beginnt erst mit dem
+        # ersten Byte – sonst schlösse sie still offene Keep-alive-Verbindungen schon nach 60 s.
+        try:
+            if not self.rfile.peek(1):
+                self.close_connection = True  # Gegenstelle hat geschlossen
+                return
+        except OSError:
+            self.close_connection = True  # Leerlauf zu lang oder Verbindung weg
+            return
         REAPER.arm(self.connection, REQUEST_READ_DEADLINE)
         try:
             super().handle_one_request()
@@ -1321,11 +1338,15 @@ class Handler(BaseHTTPRequestHandler):
 
     def parse_request(self) -> bool:
         ok = super().parse_request()
-        if ok and REAPER.was_reaped(self.connection):
+        if not ok:
+            return ok
+        if not (self.headers.get("Content-Length") or "").strip("0 "):
+            reaped = REAPER.disarm(self.connection)  # kein Body: die Anfrage ist vollständig gelesen
+        else:
+            reaped = REAPER.was_reaped(self.connection)
+        if reaped:
             self.close_connection = True
             return False  # Frist abgelaufen: Köpfe abgeschnitten – nicht ausführen
-        if ok and not (self.headers.get("Content-Length") or "").strip("0 "):
-            REAPER.disarm(self.connection)  # kein Body: die Anfrage ist vollständig gelesen
         return ok
 
     # --- Helfer --------------------------------------------------------------
@@ -1350,7 +1371,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def _note_transport(self, ident: dict) -> None:
         try:
-            webtransport.WATCH.note(self._transport(), ident.get("kind"))
+            # Nur Passwort und Verwaltungsschlüssel dürfen eine Adresse für „per Klick eintragen“
+            # vorschlagen – ein Lese-Schlüssel könnte sich sonst als Proxy nach vorn drängen.
+            can_admin = ident.get("kind") == "basic" or ident.get("scope") == "admin"
+            webtransport.WATCH.note(self._transport(), ident.get("kind"), can_admin=can_admin)
         except Exception:
             pass  # nur für einen Hinweis – nie eine Anfrage daran scheitern lassen
 
@@ -1365,7 +1389,15 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header(key, value)
         self.end_headers()
         if self.command != "HEAD":
-            self.wfile.write(body)
+            self._write_body(body)
+
+    def _write_body(self, body: bytes) -> None:
+        """In Stücken schreiben: Seit Python 3.5 gilt die Socket-Frist für ein ganzes sendall() – ein
+        großes Diagnosepaket über eine langsame Mobil- oder VPN-Verbindung brach sonst nach der Frist
+        still ab. Je Stück bleibt die Frist: Wer gar nichts mehr liest, hält keinen Thread fest."""
+        view = memoryview(body)
+        for start in range(0, len(view), WRITE_CHUNK):
+            self.wfile.write(view[start:start + WRITE_CHUNK])
 
     def _send_json(self, payload, status: HTTPStatus = HTTPStatus.OK, extra: dict | None = None) -> None:
         body = json.dumps(payload, default=str).encode()
@@ -1812,8 +1844,7 @@ class Handler(BaseHTTPRequestHandler):
         if length < 0 or length > MAX_BODY:
             raise ValueError("Anfrage zu groß")
         raw = self.rfile.read(length) if length else b"{}"
-        reaped = REAPER.was_reaped(self.connection)
-        REAPER.disarm(self.connection)
+        reaped = REAPER.disarm(self.connection)
         if len(raw) < length or reaped:
             self.close_connection = True
             raise ValueError("Anfrage unvollständig")
