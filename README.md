@@ -1102,6 +1102,12 @@ Die Seite **Uhrqualität** zeigt, was die Uhr deines Servers langfristig beeinfl
   VMs gibt es meist keinen Sensor. Einen Temperaturausgleich gibt es vorerst nicht: Mit dem
   CPU-Sensor ist der Zusammenhang oft schwach (auf einem Raspberry Pi folgte die Frequenz eher der
   Tageszeit als der CPU-Temperatur), siehe [Roadmap](ROADMAP.md).
+- **Allan-Abweichung (ab 1.5.4):** Wie stabil ist der Quarz über 10 s … 1 Tag? Gerechnet aus der
+  Frequenz, die chrony für den Quarz gelernt hat (nicht aus dem Offset – der zeigt nur, was nach dem
+  Nachregeln übrig bleibt), als log-log-Diagramm mit Tabelle und Einordnung. Faustregel: Wert × τ ≈
+  Zeitfehler, den die Uhr frei laufend in τ sammeln würde (1 ppb über 1 h ≈ 3,6 µs). Ein Pi-Quarz ohne
+  Temperaturkontrolle liegt drinnen typisch bei 1–10 ppb um 1 h. Für τ ≈ 1 Tag braucht es 4 Tage Verlauf.
+  API: `GET /api/v1/clockquality/allan`.
 - **Schaltsekunden:** TAI−UTC, letzte Schaltsekunde und wie lange die `leap-seconds.list` im
   Image noch gilt – für die Datei, die chrony wirklich liest. Läuft sie in weniger als 60 Tagen
   ab, meldet ntp-gui „Image zu alt“ – dann `docker compose pull && docker compose up -d`.
@@ -1658,6 +1664,7 @@ Einstellungen laufen) und `ntpgui_service_restarts_total`. Der mitgelieferte Ala
 | `/api/holdover` | Holdover-Test: laufender Test und Ergebnisse; `POST` (starten, abbrechen) mit Verwaltungsrecht |
 | `/api/clients/groups?by=group\|vlan\|software`, `/api/clients/quality`, `/api/clients/rules`, `/api/clients/pass?ip=` | Clients 3: Gruppen, Uhrgüte, Regeln, Gerätepass (`&share=1` = gefilterte Kopie); `POST /api/clients/groups`, `/groups/delete`, `/rules` mit Verwaltungsrecht |
 | `/api/temperature`, `/api/leap` | Temperatur und Frequenz bzw. Schaltsekunden-Liste (Seite Uhrqualität) |
+| `/api/clockquality/allan` | Allan-Abweichung der Systemuhr (Seite Uhrqualität, ab 1.5.4) |
 | `/api/v1/time` | Serverzeit mit Zeitstempeln für die Vollbild-Uhr `/clock` |
 | `/api/update` | Zustand des Update-Hinweises (ohne Netzzugriff, wenn ausgeschaltet) |
 | `/api/apikeys` (Alias `/api/keys`) | API-Schlüssel auflisten, `POST` legt an, `/api/apikeys/revoke` widerruft (nur mit Benutzer/Passwort) |

@@ -299,6 +299,40 @@ class History:
             data = [s for s in data if s.get("t", 0) >= since]
         return data
 
+    def series(self, key: str, since: float | None = None) -> list[tuple[int, float]]:
+        """(t, Wert) einer Zahl auf oberster Ebene (z. B. „freq“), zeitlich sortiert – ohne die
+        Messpunkte als JSON zu dekodieren (1.5.4, Allan-Abweichung: 30 Tage ≈ 260 000 Punkte).
+        In SQL wie snapshot() abschnittsweise, damit add() nicht lange wartet."""
+        assert key in _NUMERIC_TOP
+        out: list[tuple[int, float]] = []
+        if self._sql:
+            try:
+                with self._lock:
+                    lower, newest = self._bounds()
+                if newest is None:
+                    return []
+                if since is not None:
+                    lower = max(lower, since)
+                expr = _num_expr("j", "$." + key)
+                lo = lower
+                while lo <= newest:
+                    hi = min(newest, math.floor(lo) + SNAPSHOT_CHUNK - 1)
+                    with self._lock:
+                        rows = self._db(_cte("samples") + f"SELECT t, {expr} FROM d ORDER BY t",
+                                        {"lo": lo, "hi": hi, "p": self._pending_json()})
+                    out += [(int(t), float(v)) for t, v in rows if v is not None]
+                    lo = math.floor(hi) + 1
+                    time.sleep(0)
+                return out
+            except Exception as exc:
+                self.error = f"Verlauf nicht lesbar: {exc}"
+                return []
+        for sample in self.snapshot(since):
+            value = sample.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
+                out.append((int(sample.get("t", 0)), float(value)))
+        return out
+
     def query(self, seconds: float | None = None, points: int = 600) -> list[dict]:
         """Ausschnitt der letzten `seconds` Sekunden, auf höchstens `points` verdichtet."""
         if self._sql:

@@ -9,7 +9,8 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 Schwerpunkt: GPS bei schwachem Empfang ruhig – keine Positions-Fehlalarme, weniger Ereignisse, stabile
 Fehlerschranke (Rückmeldung: Diagnosepaket 1.5.3, VK-162 drinnen ohne PPS, GPS nur Rückfallebene).
 Dazu: Reverse Proxy per Klick eintragen und die Restpunkte aus der Abschlussprüfung (Kalibrierung über den
-ganzen Verlauf, hängende HTTP-Verbindungen, Holdover-Frist, „GPS gesperrt, Uhr läuft frei“).
+ganzen Verlauf, hängende HTTP-Verbindungen, Holdover-Frist, „GPS gesperrt, Uhr läuft frei“) sowie die
+Allan-Abweichung auf der Seite „Uhrqualität“.
 
 ### Behoben
 - **Kein Fehlalarm „GNSS-Störung: Position um 160 m gesprungen“ mehr bei schwachem Empfang.** Für den
@@ -63,6 +64,17 @@ ganzen Verlauf, hängende HTTP-Verbindungen, Holdover-Frist, „GPS gesperrt, Uh
   rechnet ntp-gui die Restzeit einmal daraus um – nie länger als die ganze Testdauer.
 
 ### Neu
+- **Allan-Abweichung auf der Seite „Uhrqualität“:** Wie stabil ist der Quarz über 10 s … 1 Tag? Gerechnet
+  (überlappend) aus der Frequenz, die chrony in jedem Messpunkt für den Quarz meldet – nicht aus dem Offset,
+  der nur zeigt, was nach dem Nachregeln übrig bleibt. τ log-gestuft (5 je Dekade) vom Messintervall bis zu
+  einem Viertel der Messdauer, je Punkt 68-%-Bereich und Zahl unabhängiger Paare. Log-log-Diagramm mit
+  Tooltip und Tabelle, Kacheln für Bestwert, 1 Stunde und 1 Tag mit dem Zeitfehler, den die Uhr frei laufend
+  in dieser Zeit etwa sammeln würde (Wert × τ), und eine Einordnung („typisch für einen Pi-Quarz ohne
+  Temperaturkontrolle in ruhiger Umgebung“: 1–10 ppb um 1 h). Punkte unter 15 min sind blass – dort zeigt
+  die Kurve vor allem chronys Nachführung. Aufwand begrenzt (höchstens 50 000 Rasterpunkte, 20 000 Paare je
+  τ; 30 Tage Verlauf ≈ 0,7 s auf einem PC), Ergebnis 10 min zwischengespeichert. Neu: `GET
+  /api/clockquality/allan` (auch /api/v1). Das Diagnosepaket enthält die Kurve im Abschnitt Verlauf als reine
+  Zahlen (τ, Wert, n). Aus den Stundenmitteln im Paket der Rückmeldung: rund 2 ppb über 1 h, 5 ppb über 6 h.
 - **Reverse Proxy per Klick eintragen** (Rückmeldung: Der Hinweis zeigte die Adresse des Proxys, das
   richtige Eintragen gelang trotzdem tagelang nicht). Die Hinweise „Reverse Proxy erkannt, aber nicht
   eingetragen“ und „Dashboard über unverschlüsseltes HTTP mit Anmeldung“ (Ursache: Proxy nicht

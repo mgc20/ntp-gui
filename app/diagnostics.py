@@ -83,7 +83,7 @@ SECTION_TITLES = {
     "events": f"Ereignisse der letzten {EVENT_DAYS} Tage",
     "logs": f"Log (letzte {LOG_LINES} Zeilen)",
     "settings": "Einstellungen (ohne Zugangsdaten)",
-    "history": "Verlauf der letzten 24 h (nur Kennzahlen)",
+    "history": "Verlauf der letzten 24 h (nur Kennzahlen) und Allan-Abweichung der Uhr",
     "recording": "Aufzeichnung der Datenquellen",
 }
 DEFAULT_SECTIONS = ["meta", "hints", "config", "chrony", "gps", "ptp", "hardware", "services", "events",
@@ -505,7 +505,11 @@ def _collect_history(cfg: dict, options: dict) -> dict:
             samples = []
     if not isinstance(samples, list):
         samples = []
-    return summarize_history(samples, since=time.time() - 86400)
+    out = summarize_history(samples, since=time.time() - 86400)
+    # 1.5.4: Allan-Abweichung über den ganzen Verlauf – nur Zahlen (τ in s, ADEV als Bruchteil, n).
+    if options.get("allan"):
+        out["allan"] = options["allan"]
+    return out
 
 
 def _collect_recording(cfg: dict, options: dict) -> str:

@@ -879,6 +879,11 @@ details.enforce-names { margin-top: 10px; }
 /* ---------- Uhrqualität (1.4) ---------- */
 .uq-subchart { margin-top: 12px; }
 .uq-subchart .mini-head { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+/* 1.5.4: Allan-Abweichung – Tabelle zum Diagramm */
+details.adev-table { margin-top: 10px; }
+details.adev-table summary { cursor: pointer; font-size: 13px; color: var(--ink-muted); }
+details.adev-table table { margin-top: 8px; width: 100%; font-variant-numeric: tabular-nums; }
+details.adev-table tr.is-muted td { color: var(--ink-muted); }
 
 /* Antennen-Test (1.5): Auswahl der beiden Messungen über der Vergleichstabelle. */
 .antenna-pick { margin-bottom: 8px; }

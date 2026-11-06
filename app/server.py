@@ -50,6 +50,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+import allan
 import apikeys
 import apiv1
 import autocal
@@ -140,6 +141,8 @@ def env_flag(name: str, default: bool = False) -> bool:
 # 24 h bei 10 s Abstand. Komprimiert gesichert sind das wenige MB.
 HISTORY_SIZE = env_number("HISTORY_SIZE", 8640, int, minimum=2)
 HISTORY = historymod.History(HISTORY_SIZE, os.path.join(settings.DATA_DIR, "history.json.gz"))
+# 1.5.4: Allan-Abweichung der Systemuhr aus der Frequenz im ganzen Verlauf, 10 min zwischengespeichert.
+ALLAN = allan.Cache(lambda: HISTORY.series("freq"))
 
 # Endpunkte von 1.3, die auch unter /api/v1 erreichbar sind (Recht je Endpunkt).
 apiv1.endpoint("GET", "/logs", "/api/logs", "read",
@@ -298,6 +301,14 @@ apiv1.endpoint("GET", "/temperature", "/api/temperature", "read",
                ["available", "setting", "reason", "sensor", "celsius", "candidates", "pairs", "summary"],
                {"range": "Zeitraum in Sekunden (Standard 7 Tage, höchstens 30 Tage)",
                 "points": "Höchstzahl der Paare, 100–3000 (Standard 1500)"})
+apiv1.endpoint("GET", "/clockquality/allan", "/api/clockquality/allan", "read",
+               "Allan-Abweichung (überlappend) der Systemuhr aus der Frequenz, die chrony im ganzen Verlauf "
+               "für den Quarz gelernt hat: je τ (s, log-gestuft bis ¼ der Messdauer) Wert als Bruchteil "
+               "(1e-9 = 1 ppb), 68-%-Bereich (lo, hi), unabhängige Paare n und „short“ (τ unter 15 min: zeigt "
+               "vor allem chronys Nachführung). Dazu Einordnung (summary) und Datenbasis (tau0, span, "
+               "coverage). 10 min zwischengespeichert.",
+               ["available", "reason", "source", "unit", "tau0", "span", "samples", "coverage", "points",
+                "summary", "short_tau", "resolution", "cached"])
 apiv1.endpoint("GET", "/leap", "/api/leap", "read",
                "Schaltsekunden: TAI−UTC, letzte (und ggf. angekündigte) Schaltsekunde, Ablaufdatum und "
                "Prüfsumme der leap-seconds.list, Leap-Status von chrony.",
@@ -1731,6 +1742,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(temperature_payload(query))
         elif path == "/api/leap":
             self._send_json(leap.status(settings.values(), chrony.tracking()))
+        elif path == "/api/clockquality/allan":
+            self._send_json(ALLAN.get())
         elif path == "/api/enforce/snippets":
             self._send_json(enforce.api_snippets(query, settings.values()))
         elif path == "/api/enforce/check":
@@ -1813,6 +1826,10 @@ class Handler(BaseHTTPRequestHandler):
         options.update(version=VERSION, uptime_seconds=int(time.time() - START_TIME),
                        chrony_conf=CHRONY_CONF,
                        history=HISTORY.snapshot(time.time() - 86400))
+        try:
+            options["allan"] = allan.compact(ALLAN.get())
+        except Exception:  # nie das Paket deswegen verlieren
+            options["allan"] = None
         return options
 
     def _leak_error(self, exc: Exception) -> None:

@@ -4,7 +4,7 @@ export const HELP_UHR = {
   uq_page: {
     title: "Uhrqualität",
     text: "Diese Seite zeigt, was die Uhr dieses Geräts **ohne** Hilfe von außen taugen würde und was sie "
-      + "langfristig beeinflusst: die Temperatur des Quarzes, die Schaltsekunden-Liste und eine große Uhr "
+      + "langfristig beeinflusst: die Temperatur des Quarzes, seine Stabilität (Allan-Abweichung), die Schaltsekunden-Liste und eine große Uhr "
       + "für den Wandmonitor. Nichts hier verändert die Zeit oder die Einstellungen von chrony – außer dem "
       + "**Holdover-Test**, den du selbst startest und der sich danach von allein zurückstellt.",
   },
@@ -78,6 +78,46 @@ export const HELP_UHR = {
       + "ohne GPS/PPS heißt „Ohne GPS/PPS: Abweichung …“, weil das Netz die Uhr weiter regelt (kein Freilauf). "
       + "„Ungültig“: chrony hat während des Tests eine neue Quelle aufgenommen, die sich nicht abwählen ließ. Gespeichert werden "
       + "die letzten 20 Ergebnisse, nur auf diesem Gerät.",
+  },
+  adev: {
+    title: "Allan-Abweichung",
+    text: "Die **Allan-Abweichung** σ(τ) beantwortet: Wie stark ändert sich der Gang des Quarzes von einem "
+      + "Zeitabschnitt der Länge τ zum nächsten? Kleine Werte heißen: Die Uhr ist über diese Dauer berechenbar. "
+      + "Grob übersetzt in Zeit: Liefe die Uhr frei (Holdover), sammelte sie in τ etwa **σ(τ) × τ** Zeitfehler – "
+      + "1 ppb (= 0,001 ppm) über 1 Stunde sind rund 3,6 µs. Gerechnet wird aus der **Frequenz**, die chrony für "
+      + "den Quarz gelernt hat (gespeichert in jedem Messpunkt), nicht aus dem Offset: Der Offset ist das, was "
+      + "nach dem Nachregeln übrig bleibt, und zeigt die Regelung und die Quellen, nicht den Quarz. "
+      + "**Einordnung um τ ≈ 1 h:** unter 1 ppb sehr ruhig (wie ein temperaturgeführter Quarz), 1–10 ppb typisch "
+      + "für einen Pi-Quarz ohne Temperaturkontrolle in ruhiger Umgebung, 10–100 ppb typisch bei Temperatur- oder "
+      + "Lastwechseln, darüber unruhig. **Grenzen:** Unter etwa 15 min ändert chrony die Frequenz nur bei jeder "
+      + "Messung und glättet – dort zeigt die Kurve vor allem, wie chrony nachführt und wie unruhig die Quellen "
+      + "sind (blasse Punkte). chronyc meldet die Frequenz auf 0,001 ppm genau; Werte unter 1 ppb sind nur über lange "
+      + "Mittelung möglich und grob. Ein Neustart von chronyd oder ein Holdover-Test kann einen Sprung hinterlassen, "
+      + "der einzelne Punkte anhebt. Gerechnet wird überlappend (alle Startpunkte), τ log-gestuft bis zu einem "
+      + "Viertel der Messdauer; das Ergebnis wird 10 Minuten zwischengespeichert. Das Diagnosepaket enthält die "
+      + "Kurve als reine Zahlen (Abschnitt Verlauf).",
+  },
+  adev_best: {
+    title: "Bestwert",
+    text: "Der kleinste Wert der Kurve ab etwa 15 min und bei welchem τ er liegt. Links davon überwiegt das "
+      + "Messrauschen (die Mittelung hilft noch), rechts davon wandert der Quarz mit Temperatur und Last – Mitteln "
+      + "über noch längere Zeit macht es dann nicht mehr besser.",
+  },
+  adev_hour: {
+    title: "Über 1 Stunde",
+    text: "Der Punkt, der τ = 1 h am nächsten liegt, und der Zeitfehler, den die Uhr in dieser Zeit frei laufend "
+      + "etwa sammeln würde (Wert × τ). Danach richtet sich die Einordnung (Farbe und Satz unter den Kacheln).",
+  },
+  adev_day: {
+    title: "Über 1 Tag",
+    text: "Der Punkt um τ ≈ 1 Tag. Er braucht mindestens 4 Tage Verlauf und hat nur wenige unabhängige Paare – der "
+      + "Bereich (68 %) ist entsprechend breit. Der Tag-/Nacht-Gang der Temperatur steckt hier drin.",
+  },
+  adev_basis: {
+    title: "Datenbasis",
+    text: "Wie lang der ausgewertete Verlauf ist, in welchem Raster gemittelt wurde (Messintervall, bei langem Verlauf "
+      + "gröber, damit die Rechnung auf dem Pi kurz bleibt) und wie viel des Rasters belegt ist. Lücken (ntp-gui "
+      + "aus, chronyd ohne Antwort) bleiben leer und zählen nicht.",
   },
   temp_freq: {
     title: "Temperatur und Frequenz",
@@ -237,5 +277,5 @@ export const HELP_GROUP_UHR = {
     "temp_scatter", "temp_history", "temp_candidates", "leap_overview", "leap_tai_utc", "leap_last", "leap_next",
     "leap_expiry", "leap_hash", "leap_future", "clock_page", "clock_sync", "clock_public", "holdover", "holdover_hours",
     "holdover_limit", "holdover_network", "holdover_refs", "holdover_progress", "holdover_deviation", "holdover_drift",
-    "holdover_result"],
+    "holdover_result", "adev", "adev_best", "adev_hour", "adev_day", "adev_basis"],
 };
