@@ -556,8 +556,17 @@ class Detector:
         if lat is None or lon is None or not (-90 <= lat <= 90 and -180 <= lon <= 180):
             return None, {}, ""
         if not good_geometry(obs.get("used"), obs.get("hdop"), eph):
-            # Schwache Geometrie: weder Referenz noch Sprungtest (wie „keine Daten“).
+            # Schwache Geometrie: weder Referenz noch neuer Sprung (wie „keine Daten“). Ist das Signal
+            # schon aktiv, hält auch ein schwacher Fix außerhalb der Schwelle es aktiv – sonst käme nach
+            # 2 × Haltezeit „wieder unauffällig“, obwohl die falsche Position noch anliegt.
             self.last["position_quality"] = "schwach"
+            sig = self.signals["position"]
+            if sig.active and self._pos_anchor is not None:
+                deviation = distance_m((lat, lon), self._pos_anchor)
+                threshold = max(POS_JUMP_M, POS_EPH_FACTOR * eph if eph else 0.0)
+                if deviation > threshold:
+                    detail = {"deviation_m": round_m(deviation), "threshold_m": round_m(threshold)}
+                    return True, detail, f"Position um {round_m(deviation)} m gesprungen (Empfänger steht fest)"
             return None, {}, ""
         self.last["position_quality"] = "gut"
         sig = self.signals["position"]
@@ -738,7 +747,12 @@ def observation(now: float, gps_state: dict | None, sources: list[dict] | None, 
                 continue
             sats[f"{sat.get('system') or '?'}:{sat.get('prn')}"] = snr
         obs["sats"] = sats or None
-        obs["used"] = _num(gps_state.get("satellites_used"))
+        used = _num(gps_state.get("satellites_used"))
+        if used is not None and used <= 0:
+            # 0 heißt hier „unbekannt“ (kein SKY im Abfragefenster, NMEA ohne GSA) – kein Fix kommt
+            # mit 0 Satelliten aus. Sonst wäre die Positionsprüfung still dauerhaft aus.
+            used = None
+        obs["used"] = used
         obs["hdop"] = _num(gps_state.get("hdop"))
         if position and obs.get("mode") == 3:
             obs["pos"] = position

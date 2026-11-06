@@ -669,22 +669,57 @@ class FlapReplayTest(unittest.TestCase):
         return [e for e in events if e[0] == "gps"], lost_at
 
     def test_long_loss_while_unstet_warns_only_when_gps_matters(self):
-        # 1.5.4: kein „GPS-Fix seit 10 min weg“ mehr – eine Warnung erst nach 1 h und nur, wenn keine
-        # Netzquelle trägt (hier: chrony nutzt keine Netzquelle).
+        # Trägt keine Netzquelle (hier: chrony nutzt keine), warnt schon der schwache Empfang nach
+        # GPS_MATTERS_LOST (10 min) – nicht erst nach 1 h.
         alone = {"GPS": {"k": "#", "s": "?"}, "nts1": {"k": "^", "s": "?"}}
         events, lost_at = self.lost_while_unstet(alone)
         long = [e for e in events if "ohne Fix" in e[2] and "seit" in e[2]]
         self.assertEqual(len(long), 1, events)
         self.assertEqual(long[0][1], "warn")
-        self.assertRegex(long[0][2], r"^GPS seit 1 h ohne Fix – und gerade gebraucht")
-        self.assertGreaterEqual(long[0][4] - lost_at, statewatch.GPS_LONG_LOST)
-        self.assertLessEqual(long[0][4] - lost_at, statewatch.GPS_LONG_LOST + 60)
+        self.assertRegex(long[0][2], r"^GPS seit 10 min ohne Fix – und gerade gebraucht")
+        self.assertGreaterEqual(long[0][4] - lost_at, statewatch.GPS_MATTERS_LOST)
+        self.assertLessEqual(long[0][4] - lost_at, statewatch.GPS_MATTERS_LOST + 60)
         self.assertNotIn("notify", long[0][3])
         back = events[-1]
         self.assertEqual(back[1], "info")
         self.assertRegex(back[2], r"^GPS-Fix wieder da nach 1 h \d+ min ohne Fix$")
         self.assertNotIn("notify", back[3])                     # schließt die Warnung in den Benachrichtigungen
         self.assertFalse([e for e in events if e[2] in ("GPS-Fix verloren", "GPS-Fix wieder da")])
+
+    def weak_run(self, phases):
+        """phases: Liste (Sekunden, mode, sources). Schwacher Empfang laut 24-h-Bewertung."""
+        events, now = [], [0.0]
+        watch = statewatch.StateWatcher(lambda *a, **k: events.append(a + (now[0],)), clock=lambda: now[0],
+                                        weak_reception=lambda: True)
+        for seconds, mode, sources in phases:
+            for _ in range(int(seconds // 10)):
+                watch.sample({"gps": {"mode": mode}, "sources": sources})
+                now[0] += 10
+        return [e for e in events if e[0] == "gps"]
+
+    def test_weak_loss_warns_soon_when_gps_matters(self):
+        alone = {"GPS": {"k": "#", "s": "*"}, "nts1": {"k": "^", "s": "?"}}
+        events = self.weak_run([(600, 3, alone), (3000, 1, alone), (600, 3, alone)])
+        warns = [e for e in events if e[1] == "warn"]
+        self.assertEqual(len(warns), 1, events)
+        self.assertRegex(warns[0][2], r"^GPS seit 10 min ohne Fix – und gerade gebraucht")
+        self.assertRegex(events[-1][2], r"^GPS-Fix wieder da nach 50 min ohne Fix$")
+        self.assertNotIn("notify", events[-1][3])
+
+    def test_info_upgrades_to_warn_when_network_fails(self):
+        carried = {"GPS": {"k": "#", "s": "?"}, "nts1": {"k": "^", "s": "*"}, "nts2": {"k": "^", "s": "+"}}
+        gone = {"GPS": {"k": "#", "s": "?"}, "nts1": {"k": "^", "s": "?"}, "nts2": {"k": "^", "s": "?"}}
+        events = self.weak_run([(600, 3, carried), (4200, 1, carried), (3600, 1, gone), (600, 3, gone)])
+        long = [e for e in events if e[2].startswith("GPS seit")]
+        self.assertEqual([e[1] for e in long], ["info", "warn"], events)
+        self.assertIn("jetzt gebraucht", long[1][2])
+        self.assertNotIn("notify", events[-1][3])   # „wieder da“ schließt die Warnung
+
+    def test_long_outage_without_extra_summary(self):
+        carried = {"GPS": {"k": "#", "s": "?"}, "nts1": {"k": "^", "s": "*"}, "nts2": {"k": "^", "s": "+"}}
+        events = self.weak_run([(600, 3, carried), (7200, 1, carried), (600, 3, carried)])
+        self.assertEqual(len([e for e in events if e[2].startswith("GPS seit")]), 1, events)
+        self.assertFalse([e for e in events if "1-mal verloren" in e[2]], events)
 
     def test_long_loss_while_unstet_is_info_when_network_carries(self):
         carried = {"GPS": {"k": "#", "s": "?"}, "nts1": {"k": "^", "s": "*"}, "nts2": {"k": "^", "s": "+"}}

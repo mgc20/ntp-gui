@@ -46,8 +46,9 @@ export const HELP_GNSS = {
       + "einem Neustart, aus der 24-h-Bewertung): So lange gibt es keine Einzelmeldungen „verloren/wieder da“, "
       + "sondern höchstens eine Info-Zeile je Stunde, z. B. „GPS-Fix 7-mal verloren in der letzten Stunde, "
       + "zusammen 23 min ohne Fix“ – flattert es weiter, wird das Fenster bis 6 Stunden länger. Eine **Warnung** "
-      + "gibt es nur, wenn der Fix **eine Stunde am Stück** fehlt **und** das GPS gebraucht wird (keine brauchbare "
-      + "Netzquelle, GPS/PPS ausgewählt oder PPS eingerichtet); sonst steht das als Info im Protokoll. Bei "
+      + "gibt es, wenn das GPS gebraucht wird (keine brauchbare Netzquelle, GPS/PPS ausgewählt oder PPS "
+      + "eingerichtet) und der Fix **10 Minuten am Stück** fehlt; tragen die Netzquellen die Zeit, steht ein "
+      + "Ausfall erst nach einer Stunde als Info im Protokoll. Bei "
       + "**stetig** steht dahinter, wie viele Fix-Wechsel es in der letzten halben Stunde trotzdem gab (unter sechs).",
   },
   gpsq_basis: {

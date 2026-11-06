@@ -267,6 +267,31 @@ class WeakGeometryTest(unittest.TestCase):
         obs = gnssguard.observation(5.0, dict(status, running=True), [], {}, "GPS", (1.0, 2.0, 8.0))
         self.assertEqual((obs["used"], obs["hdop"]), (4, 7.5))
 
+    def test_observation_zero_used_counts_as_unknown(self):
+        # Kein SKY im Abfragefenster (oder NMEA ohne GSA): gps.parse liefert 0 benutzte Satelliten.
+        # Das darf die Positionsprüfung nicht still abschalten.
+        status = gps.parse_reports({"TPV": {"mode": 3, "lat": 1.0, "lon": 2.0, "eph": 8.0}})
+        self.assertEqual(status["satellites_used"], 0)
+        obs = gnssguard.observation(5.0, dict(status, running=True), [], {}, "GPS", (1.0, 2.0, 8.0))
+        self.assertIsNone(obs["used"])
+        self.assertTrue(gnssguard.good_geometry(obs["used"], obs.get("hdop"), 8.0))
+
+    def test_active_jump_stays_active_on_weak_fixes(self):
+        rng = random.Random(7)
+        det = gnssguard.Detector()
+        t = 0.0
+        while t < 2400.0:
+            det.update(dict(outdoor(t, rng), used=8, hdop=1.1))
+            t += 10.0
+        for _ in range(30):   # 5 min gut und 800 m daneben: Störung
+            stage = det.update(dict(outdoor(t, rng, pos_shift=800.0), used=8, hdop=1.1))["stage"]
+            t += 10.0
+        self.assertEqual(stage, "stoerung")
+        for _ in range(180):  # 30 min weiter 800 m daneben, nur schwache Geometrie: bleibt aktiv
+            det.update(dict(outdoor(t, rng, pos_shift=800.0), used=4, hdop=9.0))
+            t += 10.0
+        self.assertTrue(det.signals["position"].active)
+
 
 class SignalTest(unittest.TestCase):
     def test_uniform_cn0_is_hint(self):

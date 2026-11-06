@@ -38,18 +38,20 @@ GPS_FLAP_WINDOW = 1800.0
 GPS_FLAP_ENTER = 6
 GPS_FLAP_CALM = 3600.0
 # Während „unstet“: Bleibt der Fix so lange am Stück weg, endet die Episode (still – was dann
-# zählt, entscheidet GPS_LONG_LOST).
+# zählt, entscheidet _outage_update).
 GPS_UNSTET_LOST = 10 * GPS_FIX_HOLD
 # 1.5.4: Schwacher Empfang (Episode „unstet“, oder die 24-h-Empfangsbewertung sagt „Fix kommt und
 # geht“) wird für GPS_WEAK_MEMORY seit dem letzten Fix-Wechsel gemerkt. So lange gibt es keine
 # Einzelmeldungen „verloren/wieder da“, sondern höchstens EINE Info-Zeile je Stunde
 # („GPS-Fix 7-mal verloren in der letzten Stunde, zusammen 23 min ohne Fix“). Eine Warnung gibt es
-# nur, wenn der Fix GPS_LONG_LOST am Stück fehlt UND das GPS gerade gebraucht wird (keine
-# brauchbare Netzquelle, GPS/PPS ausgewählt oder PPS eingerichtet) – sonst eine stille Info.
+# gibt es, sobald der Fix GPS_MATTERS_LOST am Stück fehlt UND das GPS gerade gebraucht wird (keine
+# brauchbare Netzquelle, GPS/PPS ausgewählt oder PPS eingerichtet) – das wird bei jedem Messpunkt
+# neu gefragt; tragen die Netzquellen, nach GPS_LONG_LOST nur eine stille Info.
 GPS_WEAK_MEMORY = 24 * 3600.0
 GPS_SUMMARY_INTERVAL = 3600.0
 GPS_SUMMARY_MAX = 6 * 3600.0   # flattert es Stunde um Stunde weiter, verdoppelt sich das Fenster bis 6 h
 GPS_LONG_LOST = 3600.0
+GPS_MATTERS_LOST = 600.0   # wird das GPS gebraucht: Warnung nach 10 min ohne Fix (kurzes Flattern bleibt still)
 GPS_GAP_MAX = 300.0     # größere Lücken zwischen Messpunkten zählen nicht als Zeit ohne Fix
 
 
@@ -180,6 +182,7 @@ class StateWatcher:
         self._summary_interval = GPS_SUMMARY_INTERVAL if summary_interval is None else summary_interval
         self._summary_max = max(self._summary_interval, GPS_SUMMARY_MAX * self._summary_interval / GPS_SUMMARY_INTERVAL)
         self._long_lost = GPS_LONG_LOST if long_lost is None else long_lost
+        self._matters_lost = min(GPS_MATTERS_LOST, self._long_lost)
         self._weak_memory = GPS_WEAK_MEMORY if weak_memory is None else weak_memory
         self._flap_reset()
         self._pps: dict[str, _Tracker] = {}
@@ -343,7 +346,7 @@ class StateWatcher:
                                       f"(vorher {count} Fix-Wechsel in {_fmt_span(duration)})", info)
         if calm or lost:
             # Fix dauerhaft weg: Episode still beenden – ob das eine Meldung wert ist, entscheidet
-            # _outage_update (erst nach GPS_LONG_LOST und nur, wenn das GPS gebraucht wird).
+            # _outage_update (Warnung nach GPS_MATTERS_LOST, wenn das GPS gebraucht wird, sonst Info nach GPS_LONG_LOST).
             self._unstet = False
             self._unstet_since = self._unstet_since_wall = None
             self._unstet_changes = 0
@@ -362,18 +365,24 @@ class StateWatcher:
         if state is False:
             if self._lost_since is None:
                 self._lost_since = now
-            if (self._long_level is None and not self._loss_reported
-                    and now - self._lost_since >= self._long_lost):
-                span = _fmt_span(now - self._lost_since)
-                info = dict(data, outcome="fix_weg", lost_s=round(now - self._lost_since))
-                if gps_matters(sample):
-                    self._long_level = "warn"
-                    self._send("gps", "warn", f"GPS seit {span} ohne Fix – und gerade gebraucht "
-                                              "(keine brauchbare Netzquelle oder GPS/PPS ausgewählt)", info)
-                else:
-                    self._long_level = "info"
-                    self._send("gps", "info", f"GPS seit {span} ohne Fix – die Netzquellen tragen die Zeit, "
-                                              "das GPS ist nur Rückfallebene", dict(info, notify=False, resolves=False))
+            if self._loss_reported or self._long_level == "warn":
+                return
+            lost = now - self._lost_since
+            span = _fmt_span(lost)
+            info = dict(data, outcome="fix_weg", lost_s=round(lost))
+            # Bei jedem Messpunkt neu fragen: wird das GPS gebraucht, reicht die kurze Verzögerung
+            # (Flattern bleibt still); fällt das Netz erst während des Ausfalls weg, wird aus „info“ „warn“.
+            if gps_matters(sample) and lost >= self._matters_lost:
+                upgrade = self._long_level == "info"
+                self._long_level = "warn"
+                text = (f"GPS seit {span} ohne Fix – jetzt gebraucht (die Netzquellen tragen nicht mehr)"
+                        if upgrade else f"GPS seit {span} ohne Fix – und gerade gebraucht "
+                                        "(keine brauchbare Netzquelle oder GPS/PPS ausgewählt)")
+                self._send("gps", "warn", text, info)
+            elif self._long_level is None and lost >= self._long_lost:
+                self._long_level = "info"
+                self._send("gps", "info", f"GPS seit {span} ohne Fix – die Netzquellen tragen die Zeit, "
+                                          "das GPS ist nur Rückfallebene", dict(info, notify=False, resolves=False))
             return
         if state and self._lost_since is not None:
             if self._long_level is not None:
@@ -398,7 +407,9 @@ class StateWatcher:
             return
         if now - self._sum_start < self._sum_window:
             return
-        if self._sum_losses > 0:
+        if self._sum_losses == 1 and self._long_level is not None:
+            pass   # der eine Verlust ist schon als langer Ausfall gemeldet – keine zweite Zeile dazu
+        elif self._sum_losses > 0:
             window = now - self._sum_start
             when = ("in der letzten Stunde" if window < 1.1 * GPS_SUMMARY_INTERVAL
                     else f"in den letzten {_fmt_span(window)}")

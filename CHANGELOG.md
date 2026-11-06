@@ -15,16 +15,21 @@ Fehlerschranke (Rückmeldung: Diagnosepaket 1.5.3, VK-162 drinnen ohne PPS, GPS 
   (ohne HDOP: eph höchstens 50 m) –, für die Referenz wie für den Vergleich; 2D-Fixe und schlechte
   Geometrie werden ignoriert. Ein Sprung zählt erst, wenn er über mindestens 5 gute Fixe und 50 s anhält.
   Ein echter Spoofer (sauberes Signal, gute Geometrie, bleibender Sprung) wird weiter in unter einer
-  Minute erkannt. Replay der Fix-Folge aus dem Paket (4 Tage, Positionsstreuung nach HDOP): vorher rund 40
+  Minute erkannt. Ist die Störung schon gemeldet, halten auch schwache Fixe außerhalb der Schwelle sie
+  aufrecht – „GNSS wieder unauffällig“ kommt nicht mehr, nur weil ein Spoofer auf schlechte Geometrie
+  umschaltet. Meldet gpsd keine Satellitenliste (kein SKY im Abfragefenster, NMEA ohne GSA), gilt die
+  Satellitenzahl als unbekannt statt als 0 – sonst wäre die Positionsprüfung still dauerhaft aus. Replay der Fix-Folge aus dem Paket (4 Tage, Positionsstreuung nach HDOP): vorher rund 40
   Störungen, jetzt keine.
 - **Weniger GPS-Ereignisse bei schwachem Empfang.** Gilt der Empfang als schwach (Episode „unstet“ oder
   die 24-h-Bewertung meldet häufige Fix-Wechsel – auch gleich nach einem Neustart), merkt sich ntp-gui das
   24 h lang. So lange gibt es keine Einzelmeldungen „GPS-Fix verloren/wieder da“ mehr, sondern höchstens
   eine Info-Zeile je Stunde: „GPS-Fix 7-mal verloren in der letzten Stunde, zusammen 23 min ohne Fix“
   (flattert es weiter, wächst das Fenster bis 6 h). „GPS-Empfang unstet“ ist nur noch eine Info ohne
-  Benachrichtigung; „GPS-Fix seit 10 min weg“ entfällt. Eine Warnung (mit Benachrichtigung) gibt es nur,
-  wenn der Fix eine Stunde am Stück fehlt **und** das GPS gebraucht wird (keine brauchbare Netzquelle,
-  GPS/PPS ausgewählt oder PPS eingerichtet); sonst steht das als Info im Protokoll. Bei gutem Empfang
+  Benachrichtigung. Wird das GPS gebraucht (keine brauchbare Netzquelle, GPS/PPS ausgewählt oder PPS
+  eingerichtet), gibt es eine Warnung (mit Benachrichtigung), sobald der Fix 10 min am Stück fehlt – kurzes
+  Flattern bleibt still. Das wird bei jedem Messpunkt neu geprüft: Fallen die Netzquellen erst während des
+  Ausfalls weg, wird aus der Info eine Warnung. Tragen die Netzquellen die Zeit, steht ein Ausfall erst nach
+  einer Stunde am Stück als stille Info im Protokoll – ohne zusätzliche Stundenzeile „1-mal verloren“ dazu. Bei gutem Empfang
   bleibt jeder Fix-Verlust eine Warnung. Replay: vorher rund 100 GPS-Ereignisse in 4 Tagen (über die
   Hälfte „warn“), jetzt rund 20, alle „info“.
 - **Hinweis „GPS hat noch keinen Fix“ passt zur Lage.** Gab es vor kurzem noch einen Fix, heißt er „GPS
