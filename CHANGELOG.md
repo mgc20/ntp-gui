@@ -8,6 +8,8 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 
 Schwerpunkt: GPS bei schwachem Empfang ruhig – keine Positions-Fehlalarme, weniger Ereignisse, stabile
 Fehlerschranke (Rückmeldung: Diagnosepaket 1.5.3, VK-162 drinnen ohne PPS, GPS nur Rückfallebene).
+Dazu: Reverse Proxy per Klick eintragen und die Restpunkte aus der Abschlussprüfung (Kalibrierung über den
+ganzen Verlauf, hängende HTTP-Verbindungen, Holdover-Frist, „GPS gesperrt, Uhr läuft frei“).
 
 ### Behoben
 - **Kein Fehlalarm „GNSS-Störung: Position um 160 m gesprungen“ mehr bei schwachem Empfang.** Für den
@@ -39,6 +41,41 @@ Fehlerschranke (Rückmeldung: Diagnosepaket 1.5.3, VK-162 drinnen ohne PPS, GPS 
   wieder ± 22 ms, jedes Mal ein Neustart von chronyd). Kleiner wird sie nur noch, wenn die gemessene
   Streuung höchstens 0,6 × die jetzige Schranke ist und auch die Messung der letzten 48 h (nicht nur 6 h)
   mit Reserve hineinpasst. Größer wird sie wie bisher sofort, höchstens einmal je Stunde.
+- **Kalibrierung liest nicht mehr den ganzen Verlauf** (Prüfbefund: Die Karte „GPS kalibrieren“ fragte
+  alle 15 s mit window=0 = „gesamter Verlauf“; über 30 Tage SQLite auf einem Pi 14 s und 1,1 GB). Die
+  Karte startet mit „letzte 24 h“, statt „gesamter Verlauf“ gibt es „letzte 7 Tage“ (alle 2 min neu
+  gemessen). Der Server begrenzt window auf 7 Tage (0 von älteren Dashboards = 7 Tage), lehnt NaN und
+  negative Werte mit 400 ab; die automatische Kalibrierung liest ebenso höchstens 7 Tage. Den Verlauf
+  liest ntp-gui in 6-h-Abschnitten, jeder für sich unter der Sperre – die Messschleife wartet höchstens
+  einen Abschnitt statt der ganzen Abfrage. Messung (30 Tage im 10-s-Takt, 259 000 Punkte, Testrechner):
+  vorher 4,8 s, Prozess bis 1,2 GB, Messschleife bis 0,64 s blockiert; jetzt 7 Tage 0,95 s, 24 h 0,11 s, unter 3 ms.
+- **Hängende HTTP-Verbindungen halten keinen Thread mehr fest.** Ein Client, der eine Content-Length
+  ankündigt und weniger schickt, eine still offene Keep-alive-Verbindung oder einer, der die Köpfe
+  tröpfchenweise schickt, blockierte bisher einen Thread für immer. Jetzt gilt je Lese-/Schreibvorgang
+  eine Frist von 30 s (auch für den Leerlauf zwischen zwei Anfragen) und für Anfragezeile, Köpfe und Body
+  zusammen 60 s. Eine abgeschnittene Anfrage wird nicht ausgeführt.
+- **Holdover-Test: Frist auf der monotonen Uhr.** Ein Sprung der Wanduhr verlängert oder verkürzt den
+  Test nicht mehr. Gespeichert und angezeigt wird die Frist weiter als Uhrzeit; nach einem Neustart
+  rechnet ntp-gui die Restzeit einmal daraus um – nie länger als die ganze Testdauer.
+
+### Neu
+- **Reverse Proxy per Klick eintragen** (Rückmeldung: Der Hinweis zeigte die Adresse des Proxys, das
+  richtige Eintragen gelang trotzdem tagelang nicht). Die Hinweise „Reverse Proxy erkannt, aber nicht
+  eingetragen“ und „Dashboard über unverschlüsseltes HTTP mit Anmeldung“ (Ursache: Proxy nicht
+  eingetragen) nennen die Adresse und bieten „Als vertrauenswürdigen Proxy eintragen (…/32 bzw. /128)“
+  an – mit Rückfrage, was das heißt. Eingetragen wird genau die Adresse, die ntp-gui selbst als
+  Gegenstelle gesehen hat, nie ein Netz; der Knopf schickt nur eine Kennung, die Adresse nimmt der Server
+  aus seiner eigenen Liste. Nur mit Admin-Recht (Passwort oder Admin-Schlüssel), mit demselben
+  CSRF-Schutz wie jede Einstellung; API-Schlüssel mit Leserecht sehen den Knopf nicht. Danach beginnt die
+  HTTPS-Prüfung neu. API: `POST /api/v1/web/proxies/trust`.
+- **Warnung bei zu breiten Proxy-Einträgen:** Ein Eintrag in „Vertrauenswürdige Proxys“ breiter als /24
+  (IPv4) bzw. /64 (IPv6) wird gespeichert, aber beim Speichern und mit einem Hinweis in der Übersicht
+  gewarnt – jedes Gerät darin dürfte sonst eine falsche Browser-Adresse und „HTTPS“ vorgeben.
+- **„GPS gesperrt, Uhr läuft frei“:** Bleibt das GPS gesperrt und gibt es 6 h lang keine andere
+  auswählbare Zeitquelle, meldet ntp-gui das einmal je Sperre als Störung (mit Benachrichtigung). Ein
+  laufender Holdover-Test zählt nicht mit. Die GNSS-Seite zeigt „Andere Quellen: keine“ bei der Sperre.
+- Hilfe: „GPS gesperrt, Uhr läuft frei“ und „Empfänger umgezogen → Position neu lernen“ an der
+  GNSS-Karte; „Vertrauenswürdige Proxys“ erklärt das Eintragen per Klick und die /24-/64-Warnung.
 
 ## [1.5.3] – 2026-11-04
 

@@ -249,7 +249,28 @@ export const HELP_GNSS = {
       + "chronyd – deshalb wählt der Supervisor das GPS direkt nach jedem Start von chronyd (auch nach dem Speichern "
       + "von Einstellungen) wieder ab, bevor die erste GPS-Messung da ist. Von Hand sperren ohne andere auswählbare "
       + "Quelle geht nur nach einer zweiten Bestätigung: Die Uhr liefe dann frei. "
-      + "Jede Sperre und Freigabe steht im Ereignisprotokoll.",
+      + "Jede Sperre und Freigabe steht im Ereignisprotokoll. Bleibt das GPS gesperrt und ist **6 Stunden lang keine "
+      + "andere auswählbare Quelle** da, kommt einmal je Sperre die Störungsmeldung „GPS gesperrt, Uhr läuft frei“ "
+      + "(siehe „Uhr läuft frei“).",
+  },
+  gnss_freerun: {
+    title: "GPS gesperrt, Uhr läuft frei",
+    text: "Das GPS ist gesperrt, und chrony hat keine andere auswählbare Zeitquelle – keine Netzquelle ist erreichbar "
+      + "oder alle sind abgewählt. Dann stellt niemand die Uhr: Sie läuft frei (Holdover) und driftet, bei einem "
+      + "Raspberry Pi typisch einige Millisekunden pro Stunde, je nach Temperatur auch mehr. Dauert das **6 Stunden**, "
+      + "meldet ntp-gui das einmal als Störung (mit Benachrichtigung). Was tun: Ist die Störung vorbei (Seite GNSS, "
+      + "Stufe „unauffällig“), die Sperre aufheben. Sonst eine Netzquelle erreichbar machen (Internet, Firewall, "
+      + "DNS). Während eines Holdover-Tests zählt die Zeit nicht – der wählt absichtlich alles ab.",
+  },
+  gnss_moved: {
+    title: "Empfänger umgezogen → Position neu lernen",
+    text: "Die Störungserkennung lernt, wo der Empfänger steht, und meldet einen Sprung dieser Position als möglichen "
+      + "Angriff (Spoofing). Hast du den Empfänger oder die Antenne **an einen anderen Platz** gestellt – anderes "
+      + "Fenster, anderes Stockwerk, anderer Ort – oder einen anderen Empfänger angesteckt, drück „Neu lernen“. Sonst "
+      + "meldet sie den Umzug als „Position gesprungen“. Danach lernt sie die neue Position in einigen Minuten mit "
+      + "gutem 3D-Fix. Kleine Bewegungen (Stick ein paar Zentimeter verrückt) brauchen das nicht: Gezählt wird erst ein "
+      + "Sprung über der Schwelle, der über mehrere gute Fixe anhält. Bei einer Meldung, die du dir nicht erklären kannst, "
+      + "nicht neu lernen – erst die Ursache klären.",
   },
   gnss_lock_reason: {
     title: "Grund der Sperre",
@@ -272,5 +293,5 @@ export const HELP_GROUP_GNSS = {
     "gpsq_basis", "gpsq_tips", "gpsq_role", "gpsq_bound", "gpsq_bound_mode", "gpsq_spread", "gpsq_bound_check",
     "gpsq_antenna", "gpsq_antenna_label", "gpsq_antenna_compare", "gpsq_antenna_list", "gpsq_tracked", "gpsq_strong",
     "gnss_guard", "gnss_stage", "gnss_cn0_drop", "gnss_uniform", "gnss_falseticker", "gnss_time", "gnss_position",
-    "gnss_mode", "gnss_lock", "gnss_lock_reason", "gnss_relearn"],
+    "gnss_mode", "gnss_lock", "gnss_freerun", "gnss_lock_reason", "gnss_relearn", "gnss_moved"],
 };

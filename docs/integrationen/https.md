@@ -24,7 +24,11 @@ nötig.
 | **Erlaubte Namen** bzw. **`WEB_ALLOWED_HOSTS`**, wenn ohne Passwort | Ohne Passwort beantwortet ntp-gui nur IP-Adressen, einteilige Namen und lokale Endungen (`.lan`, `.local`, `.home.arpa`, `.internal` …) – Schutz vor DNS-Rebinding. Ein Name wie `zeit.example.com` muss dann unter **Einstellungen → Dashboard → Erweitert → Erlaubte Namen** oder in `WEB_ALLOWED_HOSTS` stehen (beide gelten). Mit Passwort gilt jeder Name. Die Vollbild-Uhr `/clock` mit „Vollbild-Uhr ohne Anmeldung“ antwortet über jeden Namen. |
 
 `TRUSTED_PROXIES` lässt sich auch im Dashboard setzen: **Einstellungen → Dashboard → Erweitert →
-Vertrauenswürdige Proxys**.
+Vertrauenswürdige Proxys**. Einfacher (ab 1.5.4): Kommen Anfragen mit Proxy-Köpfen von einer Adresse,
+die dort fehlt, zeigt die Übersicht „Reverse Proxy erkannt, aber nicht eingetragen“ mit dem Knopf
+**„Als vertrauenswürdigen Proxy eintragen (…/32)“**. Er trägt genau die Adresse ein, die ntp-gui als
+Gegenstelle gesehen hat (nur mit Admin-Recht, mit Rückfrage). Einträge breiter als /24 bzw. /64 warnt
+ntp-gui an.
 
 ## Variante A: Caddy als eigener Stack (fertiges Beispiel)
 

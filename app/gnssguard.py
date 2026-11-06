@@ -186,6 +186,7 @@ STAGE_LEVEL = {"hinweis": "info", "warnung": "warn", "stoerung": "crit"}
 LOCK_OWNER = "gps-lock"
 RELEASE_AFTER = 1800.0          # 30 min ohne Signal → automatische Freigabe
 MAX_AUTO_RELEASES = 3           # danach bleibt die nächste Sperre bis zur Freigabe von Hand
+FREERUN_ALERT = 6 * 3600.0      # 1.5.4: so lange gesperrt ohne andere auswählbare Quelle → „Uhr läuft frei“
 SERIES_RESET = 24 * 3600.0      # nach 24 h ohne Sperre beginnt die Zählung neu
 
 _SCHEMA = [
@@ -865,6 +866,7 @@ class Guard:
         self._alarm_saved: float | None = None
         self._relearn_wall: float | None = None      # letztes „Neu lernen“ (Wanduhr, für autocal)
         self._relearn_loaded = False
+        self._freerun_since: float | None = None     # gesperrt und keine andere Quelle seit (monotone Uhr)
 
     # --- Ereignisse --------------------------------------------------------------------------
     def _emit(self, level: str, title: str, data: dict) -> None:
@@ -884,6 +886,7 @@ class Guard:
                           "repeats": int(state.get("repeats") or 0), "series_t": _num(state.get("series_t")),
                           "auto_releases": int(state.get("auto_releases") or 0),
                           "suppress": bool(state.get("suppress")),
+                          "freerun_noted": bool(state.get("freerun_noted")),
                           "added": [t for t in state.get("added") or [] if selectctl.valid_name(t)]}
             if self.state["locked"]:
                 selectctl.register(LOCK_OWNER, self.state["targets"], self.state["added"])
@@ -953,7 +956,8 @@ class Guard:
                 raise GuardError(f"chronyc selectopts ging nicht: {exc}", conflict=True) from exc
             now = self.wall()
             state.update(locked=True, since=now, manual=manual, auto_release=auto_release, reason=reason,
-                         targets=targets, suppress=False)
+                         targets=targets, suppress=False, freerun_noted=False)
+            self._freerun_since = None
             if not manual:
                 state["series_t"] = now
             self._save_lock()
@@ -988,7 +992,9 @@ class Guard:
             elif state["auto_release"]:
                 state["auto_releases"] += 1
             duration = max(0.0, self.wall() - (state["since"] or self.wall()))
-            state.update(locked=False, since=None, manual=False, auto_release=False, reason="", targets=[])
+            state.update(locked=False, since=None, manual=False, auto_release=False, reason="", targets=[],
+                         freerun_noted=False)
+            self._freerun_since = None
             self._save_lock()
             self._emit("info", f"GPS-Sperre aufgehoben – {reason}",
                        {"subject": "gps-sperre", "released": released, "manual": manual,
@@ -1122,6 +1128,7 @@ class Guard:
             if sources is not None:   # für die Oberfläche: Bleibt nach einer Sperre noch eine Quelle?
                 refid = str(cfg.get("gps_refid") or "GPS")
                 self.other_sources = self.count_others(select, sources, set(self.targets(select, refid)))
+        self._check_freerun(state, now)
         self.enabled = bool(cfg.get("gps_enable")) and mode != "off"
         if not self.enabled:
             if self.stage != "ok":
@@ -1164,6 +1171,33 @@ class Guard:
             state["suppress"] = False
         self._auto_lock(cfg, mode, select, sources)
         return {"stage": stage, "enabled": True, "changes": result["changes"]}
+
+    def _check_freerun(self, state: dict, now: float) -> None:
+        """1.5.4: GPS gesperrt und seit FREERUN_ALERT keine andere auswählbare Quelle – die Uhr läuft
+        frei (Holdover) und driftet weg. Einmal je Sperre „crit“ mit Benachrichtigung. Ein laufender
+        Holdover-Test (wählt selbst alles ab) zählt nicht mit; eine wieder erreichbare Quelle setzt
+        die Uhr zurück. Die Frist läuft auf der monotonen Uhr; nach einem Neustart beginnt sie neu."""
+        if not state["locked"] or self.other_sources is None or _holdover_running():
+            self._freerun_since = None
+            return
+        if self.other_sources > 0:
+            self._freerun_since = None
+            return
+        if self._freerun_since is None:
+            self._freerun_since = now
+            return
+        if state.get("freerun_noted") or now - self._freerun_since < FREERUN_ALERT:
+            return
+        state["freerun_noted"] = True
+        self._save_lock()
+        names = " und ".join(state.get("targets") or []) or "GPS"
+        hours = round((now - self._freerun_since) / 3600.0)
+        how = "von Hand" if state.get("manual") else "automatisch"
+        self._emit("crit", f"GPS gesperrt, Uhr läuft frei: {names} seit über {hours} h {how} gesperrt und "
+                           "keine andere auswählbare Zeitquelle – die Uhr driftet. Sperre aufheben (GNSS-Seite) "
+                           "oder eine Netzquelle erreichbar machen.",
+                   {"subject": "gps-sperre", "freerun": True, "hours": hours, "manual": bool(state.get("manual")),
+                    "resolves": False})
 
     def _note_alarm(self) -> None:
         """Merkt sich (in SQLite, höchstens alle 10 min geschrieben), wann zuletzt „Warnung“ oder

@@ -16,6 +16,7 @@ unverschlüsseltes HTTP ankamen, und liefert daraus einen Hinweis für die Über
 
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import re
 import threading
@@ -40,6 +41,27 @@ def parse_networks(items: Iterable[str] | None) -> list:
             continue  # „allen trauen“ gibt es nicht – das hieße: jeder darf seine Adresse fälschen
         out.append(net)
     return out
+
+
+# Breiter als das sollte kein Proxy-Eintrag sein: Ein Proxy ist ein Gerät, kein ganzes Netz. Ein /16
+# hieße: Jedes Gerät darin darf dem Zugriffsprotokoll eine beliebige Absenderadresse vorgeben.
+BROAD_PREFIX = {4: 24, 6: 64}
+
+
+def broad_entries(items: Iterable[str] | None) -> list[str]:
+    """Einträge, die breiter als /24 (IPv4) bzw. /64 (IPv6) sind – für Warnung und Hinweis."""
+    out = []
+    for net in parse_networks(items):
+        if net.prefixlen < BROAD_PREFIX[net.version]:
+            out.append(str(net))
+    return out
+
+
+def broad_warning(entries: list[str]) -> str:
+    return (f"„{'“, „'.join(entries)}“ {'umfasst' if len(entries) == 1 else 'umfassen'} mehr als ein "
+            "/24- (IPv4) bzw. /64-Netz (IPv6). Jedes Gerät darin darf ntp-gui dann eine falsche "
+            "Browser-Adresse und „HTTPS“ vorgeben. Trag nur die Adresse deines Proxys ein, z. B. "
+            "192.168.1.10/32.")
 
 
 def parse_ip(text: str | None):
@@ -224,6 +246,7 @@ class TransportWatch:
         self.last_untrusted: float | None = None    # Proxy-Köpfe von einer nicht eingetragenen Gegenstelle
         self.last_https: float | None = None        # durchgehend verschlüsselt
         self.last_proto: dict[str, float] = {}      # Proxy → letzter Zugriff mit Proto-Kopf
+        self.untrusted: dict[str, float] = {}       # nicht eingetragener Proxy (Adresse) → letzter Zugriff
 
     # Kompatibel zu 1.5.0 (Tests, Aufrufer): Zeitpunkt und Arten des letzten Klartext-Zugriffs.
     @property
@@ -255,6 +278,10 @@ class TransportWatch:
         with self._lock:
             if info.get("untrusted_forward"):
                 self.last_untrusted = now
+                if parse_ip(peer) is not None:
+                    if peer not in self.untrusted and len(self.untrusted) >= MAX_SOURCES:
+                        del self.untrusted[min(self.untrusted, key=self.untrusted.get)]
+                    self.untrusted[peer] = now
                 if loopback:
                     return  # Proxy auf diesem Rechner: die Strecke zu ntp-gui verlässt den Host nicht
                 # Was die Köpfe behaupten, zählt nicht: Bei ntp-gui kam die Anfrage per HTTP aus dem Netz.
@@ -262,6 +289,7 @@ class TransportWatch:
                 return
             if info.get("proxied"):
                 self.last_untrusted = None  # ein eingetragener Proxy ist angekommen – Hinweis erledigt
+                self.untrusted.clear()
                 if not info.get("proto_missing"):
                     if peer not in self.last_proto and len(self.last_proto) >= MAX_SOURCES:
                         del self.last_proto[min(self.last_proto, key=self.last_proto.get)]
@@ -292,8 +320,52 @@ class TransportWatch:
         with self._lock:
             self.last_untrusted = self.last_https = self.last_hop_plain = self.last_hop_https = None
             self.last_proto.clear()
+            self.untrusted.clear()
             self.plain.clear()
             self.no_proto.clear()
+
+    @staticmethod
+    def fix_id(peer: str) -> str:
+        """Kennung eines beobachteten Proxys für „per Klick eintragen“ – die Adresse selbst nimmt der
+        Server aus seiner eigenen Liste, nie aus der Anfrage."""
+        return hashlib.sha256(("trust-proxy|" + peer).encode()).hexdigest()[:16]
+
+    def untrusted_peer(self, fix_id: str, now: float | None = None) -> str | None:
+        """Die beobachtete Proxy-Adresse zu einer Kennung – nur, solange ihr Hinweis noch steht."""
+        now = self._clock() if now is None else now
+        with self._lock:
+            for peer, at in self.untrusted.items():
+                if self.fix_id(peer) == str(fix_id) and now - at <= WINDOW:
+                    return peer
+        return None
+
+    @staticmethod
+    def host_network(peer: str) -> str:
+        """Genau diese eine Adresse als Netz: 192.168.1.10/32 bzw. fd00::10/128 – nie ein Bereich."""
+        address = ipaddress.ip_address(peer)
+        return f"{address}/{address.max_prefixlen}"
+
+    def _fixes(self, peers: list[str]) -> list[dict[str, Any]]:
+        out = []
+        for peer in peers[:SHOW_SOURCES]:
+            try:
+                network = self.host_network(peer)
+            except ValueError:
+                continue
+            out.append({
+                "kind": "trust_proxy", "id": self.fix_id(peer), "address": peer, "network": network,
+                "label": f"Als vertrauenswürdigen Proxy eintragen ({network})",
+                "confirm": (f"{peer} als vertrauenswürdigen Reverse Proxy eintragen ({network})?\n\n"
+                            "Das heißt: ntp-gui glaubt Anfragen von genau dieser Adresse die Köpfe "
+                            "X-Forwarded-For und X-Forwarded-Proto – das Zugriffsprotokoll nennt dann den "
+                            "Browser statt des Proxys, und der HTTPS-Hinweis sieht, ob der Browser "
+                            "verschlüsselt spricht. Über Anmeldung und Zugriff entscheiden die Köpfe nie.\n\n"
+                            "Nur bestätigen, wenn dort wirklich dein Proxy läuft (Caddy, Nginx Proxy "
+                            "Manager, Zoraxy, Traefik …). Ein anderes Gerät mit dieser Adresse könnte "
+                            "sonst eine falsche Browser-Adresse vorgeben. Rückgängig: Einstellungen → "
+                            "Dashboard → „Vertrauenswürdige Proxys“."),
+            })
+        return out
 
     @staticmethod
     def _recent(when: float | None, now: float, fixed_by: tuple = ()) -> bool:
@@ -333,7 +405,18 @@ class TransportWatch:
             hop = self._recent(self.last_hop_plain, now, (self.last_https,))
             hop_https = self._recent(self.last_hop_https, now, (self.last_https,))
             untrusted = self._recent(self.last_untrusted, now)
+            peers = [p for p, at in sorted(self.untrusted.items(), key=lambda kv: kv[1], reverse=True)
+                     if now - at <= WINDOW]
         out: list[dict[str, Any]] = []
+        broad = broad_entries(trusted) if trusted else []
+        if broad:
+            out.append({
+                "level": "warn", "key": "web_proxy_broad", "action": "settings",
+                "title": "Vertrauenswürdige Proxys: Eintrag umfasst ein ganzes Netz",
+                "text": broad_warning(broad) + " Ein Netz einzutragen ist nur nötig, wenn der Proxy "
+                        "seine Adresse oft wechselt – dann so klein wie möglich (z. B. das Docker-Netz "
+                        "172.18.0.0/24 statt 172.16.0.0/12).",
+            })
         if plain:
             parts = []
             for entry in plain[:SHOW_SOURCES]:
@@ -362,8 +445,11 @@ class TransportWatch:
             if not advice or causes == {"direct"}:
                 advice.append("Noch kein Proxy? Anleitung mit fertigem Caddy-Beispiel (eigener Stack) in "
                               "docs/integrationen/https.md.")
+            untrusted_via = [e["key"][2] for e in plain if e["key"][0] == "untrusted"]
+            fixes = self._fixes([p for p in peers if p in untrusted_via])
             out.append({
                 "level": "warn", "key": "web_plain_http", "action": "settings",
+                **({"fixes": fixes} if fixes else {}),
                 "title": "Dashboard über unverschlüsseltes HTTP mit Anmeldung",
                 "text": f"Ungeschützt angekommen: {listing}. Basic-Auth und Bearer-Schlüssel sind nur "
                         "Base64 bzw. Klartext – jedes Gerät auf dem Weg (WLAN, Switch mit Spiegelport, ein "
@@ -421,15 +507,23 @@ class TransportWatch:
                         "du diesen Hinweis übergehen.",
             })
         if untrusted:
+            fixes = self._fixes(peers)
+            named = ", ".join(peers[:SHOW_SOURCES])
+            more = len(peers) - SHOW_SOURCES
+            source = (f"von {named}{f' (und {more} weiteren)' if more > 0 else ''}" if peers
+                      else "von einer Adresse")
             out.append({
                 "level": "info", "key": "web_proxy_untrusted", "action": "settings",
+                **({"fixes": fixes} if fixes else {}),
                 "title": "Reverse Proxy erkannt, aber nicht eingetragen",
-                "text": "Anfragen mit Anmeldung tragen Proxy-Köpfe (X-Forwarded-For/-Proto), kommen aber von "
-                        "einer Adresse, die nicht in „Vertrauenswürdige Proxys“ (TRUSTED_PROXIES) steht. "
+                "text": "Anfragen mit Anmeldung tragen Proxy-Köpfe (X-Forwarded-For/-Proto), kommen aber "
+                        f"{source}, die nicht in „Vertrauenswürdige Proxys“ (TRUSTED_PROXIES) "
+                        f"{'stehen' if len(peers) > 1 else 'steht'}. "
                         "ntp-gui ignoriert diese Köpfe deshalb – jeder könnte sie fälschen. Folge: Das "
                         "Zugriffsprotokoll zeigt den Proxy statt des Browsers, und ntp-gui kann nicht "
-                        "erkennen, ob der Browser HTTPS benutzt. Steht dein Proxy davor, trag seine Adresse "
-                        "ein (Proxy im Host-Netzwerk auf demselben Rechner: 127.0.0.1/32 und ::1/128).",
+                        "erkennen, ob der Browser HTTPS benutzt. Ist das dein Proxy, trag ihn mit dem Knopf "
+                        "unten ein – genau diese Adresse, kein ganzes Netz (Proxy im Host-Netzwerk auf "
+                        "demselben Rechner: 127.0.0.1/32 und ::1/128).",
             })
         return out
 

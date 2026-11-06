@@ -107,6 +107,11 @@ endpoint("POST", "/settings/import", "/api/settings/import", "admin",
          ["changed", "restart", "reload_triggered"])
 endpoint("POST", "/settings/notes/ack", "/api/settings/notes/ack", "admin",
          "Update-Hinweise als gelesen markieren.", ["acknowledged"])
+endpoint("POST", "/web/proxies/trust", "/api/web/proxies/trust", "admin",
+         "Einen beobachteten, noch nicht eingetragenen Reverse Proxy als vertrauenswürdig eintragen. "
+         "Body: {\"id\": …} aus dem Hinweis (insights[].fixes[].id); eingetragen wird genau die "
+         "beobachtete Adresse als /32 bzw. /128.",
+         ["changed", "restart", "network", "trusted_proxies"])
 endpoint("POST", "/reload", "/api/reload", "admin",
          "Zeitdienste neu laden (Konfiguration neu erzeugen und Dienste neu starten).",
          ["reload_triggered"])

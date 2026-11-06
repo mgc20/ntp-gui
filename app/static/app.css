@@ -391,6 +391,7 @@ body.is-stale main { opacity: .55; transition: opacity .2s; }
 .insight-body strong { font-size: 14px; }
 .insight-body p { margin: 2px 0 0; color: var(--ink-2); font-size: 13.5px; }
 .insight-action { display: inline-block; margin-top: 4px; font-size: 13px; font-weight: 500; }
+.insight-fixes { display: flex; gap: 8px; flex-wrap: wrap; margin: 6px 0 2px; }
 .callout { margin-top: 12px; padding: 10px 12px; border-radius: 10px; background: var(--info-soft); color: var(--ink-2); font-size: 13.5px; }
 .empty-note { color: var(--ink-muted); font-size: 13.5px; margin: 8px 0 0; }
 

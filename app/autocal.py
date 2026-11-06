@@ -130,6 +130,7 @@ MAX_SPREAD = 0.025             # darüber nur noch Vorschläge
 MAX_AUTO_BIAS = 0.5            # darüber nur noch Vorschläge
 OFFSET_LIMITS = (-2.0, 2.0)    # Wertebereich von gps_offset in settings.py
 OFFSET_EPS = 5e-5              # Offsets gelten als gleich (Rundung auf 0,1 ms)
+MAX_WINDOW = 7 * DAY            # make_calibration_getter: nie mehr Verlauf als 7 Tage lesen
 CAL_CACHE_SECONDS = 300.0      # api_status(fresh=True): Messung höchstens so lange wiederverwenden
 FAST_MIN_BIAS = 0.010          # ohne PPS: ganze Korrektur in einem Schritt ab 10 ms Versatz …
 FAST_FACTOR = 3.0              # … und mindestens dem Dreifachen der Schwelle,
@@ -730,7 +731,14 @@ def make_calibration_getter(history, cfg_getter: Callable[[], dict] | None = Non
     def get(window_seconds: float) -> dict:
         cfg = (cfg_getter or settings.values)()
         refid = cfg.get("gps_refid") or "GPS"
-        samples = history.snapshot(clock() - window_seconds if window_seconds > 0 else None)
+        # 1.5.4: nie der ganze Verlauf – 0, NaN oder Riesenwerte hießen vorher „alles“ (30 Tage).
+        try:
+            window = float(window_seconds)
+        except (TypeError, ValueError):
+            window = MAX_WINDOW
+        if not window > 0:
+            window = MAX_WINDOW
+        samples = history.snapshot(clock() - min(window, MAX_WINDOW))
         result = historymod.calibrate(samples, refid, float(cfg.get("gps_offset") or 0.0),
                                       float(cfg.get("gps_delay") or 0.2))
         result.pop("series", None)

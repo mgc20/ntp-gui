@@ -102,6 +102,10 @@ function lockBlock(ctx, g) {
         : `nach ${fmtNumber(lock.max_auto_releases, 0)} automatischen Freigaben nur noch von Hand`;
     rows.push(["GPS-Sperre", el("span", {}, badge("gesperrt", "warn"), ` ${how} seit ${when(lock.since)} (${(lock.targets || []).join(", ")}) – ${release}`), "gnss_lock"]);
     if (lock.reason) rows.push(["Grund", lock.reason, "gnss_lock_reason"]);
+    if (lock.other_sources === 0) {
+      rows.push(["Andere Quellen", el("span", {}, badge("keine", "crit"),
+        " Die Uhr läuft frei und driftet – nach 6 h kommt eine Störungsmeldung"), "gnss_freerun"]);
+    }
   } else {
     rows.push(["GPS-Sperre", el("span", {}, badge("frei", "good"), " chrony darf das GPS auswählen"), "gnss_lock"]);
   }
@@ -134,7 +138,7 @@ function lockBlock(ctx, g) {
       if (!window.confirm("Position und Zeitabstand neu lernen? Nötig, wenn du Empfänger, Antenne oder USB-Port gewechselt oder den Empfänger umgestellt hast. Die automatische GPS-Kalibrierung misst danach ebenfalls neu und übernimmt den neuen Abstand selbst – bei einer echten Störung (Spoofing) deshalb nicht drücken.")) return;
       post(ctx, "/api/gnss", { action: "relearn" }, relearn, "Wird neu gelernt", "gnss");
     });
-    buttons.push(relearn, info("gnss_relearn", "Neu lernen"));
+    buttons.push(relearn, info("gnss_relearn", "Neu lernen"), info("gnss_moved", "Empfänger umgezogen?"));
   }
   buttons.push(el("a", { href: "#/einstellungen?s=gps", text: "Verhalten in den Einstellungen" }));
   return el("div", {}, kv(rows), el("div", { class: "button-row" }, buttons));

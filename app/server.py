@@ -90,6 +90,23 @@ MAX_BODY = 64 * 1024
 VERSION = os.environ.get("NTPGUI_VERSION", "1.5.3")
 EVENTS_INTERVAL = 5.0          # so oft liest der Server die Supervisor-Ereignisse ein
 CALIBRATION_DEFAULT_WINDOW = 86400.0  # /api/gps/calibration ohne window: letzte 24 h
+CALIBRATION_MAX_WINDOW = 7 * 86400.0  # … und höchstens 7 Tage (0 = „so viel wie möglich“ = 7 Tage)
+
+
+def calibration_window(raw) -> float | None:
+    """window/seconds aus der Anfrage → Sekunden (1 … 7 Tage); None bei Unsinn (NaN, negativ, kein Wert).
+    1.5.4: window=0 hieß „gesamter Verlauf“ – über 30 Tage SQLite 14 s und 1 GB, alle 15 s."""
+    if raw in (None, ""):
+        return CALIBRATION_DEFAULT_WINDOW
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if value != value or value < 0:
+        return None
+    if value == 0:
+        return CALIBRATION_MAX_WINDOW  # ältere Dashboards: „gesamter Verlauf“
+    return min(value, CALIBRATION_MAX_WINDOW)
 
 
 
@@ -773,7 +790,7 @@ def build_status() -> dict:
                                           gpsquality.insights(status.get("gps_summary")),
                                           gnssguard.insights(gnssguard.GUARD.status(cfg)),
                                           holdover.insights(holdover.TEST.status()),
-                                          webtransport.WATCH.insights())
+                                          webtransport.WATCH.insights(cfg.get("trusted_proxies")))
     global _last_insights
     _last_insights = (time.monotonic(), status["insights"])
     return status
@@ -1227,9 +1244,89 @@ def host_rejection_text(host: str) -> str:
             "Die Vollbild-Uhr /clock ist mit „Vollbild-Uhr ohne Anmeldung“ über jeden Namen erreichbar.")
 
 
+# 1.5.4: Fristen je Verbindung. Ohne sie hielt ein Client, der Content-Length ankündigt und weniger
+# schickt, oder eine still offene Keep-alive-Verbindung einen Thread für immer.
+REQUEST_IDLE_TIMEOUT = 30.0   # Socket-Frist je Lese-/Schreibvorgang – auch Leerlauf zwischen Anfragen
+REQUEST_READ_DEADLINE = 60.0  # Anfragezeile + Köpfe + Body zusammen, ab Beginn des Wartens
+
+
+class _Reaper:
+    """Schließt Verbindungen, die ihre Anfrage nicht in REQUEST_READ_DEADLINE zu Ende schicken.
+
+    Die Socket-Frist allein hilft nicht gegen Tröpfeln (alle 29 s ein Byte). Ein Thread für alle
+    Verbindungen, gestartet beim ersten Gebrauch; armiert wird nur, solange gelesen wird – eine
+    lange Antwort (Diagnosepaket) läuft ohne Frist."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._due: dict[object, float] = {}
+        self._reaped: set[int] = set()
+        self._thread: threading.Thread | None = None
+
+    def arm(self, conn, seconds: float) -> None:
+        with self._lock:
+            self._due[conn] = time.monotonic() + seconds
+            if self._thread is None:
+                self._thread = threading.Thread(target=self._run, daemon=True, name="http-reaper")
+                self._thread.start()
+
+    def disarm(self, conn) -> None:
+        with self._lock:
+            self._due.pop(conn, None)
+            self._reaped.discard(id(conn))
+
+    def was_reaped(self, conn) -> bool:
+        """Hat die Frist diese Verbindung geschlossen? Dann ist, was gelesen wurde, unvollständig –
+        auch wenn das Ende der Köpfe danach wie eine Leerzeile aussieht."""
+        with self._lock:
+            return id(conn) in self._reaped
+
+    def reap(self, now: float | None = None) -> int:
+        now = time.monotonic() if now is None else now
+        with self._lock:
+            late = [conn for conn, due in self._due.items() if due <= now]
+            for conn in late:
+                self._due.pop(conn, None)
+                self._reaped.add(id(conn))
+        for conn in late:
+            try:
+                conn.shutdown(socket.SHUT_RDWR)  # wartendes recv() kehrt sofort zurück
+            except OSError:
+                pass
+        return len(late)
+
+    def _run(self) -> None:
+        while True:
+            time.sleep(1.0)
+            try:
+                self.reap()
+            except Exception:
+                pass
+
+
+REAPER = _Reaper()
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "ntp-gui"
     protocol_version = "HTTP/1.1"
+    timeout = REQUEST_IDLE_TIMEOUT  # StreamRequestHandler.setup(): settimeout() auf der Verbindung
+
+    def handle_one_request(self) -> None:
+        REAPER.arm(self.connection, REQUEST_READ_DEADLINE)
+        try:
+            super().handle_one_request()
+        finally:
+            REAPER.disarm(self.connection)
+
+    def parse_request(self) -> bool:
+        ok = super().parse_request()
+        if ok and REAPER.was_reaped(self.connection):
+            self.close_connection = True
+            return False  # Frist abgelaufen: Köpfe abgeschnitten – nicht ausführen
+        if ok and not (self.headers.get("Content-Length") or "").strip("0 "):
+            REAPER.disarm(self.connection)  # kein Body: die Anfrage ist vollständig gelesen
+        return ok
 
     # --- Helfer --------------------------------------------------------------
     def log_message(self, fmt: str, *args) -> None:
@@ -1493,7 +1590,12 @@ class Handler(BaseHTTPRequestHandler):
         elif path.startswith("/static/"):
             self._serve_static(path[len("/static/"):])
         elif path == "/api/status":
-            self._send_json(build_status())
+            status = build_status()
+            if self._read_only_key() or env_flag("WEB_READONLY"):
+                # Knöpfe „per Klick beheben“ nur für den, der sie auch drücken darf (Admin).
+                status["insights"] = [{k: v for k, v in item.items() if k != "fixes"}
+                                      if isinstance(item, dict) else item for item in status["insights"]]
+            self._send_json(status)
         elif path == "/api/history":
             seconds = env_like(query.get("range"), 3600.0)
             points = int(env_like(query.get("points"), 600))
@@ -1536,11 +1638,15 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/gps/calibration":
             cfg = settings.values()
             # Ohne window die letzten 24 h: über 30 Tage SQLite-Verlauf dauert es sonst Sekunden.
-            window = env_like(query.get("window", query.get("seconds")), CALIBRATION_DEFAULT_WINDOW)
-            since = time.time() - window if window > 0 else None
+            window = calibration_window(query.get("window", query.get("seconds")))
+            if window is None:
+                self._error(HTTPStatus.BAD_REQUEST, "window muss eine Zahl ≥ 0 sein (Sekunden, höchstens "
+                            f"{int(CALIBRATION_MAX_WINDOW)})")
+                return
+            since = time.time() - window
             # Nur Messpunkte seit der letzten Offset-Änderung: davor lief ein anderer Offset.
             not_before = gpsquality.offset_not_before(cfg)
-            if not_before is not None and (since is None or not_before > since):
+            if not_before is not None and not_before > since:
                 since = not_before
             result = historymod.calibrate(HISTORY.snapshot(since), cfg["gps_refid"],
                                           float(cfg["gps_offset"]), float(cfg["gps_delay"]))
@@ -1706,6 +1812,11 @@ class Handler(BaseHTTPRequestHandler):
         if length < 0 or length > MAX_BODY:
             raise ValueError("Anfrage zu groß")
         raw = self.rfile.read(length) if length else b"{}"
+        reaped = REAPER.was_reaped(self.connection)
+        REAPER.disarm(self.connection)
+        if len(raw) < length or reaped:
+            self.close_connection = True
+            raise ValueError("Anfrage unvollständig")
         data = json.loads(raw.decode("utf-8") or "{}")
         if not isinstance(data, dict):
             raise ValueError("JSON-Objekt erwartet")
@@ -1735,7 +1846,10 @@ class Handler(BaseHTTPRequestHandler):
         try:
             data = self._read_json()
         except (ValueError, UnicodeDecodeError) as exc:
-            self._error(HTTPStatus.BAD_REQUEST, f"Ungültige Anfrage: {exc}")
+            try:
+                self._error(HTTPStatus.BAD_REQUEST, f"Ungültige Anfrage: {exc}")
+            except OSError:
+                pass  # Verbindung nach Fristablauf schon geschlossen
             return
         try:
             self._route_post(path, data, ident)
@@ -1771,6 +1885,32 @@ class Handler(BaseHTTPRequestHandler):
             data["api_key"] = ident.get("id")
         events.emit("settings", "info", f"{title}: {', '.join(keys[:8])}{' …' if len(keys) > 8 else ''}",
                     data, source="api" if ident.get("kind") == "key" else "web")
+
+    def _trust_proxy(self, data: dict, ident: dict) -> None:
+        """1.5.4: „Als vertrauenswürdigen Proxy eintragen“ aus dem HTTPS-Hinweis.
+
+        Die Anfrage nennt nur die Kennung des Hinweises; die Adresse kommt aus der eigenen Liste
+        beobachteter Proxys (webtransport.WATCH) – nie aus der Anfrage. Eingetragen wird genau diese
+        eine Adresse (/32 bzw. /128), kein Netz."""
+        peer = webtransport.WATCH.untrusted_peer(str(data.get("id") or ""))
+        if peer is None:
+            self._error(HTTPStatus.CONFLICT, "Diesen Proxy hat ntp-gui in den letzten 24 Stunden nicht (mehr) "
+                        "gesehen – lade die Übersicht neu.")
+            return
+        network = webtransport.TransportWatch.host_network(peer)
+        current = [str(item) for item in (settings.values().get("trusted_proxies") or [])]
+        if any(webtransport.parse_ip(peer) in net for net in webtransport.parse_networks(current)):
+            webtransport.WATCH.reset()
+            self._send_json({"changed": [], "restart": False, "network": network, "already": True,
+                             "trusted_proxies": current})
+            return
+        result = settings.save({"trusted_proxies": current + [network]})
+        self._settings_event("Vertrauenswürdigen Proxy eingetragen", result, ident)
+        result = self._after_change(result)
+        webtransport.WATCH.reset()  # auch, wenn sich nichts geändert hat: die Lage beginnt neu
+        result["network"] = network
+        result["trusted_proxies"] = settings.values().get("trusted_proxies")
+        self._send_json(result)
 
     def _route_post(self, path: str, data: dict, ident: dict | None = None) -> None:
         ident = ident or {"kind": "open"}
@@ -1912,6 +2052,8 @@ class Handler(BaseHTTPRequestHandler):
                 settings.set_credentials(str(data.get("user", "")), str(data.get("password", "")))
             AUTH_CACHE.clear()
             self._send_json({"ok": True, "auth": auth_info()})
+        elif path == "/api/web/proxies/trust":
+            self._trust_proxy(data, ident)
         elif path == "/api/reload":
             self._send_json({"reload_triggered": trigger_reload()})
         else:

@@ -114,10 +114,9 @@ und Proxy-Köpfen, aktive Hinweise im Diagnosepaket, neuer Image-Name `ghcr.io/m
   VK-162 drinnen und synthetischen Tagen), GNSS-Störungsschwellen gegen echte
   Jamming-/Spoofing-Aufzeichnungen, Mindest-Schranke ± 10 ms für NMEA, Schwellen der
   GPS-Automatik (6-h-Messung, 10 ms für den Schritt in einem Zug) an weiteren Empfängern.
-- **Aus der Abschlussprüfung 1.5.0:** eine von Hand gesetzte GPS-Sperre ohne verbleibende
-  andere Quelle nach einigen Stunden kritisch melden bzw. lösen; Hilfetext „Empfänger umgezogen →
-  Position neu lernen“; Warnung bei `TRUSTED_PROXIES` breiter als /24; Holdover-Frist auf die
-  monotone Uhr umstellen.
+- ~~**Aus der Abschlussprüfung 1.5.0:**~~ erledigt in 1.5.4 (GPS-Sperre ohne andere Quelle ≥ 6 h →
+  Störung, Hilfe „Empfänger umgezogen“, Warnung bei `TRUSTED_PROXIES` breiter als /24 bzw. /64,
+  Holdover-Frist auf der monotonen Uhr, Proxy per Klick eintragen).
 - **Optional:** AdGuard-Home-API lesen (eigener Ausgangs-Zweck, opt-in), Empfangsbewertung und
   Client-Gruppen ins Diagnosepaket (gefiltert).
 - **1.5.3+:** Verbund 1, Einstellungen als Datei (TOML).
