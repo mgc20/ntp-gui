@@ -199,7 +199,59 @@ class ComputeTest(unittest.TestCase):
         cache.get(fresh=True)
         self.assertEqual(len(calls), 2)
         broken = allan.Cache(lambda: 1 / 0)
-        self.assertEqual(broken.get()["reason"], "error")
+        with mock.patch("builtins.print") as printed:
+            out = broken.get()
+        self.assertEqual(out["reason"], "error")
+        self.assertNotIn("error", out, "keine Ausnahmetexte (Pfade) an Leser")
+        self.assertIn("ZeroDivisionError", printed.call_args[0][0], "steht im Container-Log")
+
+    def test_run_in_transient_does_not_decide_rating(self):
+        # Prüfbefund 1.5.4: frische Installation – Frequenz läuft in 30 min von 0 auf −12,3 ppm.
+        base = self.series(5 * 24, noise=0.002)
+        quiet = allan.compute(base)
+        run_in = [(t, round(v - 13.97 if t - base[0][0] >= 1800 else -12.3 * (t - base[0][0]) / 1800, 3))
+                  for t, v in base]
+        out = allan.compute(run_in)
+        self.assertEqual(quiet["summary"]["level"], "very_quiet")
+        self.assertEqual(out["summary"]["level"], "very_quiet")
+        self.assertLess(out["summary"]["hour"]["adev"], 3 * quiet["summary"]["hour"]["adev"])
+        # Neustart mitten im Verlauf mit Frequenzsprung: zweiter Abschnitt, Einschwingen weg.
+        mid = len(base) // 2
+        jumped = [(t, v + (0.8 if i >= mid else 0.0)) for i, (t, v) in enumerate(base)]
+        out = allan.compute(jumped)
+        self.assertEqual(out["segments"], 2)
+        self.assertEqual(out["summary"]["level"], "very_quiet")
+        self.assertEqual(out["settle_dropped"], 2 * int(allan.SETTLE_SECONDS / 10))
+
+    def test_gap_starts_new_segment(self):
+        base = self.series(10)
+        gapped = base[:1000] + base[1200:]
+        out = allan.compute(gapped)
+        self.assertEqual(out["segments"], 2)
+
+    def test_span_capped(self):
+        # HISTORY_DAYS bis 3650: nie mehr als MAX_SPAN rechnen (Speicher auf dem Pi).
+        series = self.series(24 * 40, interval=60.0)
+        out = allan.compute(series)
+        self.assertTrue(out["available"])
+        self.assertLessEqual(out["span"], allan.MAX_SPAN)
+        self.assertLessEqual(out["bins"], allan.MAX_BINS)
+
+    def test_diagnostics_does_not_wait_for_running_compute(self):
+        started, release = threading.Event(), threading.Event()
+
+        def slow():
+            started.set()
+            release.wait(5)
+            return self.series(3)
+        cache = allan.Cache(slow)
+        worker = threading.Thread(target=cache.get)
+        worker.start()
+        self.assertTrue(started.wait(5))
+        self.assertEqual(cache.get(wait=False)["reason"], "busy")
+        release.set()
+        worker.join(5)
+        self.assertTrue(cache.get(wait=False)["cached"])
 
 
 class HistorySeriesTest(unittest.TestCase):
@@ -227,6 +279,18 @@ class HistorySeriesTest(unittest.TestCase):
         self.assertEqual(a, b)
         self.assertEqual(a[-1], (now + 5, 9.0))
         self.assertEqual(len(a), 300 - len(range(0, 300, 7)) + 1)
+
+    def test_sql_error_is_raised_not_empty(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.addCleanup(store.close_all)
+        hist = history.History(None, os.path.join(tmp.name, "history.json.gz"), days=30,
+                               db_path=os.path.join(tmp.name, store.DB_NAME))
+        hist.add({"t": 1_793_000_000, "freq": 1.0})
+        with mock.patch.object(hist, "_db", side_effect=RuntimeError("kaputt")):
+            with self.assertRaises(RuntimeError):
+                hist.series("freq")
+        self.assertIn("kaputt", hist.error)
 
 
 class AllanHttpTest(unittest.TestCase):
@@ -289,7 +353,9 @@ class AllanHttpTest(unittest.TestCase):
         hist.series.return_value = []
         with mock.patch.object(server, "HISTORY", hist):
             out = allan.Cache(server.ALLAN.loader).get()
-        hist.series.assert_called_with("freq")
+        args, kwargs = hist.series.call_args
+        self.assertEqual(args, ("freq",))
+        self.assertGreater(kwargs["since"], server.time.time() - allan.MAX_SPAN - 60, "höchstens 30 Tage laden")
         self.assertEqual(out["reason"], "no_history")
 
 

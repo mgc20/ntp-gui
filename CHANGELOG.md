@@ -74,7 +74,15 @@ Allan-Abweichung auf der Seite „Uhrqualität“.
   die Kurve vor allem chronys Nachführung. Aufwand begrenzt (höchstens 50 000 Rasterpunkte, 20 000 Paare je
   τ; 30 Tage Verlauf ≈ 0,7 s auf einem PC), Ergebnis 10 min zwischengespeichert. Neu: `GET
   /api/clockquality/allan` (auch /api/v1). Das Diagnosepaket enthält die Kurve im Abschnitt Verlauf als reine
-  Zahlen (τ, Wert, n). Aus den Stundenmitteln im Paket der Rückmeldung: rund 2 ppb über 1 h, 5 ppb über 6 h.
+  Zahlen (τ, Wert, n). Das Einschwingen der Frequenz nach einem Start von chronyd (neue Installation,
+  frisches chrony-data, Neustart für Kalibrierung oder Fehlerschranke) zählt nicht mit: An jedem
+  Frequenzsprung über 0,5 ppm, nach jeder Lücke über 10 min und am Anfang des Verlaufs fallen die ersten
+  45 min weg – sonst hätte die erste halbe Stunde einer Neuinstallation einen ruhigen Quarz als „üblich“
+  eingeordnet (Wert um 1 h rund 200-fach zu hoch). Gerechnet werden höchstens die letzten 30 Tage, auch bei
+  größerem `HISTORY_DAYS` (bei 365 Tagen sonst gut 1 GB Speicher). Ist der Verlauf nicht lesbar, sagt die
+  Seite das (statt „noch kein Verlauf“), die Einzelheiten stehen nur im Container-Log; das Diagnosepaket
+  wartet nicht auf eine laufende Rechnung. Aus den Stundenmitteln im Paket der Rückmeldung: rund 2 ppb über
+  1 h, 5 ppb über 6 h.
 - **Reverse Proxy per Klick eintragen** (Rückmeldung: Der Hinweis zeigte die Adresse des Proxys, das
   richtige Eintragen gelang trotzdem tagelang nicht). Die Hinweise „Reverse Proxy erkannt, aber nicht
   eingetragen“ und „Dashboard über unverschlüsseltes HTTP mit Anmeldung“ (Ursache: Proxy nicht

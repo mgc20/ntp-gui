@@ -132,7 +132,8 @@ const ADEV_TICKS = [1, 10, 60, 600, 3600, 6 * 3600, 86400, 7 * 86400, 30 * 86400
 const ADEV_LEVEL = { very_quiet: "good", quiet: "good", typical: "muted", restless: "warn" };
 const ADEV_REASON = {
   no_history: "Noch kein Verlauf mit Frequenzwerten von chrony.",
-  few: "Noch zu kurz: Die Kurve braucht mindestens 2 Stunden Verlauf, für eine Aussage über einen Tag "
+  few: "Noch zu kurz: Die Kurve braucht mindestens 2 Stunden Verlauf (ohne die ersten 45 min nach jedem Start "
+    + "von chronyd – da läuft die Frequenz erst ein), für eine Aussage über einen Tag "
     + "mindestens 4 Tage (τ reicht bis zu einem Viertel der Messdauer).",
   error: "Der Verlauf ließ sich gerade nicht auswerten – Details im Container-Log.",
 };
@@ -180,7 +181,9 @@ function allanSection(data) {
     tile({ label: "Über 1 Tag", help: "adev_day", value: fmtPpb(s.day?.adev),
       note: s.day ? `≈ ${driftOf(s.day)} in ${fmtTau(s.day.tau)}` : "braucht 4 Tage Verlauf", tone: "muted" }),
     tile({ label: "Datenbasis", help: "adev_basis", value: fmtTau(data.span),
-      note: `Raster ${fmtTau(data.tau0)}, ${fmtNumber((data.coverage || 0) * 100, 0)} % belegt`, tone: "muted" })),
+      note: `Raster ${fmtTau(data.tau0)}, ${fmtNumber((data.coverage || 0) * 100, 0)} % belegt`
+        + ((data.segments || 0) > 1 ? `, ${fmtNumber(data.segments - 1, 0)}× Einschwingen nach Neustart/Sprung weggelassen` : ""),
+      tone: "muted" })),
   adevLine(data) ? el("p", { class: "hw-note" }, rich(adevLine(data))) : null,
   host,
   el("p", { class: "card-sub" }, rich(`Blasse Punkte (τ unter ${fmtTau(data.short_tau)}) zeigen vor allem, wie chrony die Frequenz `

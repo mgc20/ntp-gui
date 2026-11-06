@@ -23,7 +23,15 @@ log-gestuft (5 je Dekade) bis zu einem Viertel der Messdauer. Vertrauensbereich 
 der Zahl unabhängiger Paare n ≈ Abschnitte − 1 als Freiheitsgraden (vorsichtig – die Überlappung bringt
 mehr), Quantile nach Wilson-Hilferty.
 
-Aufwand begrenzt: höchstens MAX_BINS Rasterpunkte (τ0 wird bei langem Verlauf gröber), höchstens
+Einschwingen (1.5.4, Prüfbefund): Nach einem Start von chronyd (neue Installation, frisches
+chrony-data, Neustart für Kalibrierung oder Fehlerschranke) läuft die Frequenz erst auf ihren Wert ein –
+das ist ein einmaliger Übergang, keine Unruhe des Quarzes, würde aber den Wert um 1 h bis zu 200-fach
+verfälschen. Darum beginnt an jedem Sprung (|Δfreq| zwischen Nachbarpunkten über STEP_PPM), nach jeder
+Lücke über GAP_SECONDS und am Anfang des Verlaufs ein neuer Abschnitt, dessen erste SETTLE_SECONDS
+weggelassen werden (wie eine Lücke).
+
+Aufwand begrenzt: höchstens MAX_SPAN (30 Tage) Verlauf, auch bei größerem HISTORY_DAYS (sonst bei 365 Tagen
+gut 1 GB Speicher auf einem Pi), höchstens MAX_BINS Rasterpunkte (τ0 wird bei langem Verlauf gröber), höchstens
 MAX_PAIRS Paare je τ (sonst gleichmäßig ausgedünnt, weiter überlappend). Ergebnis 10 min im Speicher;
 gleichzeitige Abrufe rechnen nicht doppelt. Reine Mathematik, kein numpy.
 """
@@ -44,6 +52,10 @@ MIN_SPAN = 2 * 3600.0      # darunter keine Kurve (τ bis 30 min)
 MIN_POINTS = 64
 SHORT_TAU = 900.0          # darunter: chronys Nachführung statt Quarz
 PPB = 1e-9
+MAX_SPAN = 30 * 86400.0    # nur die letzten 30 Tage laden und rechnen (τ bis ~7 Tage)
+STEP_PPM = 0.5             # Frequenzsprung zwischen Nachbarpunkten: chronyd neu gestartet
+GAP_SECONDS = 600.0        # längere Lücke im Verlauf: Container/chronyd vermutlich neu gestartet
+SETTLE_SECONDS = 2700.0    # so lange nach Start/Sprung/Lücke weglassen (Einschwingen)
 
 # Einordnung nach dem Wert um τ ≈ 1 h (Bruchteil, nicht ppm). Grenzen bewusst grob.
 LEVELS = [
@@ -169,6 +181,24 @@ def _brief(p: dict | None) -> dict | None:
     return None if p is None else {"tau": p["tau"], "adev": p["adev"]}
 
 
+def settle(clean: list[tuple[float, float]]) -> tuple[list[tuple[float, float]], int, int]:
+    """Lässt das Einschwingen nach Start, Sprung oder Lücke weg. (t, ppm) sortiert →
+    (behaltene Punkte, Zahl der Abschnitte, weggelassene Punkte)."""
+    kept: list[tuple[float, float]] = []
+    segments = dropped = 0
+    start = prev_t = prev_v = None
+    for t, v in clean:
+        if prev_t is None or t - prev_t > GAP_SECONDS or abs(v - prev_v) > STEP_PPM:
+            start = t
+            segments += 1
+        if t - start >= SETTLE_SECONDS:
+            kept.append((t, v))
+        else:
+            dropped += 1
+        prev_t, prev_v = t, v
+    return kept, segments, dropped
+
+
 def compute(series: list[tuple[float, float]], now: float | None = None) -> dict:
     """Ergebnis für /api/clockquality/allan aus (t, freq in ppm)."""
     out: dict[str, Any] = {"available": False, "source": "freq", "unit": "fraction",
@@ -180,6 +210,14 @@ def compute(series: list[tuple[float, float]], now: float | None = None) -> dict
     clean.sort()
     if len(clean) < 2:
         out["reason"] = "no_history"
+        return out
+    if clean[-1][0] - clean[0][0] > MAX_SPAN:
+        cutoff = clean[-1][0] - MAX_SPAN
+        clean = [p for p in clean if p[0] >= cutoff]
+    clean, segments, dropped = settle(clean)
+    out.update(segments=segments, settle_dropped=dropped)
+    if len(clean) < 2:
+        out["reason"] = "few"
         return out
     times = [t for t, _ in clean]
     values = [v * 1e-6 for _, v in clean]  # ppm → Bruchteil
@@ -229,20 +267,30 @@ class Cache:
         self._result: dict | None = None
         self._at = 0.0
 
-    def get(self, fresh: bool = False) -> dict:
-        with self._lock:
+    def get(self, fresh: bool = False, wait: bool = True) -> dict:
+        """wait=False (Diagnosepaket): rechnet gerade ein anderer Abruf, nicht warten, sondern das
+        letzte Ergebnis liefern (oder reason „busy“)."""
+        if not self._lock.acquire(blocking=wait):
+            last = self._result
+            return dict(last, cached=True) if last is not None else {
+                "available": False, "reason": "busy", "points": [], "summary": None}
+        try:
             now = time.monotonic()
             if fresh or self._result is None or now - self._at >= self.seconds:
                 started = time.monotonic()
                 try:
                     result = compute(self.loader())
                 except Exception as exc:  # Verlauf kaputt: Seite zeigt den Grund, Server läuft weiter
-                    result = {"available": False, "reason": "error", "error": str(exc), "points": [],
+                    # Einzelheiten (evtl. Dateipfade) nur ins Container-Log, nicht an jeden Leser.
+                    print(f"[web] Allan-Abweichung nicht berechnet: {exc!r}", flush=True)
+                    result = {"available": False, "reason": "error", "points": [],
                               "summary": None, "computed": time.time()}
                 result["seconds"] = round(time.monotonic() - started, 3)
                 self._result, self._at = result, time.monotonic()
                 return dict(result, cached=False)
             return dict(self._result, cached=True)
+        finally:
+            self._lock.release()
 
     def peek(self) -> dict | None:
         """Letztes Ergebnis ohne neu zu rechnen (Diagnosepaket)."""

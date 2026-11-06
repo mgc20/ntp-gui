@@ -325,8 +325,9 @@ class History:
                     time.sleep(0)
                 return out
             except Exception as exc:
+                # Nicht still [] liefern – sonst zeigt die Seite „noch kein Verlauf“ statt des Fehlers.
                 self.error = f"Verlauf nicht lesbar: {exc}"
-                return []
+                raise
         for sample in self.snapshot(since):
             value = sample.get(key)
             if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):

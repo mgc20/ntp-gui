@@ -142,7 +142,8 @@ def env_flag(name: str, default: bool = False) -> bool:
 HISTORY_SIZE = env_number("HISTORY_SIZE", 8640, int, minimum=2)
 HISTORY = historymod.History(HISTORY_SIZE, os.path.join(settings.DATA_DIR, "history.json.gz"))
 # 1.5.4: Allan-Abweichung der Systemuhr aus der Frequenz im ganzen Verlauf, 10 min zwischengespeichert.
-ALLAN = allan.Cache(lambda: HISTORY.series("freq"))
+# Nur die letzten 30 Tage laden – bei großem HISTORY_DAYS sonst Speicher im GB-Bereich.
+ALLAN = allan.Cache(lambda: HISTORY.series("freq", since=time.time() - allan.MAX_SPAN))
 
 # Endpunkte von 1.3, die auch unter /api/v1 erreichbar sind (Recht je Endpunkt).
 apiv1.endpoint("GET", "/logs", "/api/logs", "read",
@@ -1827,7 +1828,7 @@ class Handler(BaseHTTPRequestHandler):
                        chrony_conf=CHRONY_CONF,
                        history=HISTORY.snapshot(time.time() - 86400))
         try:
-            options["allan"] = allan.compact(ALLAN.get())
+            options["allan"] = allan.compact(ALLAN.get(wait=False))  # nicht auf eine laufende Rechnung warten
         except Exception:  # nie das Paket deswegen verlieren
             options["allan"] = None
         return options
