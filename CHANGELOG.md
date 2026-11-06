@@ -4,13 +4,11 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), die Versionen folgen
 [Semantic Versioning](https://semver.org/lang/de/).
 
-## [Unveröffentlicht]
+## [1.5.4] – 2026-11-06
 
 Schwerpunkt: GPS bei schwachem Empfang ruhig – keine Positions-Fehlalarme, weniger Ereignisse, stabile
-Fehlerschranke (Rückmeldung: Diagnosepaket 1.5.3, VK-162 drinnen ohne PPS, GPS nur Rückfallebene).
-Dazu: Reverse Proxy per Klick eintragen und die Restpunkte aus der Abschlussprüfung (Kalibrierung über den
-ganzen Verlauf, hängende HTTP-Verbindungen, Holdover-Frist, „GPS gesperrt, Uhr läuft frei“) sowie die
-Allan-Abweichung auf der Seite „Uhrqualität“.
+Fehlerschranke (Rückmeldung: Diagnosepaket 1.5.3, VK-162 drinnen ohne PPS). Dazu die Allan-Abweichung auf
+der Seite „Uhrqualität“, Reverse Proxy per Klick eintragen und die Restpunkte aus der Abschlussprüfung.
 
 ### Behoben
 - **Kein Fehlalarm „GNSS-Störung: Position um 160 m gesprungen“ mehr bei schwachem Empfang.** Für den
@@ -1100,6 +1098,7 @@ Erste Veröffentlichung.
 - CI mit Unittests und Integrationstest gegen das gebaute Image; Release-Workflow,
   der das Image für amd64 und arm64 nach ghcr.io veröffentlicht.
 
+[1.5.4]: https://github.com/mgc20/ntp-gui/compare/v1.5.3...v1.5.4
 [1.5.3]: https://github.com/mgc20/ntp-gui/compare/v1.5.2...v1.5.3
 [1.5.2]: https://github.com/mgc20/ntp-gui/compare/v1.5.1...v1.5.2
 [1.5.1]: https://github.com/mgc20/ntp-gui/compare/v1.5.0...v1.5.1

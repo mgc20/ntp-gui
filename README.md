@@ -7,7 +7,7 @@
 
 <p align="center">
   <a href="https://github.com/mgc20/ntp-gui/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/mgc20/ntp-gui/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="https://github.com/mgc20/ntp-gui/releases/latest"><img alt="Release" src="https://img.shields.io/badge/release-v1.5.3-0969da"></a>
+  <a href="https://github.com/mgc20/ntp-gui/releases/latest"><img alt="Release" src="https://img.shields.io/badge/release-v1.5.4-0969da"></a>
   <img alt="Plattformen" src="https://img.shields.io/badge/platform-amd64%20%7C%20arm64-1a7f37">
   <img alt="Image" src="https://img.shields.io/badge/image-ghcr.io-8250df">
   <a href="LICENSE"><img alt="Lizenz: MIT" src="https://img.shields.io/badge/license-MIT-59636e"></a>
@@ -875,7 +875,7 @@ Streuung (nächster Abschnitt); den Offset kalibrierst du wie unten beschrieben.
 
 ### GPS ohne PPS (z. B. VK-162): Rückfallebene mit ehrlicher Fehlerschranke
 
-Ein USB-Empfänger ohne PPS liefert die Zeit nur auf einige bis einige zehn Millisekunden genau. Mit gutem Internet sind NTS-Quellen meist genauer. Ohne Internet oder mit wackeligem Mobilfunk ist das GPS dagegen die bessere oder einzige Quelle. ntp-gui macht das GPS deshalb zur **Rückfallebene**: Es misst, wie stark das GPS gegenüber deinen Netzquellen streut (letzte 6 Stunden), und gibt chrony daraus eine ehrliche Fehlerschranke. chrony nimmt dann die guten Netzquellen und übernimmt das GPS von selbst, wenn das Internet schlecht wird oder ausfällt. Bis genug gemessen ist, gilt vorsichtig ± 100 ms. Die Schranke wächst sofort mit (höchstens stündlich) und schrumpft nur deutlich und frühestens nach 12 Stunden; jede neue Schranke bekommt 25 % Reserve, damit leichtes Kriechen chronyd nicht stündlich neu startet. Enger als das 1,5-Fache der Root Distance deiner besten genutzten NTS-Quelle wird sie nie – sonst wählte chrony das GPS ohne PPS den Netzquellen vor. Jede Anpassung steht im Ereignisprotokoll. Ein eingestelltes, aber fehlendes PPS-Gerät zählt als „ohne PPS“.
+Ein USB-Empfänger ohne PPS liefert die Zeit nur auf einige bis einige zehn Millisekunden genau. Mit gutem Internet sind NTS-Quellen meist genauer. Ohne Internet oder mit wackeligem Mobilfunk ist das GPS dagegen die bessere oder einzige Quelle. ntp-gui macht das GPS deshalb zur **Rückfallebene**: Es misst, wie stark das GPS gegenüber deinen Netzquellen streut (letzte 6 Stunden), und gibt chrony daraus eine ehrliche Fehlerschranke. chrony nimmt dann die guten Netzquellen und übernimmt das GPS von selbst, wenn das Internet schlecht wird oder ausfällt. Bis genug gemessen ist, gilt vorsichtig ± 100 ms. Die Schranke wächst sofort mit (höchstens stündlich) und schrumpft nur deutlich und frühestens nach 12 Stunden (ab 1.5.4: nur, wenn die neue Schranke höchstens 0,6 × die jetzige ist und auch die Messung der letzten 48 Stunden mit Reserve hineinpasst – sonst pendelt sie bei wechselndem Empfang und startet chronyd jedes Mal neu); jede neue Schranke bekommt 25 % Reserve, damit leichtes Kriechen chronyd nicht stündlich neu startet. Enger als das 1,5-Fache der Root Distance deiner besten genutzten NTS-Quelle wird sie nie – sonst wählte chrony das GPS ohne PPS den Netzquellen vor. Jede Anpassung steht im Ereignisprotokoll. Ein eingestelltes, aber fehlendes PPS-Gerät zählt als „ohne PPS“.
 
 | Variable | Standard | Bedeutung |
 |---|---|---|
@@ -1894,7 +1894,7 @@ Updates vor. Ein Release-Build läuft ohne Cache, zieht also immer aktuelle Debi
 **Herkunft prüfen** (GitHub-CLI, sobald das Repository öffentlich ist):
 
 ```bash
-gh attestation verify oci://ghcr.io/mgc20/ntp-gui:1.5.3 -R mgc20/ntp-gui
+gh attestation verify oci://ghcr.io/mgc20/ntp-gui:1.5.4 -R mgc20/ntp-gui
 ```
 
 Scheitert ein Schritt, entsteht kein halber Release. Bei einem privaten Repository

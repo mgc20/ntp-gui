@@ -91,7 +91,8 @@ Erst ein schlankes 1.5.0 ✅, dann kurze 1.5.x-Releases (Entscheidung E15).
 | u-blox-Empfänger auslesen (Firmware, Jamming-Anzeige, Fähigkeiten) | ★★ | ◆◆ | 1.5.x |
 | GPS-Automatik einfach und sichtbar: messen → einmal korrigieren → kleinen Drifts folgen; kein GNSS-Fehlalarm nach Offset-Änderung | ★★★ | ◆◆ | 1.5.1 ✅ |
 | HTTPS-Hinweis nennt Ursache, Absender und Proxy-Köpfe; aktive Hinweise im Diagnosepaket | ★★ | ◆ | 1.5.1 ✅ |
-| Allan-Abweichung | ★★ | ◆◆ | 1.5.x |
+| Allan-Abweichung | ★★ | ◆◆ | 1.5.4 ✅ |
+| GPS bei schwachem Empfang ruhig: keine Positions-Fehlalarme, weniger Ereignisse, stabile Fehlerschranke | ★★★ | ◆ | 1.5.4 ✅ |
 | Verbund: Übersicht und Gegenmessung; Einstellungen teilen (experimentell) | ★★ | ◆◆ | 1.5.x |
 | Einstellungen als Datei (TOML) | ★ | ◆ | 1.5.x |
 | Temperaturausgleich: Fit, Vorschlag, anwenden mit 24-h-Probelauf | ★ (★★ ohne GPS) | ◆◆ | später |
@@ -104,10 +105,15 @@ GNSS-Störung mehr, wenn das GPS nach einer Offset-Änderung gleichbleibend dane
 30 ms), Fehlerschranke mit Reserve statt stündlichem Wachsen, HTTPS-Hinweis mit Ursache, Absender
 und Proxy-Köpfen, aktive Hinweise im Diagnosepaket, neuer Image-Name `ghcr.io/mgc20/ntp-gui`.
 
-**Als Nächstes (1.5.2 und folgende):**
+**Erledigt in 1.5.4:** GPS bei schwachem Empfang ruhig (keine Positions-Fehlalarme aus 2D-Fixen und
+schlechter Geometrie, Fix-Flattern als stündliche Info statt Einzelmeldungen, Warnung nur, wenn das GPS
+gebraucht wird, Fehlerschranke pendelt nicht mehr), Allan-Abweichung auf der Seite „Uhrqualität“,
+Reverse Proxy per Klick eintragen und die Restpunkte aus der Abschlussprüfung 1.5.0.
 
-- **1.5.2:** u-blox lesen (Firmware, Fähigkeiten, Jamming-Anzeige aus MON-HW bzw. gpsd 3.26 `jam`
-  als weiterer Befund der Störungserkennung), Allan-Abweichung.
+**Als Nächstes (1.5.5 und folgende):**
+
+- **u-blox und gpsd-Jamming:** u-blox lesen (Firmware, Fähigkeiten, Jamming-Anzeige aus MON-HW bzw.
+  gpsd 3.26 `jam` als weiterer Befund der Störungserkennung).
 - **Englisch, nächste Scheiben:** Seiten GPS, Zeitquellen, Clients und Einstellungsfelder;
   Server-Texte (Hinweise, Ereignisse, Benachrichtigungen) als Schlüssel; Weblate-Projekt.
 - **Schwellen aus echten Daten nachschärfen:** Empfangsampel und „unstet“ (bisher aus einem
@@ -119,7 +125,7 @@ und Proxy-Köpfen, aktive Hinweise im Diagnosepaket, neuer Image-Name `ghcr.io/m
   Holdover-Frist auf der monotonen Uhr, Proxy per Klick eintragen).
 - **Optional:** AdGuard-Home-API lesen (eigener Ausgangs-Zweck, opt-in), Empfangsbewertung und
   Client-Gruppen ins Diagnosepaket (gefiltert).
-- **1.5.3+:** Verbund 1, Einstellungen als Datei (TOML).
+- **Danach:** Verbund 1, Einstellungen als Datei (TOML).
 - **Später:** Temperatur-Fit mit Vorschlag und Temperaturausgleich anwenden (24-h-Probelauf).
   Zurückgestellt, weil der Nutzen mit dem CPU-Sensor gering ist: Auf dem Pi des Nutzers folgt die
   Frequenz eher der Tageszeit als der CPU-Temperatur (Bereich 1,33–1,63 ppm). Sinnvoll erst mit
