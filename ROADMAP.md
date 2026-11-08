@@ -125,7 +125,7 @@ die in die Zeit eingreift. Community-Funktionen kommen erst mit 1.7.
 
 | Thema | Nutzen | Aufwand | Stufe |
 |---|---|---|---|
-| Grundreinigung: alle bestätigten Fehler aus der Fehlersuche (Last, Robustheit, Zeitzone, Verbindungsverlust, Kontraste) | ★★★ | ◆◆ | 1.6.0 |
+| Grundreinigung: alle bestätigten Fehler aus der Fehlersuche (Last, Robustheit, Zeitzone, Verbindungsverlust, Kontraste) | ★★★ | ◆◆ | 1.5.5 ✅ |
 | Pi-Zustand: Unterspannung, Drosselung, Takt, Lüfter | ★★★ | ◆ | 1.6.0 |
 | Sicherung und Wiederherstellung (ohne Position, ohne Tokens, mit Vorschau) 🔒 | ★★★ | ◆◆ | 1.6.0 |
 | GUI-Erneuerung: einheitliche Bausteine und Zahlenformate, Navigation mit 7 Einträgen, Einstellungen 2.0 | ★★★ | ◆◆ | 1.6.0 |

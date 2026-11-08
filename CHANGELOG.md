@@ -6,6 +6,24 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 
 ## [Unveröffentlicht]
 
+## [1.5.5] – 2026-11-08
+
+Schwerpunkt: Grundreinigung vor 1.6 – das Diagnosepaket kommt auch mit langer Aufzeichnung hinter einem
+Reverse Proxy durch, Uhrsprünge stören keine Abläufe mehr, eine strenge Content-Security-Policy, IPv6 für das
+Dashboard, Zeiten in der Zeitzone des Servers, bessere Kontraste und Handy-Ansicht. Dazu Projektarbeit für das
+öffentliche Repository (Datenschutz-Wächter, Pläne 1.6/1.7).
+
+### Hinzugefügt
+- **Datenschutz-Wächter in der CI:** prüft in jedem PR alle Dateien, neue Commits (Autor, Committer,
+  Nachricht) sowie Titel und Beschreibung auf private LAN-Adressen außerhalb der Beispielnetze und echte
+  Koordinaten; Git-Identität nur noreply. Ein Sicherheitsnetz gegen Versehen, bewusst schlank.
+- **Testdaten ohne echte Netze und Anbieter:** Beispielnetze statt eines verbreiteten Heimnetz-Bereichs,
+  Adressen großer öffentlicher Anbieter statt realer Server und Zugangs-Präfixe.
+- **Pläne für 1.6 und 1.7:** `docs/konzept/version-1.6.md` (rein lokal: Grundreinigung, Pi-Zustand,
+  Sicherung, GUI-Erneuerung, Willkommens-Assistent, Uhr-Werkstatt, „Heute“-Zeitleiste; offene Fragen
+  entschieden) und `docs/konzept/version-1.7-entwurf.md` (Community-Funktionen). Die ROADMAP folgt
+  dieser Staffelung.
+
 ### Geändert
 - **Diagramme:** Liegt der Live-Wert sichtbar außerhalb von min/max, steht „min/max aus Mittelwerten“ daneben
   (der Verlauf speichert Mittelwerte je Abschnitt, „jetzt“ ist der Rohwert).
@@ -15,12 +33,6 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 - **Das Dashboard startet immer auf Deutsch**, auch wenn der Browser auf Englisch steht. Englisch heißt
   „English (Beta)“ und gilt nur, wenn du es ausdrücklich wählst (DE/EN oder Einstellungen → Dashboard);
   eine schon gespeicherte Wahl bleibt. Vollständiges Englisch kommt mit 1.7.
-
-### Sicherheit
-- **Content-Security-Policy an jeder Antwort** (auch API und Fehlerseiten): nur eigene Skripte, Stylesheets
-  und Verbindungen, keine Inline-Skripte, keine Einbettung in fremde Seiten, Bilder zusätzlich als `data:`.
-  Im Browser über alle Seiten in beiden Farbschemata ohne Verstoß geprüft. Die Seite „Zugriff abgelehnt“
-  erscheint dafür ohne eigene Formatierung.
 
 ### Behoben
 - **Kontraste:** Alle Schriftfarben erreichen in beiden Farbschemata mindestens 4,5:1 auf ihren Flächen
@@ -94,16 +106,11 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
   der Server mit 409 statt minutenlang neu zu bauen; die Seite erstellt dann eine neue Vorschau.
   Höchstens zwei Hintergrund-Bauten gleichzeitig (sonst 429), damit der Pi nicht ausgelastet wird.
 
-### Hinzugefügt
-- **Datenschutz-Wächter in der CI:** prüft in jedem PR alle Dateien, neue Commits (Autor, Committer,
-  Nachricht) sowie Titel und Beschreibung auf private LAN-Adressen außerhalb der Beispielnetze und echte
-  Koordinaten; Git-Identität nur noreply. Ein Sicherheitsnetz gegen Versehen, bewusst schlank.
-- **Testdaten ohne echte Netze und Anbieter:** Beispielnetze statt eines verbreiteten Heimnetz-Bereichs,
-  Adressen großer öffentlicher Anbieter statt realer Server und Zugangs-Präfixe.
-- **Pläne für 1.6 und 1.7:** `docs/konzept/version-1.6.md` (rein lokal: Grundreinigung, Pi-Zustand,
-  Sicherung, GUI-Erneuerung, Willkommens-Assistent, Uhr-Werkstatt, „Heute“-Zeitleiste; offene Fragen
-  entschieden) und `docs/konzept/version-1.7-entwurf.md` (Community-Funktionen). Die ROADMAP folgt
-  dieser Staffelung.
+### Sicherheit
+- **Content-Security-Policy an jeder Antwort** (auch API und Fehlerseiten): nur eigene Skripte, Stylesheets
+  und Verbindungen, keine Inline-Skripte, keine Einbettung in fremde Seiten, Bilder zusätzlich als `data:`.
+  Im Browser über alle Seiten in beiden Farbschemata ohne Verstoß geprüft. Die Seite „Zugriff abgelehnt“
+  erscheint dafür ohne eigene Formatierung.
 
 ## [1.5.4] – 2026-11-08
 
