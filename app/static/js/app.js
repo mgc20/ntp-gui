@@ -142,6 +142,7 @@ function restoreFocus(saved) {
 function render() {
   const route = currentRoute();
   const page = currentPage();
+  state.shown = page;
   document.title = `${pageTitle(page)} · ${state.status?.system?.title || "ntp-gui"}`;
   markActive(page);
   renderTabs(page);
@@ -523,7 +524,31 @@ window.addEventListener("resize", () => {
   clearTimeout(resizeTimer);
   resizeTimer = setTimeout(() => { if (currentPage().module.live !== false) render(); }, 200);
 });
+// Ungespeicherte Änderungen (Einstellungen): Seite mit leaveMessage(uiState) fragt vor dem Verlassen nach –
+// beim Wechsel auf eine andere Seite (Hash) und beim Schließen/Neuladen (beforeunload). „Abbrechen“ stellt
+// die Adresse zurück, ohne neu zu zeichnen; „OK“ verwirft die Änderungen (leave).
+let lastHash = window.location.hash;
+function leaveAllowed() {
+  const shown = state.shown;
+  const next = currentPage();
+  if (!shown || shown.id === next.id) return true;
+  const message = shown.module?.leaveMessage?.(state.uiState);
+  if (!message) return true;
+  if (!window.confirm(message)) return false;
+  shown.module.leave?.(state.uiState);
+  return true;
+}
+window.addEventListener("beforeunload", (event) => {
+  if (!state.shown?.module?.leaveMessage?.(state.uiState)) return;
+  event.preventDefault();
+  event.returnValue = "";
+});
 window.addEventListener("hashchange", () => {
+  if (!leaveAllowed()) {
+    history.replaceState(null, "", lastHash || window.location.pathname + window.location.search);
+    return;
+  }
+  lastHash = window.location.hash;
   if (redirectLegacy()) return;
   closeMore(false);
   state.uiState.scrolled = false;

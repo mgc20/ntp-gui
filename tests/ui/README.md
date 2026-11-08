@@ -9,7 +9,13 @@ Der Rundgang öffnet jede Route bei 1440 und 390 px, hell und dunkel, und meldet
 - verbotene Zahlmuster („1,000 ms“, Punkt als Dezimalzeichen vor s/ms, „12.345 ppb“),
 - waagerechte Überbreite,
 - ⓘ-Knöpfe, deren 24-px-Tippfläche nicht greift, und Bedienelemente, deren Rand ein ⓘ daneben
-  überdeckt (`elementFromPoint` an den Innenrändern jedes Knopfs, Links und Eingabefelds).
+  überdeckt (`elementFromPoint` an den Innenrändern jedes Knopfs, Links und Eingabefelds),
+- in den Einstellungen: sechs Reiter (je adressierbar per `?s=…`), Höhe jedes Reiters bei 1440 px unter
+  2500 px ohne aufgeklappte Erweitert-Bereiche, Suche (`/` fokussiert sie, Treffer springen in den Reiter),
+  „nur Geänderte“, Speicherleiste (bei 390 px über der unteren Leiste), Vorschau-Dialog mit Diff (kein loser
+  Text, Diff rollt in seinem Kasten statt den Dialog zu verbreitern), die Nachfrage beim Verlassen mit
+  ungespeicherten Änderungen, Tastaturfokus nach „Verwerfen“ und „zurücksetzen“, alte Sprungziele
+  (`?s=dns`, `?s=api`) auch beim wiederholten Sprung und der Schalter „Nächtliche Sicherung“ im Reiter „Sichern“.
 
 ## Dateien
 

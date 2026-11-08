@@ -1,10 +1,11 @@
 import { el, rich, apiPost, apiGet, apiUpload, fmtNumber, fmtDate as fmtDateTime, fmtZoned, serverZone, isNum } from "../util.js";
 import { card, infoButton, badge, kv, emptyState, toast, copyButton, isPopoverOpen } from "../ui.js";
 import { t, has, language, setLanguage, LANGUAGES } from "../i18n.js";
+import { HELP } from "../help.js";
+import { route } from "../routes.js";
 
 export const live = false; // nicht bei jedem Refresh neu aufbauen – Eingaben bleiben stehen
 
-const SOURCE_LABEL = { default: "Standard", env: "Umgebung", gui: "Dashboard" };
 const PRESETS = [
   ["PTB (NTS)", [["server", "ptbtime1.ptb.de", true], ["server", "ptbtime2.ptb.de", true], ["server", "ptbtime3.ptb.de", true]]],
   ["Cloudflare (NTS)", [["server", "time.cloudflare.com", true]]],
@@ -14,7 +15,7 @@ const PRESETS = [
 ];
 
 // ⓘ neben einzelnen Feldern: verweist auf die ausführliche Erklärung in der Hilfe.
-// Der kurze Hilfetext unter jedem Feld kommt vom Server (Schema).
+// Die sichtbare Zeile unter jedem Feld („hint“) und der Rest im ⓘ („more“) kommen vom Server (Schema).
 export const FIELD_HELP = {
   ntp_sources: "source_type", ntp_minsources: "minsources", leapsectz: "leap_source", leapseclist: "leap_source",
   serve_unsynced: "island", local_stratum: "island", local_orphan: "local_orphan",
@@ -47,8 +48,8 @@ function languageRow() {
   return el("div", { class: "fields" }, el("div", { class: "field", id: "row-ui-language" },
     el("div", { class: "field-head" },
       el("span", { class: "field-label" }, el("label", { for: "f-ui-language", text: t("settings.language.label") }), " ",
-        infoButton("ui_language", t("settings.language.label"))),
-      el("span", { class: "field-meta" }, badge("Browser", "muted"))),
+        infoButton("ui_language", t("settings.language.label"),
+          { title: t("settings.language.label"), text: t("settings.language.note_more") }))),
     select,
     el("p", { class: "field-help", text: t("settings.language.note") })));
 }
@@ -337,7 +338,8 @@ function backupPreview(ctx, preview) {
     (setts.notes || []).length ? el("ul", { class: "backup-notes" }, setts.notes.map((text) => el("li", { text }))) : null);
 }
 
-function backupCard(ctx, readonly) {
+// rows: Feldzeilen aus dem Schema, die hier stehen (Schalter „Nächtliche Sicherung“).
+function backupCard(ctx, readonly, rows = []) {
   const ui = ctx.uiState;
   ui.backup = ui.backup || {};
   const state = ui.backup;
@@ -423,19 +425,155 @@ function backupCard(ctx, readonly) {
         el("ul", {}, result.reenter.map((text) => el("li", { text })))) : null));
   }
   const list = stored?.backups || [];
+  if (rows.length) body.push(el("div", { class: "fields" }, rows));
   body.push(el("h3", { class: "mini-head" }, "Gespeicherte Sicherungen ", infoButton("backup_stored", "Gespeicherte Sicherungen")));
   body.push(list.length
     ? el("ul", { class: "backup-list" }, list.map((item) => el("li", {},
       el("a", { href: `/api/backup?name=${encodeURIComponent(item.name)}`, download: "", text: item.name }),
       el("span", { class: "muted", text: ` · ${item.kind === "nightly" ? "nächtlich" : "vor einer Wiederherstellung"} · ${backupDate(ctx, item.t)} · ${fmtSize(item.size)}` }))))
     : emptyState(stored?.nightly ? "Noch keine – die erste nächtliche Sicherung entsteht gegen 3 Uhr."
-      : "Keine. Die nächtliche Sicherung schaltest du unter **Dashboard → Nächtliche Sicherung** ein."));
+      : "Keine. Die nächtliche Sicherung schaltest du oben mit dem Schalter **Nächtliche Sicherung** ein."));
   return card("Sichern", { id: "s-backup", help: "backup",
     sub: "Alles außer Position und Geheimnissen in einer Datei – für eine neue SD-Karte oder einen neuen Container." }, body);
 }
 
+
 function clone(value) { return JSON.parse(JSON.stringify(value)); }
 function same(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
+
+// --- Einstellungen 2.0 (1.6, T2) ---------------------------------------------------------------------
+// Reiter im Abfrageteil (#/system/einstellungen?s=gps); frühere Sprungziele ?s=<abschnitt> (ntp, nts, dns,
+// web, auth, api, backup …) landen im passenden Reiter. Suche über alle Reiter, Schalter „nur Geänderte“,
+// Abzeichen nur bei geänderten Werten, klebende Speicherleiste mit Vorschau (Diff der chrony.conf/ptp4l.conf
+// vom Server: POST /api/settings/preview prüft wie Speichern und schreibt nichts).
+export const TABS = [
+  { id: "quellen", titleKey: "settings.tab.quellen", sections: ["ntp", "nts", "dns"] },
+  { id: "lan", titleKey: "settings.tab.lan", sections: ["lan"] },
+  { id: "gps", titleKey: "settings.tab.gps", sections: ["gps"] },
+  { id: "ptp", titleKey: "settings.tab.ptp", sections: ["ptp"] },
+  { id: "zugang", titleKey: "settings.tab.zugang", sections: ["web"] },
+  { id: "sichern", titleKey: "settings.tab.sichern", sections: [] },
+];
+const DEFAULT_TAB = TABS[0].id;
+// Karten außerhalb des Schemas und ihr Reiter.
+const EXTRA_TAB = { auth: "zugang", api: "zugang", env: "zugang", backup: "sichern", export: "sichern" };
+// Einzelne Felder, die nicht im Reiter ihres Abschnitts stehen (Schalter beim zugehörigen Bereich).
+const FIELD_TAB = { backup_nightly: "sichern" };
+const own = (object, key) => Object.prototype.hasOwnProperty.call(object, key);
+
+/** Reiter eines Abschnitts (Schema) oder einer Zusatzkarte; Unbekanntes landet im ersten Reiter. */
+export function tabOf(section) {
+  const tab = TABS.find((entry) => entry.sections.includes(section));
+  if (tab) return tab.id;
+  return own(EXTRA_TAB, section) ? EXTRA_TAB[section] : DEFAULT_TAB;
+}
+
+/** Reiter eines Felds: eigener Eintrag in FIELD_TAB, sonst der Reiter seines Abschnitts. */
+export function fieldTab(field) {
+  return own(FIELD_TAB, field?.key) ? FIELD_TAB[field.key] : tabOf(field?.section);
+}
+
+/** Reiter aus dem Abfrageteil („s=gps“, auch alte Sprungziele wie „s=web“). */
+export function tabFromQuery(query) {
+  const target = new URLSearchParams(query || "").get("s") || "";
+  if (TABS.some((tab) => tab.id === target)) return target;
+  return tabOf(target);
+}
+
+function hashQuery() {
+  const hash = window.location.hash || "";
+  const index = hash.indexOf("?");
+  return index < 0 ? "" : hash.slice(index + 1);
+}
+
+// Suche: Name, Schlüssel, sichtbare Zeile, ⓘ-Text (Rest des Hilfetexts und die Erklärung aus der Hilfe),
+// Umgebungsvariable und Auswahlwerte. Groß/klein und Akzente egal; jedes Wort muss vorkommen.
+function normalize(text) {
+  return String(text ?? "").replace(/[*`]/g, "").toLocaleLowerCase("de").replace(/ß/g, "ss").normalize("NFKD")
+    .replace(/[̀-ͯ]/g, "").replace(/\s+/g, " ").trim();
+}
+
+const EXTRA_ENTRIES = [
+  { id: "ui_language", tab: "zugang", target: "row-ui-language", labelKey: "settings.language.label",
+    words: "Sprache Language Deutsch English Beta" },
+  { id: "auth", tab: "zugang", target: "s-auth", label: "Zugang zum Dashboard", words: "Passwort Benutzer Anmeldung Schutz" },
+  { id: "api", tab: "zugang", target: "s-api", label: "API-Schlüssel und Instanz",
+    words: "API Schlüssel Token Bearer Instanz-Kennung Skripte" },
+  { id: "env", tab: "zugang", target: "s-env", label: "Nur per Umgebungsvariable", words: "Compose Umgebungsvariable" },
+  { id: "backup", tab: "sichern", target: "s-backup", label: "Sichern",
+    words: "Sicherung herunterladen wiederherstellen nächtliche Sicherung Backup" },
+  { id: "export", tab: "sichern", target: "s-export", label: "Nur Einstellungen übertragen",
+    words: "Exportieren Importieren JSON Datei" },
+];
+
+/** Suchindex über alle Felder (Schema vom Server) und die Karten außerhalb des Schemas. */
+export function searchIndex(fields, help = {}) {
+  const out = (Array.isArray(fields) ? fields : []).map((field) => {
+    const info = help[FIELD_HELP[field.key]];
+    const options = (field.options || []).map((option) => `${option.label} ${option.value}`).join(" ");
+    return {
+      id: field.key, tab: fieldTab(field), section: field.section, label: field.label,
+      advanced: Boolean(field.advanced), target: `row-${field.key}`,
+      name: normalize(field.label), key: normalize(field.key),
+      text: normalize([field.label, field.key, field.env, field.hint, field.more, field.help, options,
+        info?.title, info?.text].filter(Boolean).join(" ")),
+    };
+  });
+  for (const entry of EXTRA_ENTRIES) {
+    const label = entry.labelKey ? t(entry.labelKey) : entry.label;
+    out.push({ id: entry.id, tab: entry.tab, section: null, label, advanced: false, target: entry.target,
+      name: normalize(label), key: normalize(entry.id), text: normalize(`${label} ${entry.id} ${entry.words}`) });
+  }
+  return out;
+}
+
+/** Treffer für eine Eingabe: erst Namen, dann Schlüssel, dann der Rest – sonst in Schema-Reihenfolge. */
+export function search(index, query) {
+  const words = normalize(query).split(" ").filter(Boolean);
+  if (!words.length) return [];
+  const rank = (entry) => (words.every((w) => entry.name.includes(w)) ? 0 : words.every((w) => entry.key.includes(w)) ? 1 : 2);
+  return index.map((entry, order) => ({ entry, order }))
+    .filter(({ entry }) => words.every((w) => entry.text.includes(w)))
+    .map((hit) => ({ ...hit, rank: rank(hit.entry) }))
+    .sort((a, b) => a.rank - b.rank || a.order - b.order)
+    .map((hit) => hit.entry);
+}
+
+// Verlassen der Seite (app.js: Hash-Wechsel und beforeunload) mit ungespeicherten Änderungen.
+export function leaveMessage(uiState) {
+  return uiState?.settings?.pending ? t("settings.leave") : null;
+}
+
+export function leave(uiState) {
+  if (uiState?.settings) Object.assign(uiState.settings, { draft: {}, defaults: {}, fieldErrors: {}, pending: 0 });
+}
+
+// Diff-Zeile → CSS-Klasse; „−“ statt „-“ für entfernte Zeilen (lesbarer), sonst unverändert.
+function diffLine(line) {
+  if (line.startsWith("+++") || line.startsWith("---")) return el("span", { class: "diff-line diff-file", text: line });
+  if (line.startsWith("@@")) return el("span", { class: "diff-line diff-hunk", text: line });
+  if (line.startsWith("+")) return el("span", { class: "diff-line diff-add", text: line });
+  if (line.startsWith("-")) return el("span", { class: "diff-line diff-del", text: `−${line.slice(1)}` });
+  return el("span", { class: "diff-line diff-ctx", text: line });
+}
+
+const PREVIEW_STATUS = {
+  changed: "settings.preview.changed", same: "settings.preview.same", new: "settings.preview.new",
+  unused: "settings.preview.unused", custom: "settings.preview.custom",
+};
+
+function previewFile(file) {
+  const lines = Array.isArray(file.diff) ? file.diff : [];
+  const added = lines.filter((l) => l.startsWith("+") && !l.startsWith("+++")).length;
+  const removed = lines.filter((l) => l.startsWith("-") && !l.startsWith("---")).length;
+  const status = t(PREVIEW_STATUS[file.status] || "settings.preview.changed");
+  return el("section", { class: "preview-file" },
+    el("h3", { class: "preview-name" }, el("code", { text: file.name }), " ",
+      badge(status, file.status === "changed" || file.status === "new" ? "info" : "muted"),
+      lines.length ? el("span", { class: "muted preview-count", text: ` ${t("settings.preview.lines", { added, removed })}` }) : null),
+    lines.length ? el("pre", { class: "diff", tabindex: "0", "aria-label": file.name }, lines.map(diffLine)) : null,
+    file.truncated ? el("p", { class: "field-help", text: t("settings.preview.truncated") }) : null);
+}
 
 export function render(ctx) {
   const schema = ctx.data("settings", "/api/settings", 0);
@@ -444,44 +582,93 @@ export function render(ctx) {
   const update = ctx.data("update", "/api/update", 60);
   if (!schema) return [card("Einstellungen", {}, emptyState("Wird geladen …"))];
   const ui = ctx.uiState;
-  ui.draft = ui.draft || {};
-  ui.showAdvanced = ui.showAdvanced || {};
-  ui.fieldErrors = ui.fieldErrors || {};
+  const st = ui.settings = ui.settings || {};
+  st.draft = st.draft || {};
+  st.defaults = st.defaults || {};
+  st.showAdvanced = st.showAdvanced || {};
+  st.fieldErrors = st.fieldErrors || {};
   const readonly = schema.readonly;
   const fields = Array.isArray(schema.fields) ? schema.fields : [];
   const byKey = Object.fromEntries(fields.map((f) => [f.key, f]));
-  const current = (key) => (key in ui.draft ? ui.draft[key] : byKey[key]?.value);
+  const query = hashQuery();
+  const tab = tabFromQuery(query);
+  const current = (key) => (key in st.draft ? st.draft[key] : byKey[key]?.value);
   // Entwürfe für Felder, die der Server nicht (mehr) kennt, zählen nicht.
-  const changedKeys = () => Object.keys(ui.draft).filter((k) => k in byKey && !same(ui.draft[k], byKey[k].value));
+  const draftDiffers = (key) => key in st.draft && key in byKey && !same(st.draft[key], byKey[key].value);
+  const changedKeys = () => Object.keys(st.draft).filter(draftDiffers);
+  const differsFromDefault = (field) => !same(current(field.key), field.default);
+  const isChanged = (field) => differsFromDefault(field) || draftDiffers(field.key);
 
   // 1.5.3: Läuft ein Holdover-Test, bricht jeder Neustart von chronyd ihn ab – vorher nachfragen.
   const holdoverActive = () => Boolean(ctx.status?.holdover_active);
   const confirmHoldover = () => !holdoverActive() || window.confirm(
     "Gerade läuft ein Holdover-Test. Speichern startet chronyd neu und bricht den Test ab " +
     "(das Ergebnis bis jetzt bleibt erhalten). Trotzdem speichern?");
-  const saveBar = el("div", { class: "save-bar", hidden: true });
+
+  const metaBoxes = {};
+  const tabCounts = {};
+  const saveBar = el("div", { class: "save-bar", role: "region", "aria-label": t("settings.savebar.label"), hidden: true });
+  let previewDialog = null;
+
+  const updateTabCounts = (changed) => {
+    for (const entry of TABS) {
+      const count = changed.filter((key) => fieldTab(byKey[key]) === entry.id).length;
+      const node = tabCounts[entry.id];
+      if (!node) continue;
+      node.hidden = count === 0;
+      node.textContent = count ? String(count) : "";
+    }
+  };
   const updateBar = () => {
     const changed = changedKeys();
+    st.pending = changed.length;
     saveBar.hidden = changed.length === 0;
     const restart = changed.some((k) => byKey[k].restart === "services");
+    const parts = [t("settings.savebar.changes", { count: changed.length })];
+    if (restart) parts.push(t("settings.savebar.restart"));
+    if (restart && holdoverActive()) parts.push(t("settings.savebar.holdover"));
     saveBar.replaceChildren(
-      el("span", { text: `${changed.length} ${changed.length === 1 ? "Änderung" : "Änderungen"}${restart ? " · Zeitdienste starten danach neu (wenige Sekunden)" : ""}${restart && holdoverActive() ? " – bricht den laufenden Holdover-Test ab" : ""}` }),
+      el("span", { class: "save-summary", text: parts.join(" · ") }),
       el("div", { class: "save-actions" },
-        el("button", { type: "button", class: "button", text: "Verwerfen", onclick: () => { ui.draft = {}; ui.fieldErrors = {}; ctx.rerender(); } }),
-        el("button", { type: "button", class: "button primary", text: "Speichern", onclick: save })));
+        el("button", { type: "button", class: "button", text: t("settings.savebar.preview"), onclick: openPreview }),
+        el("button", { type: "button", class: "button", text: t("settings.savebar.discard"), onclick: discard }),
+        el("button", { type: "button", class: "button primary", text: t("settings.savebar.save"), disabled: readonly ? true : null,
+          onclick: save })));
+    updateTabCounts(changed);
   };
+  const refreshMeta = (key) => { if (metaBoxes[key] && byKey[key]) metaBoxes[key].replaceChildren(...metaNodes(byKey[key])); };
   const setDraft = (key, value) => {
-    ui.draft[key] = value;
-    delete ui.fieldErrors[key];
+    st.draft[key] = value;
+    delete st.defaults[key];
+    delete st.fieldErrors[key];
     updateBar();
+    refreshMeta(key);
   };
+  function discard() {
+    leave(ui);
+    closePreview();
+    st.refocus = { tab: true };
+    ctx.rerender();
+  }
+
+  // Was die Speicherleiste schickt: geänderte Werte und Schlüssel, die auf ihren Standard zurückgehen.
+  function payload() {
+    const changed = changedKeys();
+    return {
+      changes: Object.fromEntries(changed.filter((k) => !st.defaults[k]).map((k) => [k, st.draft[k]])),
+      defaults: changed.filter((k) => st.defaults[k]),
+      restart: changed.some((k) => byKey[k]?.restart === "services"),
+    };
+  }
 
   async function save() {
-    const changes = Object.fromEntries(changedKeys().map((k) => [k, ui.draft[k]]));
-    if (Object.keys(changes).some((k) => byKey[k]?.restart === "services") && !confirmHoldover()) return;
+    const { changes, defaults, restart } = payload();
+    if (!Object.keys(changes).length && !defaults.length) return;
+    if (restart && !confirmHoldover()) return;
     try {
-      const result = await apiPost("/api/settings", { changes });
-      ui.draft = {}; ui.fieldErrors = {};
+      const result = await apiPost("/api/settings", { changes, defaults });
+      leave(ui);
+      closePreview();
       toast(result.restart ? (result.reload_triggered ? "Gespeichert – Zeitdienste starten neu" : result.reload_note) : "Gespeichert");
       for (const note of result.warnings || []) toast(note, "warn");
       if (result.reload_triggered) ctx.watchReload();
@@ -489,22 +676,104 @@ export function render(ctx) {
       ctx.refresh();
       ctx.rerender();
     } catch (error) {
-      ui.fieldErrors = error.fields || {};
+      st.fieldErrors = error.fields || {};
       toast(error.message, "crit");
+      closePreview();
       ctx.rerender();
     }
   }
 
-  async function reset(key) {
-    if (byKey[key]?.restart === "services" && !confirmHoldover()) return;
+  function closePreview() {
+    if (previewDialog?.open) previewDialog.close();
+  }
+
+  async function openPreview() {
+    const { changes, defaults } = payload();
+    if (!Object.keys(changes).length && !defaults.length) return;
+    const content = el("div", { class: "preview-body", "aria-live": "polite" }, emptyState(t("settings.preview.loading")));
+    previewDialog?.remove();
+    const dialog = el("dialog", { class: "preview-dialog", "aria-labelledby": "preview-title" },
+      el("div", { class: "preview-head" },
+        el("h2", { id: "preview-title", text: t("settings.preview.title") }),
+        el("button", { type: "button", class: "icon-button", "aria-label": t("settings.preview.close"), text: "✕",
+          onclick: () => dialog.close() })),
+      content,
+      el("div", { class: "preview-actions" },
+        el("button", { type: "button", class: "button", text: t("settings.preview.close"), onclick: () => dialog.close() }),
+        el("button", { type: "button", class: "button primary", text: t("settings.savebar.save"), disabled: readonly ? true : null,
+          onclick: save })));
+    dialog.addEventListener("click", (event) => { if (event.target === dialog) dialog.close(); });
+    dialog.addEventListener("close", () => { dialog.remove(); if (previewDialog === dialog) previewDialog = null; });
+    previewDialog = dialog;
+    document.body.append(dialog);
+    dialog.showModal();
     try {
-      const result = await apiPost("/api/settings/reset", { keys: [key] });
-      delete ui.draft[key];
-      toast(result.reload_triggered ? "Zurückgesetzt – Zeitdienste starten neu" : "Zurückgesetzt");
-      if (result.reload_triggered) ctx.watchReload();
-      ctx.invalidate("settings");
-      ctx.rerender();
-    } catch (error) { toast(error.message, "crit"); }
+      const result = await apiPost("/api/settings/preview", { changes, defaults });
+      const files = Array.isArray(result.files) ? result.files : [];
+      const touched = files.some((file) => file.status === "changed" || file.status === "new");
+      // Natives replaceChildren macht aus null den Text „null“ – leere Teile vorher weglassen.
+      content.replaceChildren(...[
+        touched ? null : el("p", { class: "preview-none", text: t("settings.preview.none") }),
+        ...files.map(previewFile),
+        (result.notes || []).length ? el("div", { class: "preview-notes" },
+          el("h3", { class: "mini-head", text: t("settings.preview.notes") }),
+          el("ul", {}, result.notes.map((note) => el("li", { text: note })))) : null,
+      ].filter(Boolean));
+    } catch (error) {
+      st.fieldErrors = error.fields || {};
+      content.replaceChildren(el("p", { class: "field-error", role: "alert", text: t("settings.preview.error", { message: error.message }) }));
+      for (const key of Object.keys(st.fieldErrors)) {
+        const row = document.getElementById(`row-${key}`);
+        if (row && !row.querySelector(".field-error")) {
+          row.classList.add("has-error");
+          row.append(el("p", { class: "field-error", role: "alert", text: st.fieldErrors[key] }));
+        }
+      }
+    }
+  }
+
+  // „zurücksetzen“: auf den Standard – wirkt erst mit dem Speichern.
+  function resetToDefault(field) {
+    if (same(field.value, field.default)) {
+      delete st.draft[field.key];
+      delete st.defaults[field.key];
+    } else {
+      st.draft[field.key] = clone(field.default);
+      st.defaults[field.key] = true;
+    }
+    delete st.fieldErrors[field.key];
+    st.refocus = { key: field.key };
+    ctx.rerender();
+  }
+  function undoReset(field) {
+    delete st.draft[field.key];
+    delete st.defaults[field.key];
+    st.refocus = { key: field.key };
+    ctx.rerender();
+  }
+
+  // Abzeichen nur bei geänderten Werten: „geändert · zurücksetzen“ (bzw. „ungespeichert“ für Entwürfe).
+  function metaNodes(field) {
+    const key = field.key;
+    const nodes = [];
+    if (st.defaults[key] && draftDiffers(key)) {
+      nodes.push(badge(t("settings.badge.to_default"), "info"));
+      nodes.push(el("button", { type: "button", class: "link", text: t("settings.badge.undo"), onclick: () => undoReset(field) }));
+      return nodes;
+    }
+    if (differsFromDefault(field)) {
+      const env = field.source === "env" && field.env && !draftDiffers(key);
+      nodes.push(badge(t("settings.badge.changed"), "info", env ? t("settings.badge.env", { name: field.env }) : null));
+      if (env) nodes.push(el("span", { class: "field-source muted", text: t("settings.badge.env", { name: field.env }) }));
+      if (!readonly) {
+        nodes.push(el("span", { class: "muted", "aria-hidden": "true", text: "·" }));
+        nodes.push(el("button", { type: "button", class: "link", text: t("settings.badge.reset"),
+          title: t("settings.badge.reset_title"), "aria-label": `${field.label}: ${t("settings.badge.reset_title")}`,
+          onclick: () => resetToDefault(field) }));
+      }
+    }
+    if (draftDiffers(key)) nodes.push(badge(t("settings.badge.unsaved"), "warn"));
+    return nodes;
   }
 
   function control(field) {
@@ -525,13 +794,13 @@ export function render(ctx) {
         return select;
       }
       case "hostlist": {
-        const area = el("textarea", { id, rows: Math.max(3, (value || []).length + 1), disabled,
+        const area = el("textarea", { id, rows: Math.max(2, (value || []).length + 1), disabled,
           placeholder: field.placeholder || "ein Name pro Zeile", value: (value || []).join("\n") });
         area.addEventListener("input", () => setDraft(field.key, area.value.split(/[\n,\s]+/).map((s) => s.trim()).filter(Boolean)));
         return area;
       }
       case "networks": {
-        const area = el("textarea", { id, rows: Math.max(3, (value || []).length + 1), disabled,
+        const area = el("textarea", { id, rows: Math.max(2, (value || []).length + 1), disabled,
           placeholder: "ein Netz pro Zeile, z. B. 192.168.0.0/16", value: (value || []).join("\n") });
         area.addEventListener("input", () => setDraft(field.key, area.value.split(/[\n,]+/).map((s) => s.trim()).filter(Boolean)));
         return area;
@@ -615,24 +884,115 @@ export function render(ctx) {
       values.includes("*") ? el("span", { text: " – „*“ schaltet die Namensprüfung ganz ab." }) : null);
   }
 
+  // Pro Feld höchstens eine sichtbare Zeile (Schema: „hint“ ≤ 140 Zeichen); der Rest („more“) steht im ⓘ.
   function fieldRow(field) {
-    const error = ui.fieldErrors[field.key] || field.error;
-    const sourceText = field.source === "env" && field.env ? `Umgebung (${field.env})` : SOURCE_LABEL[field.source];
+    const error = st.fieldErrors[field.key] || field.error;
+    const hint = field.hint ?? field.help;
+    const more = field.more ? { title: field.label, text: field.more } : null;
+    const meta = el("span", { class: "field-meta" }, metaNodes(field));
+    metaBoxes[field.key] = meta;
     return el("div", { class: `field${error ? " has-error" : ""}`, id: `row-${field.key}` },
       el("div", { class: "field-head" },
         el("span", { class: "field-label" }, el("label", { for: `f-${field.key}`, text: field.label }), " ",
-          FIELD_HELP[field.key] ? infoButton(FIELD_HELP[field.key], field.label) : null),
-        el("span", { class: "field-meta" },
-          badge(sourceText, field.source === "gui" ? "info" : "muted"),
-          field.restart === "none" ? badge("wirkt sofort", "muted") : null,
-          field.source === "gui" && !readonly ? el("button", { type: "button", class: "link", text: "zurücksetzen",
-            title: "Dashboard-Wert entfernen – dann gilt wieder Umgebung bzw. Standard", onclick: () => reset(field.key) }) : null)),
+          infoButton(FIELD_HELP[field.key] || "", field.label, more)),
+        meta),
       control(field),
       envExtra(field),
-      el("p", { class: "field-help" }, rich(field.help)),
+      hint ? el("p", { class: "field-help" }, rich(hint)) : null,
       error ? el("p", { class: "field-error", role: "alert", text: error }) : null);
   }
 
+  function sectionCard(section) {
+    const sectionFields = fields.filter((f) => f.section === section.key && fieldTab(f) === tabOf(section.key));
+    if (!sectionFields.length) return null;
+    let basic;
+    let advanced = [];
+    if (st.onlyChanged) {
+      basic = sectionFields.filter(isChanged);
+      if (!basic.length) return null;
+    } else {
+      // Eingeklappt bleiben nur erweiterte Felder auf ihrem Standard (Geändertes und Fehler stehen immer da).
+      basic = sectionFields.filter((f) => !f.advanced || isChanged(f) || st.fieldErrors[f.key] || f.error
+        || (f.env_extra?.values || []).length > 0);
+      advanced = sectionFields.filter((f) => !basic.includes(f));
+    }
+    const showAdv = Boolean(st.showAdvanced[section.key]) && advanced.length > 0;
+    const toggle = advanced.length ? el("button", { type: "button", class: "link advanced-toggle",
+      text: showAdv ? t("settings.advanced.hide") : t("settings.advanced.show", { count: advanced.length }),
+      "aria-expanded": showAdv ? "true" : "false",
+      onclick: () => { st.showAdvanced[section.key] = !showAdv; ctx.rerender(); } }) : null;
+    const helpKey = { ntp: "minsources", lan: "island", nts: "nts", dns: "dns", gps: "gps_value", ptp: "ptp_requirements", web: "settings_source" }[section.key];
+    // Titel und Beschreibung aus dem Sprachkatalog; unbekannte Abschnitte behalten den Servertext.
+    const titleKey = `settings.section.${section.key}.title`;
+    const descKey = `settings.section.${section.key}.description`;
+    return card(has(titleKey) ? t(titleKey) : section.label, { id: `s-${section.key}`, help: helpKey,
+      sub: has(descKey) ? t(descKey) : section.description, actions: toggle },
+    !st.onlyChanged && section.key === "dns" ? dnsStatus(dns) : null,
+    !st.onlyChanged && section.key === "web" ? updateStatus(update) : null,
+    !st.onlyChanged && section.key === "web" ? languageRow() : null,
+    el("div", { class: "fields" }, basic.map(fieldRow)),
+    showAdv ? el("div", { class: "fields fields-advanced" }, advanced.map(fieldRow)) : null);
+  }
+
+  // --- Kopf: Reiter, Suche, „nur Geänderte“ ---------------------------------------------------------
+  const index = searchIndex(fields, HELP);
+  const tabTitle = (id) => t(TABS.find((entry) => entry.id === id)?.titleKey || "settings.tab.quellen");
+  const tabsNav = el("nav", { class: "settings-tabs", "aria-label": t("settings.tabs_label") },
+    TABS.map((entry) => {
+      const count = el("span", { class: "nav-badge tab-count", hidden: true });
+      tabCounts[entry.id] = count;
+      return el("a", { href: route("settings", "", `s=${entry.id}`), class: `subtab${entry.id === tab ? " is-active" : ""}`,
+        "aria-current": entry.id === tab ? "true" : null, dataset: { tab: entry.id } },
+      el("span", { text: t(entry.titleKey) }), count);
+    }));
+  const searchInput = el("input", { type: "search", id: "settings-search", class: "settings-search", autocomplete: "off",
+    placeholder: t("settings.search.placeholder"), "aria-label": t("settings.search.label"), "aria-controls": "settings-hits",
+    value: st.query || "" });
+  const hitsBox = el("div", { class: "search-hits", id: "settings-hits", "aria-live": "polite", hidden: true });
+  let hits = [];
+  const jump = (entry) => {
+    st.query = "";
+    st.focus = entry.target;
+    if (entry.advanced && entry.section) st.showAdvanced[entry.section] = true;
+    if (st.onlyChanged && byKey[entry.id] && !isChanged(byKey[entry.id])) st.onlyChanged = false;
+    if (st.onlyChanged && !byKey[entry.id]) st.onlyChanged = false;
+    if (entry.tab !== tab) window.location.hash = route("settings", "", `s=${entry.tab}`);
+    else ctx.rerender();
+  };
+  const drawHits = () => {
+    hits = search(index, st.query || "");
+    hitsBox.hidden = !(st.query || "").trim();
+    if (hitsBox.hidden) { hitsBox.replaceChildren(); return; }
+    hitsBox.replaceChildren(
+      el("p", { class: "search-count muted", text: hits.length ? t("settings.search.hits", { count: hits.length })
+        : t("settings.search.none", { query: st.query.trim() }) }),
+      hits.length ? el("ul", { class: "search-list" }, hits.slice(0, 12).map((entry) => el("li", {},
+        el("button", { type: "button", class: "search-hit", onclick: () => jump(entry) },
+          el("span", { class: "search-hit-label", text: entry.label }),
+          el("span", { class: "search-hit-where muted", text: entry.advanced
+            ? `${tabTitle(entry.tab)} · ${t("settings.search.advanced")}` : tabTitle(entry.tab) }))))) : null);
+  };
+  searchInput.addEventListener("input", () => { st.query = searchInput.value; drawHits(); });
+  searchInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && hits.length) { event.preventDefault(); jump(hits[0]); }
+    if (event.key === "Escape" && searchInput.value) {
+      event.preventDefault(); event.stopPropagation();
+      searchInput.value = ""; st.query = ""; drawHits();
+    }
+  });
+  drawHits();
+  const onlyChanged = el("button", { type: "button", class: "chip only-changed", "aria-pressed": st.onlyChanged ? "true" : "false",
+    text: t("settings.only_changed"), onclick: () => { st.onlyChanged = !st.onlyChanged; ctx.rerender(); } });
+  const head = el("div", { class: "settings-head" }, tabsNav,
+    el("div", { class: "settings-tools" }, searchInput, onlyChanged,
+      el("span", { class: "settings-intro muted" }, rich("Dashboard-Werte haben **Vorrang** vor der Compose-Datei."), " ",
+        infoButton("settings_source", "Wie Einstellungen wirken", { title: "Wie Einstellungen wirken", text:
+          "Werte aus diesem Dashboard haben **Vorrang** vor Umgebungsvariablen aus der Compose-Datei; die gelten als Startwerte. "
+          + "Nach dem Speichern starten die Zeitdienste neu – das dauert wenige Sekunden, chrony behält seine Messhistorie. "
+          + "Eine eigene `/config/chrony.conf` ersetzt die erzeugte Konfiguration komplett." }))),
+    hitsBox);
+
+  // --- Seite ---------------------------------------------------------------------------------------
   const out = [];
   out.push(notesCard(ctx, schema.notes, readonly));
   if (!fields.length) {
@@ -645,33 +1005,70 @@ export function render(ctx) {
       "`/var/lib/chrony` liegt auf keinem Volume. Gespeichertes geht verloren, wenn der Container **neu erstellt** wird (ein Neustart reicht nicht). "
       + "In der Compose-Datei: `volumes: [chrony-data:/var/lib/chrony]`."))));
   }
-  out.push(card("Wie Einstellungen wirken", { help: "settings_source", class: "explain" }, el("p", {}, rich(
-    "Werte aus diesem Dashboard haben **Vorrang** vor Umgebungsvariablen aus der Compose-Datei; die gelten als Startwerte. "
-    + "Nach dem Speichern starten die Zeitdienste neu – das dauert wenige Sekunden, chrony behält seine Messhistorie. "
-    + "Eine eigene `/config/chrony.conf` ersetzt die erzeugte Konfiguration komplett."))));
+  out.push(head);
 
-  for (const section of Array.isArray(schema.sections) ? schema.sections : []) {
-    const sectionFields = fields.filter((f) => f.section === section.key);
-    if (!sectionFields.length) continue;
-    const advancedCount = sectionFields.filter((f) => f.advanced).length;
-    const showAdv = ui.showAdvanced[section.key];
-    const visible = sectionFields.filter((f) => !f.advanced || showAdv || f.source === "gui" || f.source === "env"
-      || (f.env_extra?.values || []).length > 0);
-    const toggle = advancedCount ? el("button", { type: "button", class: "link", text: showAdv ? "Weniger anzeigen" : `Erweitert (${advancedCount})`,
-      "aria-expanded": showAdv ? "true" : "false", onclick: () => { ui.showAdvanced[section.key] = !showAdv; ctx.rerender(); } }) : null;
-    const helpKey = { ntp: "minsources", lan: "island", nts: "nts", dns: "dns", gps: "gps_value", ptp: "ptp_requirements", web: "settings_source" }[section.key];
-    // Titel und Beschreibung aus dem Sprachkatalog; unbekannte Abschnitte behalten den Servertext.
-    const titleKey = `settings.section.${section.key}.title`;
-    const descKey = `settings.section.${section.key}.description`;
-    out.push(card(has(titleKey) ? t(titleKey) : section.label, { id: `s-${section.key}`, help: helpKey,
-      sub: has(descKey) ? t(descKey) : section.description, actions: toggle },
-      section.key === "dns" ? dnsStatus(dns) : null,
-      section.key === "web" ? updateStatus(update) : null,
-      section.key === "web" ? languageRow() : null,
-      el("div", { class: "fields" }, visible.map(fieldRow))));
+  const tabEntry = TABS.find((entry) => entry.id === tab);
+  const panel = [];
+  const sections = Array.isArray(schema.sections) ? schema.sections : [];
+  for (const section of sections) {
+    if (tabOf(section.key) !== tab) continue;
+    panel.push(sectionCard(section));
   }
 
-  // Zugang zum Dashboard
+  if (!st.onlyChanged && tab === "zugang") panel.push(...accessCards(ctx, schema, readonly));
+  // Felder aus FIELD_TAB, die in diesem Reiter stehen (z. B. „Nächtliche Sicherung“ in „Sichern“).
+  const movedHere = fields.filter((f) => fieldTab(f) === tab && tabOf(f.section) !== tab);
+  if (tab === "sichern") {
+    if (!st.onlyChanged) panel.push(...backupCards(ctx, readonly, confirmHoldover, movedHere.map(fieldRow)));
+    else if (movedHere.some(isChanged)) {
+      panel.push(card(t(tabEntry.titleKey), {}, el("div", { class: "fields" }, movedHere.filter(isChanged).map(fieldRow))));
+    }
+  }
+  if (!panel.filter(Boolean).length) {
+    panel.push(card(t(tabEntry.titleKey), {}, emptyState(st.onlyChanged ? t("settings.only_changed_none") : "Hier gibt es nichts einzustellen.")));
+  }
+  out.push(el("div", { class: "settings-panel", id: `panel-${tab}` }, panel));
+
+  out.push(saveBar);
+  updateBar();
+  ctx.afterRender(() => {
+    // Der gedrückte Knopf ist nach dem Neuzeichnen weg (bzw. die Speicherleiste versteckt): Fokus bewusst setzen –
+    // nach „zurücksetzen“/„rückgängig“ auf den Gegenknopf im Abzeichen oder das Feld, nach „Verwerfen“ auf den Reiter.
+    const refocus = st.refocus;
+    st.refocus = null;
+    if (refocus) {
+      const node = refocus.key
+        ? document.querySelector(`#row-${refocus.key} .field-meta button.link`) || document.getElementById(`f-${refocus.key}`)
+        : document.querySelector(".settings-tabs a[aria-current]");
+      node?.focus({ preventScroll: true });
+    }
+    // Sprungziel: Suchtreffer oder früheres ?s=<abschnitt> (z. B. ?s=nts im Reiter „Quellen“). Erst nach
+    // dem Zeichnen – app.js stellt danach noch die Scrollposition wieder her.
+    const s = new URLSearchParams(query).get("s") || "";
+    let target = st.focus || null;
+    const focusField = Boolean(st.focus);
+    st.focus = null;
+    // ui.scrolled setzt app.js bei jedem Hash-Wechsel zurück – so scrollt auch der zweite Sprung in der
+    // Sitzung, das regelmäßige Neuzeichnen aber nicht.
+    if (!target && s && s !== tab && !ui.scrolled && document.getElementById(`s-${s}`)) target = `s-${s}`;
+    if (!target) return;
+    ui.scrolled = true;
+    setTimeout(() => {
+      const node = document.getElementById(target);
+      if (!node) return;
+      node.scrollIntoView({ block: focusField ? "center" : "start" });
+      if (!focusField) return;
+      node.classList.add("is-hit");
+      node.querySelector("input:not([type=hidden]), select, textarea, button:not(.info)")?.focus({ preventScroll: true });
+      setTimeout(() => node.classList.remove("is-hit"), 2400);
+    }, 0);
+  });
+  return out;
+}
+
+// Dashboard & Zugang: Passwort, API-Schlüssel, Werte nur per Umgebungsvariable.
+function accessCards(ctx, schema, readonly) {
+  const out = [];
   const auth = schema.auth || {};
   const authBody = [];
   if (auth.source === "env") {
@@ -701,8 +1098,15 @@ export function render(ctx) {
   }
   out.push(card("Zugang zum Dashboard", { id: "s-auth" }, authBody));
   if (auth.enabled || !readonly) out.push(apiCard(ctx, readonly, auth));
+  out.push(card("Nur per Umgebungsvariable", { id: "s-env", sub: "Diese Werte steuern den Start selbst und lassen sich deshalb nur in der Compose-Datei setzen." },
+    el("table", { class: "mini-table" }, el("tbody", {}, (schema.env_only || []).map((e) => el("tr", {},
+      el("td", { class: "mono", text: e.name }), el("td", { text: e.label }),
+      el("td", { class: "mono", text: e.set ? (e.value || "(gesetzt)") : "–" })))))));
+  return out;
+}
 
-  // Sichern & Wiederherstellen
+// Sichern: Sicherung (T5, unverändert) und „Nur Einstellungen übertragen“.
+function backupCards(ctx, readonly, confirmHoldover, rows = []) {
   const fileInput = el("input", { type: "file", accept: "application/json,.json", hidden: true });
   fileInput.addEventListener("change", async () => {
     const file = fileInput.files[0];
@@ -718,32 +1122,16 @@ export function render(ctx) {
     } catch (error) { toast(`Import fehlgeschlagen: ${error.message}`, "crit"); }
     fileInput.value = "";
   });
-  out.push(backupCard(ctx, readonly));
-  out.push(card("Nur Einstellungen übertragen", {},
-    el("p", { text: "Die im Dashboard gespeicherten Werte als Datei sichern oder auf einen anderen Server übertragen (ohne Passwort)." }),
-    el("div", { class: "button-row" },
-      el("a", { class: "button", href: "/api/settings/export", download: "ntp-gui-einstellungen.json", text: "Exportieren" }),
-      el("button", { type: "button", class: "button", text: "Importieren …", disabled: readonly ? true : null, onclick: () => fileInput.click() }),
-      fileInput),
-    el("p", { class: "field-help export-note" }, el("span", {}, rich("Die Sicherung ist **ungefiltert**: Sie enthält "
-      + "Hostnamen, Server und Netze genau so, wie sie hier eingetragen sind. Nicht öffentlich teilen – für "
-      + "Fehlerberichte das gefilterte **Diagnosepaket** nehmen.")), infoButton("settings_export", "Sicherung"))));
-
-  out.push(card("Nur per Umgebungsvariable", { sub: "Diese Werte steuern den Start selbst und lassen sich deshalb nur in der Compose-Datei setzen." },
-    el("table", { class: "mini-table" }, el("tbody", {}, (schema.env_only || []).map((e) => el("tr", {},
-      el("td", { class: "mono", text: e.name }), el("td", { text: e.label }),
-      el("td", { class: "mono", text: e.set ? (e.value || "(gesetzt)") : "–" })))))));
-
-  out.push(saveBar);
-  updateBar();
-  ctx.afterRender(() => {
-    const target = new URLSearchParams(window.location.hash.split("?")[1] || "").get("s");
-    if (target && !ui.scrolled) {
-      ui.scrolled = true;
-      document.getElementById(`s-${target}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
-    }
-  });
-  return out;
+  return [backupCard(ctx, readonly, rows),
+    card("Nur Einstellungen übertragen", { id: "s-export" },
+      el("p", { text: "Die im Dashboard gespeicherten Werte als Datei sichern oder auf einen anderen Server übertragen (ohne Passwort)." }),
+      el("div", { class: "button-row" },
+        el("a", { class: "button", href: "/api/settings/export", download: "ntp-gui-einstellungen.json", text: "Exportieren" }),
+        el("button", { type: "button", class: "button", text: "Importieren …", disabled: readonly ? true : null, onclick: () => fileInput.click() }),
+        fileInput),
+      el("p", { class: "field-help export-note" }, el("span", {}, rich("Die Sicherung ist **ungefiltert**: Sie enthält "
+        + "Hostnamen, Server und Netze genau so, wie sie hier eingetragen sind. Nicht öffentlich teilen – für "
+        + "Fehlerberichte das gefilterte **Diagnosepaket** nehmen.")), infoButton("settings_export", "Sicherung")))];
 }
 
 export { apiGet };

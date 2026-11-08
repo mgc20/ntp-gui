@@ -11,7 +11,9 @@ gehen auf stderr und landen so im Container-Log.
 
 from __future__ import annotations
 
+import difflib
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -523,11 +525,12 @@ def _install_private(path: str, data: bytes, ids: tuple[int, int] | None) -> Non
 
 
 def prepare_nts_files(cfg: dict, target_dir: str | None = None, warn=_log,
-                      ids: tuple[int, int] | None | bool = True) -> tuple[str, str] | None:
+                      ids: tuple[int, int] | None | bool = True, dry_run: bool = False) -> tuple[str, str] | None:
     """Kopiert Zertifikat + Schlüssel für chronyd; liefert die Pfade für chrony.conf.
 
     None = NTS-Server bleibt aus (Dateien fehlen/ungültig). Schlägt nur das Kopieren
-    fehl (z. B. ohne Root), werden die Originalpfade verwendet.
+    fehl (z. B. ohne Root), werden die Originalpfade verwendet. dry_run (Vorschau):
+    alles prüfen, nichts kopieren – Ergebnis wie nach einem gelungenen Kopieren.
     """
     if not cfg.get("nts_server_enable"):
         return None
@@ -570,6 +573,8 @@ def prepare_nts_files(cfg: dict, target_dir: str | None = None, warn=_log,
         warn("nts", "WARNUNG: Zertifikat und Schlüssel passen nicht zusammen – "
                     "NTS-Server bleibt aus.")
         return None
+    if dry_run:
+        return copy_cert, copy_key
     try:
         os.makedirs(target_dir, mode=0o750, exist_ok=True)
         os.chmod(target_dir, 0o750)
@@ -664,6 +669,108 @@ def _wait_for(path: str, seconds: int) -> bool:
     return os.path.exists(path)
 
 
+def planned_files(cfg: dict, env: dict, nts_files: tuple[str, str] | tuple = (), log=_log) -> list[tuple[str, str]]:
+    """(Pfad, Inhalt) der Dateien, die apply() schreibt – genau so, ohne zu schreiben.
+    apply() und die Vorschau im Dashboard (preview) nutzen beide diese Funktion."""
+    files = []
+    if os.path.isfile(CUSTOM_CHRONY):
+        log("chrony", f"verwende gemountete {CUSTOM_CHRONY}")
+        with open(CUSTOM_CHRONY, encoding="utf-8") as handle:
+            files.append((CHRONY_CONF, handle.read()))
+    else:
+        files.append((CHRONY_CONF, render_chrony(cfg, env, warn=log, nts_files=nts_files)))
+
+    ptp_on = bool(cfg["ptp_enable"]) and bool(cfg["ptp_interface"])
+    if cfg["ptp_enable"] and not cfg["ptp_interface"]:
+        log("ptp", "WARNUNG: PTP ist aktiviert, aber kein Interface gewählt – PTP wird nicht gestartet.")
+    if ptp_on:
+        if os.path.isfile(CUSTOM_PTP4L):
+            log("ptp", f"verwende gemountete {CUSTOM_PTP4L}")
+            with open(CUSTOM_PTP4L, encoding="utf-8") as handle:
+                files.append((PTP4L_CONF, handle.read()))
+        else:
+            files.append((PTP4L_CONF, render_ptp4l(cfg, env)))
+    return files
+
+
+# --- Vorschau im Dashboard (1.6, T2): was Speichern in die Dateien schriebe ---------------------------
+# Rechnet mit den ungespeicherten Werten genau wie apply(), schreibt aber nichts, kopiert keine
+# NTS-Dateien, wartet nicht auf Geräte und startet keinen Dienst. Ergebnis je Datei: Zeilen-Diff
+# (difflib.unified_diff) gegen die jetzt geschriebene Datei. Geheimnisse stehen in den erzeugten
+# Dateien nicht (Passwort, API-Schlüssel, Tokens und DoH-Adressen landen nie in chrony.conf/ptp4l.conf;
+# NTS-Zertifikat und -Schlüssel nur als Pfad). Frei eingetragene Zeilen (EXTRA_CHRONY_CONF,
+# EXTRA_PTP4L_CONF, gemountete Dateien) werden trotzdem vorsichtshalber geschwärzt (redact_config).
+PREVIEW_MAX_FILE = 1024 * 1024
+PREVIEW_MAX_LINES = 2000
+REDACTED = "••••"
+_SECRET_WORD = re.compile(r"(?i)(password|passwd|passphrase|secret|token|psk|api[_-]?key|credential|bearer)")
+_URL_USERINFO = re.compile(r"(?i)\b(https?://)[^/\s@]+@")
+_URL_PATH = re.compile(r"(?i)\b(https?://[^/\s?#]+)[/?#]\S*")
+
+
+def redact_config(text: str) -> str:
+    """Schwärzt in Konfigurationstext alles, was nach einem Geheimnis aussieht: den Wert einer Zeile,
+    deren Direktive oder Wert nach Passwort/Token/Secret klingt, Zugangsdaten und Pfade in URLs
+    (DoH-Pfade tragen Konto-Kennungen). Pfade zu Dateien (ntsserverkey /…) bleiben stehen."""
+    out = []
+    for line in text.split("\n"):
+        stripped = line.lstrip()
+        if stripped and not stripped.startswith(("#", ";", "[")) and _SECRET_WORD.search(stripped):
+            indent = line[:len(line) - len(stripped)]
+            head = re.split(r"[\s=:]", stripped, maxsplit=1)[0]
+            line = f"{indent}{head} {REDACTED}" if head and head != stripped else f"{indent}{REDACTED}"
+        line = _URL_PATH.sub(lambda m: f"{m.group(1)}/{REDACTED}", _URL_USERINFO.sub(rf"\1{REDACTED}@", line))
+        out.append(line)
+    return "\n".join(out)
+
+
+def _current(path: str) -> str | None:
+    """Die jetzt geschriebene Datei (None = gibt es noch nicht)."""
+    try:
+        with open(path, "rb") as handle:
+            data = handle.read(PREVIEW_MAX_FILE + 1)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return ""
+    return data[:PREVIEW_MAX_FILE].decode("utf-8", "replace")
+
+
+def preview_files(changes: dict, defaults=None, env: dict | None = None) -> tuple[dict, list[str]]:
+    """({Pfad: Inhalt}, Hinweise) – was apply() mit diesen ungespeicherten Werten schriebe."""
+    env = dict(os.environ if env is None else env)
+    cfg = settings.preview_values(changes, defaults, env)
+    notes: list[str] = []
+
+    def note(_area: str, message: str) -> None:
+        if message not in notes:
+            notes.append(message)
+
+    nts = prepare_nts_files(cfg, warn=note, ids=None, dry_run=True) or ()
+    return dict(planned_files(cfg, env, nts_files=nts, log=note)), notes
+
+
+def preview(changes: dict, defaults=None, env: dict | None = None) -> dict:
+    """Vorschau fürs Dashboard: je Datei Zustand und Zeilen-Diff (geschwärzt, siehe redact_config)."""
+    planned, notes = preview_files(changes, defaults, env)
+    out = []
+    for path, name, custom in ((CHRONY_CONF, "chrony.conf", CUSTOM_CHRONY), (PTP4L_CONF, "ptp4l.conf", CUSTOM_PTP4L)):
+        entry: dict = {"name": name, "diff": [], "truncated": False}
+        if path not in planned:
+            entry["status"] = "unused"
+            out.append(entry)
+            continue
+        current = _current(path)
+        diff = list(difflib.unified_diff(
+            redact_config(current or "").splitlines(), redact_config(planned[path]).splitlines(),
+            fromfile=f"{name} (jetzt)", tofile=f"{name} (nach dem Speichern)", lineterm=""))
+        entry["status"] = "custom" if os.path.isfile(custom) else "new" if current is None else "changed" if diff else "same"
+        entry["truncated"] = len(diff) > PREVIEW_MAX_LINES
+        entry["diff"] = diff[:PREVIEW_MAX_LINES]
+        out.append(entry)
+    return {"files": out, "notes": notes[:20]}
+
+
 def apply(env: dict | None = None) -> dict:
     """Schreibt die Konfiguration und liefert die Werte für den Supervisor."""
     env = dict(os.environ if env is None else env)
@@ -686,24 +793,8 @@ def apply(env: dict | None = None) -> dict:
 
     # Erst beide Dateien vollständig erzeugen, dann gemeinsam ersetzen: Scheitert ptp4l.conf,
     # darf chrony.conf nicht schon neu sein (der Supervisor meldet dann „bisherige Einstellungen aktiv“).
-    files = []
-    if os.path.isfile(CUSTOM_CHRONY):
-        _log("chrony", f"verwende gemountete {CUSTOM_CHRONY}")
-        with open(CUSTOM_CHRONY, encoding="utf-8") as handle:
-            files.append((CHRONY_CONF, handle.read()))
-    else:
-        files.append((CHRONY_CONF, render_chrony(cfg, env, nts_files=prepare_nts_files(cfg) or ())))
-
+    files = planned_files(cfg, env, nts_files=prepare_nts_files(cfg) or ())
     ptp_on = bool(cfg["ptp_enable"]) and bool(cfg["ptp_interface"])
-    if cfg["ptp_enable"] and not cfg["ptp_interface"]:
-        _log("ptp", "WARNUNG: PTP ist aktiviert, aber kein Interface gewählt – PTP wird nicht gestartet.")
-    if ptp_on:
-        if os.path.isfile(CUSTOM_PTP4L):
-            _log("ptp", f"verwende gemountete {CUSTOM_PTP4L}")
-            with open(CUSTOM_PTP4L, encoding="utf-8") as handle:
-                files.append((PTP4L_CONF, handle.read()))
-        else:
-            files.append((PTP4L_CONF, render_ptp4l(cfg, env)))
     # Erst ALLES berechnen, was noch werfen kann (phc2sys-Plan, DNS-Modus, Pfade, Warnungen),
     # und erst danach die Dateien ersetzen. Wirft ein Schritt, bleiben chrony.conf/ptp4l.conf
     # unverändert und passen weiter zu den laufenden Diensten und ihren NTPGUI_*-Variablen.

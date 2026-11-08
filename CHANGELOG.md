@@ -7,6 +7,18 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 ## [Unveröffentlicht]
 
 ### Hinzugefügt
+- **Einstellungen in Reitern:** Quellen · LAN-Server · GPS · PTP · Dashboard & Zugang · Sichern, jeder Reiter mit
+  eigener Adresse (`#/system/einstellungen?s=gps` …). Alte Sprungziele wie `?s=web`, `?s=nts` oder `?s=dns`
+  öffnen den passenden Reiter und scrollen zur Karte.
+- **Suche über alle Reiter:** findet jede Einstellung nach Name, Schlüssel (z. B. `ntp_minsources`) oder einem
+  Wort aus dem ⓘ; ein Treffer springt zum Feld, auch unter „Erweitert“. `/` setzt den Cursor ins Suchfeld.
+  Der Schalter „nur Geänderte“ zeigt nur Werte, die vom Standard abweichen.
+- **Vorschau vor dem Speichern:** „Vorschau“ in der Speicherleiste zeigt als +/−-Diff genau die Zeilen, die sich
+  in `chrony.conf` und `ptp4l.conf` ändern würden. Ungültige Werte meldet sie wie das Speichern. Dabei wird
+  nichts geschrieben und kein Dienst neu gestartet. Für Skripte: `POST /api/v1/settings/preview`
+  (Verwaltungsrecht).
+- **Nachfrage beim Verlassen:** Wechselst du mit ungespeicherten Änderungen die Seite oder schließt den Tab,
+  fragt das Dashboard vorher nach.
 - **Untere Leiste auf dem Handy** (bis 640 px): Übersicht, Quellen, GPS, Clients und „Mehr“ für die übrigen
   Bereiche. „Mehr“ schließt mit Esc, einem Tipp daneben oder Tab aus dem Menü heraus. Die Leiste verdeckt
   keinen Inhalt, auch nicht die Speicherleiste der Einstellungen oder den Bereich über dem Home-Indikator.
@@ -33,7 +45,7 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
   bleiben erhalten, damit keine Lücke entsteht. Danach steht „Wiederhergestellt aus Sicherung vom …“ im
   Ereignisprotokoll. Übernommene alte Ereignisse lösen keine Benachrichtigungen aus, und die Geräte der
   laufenden Client-Messung sind sofort sichtbar.
-- **Nächtliche Sicherung** (Einstellungen → Dashboard, Standard aus): Gegen 3 Uhr landet eine Sicherung im
+- **Nächtliche Sicherung** (Einstellungen → Sichern, Standard aus): Gegen 3 Uhr landet eine Sicherung im
   Datenverzeichnis, die letzten 7 Nächte bleiben. Unter „Gespeicherte Sicherungen“ kannst du sie
   herunterladen.
 - API: `GET /api/v1/backup`, `GET /api/v1/backup/list`, `POST /api/v1/restore/preview`, `…/apply` und
@@ -49,6 +61,14 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 - Prometheus-Metriken `ntpgui_pi_undervoltage` und `ntpgui_pi_throttled`; Verlaufsfeld `pi_state`.
 
 ### Geändert
+- **Abzeichen nur bei geänderten Werten:** „geändert · zurücksetzen“. Zurücksetzen stellt den Standard ein –
+  auch gegen einen Wert aus der Compose-Datei – und wirkt erst mit „Speichern“; bis dahin nimmt „rückgängig“
+  oder „Verwerfen“ es zurück. Die Herkunfts-Abzeichen (Standard/Umgebung/Dashboard) entfallen.
+- **Kürzere Hilfetexte:** Unter jedem Feld steht höchstens eine Zeile, der Rest der Erklärung steht im ⓘ.
+  Gelöscht wurde nichts. „Erweitert“ ist je Abschnitt eingeklappt; geänderte erweiterte Werte bleiben sichtbar.
+- **Klebende Speicherleiste** mit Zahl der Änderungen, Hinweis „Neustart der Zeitdienste nötig“, Vorschau,
+  Speichern und Verwerfen. Die Reiter zeigen, wo ungespeicherte Änderungen liegen.
+- Versionsangaben („Standard ab …“) stehen nicht mehr in der Oberfläche.
 - **Navigation mit sieben statt elf Einträgen:** Übersicht · Zeitquellen · GPS · Clients · Uhr & Hardware ·
   System · Hilfe. Unter „Uhr & Hardware“ findest du die Reiter Uhrqualität, Hardware und PTP, unter „System“
   die Reiter Diagnose, Benachrichtigungen und Einstellungen. Neue, kurze Adressen wie `#/uhr/ptp` oder
@@ -76,6 +96,11 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
   Handy ist die Hilfe-Seite nicht mehr zu breit.
 
 ### Sicherheit
+- **Vorschau der Konfiguration:** gleiche Rechte wie das Speichern (nur Verwaltungsrecht, CSRF-/Origin-Prüfung,
+  Größengrenze); sie liest nur die Dateien, die ntp-gui selbst erzeugt, nie einen Pfad aus der Anfrage.
+  Passwort, Tokens und DoH-Adressen stehen ohnehin nicht in den Konfigurationsdateien; frei eingetragene Zeilen
+  (`EXTRA_CHRONY_CONF`, `EXTRA_PTP4L_CONF`, eigene Dateien), die nach Passwort, Token oder Secret aussehen,
+  sowie Zugangsdaten und Pfade in URLs werden geschwärzt.
 - **Wiederherstellen ohne Vertrauensvorschuss:** Das Manifest ist nicht signiert. Darum filtert ntp-gui
   beim Einspielen jede Zeile genauso wie beim Erstellen: keine Position, keine Satellitenwinkel und keine
   Geheimnisse in Messpunkten, Ereignissen und Gerätedaten, auch nicht in Grad/Minuten/Sekunden-Schreibweise,

@@ -14,7 +14,8 @@
 // auf der neuen, Reiterleiste, PTP aus als eine Zeile, untere Leiste nur ≤ 640 px ohne Überdeckung des
 // letzten Inhalts, „Mehr“ per Tastatur (Enter/Esc/Tab hinaus, Fokus zurück bzw. auf den Inhalt), Reiterwechsel
 // per Enter ohne Fokusverlust, Speicherleiste der Einstellungen über der unteren Leiste, /clock ohne deren
-// Abstand, Tastenkürzel nicht im Suchfeld.
+// Abstand, Tastenkürzel nicht im Suchfeld. Dazu die Einstellungen (settingsChecks): Reiter, Höhe < 2500 px
+// bei 1440 px, Suche, „nur Geänderte“, Speicherleiste, Vorschau-Dialog, Nachfrage beim Verlassen.
 //
 // Aufruf: node tests/ui/tour.js [Basis-URL]   (Standard http://127.0.0.1:18300, oder TOUR_BASE)
 // Ausgabe: JSON mit „problems“ (leer = alles gut) und einer Zeile je Route. Rückgabecode 1 bei Problemen.
@@ -239,7 +240,8 @@ async function navChecks(browser) {
       // Einstellungen: geändertes Feld → Speicherleiste liegt über der unteren Leiste, Knöpfe treffbar.
       const edit = await ctx.newPage();
       edit.on("pageerror", (e) => errors.push(e.message));
-      await edit.goto(`${BASE}/#/system/einstellungen`, { waitUntil: "load" });
+      // Reiter „Dashboard & Zugang“: Textfelder mit input-Ereignis (Titel). Quellen hat nur das Quellen-Raster.
+      await edit.goto(`${BASE}/#/system/einstellungen?s=zugang`, { waitUntil: "load" });
       await edit.waitForTimeout(1500);
       // Erstes Textfeld, dessen Änderung die Speicherleiste zeigt (andere Textfelder gehören z. B. zu API-Schlüsseln).
       let dirty = false;
@@ -314,12 +316,204 @@ async function navChecks(browser) {
   return { found, lines };
 }
 
+// Einstellungen 2.0 (1.6, T2): Reiter, Höhe < 2500 px bei 1440 px (ohne aufgeklappte Erweitert-Bereiche),
+// Suche („/“ fokussiert sie, Treffer springen in den Reiter), „nur Geänderte“, Speicherleiste mit Vorschau-Dialog,
+// Nachfrage beim Verlassen mit ungespeicherten Änderungen, Speicherleiste bei 390 px über der unteren Leiste.
+const SETTINGS_TABS = ["quellen", "lan", "gps", "ptp", "zugang", "sichern"];
+const SETTINGS_MAX_HEIGHT = 2500;
+
+async function settingsChecks(browser) {
+  const found = [];
+  const lines = [];
+  for (const width of [1440, 390]) {
+    const ctx = await browser.newContext({ viewport: { width, height: 900 } });
+    const page = await ctx.newPage();
+    const errors = [];
+    let answer = false;
+    const dialogs = [];
+    page.on("pageerror", (e) => errors.push(e.message));
+    page.on("dialog", async (d) => { dialogs.push(d.type()); if (answer) await d.accept(); else await d.dismiss(); });
+    const base = `${BASE}/#/system/einstellungen`;
+    // Reiter: sechs Links, genau einer aktiv, jeder Reiter adressierbar (?s=…) und mit eigenem Inhalt.
+    const heights = {};
+    for (const tab of SETTINGS_TABS) {
+      await page.goto(`${base}?s=${tab}`, { waitUntil: "load" });
+      await page.waitForTimeout(900);
+      const got = await page.evaluate(() => ({
+        tabs: [...document.querySelectorAll(".settings-tabs a.subtab")].map((a) => ({ tab: a.dataset.tab, current: a.getAttribute("aria-current") })),
+        panel: document.querySelector(".settings-panel")?.id || null,
+        cards: document.querySelectorAll(".settings-panel .card").length,
+        advanced: document.querySelectorAll(".fields-advanced").length,
+        height: document.documentElement.scrollHeight,
+      }));
+      heights[tab] = got.height;
+      if (got.tabs.map((x) => x.tab).join() !== SETTINGS_TABS.join() || got.tabs.filter((x) => x.current === "true").length !== 1
+        || got.tabs.find((x) => x.current === "true")?.tab !== tab) found.push(`${width} Einstellungen Reiter ${tab}: ${JSON.stringify(got.tabs)}`);
+      if (got.panel !== `panel-${tab}` || !got.cards) found.push(`${width} Einstellungen ${tab}: Inhalt fehlt ${JSON.stringify(got)}`);
+      if (got.advanced) found.push(`${width} Einstellungen ${tab}: Erweitert ist aufgeklappt`);
+      if (width === 1440 && got.height >= SETTINGS_MAX_HEIGHT) found.push(`1440 Einstellungen ${tab}: ${got.height} px hoch (Ziel < ${SETTINGS_MAX_HEIGHT})`);
+    }
+    lines.push(`settings ${width}: ${SETTINGS_TABS.map((tab) => `${tab}=${heights[tab]}`).join(" ")}`);
+    // Altes Sprungziel landet im richtigen Reiter.
+    await page.goto(`${BASE}/#/einstellungen?s=web`, { waitUntil: "load" });
+    await page.waitForTimeout(1200);
+    const legacy = await page.evaluate(() => ({ hash: location.hash, tab: document.querySelector(".settings-tabs a[aria-current]")?.dataset.tab }));
+    if (legacy.hash !== "#/system/einstellungen?s=web" || legacy.tab !== "zugang") found.push(`${width} ?s=web: ${JSON.stringify(legacy)}`);
+    // Reiterwechsel per Klick.
+    await page.click('.settings-tabs a[data-tab="gps"]');
+    await page.waitForTimeout(800);
+    const clicked = await page.evaluate(() => ({ hash: location.hash, panel: document.querySelector(".settings-panel")?.id }));
+    if (clicked.hash !== "#/system/einstellungen?s=gps" || clicked.panel !== "panel-gps") found.push(`${width} Reiterklick: ${JSON.stringify(clicked)}`);
+    // Suche: „/“ fokussiert das Suchfeld; ein Treffer aus einem anderen Reiter (erweitertes Feld) springt dorthin.
+    await page.evaluate(() => document.activeElement?.blur());
+    await page.keyboard.press("/");
+    const focused = await page.evaluate(() => document.activeElement?.id);
+    if (focused !== "settings-search") found.push(`${width} „/“ fokussiert die Suche nicht (${focused})`);
+    await page.fill("#settings-search", "orphan");
+    await page.waitForTimeout(200);
+    const hitList = await page.evaluate(() => [...document.querySelectorAll(".search-hit")].map((b) => b.textContent));
+    if (!hitList.length) found.push(`${width} Suche „orphan“: keine Treffer`);
+    await page.keyboard.press("Enter");
+    await page.waitForTimeout(1000);
+    const jumped = await page.evaluate(() => {
+      const row = document.getElementById("row-local_orphan");
+      const r = row?.getBoundingClientRect();
+      return { hash: location.hash, row: Boolean(row), visible: Boolean(r && r.bottom > 0 && r.top < innerHeight),
+        focus: Boolean(row && row.contains(document.activeElement)) };
+    });
+    if (jumped.hash !== "#/system/einstellungen?s=lan" || !jumped.row || !jumped.visible || !jumped.focus) found.push(`${width} Suchtreffer springt nicht: ${JSON.stringify(jumped)}`);
+    await page.fill("#settings-search", "ntp_minsources");
+    await page.waitForTimeout(200);
+    if (!await page.evaluate(() => [...document.querySelectorAll(".search-hit")].some((b) => b.textContent.includes("Mindestens")))) {
+      found.push(`${width} Suche nach Schlüssel ntp_minsources findet das Feld nicht`);
+    }
+    await page.fill("#settings-search", "");
+    // „nur Geänderte“: mit Standardwerten weniger Felder, aria-pressed; danach wieder alles.
+    await page.goto(`${base}?s=quellen`, { waitUntil: "load" });
+    await page.waitForTimeout(900);
+    await page.click(".only-changed");
+    await page.waitForTimeout(300);
+    const only = await page.evaluate(() => ({ pressed: document.querySelector(".only-changed").getAttribute("aria-pressed"),
+      fields: document.querySelectorAll(".settings-panel .field").length }));
+    await page.click(".only-changed");
+    await page.waitForTimeout(300);
+    const all = await page.evaluate(() => document.querySelectorAll(".settings-panel .field").length);
+    if (only.pressed !== "true" || only.fields >= all || !all) found.push(`${width} nur Geänderte: ${JSON.stringify(only)} gegen ${all}`);
+    // Änderung → Speicherleiste mit Zähler und Neustart-Hinweis, Abzeichen am Feld, Vorschau als Diff.
+    await page.fill("#f-ntp_minsources", "2");
+    await page.waitForTimeout(200);
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.waitForTimeout(200);
+    const bar = await page.evaluate(() => {
+      const node = document.querySelector(".save-bar");
+      const meta = document.querySelector("#row-ntp_minsources .field-meta")?.textContent || "";
+      const bottombar = document.getElementById("bottombar");
+      const barTop = bottombar && bottombar.getBoundingClientRect().height ? bottombar.getBoundingClientRect().top : innerHeight;
+      const r = node.getBoundingClientRect();
+      const buttons = [...node.querySelectorAll("button")].map((b) => { const q = b.getBoundingClientRect();
+        const hit = document.elementFromPoint(q.left + q.width / 2, q.top + q.height / 2); return Boolean(hit && (hit === b || b.contains(hit))); });
+      return { hidden: node.hidden, text: node.textContent, meta, bottom: r.bottom, barTop, buttons };
+    });
+    if (bar.hidden || !/1 Änderung/.test(bar.text) || !/Neustart der Zeitdienste/.test(bar.text) || !/Vorschau/.test(bar.text)) found.push(`${width} Speicherleiste: ${JSON.stringify(bar)}`);
+    if (!/geändert/.test(bar.meta) || !/zurücksetzen/.test(bar.meta)) found.push(`${width} Abzeichen am geänderten Feld fehlt: ${bar.meta}`);
+    if (bar.bottom > bar.barTop + 0.5 || bar.buttons.some((ok) => !ok)) found.push(`${width} Speicherleiste verdeckt: ${JSON.stringify(bar)}`);
+    await page.click(".save-bar >> text=Vorschau");
+    await page.waitForTimeout(1200);
+    const preview = await page.evaluate(() => {
+      const dialog = document.querySelector("dialog.preview-dialog");
+      const r = dialog?.getBoundingClientRect();
+      return { open: Boolean(dialog?.open), add: [...(dialog?.querySelectorAll(".diff-add") || [])].map((n) => n.textContent),
+        del: [...(dialog?.querySelectorAll(".diff-del") || [])].map((n) => n.textContent),
+        names: [...(dialog?.querySelectorAll(".preview-name code") || [])].map((n) => n.textContent),
+        inline: dialog ? [...dialog.querySelectorAll("[style]")].length : -1, fits: Boolean(r && r.right <= innerWidth && r.left >= 0) };
+    });
+    // Ohne Supervisor (Rundgang) gibt es noch keine chrony.conf – dann ist alles „+“ (Datei wird neu angelegt).
+    if (!preview.open || !preview.add.includes("+minsources 2") || (preview.del.length && !preview.del.includes("−minsources 1"))
+      || preview.names.join() !== "chrony.conf,ptp4l.conf" || preview.inline || !preview.fits) found.push(`${width} Vorschau-Dialog: ${JSON.stringify(preview)}`);
+    // Kein loser Text (etwa „null“) im Dialog; der Diff rollt in seinem eigenen Kasten, nicht der ganze Dialog.
+    const previewBox = await page.evaluate(() => {
+      const dialog = document.querySelector("dialog.preview-dialog");
+      const body = dialog?.querySelector(".preview-body");
+      const loose = body ? [...body.childNodes].filter((n) => n.nodeType === 3 && n.textContent.trim()).map((n) => n.textContent) : ["?"];
+      const box = dialog?.getBoundingClientRect();
+      const out = [...(dialog?.querySelectorAll("pre.diff") || [])].some((pre) => pre.getBoundingClientRect().right > box.right + 0.5);
+      return { loose, client: dialog?.clientWidth, scroll: dialog?.scrollWidth, out };
+    });
+    if (previewBox.loose.length) found.push(`${width} Vorschau: loser Text ${JSON.stringify(previewBox.loose)}`);
+    if (!(previewBox.scroll <= previewBox.client + 1) || previewBox.out) found.push(`${width} Vorschau läuft waagerecht über: ${JSON.stringify(previewBox)}`);
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(200);
+    if (await page.evaluate(() => Boolean(document.querySelector("dialog.preview-dialog[open]")))) found.push(`${width} Vorschau schließt nicht mit Esc`);
+    // Verlassen mit ungespeicherten Änderungen: erst „Abbrechen“ (bleibt), dann „OK“ (verwirft).
+    answer = false;
+    await page.evaluate(() => { location.hash = "#/hilfe"; });
+    await page.waitForTimeout(600);
+    const stayed = await page.evaluate(() => ({ hash: location.hash, bar: document.querySelector(".save-bar")?.hidden === false }));
+    if (stayed.hash !== "#/system/einstellungen?s=quellen" || !stayed.bar || !dialogs.includes("confirm")) found.push(`${width} Nachfrage beim Verlassen: ${JSON.stringify(stayed)} ${dialogs}`);
+    answer = true;
+    await page.evaluate(() => { location.hash = "#/hilfe"; });
+    await page.waitForTimeout(800);
+    await page.evaluate(() => { location.hash = "#/system/einstellungen?s=quellen"; });
+    await page.waitForTimeout(800);
+    const back = await page.evaluate(() => ({ bar: document.querySelector(".save-bar")?.hidden, value: document.getElementById("f-ntp_minsources")?.value }));
+    if (!back.bar || back.value !== "1") found.push(`${width} Verwerfen beim Verlassen: ${JSON.stringify(back)}`);
+    // Tastaturfokus bleibt nach „Verwerfen“ (Speicherleiste) und „zurücksetzen“ (Feld) auf der Seite.
+    const focusAt = () => page.evaluate(() => {
+      const node = document.activeElement;
+      const main = document.getElementById("main");
+      return node && node !== main && main?.contains(node) ? node.id || node.tagName : null;
+    });
+    await page.fill("#f-ntp_minsources", "2");
+    await page.waitForTimeout(200);
+    await page.focus(".save-bar >> text=Verwerfen");
+    await page.keyboard.press("Enter");
+    await page.waitForTimeout(300);
+    const afterDiscard = await focusAt();
+    if (!afterDiscard) found.push(`${width} Fokus nach „Verwerfen“ verloren`);
+    await page.fill("#f-ntp_minsources", "2");
+    await page.waitForTimeout(200);
+    await page.focus("#row-ntp_minsources .field-meta button.link");
+    await page.keyboard.press("Enter");
+    await page.waitForTimeout(300);
+    const afterReset = await focusAt();
+    if (!afterReset) found.push(`${width} Fokus nach „zurücksetzen“ verloren`);
+    if (await page.evaluate(() => document.querySelector(".save-bar")?.hidden === false)) {
+      await page.click(".save-bar >> text=Verwerfen");
+      await page.waitForTimeout(300);
+    }
+    // Alte Sprungziele scrollen auch beim zweiten und dritten Sprung in derselben Sitzung zur Karte.
+    for (const [jumpTo, card] of [["dns", "s-dns"], ["api", "s-api"], ["dns", "s-dns"]]) {
+      await page.evaluate(() => { location.hash = "#/hilfe"; });
+      await page.waitForTimeout(500);
+      await page.evaluate((s) => { location.hash = `#/system/einstellungen?s=${s}`; }, jumpTo);
+      await page.waitForTimeout(900);
+      const pos = await page.evaluate((id) => ({ y: Math.round(scrollY), top: Math.round(document.getElementById(id)?.getBoundingClientRect().top ?? -1) }), card);
+      if (pos.top < 0 || pos.top > 300) found.push(`${width} Sprung ?s=${jumpTo} scrollt nicht zur Karte: ${JSON.stringify(pos)}`);
+    }
+    // Nächtliche Sicherung: Schalter im Reiter „Sichern“, nicht unter „Dashboard & Zugang“.
+    await page.evaluate(() => { location.hash = "#/system/einstellungen?s=sichern"; });
+    await page.waitForTimeout(900);
+    const nightly = await page.evaluate(() => ({ here: Boolean(document.querySelector("#panel-sichern #f-backup_nightly")),
+      oldText: document.getElementById("main").textContent.includes("Dashboard → Nächtliche") }));
+    await page.evaluate(() => { location.hash = "#/system/einstellungen?s=zugang"; });
+    await page.waitForTimeout(900);
+    nightly.zugang = await page.evaluate(() => Boolean(document.getElementById("f-backup_nightly")));
+    if (!nightly.here || nightly.oldText || nightly.zugang) found.push(`${width} Nächtliche Sicherung: ${JSON.stringify(nightly)}`);
+    if (errors.length) found.push(`${width} Einstellungen Seitenfehler: ${errors.join(" | ")}`);
+    await ctx.close();
+  }
+  return { found, lines };
+}
+
 (async () => {
   const browser = await chromium.launch();
   const results = [];
   let nav = { found: [], lines: [] };
   try {
     nav = await navChecks(browser);
+    const settingsResult = await settingsChecks(browser);
+    nav.found.push(...settingsResult.found);
+    nav.lines.push(...settingsResult.lines);
     // TOUR_NAV_ONLY=1: nur die Navigationsprüfungen (schneller Durchlauf beim Arbeiten an der Navigation).
     for (const theme of process.env.TOUR_NAV_ONLY ? [] : ["light", "dark"]) {
       for (const width of [1440, 390]) {

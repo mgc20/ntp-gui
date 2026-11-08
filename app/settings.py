@@ -684,12 +684,51 @@ PRIVATE_NETWORKS = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.
 
 
 def _field(key, section, label, kind, default, convert, *, env=None, help="", options=None,
-           advanced=False, restart=RESTART_SERVICES, unit=None, placeholder=None):
+           advanced=False, restart=RESTART_SERVICES, unit=None, placeholder=None, hint=None):
     return {
         "key": key, "section": section, "label": label, "type": kind, "default": default,
         "convert": convert, "env": env, "help": help, "options": options,
         "advanced": advanced, "restart": restart, "unit": unit, "placeholder": placeholder,
+        "hint": hint,
     }
+
+
+# --- Hilfetext: eine sichtbare Zeile, der Rest ins ⓘ (1.6, T2) -----------------------------------
+# Im Dashboard steht unter jedem Feld höchstens eine Zeile (HINT_MAX Zeichen); der Rest des Hilfetexts
+# wandert ins ⓘ daneben. Gekürzt wird nur an Satzgrenzen – „hint“ + „more“ ergibt wieder den ganzen
+# Text. Ist schon der erste Satz zu lang, steht am Feld ein eigener Kurztext (hint=…) und das ⓘ zeigt
+# den vollständigen Hilfetext.
+HINT_MAX = 140
+_ABBREVIATIONS = ("z. B.", "d. h.", "u. a.", "z. T.", "bzw.", "ggf.", "evtl.", "ca.", "usw.", "Nr.", "inkl.",
+                  "max.", "min.", "vgl.", "etc.")
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+(?=[A-Za-zÄÖÜäöü„\"(0-9])")
+
+
+def _sentences(text: str) -> list[str]:
+    parts: list[str] = []
+    start = 0
+    for match in _SENTENCE_END.finditer(text):
+        head = text[start:match.start()]
+        if head.endswith(_ABBREVIATIONS) or re.search(r"(?<!\w)\w\.$", head):
+            continue  # „z. B. de.pool…“ – keine Satzgrenze
+        parts.append(head)
+        start = match.end()
+    parts.append(text[start:])
+    return [part for part in parts if part]
+
+
+def help_parts(field: dict) -> tuple[str, str]:
+    """(sichtbare Zeile, Rest fürs ⓘ) eines Feldes."""
+    text = (field.get("help") or "").strip()
+    if field.get("hint"):
+        return field["hint"], text
+    hint = ""
+    rest = _sentences(text)
+    while rest and len(f"{hint} {rest[0]}".strip()) <= HINT_MAX:
+        hint = f"{hint} {rest.pop(0)}".strip()
+    if not hint:  # erster Satz zu lang und kein eigener Kurztext (tests/test_einstellungen.py prüft das)
+        return "", text
+    return hint, " ".join(rest)
 
 
 SCHEMA: list[dict] = [
@@ -742,6 +781,7 @@ SCHEMA: list[dict] = [
                 "Gäste-WLAN."),
     _field("serve_unsynced", "lan", "Auch ohne Quelle Zeit ausliefern", "bool", True, _as_bool,
            env="SERVE_UNSYNCED",
+           hint="Inselbetrieb: Ist keine Quelle erreichbar, liefert der Server trotzdem seine eigene Uhrzeit aus – mit hohem Stratum.",
            help="Inselbetrieb: Ist keine Quelle erreichbar, liefert der Server trotzdem die "
                 "eigene Uhrzeit aus (mit hohem Stratum, damit Clients sie als zweite Wahl "
                 "erkennen). Hält das LAN einheitlich, auch wenn das Internet ausfällt."),
@@ -803,6 +843,7 @@ SCHEMA: list[dict] = [
                 "Der Name bleibt auf dieser Instanz."),
     _field("clients_new_device_alarm", "lan", "Melden, wenn ein neues Gerät nach der Zeit fragt", "bool", False,
            _as_bool, env="CLIENTS_NEW_DEVICE_ALARM", restart=RESTART_NONE, advanced=True,
+           hint="Schreibt ein Ereignis, sobald ein Gerät zum ersten Mal nach der Zeit fragt, das ntp-gui noch nie gesehen hat.",
            help="Schreibt ein Ereignis „Neues Gerät fragt nach der Zeit“, sobald ein Gerät zum ersten Mal "
                 "fragt, das ntp-gui noch nie gesehen hat – nützlich, um unbekannte Geräte im Netz zu "
                 "bemerken. Erkannt wird an der MAC-Adresse (im selben Netz) bzw. an der IPv4-Adresse; "
@@ -812,6 +853,7 @@ SCHEMA: list[dict] = [
     _field("enforce_hostnames", "lan", "Weitere Namen für „Zeitserver erzwingen“", "hostlist",
            [], _as_host_list, env="ENFORCE_HOSTNAMES", restart=RESTART_NONE, advanced=True,
            placeholder="z. B. time.example.com",
+           hint="Zusätzliche Zeitserver-Namen, die die Anleitungen zum Erzwingen per DNS-Umschreibung auf diesen Server umleiten.",
            help="Zusätzliche Zeitserver-Namen, die die Anleitungen zum Erzwingen (DNS-"
                 "Umschreibung in AdGuard, Pi-hole, dnsmasq) auf diesen Server umleiten sollen – "
                 "etwa der fest eingetragene Server einer Kamera oder eines Fernsehers. Die "
@@ -890,6 +932,7 @@ SCHEMA: list[dict] = [
                 "wieder ntp-gui selbst, und der Name bliebe unauflösbar."),
     _field("dns_doh", "dns", "DNS-over-HTTPS-Adressen", "hostlist", [], _as_doh_urls,
            env="DNS_DOH", placeholder="z. B. https://dns.quad9.net/dns-query",
+           hint="Für den Modus DoH: vollständige https-Adresse nach RFC 8484, z. B. https://dns.quad9.net/dns-query.",
            help="Für den Modus DoH: vollständige https-Adresse nach RFC 8484, z. B. "
                 "https://dns.quad9.net/dns-query oder https://cloudflare-dns.com/dns-query. ntp-gui "
                 "schickt die Anfrage per POST, folgt keiner Weiterleitung und nutzt keinen Proxy. Steht "
@@ -899,11 +942,13 @@ SCHEMA: list[dict] = [
                 "nicht auflösbar."),
     _field("dns_pin", "dns", "Feste Adressen für DoT/DoH", "hostlist", [], _as_dns_pins,
            env="DNS_PIN", advanced=True, placeholder="z. B. dns.quad9.net=9.9.9.9",
+           hint="Optional, je Zeile Name=IP, z. B. dns.quad9.net=9.9.9.9 – dann braucht der Verbindungsaufbau keinen System-DNS.",
            help="Optional, je Zeile Name=IP, z. B. dns.quad9.net=9.9.9.9. Dann fragt ntp-gui für den "
                 "Verbindungsaufbau keinen System-DNS – sinnvoll, wenn der DNS im LAN unzuverlässig ist "
                 "oder selbst umgeleitet wird. Das Zertifikat wird weiter gegen den Namen geprüft."),
     _field("dns_fallback", "dns", "Rückfall auf den System-DNS", "bool", True, _as_bool,
            env="DNS_FALLBACK", advanced=True,
+           hint="Antwortet keiner deiner Server, fragt ntp-gui den ursprünglichen DNS des Containers und meldet das als Ereignis.",
            help="Antwortet keiner deiner Server, fragt ntp-gui den ursprünglichen DNS des Containers "
                 "und meldet das als Ereignis – lieber eine Antwort mit Schleifenrisiko als gar keine "
                 "Zeitquelle. Aus: Dann bleibt die Anfrage unbeantwortet, und nichts geht unverschlüsselt "
@@ -945,6 +990,7 @@ SCHEMA: list[dict] = [
            options=[("auto", "automatisch (ohne PPS: Rückfallebene)"),
                     ("prefer", "bevorzugen – GPS ist erste Wahl"),
                     ("noselect", "nur beobachten – nie zur Synchronisation")],
+           hint="„Automatisch“ nimmt die genaueste Quelle, „Bevorzugen“ macht das GPS zur Hauptquelle, „Nur beobachten“ misst nur.",
            help="„Automatisch“: chrony nimmt die genaueste Quelle – ohne PPS ist das GPS damit die "
                 "Rückfallebene, wenn das Internet schlecht wird oder ausfällt. „Bevorzugen“ macht "
                 "das GPS zur Hauptquelle, solange es plausibel ist (sinnvoll bei Mobilfunk oder "
@@ -1021,6 +1067,7 @@ SCHEMA: list[dict] = [
            options=[("off", "aus – nicht prüfen"),
                     ("report", "nur melden (empfohlen)"),
                     ("lock", "automatisch sperren")],
+           hint="Prüft laufend, ob das GPS gestört oder gefälscht wird – nur melden oder das GPS bei starkem Befund sperren.",
            help="ntp-gui prüft laufend, ob das GPS gestört oder gefälscht wird: gleichzeitiger "
                 "Signaleinbruch aller Satelliten, unnatürlich gleichmäßige Signale, GPS-Zeit weit "
                 "weg von den NTS-Quellen, Positionssprung. „Nur melden“ schreibt ein Ereignis und benachrichtigt. "
@@ -1053,6 +1100,7 @@ SCHEMA: list[dict] = [
            options=[("auto", "automatisch (bester Takt im Netz)"),
                     ("master", "Grandmaster – gibt den Takt vor"),
                     ("slave", "Slave – übernimmt fremden Takt")],
+           hint="Mit GPS ist „Grandmaster“ richtig; „Slave“ passt, wenn es im Netz schon einen besseren Grandmaster gibt.",
            help="Mit GPS ist „Grandmaster“ richtig: chrony stellt die Systemuhr nach GPS, "
                 "phc2sys überträgt sie auf die PTP-Uhr der Netzwerkkarte und ptp4l verteilt sie. "
                 "„Slave“ passt, wenn es im Netz schon einen besseren Grandmaster gibt – dann "
@@ -1099,6 +1147,7 @@ SCHEMA: list[dict] = [
            help="Gleichstandsentscheidung nach Priority 1."),
     _field("ptp_clock_class", "ptp", "Clock Class", "int", 248, _as_number(int, 0, 255),
            env="PTP_CLOCK_CLASS", advanced=True,
+           hint="Wie gut der eigene Takt ist (IEEE 1588): 6 = an GPS gekoppelt, 7 = Holdover, 248 = Standard/unbekannt.",
            help="Wie gut der eigene Takt ist (IEEE 1588): 6 = an eine primäre Referenz wie GPS "
                 "gekoppelt, 7 = gerade Holdover (Referenz verloren, läuft noch genau weiter), 248 = "
                 "Standard/unbekannt. Dieser Wert gilt beim Start von ptp4l. Als Grandmaster führt "
@@ -1125,6 +1174,7 @@ SCHEMA: list[dict] = [
            help="Wie oft ptp4l eine Zusammenfassung ins Log schreibt (4 = alle 16 s)."),
     _field("phc2sys_enable", "ptp", "Systemuhr und PTP-Uhr koppeln (phc2sys)", "bool", False,
            _as_bool, env="PHC2SYS_ENABLE",
+           hint="Verbindet die Systemuhr mit der PTP-Uhr (PHC) der Netzwerkkarte – nötig bei Hardware-Zeitstempeln.",
            help="Verbindet die Systemuhr mit der PTP-Uhr (PHC) der Netzwerkkarte – nötig bei "
                 "Hardware-Zeitstempeln, in beide Richtungen: Als Grandmaster überträgt phc2sys "
                 "die von chrony per GPS/NTP gestellte Systemuhr auf die Karte (sonst verteilt "
@@ -1134,6 +1184,7 @@ SCHEMA: list[dict] = [
                 "Zeitstempeln gibt es keine Kartenuhr – dann wird phc2sys nicht gestartet."),
     _field("phc2sys_options", "ptp", "phc2sys-Optionen", "text", "", _as_phc2sys_options,
            env="PHC2SYS_OPTIONS", advanced=True, placeholder="automatisch nach Rolle",
+           hint="Leer lassen = automatisch passend zur Rolle. Eigene Optionen ersetzen das.",
            help="Leer lassen = automatisch passend zur Rolle: Grandmaster „-a -rr -m“ (Systemuhr "
                 "ist Quelle, die Karte folgt ihr; den UTC-Abstand von 37 s holt phc2sys aus "
                 "ptp4l), Slave und Automatisch „-a -r -m“ (Karte ist Quelle, die Systemuhr folgt). "
@@ -1141,6 +1192,7 @@ SCHEMA: list[dict] = [
                 "Systemuhr stellen kann („-r“ ohne „-rr“, „-c CLOCK_REALTIME“ oder -s ohne -c)."),
     _field("phc_refclock", "ptp", "PTP-Hardwareuhr als chrony-Quelle", "device", "",
            _as_device(optional=True), env="PHC_REFCLOCK", placeholder="aus",
+           hint="PTP-zu-NTP-Brücke: chrony nutzt die PTP-Uhr der Netzwerkkarte (z. B. /dev/ptp0) als Referenz.",
            help="PTP-zu-NTP-Brücke: chrony nutzt die PTP-Uhr der Netzwerkkarte (z. B. "
                 "/dev/ptp0) als Referenz und verteilt diese Zeit per NTP an Geräte ohne PTP."),
 
@@ -1153,6 +1205,7 @@ SCHEMA: list[dict] = [
     _field("notify_dashboard_url", "web", "Adresse des Dashboards (für Links)", "text", "",
            _as_link_url, env="NOTIFY_DASHBOARD_URL", restart=RESTART_NONE, advanced=True,
            placeholder="z. B. http://zeitserver.lan:8080/",
+           hint="Wenn gesetzt, hängt jede Benachrichtigung einen Link auf die passende Seite dieses Dashboards an.",
            help="Wenn gesetzt, hängt jede Benachrichtigung einen Link auf die passende Seite dieses "
                 "Dashboards an – ein Tipp auf dem Handy führt direkt zur GPS- oder Quellen-Seite. "
                 "Leer = kein Link. Der Link wird nicht gefiltert, weil du ihn selbst einträgst; trag "
@@ -1186,6 +1239,7 @@ SCHEMA: list[dict] = [
                 "geschützt. Wirkt ohne Neustart."),
     _field("trusted_proxies", "web", "Vertrauenswürdige Proxys", "networks", [], _as_proxy_list,
            env="TRUSTED_PROXIES", restart=RESTART_NONE, advanced=True, placeholder="leer = niemandem trauen",
+           hint="Adressen deiner Reverse Proxys, z. B. 127.0.0.1/32 für einen Proxy auf demselben Host. Leer = niemandem trauen.",
            help="Adressen deiner Reverse Proxys (Caddy, Nginx Proxy Manager, Zoraxy, Traefik), z. B. "
                 "127.0.0.1/32 für einen Proxy auf demselben Host (Anleitung: docs/integrationen/https.md). Nur von diesen Adressen glaubt ntp-gui die "
                 "Köpfe X-Forwarded-For und X-Forwarded-Proto: Dann nennt das Zugriffsprotokoll die echte "
@@ -1198,6 +1252,7 @@ SCHEMA: list[dict] = [
                 "Klick einzutragen. Wirkt ohne Neustart."),
     _field("web_allowed_hosts", "web", "Erlaubte Namen", "hostlist", [], _as_allowed_hosts,
            restart=RESTART_NONE, placeholder="z. B. zeit.example.org oder *.fritz.box",
+           hint="Namen, über die du das Dashboard ohne Passwort öffnen darfst – zusätzlich zu IP-Adressen und lokalen Namen.",
            help="Namen, über die du das Dashboard ohne Passwort öffnen darfst – zusätzlich zu IP-Adressen, "
                 "einteiligen und lokalen Namen (*.lan, *.local, *.home.arpa …), die immer gehen. Warum die "
                 "Liste? Schutz vor DNS-Rebinding: Eine fremde Webseite, die du besuchst, kann ihren eigenen "
@@ -1211,6 +1266,7 @@ SCHEMA: list[dict] = [
                 "Mit Passwort gilt ohnehin jeder Name. Wirkt ohne Neustart."),
     _field("update_check", "web", "Update-Hinweis (fragt GitHub)", "bool", False, _as_bool,
            env="UPDATE_CHECK", restart=RESTART_NONE,
+           hint="Fragt einmal am Tag bei GitHub nach der neuesten ntp-gui-Version. Kein Download, kein automatisches Update.",
            help="Fragt einmal am Tag zu einer zufälligen Uhrzeit bei GitHub nach der neuesten "
                 "ntp-gui-Version und zeigt „Neue Version x.y.z verfügbar“ samt Link zu den "
                 "Release-Notizen. Gesendet wird nur eine feste Anfrage mit dem User-Agent „ntp-gui“ – "
@@ -1414,15 +1470,17 @@ def _env_value(field: dict, env: dict[str, str]):
     return field["convert"](raw)
 
 
-def effective(env: dict[str, str] | None = None) -> dict[str, dict]:
+def effective(env: dict[str, str] | None = None, saved: dict[str, Any] | None = None) -> dict[str, dict]:
     """Alle Einstellungen mit Wert und Herkunft: gui > env > default.
 
     Ein ungültiger Env-Wert fällt auf den Standard zurück und wird als Fehler
-    gemeldet, statt den Start zu verhindern.
+    gemeldet, statt den Start zu verhindern. saved: gespeicherte Werte statt
+    settings.json (Vorschau – so stünde es nach dem Speichern).
     """
     env = dict(os.environ if env is None else env)
-    with _LOCK:
-        saved = dict(_load_file().get("values", {}))
+    if saved is None:
+        with _LOCK:
+            saved = dict(_load_file().get("values", {}))
     result = {}
     for field in SCHEMA:
         key = field["key"]
@@ -1467,18 +1525,70 @@ def validate(changes: dict[str, Any]) -> dict[str, Any]:
     return clean
 
 
-def save(changes: dict[str, Any]) -> dict[str, Any]:
-    """Speichert geprüfte Änderungen. Gibt zurück, welche Dienste neu starten müssen."""
+def validate_defaults(keys: Any) -> list[str]:
+    """Schlüssel, die auf ihren Standard zurück sollen („zurücksetzen“ im Dashboard)."""
+    if keys is None:
+        return []
+    # Nur Schlüssel als Zeichenketten – Listen oder Objekte darin wären sonst ein TypeError (HTTP 500).
+    if not isinstance(keys, list) or len(keys) > len(FIELDS) or not all(isinstance(key, str) for key in keys):
+        raise ValidationError("„defaults“ muss eine Liste von Einstellungen sein")
+    unknown = [str(key) for key in keys if key not in FIELDS]
+    if unknown:
+        error = ValidationError(f"Unbekannte Einstellung: {', '.join(unknown[:5])}")
+        error.fields = {key: "Unbekannte Einstellung" for key in unknown}  # type: ignore[attr-defined]
+        raise error
+    return list(dict.fromkeys(str(key) for key in keys))
+
+
+def _stored_after(stored: dict[str, Any], clean: dict[str, Any], defaults: list[str],
+                  env: dict[str, str] | None = None) -> dict[str, Any]:
+    """Gespeicherte Werte nach dem Speichern: clean übernommen, defaults auf den Standard.
+
+    „Auf den Standard“ heißt: den Dashboard-Wert entfernen – setzt aber die Umgebung einen anderen
+    Wert, wird der Standard ausdrücklich gespeichert (sonst gälte wieder der Wert aus der Compose-Datei).
+    """
+    env = dict(os.environ if env is None else env)
+    out = dict(stored)
+    out.update(clean)
+    for key in defaults:
+        if key in clean:
+            continue  # ausdrücklich gesetzter Wert gewinnt
+        out.pop(key, None)
+        field = FIELDS[key]
+        try:
+            env_value = _env_value(field, env)
+        except ValidationError:
+            env_value = None
+        if env_value is not None and env_value != field["default"]:
+            out[key] = field["default"]
+    return out
+
+
+def preview_values(changes: dict[str, Any], defaults: Any = None,
+                   env: dict[str, str] | None = None) -> dict[str, Any]:
+    """Effektive Werte, wie sie nach save(changes, defaults) gälten – ohne etwas zu schreiben.
+    Prüft genauso streng wie save() (ValidationError mit Feldbezug)."""
     clean = validate(changes)
+    keys = validate_defaults(defaults)
+    with _LOCK:
+        stored = dict(_load_file().get("values", {}))
+    after = _stored_after(stored, clean, keys, env)
+    return {key: entry["value"] for key, entry in effective(env, after).items()}
+
+
+def save(changes: dict[str, Any], defaults: Any = None) -> dict[str, Any]:
+    """Speichert geprüfte Änderungen. Gibt zurück, welche Dienste neu starten müssen.
+    defaults: Schlüssel, die auf ihren Standard zurückgehen (siehe _stored_after)."""
+    clean = validate(changes)
+    keys = validate_defaults(defaults)
     with _LOCK:
         data = dict(_load_file())
         stored = dict(data.get("values", {}))
         before = values()
-        stored.update(clean)
-        data["values"] = stored
+        data["values"] = _stored_after(stored, clean, keys)
         _write_file(data)
     after = values()
-    changed = [key for key in clean if before.get(key) != after.get(key)]
+    changed = [key for key in [*clean, *(k for k in keys if k not in clean)] if before.get(key) != after.get(key)]
     restart = any(FIELDS[key]["restart"] == RESTART_SERVICES for key in changed)
     result: dict[str, Any] = {"changed": changed, "restart": restart}
     warnings = save_warnings(clean)
@@ -1577,9 +1687,11 @@ def public_schema(masked: bool = False) -> dict:
             entry = dict(entry, value=_mask_value(field["key"], entry["value"]),
                          env=_mask_value(field["key"], entry["env"]) if entry["env"] is not None else None,
                          error="Wert ungültig (Einzelheiten nur mit Admin-Recht)" if entry["error"] else None)
+        hint, more = help_parts(field)
         fields.append({
             "key": field["key"], "section": field["section"], "label": field["label"],
-            "type": field["type"], "help": field["help"], "advanced": field["advanced"],
+            "type": field["type"], "help": field["help"], "hint": hint, "more": more,
+            "advanced": field["advanced"],
             "restart": field["restart"], "unit": field["unit"],
             "placeholder": field["placeholder"], "env": field["env"],
             "options": [{"value": v, "label": l} for v, l in (field["options"] or [])],

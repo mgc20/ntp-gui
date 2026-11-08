@@ -147,8 +147,67 @@
     },
     "language": {
       "label": "Dashboard language",
-      "note": "Applies to this browser only; without a choice German is used (English is in beta). So far the navigation, the header, the status band on the overview and the sections here are translated – everything else, the ⓘ explanations and messages from the server are German for now."
-    }
+      "note": "Applies to this browser only; without a choice German is used (English is in beta).",
+      "note_more": "So far the navigation, the header, the status band on the overview and the sections here are translated – everything else, the ⓘ explanations and messages from the server are German for now."
+    },
+    "tabs_label": "Settings areas",
+    "tab": {
+      "quellen": "Sources",
+      "lan": "LAN server",
+      "gps": "GPS",
+      "ptp": "PTP",
+      "zugang": "Dashboard & access",
+      "sichern": "Backup"
+    },
+    "search": {
+      "label": "Search settings",
+      "placeholder": "Search: name, key or explanation",
+      "hits_one": "{count} match",
+      "hits_other": "{count} matches",
+      "none": "Nothing found for “{query}”.",
+      "advanced": "Advanced"
+    },
+    "only_changed": "changed only",
+    "only_changed_none": "Nothing in this area differs from the default.",
+    "advanced": {
+      "show": "Advanced ({count})",
+      "hide": "Hide advanced"
+    },
+    "badge": {
+      "changed": "changed",
+      "reset": "reset",
+      "reset_title": "Back to the default – takes effect when you save",
+      "to_default": "will be reset to default",
+      "undo": "undo",
+      "unsaved": "unsaved",
+      "env": "from {name}"
+    },
+    "savebar": {
+      "label": "Unsaved changes",
+      "changes_one": "{count} change",
+      "changes_other": "{count} changes",
+      "restart": "time services need a restart",
+      "holdover": "aborts the running holdover test",
+      "preview": "Preview",
+      "save": "Save",
+      "discard": "Discard"
+    },
+    "preview": {
+      "title": "Preview: what saving writes",
+      "loading": "Building the configuration …",
+      "close": "Close",
+      "changed": "changes",
+      "same": "stays the same",
+      "new": "will be created",
+      "unused": "not used – stays as it is",
+      "custom": "own file from /config – used unchanged",
+      "lines": "+{added} / −{removed} lines",
+      "truncated": "Shortened – the difference is very long.",
+      "notes": "Notes",
+      "none": "chrony.conf and ptp4l.conf stay as they are – the change only affects the dashboard.",
+      "error": "Preview not possible: {message}"
+    },
+    "leave": "The settings have unsaved changes. Leave anyway? The changes will be lost."
   },
   "help": {
     "german_only": "The explanations on this page are only available in German for now. Translations are welcome – see CONTRIBUTING.md.",
