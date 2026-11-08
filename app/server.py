@@ -86,7 +86,7 @@ STATIC_DIR = Path(__file__).with_name("static")
 CHRONY_CONF = os.environ.get("CHRONY_CONF", "/etc/chrony/chrony.conf")
 PTP4L_CONF = os.environ.get("PTP4L_CONF", "/etc/linuxptp/ptp4l.conf")
 RUN_DIR = os.environ.get("NTPGUI_RUN_DIR", "/run/ntp-gui")
-START_TIME = time.time()
+START_MONO = time.monotonic()  # Laufzeit nach monotoner Uhr – ein Uhrsprung verfälscht sie nicht
 MAX_BODY = 64 * 1024
 VERSION = os.environ.get("NTPGUI_VERSION", "1.5.4")
 EVENTS_INTERVAL = 5.0          # so oft liest der Server die Supervisor-Ereignisse ein
@@ -360,6 +360,7 @@ def _num(value):
 
 def collect_sample() -> dict:
     tracking = chrony.tracking()
+    events.note_tracking(tracking)  # B4: Plausibilität fürs Aufräumen – außerhalb von events._LOCK
     stats = chrony.serverstats()
     sample: dict = {
         "t": int(time.time()),
@@ -571,7 +572,7 @@ def system_info(cfg: dict) -> dict:
         "hostname": socket.gethostname(),
         "time": time.time(),
         "timezone": time.strftime("%Z"),
-        "uptime_seconds": int(time.time() - START_TIME),
+        "uptime_seconds": int(time.monotonic() - START_MONO),
         "title": cfg["web_title"],
         "refresh_seconds": cfg["web_refresh_seconds"],
         "ntp_port": cfg["ntp_port"],
@@ -1849,7 +1850,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _diag_options(self, query: dict) -> dict:
         options = diagnostics.options_from_query(query)
-        options.update(version=VERSION, uptime_seconds=int(time.time() - START_TIME),
+        options.update(version=VERSION, uptime_seconds=int(time.monotonic() - START_MONO),
                        chrony_conf=CHRONY_CONF,
                        history=HISTORY.snapshot(time.time() - 86400))
         try:

@@ -11,7 +11,13 @@ neuen Zeilen und merkt sich die Leseposition (samt Inode, damit ein neu
 angelegtes oder gekürztes File erkannt wird) in der Datenbank.
 
 Aufbewahrung: 90 Tage und höchstens 50 000 Einträge – geprüft bei jedem
-200. Schreiben, damit nicht jedes emit() eine DELETE-Abfrage kostet.
+200. Schreiben, damit nicht jedes emit() eine DELETE-Abfrage kostet. Nach
+Alter wird nur gelöscht, wenn die Systemzeit plausibel ist (clock_plausible):
+chrony meldet nicht „Not synchronised“ und |Systemzeit-Offset| <= 1 s –
+Inselbetrieb (local reference) zählt als plausibel. Den chrony-Wert liefert
+der Status-Abruf des Servers über note_tracking(); prune() fragt chronyc nie
+selbst (es läuft unter _LOCK). Ohne Wert gilt „unbekannt“: aufräumen, außer
+es träfe alle Zeilen. Die Größenobergrenze gilt immer.
 """
 
 from __future__ import annotations
@@ -54,7 +60,15 @@ _SCHEMA = [
 ]
 
 _LOCK = threading.Lock()
+CLOCK_MAX_OFFSET = 1.0     # s – |Systemzeit − chrony-Zeit|, darüber gilt die Uhr als unplausibel
+CLOCK_STATE_TTL = 1800.0   # s (monoton) – älterer chrony-Wert gilt als unbekannt (Verlaufstakt bis 600 s)
+CLOCK_RECENT = 300.0       # s – so frische Zeilen zählen bei „träfe alle Zeilen“ nicht mit
+PRUNE_PAUSED_TITLE = "Aufräumen ausgesetzt: Systemzeit unplausibel"
+
 _STATE: dict[str, Any] = {"ready_for": None, "since_prune": 0}
+# plausible: True/False/None (unbekannt), at: monotone Zeit des Werts, noted: Hinweis geschrieben,
+# held: wegen „träfe alle Zeilen“ ausgesetzt – bleibt so, bis chrony wieder einen Wert liefert
+_CLOCK: dict[str, Any] = {"plausible": None, "at": None, "noted": False, "held": False}
 _PENDING: deque = deque(maxlen=500)
 _LISTENERS: list = []  # werden nach jedem erfolgreichen Schreiben aufgerufen (z. B. notify.wake)
 _FILTERS: list = []    # (kind, level, title, data) -> (level, title, data), z. B. holdover.event_filter
@@ -153,14 +167,94 @@ def emit(kind: str, level: str, title: str, data: dict | None = None,
     _notify_listeners()
 
 
-def prune(now: float | None = None) -> int:
-    """Alte Einträge löschen (90 Tage / 50 000 Zeilen). Gibt die Zahl gelöschter zurück."""
+def clock_from_tracking(tracking: dict | None) -> bool | None:
+    """Plausibilität aus chrony.tracking(): False bei „Leap status: Not synchronised“ oder
+    |Systemzeit-Offset| > CLOCK_MAX_OFFSET, sonst True – auch im Inselbetrieb (local reference).
+    None (unbekannt), wenn chronyc nichts geliefert hat."""
+    if not tracking:
+        return None
+    leap = " ".join(str(tracking.get("leap_status") or "").lower().split())
+    if not leap:
+        return None
+    if leap in ("not synchronised", "not synchronized"):
+        return False
+    offset = tracking.get("system_time_offset")
+    if isinstance(offset, (int, float)) and not isinstance(offset, bool) and abs(offset) > CLOCK_MAX_OFFSET:
+        return False
+    return True
+
+
+def note_tracking(tracking: dict | None) -> None:
+    """Setter für den Zwischenspeicher – vom Status-Abruf des Servers aufrufen (außerhalb von _LOCK)."""
+    state = clock_from_tracking(tracking)
+    _CLOCK.update(plausible=state, at=time.monotonic())
+    if state is not None:
+        _CLOCK["held"] = False
+
+
+def clock_state() -> bool | None:
+    """Zuletzt gemeldete Plausibilität; None, wenn es keinen oder nur einen veralteten Wert gibt."""
+    at = _CLOCK["at"]
+    if at is None or not 0 <= time.monotonic() - at <= CLOCK_STATE_TTL:
+        return None
+    return _CLOCK["plausible"]
+
+
+def note_prune_paused() -> None:
+    """Einmal je Vorfall das Ereignis „Aufräumen ausgesetzt“ schreiben – direkt, ohne emit(),
+    weil prune() auch unter _LOCK aus emit() heraus läuft. Aufrufen, wenn clock_plausible()
+    False war und das Aufräumen nach Alter tatsächlich etwas gelöscht hätte."""
+    if _CLOCK["noted"]:
+        return
+    _CLOCK["noted"] = True
     try:
         _ensure()
-        cutoff = (now or time.time()) - RETENTION_DAYS * 86400
-        removed = 0
+        row = _clean("other", "warn", PRUNE_PAUSED_TITLE,
+                     {"hint": "Alte Einträge werden erst wieder nach Alter gelöscht, wenn chrony "
+                              "nicht „Not synchronised“ meldet und die Systemzeit höchstens 1 s "
+                              "abweicht. Die Größenobergrenze gilt weiter."}, "web")
         with store.transaction() as conn:
-            removed += conn.execute("DELETE FROM events WHERE t < ?", (cutoff,)).rowcount
+            conn.execute("INSERT INTO events(t, kind, level, title, data, source) "
+                         "VALUES (?, ?, ?, ?, ?, ?)", row)
+    except Exception:
+        pass
+
+
+def clock_plausible(due: int = 0, older: int = 0) -> bool:
+    """Darf nach Alter (Wanduhr) aufgeräumt werden? Ruft nie chronyc auf.
+
+    Mit Wert von chrony: dessen Urteil (clock_state). Ohne Wert („unbekannt“): ja – außer das
+    Aufräumen träfe alle Zeilen (`due` >= `older` > 0; `older` = Zeilen älter als CLOCK_RECENT,
+    damit das gerade Geschriebene nicht zählt). Dann aussetzen, bis chrony wieder einen Wert
+    liefert. Ist die Uhr wieder plausibel, darf ein späterer Vorfall erneut gemeldet werden."""
+    state = clock_state()
+    if state is None:
+        if due and older and due >= older:
+            _CLOCK["held"] = True
+        ok = not _CLOCK["held"]
+    else:
+        ok = bool(state)
+    if ok:
+        _CLOCK["noted"] = False
+    return ok
+
+
+def prune(now: float | None = None) -> int:
+    """Alte Einträge löschen (90 Tage / 50 000 Zeilen). Gibt die Zahl gelöschter zurück.
+    Nach Alter nur bei plausibler Systemzeit (clock_plausible), die Zeilengrenze immer."""
+    try:
+        _ensure()
+        now = time.time() if now is None else now
+        cutoff = now - RETENTION_DAYS * 86400
+        removed = 0
+        due, older = store.query("SELECT sum(t < ?), sum(t < ?) FROM events",
+                                 (cutoff, now - CLOCK_RECENT))[0]
+        age_ok = clock_plausible(due or 0, older or 0)
+        if not age_ok and due:
+            note_prune_paused()
+        with store.transaction() as conn:
+            if age_ok:
+                removed += conn.execute("DELETE FROM events WHERE t < ?", (cutoff,)).rowcount
             removed += conn.execute(
                 "DELETE FROM events WHERE id <= (SELECT max(id) FROM events) - ?",
                 (MAX_ROWS,)).rowcount

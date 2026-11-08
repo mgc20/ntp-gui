@@ -373,6 +373,7 @@ class EntrypointSupervisorTest(unittest.TestCase):
 set -euo pipefail
 log() { printf '[%s] %s\\n' "$1" "${*:2}" >&2; }
 now() { echo 1000; }
+mono() { echo 1000; }
 write_status() { :; }
 write_services() { :; }
 declare -A SVC_ENTRY=() SVC_STATE=() SVC_RESTARTS=() SVC_EXIT=() SVC_SINCE=() \\
@@ -449,7 +450,7 @@ kill "$old"
 
     def test_watchdog_uses_reload_chronyd_for_certs(self):
         text = (ROOT / "docker" / "entrypoint.sh").read_text(encoding="utf-8")
-        block = text[text.index('check_nts_cert "$NOW"'):]
+        block = text[text.index('check_nts_cert "$MONO"'):]
         block = block[:block.index("\n  fi", block.index("NTS_CERT_DEFERRED )) &&"))]
         self.assertIn("reload_chronyd", block)
         self.assertNotIn("reload_services", block)

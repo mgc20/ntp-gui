@@ -53,6 +53,8 @@ class TempDataMixin:
         settings.DATA_DIR = os.path.join(self.tmp, "data")
         clientinfo._META_CACHE.update(t=0.0, data=None)
         clientinfo._reset_probe_limits()
+        import events
+        events._CLOCK.update(plausible=None, at=None, noted=False, held=False)
 
     def tearDown(self):
         store.close_all()
@@ -256,6 +258,63 @@ class StorageTest(TempDataMixin, unittest.TestCase):
         self.assertEqual(sum(left.values()), 20)  # Gesamtgrenze, neueste bleiben
         self.assertIn("fd00::98", left)
 
+    def test_prune_skips_age_when_clock_implausible(self):
+        """B4: Uhr ein Jahr vorgestellt, chrony nicht synchron → Punkte bleiben; die Mengen-Grenze
+        gilt trotzdem. Mit plausibler Uhr wird wie bisher nach Alter gelöscht."""
+        import events
+        clientmon._migrate(store)
+        now = time.time()
+        with store.transaction() as conn:
+            conn.execute("INSERT INTO clientmon_clients(ip, data, updated) VALUES('192.0.2.1', '{}', ?)", (now,))
+            conn.executemany("INSERT INTO clientmon_samples(ip, t, offset, poll, version, interval) "
+                             "VALUES(?, ?, ?, ?, ?, ?)", [("192.0.2.1", now - i, 0.1, 6, 4, None) for i in range(5)])
+        count = lambda: store.query("SELECT COUNT(*) FROM clientmon_samples")[0][0]  # noqa: E731
+        future = now + 365 * 86400
+        events.note_tracking({"leap_status": "Not synchronised", "system_time_offset": 0.0})
+        with mock.patch("time.time", return_value=future):
+            clientmon.prune_samples(store)
+            self.assertEqual(count(), 5)
+            clientmon.prune_samples(store, total=3)
+            self.assertEqual(count(), 3)
+        events.note_tracking({"leap_status": "Normal", "system_time_offset": 0.001})
+        with mock.patch("time.time", return_value=future):
+            clientmon.prune_samples(store)
+        self.assertEqual(count(), 0)
+
+    def test_prune_island_mode_and_future_sample(self):
+        """Inselbetrieb (TRACKING_LOCAL) gilt als plausibel: 8 Tage alte Punkte gehen, ein
+        einzelner Punkt in der Zukunft hält das Aufräumen nicht auf."""
+        import chrony
+        import events
+        from test_parsers import TRACKING_LOCAL
+        clientmon._migrate(store)
+        now = time.time()
+        with store.transaction() as conn:
+            conn.execute("INSERT INTO clientmon_clients(ip, data, updated) VALUES('192.0.2.1', '{}', ?)", (now,))
+            conn.executemany("INSERT INTO clientmon_samples(ip, t, offset, poll, version, interval) "
+                             "VALUES(?, ?, ?, ?, ?, ?)",
+                             [("192.0.2.1", now - 8 * 86400 - i, 0.1, 6, 4, None) for i in range(5)]
+                             + [("192.0.2.1", now + 365 * 86400, 0.1, 6, 4, None)])
+        events.note_tracking(chrony.parse_tracking(TRACKING_LOCAL))
+        clientmon.prune_samples(store, now)
+        self.assertEqual(store.query("SELECT COUNT(*) FROM clientmon_samples")[0][0], 1)
+        titles = [r["title"] for r in events.query()]
+        self.assertNotIn(events.PRUNE_PAUSED_TITLE, titles)
+
+    def test_stored_clients_kept_when_clock_implausible(self):
+        import events
+        monitor = clientmon.Monitor(123)
+        clientmon._migrate(store)
+        with store.transaction() as conn:
+            conn.execute("INSERT INTO clientmon_clients(ip, data, updated) VALUES('192.0.2.7', '{}', ?)",
+                         (time.time(),))
+        monitor.table.update("192.0.2.8", {"xmit": 1, "version": 4, "poll": 6}, 0.001, time.time())
+        events.note_tracking({"leap_status": "Not synchronised", "system_time_offset": 0.0})
+        with mock.patch("time.time", return_value=time.time() + 365 * 86400):
+            monitor._persist()
+        ips = {r[0] for r in store.query("SELECT ip FROM clientmon_clients")}
+        self.assertIn("192.0.2.7", ips)
+
     def test_stored_clients_bounded(self):
         monitor = clientmon.Monitor(123)
         with mock.patch.object(clientmon, "MAX_STORED_CLIENTS", 5):
@@ -273,6 +332,8 @@ class StorageTest(TempDataMixin, unittest.TestCase):
         with store.transaction() as conn:
             conn.executemany("INSERT INTO clientmon_samples(ip, t, offset, poll, version, interval) "
                              "VALUES(?, ?, ?, ?, ?, ?)", rows)
+        import events
+        events.note_tracking({"leap_status": "Normal", "system_time_offset": 0.001})
         clientmon.prune_samples(store, now, keep=5)
         left = store.query("SELECT ip, COUNT(*), MIN(t) FROM clientmon_samples GROUP BY ip")
         self.assertEqual(len(left), 1)

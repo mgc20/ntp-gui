@@ -101,11 +101,13 @@ unabhängiger Prüfung auf Korrektheit sowie Sicherheit und Datenschutz.
 - **Umsetzungsskizze (nach Gruppen):**
   1. **Robustheit:** (B1 und B2 erledigt in 1.5.4.) B3 – `address_family` aus `WEB_BIND`
      ableiten (`:` → AF_INET6), Fehlermeldung mit dem echten `OSError`-Text.
-  2. **Uhren:** B4 – Aufräumen nur, wenn die Uhr synchron ist (chrony `Leap status normal` und
-     kleiner Offset) **und** `now` nicht hinter dem neuesten gespeicherten `t` liegt; sonst
-     überspringen und Ereignis „Aufräumen ausgesetzt: Systemzeit unplausibel“. B5/B7 –
-     `time.monotonic()` für Cache-TTL, `_last_save`, Uptime; in `entrypoint.sh` `$SECONDS` statt
-     `printf '%(%s)T'`. (Die Holdover-Frist läuft seit 1.5.4 schon auf der monotonen Uhr.)
+  2. **Uhren:** B4 – Aufräumen nach Alter nur bei plausibler Uhr: chrony meldet nicht „Not
+     synchronised“ und höchstens 1 s Abweichung (Inselbetrieb zählt als plausibel); ohne
+     chrony-Wert nur aussetzen, wenn sonst alle älteren Einträge wegfielen. Sonst einmal das
+     Ereignis „Aufräumen ausgesetzt: Systemzeit unplausibel“. B5/B7 – `time.monotonic()` für
+     Cache-TTL, `_last_save`, Uptime; in `entrypoint.sh` `/proc/uptime` (nicht `$SECONDS`: das folgt
+     in bash der Wanduhr). (Die Holdover-Frist läuft seit 1.5.4 schon auf der monotonen Uhr.)
+     *Umgesetzt in T1.*
   3. **Daten:** B6 – Flush mit `INSERT OR IGNORE` wie die Migration (oder `ON CONFLICT DO NOTHING`).
      B8 – `confgen._write` mit `try/finally unlink`; `apply()` rendert **beide** Dateien zuerst in
      Tempdateien und benennt erst um, wenn beide fertig sind; schlägt etwas fehl, keine

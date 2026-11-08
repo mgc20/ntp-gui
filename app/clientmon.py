@@ -684,12 +684,17 @@ class Monitor:
             import store  # spät: fehlt store, läuft die Messung trotzdem
             _migrate(store)
             now = time.time()
+            # Uhr weit vorgestellt → nicht nach Alter löschen (Hinweis nur, wenn es etwas träfe)
+            due, older = store.query("SELECT sum(updated < ?), sum(updated < ?) FROM clientmon_clients",
+                                     (now - CLIENT_RETENTION, now - _recent()))[0]
+            age_ok = _clock_plausible(due or 0, older or 0)
             with store.transaction() as conn:
                 conn.executemany(
                     "INSERT INTO clientmon_clients(ip, data, updated) VALUES(?, ?, ?) "
                     "ON CONFLICT(ip) DO UPDATE SET data=excluded.data, updated=excluded.updated",
                     [(ip, json.dumps(entry), now) for ip, entry in snap.items()])
-                conn.execute("DELETE FROM clientmon_clients WHERE updated < ?", (now - CLIENT_RETENTION,))
+                if age_ok:
+                    conn.execute("DELETE FROM clientmon_clients WHERE updated < ?", (now - CLIENT_RETENTION,))
                 # Verdrängte Adressen bleiben 30 Tage stehen – bei wechselnden Absendern wären das
                 # beliebig viele Zeilen. Die neuesten MAX_STORED_CLIENTS genügen.
                 conn.execute("DELETE FROM clientmon_clients WHERE ip IN (SELECT ip FROM clientmon_clients "
@@ -759,16 +764,42 @@ def stored_clients(ip: str | None = None) -> dict[str, dict]:
     return out
 
 
+def _recent() -> float:
+    try:
+        import events
+        return float(events.CLOCK_RECENT)
+    except Exception:  # noqa: BLE001
+        return 300.0
+
+
+def _clock_plausible(due: int, older: int) -> bool:
+    """Nach Alter nur aufräumen, wenn die Systemzeit plausibel ist (events.clock_plausible, ohne
+    chronyc-Aufruf). Hätte das Aufräumen etwas gelöscht, einmal Ereignis „Aufräumen ausgesetzt“."""
+    try:
+        import events
+        ok = events.clock_plausible(due, older)
+        if not ok and due:
+            events.note_prune_paused()
+        return ok
+    except Exception:  # noqa: BLE001 – im Zweifel nichts nach Alter löschen
+        return False
+
+
 def prune_samples(store_mod, now: float | None = None, keep: int = MAX_SAMPLES_PER_CLIENT,
                   total: int = MAX_SAMPLES_TOTAL) -> None:
     """Älter als 7 Tage weg; Punkte von Adressen, die nicht (mehr) in clientmon_clients stehen,
     nach ORPHAN_GRACE weg; insgesamt höchstens `total` Punkte (die neuesten bleiben); je Client
     höchstens `keep` Punkte."""
     now = time.time() if now is None else now
+    due, older = store_mod.query(
+        "SELECT sum(t < ? OR (t < ? AND ip NOT IN (SELECT ip FROM clientmon_clients))), sum(t < ?) "
+        "FROM clientmon_samples", (now - SAMPLE_RETENTION, now - ORPHAN_GRACE, now - _recent()))[0]
+    age_ok = _clock_plausible(due or 0, older or 0)  # sonst nur die Mengen-Grenzen
     with store_mod.transaction() as conn:
-        conn.execute("DELETE FROM clientmon_samples WHERE t < ?", (now - SAMPLE_RETENTION,))
-        conn.execute("DELETE FROM clientmon_samples WHERE t < ? AND ip NOT IN (SELECT ip FROM clientmon_clients)",
-                     (now - ORPHAN_GRACE,))
+        if age_ok:
+            conn.execute("DELETE FROM clientmon_samples WHERE t < ?", (now - SAMPLE_RETENTION,))
+            conn.execute("DELETE FROM clientmon_samples WHERE t < ? AND ip NOT IN "
+                         "(SELECT ip FROM clientmon_clients)", (now - ORPHAN_GRACE,))
         conn.execute("DELETE FROM clientmon_samples WHERE rowid IN (SELECT rowid FROM clientmon_samples "
                      "ORDER BY t DESC LIMIT -1 OFFSET ?)", (max(1, int(total)),))
         crowded = conn.execute("SELECT ip FROM clientmon_samples GROUP BY ip HAVING COUNT(*) > ?",

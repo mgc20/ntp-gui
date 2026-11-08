@@ -124,6 +124,47 @@ class FutureSampleTest(TempDataDir):
         self.assertEqual(len(h.snapshot()), 5)
 
 
+class ClockJumpTest(TempDataDir):
+    """B5/B6: Sprünge der Systemzeit."""
+
+    def test_save_not_paused_by_backward_jump(self):
+        """B5: Der Abstand zum letzten Speichern läuft auf der monotonen Uhr. Springt die Wanduhr
+        eine Stunde zurück, wird trotzdem nach FLUSH_SECONDS geschrieben."""
+        wall, mono = [1_800_000_000.0], [5000.0]
+        with mock.patch.object(history.time, "time", side_effect=lambda: wall[0]), \
+                mock.patch.object(history.time, "monotonic", side_effect=lambda: mono[0]):
+            h = self.make(days=30)
+            h.add(sample(int(wall[0])))
+            wall[0] += 301
+            mono[0] += 301
+            self.assertTrue(h.save())
+            wall[0] -= 3600          # Rücksprung der Systemzeit
+            wall[0] += 301
+            mono[0] += 301
+            h.add(sample(int(wall[0])))
+            self.assertTrue(h.save())
+        self.assertEqual(self.count(), 2)
+
+    def test_flush_keeps_pending_value_on_same_second(self):
+        """B6 (Regression): Nach einem Rücksprung landen neue Punkte auf schon belegten Sekunden.
+        Der Lesepfad zeigt den neuen Punkt schon vor dem Flush; der Flush darf das nicht umkehren
+        (INSERT OR IGNORE würde den neuen Messwert verwerfen und die Kurve zurückspringen lassen)."""
+        h = self.make(days=30)
+        base = int(time.time()) - 1000
+        for i in range(600):
+            h.add(sample(base + i, offset=1.0))
+        h.save(force=True)
+        for i in range(10):
+            h.add(sample(base + 300 + i, offset=2.0))
+        before = [p["offset"] for p in h.snapshot() if base + 300 <= p["t"] < base + 310]
+        with h._lock:
+            self.assertTrue(h._flush())
+        after = [p["offset"] for p in h.snapshot() if base + 300 <= p["t"] < base + 310]
+        self.assertEqual(before, after)
+        self.assertEqual(after, [2.0] * 10)
+        self.assertEqual(self.count(), 600)
+
+
 class DecodeOutsideLockTest(TempDataDir):
     """Review 1/6: json.loads der Punkte läuft ohne self._lock, add() muss nicht warten."""
 

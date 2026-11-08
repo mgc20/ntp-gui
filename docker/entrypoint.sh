@@ -68,7 +68,18 @@ EVENTS_MAX=1048576  # events.jsonl ab 1 MB nach events.jsonl.1 verschieben
 EMIT_EVENT=emit_event
 
 log() { printf '[%s] %s\n' "$1" "${*:2}"; }
-now() { printf '%(%s)T' -1; }
+now() { printf '%(%s)T' -1; }   # Wanduhr – nur für Zeitstempel (Ereignisse, JSON, Holdover-Frist)
+# Monotone Sekunden (/proc/uptime, CLOCK_BOOTTIME) für alle Fristen und Abstände: Ein Sprung der
+# Systemzeit darf Hotplug-Prüfung, NTS-Zertifikat-Prüfung und Dienst-Neustarts nicht aussetzen.
+# Nicht die bash-Variable SECONDS – die rechnet bash aus der Wanduhr (gettimeofday) und springt mit.
+mono() {
+  local up _
+  if read -r up _ 2>/dev/null < /proc/uptime && [[ "$up" =~ ^[0-9]+ ]]; then
+    printf '%s' "${BASH_REMATCH[0]}"
+  else
+    now
+  fi
+}
 
 is_true() {
   case "${1,,}" in 1|true|yes|on) return 0 ;; *) return 1 ;; esac
@@ -206,10 +217,13 @@ stop_logtee() {
 }
 
 # ${RUN_DIR}/services.json – je Dienst: state (running | restarting | failed |
-# stopped), restarts, last_exit, since (Unix-Zeit des letzten Zustandswechsels).
+# stopped), restarts, last_exit, since (Unix-Zeit des letzten Zustandswechsels), next_retry
+# (Unix-Zeit, aus der monotonen Frist SVC_NEXT umgerechnet).
 write_services() {
-  local name sep="" out entry pid optional
-  out="{\"time\": $(now), \"services\": {"
+  local name sep="" out entry pid optional t m retry
+  t=$(now)
+  m=$(mono)
+  out="{\"time\": ${t}, \"services\": {"
   for name in "${SERVICES[@]}"; do
     entry="${SVC_ENTRY[$name]:-}"
     pid="${entry%%=*}"
@@ -222,7 +236,11 @@ write_services() {
     out+=", \"pid\": ${pid:-null}"
     out+=", \"optional\": ${optional}"
     out+=", \"enabled\": ${SVC_ON[$name]:-false}"
-    out+=", \"next_retry\": $([[ "${SVC_STATE[$name]:-}" == restarting ]] && echo "${SVC_NEXT[$name]:-null}" || echo null)"
+    retry=null
+    if [[ "${SVC_STATE[$name]:-}" == restarting && -n "${SVC_NEXT[$name]:-}" ]]; then
+      retry=$(( t + SVC_NEXT[$name] - m ))
+    fi
+    out+=", \"next_retry\": ${retry}"
     out+=", \"message\": $(json_str "${SVC_NOTE[$name]:-}")}"
     sep=", "
   done
@@ -237,7 +255,7 @@ set_state() {  # set_state <dienst> <zustand> [meldung]
   SVC_STATE[$1]="$2"
   SVC_SINCE[$1]="$(now)"
   SVC_NOTE[$1]="${3:-}"
-  if [[ "$2" == running ]]; then SVC_STARTED[$1]="${SVC_SINCE[$1]}"; fi
+  if [[ "$2" == running ]]; then SVC_STARTED[$1]="$(mono)"; fi
   write_services
 }
 
@@ -278,7 +296,7 @@ file_signature() {  # file_signature <pfad...> -> eine Zeile
 # gpsd, ptp4l und phc2sys laufen weiter. Die Änderung
 # muss NTS_CERT_SETTLE Sekunden stabil sein, damit nicht zwischen dem Schreiben
 # von Zertifikat und Schlüssel neu geladen wird.
-check_nts_cert() {  # check_nts_cert <jetzt> -> 0 = neu laden
+check_nts_cert() {  # check_nts_cert <jetzt, monoton> -> 0 = neu laden
   local t="$1" sig
   [[ -n "$NTS_WATCH" ]] || return 1
   sig="$(file_signature $NTS_WATCH)"
@@ -458,7 +476,7 @@ start_services() {
   if [[ -n "$HOTPLUG_PATHS" ]]; then
     log main "Warte auf Geräte (Prüfung alle ${HOTPLUG_EVERY} s): ${HOTPLUG_PATHS}"
   fi
-  NEXT_HOTPLUG=$(( $(now) + HOTPLUG_EVERY ))
+  NEXT_HOTPLUG=$(( $(mono) + HOTPLUG_EVERY ))
 }
 
 stop_services() {
@@ -564,7 +582,7 @@ schedule_restart() {  # schedule_restart <dienst>
     fi
   fi
   wait "$pid" 2>/dev/null || code=$?
-  t=$(now)
+  t=$(mono)   # Laufzeit und nächste Frist nach monotoner Uhr
   ran=$(( t - ${SVC_STARTED[$name]:-$t} ))
   fails=${SVC_FAILS[$name]:-0}
   if (( ran >= STABLE_AFTER )); then fails=0; fi
@@ -716,20 +734,20 @@ while true; do
       shutdown 1
     fi
   done
-  NOW=$(now)
+  MONO=$(mono)   # Fristen (SVC_NEXT, NEXT_HOTPLUG, NEXT_NTS_CERT) nach monotoner Uhr
   for name in gpsd ptp4l phc2sys dnsfwd; do
     case "${SVC_STATE[$name]:-stopped}" in
       running)
         if ! service_alive "${SVC_ENTRY[$name]:-}"; then schedule_restart "$name"; fi ;;
       restarting)
-        if (( NOW >= ${SVC_NEXT[$name]:-0} )); then restart_service "$name"; fi ;;
+        if (( MONO >= ${SVC_NEXT[$name]:-0} )); then restart_service "$name"; fi ;;
     esac
   done
-  if (( NOW >= NEXT_HOTPLUG )); then
-    NEXT_HOTPLUG=$(( NOW + HOTPLUG_EVERY ))
+  if (( MONO >= NEXT_HOTPLUG )); then
+    NEXT_HOTPLUG=$(( MONO + HOTPLUG_EVERY ))
     check_hotplug
   fi
-  if (( NOW >= NEXT_NTS_CERT )) && check_nts_cert "$NOW"; then
+  if (( MONO >= NEXT_NTS_CERT )) && check_nts_cert "$MONO"; then
     NTS_CERT_DEFERRED=1
   fi
   if [[ -n "$RELOAD_HOLD_NOTED" ]] && ! hold_active; then RELOAD_HOLD_NOTED=""; fi
