@@ -192,6 +192,19 @@ PY
 check "Diagnosepaket ohne Koordinaten, MAC, öffentliche/eigene IP, Hostname" "" "$LEAKS"
 PREVIEW=$(curl -s --max-time 30 'http://127.0.0.1:18080/api/diagnostics/preview')
 contains "Vorschau zeigt, was entfernt wurde" "$PREVIEW" '"removed"'
+# Hintergrund-Auftrag (die Seite): Antwort nach höchstens ~10 s, fertig oder 202 mit job; dann abfragen.
+JOBV=$(curl -s --max-time 20 'http://127.0.0.1:18080/api/diagnostics/preview?clients=1&async=1')
+for _ in $(seq 1 30); do
+  JOBID=$(python3 -c "import json,sys; d=json.loads(sys.argv[1]); print(d.get('job','') if d.get('pending') else '')" "$JOBV" 2>/dev/null)
+  [ -z "$JOBID" ] && break
+  sleep 2
+  JOBV=$(curl -s --max-time 20 "http://127.0.0.1:18080/api/diagnostics/preview?job=$JOBID")
+done
+contains "Vorschau als Hintergrund-Auftrag wird fertig" "$JOBV" '"reuse"'
+REUSE=$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['reuse'])" "$JOBV" 2>/dev/null)
+check "Download nimmt das Paket der Vorschau" 200 "$(http --max-time 10 "http://127.0.0.1:18080/api/diagnostics/bundle?clients=1&reuse=$REUSE")"
+check "Ungültiger Merker -> 409 statt langem Bau" 409 "$(http 'http://127.0.0.1:18080/api/diagnostics/bundle?clients=1&reuse=falsch')"
+check "Unbekannter Auftrag -> 404" 404 "$(http 'http://127.0.0.1:18080/api/diagnostics/preview?job=gibtsnicht')"
 CM=$(curl -s --max-time 10 http://127.0.0.1:18080/api/clients/offsets)
 if python3 -c "
 import json, sys

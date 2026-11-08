@@ -155,12 +155,16 @@ apiv1.endpoint("GET", "/diagnostics/preview", "/api/diagnostics/preview", "read"
                "Vorschau des Diagnosepakets – genau das, was beim Herunterladen drinstünde, gefiltert.",
                ["ok", "generated", "filename", "sections", "removed", "content", "reuse"],
                {"clients": "1 = Client-Liste einschließen (pseudonymisiert)",
-                "recording": "1 = letzte Aufzeichnung einschließen (gefiltert)"})
+                "recording": "1 = letzte Aufzeichnung einschließen (gefiltert)",
+                "async": "1 = im Hintergrund bauen: Antwort nach höchstens 10 s, fertig oder 202 mit job "
+                         "(429, wenn schon zwei Bauten laufen)",
+                "job": "Stand eines Auftrags abfragen (202 = läuft noch)"})
 apiv1.endpoint("GET", "/diagnostics/bundle", "/api/diagnostics/bundle", "read",
                "Diagnosepaket als tar.gz (gefiltert, mit MANIFEST.txt). Wird nie hochgeladen.", [],
                {"clients": "wie bei der Vorschau", "recording": "wie bei der Vorschau",
-                "reuse": "Merker „reuse“ einer Vorschau: genau dieses Paket sofort (gleiche Schalter, "
-                         "höchstens 10 min alt, Aufzeichnung unverändert); sonst neu gebaut"})
+                "reuse": "Merker „reuse“ einer Vorschau: genau dieses Paket sofort (gleiche Schalter und "
+                         "Einstellungen, höchstens 10 min alt – auch wenn die Aufzeichnung gewachsen ist); "
+                         "gilt er nicht mehr: 409. Ohne Merker wird neu gebaut."})
 apiv1.endpoint("GET", "/recording", "/api/recording", "read",
                "Zustand der Aufzeichnung der Datenquellen.", ["active", "ends", "entries", "size", "available"])
 apiv1.endpoint("POST", "/recording", "/api/recording", "admin",
@@ -1722,14 +1726,35 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(diagnostics.logs(int(env_like(query.get("lines"), 500)),
                                              str(query.get("q") or ""), level))
         elif path == "/api/diagnostics/preview":
+            # ?async=1 (die Seite): Bau im Hintergrund, Antwort spätestens nach JOB_WAIT – fertig
+            # oder 202 mit Auftragsnummer; ?job=… fragt den Stand ab. Ohne beides wie bisher
+            # (API: die Anfrage wartet, bis die Vorschau fertig ist).
             try:
+                job_id = str(query.get("job") or "")
+                if not job_id and str(query.get("async") or "") == "1":
+                    job_id = diagnostics.start_job(settings.values(), self._diag_options(query))
+                if job_id:
+                    view = diagnostics.job_result(job_id, wait=diagnostics.JOB_WAIT)
+                    if view is None:
+                        self._send_json({"ok": False, "error": "Diese Vorschau ist nicht mehr bekannt – bitte "
+                                         "neu starten."}, HTTPStatus.NOT_FOUND)
+                    elif view.get("pending"):
+                        self._send_json(view, HTTPStatus.ACCEPTED)
+                    else:
+                        self._send_json(view)
+                    return
                 self._send_json(diagnostics.preview_locked(settings.values(), self._diag_options(query)))
+            except diagnostics.BusyError as exc:
+                self._send_json({"ok": False, "error": str(exc)}, HTTPStatus.TOO_MANY_REQUESTS)
             except (diagnostics.LeakError, RuntimeError) as exc:
                 self._leak_error(exc)
         elif path == "/api/diagnostics/bundle":
             try:
                 body, filename = diagnostics.bundle_locked(settings.values(), self._diag_options(query),
                                                            reuse=str(query.get("reuse") or "") or None)
+            except diagnostics.StaleError as exc:
+                self._send_json({"ok": False, "stale": True, "error": str(exc)}, HTTPStatus.CONFLICT)
+                return
             except (diagnostics.LeakError, RuntimeError) as exc:
                 self._leak_error(exc)
                 return
