@@ -351,6 +351,57 @@ export const HELP_HARDWARE = {
       + "`PTP_MAJOR=` in die `.env`; daraus entstehen die `device_cgroup_rules`.",
   },
 
+  // --- Pi-Zustand (1.6) ----------------------------------------------------------
+  pi_state: {
+    title: "Pi-Zustand",
+    text: "Was die Firmware des Raspberry Pi über Stromversorgung und Takt meldet – nur gelesen aus `/sys` "
+      + "(Firmware-Bitfeld `get_throttled`, Sensor `rpi_volt`, Lüfter, `cpufreq`), ohne `vcgencmd` und ohne "
+      + "zusätzliche Rechte. Unterspannung und Drosselung ändern Last und Temperatur am Quarz und erklären "
+      + "Sprünge in Frequenz und Offset. Die Karte erscheint nur auf einem Pi; Wechsel landen als Ereignis "
+      + "„Unterspannung erkannt“ bzw. „Takt gedrosselt“ im Protokoll.",
+  },
+  pi_undervoltage: {
+    title: "Unterspannung",
+    text: "„jetzt“: Die Spannung liegt gerade unter etwa 4,63 V. „seit Start“: Das ist seit dem Einschalten "
+      + "des Pi mindestens einmal passiert – auch kurz, zwischen zwei Messungen. Fast immer liegt es am "
+      + "Netzteil oder am Kabel: Am zuverlässigsten ist das **offizielle Netzteil** (Pi 5: 27 W, Pi 4: 15 W) "
+      + "mit kurzem Kabel; USB-Festplatten und GPS-Sticks ziehen zusätzlich Strom.",
+  },
+  pi_throttled: {
+    title: "Gedrosselt",
+    text: "Die Firmware senkt den Takt der CPU – wegen Unterspannung oder weil der Chip zu heiß wird "
+      + "(ab etwa 80 °C). „jetzt“ heißt gerade, „seit Start“ heißt mindestens einmal seit dem Einschalten. "
+      + "Für die Uhr bedeutet das wechselnde Last und Temperatur, also eine unruhigere Frequenz.",
+  },
+  pi_capped: {
+    title: "Takt gedeckelt",
+    text: "Die Firmware lässt den Takt nicht bis zum Höchstwert steigen (meist wegen Unterspannung). Die Zeile "
+      + "erscheint nur, wenn das jetzt oder seit dem Start des Pi der Fall war.",
+  },
+  pi_soft_temp: {
+    title: "Temperaturgrenze",
+    text: "Die weiche Temperaturgrenze (Pi 3B+ und neuer, um 60 °C) war aktiv: Der Takt wird schon vor der "
+      + "eigentlichen Drosselung gesenkt. Kühlkörper oder Lüfter helfen. Die Zeile erscheint nur, wenn das "
+      + "jetzt oder seit dem Start des Pi der Fall war.",
+  },
+  pi_freq: {
+    title: "Takt",
+    text: "Aktueller Takt der CPU (`scaling_cur_freq`) und der eingestellte Höchstwert. Ein niedriger Takt im "
+      + "Leerlauf ist normal (Stromsparen); dauerhaft unter dem Höchstwert trotz Last spricht für Drosselung.",
+  },
+  pi_fan: {
+    title: "Lüfter",
+    text: "Drehzahl des Lüfters in Umdrehungen pro Minute (Pi 5: offizieller Active Cooler). „steht“ ist "
+      + "normal, solange der Chip kühl genug ist – der Lüfter läuft erst ab etwa 50 °C an.",
+  },
+  hw_pi_power: {
+    title: "Stromversorgung (Pi)",
+    text: "Meldet die Firmware Unterspannung oder Drosselung – jetzt oder seit dem Start des Pi –, steht hier "
+      + "„eingeschränkt“. Die Zeitausgabe läuft weiter, wird aber unruhiger; bei starker Unterspannung startet "
+      + "der Pi im schlimmsten Fall neu. Abhilfe: **offizielles Netzteil** (Pi 5: 27 W USB-C, 5,1 V/5 A; "
+      + "Pi 4: 15 W USB-C, 5,1 V/3 A) und ein kurzes Kabel.",
+  },
+
   // --- RTC ---------------------------------------------------------------------
   hw_rtc: {
     title: "Echtzeituhr (RTC)",
@@ -495,7 +546,8 @@ export const HELP_GROUP_HARDWARE = {
     "hw_ptp_clocks", "hw_clock_name", "hw_ptp_kind", "hw_ptp_pins", "hw_pps_available", "hw_max_adj",
     "hw_nic_class", "hw_passthrough", "hw_caps", "hw_privileged", "hw_sys_time", "hw_net_admin", "hw_net_raw",
     "hw_sys_nice", "hw_network", "hw_dev_mounted", "hw_modules", "hw_majors", "hw_rtc", "hw_rtc_drift",
-    "hw_hctosys",
+    "hw_hctosys", "pi_state", "pi_undervoltage", "pi_throttled", "pi_capped", "pi_soft_temp", "pi_freq",
+    "pi_fan", "hw_pi_power",
     "gps_receiver_card", "gps_device", "gps_baud", "gpsd_version", "gps_time", "gps_leapseconds",
     "gps_position", "gps_samples", "gps_source_state", "gps_select_reason",
     "ptp_interface", "ptp_clock_identity", "ptp_time_traceable", "ptp_grandmaster_flow", "nic_driver",

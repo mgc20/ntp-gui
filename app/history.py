@@ -5,7 +5,9 @@ Zähler der beantworteten Anfragen sowie GPS- und PTP-Werte. Ab 1.4 dazu „temp
 die Temperatur des gewählten Sensors in °C (thermal.py), falls es einen gibt. Weil
 ein Messpunkt als JSON gespeichert wird, braucht das neue Feld keine Migration –
 ältere Punkte haben es einfach nicht, die Verdichtung (Mittelwert je Fenster)
-behandelt es wie die übrigen Zahlen.
+behandelt es wie die übrigen Zahlen. Ab 1.6 ebenso „pi_state“ (pistate.py: 0 alles gut,
+1 gedrosselt, 2 Unterspannung; nur auf einem Raspberry Pi) – abwärtskompatibel, ältere
+Punkte und Geräte ohne die Quelle haben das Feld nicht.
 
 Speicher (ab 1.3): Tabelle samples(t INTEGER PRIMARY KEY, json TEXT) in
 DATA_DIR/ntp-gui.db (store.py). Neue Messpunkte sammeln sich im Speicher und
@@ -65,7 +67,7 @@ import gpsquality
 import store
 
 _NUMERIC_TOP = ("offset", "rms", "freq", "skew", "root_delay", "root_dispersion",
-                "stratum", "served", "clients", "temp")
+                "stratum", "served", "clients", "temp", "pi_state")
 _GROUPS = ("gps", "ptp")
 
 LEGACY_SIZE = 8640          # Standard von HISTORY_SIZE in 1.2 (24 h bei 10 s)

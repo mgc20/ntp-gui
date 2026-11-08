@@ -961,6 +961,29 @@ def _fmt_rate(rate: float | None) -> str:
     return f"{rate:g} Impulse/s"
 
 
+def _pi_power_row(pi: dict) -> dict[str, Any]:
+    """Zeile „Stromversorgung (Pi)“: Unterspannung oder Drosselung jetzt bzw. seit dem Start des Pi."""
+    import pistate
+    uv = pi.get("undervoltage") or {}
+    throttled = pi.get("throttled") or {}
+    capped = pi.get("capped") or {}
+    soft = pi.get("soft_temp_limit") or {}
+    title = "Stromversorgung (Pi)"
+    what = pi.get("summary") or pistate.summary(pi) or ""
+    if uv.get("now") or uv.get("since_boot"):
+        return _row("pi_power", title, "limited",
+                    f"{what}. Unterspannung lässt den Pi den Takt senken, die Last und die Temperatur am "
+                    "Quarz schwanken – im Verlauf als Sprünge in Frequenz und Offset sichtbar, im "
+                    f"schlimmsten Fall startet der Pi neu. {pistate.POWER_HINT}")
+    if any(e.get("now") or e.get("since_boot") for e in (throttled, capped, soft)):
+        return _row("pi_power", title, "limited",
+                    f"{what}. Die Spannung reicht, aber der Pi senkt den Takt – meist wegen Hitze. "
+                    "Kühlkörper oder Lüfter helfen; die Temperatur zeigt die Seite Uhrqualität.")
+    return _row("pi_power", title, "ok",
+                "Keine Unterspannung und keine Drosselung seit dem Start des Pi gemeldet."
+                if uv.get("since_boot") is not None else "Gerade keine Unterspannung gemeldet.")
+
+
 def build_matrix(cfg: dict, rep: dict, ctx: dict) -> tuple[list[dict], list[str]]:
     plat, perms = rep["platform"], rep["permissions"]
     receivers, pps_list = rep["gps"]["receivers"], rep["pps"]
@@ -1428,6 +1451,12 @@ def build_matrix(cfg: dict, rep: dict, ctx: dict) -> tuple[list[dict], list[str]
                          "Geht nicht: Es fehlt eine Netzwerkkarte mit Hardware-Zeitstempeln (siehe „PTP "
                          "mit Hardware-Zeitstempeln“).", None, None, gm_active))
 
+    # --- Stromversorgung des Pi (1.6, T4) -------------------------------------
+    # Nur mit Pi-eigener Quelle (get_throttled/rpi_volt) – auf einem PC gibt es die Zeile nicht.
+    pi = rep.get("pistate") or {}
+    if pi.get("available"):
+        rows.append(_pi_power_row(pi))
+
     # --- Warnungen -----------------------------------------------------------
     if perms["privileged"]:
         warnings.append("Der Container läuft privilegiert: gut für den ersten Hardware-Check, für den "
@@ -1507,6 +1536,15 @@ def _temperature(cfg: dict) -> dict[str, Any]:
         return {"available": False, "reason": "error", "error": str(exc), "candidates": []}
 
 
+def _pistate() -> dict[str, Any]:
+    """Pi-Zustand (Unterspannung, Drosselung, Takt, Lüfter) – frisch gelesen, wirft nie."""
+    try:
+        import pistate
+        return pistate.MONITOR.current()
+    except Exception:  # der Hardware-Check darf daran nie scheitern
+        return {"available": False, "sources": []}
+
+
 def _gps_role(cfg: dict) -> dict[str, Any] | None:
     """Rolle des GPS (Rückfallebene, Referenz, nur beobachten) – ohne PPS ehrlich als Rückfallebene."""
     try:
@@ -1541,6 +1579,7 @@ def build_report(cfg: dict, ctx: dict) -> dict[str, Any]:
         "ptp": ptp_info(plat),
         "rtc": rtc_info(),
         "temperature": _temperature(cfg),
+        "pistate": _pistate(),
         "majors": {"pps": majors.get("pps"), "ptp": majors.get("ptp")},
     }
     rep["gps"]["role"] = _gps_role(cfg)
@@ -1586,7 +1625,7 @@ def cached_report() -> dict[str, Any] | None:
     return _REPORT
 
 
-INSIGHT_KEYS = ("gps_usb", "gps_pps", "ptp_hw", "ptp_sw", "ptp_to_ntp", "gps_to_ptp", "nts")
+INSIGHT_KEYS = ("gps_usb", "gps_pps", "ptp_hw", "ptp_sw", "ptp_to_ntp", "gps_to_ptp", "nts", "pi_power")
 
 
 def cached_insights(cfg: dict) -> list[dict[str, Any]]:
@@ -1627,6 +1666,10 @@ def cached_insights(cfg: dict) -> list[dict[str, Any]]:
             add("info", "Grandmaster mit ungenauer GPS-Zeit", gm["text"], "hardware", "hw_gps_to_ptp")
         elif gm["status"] in {"change", "no"}:
             add("warn", "Grandmaster ohne GPS+PPS", gm["text"], "hardware", "hw_gps_to_ptp")
+    power = rows.get("pi_power")
+    uv = (rep.get("pistate") or {}).get("undervoltage") or {}
+    if power and power["status"] == "limited" and (uv.get("now") or uv.get("since_boot")):
+        add("warn", "Pi: Unterspannung", power["text"], "hardware", "hw_pi_power")
     nts = rows.get("nts")
     # Fehlende/unlesbare Server-Zertifikate meldet schon insights.nts_server_insights.
     if nts and nts["active"] and nts["status"] == "change" \

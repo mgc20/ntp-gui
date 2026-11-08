@@ -458,7 +458,8 @@ def summarize_history(samples: list[dict], since: float | None = None) -> dict:
         "from": samples[0].get("t"), "to": samples[-1].get("t"),
         "metrics": {},
     }
-    for key in ("offset", "rms", "freq", "skew", "root_delay", "root_dispersion", "stratum", "clients", "temp"):
+    for key in ("offset", "rms", "freq", "skew", "root_delay", "root_dispersion", "stratum", "clients", "temp",
+                "pi_state"):
         stats = _stats([s.get(key) for s in samples])
         if stats:
             out["metrics"][key] = stats

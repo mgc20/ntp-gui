@@ -330,6 +330,49 @@ function rtcCard(report, ctx) {
     el("p", { class: "hw-note" }, rich(note)));
 }
 
+// --- Pi-Zustand (1.6, T4): Unterspannung, Drosselung, Takt, Lüfter ---------------------
+// „jetzt“ = gerade gemeldet, „seit Start“ = seit dem Start des Pi (Firmware-Bitfeld).
+export function flagText(entry) {
+  if (!entry || entry.now === null || entry.now === undefined) return null;
+  if (entry.now && entry.since_boot) return "jetzt und seit Start";
+  if (entry.now) return "jetzt";
+  if (entry.since_boot) return "seit Start (jetzt nicht)";
+  return "nein";
+}
+
+function flagBadge(entry) {
+  const text = flagText(entry);
+  return badge(text, entry.now ? "crit" : entry.since_boot ? "warn" : "good");
+}
+
+// Zeile nur, wenn die Quelle einen Wert liefert – kein „unbekannt“.
+const hasFlag = (entry) => flagText(entry) !== null;
+const flagSeen = (entry) => hasFlag(entry) && Boolean(entry.now || entry.since_boot);
+
+export function pistateCard(report) {
+  const pi = report?.pistate;
+  if (!pi || !pi.available) return null;  // PC, VM oder Pi ohne lesbare Quelle: keine Karte
+  const uv = pi.undervoltage;
+  const freq = isNum(pi.freq_mhz)
+    ? `${fmtNumber(pi.freq_mhz, 0)} MHz${isNum(pi.freq_max_mhz) ? ` (höchstens ${fmtNumber(pi.freq_max_mhz, 0)} MHz)` : ""}` : null;
+  const fan = isNum(pi.fan_rpm) ? (pi.fan_rpm > 0 ? `${fmtNumber(pi.fan_rpm, 0)} U/min` : "steht (0 U/min)") : null;
+  const note = flagSeen(uv)
+    ? "Der Pi bekommt zu wenig Spannung. Dann senkt er den Takt, Last und Temperatur am Quarz schwanken – das zeigt sich als Sprünge in Frequenz und Offset. Am zuverlässigsten ist das **offizielle Netzteil** (Pi 5: 27 W, 5,1 V/5 A; Pi 4: 15 W, 5,1 V/3 A) mit kurzem Kabel."
+    : flagSeen(pi.throttled) || flagSeen(pi.soft_temp_limit) || flagSeen(pi.capped)
+      ? "Die Spannung reicht, aber der Pi senkt den Takt – meist wegen Hitze. Kühlkörper oder Lüfter helfen."
+      : "Keine Unterspannung, keine Drosselung – die Stromversorgung stört die Uhr nicht.";
+  return card("Pi-Zustand", { help: "pi_state" },
+    kv([
+      hasFlag(uv) ? ["Unterspannung", flagBadge(uv), "pi_undervoltage"] : null,
+      hasFlag(pi.throttled) ? ["Gedrosselt", flagBadge(pi.throttled), "pi_throttled"] : null,
+      flagSeen(pi.capped) ? ["Takt gedeckelt", flagBadge(pi.capped), "pi_capped"] : null,
+      flagSeen(pi.soft_temp_limit) ? ["Temperaturgrenze", flagBadge(pi.soft_temp_limit), "pi_soft_temp"] : null,
+      freq ? ["Takt", freq, "pi_freq"] : null,
+      fan ? ["Lüfter", fan, "pi_fan"] : null,
+    ]),
+    el("p", { class: "hw-note" }, rich(note)));
+}
+
 const TEMP_KIND = { thermal: "Thermalzone", hwmon: "Sensorchip (hwmon)", w1: "1-Wire (DS18B20)" };
 
 function temperatureCard(report) {
@@ -413,6 +456,7 @@ export function render(ctx) {
       snippet(fixes.map((m) => `# ${m.title}\n${m.fix}`).join("\n\n"), "Alle Änderungen")) : null),
     gpsCard(report),
     el("div", { class: "grid-2" }, ppsCard(report), rtcCard(report, ctx)),
+    pistateCard(report),
     temperatureCard(report),
     ptpCard(report),
     permissionsCard(report),
