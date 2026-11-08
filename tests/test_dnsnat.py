@@ -98,8 +98,8 @@ class ChainTest(unittest.TestCase):
 
     def test_rewrite_to_host_ip_counts_as_dns(self):
         sources = [{"host": "pool.ntp.org"}]
-        replies = {"127.0.0.1": OURS, "192.168.178.2": dict(OURS)}
-        result = self.run_check({"pool.ntp.org": ["192.168.178.2"]}, replies, sources)
+        replies = {"127.0.0.1": OURS, "192.168.1.2": dict(OURS)}
+        result = self.run_check({"pool.ntp.org": ["192.168.1.2"]}, replies, sources)
         row = result["upstream"][0]
         self.assertEqual((row["state"], row["cause"]), ("self_reply", "dns"))
 

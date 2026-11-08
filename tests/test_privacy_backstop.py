@@ -93,7 +93,7 @@ TEXT_CASES = [
     ("Peer delay      : 0.023456789 seconds", ["0.023456789"], True),
     ("^* 192.53.103.108                1   6   377    34   -12us[  -13us] +/-   11ms", ["11ms", "192.53"], False),
     # 7 – von chronyc gekürzte IPv6
-    ("^* 2a01:4f8:c17:5c1b:1234:5678:9a>  1   6   377    34   -12us", ["2a01", "4f8"], True),
+    ("^* 2a00:1450:c17:5c1b:1234:5678:9a>  1   6   377    34   -12us", ["2a00", "1450"], True),
     ("^- fe80::21b:21ff:feaa:bbcc%eth>  2   6   377    36  +120us", ["21b:21ff", "feaa"], True),
     # 8 – Titel im Freitext
     (f"[web] {TITLE} gestartet", ["Kleinkleckersdorf"], True),
@@ -329,7 +329,7 @@ class DiagnosticsBackstopTest(unittest.TestCase):
                                                      "bindaddress nas-keller\n"},
             "chrony": lambda cfg, o: {
                 "tracking": "Reference ID    : C035676C (ptbtime1.ptb.de)\nRoot delay      : 0.012345678 seconds",
-                "sources": "# Spalten: …\n^,*,2a01:4f8:c17:5c1b:1234:5678:9abc:def0,1,6,377,34,-0.00001,-0.00001,"
+                "sources": "# Spalten: …\n^,*,2a00:1450:c17:5c1b:1234:5678:9abc:def0,1,6,377,34,-0.00001,-0.00001,"
                            "0.0123456",
                 "clients_count": 3},
             "gps": lambda cfg, o: {"status": {"mode": 3, "lat_deg": 48.137154, "pos": {
@@ -352,7 +352,7 @@ class DiagnosticsBackstopTest(unittest.TestCase):
 
     SECRETS = ("Kleinkleckersdorf", "001122334455", "mein-dorf", "familie-mueller", "mueller.sh", "lan-mueller",
                "nas-keller", "48.137", "4177612", "ABCDEF", "1234567890AB", "BSN-QWERTZ", "Schmidt",
-               "Lindenweg", "2a01:4f8", "0.012345678", "0.0123456", "mueller-family", "0042A7F1C3")
+               "Lindenweg", "2a00:1450", "0.012345678", "0.0123456", "mueller-family", "0042A7F1C3")
 
     def test_bundle_is_clean(self):
         data = diagnostics.bundle(self.cfg, {})

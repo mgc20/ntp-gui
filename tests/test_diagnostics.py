@@ -24,7 +24,7 @@ import egress  # noqa: E402
 CHRONY_CONF = """# erzeugt von ntp-gui
 server ptbtime1.ptb.de iburst nts
 server zeit.mueller-family.de iburst
-server 192.168.178.1 iburst
+server 192.168.1.1 iburst
 allow 192.168.0.0/16
 ntsserverkey /etc/letsencrypt/live/zeit.mueller-family.de/privkey.pem
 refclock SHM 0 refid GPS offset 0.0 delay 0.2
@@ -37,7 +37,7 @@ LOG = "\n".join([
     "[gps] WARNUNG: /dev/serial/by-id/usb-FTDI_FT232R_USB_UART_A50285BI-if00-port0 fehlt – gpsd wartet",
     "[main] Dienst 'gpsd' (PID 42) wurde unerwartet beendet (Exit 1) – Neustart in 5 s; NTP läuft weiter.",
     "[web] Position 48.1371543, 11.5761249 (sollte nie im Log stehen)",
-    "[web] Client 192.168.178.23 fragt an",
+    "[web] Client 192.168.1.23 fragt an",
     "[config] FEHLER: Konfiguration konnte nicht erzeugt werden",
 ]) + "\n"
 
@@ -50,8 +50,8 @@ def fake_collectors():
         "chrony": lambda cfg, o: {"tracking": "Reference ID    : C035676C (ptbtime1.ptb.de)\nStratum : 2",
                                   "sources": "^* 192.53.103.108  1 6 377 34 -12us[-13us] +/- 11ms",
                                   "clients_count": 3},
-        "clients": lambda cfg, o: [{"address": "192.168.178.23", "ntp_packets": 12},
-                                   {"address": "2a02:8070:aa:bb::5", "ntp_packets": 3}],
+        "clients": lambda cfg, o: [{"address": "192.168.1.23", "ntp_packets": 12},
+                                   {"address": "2606:4700:aa:bb::5", "ntp_packets": 3}],
         "gps": lambda cfg, o: {"status": {"mode": 3, "lat": 48.1371543, "lon": 11.5761249, "hdop": 0.9,
                                           "satellites": [{"prn": 5, "elevation": 40, "azimuth": 100, "snr": 40,
                                                           "used": True}]}},
@@ -91,8 +91,8 @@ class DiagnosticsTest(unittest.TestCase):
         self.assertEqual(names, ["meta", "hints", "config", "chrony", "clients", "gps", "ptp", "hardware", "services",
                                  "events", "logs", "settings", "history", "recording"])
         text = json.dumps(result["content"], ensure_ascii=False)
-        for secret in ("48.137", "11.576", "mueller", "Müllers", "192.168.178.1 ", "192.168.178.23",
-                       "192.53.103.108", "A50285BI", "G6BY12345", "aabbcc", "Europe/Berlin", "2a02:8070",
+        for secret in ("48.137", "11.576", "mueller", "Müllers", "192.168.1.1 ", "192.168.1.23",
+                       "192.53.103.108", "A50285BI", "G6BY12345", "aabbcc", "Europe/Berlin", "2606:4700",
                        "C035676C"):
             self.assertNotIn(secret, text, secret)
         self.assertEqual(egress.check_no_leaks(result["content"]), [])
@@ -113,7 +113,7 @@ class DiagnosticsTest(unittest.TestCase):
         hints = [{"level": "warn", "key": "web_plain_http", "action": "settings",
                   "title": "Dashboard über unverschlüsseltes HTTP mit Anmeldung",
                   "text": "Ungeschützt angekommen: Anmeldung von 192.168.1.40 direkt per HTTP, zuletzt vor "
-                          "2 min; Anmeldung von 84.150.12.7 über 10.0.0.2 ohne Proxy-Kopf. Standort 48.1371543, "
+                          "2 min; Anmeldung von 8.8.4.4 über 10.0.0.2 ohne Proxy-Kopf. Standort 48.1371543, "
                           "11.5761249 bei zeit.mueller-family.de",
                   "data": {"lat": 48.1371543}},
                  {"level": "info", "key": "gps_calibrating", "title": "GPS wird eingemessen", "text": "Noch 3 h."},
@@ -128,7 +128,7 @@ class DiagnosticsTest(unittest.TestCase):
         self.assertEqual([h["key"] for h in section["hinweise"]], ["web_plain_http", "gps_calibrating"])
         self.assertEqual(set(section["hinweise"][0]), {"key", "level", "title", "text"})
         text = section["hinweise"][0]["text"]
-        for secret in ("192.168.1.40", "84.150.12.7", "10.0.0.2", "48.137", "11.576", "mueller"):
+        for secret in ("192.168.1.40", "8.8.4.4", "10.0.0.2", "48.137", "11.576", "mueller"):
             self.assertNotIn(secret, text, secret)
         self.assertRegex(text, r"von client-\d+ direkt per HTTP")
         self.assertIn("<öffentliche-IP>", text)
@@ -137,7 +137,7 @@ class DiagnosticsTest(unittest.TestCase):
             members = {Path(m.name).name: tar.extractfile(m).read().decode("utf-8") for m in tar.getmembers()}
         self.assertIn("hints.json", members)
         self.assertIn("web_plain_http", members["hints.json"])
-        self.assertNotIn("84.150.12.7", members["hints.json"])
+        self.assertNotIn("8.8.4.4", members["hints.json"])
         self.assertIn("hints.json", members["MANIFEST.txt"])
 
     def test_hints_without_dashboard(self):
@@ -251,7 +251,7 @@ class ChronySectionTest(unittest.TestCase):
     def test_chrony_section_rounded_and_labelled(self):
         outputs = {
             "tracking": "Reference ID    : C035676C (ptbtime1.ptb.de)\nRoot delay      : 0.012345678 seconds",
-            "sources": "^,*,2a01:4f8:c17:5c1b:1234:5678:9abc:def0,1,6,377,34,-0.00001,-0.00001,0.0234567",
+            "sources": "^,*,2a00:1450:c17:5c1b:1234:5678:9abc:def0,1,6,377,34,-0.00001,-0.00001,0.0234567",
             "ntpdata": "Remote address  : 192.53.103.108 (C035676C)\nPeer delay      : 0.023456789 seconds",
         }
 
