@@ -450,6 +450,80 @@ class TestGpsReceivers(HardwareTestCase):
         self.assertIn("USB-Modem-Gerät", pps["text"])
         self.assertEqual(hardware.cached_insights(base_cfg(gps_enable=True)), [])
 
+    def test_remote_gpsd_without_sysfs(self):
+        """F7/U7: Entferntes gpsd (GPSD_HOST) ohne lokalen sysfs-Eintrag – aktives Gerät schlägt sysfs."""
+        self.gps_status = {"running": True, "mode": 3,
+                           "devices": gps.parse_devices({"devices": [GPSD_UBLOX7]})}
+        rep = self.run_report(base_cfg(gps_enable=True))
+        (rec,) = rep["gps"]["receivers"]
+        self.assertEqual(rec["dev"], "/dev/ttyACM0")
+        self.assertEqual(rec["interface"], "über gpsd")
+        self.assertFalse(rec["host_present"])
+        self.assertTrue(rec["configured"] and rec["usable"])
+        row = self.row(rep, "gps_usb")
+        self.assertEqual(row["status"], "ok", row["text"])
+        self.assertNotIn("Kein GPS-Empfänger", row["text"])
+        self.assertIn("u-blox 7", row["text"])
+        self.assertNotIn("hw_gps_usb", [i["key"] for i in hardware.cached_insights(base_cfg(gps_enable=True))])
+
+    def test_active_gpsd_device_beats_sysfs_in_auto(self):
+        """Ein aktives gpsd-Gerät wird bei „auto“ vor einem nur per sysfs gefundenen Empfänger gewählt."""
+        self.vk162()
+        self.gps_status = {"running": True, "mode": 3,
+                           "devices": gps.parse_devices({"devices": [{**GPSD_UBLOX7, "path": "/dev/ttyACM1"}]})}
+        rep = self.run_report(base_cfg(gps_enable=True, gps_device="auto"))
+        configured = [r["dev"] for r in rep["gps"]["receivers"] if r["configured"]]
+        self.assertEqual(configured, ["/dev/ttyACM1"])
+        self.assertEqual(self.row(rep, "gps_usb")["status"], "ok")
+
+    def test_remote_gpsd_ttyacm_no_dcd_pps(self):
+        """F7: Entferntes gpsd mit USB-Stick (ttyACM): kein PPS über DCD behaupten."""
+        self.gps_status = {"running": True, "mode": 3,
+                           "devices": gps.parse_devices({"devices": [GPSD_UBLOX7]})}
+        rep = self.run_report(base_cfg(gps_enable=True))
+        (rec,) = rep["gps"]["receivers"]
+        self.assertEqual(rec["pps_path"], "none")
+        pps = self.row(rep, "gps_pps")
+        self.assertNotIn("DCD-Leitung („PPS über gpsd“)", pps["text"])
+        self.assertIn("USB-Modem-Gerät", pps["text"])
+
+    def test_remote_gpsd_tcp_path_is_no_device(self):
+        """F7: gpsd als Proxy (tcp://…) erfindet keinen Gerätepfad unter /dev."""
+        self.gps_status = {"running": True, "mode": 3, "devices": gps.parse_devices(
+            {"devices": [{**GPSD_UBLOX7, "path": "tcp://192.0.2.5:2947"}]})}
+        rep = self.run_report(base_cfg(gps_enable=True))
+        self.assertEqual(rep["gps"]["receivers"], [])
+        text = json.dumps(rep["matrix"], ensure_ascii=False)
+        self.assertNotIn("/dev/192.0.2.5", text)
+        self.assertNotIn("DCD-Leitung („PPS über gpsd“)", text)
+
+    def test_remote_gpsd_other_configured_device(self):
+        """F7: Steht gps_device auf einem anderen Gerät, ist das gpsd-Gerät nicht „eingetragen“."""
+        self.host.uart_tty("ttyAMA0", "uart-pl011")
+        self.gps_status = {"running": True, "mode": 3,
+                           "devices": gps.parse_devices({"devices": [GPSD_UBLOX7]})}
+        rep = self.run_report(base_cfg(gps_enable=True, gps_device="/dev/ttyAMA0"))
+        configured = [r["dev"] for r in rep["gps"]["receivers"] if r["configured"]]
+        self.assertEqual(configured, ["/dev/ttyAMA0"])
+        remote = next(r for r in rep["gps"]["receivers"] if r["dev"] == "/dev/ttyACM0")
+        self.assertFalse(remote["configured"])
+
+    def test_remote_gpsd_two_devices_auto_one_configured(self):
+        """F7: Zwei entfernte gpsd-Geräte bei „auto“ – nur eines gilt als eingetragen."""
+        self.gps_status = {"running": True, "mode": 3, "devices": gps.parse_devices(
+            {"devices": [GPSD_UBLOX7, {**GPSD_UBLOX7, "path": "/dev/ttyACM1"}]})}
+        rep = self.run_report(base_cfg(gps_enable=True, gps_device="auto"))
+        self.assertEqual(len([r for r in rep["gps"]["receivers"] if r["configured"]]), 1)
+
+    def test_remote_gpsd_gps_off_not_in_container_text(self):
+        """F7: Bei ausgeschaltetem GPS heißt es für ein gpsd-Gerät nicht „ist im Container“."""
+        self.gps_status = {"running": True, "mode": 3,
+                           "devices": gps.parse_devices({"devices": [GPSD_UBLOX7]})}
+        rep = self.run_report(base_cfg(gps_enable=False))
+        row = self.row(rep, "gps_usb")
+        self.assertNotIn("ist im Container", row["text"])
+        self.assertIn("gpsd meldet", row["text"])
+
     def test_vk162_by_id_config(self):
         self.vk162()
         cfg = base_cfg(gps_device="/dev/serial/by-id/usb-u-blox_AG_-_www.u-blox.com_u-blox_7_-_GPS_GNSS_Receiver-if00")

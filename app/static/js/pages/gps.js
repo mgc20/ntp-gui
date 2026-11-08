@@ -1,4 +1,4 @@
-import { el, fmtSeconds, fmtDuration, fmtNumber, isNum, rich, apiPost, holdoverNote } from "../util.js";
+import { el, fmtSeconds, fmtDuration, fmtNumber, fmtIsoUtc, isNum, rich, apiPost, holdoverNote } from "../util.js";
 import { card, tile, kv, info, badge, emptyNote, toast } from "../ui.js";
 import { lineChart, skyPlot, snrBars } from "../charts.js";
 import { stateBadge, reasonCell } from "./sources.js";
@@ -364,10 +364,10 @@ export function render(ctx) {
       tone: gps.has_fix ? "good" : gps.running ? "warn" : "crit", note: gps.device || "" }),
     tile({ label: "Satelliten", help: "satellites", value: `${gps.satellites_used ?? 0} / ${gps.satellites_seen ?? 0}`,
       tone: (gps.satellites_used || 0) >= 4 ? "good" : "warn", note: "genutzt / sichtbar" }),
-    tile({ label: "HDOP", help: "dop", value: isNum(gps.hdop) ? gps.hdop.toFixed(2) : "–",
+    tile({ label: "HDOP", help: "dop", value: isNum(gps.hdop) ? fmtNumber(gps.hdop, 2) : "–",
       tone: isNum(gps.hdop) ? (gps.hdop < 2 ? "good" : gps.hdop < 5 ? "warn" : "crit") : "muted",
-      note: `PDOP ${isNum(gps.pdop) ? gps.pdop.toFixed(2) : "–"} · VDOP ${isNum(gps.vdop) ? gps.vdop.toFixed(2) : "–"}` }),
-    tile({ label: "Signal", help: "snr", value: isNum(gps.snr_avg) ? `${gps.snr_avg}` : "–", unit: "dB-Hz",
+      note: `PDOP ${isNum(gps.pdop) ? fmtNumber(gps.pdop, 2) : "–"} · VDOP ${isNum(gps.vdop) ? fmtNumber(gps.vdop, 2) : "–"}` }),
+    tile({ label: "Signal", help: "snr", value: isNum(gps.snr_avg) ? fmtNumber(gps.snr_avg, 1) : "–", unit: "dB-Hz",
       tone: isNum(gps.snr_avg) ? (gps.snr_avg >= 35 ? "good" : gps.snr_avg >= 25 ? "warn" : "crit") : "muted",
       note: `Ø der genutzten · max. ${gps.snr_max ?? "–"}` }),
     ppsTile(gps, cfg, report),
@@ -412,10 +412,10 @@ export function render(ctx) {
     ["Gerät", `${gps.device || "–"}${gps.driver ? ` (${gps.driver})` : ""}`, "gps_device"],
     ["Baudrate", gps.baud ?? "automatisch", "gps_baud"],
     ["gpsd", gps.gpsd_release || "–", "gpsd_version"],
-    ["GPS-Zeit", gps.time || "–", "gps_time"],
+    ["GPS-Zeit", fmtIsoUtc(gps.time), "gps_time"],
     ["Zeitfehler laut Empfänger", isNum(gps.time_error) ? fmtSeconds(gps.time_error) : "–", "time_error"],
     ["Schaltsekunden (GPS−UTC)", gps.leapseconds ?? "–", "gps_leapseconds"],
-    isNum(gps.lat) ? ["Position", `${gps.lat.toFixed(5)}, ${gps.lon.toFixed(5)}${isNum(gps.alt) ? ` · ${gps.alt.toFixed(0)} m` : ""}`, "gps_position"] : null,
+    isNum(gps.lat) ? ["Position", `${fmtNumber(gps.lat, 5)}; ${fmtNumber(gps.lon, 5)}${isNum(gps.alt) ? ` · ${fmtNumber(gps.alt, 0)} m` : ""}`, "gps_position"] : null,
   ]));
 
   return [

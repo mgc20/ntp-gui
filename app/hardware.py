@@ -594,14 +594,57 @@ def receivers_info(cfg: dict, platform_: dict, perms: dict, pps_list: list[dict]
             "accuracy": accuracy, "verdict": verdict, "tone": tone,
             "_gps_like": gps_like or bool(gpsd), "_major": _device_major("tty", name),
         })
+    # Aktives gpsd-Gerät schlägt die sysfs-Suche: Ein entferntes gpsd (GPSD_HOST) oder ein Gerät
+    # ohne Eintrag in /sys/class/tty liefert trotzdem Zeit – sonst hieße es „Kein GPS-Empfänger“.
+    for name, dev in sorted(gpsd_devs.items()):
+        gpsd = gpsd_details(dev)
+        if name in names or not gpsd or not gpsd["activated"]:
+            continue
+        if not str(dev.get("path") or "").startswith("/dev/"):
+            continue  # gpsd als Proxy/Repeater (tcp://…, udp://…): kein Gerät, keine Aussage zu DCD/PPS
+        product, _ = _receiver_product(None, gpsd, name)
+        # PPS-Weg wie bei sysfs-Geräten aus dem Gerätetyp: ttyACM* ist immer cdc_acm (USB-Modem-Klasse).
+        if name.startswith("ttyACM"):
+            pps_path = "none"
+        elif name.startswith("ttyUSB"):
+            pps_path = "dcd_usb"
+        elif name in pps_seen_on:
+            pps_path = "dcd_uart"
+        else:
+            pps_path = "unknown"
+        verdict = f"Dein Empfänger: {product} an /dev/{name}, gemeldet von gpsd."
+        tone = "info"
+        if pps_path == "none":
+            verdict += " USB, kein PPS möglich → Genauigkeit 1–10 ms."
+            tone = "warn"
+        if gpsd["timing"]:
+            verdict += f" Timing-Modul ({gpsd['module'] or 'u-blox TIM'})."
+        result.append({
+            "tty": name, "dev": f"/dev/{name}", "stable_path": "",
+            "host_present": False, "in_container": True, "usable": True,
+            # „eingetragen“ entscheidet die Auswahl unten (auto/leer oder genau dieses Gerät).
+            "tty_driver": "", "usb": None, "gpsd": gpsd, "configured": False,
+            "product": product, "interface": "über gpsd", "pps_path": pps_path,
+            "accuracy": {"none": "1–10 ms nach Kalibrierung",
+                         "dcd_usb": "~1 ms mit PPS über DCD, sonst 1–10 ms",
+                         "dcd_uart": "~1–5 µs"}.get(pps_path, "1–10 ms ohne PPS"),
+            "verdict": verdict, "tone": tone,
+            "_gps_like": True, "_major": None, "_gpsd_only": True,
+        })
     if configured_raw.lower() == "auto":
-        chosen = next((r for r in result if r["_gps_like"]), result[0] if result else None)
+        chosen = next((r for r in result if (r["gpsd"] or {}).get("activated")), None) \
+            or next((r for r in result if r["_gps_like"]), result[0] if result else None)
         if chosen:
             chosen["configured"] = True
     elif configured_tty:
         for rec in result:
             if rec["tty"] == configured_tty:
                 rec["configured"] = True
+    elif not configured_raw:
+        # Nichts eingetragen: gpsd nimmt, was es findet – das erste von gpsd gemeldete Gerät gilt.
+        chosen = next((r for r in result if r.get("_gpsd_only")), None)
+        if chosen:
+            chosen["configured"] = True
     if any(r["_gps_like"] for r in result):
         # Gibt es einen erkannten GPS-Empfänger, verwirrt eine leere Pi-UART (ttyS0 = Mini-UART für
         # Bluetooth/Konsole) als zweite „Empfänger“-Karte nur („PPS über GPIO möglich“). Gelistet bleibt
@@ -1057,8 +1100,9 @@ def build_matrix(cfg: dict, rep: dict, ctx: dict) -> tuple[list[dict], list[str]
                              f'device_cgroup_rules:\n  - "c {major}:* rwm"', active=gps_on))
         elif not gps_on:
             rows.append(_row("gps_usb", title_usb, "change",
-                             f"Empfänger {label} ist im Container. GPS in den Einstellungen einschalten "
-                             "(oder per Umgebungsvariable).",
+                             (f"gpsd meldet den Empfänger {label}." if main.get("_gpsd_only") else
+                              f"Empfänger {label} ist im Container.")
+                             + " GPS in den Einstellungen einschalten (oder per Umgebungsvariable).",
                              _env_fix(GPS_ENABLE='"true"', GPS_DEVICE=main["stable_path"] or main["dev"]),
                              accuracy="1–10 ms", active=False))
         elif not main["configured"]:

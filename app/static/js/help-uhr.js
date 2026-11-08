@@ -126,8 +126,8 @@ export const HELP_UHR = {
       + "NTP-Quellen laufend aus; man sieht es dann am **Frequenzfehler**, der im Tagesgang mit der Temperatur "
       + "mitwandert. Wichtig wird es, wenn die Referenz fehlt (GPS-Ausfall, Internet weg): Dann läuft die Uhr "
       + "mit dem zuletzt gelernten Wert weiter, und jede Temperaturänderung wird direkt zum Zeitfehler. "
-      + "ntp-gui speichert deshalb zu jedem Messpunkt die Temperatur. Daraus kann **1.5** einen Vorschlag für "
-      + "chronys Temperaturausgleich (`tempcomp`) berechnen – in 1.4 wird nur gemessen, nichts verstellt.",
+      + "ntp-gui speichert deshalb zu jedem Messpunkt die Temperatur. Daraus ließe sich ein Vorschlag für "
+      + "chronys Temperaturausgleich (`tempcomp`) berechnen – ntp-gui misst nur, es verstellt nichts.",
   },
   temp_sensor: {
     title: "Temperatursensor",

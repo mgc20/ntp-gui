@@ -44,8 +44,8 @@ function readiness(summary) {
   if (summary.days < summary.need_days) missing.push(`${fmtDays(summary.days)} von ${fmtNumber(summary.need_days, 0)} Tagen`);
   if (summary.span_k < summary.need_span_k) missing.push(`${fmtNumber(summary.span_k, 1)} K von ${fmtNumber(summary.need_span_k, 0)} K Spanne`);
   if (!missing.length) {
-    return "Genug Daten für eine Auswertung: mindestens 3 Tage und 4 K Spanne. Den Vorschlag für den Temperaturausgleich "
-      + "berechnet ntp-gui ab Version 1.5 – bis dahin hilft das Streudiagramm beim Einschätzen.";
+    return "Genug Daten für eine Auswertung: mindestens 3 Tage und 4 K Spanne. Das Streudiagramm zeigt, "
+      + "wie stark die Frequenz mit der Temperatur wandert.";
   }
   return `Es wird weiter gesammelt (bisher ${missing.join(", ")}). Für eine Aussage braucht es **1–3 Tage mit Tag-/Nacht-Wechsel**.`;
 }
@@ -85,7 +85,7 @@ function temperatureSection(ctx, data, loading) {
   const enoughRange = (ui.uqRange || 0) >= READY_DAYS * 86400;
   out.push(card("Temperatur und Frequenz", { help: "temp_freq", actions: rangeActions(ctx),
     sub: "Zu jedem Messpunkt speichert ntp-gui die Temperatur. So zeigt sich, wie stark der Quarz mit ihr wandert – "
-      + "die Grundlage für einen Temperaturausgleich ab 1.5. Hier wird nur gemessen, nichts verstellt." },
+      + "die Grundlage für einen Temperaturausgleich. Hier wird nur gemessen, nichts verstellt." },
   el("div", { class: "stat-row" },
     tile({ label: "Sensor", help: "temp_sensor", value: sensor.name || "–", note: data.setting === "auto" ? "automatisch gewählt" : "eingestellt", tone: "muted" }),
     tile({ label: "Temperatur jetzt", help: "temp_now", value: isNum(data.celsius) ? fmtFixed(data.celsius, 1) : "–", unit: "°C",

@@ -408,7 +408,7 @@ export function render(ctx) {
           const box = (key, label) => {
             const input = el("input", { type: "checkbox", checked: row[key], disabled, "aria-label": label });
             input.addEventListener("change", () => update({ [key]: input.checked }));
-            return el("label", { class: "cell-check" }, input);
+            return el("label", { class: "cell-check" }, input, el("span", { class: "cell-check-text", text: label }));
           };
           return el("div", { class: "src-editor-row" }, type, host, box("nts", "NTS"), box("prefer", "bevorzugen"),
             box("noselect", "nur beobachten"),

@@ -155,6 +155,13 @@ export function staleText(lastOkMs, zone = null) {
   return `Keine Verbindung zum Server – Werte veraltet seit ${fmtTime(lastOkMs / 1000, true, zone)}. Neuer Versuch läuft.`;
 }
 
+// ISO-Zeit (z. B. gpsd „2026-11-08T12:34:56.000Z“) als „08.11.26, 12:34:56 UTC“.
+export function fmtIsoUtc(iso) {
+  const date = new Date(iso);
+  if (!iso || Number.isNaN(date.getTime())) return "–";
+  return `${date.toLocaleString("de-DE", { dateStyle: "short", timeStyle: "medium", timeZone: "UTC" })} UTC`;
+}
+
 export function sourceLabel(source) {
   if (!source) return "–";
   return source.hostname || source.name || "–";

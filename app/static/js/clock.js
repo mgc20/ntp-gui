@@ -7,7 +7,7 @@
 //
 // Bewusst ohne app.js/ui.js: Die Seite muss auch ohne Anmeldung (clock_public) laufen und
 // lädt deshalb nur Dateien, die keine Inhalte aus Konfiguration oder Status enthalten.
-import { fromResponse, best, isoWeek, hms, fmtAccuracy } from "./clocksync.js";
+import { fromResponse, best, isoWeek, hms, fmtAccuracy, sourceText } from "./clocksync.js";
 
 const BURST = 5;
 const BURST_GAP_MS = 250;
@@ -126,7 +126,7 @@ function renderBand() {
     tone = s.level in STATE_TEXT ? s.level : "warn";
     if (!s.running) main = "chronyd antwortet nicht";
     else if (!s.synchronised) main = s.source_kind ? `nicht synchron · ${s.source_kind}` : "nicht synchron";
-    else main = `${STATE_TEXT[tone] || "synchron"} · ${s.source_kind || "Quelle"}${s.source ? ` (${s.source})` : ""}`;
+    else main = `${STATE_TEXT[tone] || "synchron"} · ${sourceText(s.source_kind, s.source)}`;
     if (typeof s.accuracy === "number") detail.push(`Server ${fmtAccuracy(s.accuracy * 1000)}`);
     if (s.leap && s.leap !== "Normal" && s.leap !== "Not synchronised") detail.push(`Schaltsekunde angekündigt (${s.leap})`);
   }

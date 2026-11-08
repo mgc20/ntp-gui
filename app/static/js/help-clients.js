@@ -128,7 +128,7 @@ export const HELP_CLIENTS = {
       + "in der Datenbank dieser Instanz und erscheint in der Liste, im Netzüberblick und in Ereignissen. "
       + "Gespeicherte Ereignisse enthalten nur die **Adresse** – den Namen setzt erst die Anzeige ein. So "
       + "bleibt ein alter Name nach Umbenennen oder Löschen nirgends stehen, und im **Diagnosepaket** wird "
-      + "die Adresse zu client-01 usw., ein Name zu `<name>`. **Benachrichtigungen** über ein Gerät (seit 1.5) "
+      + "die Adresse zu client-01 usw., ein Name zu `<name>`. **Benachrichtigungen** über ein Gerät "
       + "nennen seinen eigenen Namen statt der Adresse – du sollst auf dem Handy erkennen, welches Gerät "
       + "gemeint ist; die LAN-Adresse nur mit dem Schalter „LAN-Adressen in Nachrichten“. Ohne Namen heißt "
       + "es dort „Gerät ohne Namen“. Notizen werden nie exportiert. Ändern dürfen nur Admins.",
@@ -283,7 +283,7 @@ export const HELP_CLIENTS = {
     title: "Werte im Gerätepass",
     text: "**Median** ist der mittlere Wert aller gespeicherten Messungen (7 Tage, höchstens alle 2 min eine), "
       + "**P95** der Betrag, unter dem 95 % der Messungen liegen – er zeigt die Ausreißer. Der **30-Tage-Median** "
-      + "kommt aus den Stundenwerten, die ntp-gui ab 1.5 je Gerät 30 Tage aufhebt.",
+      + "kommt aus den Stundenwerten, die ntp-gui je Gerät 30 Tage aufhebt.",
   },
   clients_groups: {
     title: "Gruppen und Netze",

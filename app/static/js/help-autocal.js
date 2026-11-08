@@ -5,7 +5,7 @@ export const HELP_AUTOCAL = {
   autocal_mode: {
     title: "Automatische Kalibrierung",
     text: "Ein USB-GPS meldet die Zeit mit einer festen Verspätung. ntp-gui misst sie laufend gegen deine "
-      + "Netzwerkquellen. **Automatisch** (Standard ab 1.5.2, du musst nichts tun): ntp-gui stellt den Offset selbst "
+      + "Netzwerkquellen. **Automatisch** (Standard, du musst nichts tun): ntp-gui stellt den Offset selbst "
       + "nach, immer im selben Ablauf: **messen** (mindestens "
       + "6 h) → einen deutlichen Versatz **einmal korrigieren** (ohne PPS in einem Schritt, mit PPS in Schritten "
       + "von höchstens 5 ms je Tag) → danach nur noch **kleinen Drifts folgen**, jeweils erst nach einer ganzen "

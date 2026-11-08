@@ -68,3 +68,10 @@ export function fmtAccuracy(ms) {
   if (v >= 0.001) return `± ${Math.max(1, Math.round(v * 1000))} µs`;
   return "± < 1 µs";
 }
+
+/** Art der Quelle, der Name in Klammern nur, wenn er mehr sagt: „NTP (192.168.1.1)“, aber „GPS“ statt „GPS (GPS)“. */
+export function sourceText(kind, source) {
+  const name = String(source || "");
+  const words = String(kind || "").toUpperCase().split(/[^A-Z0-9]+/);
+  return `${kind || "Quelle"}${name && !words.includes(name.toUpperCase()) ? ` (${name})` : ""}`;
+}

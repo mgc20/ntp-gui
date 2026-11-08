@@ -7,6 +7,11 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 ## [Unveröffentlicht]
 
 ### Geändert
+- **Diagramme:** Liegt der Live-Wert sichtbar außerhalb von min/max, steht „min/max aus Mittelwerten“ daneben
+  (der Verlauf speichert Mittelwerte je Abschnitt, „jetzt“ ist der Rohwert).
+- **Zeitquellen:** „Grund“ erscheint nur, wenn er mehr sagt als „Zustand“.
+- **Diagnose → Ereignisse:** Rohdaten eines Ereignisses sind eingeklappt.
+- **Bedientexte ohne Versionsgeschichte** („Temperaturausgleich ab 1.5“, „Standard ab 1.5.2“ entfernt).
 - **Das Dashboard startet immer auf Deutsch**, auch wenn der Browser auf Englisch steht. Englisch heißt
   „English (Beta)“ und gilt nur, wenn du es ausdrücklich wählst (DE/EN oder Einstellungen → Dashboard);
   eine schon gespeicherte Wahl bleibt. Vollständiges Englisch kommt mit 1.7.
@@ -18,6 +23,23 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
   erscheint dafür ohne eigene Formatierung.
 
 ### Behoben
+- **Kontraste:** Alle Schriftfarben erreichen in beiden Farbschemata mindestens 4,5:1 auf ihren Flächen
+  (Hauptknopf dunkel vorher 3,1:1, gedämpfter Text kräftiger, Hinweise und Fehler in kontraststarken
+  Statusfarben). Ein Test rechnet die Verhältnisse direkt aus dem Stylesheet nach.
+- **Hardware-Check:** Liefert gpsd ein aktives Gerät, steht dort nicht mehr „Kein GPS-Empfänger
+  angeschlossen“ – auch bei gpsd auf einem anderen Rechner (`GPSD_HOST`). Gezählt wird nur ein echter
+  Gerätepfad; ein entfernter USB-Stick (ttyACM) gilt richtig als „kein PPS möglich“; als eingetragen gilt es
+  nur bei „GPS-Gerät: auto“ oder genau diesem Gerät.
+- **Zahlen und Zeiten:** Bewertung und Asymmetrie der Quellen, DOP-Werte, Signalstärke und Position stehen
+  mit Komma; die GPS-Zeit erscheint als „08.11.26, 12:34:56 UTC“ statt als roher ISO-Text.
+- **Handy:** Die Kästchen im Quellen-Editor haben eine sichtbare Beschriftung und laufen nicht über den Rand,
+  der Titel oben ist zweizeilig statt abgeschnitten (bei 320 px zeigt die Kopfzeile den Zustand als Punkt),
+  IP-Adressen brechen nicht mehr mitten in der Zahl um.
+- **ⓘ-Erklärungen** schließen erst ab 40 px Scrollweg, nicht bei jedem Ruckler.
+- **Einstellungen:** Auswahllisten werden nicht mehr abgeschnitten („(empfohle…“); die Erklärung steht im ⓘ.
+- **Vollbild-Uhr:** „synchron · GPS“ statt „GPS (GPS)“.
+- **Barrierefreiheit:** Die acht Abfrage-Kästchen einer Quelle werden als „Letzte acht Abfragen: 7 von 8
+  beantwortet“ vorgelesen.
 - **Zeiten zeigen die Zeit des Servers.** Uhrzeit in der Kopfzeile, „aktualisiert …“ in der Fußzeile,
   „Letzte Ereignisse“ und das Ereignisprotokoll der Diagnose standen bisher in der Zeitzone des Browsers
   mit dem Zeitzonen-Etikett des Servers daneben. Jetzt folgen sie dem Server, samt Sommer-/Winterzeit des

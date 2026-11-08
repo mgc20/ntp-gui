@@ -27,8 +27,8 @@ export const HELP_GNSS = {
     title: "Signalstärke der vier stärksten (C/N0)",
     text: "Median des Signal-Rausch-Abstands (dB-Hz) der vier stärksten empfangenen Satelliten. Vier, weil "
       + "der Empfänger für einen Fix vier braucht – schwache Satelliten am Horizont ziehen den Wert so nicht "
-      + "herunter. **Ab 30 dB-Hz** gut (draußen typisch 40–48), **unter 22** kaum nutzbar. Bei Messpunkten "
-      + "von vor 1.5 steht hier der Mittelwert der genutzten Satelliten.",
+      + "herunter. **Ab 30 dB-Hz** gut (draußen typisch 40–48), **unter 22** kaum nutzbar. Bei älteren Messpunkten "
+      + "ohne Einzelwerte steht hier der Mittelwert der genutzten Satelliten.",
   },
   gpsq_used: {
     title: "Genutzte Satelliten (Median)",
@@ -42,7 +42,7 @@ export const HELP_GNSS = {
       + "Dann gibt es **ein** Ereignis „GPS-Empfang unstet“ mit Zählung statt Dutzender Paare „verloren/wieder "
       + "da“. Die Folge für chrony: Das GPS ist oft unbrauchbar, chrony stellt die Uhr dann nach den "
       + "Netzwerkquellen – **das ist richtig so**. Nach einer Stunde ohne Wechsel kommt ein Abschlussereignis "
-      + "mit der Zahl der Wechsel. **Ab 1.5.4** merkt sich ntp-gui den schwachen Empfang 24 Stunden lang (auch nach "
+      + "mit der Zahl der Wechsel. Außerdem merkt sich ntp-gui den schwachen Empfang 24 Stunden lang (auch nach "
       + "einem Neustart, aus der 24-h-Bewertung): So lange gibt es keine Einzelmeldungen „verloren/wieder da“, "
       + "sondern höchstens eine Info-Zeile je Stunde, z. B. „GPS-Fix 7-mal verloren in der letzten Stunde, "
       + "zusammen 23 min ohne Fix“ – flattert es weiter, wird das Fenster bis 6 Stunden länger. Eine **Warnung** "
