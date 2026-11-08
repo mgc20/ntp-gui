@@ -185,12 +185,12 @@ def status() -> dict[str, Any]:
         return {"enabled": False, "running": False}
 
     with _LOCK:
-        if _CACHE and time.time() - _CACHE_TIME < _CACHE_TTL:
+        if _CACHE and time.monotonic() - _CACHE_TIME < _CACHE_TTL:
             return dict(_CACHE)
         state = _collect()
         _CACHE.clear()
         _CACHE.update(state)
-        globals()["_CACHE_TIME"] = time.time()
+        globals()["_CACHE_TIME"] = time.monotonic()
         return dict(state)
 
 

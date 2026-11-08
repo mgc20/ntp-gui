@@ -7,6 +7,18 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 ## [Unveröffentlicht]
 
 ### Behoben
+- **Aufräumen nur bei plausibler Systemzeit.** Sprang die Uhr weit vor (z. B. Pi ohne RTC oder falscher
+  Zeitserver), löschte ntp-gui Ereignisprotokoll und Client-Verlauf nach Alter komplett. Jetzt wird nach
+  Alter nur aufgeräumt, wenn chrony nicht „Not synchronised“ meldet und höchstens 1 s abweicht; der
+  Inselbetrieb (lokale Referenz) zählt dazu. Sonst siehst du einmal „Aufräumen ausgesetzt: Systemzeit
+  unplausibel“. Ein einzelner Eintrag mit Zeitstempel in der Zukunft hält das Aufräumen nicht auf. Den
+  chrony-Wert liefert der regelmäßige Statusabruf; das Aufräumen fragt chronyc nicht mehr selbst und
+  blockiert keine anderen Schreibvorgänge. Die Größenobergrenzen gelten immer.
+- **Uhrsprünge stören keine Abläufe mehr.** Springt die Systemzeit, frieren GPS- und PTP-Anzeige nicht
+  mehr ein, der Verlauf wird weiter regelmäßig gespeichert und die Laufzeit des Webservers ist nicht mehr
+  negativ oder riesig – diese Abstände laufen auf der monotonen Uhr. Im Container laufen die Fristen für
+  Hotplug, NTS-Zertifikat und den Neustart ausgefallener Dienste über `/proc/uptime`; „Nächster Versuch
+  in … s“ stimmt dabei weiter.
 - **Diagnosepaket mit langer Aufzeichnung scheiterte hinter einem Reverse Proxy.** Vorschau und Paket
   entstanden in einer einzigen Anfrage, die auf dem Pi mit langer Aufzeichnung über eine Minute offen
   blieb – Proxys wie Nginx Proxy Manager brechen nach 60 s ab. Jetzt baut der Server im Hintergrund,

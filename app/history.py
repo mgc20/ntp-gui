@@ -130,7 +130,7 @@ class History:
         self.days = float(days) if days else retention_days()
         self.path = path
         self._lock = threading.RLock()
-        self._last_save = time.time()
+        self._last_save = time.monotonic()  # nur Abstände – nicht die Wanduhr
         self._pending: list[dict] = []
         self.error: str | None = None
         self.db_path: str | None = None
@@ -436,7 +436,7 @@ class History:
 
     def save(self, force: bool = False, every: float = 3600.0) -> bool:
         """SQLite: Puffer schreiben (alle FLUSH_SECONDS oder force). Sonst .json.gz wie in 1.2."""
-        now = time.time()
+        now = time.monotonic()  # Abstand zu _last_save; ein Uhrsprung darf das Speichern nicht aussetzen
         if self._sql:
             with self._lock:
                 if not force and now - self._last_save < min(every, FLUSH_SECONDS):
