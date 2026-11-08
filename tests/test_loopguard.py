@@ -84,12 +84,12 @@ FIB_TRIE = """Main:
   +-- 0.0.0.0/0 3 0 5
      |-- 0.0.0.0
         /0 universe UNICAST
-     +-- 192.168.178.0/24 2 0 2
-        |-- 192.168.178.0
+     +-- 192.168.1.0/24 2 0 2
+        |-- 192.168.1.0
            /24 link UNICAST
         |-- 192.168.1.40
            /32 host LOCAL
-        |-- 192.168.178.255
+        |-- 192.168.1.255
            /32 link BROADCAST
 Local:
   +-- 127.0.0.0/8 2 0 2
@@ -177,9 +177,9 @@ class AssessTest(unittest.TestCase):
     def test_dns_rewrite_to_host_ip_in_bridge_network(self):
         # Docker-Bridge: Die Host-IP im LAN ist für den Container keine eigene, die Antwort aber schon.
         src = find(self.sources, "de.pool.ntp.org")
-        src["name"] = src["ntp"]["remote"] = "192.168.178.2"
+        src["name"] = src["ntp"]["remote"] = "192.168.1.2"
         echo_own(src, self.track)
-        verdict = loopguard.assess(src, self.own, self.track, {"192.168.178.2": True})
+        verdict = loopguard.assess(src, self.own, self.track, {"192.168.1.2": True})
         self.assertEqual(verdict["cause"], "dns")
         self.assertIn("probe", verdict["evidence"])
 
@@ -216,8 +216,8 @@ class AssessTest(unittest.TestCase):
     def test_lan_source_nat_title_without_address(self):
         src = find(self.sources, "ptbtime1.ptb.de")
         src["hostname"] = None
-        src["name"] = src["ntp"]["remote"] = "192.168.178.1"
-        verdict = loopguard.assess(src, self.own, self.track, {"192.168.178.1": True})
+        src["name"] = src["ntp"]["remote"] = "192.168.1.1"
+        verdict = loopguard.assess(src, self.own, self.track, {"192.168.1.1": True})
         self.assertEqual(verdict["cause"], "nat")
         self.assertNotIn("192.168", verdict["title"])
 

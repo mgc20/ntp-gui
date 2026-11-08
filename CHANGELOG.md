@@ -7,6 +7,11 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 ## [Unveröffentlicht]
 
 ### Hinzugefügt
+- **Datenschutz-Wächter in der CI:** prüft in jedem PR alle Dateien, neue Commits (Autor, Committer,
+  Nachricht) sowie Titel und Beschreibung auf private LAN-Adressen außerhalb der Beispielnetze und echte
+  Koordinaten; Git-Identität nur noreply. Ein Sicherheitsnetz gegen Versehen, bewusst schlank.
+- **Testdaten ohne echte Netze und Anbieter:** Beispielnetze statt eines verbreiteten Heimnetz-Bereichs,
+  Adressen großer öffentlicher Anbieter statt realer Server und Zugangs-Präfixe.
 - **Pläne für 1.6 und 1.7:** `docs/konzept/version-1.6.md` (rein lokal: Grundreinigung, Pi-Zustand,
   Sicherung, GUI-Erneuerung, Willkommens-Assistent, Uhr-Werkstatt, „Heute“-Zeitleiste; offene Fragen
   entschieden) und `docs/konzept/version-1.7-entwurf.md` (Community-Funktionen). Die ROADMAP folgt

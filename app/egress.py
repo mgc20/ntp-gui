@@ -271,7 +271,7 @@ _IPV4_RE = re.compile(r"(?<![\d.])((?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?:\.(?:25
                       r"(/\d{1,2})?(?!\d|\.\d)")
 _IPV6_RE = re.compile(r"(?<![\w.%])([0-9A-Fa-f]{0,4}(?::[0-9A-Fa-f]{0,4}){2,7}(?::\d{1,3}(?:\.\d{1,3}){3})?)"
                       r"(%[\w.-]+)?(/\d{1,3})?(?![\w:%]|\.\d)")
-# chronyc kürzt lange Namen im Klartext mit ">" ab: "2a01:4f8:c17:5c1b:1234:5678:9a>"
+# chronyc kürzt lange Namen im Klartext mit ">" ab: "2a00:1450:c17:5c1b:1234:5678:9a>"
 _IPV6_TRUNC_RE = re.compile(r"(?<![\w:.])([0-9A-Fa-f]{0,4}(?::[0-9A-Fa-f]{0,4}){2,7})>")
 # Namen mit Punkt; Labels auch mit Umlauten (IDN), letzte Stelle nur Buchstaben.
 # Labels ohne Längengrenze – genau wie die Schlussprüfung, sonst bliebe ein überlanger Name stehen
@@ -1169,7 +1169,7 @@ class Sanitizer:
     def _ipv6(self, m: re.Match) -> str:
         addr, scope, prefix = m.group(1), m.group(2) or "", m.group(3) or ""
         if _ip_kind(addr) is None:
-            # 2a01:4f8:c17:5c1b:1234:5678:9abc – abgeschnitten, aber eindeutig eine Adresse
+            # 2a00:1450:c17:5c1b:1234:5678:9abc – abgeschnitten, aber eindeutig eine Adresse
             if (addr.count(":") >= 4 and "::" not in addr and re.fullmatch(r"[0-9A-Fa-f:]+", addr)
                     and any(len(g) > 2 for g in addr.split(":"))):  # nicht ff:ff:ff:ff:ff:ff (MAC)
                 return self._ipv6_partial(addr) + prefix
@@ -1185,7 +1185,7 @@ class Sanitizer:
         return out + (scope if out == addr else "") + prefix
 
     def _ipv6_truncated(self, m: re.Match) -> str:
-        """Von chronyc gekürzte IPv6 ("2a01:4f8:c17:5c1b:1234:5678:9a>"): Art am Präfix erkennen."""
+        """Von chronyc gekürzte IPv6 ("2a00:1450:c17:5c1b:1234:5678:9a>"): Art am Präfix erkennen."""
         token = m.group(1)
         if token.count(":") < 3:
             return m.group(0)
@@ -2164,7 +2164,7 @@ def backstop(bytes_by_file: dict, known: dict | None = None, memo: "BackstopMemo
         NMEA-Koordinaten und ECEF-Tripel;
       * Werte hinter lat/lon/Breite/Länge/az/el …, Zonennamen (Europe/…), ungerundete
         chrony-Laufzeiten;
-      * von chronyc gekürzte IPv6-Adressen ("2a01:4f8:…>");
+      * von chronyc gekürzte IPv6-Adressen ("2a00:1450:…>");
       * jeden Namen mit Punkt, der nicht auf der Positivliste steht.
 
     memo: Zwischenspeicher für einen Exportlauf (gleiche Zeilen, gleiche bekannte Werte – die

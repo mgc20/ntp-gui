@@ -88,10 +88,10 @@ MS Name/IP address         Stratum Poll Reach LastRx Last sample
 ===============================================================================
 ^* 192.53.103.108                1   6   377    34   -12us[  -13us] +/-   11ms
 ^+ 162.159.200.1                 3   6   377    35   +45us[  +44us] +/-   10ms
-^- 192.168.178.1                 2   6   377    36  +120us[ +119us] +/-   20ms
-^- 2a01:4f8:c17:1234::1          2   6   377    36  +120us[ +119us] +/-   20ms
+^- 192.168.1.1                 2   6   377    36  +120us[ +119us] +/-   20ms
+^- 2a00:1450:c17:1234::1          2   6   377    36  +120us[ +119us] +/-   20ms
 #* GPS                           0   4   377    12   +1us[   +1us] +/-  100ns
-Remote address  : 2a01:4f8:c17:1234::1 (2A014F8C)
+Remote address  : 2a00:1450:c17:1234::1 (2A001450)
 """
 
 
@@ -325,7 +325,7 @@ class AddressTest(unittest.TestCase):
         self.assertIn("^- client-01", clean)
         self.assertIn("#* GPS", clean)
         self.assertNotIn("2a01", clean)
-        self.assertNotIn("2A014F8C", clean)
+        self.assertNotIn("2A001450", clean)
         self.assertIn("RMS offset      : 0.000012345 seconds", clean)  # Messwerte bleiben
         self.assertEqual(egress.check_no_leaks(clean), [])
         self.assertTrue(egress.check_no_leaks(CHRONY_TEXT))
@@ -360,14 +360,14 @@ class AddressTest(unittest.TestCase):
             "deny 81.2.3.0/24": "deny <öffentliche-IP>/24",
             "8.8.8.8": "<öffentliche-IP>",
             "2001:4860:4860::8888": "<öffentliche-IP>",
-            "[2a02:8070:1234:5600::1]:4460": "[<öffentliche-IP>]:4460",
+            "[2606:4700:1234:5600::1]:4460": "[<öffentliche-IP>]:4460",
             "::ffff:81.2.3.4": "<öffentliche-IP>",
             "100.101.102.103": "client-01",         # CGNAT/Tailscale
             "169.254.10.20": "client-01",
             "fd12:3456:789a::5": "client-01",
-            "addr:2a01:4f8::1": "addr:<öffentliche-IP>",     # ohne Leerzeichen davor
+            "addr:2a00:1450::1": "addr:<öffentliche-IP>",     # ohne Leerzeichen davor
             "client_81.2.3.4": "client_<öffentliche-IP>",
-            "Server 2a01:4f8::1.": "Server <öffentliche-IP>.",  # Satzende
+            "Server 2a00:1450::1.": "Server <öffentliche-IP>.",  # Satzende
             "::ffff:10.1.2.3": "client-01",
         }
         for raw, expected in cases.items():

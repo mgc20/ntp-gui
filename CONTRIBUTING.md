@@ -45,6 +45,14 @@ Grundregeln:
   `egress.check_no_leaks` – findet die Prüfung etwas, wird nichts exportiert. Vor jedem Export
   gibt es eine Vorschau, hochgeladen wird nie automatisch.
 - **Tests:** Neue Funktionen bringen Tests mit; die CI muss grün sein.
+- **Nichts Privates ins Repository:** Der CI-Check „Datenschutz-Wächter“
+  (`.github/scripts/datenschutz_waechter.py`) prüft in jedem PR alle Dateien, die neuen Commits
+  und den PR-Text auf private LAN-Adressen und echte Koordinaten. Beispiele
+  bitte nur aus den Beispielnetzen (z. B. `192.168.1.0/24`, `10.0.0.0/16`, `fd00::/16`, oder
+  RFC 5737/3849) und mit Beispielorten (z. B. München Marienplatz); die Liste steht im Skript.
+  Öffentliche Beispieladressen bitte von großen Anbietern (z. B. `8.8.8.8`, `2606:4700::`) oder aus
+  den Doku-Bereichen, nie aus dem eigenen Anschluss. Git-Identität nur mit noreply-Adresse. Lokal prüfen:
+  `python3 .github/scripts/datenschutz_waechter.py --commits origin/main..HEAD`.
 
 Pull Requests bitte gegen `main`. Kleine, fokussierte Änderungen lassen sich am schnellsten
 prüfen.
