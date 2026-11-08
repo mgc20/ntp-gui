@@ -1,4 +1,4 @@
-import { el, rich, apiPost, apiGet } from "../util.js";
+import { el, rich, apiPost, apiGet, apiUpload, fmtNumber, fmtZoned, serverZone, isNum } from "../util.js";
 import { card, info, badge, kv, emptyNote, toast, copyButton, isPopoverOpen } from "../ui.js";
 import { t, has, language, setLanguage, LANGUAGES } from "../i18n.js";
 
@@ -32,7 +32,7 @@ export const FIELD_HELP = {
   clients_new_device_alarm: "clients_new_device", notify_lan_addresses: "notify_lan_addresses",
   web_title: "web_title", web_refresh_seconds: "web_refresh", history_interval: "history_interval",
   notify_dashboard_url: "notify_link",
-  temp_sensor: "temp_sensor", clock_public: "clock_public", update_check: "update_check",
+  temp_sensor: "temp_sensor", clock_public: "clock_public", update_check: "update_check", backup_nightly: "backup_nightly",
   trusted_proxies: "trusted_proxies", web_allowed_hosts: "allowed_hosts",
   dns_mode: "dns_modes", dns_servers: "dns_upstreams", dns_dot: "dns_modes", dns_doh: "dns_modes",
   dns_pin: "dns_pin", dns_fallback: "dns_fallback",
@@ -260,6 +260,178 @@ function dnsStatus(dns) {
             + (typeof u.rtt_ms === "number" ? ` · ${u.rtt_ms} ms` : "")
             + (u.last_error ? ` · letzter Fehler (${fmtAgo(u.last_error_t)}): ${u.last_error}` : "") }));
       }))) : null);
+}
+
+// --- Sichern und wiederherstellen (1.6, T5) ---------------------------------------------------------
+// Herunterladen ist ein Link (GET /api/backup); Wiederherstellen in zwei Schritten: Datei hochladen →
+// Vorschau vom Server (prüft alles, ändert nichts) → „Übernehmen“ mit Rückfrage.
+function backupDate(ctx, unix) {
+  if (!isNum(unix)) return "–";
+  const sys = ctx.status?.system || null;
+  return fmtZoned(unix, serverZone(sys) ? sys : null, { day: "2-digit", month: "2-digit", year: "numeric",
+    hour: "2-digit", minute: "2-digit" });
+}
+
+function plural(n, one, other) {
+  return `${fmtNumber(n)} ${n === 1 ? one : other}`;
+}
+
+function fmtSize(bytes) {
+  if (!isNum(bytes)) return "–";
+  return bytes >= 1024 * 1024 ? `${fmtNumber(bytes / (1024 * 1024), 1)} MiB` : `${fmtNumber(Math.max(1, Math.round(bytes / 1024)))} KiB`;
+}
+
+function backupPreview(ctx, preview) {
+  const history = preview.history || {};
+  const cal = preview.calibration || {};
+  const channels = preview.channels || {};
+  const setts = preview.settings || {};
+  const reenter = [
+    ...(setts.reenter || []).map((item) => `Einstellung „${item.label}“`),
+    ...(channels.reenter || []).map((item) => `Kanal „${item.name}“ (${item.type}): ${item.what}`),
+  ];
+  const days = isNum(history.days) ? history.days : 0;
+  const items = channels.items || [];
+  const security = setts.security || [];
+  const dropped = cal.dropped || [];
+  const channelText = (item) => {
+    if (item.dropped) return `${item.type} → ${item.host}: wird nicht übernommen (${item.dropped})`;
+    const parts = [`${item.type} → ${item.host}`, item.known ? "vorhanden" : "neu"];
+    parts.push(item.enabled ? "bleibt eingeschaltet" : "wird ausgeschaltet übernommen");
+    if (item.reenter) parts.push(`neu einzugeben: ${item.reenter}`);
+    return parts.join(" · ");
+  };
+  return el("div", { class: "backup-preview" },
+    kv([
+      ["Sicherung vom", `${backupDate(ctx, preview.created)}${preview.version ? ` · ntp-gui ${preview.version}` : ""}`
+        + (preview.schema?.migrated ? " · ältere Version, wird umgewandelt" : ""), "backup_created"],
+      ["Verlauf", `${fmtNumber(days, days < 10 ? 1 : 0)} Tage · ${plural(history.samples || 0, "Messpunkt", "Messpunkte")}`
+        + (history.skipped ? ` · ${plural(history.skipped, "Messpunkt liegt", "Messpunkte liegen")} nach dem Zeitpunkt der Sicherung oder in der Zukunft und ${history.skipped === 1 ? "wird" : "werden"} nicht übernommen` : ""), "backup_history"],
+      ["Geräte", `${plural(preview.devices || 0, "Gerät", "Geräte")}, ${fmtNumber(preview.names || 0)} mit eigenem Namen`, "backup_devices"],
+      ["Gruppen und Regeln", `${plural(preview.groups || 0, "Gruppe", "Gruppen")}, ${plural(preview.rules || 0, "Regel", "Regeln")}`, "backup_groups"],
+      ["Ereignisse", fmtNumber(preview.events || 0), "backup_events"],
+      ["Kalibrierung", (isNum(cal.last_change) ? `letzte Änderung ${backupDate(ctx, cal.last_change)}` : "kein Protokoll")
+        + (isNum(cal.gps_offset) ? ` · GPS-Offset ${fmtNumber(cal.gps_offset, 4)} s` : "")
+        + (dropped.length ? ` · ${plural(dropped.length, "ungültiger Teil", "ungültige Teile")} verworfen` : ""), "backup_calibration"],
+      ["Benachrichtigungen", `${plural(channels.count || 0, "Kanal", "Kanäle")}`
+        + (items.some((item) => !item.dropped && !item.enabled) ? `, ${fmtNumber(items.filter((item) => !item.dropped && !item.enabled).length)} ausgeschaltet` : "")
+        + ((channels.reenter || []).length ? `, ${fmtNumber(channels.reenter.length)} ohne Token bzw. Adresse – bitte neu eingeben` : ""), "backup_channels"],
+      ["Einstellungen", `${plural(setts.count || 0, "gespeicherter Wert", "gespeicherte Werte")}`
+        + (setts.restart ? " · Zeitdienste starten danach neu" : " · ohne Neustart der Zeitdienste"), "backup_settings"],
+    ]),
+    items.length ? el("div", { class: "backup-reenter" },
+      el("p", { class: "field-help" }, el("strong", { text: "Benachrichtigungskanäle: " }), info("backup_channels", "Benachrichtigungskanäle")),
+      el("ul", {}, items.map((item) => el("li", {}, el("strong", { text: `${item.name}: ` }), el("span", { text: channelText(item) }))))) : null,
+    security.length ? el("div", { class: "backup-reenter" },
+      el("p", { class: "field-help" }, el("strong", { text: "Diese sicherheitsrelevanten Einstellungen ändern sich: " }), info("backup_security", "Sicherheitsrelevante Einstellungen")),
+      el("ul", {}, security.map((item) => el("li", { text: `${item.label}: ${item.before} → ${item.after}` })))) : null,
+    dropped.length ? el("div", { class: "backup-reenter" },
+      el("p", { class: "field-help" }, el("strong", { text: "Kalibrierung – verworfen, weil ungültig: " }), info("backup_calibration", "Kalibrierung")),
+      el("ul", {}, dropped.map((text) => el("li", { text })))) : null,
+    reenter.length ? el("div", { class: "backup-reenter" },
+      el("p", { class: "field-help" }, el("strong", { text: "Bitte nach dem Übernehmen neu eingeben: " }), info("backup_reenter", "Bitte neu eingeben")),
+      el("ul", {}, reenter.map((text) => el("li", { text })))) : null,
+    (setts.skipped || []).length ? el("div", { class: "backup-reenter" },
+      el("p", { class: "field-help" }, el("strong", { text: "Übersprungen (ungültig oder unbekannt): " }), info("backup_settings", "Einstellungen")),
+      el("ul", {}, setts.skipped.map((item) => el("li", { text: `${item.label}: ${item.why}` })))) : null,
+    (setts.notes || []).length ? el("ul", { class: "backup-notes" }, setts.notes.map((text) => el("li", { text }))) : null);
+}
+
+function backupCard(ctx, readonly) {
+  const ui = ctx.uiState;
+  ui.backup = ui.backup || {};
+  const state = ui.backup;
+  const stored = ctx.data("backups", "/api/backup/list", 60);
+  const fileInput = el("input", { type: "file", accept: ".gz,.tgz,application/gzip", hidden: true });
+  fileInput.addEventListener("change", async () => {
+    const file = fileInput.files[0];
+    fileInput.value = "";
+    if (!file) return;
+    state.busy = "Prüfe die Sicherung …"; state.preview = null; state.result = null; state.error = null;
+    ctx.rerender();
+    try {
+      const answer = await apiUpload("/api/restore/preview", file);
+      state.preview = answer.preview; state.token = answer.token;
+    } catch (error) {
+      state.error = error.message;
+    }
+    state.busy = null;
+    ctx.rerender();
+  });
+  const discard = async () => {
+    const token = state.token;
+    state.preview = null; state.token = null; state.error = null;
+    ctx.rerender();
+    if (token) { try { await apiPost("/api/restore/cancel", { token }); } catch (error) { /* verfällt ohnehin */ } }
+  };
+  const take = async () => {
+    const restart = state.preview?.settings?.restart;
+    const holdover = ctx.status?.holdover_active && restart ? " Gerade läuft ein Holdover-Test – der Neustart der Zeitdienste bricht ihn ab." : "";
+    if (!window.confirm("Die Sicherung ersetzt Einstellungen, Verlauf, Ereignisse, Geräte, Namen, Gruppen, Regeln, "
+      + "Kalibrierung und Benachrichtigungskanäle. Der jetzige Stand wird vorher im Datenverzeichnis gesichert (ohne "
+      + "Tokens – vorhandene Kanäle behalten ihre Tokens, neue kommen ausgeschaltet). Das Dashboard ist dabei einige "
+      + `Sekunden beschäftigt.${restart ? " Die Zeitdienste starten danach neu." : ""}${holdover} Übernehmen?`)) return;
+    state.busy = "Übernehme die Sicherung … Das Dashboard ist dabei einige Sekunden beschäftigt.";
+    ctx.rerender();
+    try {
+      const result = await apiPost("/api/restore/apply", { token: state.token });
+      state.result = result; state.preview = null; state.token = null;
+      toast(result.reload_triggered ? "Wiederhergestellt – Zeitdienste starten neu" : "Wiederhergestellt");
+      if (result.reload_triggered) ctx.watchReload();
+      ctx.invalidate("settings"); ctx.invalidate("backups");
+    } catch (error) {
+      state.error = error.message; state.preview = null; state.token = null;
+      toast(`Wiederherstellen fehlgeschlagen: ${error.message}`, "crit");
+    }
+    state.busy = null;
+    ctx.rerender();
+  };
+
+  const body = [
+    el("p", { class: "field-help export-note backup-warning" }, el("span", {}, rich("Die Sicherung **enthält Daten über Geräte "
+      + "in deinem Netz** (Adressen, Namen, Verlauf) – nicht öffentlich teilen. Für Fehlerberichte das gefilterte "
+      + "**Diagnosepaket** nehmen.")), info("backup_privacy", "Wer die Datei sehen darf")),
+    kv([
+      ["Enthalten", "Einstellungen, Verlauf, Ereignisse, Geräte mit Namen, Gruppen, Regeln, Kalibrierung, Benachrichtigungskanäle", "backup_contents"],
+      ["Nie enthalten", "GPS-Position, Satellitenwinkel, Passwort, API-Schlüssel, Tokens, NTS-Schlüssel", "backup_excluded"],
+    ]),
+    el("div", { class: "button-row" },
+      el("a", { class: "button primary", href: "/api/backup", download: "", text: "Sicherung herunterladen" }),
+      el("button", { type: "button", class: "button", text: "Wiederherstellen …", disabled: readonly || state.busy ? true : null,
+        onclick: () => fileInput.click() }),
+      info("backup_restore", "Wiederherstellen"),
+      fileInput),
+  ];
+  if (state.busy) body.push(emptyNote(state.busy));
+  if (state.error) body.push(el("p", { class: "field-error", role: "alert", text: state.error }));
+  if (state.preview) {
+    body.push(el("h3", { class: "mini-head", text: "Vorschau – noch ist nichts geändert" }));
+    body.push(backupPreview(ctx, state.preview));
+    body.push(el("p", { class: "field-help" }, el("span", { text: "Das Dashboard ist während der Übernahme einige Sekunden beschäftigt." }),
+      info("backup_busy", "Während der Übernahme")));
+    body.push(el("div", { class: "button-row" },
+      el("button", { type: "button", class: "button primary", text: "Übernehmen", disabled: readonly || state.busy ? true : null, onclick: take }),
+      el("button", { type: "button", class: "button", text: "Verwerfen", onclick: discard })));
+  }
+  if (state.result) {
+    const result = state.result;
+    body.push(el("div", { class: "backup-result", role: "status" },
+      el("p", {}, el("strong", { text: `Wiederhergestellt aus der Sicherung vom ${backupDate(ctx, result.created)}. ` }),
+        el("span", { text: `Der vorherige Stand liegt als „${result.before}“ im Ordner „sicherungen“.` })),
+      (result.reenter || []).length ? el("div", { class: "backup-reenter" },
+        el("p", { class: "field-help" }, el("strong", { text: "Jetzt bitte neu eingeben: " }), info("backup_reenter", "Bitte neu eingeben")),
+        el("ul", {}, result.reenter.map((text) => el("li", { text })))) : null));
+  }
+  const list = stored?.backups || [];
+  body.push(el("h3", { class: "mini-head" }, "Gespeicherte Sicherungen ", info("backup_stored", "Gespeicherte Sicherungen")));
+  body.push(list.length
+    ? el("ul", { class: "backup-list" }, list.map((item) => el("li", {},
+      el("a", { href: `/api/backup?name=${encodeURIComponent(item.name)}`, download: "", text: item.name }),
+      el("span", { class: "muted", text: ` · ${item.kind === "nightly" ? "nächtlich" : "vor einer Wiederherstellung"} · ${backupDate(ctx, item.t)} · ${fmtSize(item.size)}` }))))
+    : emptyNote(stored?.nightly ? "Noch keine – die erste nächtliche Sicherung entsteht gegen 3 Uhr."
+      : "Keine. Die nächtliche Sicherung schaltest du unter **Dashboard → Nächtliche Sicherung** ein."));
+  return card("Sichern", { id: "s-backup", help: "backup",
+    sub: "Alles außer Position und Geheimnissen in einer Datei – für eine neue SD-Karte oder einen neuen Container." }, body);
 }
 
 function clone(value) { return JSON.parse(JSON.stringify(value)); }
@@ -546,7 +718,8 @@ export function render(ctx) {
     } catch (error) { toast(`Import fehlgeschlagen: ${error.message}`, "crit"); }
     fileInput.value = "";
   });
-  out.push(card("Sichern und übertragen", {},
+  out.push(backupCard(ctx, readonly));
+  out.push(card("Nur Einstellungen übertragen", {},
     el("p", { text: "Die im Dashboard gespeicherten Werte als Datei sichern oder auf einen anderen Server übertragen (ohne Passwort)." }),
     el("div", { class: "button-row" },
       el("a", { class: "button", href: "/api/settings/export", download: "ntp-gui-einstellungen.json", text: "Exportieren" }),
