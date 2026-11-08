@@ -24,8 +24,8 @@ bleibt (F1 aus E15: „schlank und dann nach und nach“). 1.7 soll drei Dinge l
    Reichweite (Homelab- und Selfhosting-Gemeinschaften, Pool-Betreiber) und damit für Testberichte
    und Beiträge.
 2. **Die Community mitmessen lassen:** Hardware- und Empfangsbericht direkt aus dem Dashboard.
-   Bisher stammen alle Schwellen (Empfangsampel, „unstet“, GPS-Automatik, ± 10 ms NMEA) von
-   **einem** USB-GPS drinnen ohne PPS und synthetischen Tagen.
+   Bisher stammen die Schwellen (Empfangsampel, „unstet“, GPS-Automatik, ± 10 ms NMEA) aus wenigen
+   Aufbauten mit USB-GPS ohne PPS und aus synthetischen Tagen.
 3. **Den Blick von außen vorbereiten:** Zeit-Check und Server-Test (E17, E18) laufen als eigene
    Spur auf einem VPS des Projekts. Der Knopf „Von außen prüfen“ kommt ins Dashboard, sobald der
    Dienst ruhig läuft. **1.7.0 wartet nie auf den VPS.**
@@ -47,7 +47,7 @@ Aufwand: ◆ ≈ 1–3 Abende, ◆◆ ≈ 1–2 Wochenenden, ◆◆◆ mehrere W
 
 | # | Thema | Nutzen | Aufwand | Risiko | OSS | 🔒 | Wert | Stufe |
 |---|---|---|---|---|---|---|---|---|
-| ~~K1~~ | Ruhiger Betrieb: Neustart-Koordinator, Zustand überlebt Neustart | ★★ | ◆◆ | R2 | nein | – | 2 | vorgezogen nach **1.6.1** |
+| ~~K1~~ | Ruhiger Betrieb: Neustart-Koordinator, Zustand überlebt Neustart | ★★ | ◆◆ | R2 | nein | – | 0 | vorgezogen nach **1.6.1** |
 | K2 | Hardware- und Empfangsbericht („Mit der Community teilen“) + u-blox lesen | ★★★ | ◆◆ (5–7 PT) | R1 | teilw. | 🔒 | **3,5** | **1.7.0** |
 | K3 | Englisch komplett: Seiten, Einstellungsfelder, Server-Texte als Schlüssel, Weblate | ★★★ | ◆◆◆ (8–12 PT) | R1 | ja | – | **3** | **1.7.0** (ⓘ-Texte teilweise) |
 | K4 | Uhrqualität 2: Holdover-Prognose, „Was bringt mein GPS?“ (nur Anzeige; Allan schon in 1.5.4) | ★★ | ◆ (2–3 PT) | R1 | teilw. | – | **3** | **1.7.0** |
@@ -85,7 +85,8 @@ brechen. Englisch darf hinterherhinken.
 
 ### K1. Ruhiger Betrieb – vorgezogen nach 1.6.1
 
-Steht jetzt in [version-1.6.md, Abschnitt 3](version-1.6.md#3-scheiben-16x). Kurz: ein
+Steht jetzt mit Skizze und Abnahmekriterien in
+[version-1.6.md, Abschnitt 3](version-1.6.md#161-ruhiger-betrieb-aus-dem-17-entwurf-vorgezogen). Kurz: ein
 Neustart-Koordinator, durch den alle Automatiken gehen (Änderungen sammeln, gemeinsam anwenden,
 Obergrenze je Tag, laufende Tests haben Vorrang, jede Entscheidung als Ereignis mit Grund), und
 der Zustand von Benachrichtigungen und Client-Alarm überlebt einen Neustart. Die Restposten der
@@ -96,12 +97,13 @@ Abschlussprüfung 1.5.0 sind mit 1.5.4 erledigt.
 - **Nutzen:** Zeigt, welcher Empfänger wo funktioniert. Liefert echte Daten, um die Schwellen
   nachzuschärfen, und ist die Grundlage für GPS-Startwerte (1.7.4) und u-blox schreiben (1.7.5).
   Für einfache USB-Empfänger ohne PPS steht dann ehrlich da, was sie können und was nicht (z. B.
-  „u-blox 7, kein Timing-Modus, kein PPS am USB“).
+  „älterer Chip, kein Timing-Modus, kein PPS am USB“).
 - **Aufwand:** ◆◆ (Bericht 2–3 PT mit Action im Community-Repository, u-blox lesen 3–4 PT).
 - **Umsetzungsskizze:**
   1. **u-blox lesen** über gpsd/`ubxtool` (nur Polls): `MON-VER` (Chip, Firmware, Protokoll),
      `MON-HW` (Antennenstatus, Jamming-Indikator), unterstützte Systeme. Anzeige im Hardware-Check.
-     Der Jamming-Wert fließt als **schwacher** Befund in die Störungserkennung (`gnssguard`).
+     Der Jamming-Wert fließt als **schwacher** Befund in die Störungserkennung (`gnssguard`),
+     ebenso das Feld `jam` von gpsd (ab 3.26) für Empfänger, die es liefern.
      Polls laufen über den Neustart-Koordinator aus 1.6.1 und lösen nie einen Neustart aus.
   2. **Bericht nach Vertrag `hardware-report@1`:** feste Allowlist der Felder, dann
      `egress.sanitize("community")` und `check_no_leaks`, dann **Vorschau** im Dashboard.
@@ -117,7 +119,7 @@ Abschlussprüfung 1.5.0 sind mit 1.5.4 erledigt.
   Satelliten, kalibrierter Offset und Streuung (auf 1 ms gerundet), Messdauer; Datum nur als
   Kalenderwoche.
 - **Akzeptanzkriterien:**
-  - Replays u-blox 7 und M8/F9: Chip und Firmware korrekt erkannt; Empfänger ohne UBX
+  - Replays mehrerer u-blox-Generationen (z. B. 7, M8, F9): Chip und Firmware korrekt erkannt; Empfänger ohne UBX
     (z. B. reines NMEA) → „nicht verfügbar“ statt Fehler.
   - Test: Kein Bericht enthält Position, Satellitenwinkel (Azimut/Elevation), Seriennummer,
     MAC-Adresse, Hostname, IP oder Zeitstempel genauer als die Woche. Ein Fuzz-Test mit
@@ -157,11 +159,11 @@ Abschlussprüfung 1.5.0 sind mit 1.5.4 erledigt.
 
 ### K4. Uhrqualität 2 – „Was bringt mein GPS?“
 
-- **Nutzen:** Eine ehrliche Antwort für die vielen Nutzer mit GPS ohne PPS. In einem typischen
-  Aufbau (Raspberry Pi, USB-GPS ohne PPS, mehrere NTS-Quellen) liegt der Holdover bei rund 1 ms in
-  12 h, das NMEA-GPS nach der Kalibrierung bei etwa ± 16 ms (E19). Linear gerechnet läuft die freie
-  Uhr bei einem Internet-Ausfall dann tagelang genauer als das GPS; real vermutlich kürzer, weil die
-  Frequenz dem Tagesgang folgt. Bisher sagt das Dashboard das niemandem.
+- **Nutzen:** Eine ehrliche Antwort für die vielen Nutzer mit GPS ohne PPS. Ein guter Quarz hält
+  ohne Quelle oft einige Millisekunden über einen halben Tag, ein NMEA-GPS ohne PPS liegt selbst
+  nach der Kalibrierung meist im Bereich ± 10–20 ms. Bei einem Internet-Ausfall kann die freie Uhr
+  also länger genauer sein als das GPS – wie lange, hängt vom eigenen Gerät ab und lässt sich aus
+  den Holdover-Tests der Instanz schätzen. Bisher sagt das Dashboard das niemandem.
 - **Aufwand:** ◆ (2–3 PT; die Allan-Abweichung gibt es seit 1.5.4).
 - **Umsetzungsskizze:**
   1. **Holdover-Prognose** aus den eigenen Holdover-Tests der Instanz: erwartete Abweichung nach
@@ -174,7 +176,7 @@ Abschlussprüfung 1.5.0 sind mit 1.5.4 erledigt.
     starten“ statt einer erfundenen Zahl.
   - Prognose auf synthetischen Daten (bekannte Drift und Rauschen) innerhalb des angezeigten
     Unsicherheitsbands.
-  - Berechnung auf dem Pi 4 unter 2 s für 30 Tage Verlauf (Leistungsbudget-Test).
+  - Berechnung auf einem Raspberry Pi 4 (Referenzplattform) unter 2 s für 30 Tage Verlauf (Leistungsbudget-Test).
 - **Datenschutz:** nur lokal. Ins Diagnosepaket nur die Kennzahlen, keine Rohzeitreihe.
 
 ### K5. Zeitwächter-Ping 🔒
@@ -219,7 +221,7 @@ Abschlussprüfung 1.5.0 sind mit 1.5.4 erledigt.
 | **1.7.1** | Einstellungen als Datei (TOML): Import mit `tomllib`, Export ohne Geheimnisse, gleicher Validator wie die Oberfläche, Allowlist der Schlüssel, unbekannter Schlüssel → ganzer Import abgebrochen, Rundreise Export → Import identisch. Rest von K3 (ⓘ-Texte Teil 2), Weblate für Mitübersetzer offen. Doku: keepalived/VRRP. | keine |
 | **1.7.2** | **„Von außen prüfen“** im Dashboard: eigener Ausgangs-Zweck `external_test`, Vertrag `external-test-request@1` (Ausnahme nur `allow_fields={"nts.name"}`), opt-in, Vorschau, nur ausgehend. Ergebnisse (auch Laufzeiten je Standort) nur an den Aufrufer, keine teilbare URL. ⓘ zu CGNAT, DS-Lite und Hairpin: „von außen nicht erreichbar“ ist oft die richtige Antwort. Fällt der Dienst aus: „Dienst nicht erreichbar“, Instanz läuft normal weiter. | B2 läuft **≥ 4 Wochen** stabil |
 | **1.7.3** | Verbund 1: Übersicht und Gegenmessung zweier Instanzen, Doku für WireGuard/Tailscale/Headscale, kein Relay. DNS-Filter im LAN lesen (z. B. AdGuard Home oder Pi-hole; opt-in, nur LAN, eigener Zweck `lan_dns`, nur lesend): prüft, ob die Ausnahme für ntp-gui bei der Umschreibung gesetzt ist. | keine |
-| **1.7.4** | GPS-Startwerte aus der HCL (Median ab ≥ 3 Berichten je Modell), **beim Release fest eingebaut**, keine Verbindung zur Laufzeit. Schwellen (Empfangsampel, „unstet“, ± 10 ms NMEA) aus den Berichten nachschärfen. Nur bei Ja zu F5: Rückfallebene mit Blick auf den Holdover (opt-in, über die Sperre in `selectctl`). | genug HCL-Berichte; F5 |
+| **1.7.4** | GPS-Startwerte aus der HCL (Median ab ≥ 3 Berichten je Modell), **beim Release fest eingebaut**, keine Verbindung zur Laufzeit. Schwellen (Empfangsampel, „unstet“, ± 10 ms NMEA, GPS-Automatik: 6-h-Messung und 10-ms-Schritt) aus den Berichten nachschärfen, GNSS-Störungsschwellen gegen echte Jamming-/Spoofing-Aufzeichnungen prüfen. Nur bei Ja zu F5: Rückfallebene mit Blick auf den Holdover (opt-in, über die Sperre in `selectctl`). | genug HCL-Berichte; F5 |
 | **1.7.5** experimentell | u-blox schreiben, kleinste Form: nur feste Voreinstellungen (stationäres Modell, Satellitensysteme, PPS 1 Hz). Vorher `ubxtool -p CONFIG` sichern, Befehlsvorschau, Knopf „zurück“. Nur für Empfänger mit HCL-Bericht, sonst ausgegraut. | Testhardware (z. B. M8T/F9T); sonst später |
 
 ## 5. Bewusst nicht in 1.7
@@ -233,8 +235,8 @@ Abschlussprüfung 1.5.0 sind mit 1.5.4 erledigt.
 - **Schwarm A/B:** frühestens nach Website und Server-Test (A), B nach E13.
 - **MQTT/HA-Discovery oder HACS-Integration:** E4 gilt weiter (5 Nachfragen). Für Smart-Home-Systeme
   reicht die REST-Doku.
-- **Temperaturausgleich anwenden:** Die bisherigen Daten zeigen keinen Zusammenhang mit der
-  CPU-Temperatur (die Frequenz folgt eher der Tageszeit); erst mit einem Sensor nahe am Quarz.
+- **Temperaturausgleich anwenden:** Die CPU-Temperatur ist ein schlechter Stellvertreter für die
+  Quarztemperatur; sinnvoll erst mit einem Sensor nahe am Quarz.
 - **Router- und Controller-APIs** (Zugangsdaten, große Angriffsfläche, kleiner Nutzen); nur Doku.
 - **Weiter ausgelassen:** ts2phc/Profi-PTP (ohne Tester mit i210/i226/TimeHAT), DCF77, Verbund 2,
   eigenes Relay, TLS im Python-Server (E5), Telemetrie, Auto-Update, Analytics auf der Website.

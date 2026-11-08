@@ -17,8 +17,8 @@ Themen, die sinnvoll sind, Spielereien sind, Fehler beheben, GUI verbessern.“*
 1.6 soll sich für Nutzer wie ein neues Release anfühlen, ohne dass etwas Neues das Haus verlässt:
 
 1. **Qualität:** alle bestätigten Fehler aus den beiden Fehlersuchen beheben (Anhang A). Vorrang
-   haben B1 (Kalibrierkarte lädt den ganzen Verlauf), B2 (kein Socket-Timeout), F1 (Zeitzone),
-   F2 (Verbindungsverlust) und F3 (endloses „Lade …“).
+   haben F1 (Zeitzone), F2 (Verbindungsverlust) und F3 (endloses „Lade …“). B1 und B2 sind schon
+   mit 1.5.4 behoben.
 2. **Ruhigere Oberfläche:** weniger Text, gleiche Bausteine überall, eine Navigation, die aufs
    Handy passt, Einstellungen, die man findet. Das ist der sichtbare Sprung.
 3. **Spaß:** Spielereien, die etwas erklären (Uhr-Designs, Ton auf der Sekunde, „Heute“-Zeitleiste).
@@ -57,15 +57,15 @@ Aufwand: ◆ ≈ 1–3 Abende, ◆◆ ≈ 1–2 Wochenenden, ◆◆◆ mehrere W
 | T5 | Sicherung und Wiederherstellung (alles außer Position) | ★★★ | – | ◆◆ (3–4 PT) | R2 | 🔒 | **2** | **1.6.0** |
 | T6 | Uhr-Werkstatt: `/clock`-Designs, Kiosk, Ton auf der Sekunde, „Wie falsch geht dein Gerät?“ | ★★ | ☺☺☺ | ◆ (2–3 PT) | R1 | – | **3** | **1.6.0** |
 | T7 | „Heute“-Zeitleiste: Zustandsband 24 h, Ereignismarker in allen Diagrammen, Tagesbericht | ★★ | ☺☺ | ◆◆ (3–4 PT) | R1 | – | **2** | **1.6.0** (Tagesbericht-Nachricht 1.6.1) |
-| – | Ruhiger Betrieb (Neustart-Koordinator), aus dem 1.7-Entwurf vorgezogen | ★★ | – | ◆◆ | R2 | – | 1 | **1.6.1** (siehe Frage F1) |
+| – | Ruhiger Betrieb (Neustart-Koordinator), aus dem 1.7-Entwurf vorgezogen | ★★ | – | ◆◆ | R2 | – | 0 | **1.6.1** (Entscheidung F1) |
 | – | Hilfe mit Inhaltsverzeichnis und Unterseiten, ⓘ verlinkt „mehr →“ | ★★ | – | ◆ | R1 | – | 3 | 1.6.1 |
 | – | PPS-Bastelanleitung + Prüfassistent | ★★★ | ☺☺ | ◆ | R1 | – | 4 | 1.6.1 (Doku kann schon mit 1.6.0) |
 | – | Prometheus erweitern + Grafana-JSON | ★★ | – | ◆ | R1 | – | 2,5 | 1.6.1 |
-| – | Satelliten-Spuren, Zeitraffer, Abschattungskarte | ★★ | ☺☺☺ | ◆◆ | R2 | 🔒 | 0 (+Spaß) | 1.6.2 (Frage F5) |
+| – | Satelliten-Spuren, Zeitraffer, Abschattungskarte | ★★ | ☺☺☺ | ◆◆ | R2 | 🔒 | 0 (+Spaß) | 1.6.2 (Entscheidung F5: nur lokal 24 h) |
 | – | Rangliste der LAN-Uhren, Zeit-Kuriositäten, Ostereier | ★ | ☺☺☺ | ◆ | R1 | – | 0–1 (+Spaß) | 1.6.2 |
 | – | Wochenbericht als Druckseite, Stratum-Baum | ★★ | ☺ | ◆◆ | R1 | – | 1 | 1.6.3 |
 
-**Schätzung 1.6.0:** ≈ 22–31 PT, mit 30 % Puffer ≈ 8–11 Wochenenden. Das ist so groß wie der
+**Schätzung 1.6.0:** ≈ 20–29 PT, mit 30 % Puffer ≈ 8–11 Wochenenden. Das ist so groß wie der
 1.7-Entwurf; dafür ist fast alles Frontend oder Lesen, also geringes Risiko für den Zeitdienst.
 
 **Wenn die Zeit knapp wird:** Einstellungen 2.0 (Teil von T2) und T7 dürfen nach 1.6.1 rutschen,
@@ -79,8 +79,8 @@ unabhängiger Prüfung auf Korrektheit sowie Sicherheit und Datenschutz.
 1. **T1 Grundreinigung** zuerst, damit Regressionen nicht in GUI-Änderungen untergehen. Der
    Frontend-Teil von T1 behebt die Fehler gezielt am bestehenden Code; was ohnehin in die neuen
    Bausteine gehört (Zahlenformate F14/F15, `errorState`), bekommt in T1 die kleinste Korrektur und
-   wandert in T2 in die Bausteine. Die Vorrang-Fehler B1/B2 können als **1.5.5** vorab erscheinen,
-   wenn 1.6.0 länger als 4 Wochen braucht.
+   wandert in T2 in die Bausteine. Erster Schritt: Anhang A gegen den Stand 1.5.4 neu prüfen (die
+   Zeilenangaben stammen aus 1.5.3; B1 und B2 sind erledigt).
 2. **T4 Pi-Zustand** (klein, unabhängig, wird von T3 gebraucht).
 3. **T5 Sicherung** vor dem großen Umbau – sie schützt Nutzerdaten, bevor sich viel ändert.
 4. **T2 GUI-Erneuerung:** Bausteine (`ui.js`-Komponenten, `fmt*`) vor jeder Seitenarbeit, dann
@@ -92,24 +92,20 @@ unabhängiger Prüfung auf Korrektheit sowie Sicherheit und Datenschutz.
 
 ### T1. Grundreinigung: alle bestätigten Fehler
 
-- **Nutzen:** Die Fehlersuche hat 27 bestätigte Fehler gefunden (Anhang A), davon fünf mit
-  spürbarer Wirkung: B1 (Kalibrierkarte fragt alle 15 s den **gesamten** Verlauf ab; gemessen
-  13,9 s Serverzeit und ≈ 1,1 GB), B2 (ein halber Request hält einen Thread für immer), F1
+- **Nutzen:** Die Fehlersuche hat 27 bestätigte Fehler gefunden (Anhang A). Zwei mit spürbarer
+  Wirkung sind schon mit 1.5.4 behoben (B1: Kalibrierkarte fragte den gesamten Verlauf ab; B2: ein
+  halber Request hielt einen Thread fest). Offen und spürbar bleiben F1
   (Uhrzeit in der Browser-Zeitzone mit Etikett der Server-Zeitzone), F2 (bei Verbindungsverlust
   bleiben alte Werte stehen, als wären sie aktuell), F3 („Lade …“ für immer bei API-Fehlern).
-- **Aufwand:** ◆◆ (Backend 2–3 PT, Frontend 2–3 PT, viele Punkte sind Einzeiler).
+- **Aufwand:** ◆◆ (Backend 1–2 PT, Frontend 2–3 PT, viele Punkte sind Einzeiler).
 - **Umsetzungsskizze (nach Gruppen):**
-  1. **Last und Robustheit:** B1 – Frontend-Standard auf 24 h (`calWindow ?? 86400`), Server
-     behandelt `window=0`/`nan` als „Standard“, „gesamter Verlauf“ nur auf Klick und serverseitig
-     verdichtet (höchstens ≈ 2000 Punkte); Umwandlung außerhalb des Locks gilt schon, aber die
-     Abfrage selbst begrenzen (gleich in `autocal.py:733`). B2 – `Handler.timeout = 30`
-     (`StreamRequestHandler` setzt damit `settimeout`). B3 – `address_family` aus `WEB_BIND`
+  1. **Robustheit:** (B1 und B2 erledigt in 1.5.4.) B3 – `address_family` aus `WEB_BIND`
      ableiten (`:` → AF_INET6), Fehlermeldung mit dem echten `OSError`-Text.
   2. **Uhren:** B4 – Aufräumen nur, wenn die Uhr synchron ist (chrony `Leap status normal` und
      kleiner Offset) **und** `now` nicht hinter dem neuesten gespeicherten `t` liegt; sonst
      überspringen und Ereignis „Aufräumen ausgesetzt: Systemzeit unplausibel“. B5/B7 –
      `time.monotonic()` für Cache-TTL, `_last_save`, Uptime; in `entrypoint.sh` `$SECONDS` statt
-     `printf '%(%s)T'`. Gleichzeitig der Restposten aus 1.5.0: Holdover-Frist auf der monotonen Uhr.
+     `printf '%(%s)T'`. (Die Holdover-Frist läuft seit 1.5.4 schon auf der monotonen Uhr.)
   3. **Daten:** B6 – Flush mit `INSERT OR IGNORE` wie die Migration (oder `ON CONFLICT DO NOTHING`).
      B8 – `confgen._write` mit `try/finally unlink`; `apply()` rendert **beide** Dateien zuerst in
      Tempdateien und benennt erst um, wenn beide fertig sind; schlägt etwas fehl, keine
@@ -138,9 +134,6 @@ unabhängiger Prüfung auf Korrektheit sowie Sicherheit und Datenschutz.
 - **Akzeptanzkriterien:**
   - Für jeden Fehler aus Anhang A ein Test (Unit, Container oder Playwright), der vor dem Fix rot
     und danach grün ist. Ausnahmen (reine Texte) stehen im CHANGELOG.
-  - B1: Kalibrierkarte mit 30 Tagen Verlauf auf dem Pi 4 < 300 ms Serverzeit je Abruf.
-  - B2: Ein Client, der 10 Bytes eines angekündigten 1-KiB-Bodys schickt, belegt nach 30 s keinen
-    Thread mehr (Thread-Zählung im Test).
   - B4: Systemuhr um +1 Jahr verstellt → keine Zeile in `events`, `clientmon_samples` gelöscht.
   - F2: Server gestoppt → innerhalb von 35 s steht „veraltet seit hh:mm:ss“ über dem Inhalt;
     Server wieder da → Hinweis weg ohne Neuladen.
@@ -266,12 +259,14 @@ unabhängiger Prüfung auf Korrektheit sowie Sicherheit und Datenschutz.
 - **Umsetzungsskizze:**
   1. `GET /api/backup` (nur angemeldet, wie der Einstellungsexport) liefert `.tar.gz`:
      `manifest.json` (Format-Version, ntp-gui-Version, Schema-Version, Liste der Teile, SHA-256 je
-     Datei), SQLite-Abzug über `VACUUM INTO` in eine Tempdatei, Einstellungen, Kalibrierung,
+     Datei), SQLite-Abzug als **neue, leere Datenbank**, in die nur die erlaubten Tabellen und Spalten
+     per `INSERT … SELECT` kopiert werden (echte Allowlist; keine Kopie der ganzen Datei, in deren
+     freien Seiten gelöschte Werte stehen blieben), Einstellungen, Kalibrierung,
      Gruppen/Namen/Regeln, Kanäle **ohne Geheimnisse** (Tokens werden durch Platzhalter ersetzt,
      Entscheidung F4).
   2. **Ausgeschlossen:** gelernte GPS-Position, Satellitenwinkel, NTS-Schlüssel und -Zertifikate,
-     API-Schlüssel, Kanal-Tokens. Ausschluss als Allowlist der Tabellen/Spalten, nicht als
-     Blocklist; die Positionsspalten werden im Abzug geleert (`UPDATE … SET lat=NULL …` im Tempabzug).
+     API-Schlüssel, Kanal-Tokens. Was nicht auf der Allowlist steht, kommt nicht hinein – auch neue
+     Spalten späterer Versionen erst, wenn sie ausdrücklich freigegeben sind.
   3. `POST /api/restore` in zwei Schritten: hochladen → **Vorschau** („Verlauf 30 Tage, 12 Geräte,
      4 Gruppen, Kalibrierung vom 02.11., 2 Kanäle ohne Token – bitte neu eingeben“) → bestätigen.
      Prüfungen: Größenlimit (eigenes, z. B. 200 MB, statt `MAX_BODY`), nur bekannte Dateinamen,
@@ -283,8 +278,9 @@ unabhängiger Prüfung auf Korrektheit sowie Sicherheit und Datenschutz.
   - Rundreise: Sicherung → frischer Container → Wiederherstellung → Einstellungen, Gruppen, Namen,
     Kalibrierung und Verlauf identisch (Test vergleicht Tabelleninhalte außer ausgeschlossenen Spalten).
   - Sicherung enthält keine Position und keine Geheimnisse: Test sucht im entpackten Abzug nach den
-    bekannten Koordinaten des Testaufbaus (als Zahl und gerundet), nach Satellitenwinkel-Tabellen
-    und nach den Test-Tokens der Kanäle.
+    bekannten Koordinaten des Testaufbaus (als Text, gerundet **und** als binärer
+    8-Byte-Double in beiden Byte-Reihenfolgen), nach Satellitenwinkel-Tabellen und nach den
+    Test-Tokens der Kanäle; das Schema des Abzugs muss genau der Allowlist entsprechen.
   - Bösartige Archive (Pfad `../`, Symlink, 1-GB-Datei, falsche Prüfsumme, neuere Schema-Version)
     werden mit klarer Meldung abgelehnt, nichts wird geschrieben.
   - Sicherung von 30 Tagen Verlauf auf dem Pi 4 < 10 s, blockiert andere Requests nicht.
@@ -352,13 +348,37 @@ unabhängiger Prüfung auf Korrektheit sowie Sicherheit und Datenschutz.
 
 | Release | Inhalt | Voraussetzung |
 |---|---|---|
-| **1.6.1** | **Ruhiger Betrieb** (Neustart-Koordinator, Zustand der Benachrichtigungen/Alarme überlebt Neustart) – aus dem 1.7-Entwurf vorgezogen (Entscheidung F1), weil es Fehlerbehebung ist und 1.7 dann auf ruhigem Grund steht. **Hilfe** mit Inhaltsverzeichnis, Sprungmarken und Unterseiten (`#/hilfe/gps`), ⓘ mit „mehr in der Hilfe →“. **PPS-Bastelanleitung** mit Prüfassistent auf „Uhr & Hardware“ (Empfänger mit PPS-Ausgang am GPIO, `dtoverlay=pps-gpio`, ehrliche Erwartung µs statt ms). **Prometheus**: Metriken je Gruppe (je Gerät nur per Schalter, Obergrenze ≈ 100), Ereigniszähler, Holdover-Ergebnis, GNSS-Störung, Pi-Zustand, Automatik-Status; Grafana-JSON aktualisiert. Tagesbericht als Nachricht (opt-in). Restliche Einstellungen 2.0, falls aus 1.6.0 gerutscht. | 1.6.0 |
-| **1.6.2** | **Satelliten-Spuren** (Entscheidung F5): Winkel alle 60 s in eigener Tabelle, nur lokal, 24 h rollierend; Himmelskarte mit Spuren, Zeitraffer-Regler, **Abschattungskarte** (wo steht nie ein Satellit über 10°? – hilft Nutzern mit USB-GPS drinnen ohne PPS bei der Antennensuche). Vorher Test, dass die Tabelle nie in Export, Diagnose, Sicherung, Benachrichtigung oder API gelangt. **Rangliste der LAN-Uhren** („Wer geht am genauesten?“, Podest, Aufsteiger der Woche, aus Uhrgüte je Gerät). **Zeit-Kuriositäten** (GPS-Woche, GPS−UTC, TAI, Julianisches Datum, Countdown Unixzeit 2 000 000 000 und 2038, NTP-Ära 2036, nächste Zeitumstellung). Weitere `/clock`-Designs (Binär, 7-Segment), Konami-Osterei. | F5 ✅ |
+| **1.6.1** | **Ruhiger Betrieb** (Neustart-Koordinator, Zustand der Benachrichtigungen/Alarme überlebt Neustart) – aus dem 1.7-Entwurf vorgezogen (Entscheidung F1), weil es Fehlerbehebung ist und 1.7 dann auf ruhigem Grund steht. **Hilfe** mit Inhaltsverzeichnis, Sprungmarken und Unterseiten (`#/hilfe/gps`), ⓘ mit „mehr in der Hilfe →“. **PPS-Bastelanleitung** mit Prüfassistent auf „Uhr & Hardware“ (Empfänger mit PPS-Ausgang am GPIO, `dtoverlay=pps-gpio`, ehrliche Erwartung µs statt ms). **Diagnosepaket** um Empfangsbewertung und Client-Gruppen ergänzt (gefiltert, ohne Position und Winkel). **Prometheus**: Metriken je Gruppe (je Gerät nur per Schalter, Obergrenze ≈ 100), Ereigniszähler, Holdover-Ergebnis, GNSS-Störung, Pi-Zustand, Automatik-Status; Grafana-JSON aktualisiert. Tagesbericht als Nachricht (opt-in). Restliche Einstellungen 2.0, falls aus 1.6.0 gerutscht. | 1.6.0 |
+| **1.6.2** | **Satelliten-Spuren** (Entscheidung F5): Aufzeichnung per Schalter (Standard aus), Winkel alle 60 s in eigener Tabelle, nur lokal, 24 h rollierend; Himmelskarte mit Spuren, Zeitraffer-Regler, **Abschattungskarte** (wo steht nie ein Satellit über 10°? – hilft Nutzern mit USB-GPS drinnen ohne PPS bei der Antennensuche). Abruf nur über einen internen Endpunkt der angemeldeten Dashboard-Sitzung, nie über `/api/v1` oder mit API-Schlüssel. Hinweis in der Ansicht: Screenshots von Spuren und Abschattungskarte nicht öffentlich teilen. Vorher Test, dass die Tabelle nie in Export, Diagnose, Sicherung, Benachrichtigung, Wochen-/Tagesbericht oder API gelangt. **Rangliste der LAN-Uhren** („Wer geht am genauesten?“, Podest, Aufsteiger der Woche, aus Uhrgüte je Gerät). **Zeit-Kuriositäten** (GPS-Woche, GPS−UTC, TAI, Julianisches Datum, Countdown Unixzeit 2 000 000 000 und 2038, NTP-Ära 2036, nächste Zeitumstellung). Weitere `/clock`-Designs (Binär, 7-Segment), Konami-Osterei. | F5 ✅ |
 | **1.6.3** | **Wochenbericht** als Druckseite `/report?week=` (PDF über die Druckfunktion des Browsers, keine Bibliothek). **Stratum-Baum** als SVG (Quellen → Pi → PTP → Client-Gruppen, Linienfarbe nach Güte). Erfolge/Abzeichen („100 Tage synchron“) dezent, abschaltbar. | – |
 
 Danach beginnt 1.7 (Community: Englisch komplett, Hardware-Bericht, Zeitwächter-Ping, „Von außen
 prüfen“; Uhrqualität 2 bleibt im 1.7-Entwurf). Die VPS-Spur kann trotzdem parallel laufen, weil sie
 kein ntp-gui-Release braucht.
+
+### 1.6.1: Ruhiger Betrieb (aus dem 1.7-Entwurf vorgezogen)
+
+- **Nutzen:** Weniger Fehlerberichte, weniger Notfall-Releases, also weniger Pflege. Für Nutzer:
+  Tests werden nicht durch Neustarts abgebrochen, Meldungen kommen nach einem Neustart nicht doppelt.
+- **Beleg:** 1.5.1–1.5.3 gingen auf das Zusammenspiel der Automatiken mit Neustarts von chronyd
+  zurück (Fehlerschranke startete stündlich neu, Holdover-Test durch einen Neustart abgebrochen).
+- **Aufwand:** ◆◆ (3–4 PT).
+- **Umsetzungsskizze:**
+  1. **Neustart-Koordinator** (ein Modul, alle Automatiken gehen hindurch): Änderungen sammeln und
+     gemeinsam anwenden, Obergrenze je Tag, Zurückstellen nach dem Muster von
+     `holdover.reload_or_defer` für **alle** Automatiken, laufende Tests haben Vorrang. Jede
+     Entscheidung ist ein Ereignis mit Grund („zurückgestellt: Holdover-Test läuft“).
+  2. **Zustand überlebt Neustart:** Zustand der Benachrichtigungen und des Client-Alarms in SQLite
+     (heute in „Bekannte Einschränkungen“).
+- **Akzeptanzkriterien:**
+  - Replays der Szenarien aus 1.5.1, 1.5.2 und 1.5.3 laufen als Regressionstests: höchstens ein
+    gemeinsamer Neustart statt mehrerer, kein abgebrochener Holdover-Test.
+  - 7 Tage Testbetrieb mit höchstens der eingestellten Zahl von Neustarts je Tag, jeder mit
+    Ereignis und Grund.
+  - Neustart des Containers: offene Benachrichtigungs- und Alarmzustände sind danach noch da,
+    keine doppelte Meldung.
+- **Datenschutz:** nichts Neues nach außen. Der gespeicherte Zustand bleibt in der lokalen
+  SQLite und im Diagnosepaket nur gefiltert.
 
 ## 4. Bewusst nicht in 1.6
 
@@ -368,7 +388,8 @@ kein ntp-gui-Release braucht.
 - **MQTT/HA-Discovery:** E4 gilt weiter (5 Nachfragen oder fertiger PR). Für Home Assistant reicht
   die REST-Doku; ein fertiges HA-Paket (YAML) ist Doku und kann jederzeit kommen.
 - **u-blox schreiben:** schreibt auf Hardware (R3), braucht Testhardware und HCL-Berichte → 1.7+.
-- **Temperaturausgleich anwenden:** Daten zeigen keinen Zusammenhang mit der CPU-Temperatur.
+- **Temperaturausgleich anwenden:** Die CPU-Temperatur ist ein schlechter Stellvertreter für die
+  Quarztemperatur; sinnvoll erst mit einem Sensor nahe am Quarz.
 - **Lokale Zeitstempelstelle (RFC 3161):** Kryptografie, Schlüsselverwaltung, falsch verstandene
   Rechtswirkung – nicht machen.
 - **Uhrqualität 2 (Holdover-Prognose, „Was bringt mein GPS?“):** bleibt im 1.7-Entwurf, damit 1.6
@@ -385,7 +406,8 @@ kein ntp-gui-Release braucht.
 | Wiederherstellen (T5) | Datenverlust, bösartiges Archiv | Vorschau, Auto-Sicherung vorher, `tarfile` `filter="data"`, Allowlist der Dateien, Prüfsummen, Versionsprüfung, Fuzz-Test |
 | Position in Sicherung oder Diagnose | Ortsbestimmung möglich | Allowlist statt Blocklist, Test mit bekannten Testkoordinaten, Satellitenwinkel nie exportieren |
 | B4-Fix (Aufräumen aussetzen) | Datenbank wächst bei dauerhaft falscher Uhr | Aussetzen nur bei unplausibler Zeit, Ereignis + Hinweis; Größenobergrenze bleibt als harte Grenze |
-| Umfang 1.6.0 (≈ 22–31 PT) | Release zieht sich, 1.7 rückt weg | feste Rutsch-Reihenfolge (Abschnitt 1); B1/B2 notfalls als 1.5.5 vorab |
+| Umfang 1.6.0 (≈ 20–29 PT) | Release zieht sich, 1.7 rückt weg | Einstellungen 2.0 und T7 dürfen nach 1.6.1 rutschen, T1 nie (Abschnitt 1) |
+| Neustart-Koordinator (1.6.1) baut dort um, wo alle Automatiken zusammenlaufen | Regressionen wie in 1.5.1–1.5.3 | Replays der drei Szenarien als Regressionstests vor dem Umbau; 7 Tage Testbetrieb vor Release |
 | CSP-Header | einzelne Seiten brechen (Inline-Styles/Handler) | erst `Content-Security-Policy-Report-Only` in einem Testlauf, Playwright prüft Konsolen-Verstöße |
 | Textkürzung (T2) | Erklärtiefe geht verloren | nichts löschen, nur ins ⓘ oder in die Hilfe verschieben; Wortzahl je Seite als Messwert im PR |
 | Spielereien verdrängen Pflicht | Fehler bleiben liegen | T1 vor allem anderen; T6 nur, was bis zum Freeze fertig ist |
@@ -400,17 +422,19 @@ Entschieden am 08.11.2026 nach der jeweiligen Empfehlung.
 | F2 | **Sprache bis 1.7:** Standard immer Deutsch, Englisch nur auf ausdrücklichen Wunsch als „English (Beta)“ – statt automatisch nach Browsersprache? | **Ja.** Englisch bis 1.7 nur als „Beta“. Halbes Englisch ist schlechter als Deutsch. Automatische Wahl erst, wenn 1.7 Englisch vollständig hat. |
 | F3 | **Navigation 11 → 7 Einträge** mit Untergruppen „Uhr & Hardware“ und „System“, auf dem Handy untere Leiste? | **Ja**, 7 Einträge; alte Links und Lesezeichen leiten weiter. Der größte einzelne Gewinn auf dem Handy. |
 | F4 | **Sicherung mit Geheimnissen** (Kanal-Tokens, API-Schlüssel)? | **Nein.** Keine Tokens in die Sicherung. Ohne neue Abhängigkeit gibt es keine gute Verschlüsselung; Tokens nach der Wiederherstellung neu eingeben (die Vorschau listet sie). Position und NTS-Schlüssel nie. |
-| F5 | **Satellitenwinkel speichern** (24 h, nur lokal) für Spuren, Zeitraffer und Abschattungskarte in 1.6.2? Winkel über die Zeit verraten grob den Standort. | **Ja, nur lokal 24 h** – nie in Export, Diagnosepaket, Sicherung, Benachrichtigung oder API. Eigene Tabelle, Ausschluss per Allowlist mit eigenem Test; Schalter „Satellitenverlauf aufzeichnen“, Standard an, im ⓘ erklärt. |
+| F5 | **Satellitenwinkel speichern** (24 h, nur lokal) für Spuren, Zeitraffer und Abschattungskarte in 1.6.2? Winkel über die Zeit verraten grob den Standort. | **Ja, nur lokal 24 h** – nie in Export, Diagnosepaket, Sicherung, Benachrichtigung oder API (auch nicht `/api/v1` mit API-Schlüssel). Eigene Tabelle, Ausschluss per Allowlist mit eigenem Test; Schalter „Satellitenverlauf aufzeichnen“, **Standard aus**, im ⓘ erklärt. |
 
 ## Anhang A: Bestätigte Fehler
 
 Am Code gegengeprüft (Prüfung „Fehler für 1.6“). **27 bestätigt** (8 Backend, 1 Doku-Lücke,
-14 Frontend, 4 Kleinkram), 1 plausibel, 3 unbestätigt. Vorrang: **B1, B2, F1, F2, F3**.
+14 Frontend, 4 Kleinkram), 1 plausibel, 3 unbestätigt. Vorrang: **F1, F2, F3**. B1 und B2 sind mit
+1.5.4 behoben. Die Zeilenangaben stammen aus dem Stand 1.5.3 und werden zu Beginn von T1 gegen 1.5.4
+neu geprüft.
 
 | # | Fehler | Ort | Status | Vorrang | Behebung (Kurz) |
 |---|---|---|---|---|---|
-| B1 | Kalibrierkarte lädt standardmäßig den gesamten Verlauf (`window=0`, auch `nan`), alle 15 s; umgeht `CALIBRATION_DEFAULT_WINDOW` | `gps.js:216`, `server.py:1539f`, `autocal.py:733` | bestätigt | **hoch** | Standard 24 h, `window<=0`/`nan` → Standard, Gesamtverlauf verdichtet |
-| B2 | Kein Socket-Timeout: Request ≤ 64 KiB, der weniger Bytes schickt als angekündigt, hält einen Thread für immer | `server.py` `class Handler` | bestätigt | **hoch** | `Handler.timeout = 30` |
+| B1 | Kalibrierkarte lädt standardmäßig den gesamten Verlauf (`window=0`, auch `nan`), alle 15 s; umgeht `CALIBRATION_DEFAULT_WINDOW` | `gps.js:216`, `server.py:1539f`, `autocal.py:733` | **erledigt in 1.5.4** | – | Standard 24 h, `window<=0`/`nan` → Standard, Gesamtverlauf verdichtet |
+| B2 | Kein Socket-Timeout: Request ≤ 64 KiB, der weniger Bytes schickt als angekündigt, hält einen Thread für immer | `server.py` `class Handler` | **erledigt in 1.5.4** | – | `Handler.timeout = 30` |
 | B3 | `WEB_BIND` auf IPv6 scheitert (AF_INET fest), jeder `OSError` als „Port nicht verfügbar“ gemeldet | `QuietHTTPServer`, `server.py:1993ff` | bestätigt | mittel | `address_family` aus Adresse, echte Fehlermeldung |
 | B4 | Aufräumen nach Wanduhr: Zeit in der Zukunft löscht `events` und `clientmon_samples` (bei `clientmon_clients` nur nicht aktuelle Geräte) | `events.prune`, clientmon | bestätigt (Einschr.) | mittel | Aufräumen nur bei plausibler Zeit |
 | B5 | Intervalle nach Wanduhr (Cache-TTL, `_last_save`, Hotplug/Dienste/NTS-Zertifikat in `entrypoint.sh`) | `gps.py:221`, `ptp.py:188`, `history.save`, `entrypoint.sh:71` | bestätigt | gering | `time.monotonic()`, `$SECONDS` |

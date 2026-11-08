@@ -110,8 +110,10 @@ schlechter Geometrie, Fix-Flattern als stündliche Info statt Einzelmeldungen, W
 gebraucht wird, Fehlerschranke pendelt nicht mehr), Allan-Abweichung auf der Seite „Uhrqualität“,
 Reverse Proxy per Klick eintragen und die Restpunkte aus der Abschlussprüfung 1.5.0.
 
-Die bisher hier als „Als Nächstes“ geführten Punkte (u-blox lesen, Englisch, Schwellen aus echten
-Daten, DNS-Filter lesen, Verbund 1, TOML) sind in den 1.7-Entwurf gewandert. Temperaturausgleich
+Die bisher hier als „Als Nächstes“ geführten Punkte sind verteilt: u-blox lesen und gpsd-`jam`,
+Englisch, Schwellen aus echten Daten (Empfang, GPS-Automatik, GNSS-Störung), DNS-Filter lesen,
+Verbund 1 und TOML in den 1.7-Entwurf; Empfangsbewertung und Client-Gruppen im Diagnosepaket nach
+1.6.1. Temperaturausgleich
 bleibt zurückgestellt: In den bisherigen Daten folgt die Frequenz eher der Tageszeit als der
 CPU-Temperatur; sinnvoll erst mit einem Sensor nahe am Quarz.
 
@@ -162,8 +164,8 @@ Alles, was die Instanz verlässt, ist opt-in, standardmäßig aus und läuft dur
 ## Community-Dienste (eigenes Repository, freiwillig)
 
 Gestaffelt nach Nutzen für alle – auch für Menschen ohne ntp-gui. **Erster eigener Dienst:**
-Zeit-Check-Website und Server-Test (Selbsttest des eigenen Anschlusses) auf dem VPS des
-Maintainers – Architektur, Aufwand, Kosten und Recht in
+Zeit-Check-Website und Server-Test (Selbsttest des eigenen Anschlusses) auf einem VPS des
+Projekts – Architektur, Aufwand, Kosten und Recht in
 [version-1.5.md, Abschnitt 4.6](docs/konzept/version-1.5.md#46-erster-konkreter-schritt-zeit-check-website--server-test-auf-dem-vps-des-maintainers).
 
 | Dienst | Nutzen | Aufwand |
