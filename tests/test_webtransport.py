@@ -625,6 +625,10 @@ class ComposeTemplateTest(unittest.TestCase):
     def uncommented(self):
         return re.sub(r"(?m)^( +)#  ", r"\1", self.TEXT)
 
+    def test_doc_names_nginx_host_header(self):
+        # nginx schickt ohne diese Zeile den Upstream-Namen als Host – ntp-gui lehnt dann jede Änderung ab.
+        self.assertIn("proxy_set_header Host $host;", self.DOC)
+
     def test_proxy_option_present(self):
         text = self.uncommented()
         self.assertIn("[OPTION Reverse Proxy auf diesem Rechner]", self.TEXT)

@@ -1332,6 +1332,19 @@ class _Reaper:
 REAPER = _Reaper()
 
 
+# Content-Security-Policy: nur eigene Skripte, Stylesheets und Verbindungen. Inline-Skripte,
+# on…-Attribute und style-Attribute sind gesperrt (el() setzt Stile per CSSOM, das bleibt erlaubt);
+# data: nur für Bilder (Favicon). Gilt für jede Antwort, auch für JSON und Fehlerseiten.
+CSP = ("default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; "
+       "object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "same-origin",
+    "X-Frame-Options": "DENY",
+    "Content-Security-Policy": CSP,
+}
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "ntp-gui"
     protocol_version = "HTTP/1.1"
@@ -1395,13 +1408,16 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             pass  # nur für einen Hinweis – nie eine Anfrage daran scheitern lassen
 
+    def send_response(self, code, message=None) -> None:
+        # Hier statt in _send: auch die Fehlerseiten von http.server (send_error) bekommen die Köpfe.
+        super().send_response(code, message)
+        for key, value in SECURITY_HEADERS.items():
+            self.send_header(key, value)
+
     def _send(self, status: HTTPStatus, body: bytes, content_type: str, extra_headers: dict | None = None) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Referrer-Policy", "same-origin")
-        self.send_header("X-Frame-Options", "DENY")
         for key, value in (extra_headers or {}).items():
             self.send_header(key, value)
         self.end_headers()
@@ -1472,7 +1488,7 @@ class Handler(BaseHTTPRequestHandler):
             self._error(HTTPStatus.FORBIDDEN, text, reason="host_not_allowed")
         else:
             body = ("<!doctype html><html lang=\"de\"><meta charset=\"utf-8\"><title>Zugriff abgelehnt</title>"
-                    "<body style=\"font-family:sans-serif;max-width:42em;margin:2em auto;padding:0 1em\">"
+                    "<body>"
                     f"<h1>Zugriff abgelehnt</h1><p>{html.escape(text)}</p></body></html>\n")
             self._send(HTTPStatus.FORBIDDEN, body.encode("utf-8"), "text/html; charset=utf-8",
                        {"Cache-Control": "no-store"})
@@ -2169,6 +2185,37 @@ class QuietHTTPServer(ThreadingHTTPServer):
         super().handle_error(request, client_address)
 
 
+class QuietHTTPServer6(QuietHTTPServer):
+    """Dasselbe für eine IPv6-Adresse in WEB_BIND. „::“ nimmt auch IPv4 an: IPV6_V6ONLY wird
+    ausdrücklich auf 0 gesetzt (wie http.server.DualStackServer), sonst entschiede die Sysctl
+    net.ipv6.bindv6only des Hosts, ob IPv4 und der Docker-Healthcheck noch durchkommen."""
+    address_family = socket.AF_INET6
+
+    def server_bind(self):
+        try:
+            self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+        except (OSError, AttributeError):
+            pass  # Plattform ohne IPV6_V6ONLY: Standard des Systems gilt
+        super().server_bind()
+
+
+def make_server(bind: str, port: int) -> QuietHTTPServer:
+    """Server für WEB_BIND (IPv4 oder IPv6, auch in [ ]) – mit verständlicher Meldung, falls das scheitert."""
+    bind = bind.strip().strip("[]")
+    cls = QuietHTTPServer6 if ":" in bind else QuietHTTPServer
+    try:
+        return cls((bind, port), Handler)
+    except OSError as exc:
+        if exc.errno == errno.EADDRINUSE:
+            hint = "Port belegt – WEB_PORT anpassen oder den belegenden Dienst beenden."
+        elif exc.errno in (errno.EACCES, errno.EPERM):
+            hint = ("Port unter 1024 braucht CAP_NET_BIND_SERVICE oder einen höheren WEB_PORT "
+                    "(z. B. 8080).")
+        else:
+            hint = "WEB_BIND prüfen (gibt es die Adresse auf diesem Host, ist IPv6 aktiv?)."
+        raise SystemExit(f"[web] {bind}:{port} nicht nutzbar ({exc}). {hint}") from None
+
+
 def main() -> None:
     port = env_number("WEB_PORT", 8080, int, minimum=1)
     bind = os.environ.get("WEB_BIND", "0.0.0.0")
@@ -2207,15 +2254,12 @@ def main() -> None:
 
     signal.signal(signal.SIGTERM, save_and_exit)
 
-    try:
-        server = QuietHTTPServer((bind, port), Handler)
-    except OSError as exc:
-        raise SystemExit(f"[web] Port {bind}:{port} nicht verfügbar ({exc}). "
-                         f"WEB_PORT anpassen oder den belegenden Dienst beenden.")
+    server = make_server(bind, port)
     server.daemon_threads = True
     note = {"env": "mit Basic-Auth (Umgebungsvariable)", "gui": "mit Passwort aus dem Dashboard",
             None: "ohne Passwort"}[auth_info()["source"]]
-    print(f"[web] Dashboard auf http://{bind}:{port} ({note})", flush=True)
+    shown = f"[{bind.strip().strip('[]')}]" if ":" in bind else bind
+    print(f"[web] Dashboard auf http://{shown}:{port} ({note})", flush=True)
     try:
         server.serve_forever()
     except (KeyboardInterrupt, SystemExit):

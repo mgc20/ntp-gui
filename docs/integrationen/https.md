@@ -18,7 +18,7 @@ nötig.
 
 | Punkt | Warum |
 |---|---|
-| **Host-Kopf unverändert weitergeben** (Standard bei Caddy, NPM, Zoraxy, Traefik) | ntp-gui vergleicht beim Speichern die Herkunft (`Origin`) mit dem Host. Schreibt der Proxy den Host um, lehnt ntp-gui jede Änderung ab („Anfrage abgelehnt (nur aus dem Dashboard heraus)“). |
+| **Host-Kopf unverändert weitergeben** (Standard bei Caddy, NPM, Zoraxy, Traefik) | ntp-gui vergleicht beim Speichern die Herkunft (`Origin`) mit dem Host. Schreibt der Proxy den Host um, lehnt ntp-gui jede Änderung ab („Anfrage abgelehnt (nur aus dem Dashboard heraus)“). Bei reinem nginx selbst eintragen: `proxy_set_header Host $host;` – nginx schickt sonst den Namen aus `proxy_pass` (z. B. `127.0.0.1:8080`). |
 | **`WEB_BIND=127.0.0.1`**, wenn der Proxy auf demselben Host läuft | Dann ist das Dashboard nur noch über HTTPS erreichbar, nicht mehr nebenher über `http://host:8080`. Läuft der Proxy auf einem anderen Gerät, `WEB_BIND` lassen und Port 8080 per Firewall nur für den Proxy öffnen. |
 | **`TRUSTED_PROXIES`** = Adresse des Proxys | Nur dann glaubt ntp-gui `X-Forwarded-For` und `X-Forwarded-Proto`: Das Zugriffsprotokoll (`WEB_ACCESS_LOG=true`) nennt den Browser statt des Proxys, und der HTTPS-Hinweis erkennt den verschlüsselten Weg. Standard ist leer – **niemandem trauen**, sonst könnte jeder Browser eine falsche Adresse vorgeben. Nie ein ganzes Netz eintragen, nur den Proxy (`/32` bzw. `/128`). Über Anmeldung und Zugriff entscheiden die Köpfe nie. |
 | **Erlaubte Namen** bzw. **`WEB_ALLOWED_HOSTS`**, wenn ohne Passwort | Ohne Passwort beantwortet ntp-gui nur IP-Adressen, einteilige Namen und lokale Endungen (`.lan`, `.local`, `.home.arpa`, `.internal` …) – Schutz vor DNS-Rebinding. Ein Name wie `zeit.example.com` muss dann unter **Einstellungen → Dashboard → Erweitert → Erlaubte Namen** oder in `WEB_ALLOWED_HOSTS` stehen (beide gelten). Mit Passwort gilt jeder Name. Die Vollbild-Uhr `/clock` mit „Vollbild-Uhr ohne Anmeldung“ antwortet über jeden Namen. |
@@ -155,6 +155,8 @@ diese `/32` eintragen.
 2. **SSL:** ein vorhandenes Zertifikat wählen oder „Request a new SSL Certificate“ (Let's Encrypt,
    für LAN-Namen per DNS-Challenge). „Force SSL“ einschalten.
 3. NPM setzt `X-Forwarded-For` und `X-Forwarded-Proto` und gibt den Host unverändert weiter.
+   Eigene Regeln unter „Advanced“ (`location`-Blöcke mit `proxy_pass`) brauchen
+   `proxy_set_header Host $host;`, sonst kommt der Name aus `proxy_pass` an.
 4. In ntp-gui `TRUSTED_PROXIES` = Adresse des NPM-Hosts, z. B. `192.168.1.2/32`. Läuft NPM auf
    demselben Host mit eigenem Bridge-Netz, kommt die Anfrage aus dessen Docker-Netz (z. B.
    `172.18.0.2/32` – die genaue Adresse steht im Zugriffsprotokoll von ntp-gui mit
@@ -245,7 +247,7 @@ Traefik-Hosts.
    Läuft der Proxy auf einem anderen Gerät, erscheint zusätzlich „Strecke Proxy → ntp-gui ist
    unverschlüsselt“ – diese Strecke ist dann in jedem Fall HTTP.
    Caddy, NPM, Zoraxy und Traefik setzen den Kopf von selbst; fehlt er, entfernt ihn meist eine
-   eigene Regel. Nginx/NPM („Advanced“): `proxy_set_header X-Forwarded-Proto $scheme;`, HAProxy:
+   eigene Regel. Nginx/NPM („Advanced“): `proxy_set_header X-Forwarded-Proto $scheme;` (dazu `proxy_set_header Host $host;`), HAProxy:
    `http-request set-header X-Forwarded-Proto https if { ssl_fc }`, Apache: nur im
    `<VirtualHost *:443>` `RequestHeader set X-Forwarded-Proto "expr=%{REQUEST_SCHEME}"` – nie
    pauschal `https`, sonst gilt auch ein HTTP-Zugriff als geschützt und die Warnung verschwindet

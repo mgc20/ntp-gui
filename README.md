@@ -1477,7 +1477,7 @@ PHC-Refclock dient ihm als Referenz für Stratum und Statistik.
 
 | Variable | Default | Bedeutung |
 |---|---|---|
-| `WEB_PORT` / `WEB_BIND` | `8080` / `0.0.0.0` | Adresse des Dashboards |
+| `WEB_PORT` / `WEB_BIND` | `8080` / `0.0.0.0` | Adresse des Dashboards. IPv6 geht auch: `::` nimmt IPv4 und IPv6 an; mit `::1` oder einer anderen einzelnen Adresse erreicht der Docker-Healthcheck (fragt `127.0.0.1`) das Dashboard nicht. |
 | `WEB_TITLE` | `NTP / PTP Time Server` | Überschrift |
 | `WEB_USER` / `WEB_PASSWORD` | – | Beide gesetzt ⇒ HTTP Basic Auth (alternativ Passwort im Dashboard setzen) |
 | `WEB_ALLOWED_HOSTS` | – | Weitere Namen, unter denen das Dashboard **ohne Passwort** antworten darf, kommagetrennt; `*.example.org` für alle Unternamen, `*` schaltet die Prüfung ab. Gilt zusätzlich zu „Erlaubte Namen“ im Dashboard (Einstellungen → Dashboard → Erweitert). Siehe [Schutz vor DNS-Rebinding](#schutz-vor-dns-rebinding) |

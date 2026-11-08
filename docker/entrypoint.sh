@@ -499,19 +499,20 @@ stop_services() {
 reload_services() {
   log main "Einstellungen geändert – Zeitdienste werden neu gestartet …"
   write_status running "Zeitdienste werden neu gestartet"
+  # Erst die neue Konfiguration erzeugen (confgen ersetzt die Dateien nur, wenn alle gelingen).
+  # Scheitert das, laufen die Dienste ohne Neustart mit den bisherigen Einstellungen weiter.
+  if ! apply_config; then
+    write_status error "Konfiguration fehlerhaft – bisherige Einstellungen weiter aktiv"
+    "${EMIT_EVENT:-:}" reload warn "Konfiguration fehlerhaft – bisherige Einstellungen bleiben aktiv" result=error
+    return 0
+  fi
   stop_services
   local name
   for name in gpsd ptp4l phc2sys dnsfwd; do SVC_RESTARTS[$name]=0; SVC_EXIT[$name]=""; done
-  if apply_config; then
-    start_services
-    write_status done "Neue Einstellungen aktiv"
-    log main "Neustart abgeschlossen."
-    "${EMIT_EVENT:-:}" reload info "Neue Einstellungen aktiv – Zeitdienste neu gestartet" result=done
-  else
-    start_services
-    write_status error "Konfiguration fehlerhaft – bisherige Einstellungen weiter aktiv"
-    "${EMIT_EVENT:-:}" reload warn "Konfiguration fehlerhaft – bisherige Einstellungen bleiben aktiv" result=error
-  fi
+  start_services
+  write_status done "Neue Einstellungen aktiv"
+  log main "Neustart abgeschlossen."
+  "${EMIT_EVENT:-:}" reload info "Neue Einstellungen aktiv – Zeitdienste neu gestartet" result=done
 }
 
 # Nur chronyd neu laden (erneuertes NTS-Zertifikat): confgen legt die Kopien von
