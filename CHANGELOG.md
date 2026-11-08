@@ -4,6 +4,13 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), die Versionen folgen
 [Semantic Versioning](https://semver.org/lang/de/).
 
+## [Unveröffentlicht]
+
+### Hinzugefügt
+- **Sicherheitslücken vertraulich melden:** `SECURITY.md` beschreibt den Weg über GitHub Private
+  Vulnerability Reporting; das Issue-Formular verweist darauf. `.github/CODEOWNERS` legt den
+  Standard-Prüfer fest.
+
 ## [1.5.4] – 2026-11-06
 
 Schwerpunkt: GPS bei schwachem Empfang ruhig – keine Positions-Fehlalarme, weniger Ereignisse, stabile

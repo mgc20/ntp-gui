@@ -8,6 +8,8 @@ Schön, dass du ntp-gui besser machen willst! Jeder Beitrag hilft – auch ohne 
   das Ergebnis über das Issue-Formular „Hardware-Bericht“. Daraus entsteht die
   Kompatibilitätsliste (welcher GPS-Empfänger, welche Netzwerkkarte, welcher Pi funktioniert
   wie gut). Bitte keine Koordinaten, Seriennummern oder öffentlichen IP-Adressen einfügen.
+- **Sicherheitslücke gefunden?** Bitte nicht öffentlich, sondern vertraulich melden – wie, steht
+  in [SECURITY.md](SECURITY.md).
 - **Fehler melden:** Formular „Fehlerbericht“. Je genauer, desto besser: Version, Hardware,
   Compose-Ausschnitt, was du erwartet hast und was passiert ist. Am meisten hilft ein
   **Diagnosepaket** (Seite **Diagnose** → Vorschau → Herunterladen): Es ist bereits gefiltert –
