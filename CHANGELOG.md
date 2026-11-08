@@ -7,6 +7,30 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 ## [Unveröffentlicht]
 
 ### Hinzugefügt
+- **Sichern und wiederherstellen** (Einstellungen → Sichern): Mit „Sicherung herunterladen“ bekommst du eine
+  `.tar.gz`, in der alles steckt, was du sonst bei einer neuen SD-Karte oder einem neuen Container verlierst:
+  Einstellungen, Verlauf der Messwerte, Ereignisprotokoll, Geräte mit eigenen Namen und Notizen, Gruppen,
+  Regeln, GPS-Kalibrierung und Benachrichtigungskanäle. **Nie** enthalten sind GPS-Position,
+  Satellitenwinkel, Passwort, API-Schlüssel, Tokens der Kanäle, ntfy-Themen, Apprise-Schlüssel,
+  Webhook-Pfade, DNS-over-HTTPS- und DNS-over-TLS-Server, feste DNS-Adressen sowie NTS-Schlüssel und
+  -Zertifikate. Die Datenbank in der Sicherung wird neu angelegt und nur mit festgelegten Tabellen und
+  Spalten gefüllt, damit keine gelöschten Werte aus freien Seiten mitkommen. Der Dateiname enthält nur
+  Datum und Uhrzeit. Die Sicherung ist ein Download – ntp-gui lädt nichts hoch.
+- **Wiederherstellen in zwei Schritten:** Datei wählen → ntp-gui prüft sie und zeigt eine Vorschau, ohne
+  etwas zu ändern → „Übernehmen“. Die Vorschau zeigt Zeitraum des Verlaufs, Geräte, Gruppen, Regeln,
+  Ereignisse, Kalibrierung, jeden Benachrichtigungskanal (Art, Server, neu oder vorhanden, ob er
+  ausgeschaltet übernommen wird, was du neu eingeben musst), sicherheitsrelevante Einstellungen mit altem
+  und neuem Wert und alles, was übersprungen oder verworfen wird. Vor dem Übernehmen sichert ntp-gui den
+  jetzigen Stand automatisch im Datenverzeichnis (Ordner `sicherungen`). Sicherungen älterer Versionen
+  werden umgewandelt, neuere abgelehnt. Messpunkte, die nach dem Zeitpunkt der Sicherung entstanden sind,
+  bleiben erhalten, damit keine Lücke entsteht. Danach steht „Wiederhergestellt aus Sicherung vom …“ im
+  Ereignisprotokoll. Übernommene alte Ereignisse lösen keine Benachrichtigungen aus, und die Geräte der
+  laufenden Client-Messung sind sofort sichtbar.
+- **Nächtliche Sicherung** (Einstellungen → Dashboard, Standard aus): Gegen 3 Uhr landet eine Sicherung im
+  Datenverzeichnis, die letzten 7 Nächte bleiben. Unter „Gespeicherte Sicherungen“ kannst du sie
+  herunterladen.
+- API: `GET /api/v1/backup`, `GET /api/v1/backup/list`, `POST /api/v1/restore/preview`, `…/apply` und
+  `…/cancel` – nur mit Verwaltungsrecht.
 - **Pi-Zustand:** Neue Karte auf der Seite Hardware: meldet der Raspberry Pi Unterspannung oder drosselt er
   den Takt – jetzt und seit dem Start des Pi –, dazu aktueller Takt und Lüfterdrehzahl. Gelesen wird nur aus
   sysfs (Firmware-Bitfeld `get_throttled`, Sensor `rpi_volt`, `fan1_input`, `cpufreq`), ohne `vcgencmd`,
@@ -16,6 +40,32 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 - Hardware-Check: Zeile „Stromversorgung (Pi)“ mit Hinweis auf das offizielle Netzteil (bei Hitze-Drosselung
   ein Hinweis auf Kühlung); bei Unterspannung ein Hinweis auf der Übersicht.
 - Prometheus-Metriken `ntpgui_pi_undervoltage` und `ntpgui_pi_throttled`; Verlaufsfeld `pi_state`.
+
+### Sicherheit
+- **Wiederherstellen ohne Vertrauensvorschuss:** Das Manifest ist nicht signiert. Darum filtert ntp-gui
+  beim Einspielen jede Zeile genauso wie beim Erstellen: keine Position, keine Satellitenwinkel und keine
+  Geheimnisse in Messpunkten, Ereignissen und Gerätedaten, auch nicht in Grad/Minuten/Sekunden-Schreibweise,
+  in Texten und Quellnamen von Messpunkten oder als Zahlenliste in Ereignis- und Gerätedaten.
+  Es übernimmt nur gültige IP-Adressen und Inventar-Schlüssel und für Ereignisse nur Art und Herkunft nach
+  festem Muster. Ein präpariertes Archiv bringt so weder einen Standort noch fremde Werte in die Datenbank.
+- **Benachrichtigungskanäle:** Jeder Kanal wird geprüft wie bei einer Eingabe. Gibt es ihn hier schon (gleiche
+  Kennung, gleiche Art, gleicher Server), behält er seine Tokens, sein Thema bzw. seinen Schlüssel und seine
+  volle Adresse. Alle anderen kommen **ausgeschaltet** an, bis du Ziel und Token geprüft und den Kanal
+  eingeschaltet hast. Eine Sicherung kann so keinen aktiven Kanal zu einem fremden Server anlegen.
+- **Alles oder nichts:** Einstellungen, Kalibrierung und Datenbank werden in einem Zug getauscht; die beiden
+  Dateien werden direkt vor dem Abschluss der Datenbank-Transaktion eingesetzt, bei einem Fehler kommen
+  die alten zurück. Geht danach doch etwas schief, spielt ntp-gui die automatische Sicherung zurück – die
+  Benachrichtigungskanäle behalten dabei Tokens, Themen, Adressen und Ein/Aus. Fehlermeldungen sind fest formuliert, Einzelheiten stehen nur im Log. Während der
+  Übernahme ist das Dashboard einige Sekunden beschäftigt, danach wird die WAL-Datei der Datenbank wieder
+  verkleinert.
+- **Prüfung des Uploads:** höchstens 200 MiB; nur die vier bekannten Dateien; keine Links, Pfade oder
+  Gerätedateien; Schutz vor Gzip-Bomben und vor übergroßen oder zu vielen Tar-Köpfen; Prüfsummen. Die
+  Datenbank muss genau das erwartete Schema haben (keine fremden Tabellen, Views, Trigger, WITHOUT ROWID,
+  COLLATE oder generierten Spalten). Die Kalibrierung wird auf Zahlen und Aufbau geprüft, Ungültiges wird
+  verworfen und genannt. Ein Sicherungszeitpunkt mehr als einen Tag in der Zukunft wird abgelehnt;
+  Messpunkte nach dem Sicherungszeitpunkt oder in der Zukunft werden nicht übernommen, die Vorschau nennt
+  ihre Zahl. Abgelehnte Dateien bekommen eine klare Meldung (HTTP 422), und nichts bleibt
+  liegen.
 
 ## [1.5.5] – 2026-11-08
 

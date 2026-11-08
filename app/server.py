@@ -54,6 +54,7 @@ import allan
 import apikeys
 import apiv1
 import autocal
+import backup
 import gnssguard
 import gpsquality
 import holdover
@@ -146,6 +147,11 @@ HISTORY = historymod.History(HISTORY_SIZE, os.path.join(settings.DATA_DIR, "hist
 # Nur die letzten 30 Tage laden – bei großem HISTORY_DAYS sonst Speicher im GB-Bereich.
 ALLAN = allan.Cache(lambda: HISTORY.series("freq", since=time.time() - allan.MAX_SPAN))
 
+# 1.6 (T5): Vor jeder Sicherung den Verlauf und die Client-Messpunkte aus dem Speicher schreiben.
+backup.add_flusher(lambda: HISTORY.save(force=True))
+backup.add_flusher(lambda: clientmon._MONITOR.flush_samples(prune=False) if clientmon._MONITOR else None)
+UPLOAD_READ_DEADLINE = 900.0  # Upload einer Sicherung (bis 200 MiB) – statt REQUEST_READ_DEADLINE
+
 # Endpunkte von 1.3, die auch unter /api/v1 erreichbar sind (Recht je Endpunkt).
 apiv1.endpoint("GET", "/logs", "/api/logs", "read",
                "Die letzten Zeilen des Container-Logs (lokal, ungefiltert).",
@@ -166,6 +172,23 @@ apiv1.endpoint("GET", "/diagnostics/bundle", "/api/diagnostics/bundle", "read",
                 "reuse": "Merker „reuse“ einer Vorschau: genau dieses Paket sofort (gleiche Schalter und "
                          "Einstellungen, höchstens 10 min alt – auch wenn die Aufzeichnung gewachsen ist); "
                          "gilt er nicht mehr: 409. Ohne Merker wird neu gebaut."})
+apiv1.endpoint("GET", "/backup", "/api/backup", "admin",
+               "Sicherung als tar.gz: Einstellungen, Verlauf, Ereignisse, Clients mit Namen, Gruppen und "
+               "Regeln, Kalibrierung, Kanäle – ohne Position, Passwort, Tokens und API-Schlüssel. Wird nie "
+               "hochgeladen.", [],
+               {"name": "statt einer neuen Sicherung eine gespeicherte aus /backup/list herunterladen"})
+apiv1.endpoint("GET", "/backup/list", "/api/backup/list", "admin",
+               "Im Datenverzeichnis gespeicherte Sicherungen (vor einer Wiederherstellung, nächtlich).",
+               ["backups", "nightly"])
+apiv1.endpoint("POST", "/restore/preview", "/api/restore/preview", "admin",
+               "Sicherung hochladen (Body: die .tar.gz, Content-Type application/gzip, höchstens 200 MiB) und "
+               "prüfen. Antwort: Vorschau und Merker „token“ (15 min gültig). Schreibt nichts.",
+               ["token", "expires_in", "preview"])
+apiv1.endpoint("POST", "/restore/apply", "/api/restore/apply", "admin",
+               "Geprüfte Sicherung übernehmen ({\"token\": …}). Sichert vorher den jetzigen Stand ins "
+               "Datenverzeichnis.", ["ok", "created", "rows", "before", "changed", "restart", "reenter"])
+apiv1.endpoint("POST", "/restore/cancel", "/api/restore/cancel", "admin",
+               "Hochgeladene Sicherung verwerfen ({\"token\": …}).", ["ok"])
 apiv1.endpoint("GET", "/recording", "/api/recording", "read",
                "Zustand der Aufzeichnung der Datenquellen.", ["active", "ends", "entries", "size", "available"])
 apiv1.endpoint("POST", "/recording", "/api/recording", "admin",
@@ -1496,6 +1519,21 @@ class Handler(BaseHTTPRequestHandler):
         for start in range(0, len(view), WRITE_CHUNK):
             self.wfile.write(view[start:start + WRITE_CHUNK])
 
+    def _send_file(self, path: str, content_type: str, extra_headers: dict | None = None) -> None:
+        """Datei in Stücken senden (Sicherungen können groß sein – nicht ganz in den Speicher laden)."""
+        with open(path, "rb") as handle:
+            size = os.fstat(handle.fileno()).st_size
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(size))
+            for key, value in (extra_headers or {}).items():
+                self.send_header(key, value)
+            self.end_headers()
+            if self.command == "HEAD":
+                return
+            for chunk in iter(lambda: handle.read(WRITE_CHUNK), b""):
+                self.wfile.write(chunk)
+
     def _send_json(self, payload, status: HTTPStatus = HTTPStatus.OK, extra: dict | None = None) -> None:
         body = json.dumps(payload, default=str).encode()
         headers = {"Cache-Control": "no-store"}
@@ -1751,6 +1789,11 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(schema)
         elif path == "/api/settings/notes":
             self._send_json({"schema": settings.schema_version(), "notes": settings.migration_notes()})
+        elif path == "/api/backup":
+            self._send_backup(query)
+        elif path == "/api/backup/list":
+            self._send_json({"backups": backup.stored(), "nightly": bool(settings.values().get("backup_nightly")),
+                             "keep_nightly": backup.KEEP_NIGHTLY, "keep_auto": backup.KEEP_AUTO})
         elif path == "/api/settings/export":
             body = json.dumps(settings.export_values(masked=self._read_only_key()), indent=2,
                               ensure_ascii=False).encode()
@@ -1942,6 +1985,68 @@ class Handler(BaseHTTPRequestHandler):
             options["allan"] = None
         return options
 
+    def _send_backup(self, query: dict) -> None:
+        """GET /api/backup: neue Sicherung (oder mit name= eine gespeicherte) als Download."""
+        headers = {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"}
+        name = query.get("name")
+        if name is not None:
+            path = backup.stored_path(name)
+            if path is None:
+                self._error(HTTPStatus.NOT_FOUND, "Diese gespeicherte Sicherung gibt es nicht (mehr).")
+                return
+            headers["Content-Disposition"] = f'attachment; filename="ntp-gui-{name}"'
+            self._send_file(path, "application/gzip", headers)
+            return
+        dest = backup.download_path()
+        try:
+            manifest = backup.create(dest, VERSION)
+            headers["Content-Disposition"] = f'attachment; filename="{backup.file_name(manifest["created"])}"'
+            self._send_file(dest, "application/gzip", headers)
+        finally:
+            try:
+                os.unlink(dest)
+            except OSError:
+                pass
+
+    def _csrf_upload_ok(self, ident: dict | None) -> bool:
+        """Wie _csrf_ok, aber für den Upload einer Sicherung (Body ist die .tar.gz, kein JSON).
+        Schutz vor fremden Seiten: Pflicht-Kopf X-NTP-GUI (erzwingt eine CORS-Vorabfrage, die
+        niemand beantwortet) und ein mitgeschickter Origin muss zum Host passen."""
+        ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if ctype not in ("application/gzip", "application/x-gzip", "application/octet-stream"):
+            return False
+        if ident is not None and ident.get("kind") == "key":
+            return True
+        if self.headers.get("X-NTP-GUI") != "1":
+            return False
+        origin = self.headers.get("Origin")
+        return not origin or urlparse(origin).netloc == self.headers.get("Host", "")
+
+    def _restore_preview(self) -> None:
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = -1
+        self.close_connection = True  # nach einem Upload immer neu verbinden (Body evtl. ungelesen)
+        if length > backup.MAX_UPLOAD:
+            self._error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                        f"Die Datei ist zu groß (höchstens {backup.MAX_UPLOAD // (1024 * 1024)} MiB).")
+            return
+        if length <= 0:
+            self._error(HTTPStatus.BAD_REQUEST, "Keine Datei hochgeladen.")
+            return
+        REAPER.arm(self.connection, UPLOAD_READ_DEADLINE)
+        try:
+            result = backup.stage_upload(self.rfile, length)
+        except backup.RestoreError as exc:
+            if not REAPER.disarm(self.connection):  # Frist abgelaufen: Verbindung ist schon zu
+                self._error(HTTPStatus.UNPROCESSABLE_ENTITY, str(exc), written=False)
+            return
+        if REAPER.disarm(self.connection):
+            backup.discard(result["token"])
+            return
+        self._send_json(result)
+
     def _leak_error(self, exc: Exception) -> None:
         # Nur Art und Fundstelle – den gefundenen Text selbst nicht noch einmal ausgeben.
         leaks = [{"kind": f.get("kind"), "path": f.get("path")} for f in getattr(exc, "findings", [])]
@@ -1984,6 +2089,7 @@ class Handler(BaseHTTPRequestHandler):
         path, index = self._api_path(self.path)
         ident = self._identity()
         if ident is None:
+            self.close_connection = True  # Body bleibt ungelesen – nicht als nächste Anfrage deuten
             self._deny_auth()
             return
         if not self._host_ok(ident):
@@ -1993,13 +2099,28 @@ class Handler(BaseHTTPRequestHandler):
             self._error(HTTPStatus.METHOD_NOT_ALLOWED, "GET /api/v1 beschreibt die API; hier gibt es nichts zu senden")
             return
         if not self._scope_ok(ident, "POST", path):
+            self.close_connection = True
             self._deny_scope(ident, "POST", path)
             return
-        if not self._csrf_ok(ident):
+        upload = path == "/api/restore/preview"
+        if not (self._csrf_upload_ok(ident) if upload else self._csrf_ok(ident)):
+            self.close_connection = True  # ein evtl. Body bleibt ungelesen
             self._error(HTTPStatus.FORBIDDEN, "Anfrage abgelehnt (nur aus dem Dashboard heraus)")
             return
         if env_flag("WEB_READONLY"):
+            self.close_connection = True
             self._error(HTTPStatus.FORBIDDEN, "Einstellungen sind gesperrt (WEB_READONLY)")
+            return
+        if upload:
+            try:
+                self._restore_preview()
+            except BrokenPipeError:
+                pass
+            except Exception as exc:
+                # Kein roher Ausnahmetext an die Seite – Einzelheiten nur ins Log.
+                print(f"[backup] Prüfung der Sicherung fehlgeschlagen: {type(exc).__name__}: {exc}", flush=True)
+                self._error(HTTPStatus.INTERNAL_SERVER_ERROR,
+                            "Die Sicherung ließ sich nicht prüfen (Details im Log) – es wurde nichts geändert.")
             return
         try:
             data = self._read_json()
@@ -2102,6 +2223,18 @@ class Handler(BaseHTTPRequestHandler):
             result = self._after_change(result)
             result["notes"] = notes
             self._send_json(result)
+        elif path == "/api/restore/apply":
+            try:
+                result = backup.apply(data.get("token"), VERSION, emit=events.emit)
+            except backup.RestoreError as exc:
+                self._error(HTTPStatus.CONFLICT, str(exc))
+                return
+            self._settings_event("Einstellungen wiederhergestellt", result, ident)
+            self._send_json(self._after_change(result))
+        elif path == "/api/restore/cancel":
+            token = data.get("token")
+            backup.discard(token if isinstance(token, str) and token else "-")
+            self._send_json({"ok": True})
         elif path == "/api/settings/notes/ack":
             self._send_json({"acknowledged": settings.ack_migration_notes()})
         elif path == "/api/gps/autocal/rollback":
@@ -2307,6 +2440,11 @@ def main() -> None:
     # 1.5: GNSS-Störungen, GPS-Sperre und Holdover-Test im festen 10-s-Takt (eigener Thread).
     threading.Thread(target=gnssguard.run, args=(settings.values,), daemon=True, name="gnssguard").start()
     threading.Thread(target=events_ingester, daemon=True, name="events").start()
+    backup.cleanup_staging()  # Reste eines abgebrochenen Uploads vom letzten Lauf
+    backup.cleanup_downloads(0.0)
+    # 1.6: nächtliche Sicherung ins Datenverzeichnis (Schalter backup_nightly, Standard aus).
+    threading.Thread(target=backup.nightly_runner, args=(settings.values, VERSION), daemon=True,
+                     name="backup").start()
     notify.start(VERSION)  # eigener Thread je Kanal; ohne angelegte Kanäle geht nichts hinaus
     updatecheck.start(VERSION)  # opt-in; ausgeschaltet keine Anfrage nach außen
     diagnostics.own_hostnames()  # eigenen FQDN schon jetzt im Hintergrund auflösen (Host-Prüfung)

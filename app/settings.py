@@ -1218,6 +1218,13 @@ SCHEMA: list[dict] = [
                 "dabei einmal am Tag deine öffentliche IP-Adresse (grob ortbar) und dass hier "
                 "vermutlich ntp-gui läuft. Darum ist der Hinweis aus, bis du ihn einschaltest. Kein "
                 "Download, kein automatisches Update. Wirkt ohne Neustart."),
+    _field("backup_nightly", "web", "Nächtliche Sicherung", "bool", False, _as_bool,
+           env=None, restart=RESTART_NONE,
+           help="Legt jede Nacht gegen 3 Uhr (Ortszeit des Servers) eine Sicherung im Datenverzeichnis ab "
+                "(Ordner „sicherungen“, die letzten 7 Nächte). Inhalt wie beim Herunterladen unter "
+                "„Sichern“: ohne Position, ohne Passwort, Tokens und API-Schlüssel. Sie liegt auf "
+                "derselben Karte wie die Daten – gegen einen Kartendefekt hilft nur eine heruntergeladene "
+                "Kopie. Nichts wird hochgeladen. Wirkt ohne Neustart."),
 ]
 
 
@@ -1359,7 +1366,8 @@ def _load_file() -> dict:
     return data
 
 
-def _write_file(data: dict) -> None:
+def _write_tmp(data: dict) -> str:
+    """settings.json-Inhalt in eine temporäre Datei im Datenverzeichnis (0600). Gibt ihren Pfad."""
     data = dict(data)
     data.setdefault("schema", SCHEMA_VERSION)
     os.makedirs(DATA_DIR, mode=0o700, exist_ok=True)
@@ -1372,7 +1380,19 @@ def _write_file(data: dict) -> None:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             json.dump(data, handle, indent=2, ensure_ascii=False, sort_keys=True)
             handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
         os.chmod(tmp, 0o600)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+    return tmp
+
+
+def _write_file(data: dict) -> None:
+    tmp = _write_tmp(data)
+    try:
         os.replace(tmp, SETTINGS_FILE)
     finally:
         if os.path.exists(tmp):
@@ -1495,6 +1515,43 @@ def reset(keys: list[str]) -> dict[str, Any]:
     changed = [key for key in keys if before.get(key) != after.get(key)]
     restart = any(FIELDS[key]["restart"] == RESTART_SERVICES for key in changed)
     return {"changed": changed, "restart": restart}
+
+
+def replace_values(new_values: dict[str, Any], keep: Any = ()) -> dict[str, Any]:
+    """Wiederherstellen (backup.py): Die gespeicherten Werte werden genau new_values – Schlüssel in keep
+    behalten ihren bisherigen Wert, wenn new_values sie nicht nennt. Passwort und Hinweise bleiben."""
+    return commit_replace(stage_replace(new_values, keep))
+
+
+def stage_replace(new_values: dict[str, Any], keep: Any = ()) -> dict[str, Any]:
+    """Erster Schritt von replace_values: prüfen und als temporäre Datei schreiben – settings.json bleibt,
+    wie sie ist. commit_replace() setzt die Datei ein, discard_staged() verwirft sie. So kann
+    backup.py erst alles vorbereiten und dann in einem Zug tauschen (alles oder nichts)."""
+    clean = validate(new_values)
+    with _LOCK:
+        data = dict(_load_file())
+        stored = dict(data.get("values", {}))
+        kept = {key: stored[key] for key in keep if key in stored and key not in clean}
+        data["values"] = {**kept, **clean}
+        return {"tmp": _write_tmp(data)}
+
+
+def commit_replace(staged: dict[str, Any]) -> dict[str, Any]:
+    with _LOCK:
+        before = values()
+        os.replace(staged["tmp"], SETTINGS_FILE)
+        _CACHE.update(mtime=None, data=None)
+    after = values()
+    changed = [key for key in FIELDS if before.get(key) != after.get(key)]
+    restart = any(FIELDS[key]["restart"] == RESTART_SERVICES for key in changed)
+    return {"changed": changed, "restart": restart}
+
+
+def discard_staged(staged: dict[str, Any]) -> None:
+    try:
+        os.unlink(staged["tmp"])
+    except (OSError, KeyError, TypeError):
+        pass
 
 
 # Werte, die keine Geheimnisse sind, aber Konto-Kennungen enthalten können (NextDNS-ID im

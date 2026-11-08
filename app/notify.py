@@ -1156,6 +1156,13 @@ class Notifier:
         """Position sofort speichern (SIGTERM): sonst schickt ein Neustart schon Zugestelltes noch einmal."""
         self._save_position(force=True)
 
+    def skip_to(self, event_id: int) -> None:
+        """Nach einer Wiederherstellung (backup.py): Ereignisse bis event_id gelten als verteilt – die
+        übernommenen alten Ereignisse lösen keine Meldungen aus."""
+        with self.lock:
+            self.last_id = max(self.last_id, int(event_id))
+        self._save_position(force=True)
+
     def reload(self) -> None:
         self._dirty = True
         self.wake_event.set()

@@ -172,7 +172,7 @@ POSITION_KEYS = {
     "geoidsep", "undulation", "ecefx", "ecefy", "ecefz", "ecefvx", "ecefvy", "ecefvz", "ecefpacc",
     "ecefvacc", "reln", "rele", "reld", "position", "location", "coordinates", "coords", "latlon",
     "latlng", "geo", "geolocation", "epx", "epy", "epv", "eph", "dgpssta", "basestation",
-    "antennaposition",
+    "antennaposition", "pos",
 }
 MOTION_KEYS = {"speed", "track", "climb", "heading", "course", "magtrack", "magvar", "veln", "vele",
                "veld", "eps", "epd", "epc", "velocity", "yaw", "pitch", "roll"}

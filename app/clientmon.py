@@ -343,6 +343,9 @@ class ClientTable:
         self._stored: dict[str, float] = {}
         self._new_pending = 0
         self.dropped = 0   # wegen der Grenzen nicht gespeicherte Messpunkte (seit Start)
+        # Zählt jedes reset() (Wiederherstellung einer Sicherung): Ein Speichern, das seinen Stand vor dem
+        # Reset genommen hat, schreibt nicht mehr (es überschriebe die wiederhergestellten Zeilen).
+        self.generation = 0
 
     def update(self, ip: str, req: dict, offset: float | None, now: float) -> dict:
         with self.lock:
@@ -420,10 +423,27 @@ class ClientTable:
                              round(interval, 3) if interval is not None else None))
 
     def take_pending(self) -> list[tuple]:
+        return self.take_pending_gen()[0]
+
+    def take_pending_gen(self) -> tuple[list[tuple], int]:
         with self.lock:
             rows, self.pending = self.pending, []
             self._new_pending = 0
-        return rows
+            return rows, self.generation
+
+    def reset(self, rows: dict[str, dict]) -> None:
+        """Tabelle aus gespeicherten Zeilen neu aufbauen; vorgemerkte Messpunkte verwerfen.
+
+        Leeren und Neuaufbau in EINEM Sperrbereich: Eine Anfrage dazwischen legte sonst einen neuen Eintrag
+        an (requests=1), den der Neuaufbau überspränge – und das nächste Speichern überschriebe damit die
+        wiederhergestellte Zeile."""
+        with self.lock:
+            self.clients.clear()
+            self.pending = []
+            self._stored.clear()
+            self._new_pending = 0
+            self.generation += 1
+            self._restore_locked(rows)
 
     def get(self, ip: str) -> dict | None:
         with self.lock:
@@ -431,25 +451,33 @@ class ClientTable:
             return public_entry(entry) if entry is not None else None
 
     def snapshot(self, private: bool = False) -> dict[str, dict]:
+        return self.snapshot_gen(private)[0]
+
+    def snapshot_gen(self, private: bool = False) -> tuple[dict[str, dict], int]:
         convert = private_entry if private else public_entry
         with self.lock:
             items = [(ip, convert(e)) for ip, e in self.clients.items()]
-        return dict(items)
+            return dict(items), self.generation
 
     def restore(self, rows: dict[str, dict]) -> None:
         with self.lock:
-            for ip, entry in sorted(rows.items(), key=lambda kv: kv[1].get("last_seen") or 0):
-                if ip in self.clients or not isinstance(entry, dict):
-                    continue
-                base = _new_entry(None)
-                base.update({k: entry.get(k) for k in base if k in entry and entry.get(k) is not None})
-                base.update({k: entry.get(k) for k in RESTORED_KEYS if k in entry})
-                if not isinstance(base.get("intervals"), list):
-                    base["intervals"] = []
-                base["recent"] = _clean_recent(base.get("recent"))
-                self.clients[ip] = base
-            while len(self.clients) > self.limit:
-                self.clients.popitem(last=False)
+            self._restore_locked(rows)
+
+    def _restore_locked(self, rows: dict[str, dict]) -> None:
+        """Wie restore(), der Aufrufer hält self.lock."""
+        for ip, entry in sorted(rows.items(), key=lambda kv: (kv[1].get("last_seen") or 0)
+                                if isinstance(kv[1], dict) else 0):
+            if ip in self.clients or not isinstance(entry, dict):
+                continue
+            base = _new_entry(None)
+            base.update({k: entry.get(k) for k in base if k in entry and entry.get(k) is not None})
+            base.update({k: entry.get(k) for k in RESTORED_KEYS if k in entry})
+            if not isinstance(base.get("intervals"), list):
+                base["intervals"] = []
+            base["recent"] = _clean_recent(base.get("recent"))
+            self.clients[ip] = base
+        while len(self.clients) > self.limit:
+            self.clients.popitem(last=False)
 
 
 RESTORED_KEYS = ("version", "poll", "last_seen", "vlan", "mac", "stratum", "precision", "bare")
@@ -654,7 +682,7 @@ class Monitor:
     def flush_samples(self, prune: bool | None = None) -> int:
         """Vorgemerkte Messpunkte in clientmon_samples schreiben; stündlich alte entfernen."""
         self._last_flush = time.monotonic()
-        rows = self.table.take_pending()
+        rows, generation = self.table.take_pending_gen()
         if prune is None:
             prune = time.monotonic() - self._last_prune > SAMPLE_PRUNE
         if not rows and not prune:
@@ -664,6 +692,8 @@ class Monitor:
             _migrate(store)
             if rows:
                 with store.transaction() as conn:
+                    if self.table.generation != generation:
+                        rows = []  # vor einer Wiederherstellung vorgemerkt – verwerfen
                     conn.executemany("INSERT INTO clientmon_samples(ip, t, offset, poll, version, interval) "
                                      "VALUES(?, ?, ?, ?, ?, ?)", rows)
             if prune:
@@ -676,7 +706,7 @@ class Monitor:
     def _persist(self) -> None:
         self._last_persist = time.monotonic()
         self.flush_samples(prune=False)
-        snap = self.table.snapshot(private=True)
+        snap, generation = self.table.snapshot_gen(private=True)
         if not snap:
             return
         try:
@@ -689,6 +719,8 @@ class Monitor:
                                      (now - CLIENT_RETENTION, now - _recent()))[0]
             age_ok = _clock_plausible(due or 0, older or 0)
             with store.transaction() as conn:
+                if self.table.generation != generation:
+                    return  # Stand von vor einer Wiederherstellung – nicht darüberschreiben
                 conn.executemany(
                     "INSERT INTO clientmon_clients(ip, data, updated) VALUES(?, ?, ?) "
                     "ON CONFLICT(ip) DO UPDATE SET data=excluded.data, updated=excluded.updated",
@@ -741,6 +773,16 @@ def _from_stored(entry: dict) -> dict:
     elif entry.get("state") == NO_TIMESTAMP and not out["no_timestamp"]:
         out["no_timestamp"] = max(1, entry.get("requests") or 1)
     return out
+
+
+def reload_from_store() -> bool:
+    """Nach einer Wiederherstellung (backup.py, unter store.lock): Die laufende Messung baut ihre Tabelle
+    aus der Datenbank neu auf und verwirft vorgemerkte Messpunkte. Ohne laufende Messung: nichts zu tun."""
+    monitor = _MONITOR
+    if monitor is None:
+        return False
+    monitor.table.reset(stored_clients())
+    return True
 
 
 def stored_clients(ip: str | None = None) -> dict[str, dict]:

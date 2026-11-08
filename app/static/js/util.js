@@ -198,6 +198,20 @@ export async function apiPost(path, body) {
   return data;
 }
 
+// Datei als Body hochladen (Sicherung wiederherstellen). Gleicher Schutz wie apiPost: Pflicht-Kopf X-NTP-GUI.
+export async function apiUpload(path, file, type = "application/gzip") {
+  const response = await fetch(path, {
+    method: "POST",
+    cache: "no-store",
+    headers: { "Content-Type": type, "X-NTP-GUI": "1" },
+    body: file,
+  });
+  let data = {};
+  try { data = await response.json(); } catch (error) { /* leere Antwort */ }
+  if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+  return data;
+}
+
 // 1.5.3: Läuft ein Holdover-Test, bricht jeder Neustart von chronyd ihn ab – Zusatz für Rückfragen.
 export function holdoverNote(ctx) {
   return ctx?.status?.holdover_active

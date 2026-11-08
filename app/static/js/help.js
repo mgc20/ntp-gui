@@ -9,6 +9,7 @@ import { HELP_UHR, HELP_GROUP_UHR } from "./help-uhr.js";
 import { HELP_UPDATE, HELP_GROUP_UPDATE } from "./help-update.js";
 import { HELP_GNSS, HELP_GROUP_GNSS } from "./help-gnss.js";
 import { HELP_WEB, HELP_GROUP_WEB } from "./help-web.js";
+import { HELP_BACKUP, HELP_GROUP_BACKUP } from "./help-backup.js";
 
 // Alle Erklärungen an einer Stelle. Die ⓘ-Knöpfe im Dashboard und die
 // Hilfeseite nutzen dieselben Texte. **fett** und `code` werden formatiert.
@@ -930,6 +931,7 @@ export const HELP_GROUPS = [
   HELP_GROUP_CLIENTS,
   { title: "Einstellungen", keys: ["settings_source", "settings_export", "web_title", "web_refresh", "history_interval",
     "allow_networks", "gps_show_position"] },
+  HELP_GROUP_BACKUP,
   HELP_GROUP_API,
   HELP_GROUP_NOTIFY,
   HELP_GROUP_DNS,
@@ -951,3 +953,4 @@ Object.assign(HELP, HELP_UHR);
 Object.assign(HELP, HELP_UPDATE);
 Object.assign(HELP, HELP_GNSS);
 Object.assign(HELP, HELP_WEB);
+Object.assign(HELP, HELP_BACKUP);
