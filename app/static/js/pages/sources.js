@@ -1,5 +1,5 @@
-import { el, fmtSeconds, fmtDuration, fmtLogInterval, fmtNumber, isNum, rich } from "../util.js";
-import { card, kv, badge, info, reachRegister, rangeButtons, emptyNote } from "../ui.js";
+import { el, fmtSeconds, fmtDuration, fmtLogInterval, fmtNumber, fmtDate, isNum, rich } from "../util.js";
+import { card, kv, badge, infoButton, reachRegister, rangeButtons, emptyState, chartCard } from "../ui.js";
 import { lineChart } from "../charts.js";
 import { SELECT_STATE_HELP, SELECT_STATE_SHORT } from "../help.js";
 import { axisSeconds } from "./overview.js";
@@ -16,7 +16,7 @@ const TYPE = { "^": "server", "=": "peer", "#": "refclock" };
 
 export function stateBadge(source) {
   const [label, tone, help] = STATE[source.state] || [source.state_label || "–", "muted", null];
-  return el("span", { class: "state-cell" }, badge(label, tone), help ? info(help, label) : null);
+  return el("span", { class: "state-cell" }, badge(label, tone), help ? infoButton(help, label) : null);
 }
 
 // „Grund“ nur, wenn er mehr sagt als „Zustand“ (bei * und + wäre es dasselbe Wort).
@@ -29,7 +29,7 @@ export function reasonCell(source) {
   const key = source.select_state;
   if (!key || sameAsState(source)) return el("span", { class: "muted", text: "–" });
   const text = SELECT_STATE_SHORT[key] || key;
-  return el("span", { class: "reason" }, el("span", { text }), info(SELECT_STATE_HELP[key], text));
+  return el("span", { class: "reason" }, el("span", { text }), infoButton(SELECT_STATE_HELP[key], text));
 }
 
 function lastRx(source) {
@@ -75,7 +75,7 @@ function details(source) {
   }
   if (source.auth) {
     const nts = auth.mode === "NTS";
-    blocks.push(el("div", { class: "detail-block" }, el("h3", {}, "NTS ", info("nts", "NTS")), nts ? kv([
+    blocks.push(el("div", { class: "detail-block" }, el("h3", {}, "NTS ", infoButton("nts", "NTS")), nts ? kv([
       ["Authentifiziert", source.authenticated ? "ja – Antworten sind signiert" : "nein", "nts_authenticated"],
       ["Letzter Schlüsselaustausch", auth.last_ke_ago === null ? "noch keiner" : `vor ${fmtDuration(auth.last_ke_ago)}`, "nts_ke"],
       ["Versuche / NAK", `${auth.ke_attempts ?? 0} / ${auth.nak ?? 0}`, "nts_ke"],
@@ -98,7 +98,7 @@ function expiry(nts) {
   const days = nts.days_left;
   const tone = days < 0 ? "crit" : days < 14 ? "warn" : "good";
   const label = days < 0 ? `seit ${Math.ceil(-days)} Tagen abgelaufen` : `noch ${Math.floor(days)} Tage`;
-  return el("span", {}, `${new Date(nts.not_after * 1000).toLocaleDateString("de-DE")} `, badge(label, tone));
+  return el("span", {}, `${fmtDate(nts.not_after, { date: "medium", time: false })} `, badge(label, tone));
 }
 
 // Name, unter dem Clients den Server eintragen – passt er nicht zum Zertifikat,
@@ -168,37 +168,41 @@ export function render(ctx) {
   ];
   const table = el("div", { class: "table-scroll" }, el("table", { class: "sources-table" },
     el("thead", {}, el("tr", {}, head.map(([label, help, cls]) => el("th", { class: cls || null },
-      el("span", { text: label }), info(help, label))))),
+      el("span", { text: label }), infoButton(help, label))))),
     el("tbody", {}, rows.length ? rows : el("tr", {}, el("td", { colspan: 10, class: "empty-note", text: "Keine Zeitquellen konfiguriert." })))));
 
   // Offset je Quelle
   const names = [...new Set(history.flatMap((s) => Object.keys(s.sources || {})))];
   const labelOf = (name) => (sources.find((s) => s.name === name) || {}).hostname || name;
   const hidden = ctx.uiState.hiddenSeries || (ctx.uiState.hiddenSeries = new Set());
-  const chartHost = el("div", { class: "chart-host" });
-  ctx.afterRender(() => lineChart(chartHost, {
-    series: names.map((name) => ({ id: name, label: labelOf(name),
-      points: history.map((s) => [s.t, (s.sources || {})[name]?.o ?? null]) })),
-    format: (v) => fmtSeconds(v, 3, true), axisFormat: axisSeconds, height: 260, hidden, range: ctx.range, end: ctx.status.system?.time, 
-    ariaLabel: "Offset je Quelle",
-    onToggle: (id) => { if (hidden.has(id)) hidden.delete(id); else hidden.add(id); ctx.rerender(); },
-    emptyText: "Noch zu wenige Messwerte – der Verlauf füllt sich alle paar Sekunden",
-  }));
+  const offsetSeries = names.map((name) => ({ id: name, label: labelOf(name),
+    points: history.map((s) => [s.t, (s.sources || {})[name]?.o ?? null]) }));
+  // Noch kein Verlauf → eine Zeile „sammelt seit …“ statt einer leeren Fläche. Nie „flach“:
+  // Offsets mehrerer Quellen sind auch bei kleiner Spannweite aussagekräftig.
+  const offsetCard = chartCard(ctx, {
+    title: "Offset je Quelle", help: "source_offset", key: "sources-offset", series: offsetSeries, flat: false,
+    sub: "Wie weit jede Quelle von der Systemuhr entfernt ist. Liegen alle Netzwerkquellen beieinander und eine weicht konstant ab, ist das ein Kalibrierfall (typisch: USB-GPS). Klick auf die Legende blendet Quellen aus.",
+    actions: rangeButtons(ctx.range, ctx.setRange), since: history.length ? history[0].t : null,
+    zone: ctx.status.system?.tz_name || isNum(ctx.status.system?.utc_offset) ? ctx.status.system : null,
+    draw: (host) => lineChart(host, {
+      series: offsetSeries,
+      format: (v) => fmtSeconds(v, 3, true), axisFormat: axisSeconds, height: 260, hidden, range: ctx.range, end: ctx.status.system?.time,
+      ariaLabel: "Offset je Quelle",
+      onToggle: (id) => { if (hidden.has(id)) hidden.delete(id); else hidden.add(id); ctx.rerender(); },
+      emptyText: "Noch zu wenige Messwerte – der Verlauf füllt sich alle paar Sekunden",
+    }),
+  });
 
   return [
     card("Zeitquellen", { help: "source_type", sub: "Klick auf eine Zeile zeigt alles, was chrony über die Quelle weiß." }, table),
     ntsServerCard(status.nts_server),
-    card("Offset je Quelle", {
-      help: "source_offset",
-      sub: "Wie weit jede Quelle von der Systemuhr entfernt ist. Liegen alle Netzwerkquellen beieinander und eine weicht konstant ab, ist das ein Kalibrierfall (typisch: USB-GPS). Klick auf die Legende blendet Quellen aus.",
-      actions: rangeButtons(ctx.range, ctx.setRange),
-    }, chartHost),
+    offsetCard,
     card("So wählt chrony seine Quellen", { class: "explain" },
       el("ol", { class: "steps" },
         el("li", {}, rich("**Messen**: Jede Quelle wird regelmäßig gefragt. Aus Offset, Laufzeit und Streuung entsteht ein **Vertrauensbereich**, in dem die echte Zeit laut dieser Quelle liegt.")),
         el("li", {}, rich("**Mehrheit finden**: chrony sucht den Bereich, in dem sich die meisten Vertrauensbereiche überschneiden. Wer nicht dazugehört, ist **Falseticker (x)** und wird ignoriert.")),
         el("li", {}, rich("**Beste wählen**: Unter den übrigen wird die beste Quelle **ausgewählt** (Zeichen `*`) – kleinste Unsicherheit, stabil, ohne Hin-und-her-Springen.")),
         el("li", {}, rich("**Kombinieren**: Quellen, die fast so gut sind, werden **kombiniert (+)** und mitgemittelt. Deutlich schlechtere bleiben **nicht kombiniert (−)** – sie stehen als Reserve bereit."))),
-      emptyNote("Bevorzugte Quellen („prefer“) gewinnen, solange sie plausibel sind. „Nur beobachten“ („noselect“) misst ohne zu nutzen.")),
+      emptyState("Bevorzugte Quellen („prefer“) gewinnen, solange sie plausibel sind. „Nur beobachten“ („noselect“) misst ohne zu nutzen.")),
   ].filter(Boolean);
 }

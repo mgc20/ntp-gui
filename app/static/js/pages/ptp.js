@@ -1,5 +1,5 @@
-import { el, fmtNs, isNum, rich } from "../util.js";
-import { card, tile, kv, info, badge, emptyNote, copyButton } from "../ui.js";
+import { el, fmtNs, fmtNumber, isNum, rich } from "../util.js";
+import { card, statCard, kv, infoButton, badge, emptyState, copyButton } from "../ui.js";
 import { lineChart } from "../charts.js";
 import { axisSeconds } from "./overview.js";
 import { hardwareData, matrixList } from "./hardware.js";
@@ -31,7 +31,7 @@ function checklist(checks, report) {
     const state = c.ok === true ? "ok" : c.ok === false ? (c.warn ? "warn" : "fail") : "note";
     const icon = { ok: "✓", fail: "✕", warn: "!", note: "i" }[state];
     return el("li", { "data-state": state }, el("span", { class: "check-icon", "aria-hidden": "true", text: icon }),
-      el("div", {}, el("div", { class: "hw-row-head" }, el("strong", { text: c.title }), CHECK_HELP[c.key] ? info(CHECK_HELP[c.key], c.title) : null),
+      el("div", {}, el("div", { class: "hw-row-head" }, el("strong", { text: c.title }), CHECK_HELP[c.key] ? infoButton(CHECK_HELP[c.key], c.title) : null),
         el("p", { text: c.detail })));
   }));
 }
@@ -40,10 +40,10 @@ const NIC_CLASS = { good: ["PTP-tauglich", "good"], limited: ["eingeschränkt", 
   virtual: ["virtuell – nur Software", "warn"] };
 
 function nicTable(nics, report) {
-  if (!nics || !nics.length) return emptyNote("Keine Netzwerkkarten gefunden.");
+  if (!nics || !nics.length) return emptyState("Keine Netzwerkkarten gefunden.");
   const yes = (v) => (v ? "ja" : "nein");
   const hw = new Map((report?.ptp?.interfaces || []).map((n) => [n.name, n]));
-  const head = (text, help) => el("th", {}, text, " ", info(help, text));
+  const head = (text, help) => el("th", {}, text, " ", infoButton(help, text));
   return el("div", { class: "table-scroll" }, el("table", {},
     el("thead", {}, el("tr", {}, head("Interface", "ptp_interface"), head("Treiber", "nic_driver"), head("Zustand", "nic_state"),
       head("HW-Zeitstempel", "nic_hw_timestamps"), head("PTP-Uhr", "phc"), head("Eignung", "nic_suitability"))),
@@ -114,14 +114,14 @@ export function render(ctx) {
       el("div", { class: "compare-col" }, el("h3", { text: "Nicht nötig für" }), el("ul", {},
         el("li", {}, rich("PCs, Server, Smart-Home, Logs, Zertifikate – dafür reicht **NTP** völlig")),
         el("li", {}, rich("Geräte ohne PTP-Unterstützung (Windows nur eingeschränkt, macOS gar nicht)"))))),
-    emptyNote("Dieser Server macht beides gleichzeitig: PTP für Geräte, die es können, NTP für alle anderen. Natives Dante nutzt PTPv1 – das kann linuxptp nicht; Dante-Geräte daher in den AES67-Modus schalten."),
+    emptyState("Dieser Server macht beides gleichzeitig: PTP für Geräte, die es können, NTP für alle anderen. Natives Dante nutzt PTPv1 – das kann linuxptp nicht; Dante-Geräte daher in den AES67-Modus schalten."),
     el("details", keepOpen(ctx, "ptpReq"), el("summary", { text: "Alle Voraussetzungen im Detail" }), el("p", {}, rich(
       "1. **Netzwerkkarte mit Hardware-Zeitstempeln** und eigener PTP-Uhr – geprüft unten. Gut: Intel i210/i211/i225/i226/X550, Raspberry Pi CM4/CM5. Virtuelle Karten in VMs können es nicht.  "
       + "2. **Host-Netzwerk** und Rechte `NET_ADMIN`/`NET_RAW`, das Gerät `/dev/ptpN` im Container.  "
       + "3. **Eine gute Referenz**: Als Grandmaster ist PTP nur mit GPS **plus PPS** sinnvoll – sonst verteilt man Nanosekunden-genau eine Zeit, die auf Millisekunden falsch ist. Als Slave übernimmt der Server die Zeit eines vorhandenen Grandmasters.  "
       + "4. **PTP-fähige Clients** (Linux mit linuxptp, viele Audio- und Netzwerkgeräte).  "
       + "5. **Switches**: einfache gehen, kosten aber Genauigkeit (Mikrosekunden). Für Nanosekunden: Switches mit Transparent- oder Boundary-Clock oder Direktverbindung."))),
-    el("details", keepOpen(ctx, "ptpGm"), el("summary", {}, "So wird dieser Server zum GPS-Grandmaster ", info("ptp_grandmaster_flow", "Grandmaster")),
+    el("details", keepOpen(ctx, "ptpGm"), el("summary", {}, "So wird dieser Server zum GPS-Grandmaster ", infoButton("ptp_grandmaster_flow", "Grandmaster")),
       el("ol", { class: "steps gm-flow" },
         el("li", {}, rich("**chrony** stellt die Systemuhr nach GPS – mit **PPS** auf Mikrosekunden genau.")),
         el("li", {}, rich("**phc2sys** kopiert die Systemuhr laufend in die PTP-Uhr der Netzwerkkarte (`/dev/ptp0`) und rechnet dabei die 37 s zwischen UTC und der PTP-Zeitskala TAI ein. Dafür muss „Systemuhr und PTP-Uhr koppeln (phc2sys)“ an sein (`PHC2SYS_ENABLE=true`); die Richtung wählt ntp-gui im Modus „Master“ automatisch. chrony stellt dabei weiter die Systemuhr.")),
@@ -130,24 +130,24 @@ export function render(ctx) {
 
   out.push(card("Voraussetzungen auf diesem System", { help: "ptp_requirements",
     sub: "Live geprüft. Graue Punkte lassen sich nicht automatisch prüfen." },
-    matrixRows.length ? [el("h3", { class: "mini-head" }, "Was mit dieser Hardware geht ", info("hw_matrix", "Was mit dieser Hardware geht")),
+    matrixRows.length ? [el("h3", { class: "mini-head" }, "Was mit dieser Hardware geht ", infoButton("hw_matrix", "Was mit dieser Hardware geht")),
       matrixList(matrixRows),
       el("p", { class: "hw-more" }, el("a", { href: "#/hardware", text: "Alle Fähigkeiten im Hardware-Check →" })),
-      el("h3", { class: "mini-head hw-gap" }, "Einzelprüfungen ", info("ptp_requirements", "Einzelprüfungen"))] : null,
-    devices ? checklist(devices.ptp_checks, report) : emptyNote("Wird geprüft …")));
+      el("h3", { class: "mini-head hw-gap" }, "Einzelprüfungen ", infoButton("ptp_requirements", "Einzelprüfungen"))] : null,
+    devices ? checklist(devices.ptp_checks, report) : emptyState("Wird geprüft …")));
   out.push(card("Netzwerkkarten", { help: "phc", sub: "Fähigkeiten laut `ethtool -T`." },
-    devices ? nicTable(devices.interfaces, report) : emptyNote("Wird geprüft …")));
+    devices ? nicTable(devices.interfaces, report) : emptyState("Wird geprüft …")));
 
   if (ptp.enabled && ptp.running) {
     const metrics = ptp.log_metrics || {};
     out.unshift(el("div", { class: "stat-row" },
-      tile({ label: "Rolle", help: "port_state", value: ptp.is_grandmaster ? "Grandmaster" : (ptp.portState || "–"),
+      statCard({ label: "Rolle", help: "port_state", value: ptp.is_grandmaster ? "Grandmaster" : (ptp.portState || "–"),
         tone: ptp.synchronised ? "good" : "warn", note: ptp.port_state_label || "" }),
-      tile({ label: "Offset zum Master", help: "offset_from_master", value: ptp.is_grandmaster ? "–" : fmtNs(ptp.offset_ns),
+      statCard({ label: "Offset zum Master", help: "offset_from_master", value: ptp.is_grandmaster ? "–" : fmtNs(ptp.offset_ns),
         tone: "muted", note: ptp.is_grandmaster ? "dieser Server ist die Referenz" : `RMS ${isNum(metrics.rms_ns) ? fmtNs(metrics.rms_ns) : "–"}` }),
-      tile({ label: "Laufzeit", help: "mean_path_delay", value: fmtNs(ptp.meanPathDelay ?? metrics.path_delay_ns), tone: "muted",
+      statCard({ label: "Laufzeit", help: "mean_path_delay", value: fmtNs(ptp.meanPathDelay ?? metrics.path_delay_ns), tone: "muted",
         note: "eine Richtung" }),
-      tile({ label: "Zeitstempel", help: "timestamping", value: ptp.time_stamping === "hardware" ? "Hardware" : "Software",
+      statCard({ label: "Zeitstempel", help: "timestamping", value: ptp.time_stamping === "hardware" ? "Hardware" : "Software",
         tone: ptp.time_stamping === "hardware" ? "good" : "warn", note: ptp.interface || "" })));
 
     out.push(card("PTP im Detail", { help: "grandmaster" }, el("div", { class: "grid-2" },
@@ -157,7 +157,7 @@ export function render(ctx) {
         ["Transport", ptp.transport, "ptp_transport"],
         ["Portzustand", ptp.port_state_label || ptp.portState, "port_state"],
         ["Servo", metrics.servo_state || "–", "ptp_servo"],
-        ["Frequenzkorrektur", isNum(metrics.freq_ppb) ? `${metrics.freq_ppb} ppb` : "–", "ptp_freq"],
+        ["Frequenzkorrektur", isNum(metrics.freq_ppb) ? `${fmtNumber(metrics.freq_ppb, 1, { group: false })} ppb` : "–", "ptp_freq"],
         ["RMS / Max", isNum(metrics.rms_ns) ? `${fmtNs(metrics.rms_ns)} / ${fmtNs(metrics.max_ns)}` : "–", "ptp_rms"],
         ["phc2sys", ptp.phc2sys ? (masterMode ? "an – überträgt die Systemuhr in die Karte" : "an – stellt die Systemuhr") : "aus", "phc2sys"],
       ]),

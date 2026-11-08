@@ -1,7 +1,7 @@
 // Hardware-Check: Was kann dieses Gerät von dem, was ntp-gui kann?
 // Alle Werte aus /api/hardware landen nur als Text im DOM (el/textContent).
 import { el, apiGet, fmtNumber, fmtTime, isNum, rich } from "../util.js";
-import { card, kv, info, badge, emptyNote, toast, copyButton } from "../ui.js";
+import { card, kv, infoButton, badge, emptyState, toast, copyButton } from "../ui.js";
 
 // Kein Neuaufbau alle paar Sekunden: Kopierbare Ausschnitte bleiben markierbar,
 // aufgeklappte Details bleiben offen. Neu geladen wird per Knopf oder Seitenwechsel.
@@ -59,7 +59,7 @@ function snippet(code, title) {
 
 // Eine Zeile der Fähigkeitsmatrix im Stil der PTP-Prüfliste.
 export function matrixList(rows) {
-  if (!rows || !rows.length) return emptyNote("Der Server hat keine Ergebnisse geliefert – „Neu prüfen“ versuchen oder das Container-Log ansehen.");
+  if (!rows || !rows.length) return emptyState("Der Server hat keine Ergebnisse geliefert – „Neu prüfen“ versuchen oder das Container-Log ansehen.");
   return el("ul", { class: "checklist hw-matrix" }, rows.map((row) => {
     const s = STATUS[row.status] || STATUS.unknown;
     return el("li", { "data-state": s.state, "data-active": row.active ? "true" : null },
@@ -67,12 +67,12 @@ export function matrixList(rows) {
       el("div", { class: "hw-row-body" },
         el("div", { class: "hw-row-head" },
           el("strong", { text: row.title || row.key }),
-          info(`hw_${row.key}`, row.title),
+          infoButton(`hw_${row.key}`, row.title),
           badge(s.label, s.tone),
           row.active ? badge("aktiv", "info", "In den Einstellungen eingeschaltet") : null),
         el("p", { text: row.text || "" }),
         row.accuracy ? el("p", { class: "hw-accuracy" }, el("span", { class: "muted", text: "Genauigkeit: " }),
-          el("span", { class: "mono", text: row.accuracy }), " ", info("hw_accuracy", "Genauigkeit")) : null,
+          el("span", { class: "mono", text: row.accuracy }), " ", infoButton("hw_accuracy", "Genauigkeit")) : null,
         row.fix ? snippet(row.fix, row.status === "change" ? "So geht es" : row.status === "no" ? "Nur mit anderer Hardware" : "Hinweis") : null));
   }));
 }
@@ -93,7 +93,7 @@ export function accuracyLadder(receiver, report) {
   const summary = `Jetzt: ${currentStep ? `${currentStep.label} (${currentStep.value})` : "unbekannt"}`
     + (possibleStep ? `, möglich: ${possibleStep.label} (${possibleStep.value})` : "");
   return el("div", { class: "ladder" },
-    el("div", { class: "ladder-head" }, el("span", { text: "Genauigkeitsstufen" }), info("hw_ladder", "Genauigkeitsstufen"),
+    el("div", { class: "ladder-head" }, el("span", { text: "Genauigkeitsstufen" }), infoButton("hw_ladder", "Genauigkeitsstufen"),
       el("span", { class: "ladder-axis", text: "ungenau → genau" })),
     el("ol", { class: "ladder-steps", "aria-label": `Genauigkeitsstufen. ${summary}` }, steps),
     el("p", { class: "ladder-legend", text: summary }));
@@ -152,7 +152,7 @@ function receiverBlock(r, report) {
       r.configured ? badge("eingetragen", "info", "Steht in den Einstellungen als GPS-Gerät") : null,
       gpsd?.timing ? badge("Timing-Modul", "good") : null),
     el("div", { class: "verdict", "data-tone": r.tone || "info" },
-      el("span", { class: "verdict-label" }, "Urteil ", info("hw_verdict", "Urteil")),
+      el("span", { class: "verdict-label" }, "Urteil ", infoButton("hw_verdict", "Urteil")),
       el("p", { text: r.verdict || "–" })),
     el("div", { class: "hw-item-grid" },
       kv([
@@ -175,24 +175,24 @@ function receiverBlock(r, report) {
 }
 
 function gpsCard(report) {
-  if (missing(report.gps)) return card("GPS-Empfänger", { help: "hw_receiver" }, emptyNote(NO_DATA));
+  if (missing(report.gps)) return card("GPS-Empfänger", { help: "hw_receiver" }, emptyState(NO_DATA));
   const receivers = report.gps.receivers || [];
   const gpsdPps = report.gps.gpsd_pps || {};
   const body = receivers.length ? receivers.map((r) => receiverBlock(r, report))
-    : [emptyNote("Kein serieller GPS-Empfänger gefunden – weder am Host noch im Container. USB-Sticks erscheinen als `/dev/ttyACM0` oder `/dev/ttyUSB0`, GPS-HATs am Pi als `/dev/ttyAMA0` bzw. `/dev/serial0`."),
+    : [emptyState("Kein serieller GPS-Empfänger gefunden – weder am Host noch im Container. USB-Sticks erscheinen als `/dev/ttyACM0` oder `/dev/ttyUSB0`, GPS-HATs am Pi als `/dev/ttyAMA0` bzw. `/dev/serial0`."),
       accuracyLadder(null, report)];
   if (receivers.length) {
     body.push(kv([
       ["gpsd sieht PPS", gpsdPps.seen === false && (report.pps || []).some((p) => p.kind === "gpio" && p.state === "live")
         ? "nein – normal, chrony liest /dev/pps direkt" : yesNo(gpsdPps.seen), "hw_gpsd_pps"],
-      ["NMEA-Verspätung (gpsd)", isNum(gpsdPps.toff_latency_ms) ? `${fmtNumber(gpsdPps.toff_latency_ms, 1)} ms` : "–", "hw_toff"],
+      ["NMEA-Verspätung (gpsd)", isNum(gpsdPps.toff_latency_ms) ? `${fmtNumber(gpsdPps.toff_latency_ms, 1, { group: false })} ms` : "–", "hw_toff"],
     ]));
   }
   // 1.5: welche Rolle das GPS spielt – ohne PPS ehrlich als Rückfallebene (E16).
   const role = report.gps.role;
   if (role && role.role !== "off") {
     body.push(kv([
-      ["Rolle des GPS", `${role.label}${isNum(role.bound) ? ` · Fehlerschranke ± ${fmtNumber(role.bound * 1000, 0)} ms` : ""}`, "gpsq_role"],
+      ["Rolle des GPS", `${role.label}${isNum(role.bound) ? ` · Fehlerschranke ± ${fmtNumber(role.bound * 1000, 0, { group: false })} ms` : ""}`, "gpsq_role"],
     ]));
     body.push(el("p", { class: "hw-note", text: role.text || "" }));
   }
@@ -200,18 +200,18 @@ function gpsCard(report) {
 }
 
 function ppsCard(report) {
-  if (!Array.isArray(report.pps)) return card("PPS-Quellen", { help: "hw_pps_sources" }, emptyNote(NO_DATA));
+  if (!Array.isArray(report.pps)) return card("PPS-Quellen", { help: "hw_pps_sources" }, emptyState(NO_DATA));
   const pps = report.pps;
   if (!pps.length) {
     return card("PPS-Quellen", { help: "hw_pps_sources" },
-      emptyNote("Keine PPS-Quelle im Kernel. Für PPS über GPIO am Raspberry Pi: `dtoverlay=pps-gpio,gpiopin=18` in `/boot/firmware/config.txt`, neu starten – dann erscheint `/dev/pps0`."));
+      emptyState("Keine PPS-Quelle im Kernel. Für PPS über GPIO am Raspberry Pi: `dtoverlay=pps-gpio,gpiopin=18` in `/boot/firmware/config.txt`, neu starten – dann erscheint `/dev/pps0`."));
   }
   const kindLabel = { gpio: "GPIO", ldisc: "seriell (DCD)", phc: "Netzwerkkarte", unknown: "unbekannt" };
-  const head = (text, help) => el("th", {}, text, " ", info(help, text));
+  const head = (text, help) => el("th", {}, text, " ", infoButton(help, text));
   return card("PPS-Quellen", { help: "hw_pps_sources" },
     el("div", { class: "table-scroll" }, el("table", { class: "hw-table" },
       el("thead", {}, el("tr", {}, head("Gerät", "hw_device_path"), head("Art", "hw_pps_kind"), head("Impulse", "hw_pps_state"),
-        el("th", { class: "num" }, "Rate ", info("hw_pps_rate", "Rate")), el("th", { class: "num" }, "Phase ", info("hw_pps_phase", "Phase")),
+        el("th", { class: "num" }, "Rate ", infoButton("hw_pps_rate", "Rate")), el("th", { class: "num" }, "Phase ", infoButton("hw_pps_phase", "Phase")),
         head("Verfügbarkeit", "hw_presence"), head("Eingetragen", "hw_pps_configured"))),
       el("tbody", {}, pps.map((p) => {
         const s = PPS_STATE[p.state] || PPS_STATE.unknown;
@@ -220,7 +220,7 @@ function ppsCard(report) {
           el("td", { text: kindLabel[p.kind] || p.kind || "–" }),
           el("td", { class: "wrap-cell" }, badge(s.label, s.tone), el("div", { class: "sub", text: p.error || s.text })),
           el("td", { class: "num", text: isNum(p.rate_hz) ? `${fmtNumber(p.rate_hz, 2)} Hz` : "–" }),
-          el("td", { class: "num", text: isNum(p.phase_us) ? `${fmtNumber(p.phase_us, 1)} µs` : "–" }),
+          el("td", { class: "num", text: isNum(p.phase_us) ? `${fmtNumber(p.phase_us, 1, { group: false })} µs` : "–" }),
           el("td", {}, presence(p)),
           el("td", { text: p.configured ? "ja" : "nein" }));
       })))));
@@ -232,10 +232,10 @@ const NIC_CLASS = {
 };
 
 function ptpCard(report) {
-  if (missing(report.ptp)) return card("PTP-Uhren und Netzwerkkarten", { help: "hw_ptp_clocks" }, emptyNote(NO_DATA));
+  if (missing(report.ptp)) return card("PTP-Uhren und Netzwerkkarten", { help: "hw_ptp_clocks" }, emptyState(NO_DATA));
   const clocks = report.ptp?.clocks || [];
   const nics = report.ptp?.interfaces || [];
-  const head = (text, help, cls) => el("th", { class: cls || null }, text, " ", info(help, text));
+  const head = (text, help, cls) => el("th", { class: cls || null }, text, " ", infoButton(help, text));
   const kindLabel = { nic: "Netzwerkkarte", vm: "VM-Uhr", unknown: "unbekannt" };
   const clockTable = clocks.length ? el("div", { class: "table-scroll" }, el("table", { class: "hw-table" },
     el("thead", {}, el("tr", {}, head("Uhr", "phc"), head("Name", "hw_clock_name"), head("Art", "hw_ptp_kind"),
@@ -249,7 +249,7 @@ function ptpCard(report) {
       el("td", { class: "num", text: `${c.n_pins ?? "–"} / ${c.n_external_timestamps ?? "–"}` }),
       el("td", { text: yesNo(c.pps_available === 1 ? true : c.pps_available === 0 ? false : c.pps_available) }),
       el("td", { class: "wrap-cell" }, presence({ host_present: true, ...c }), c.error ? el("div", { class: "sub", text: c.error }) : null))))))
-    : emptyNote("Keine PTP-Hardwareuhr (`/dev/ptp*`) im System – Hardware-PTP geht mit dieser Hardware nicht.");
+    : emptyState("Keine PTP-Hardwareuhr (`/dev/ptp*`) im System – Hardware-PTP geht mit dieser Hardware nicht.");
   const nicTable = nics.length ? el("div", { class: "table-scroll" }, el("table", { class: "hw-table" },
     el("thead", {}, el("tr", {}, head("Interface", "ptp_interface"), head("Treiber", "nic_driver"), head("Zustand", "nic_state"),
       head("HW-Zeitstempel", "nic_hw_timestamps"), head("PTP-Uhr", "phc"), head("Eignung", "hw_nic_class"))),
@@ -264,11 +264,11 @@ function ptpCard(report) {
         el("td", { class: "wrap-cell" }, el("span", { class: "badge-row" }, badge(label, tone),
           n.passthrough ? badge("Passthrough", "good", "PCI-Passthrough erkannt") : null),
           n.nic_note ? el("div", { class: "sub", text: n.nic_note }) : null));
-    })))) : emptyNote("Keine Netzwerkkarten sichtbar.");
+    })))) : emptyState("Keine Netzwerkkarten sichtbar.");
   const bridge = report.permissions?.network === "bridge";
   return card("PTP-Uhren und Netzwerkkarten", { help: "hw_ptp_clocks" },
-    el("h3", { class: "mini-head" }, "PTP-Hardwareuhren ", info("hw_ptp_clocks", "PTP-Hardwareuhren")), clockTable,
-    el("h3", { class: "mini-head hw-gap" }, "Netzwerkkarten ", info("hw_nic_class", "Netzwerkkarten")), nicTable,
+    el("h3", { class: "mini-head" }, "PTP-Hardwareuhren ", infoButton("hw_ptp_clocks", "PTP-Hardwareuhren")), clockTable,
+    el("h3", { class: "mini-head hw-gap" }, "Netzwerkkarten ", infoButton("hw_nic_class", "Netzwerkkarten")), nicTable,
     bridge ? el("p", { class: "hw-note" }, rich("Der Container läuft im **Bridge-Netz** und sieht nur seine virtuelle Karte. Die echten Karten des Hosts erscheinen erst mit `network_mode: host`.")) : null);
 }
 
@@ -323,7 +323,7 @@ function rtcCard(report, ctx) {
   return card("Echtzeituhr (RTC)", { help: "hw_rtc" },
     kv([
       ["Vorhanden", unknown ? "unbekannt" : rtc.present ? `ja${rtc.name ? ` (${rtc.name})` : ""}` : "nein", "hw_rtc"],
-      rtc.present ? ["Abweichung zur Systemuhr", isNum(rtc.drift_seconds) ? `${fmtNumber(rtc.drift_seconds, 1)} s` : "–", "hw_rtc_drift"] : null,
+      rtc.present ? ["Abweichung zur Systemuhr", isNum(rtc.drift_seconds) ? `${fmtNumber(rtc.drift_seconds, 1, { group: false })} s` : "–", "hw_rtc_drift"] : null,
       rtc.present ? ["Beim Start übernommen", yesNo(rtc.hctosys), "hw_hctosys"] : null,
       nocert !== undefined ? ["Zertifikatszeit beim Start prüfen", nocert ? "nein (sicher ohne RTC)" : "ja", "nocerttimecheck"] : null,
     ]),
@@ -377,7 +377,7 @@ const TEMP_KIND = { thermal: "Thermalzone", hwmon: "Sensorchip (hwmon)", w1: "1-
 
 function temperatureCard(report) {
   const temp = report.temperature;
-  if (missing(temp)) return card("Temperatursensoren", { help: "temp_candidates" }, emptyNote(NO_DATA));
+  if (missing(temp)) return card("Temperatursensoren", { help: "temp_candidates" }, emptyState(NO_DATA));
   const rows = temp.candidates || [];
   const chosen = temp.sensor?.id;
   const note = !rows.length
@@ -387,7 +387,7 @@ function temperatureCard(report) {
     : temp.available
       ? `Aufgezeichnet wird **${temp.sensor.label || temp.sensor.id}** (Einstellung „${temp.setting}“). Die Kennung eines anderen Sensors kannst du in den Einstellungen unter „Temperatursensor“ eintragen.`
       : "Der eingestellte Sensor liefert keinen Wert – in den Einstellungen „auto“ wählen oder eine Kennung aus der Tabelle eintragen.";
-  const head = (text, help) => el("th", {}, text, " ", info(help, text));
+  const head = (text, help) => el("th", {}, text, " ", infoButton(help, text));
   return card("Temperatursensoren", { help: "temp_candidates" },
     rows.length ? el("div", { class: "table-scroll" }, el("table", {},
       el("thead", {}, el("tr", {}, head("Kennung", "temp_candidates"), el("th", { text: "Art" }),
@@ -410,7 +410,7 @@ function headCard(report, ctx) {
     onclick: () => recheck(ctx) });
   return card("Dieses System", { help: "hw_check", actions: el("span", { class: "button-row" },
     el("span", { class: "muted hw-stamp", text: isNum(report.generated) ? `Stand ${fmtTime(report.generated)}` : "" }),
-    button, info("hw_refresh", "Neu prüfen")) },
+    button, infoButton("hw_refresh", "Neu prüfen")) },
     el("p", { class: "hw-summary", text: plat.summary || (model !== "–" ? model : missing(report.platform) ? "Keine Daten zur Plattform" : "Plattform nicht erkannt") }),
     kv([
       ["Board / Modell", model, "hw_board"],
@@ -418,7 +418,7 @@ function headCard(report, ctx) {
       ["Virtualisierung", plat.hypervisor || (plat.docker_desktop ? "Docker Desktop (VM)" : plat.wsl ? "WSL2 (VM)" : missing(report.platform) ? "unbekannt" : "keine erkannt"), "hw_hypervisor"],
     ]),
     (report.warnings || []).length ? el("div", { class: "hw-warnings" },
-      el("h3", { class: "mini-head" }, "Auffälligkeiten ", info("hw_warnings", "Auffälligkeiten")),
+      el("h3", { class: "mini-head" }, "Auffälligkeiten ", infoButton("hw_warnings", "Auffälligkeiten")),
       el("ul", { class: "insights" }, report.warnings.map((w) => el("li", { class: "insight", "data-level": "warn" },
         el("span", { class: "insight-icon", "aria-hidden": "true", text: "!" }),
         el("div", { class: "insight-body" }, el("p", { text: w })))))) : null);
@@ -443,7 +443,7 @@ export function render(ctx) {
   const report = hardwareData(ctx);
   if (!report) {
     return [card("Hardware-Check", { help: "hw_check" },
-      emptyNote("Hardware wird geprüft … (beim ersten Mal gut eine Sekunde, um PPS-Impulse zu zählen)"))];
+      emptyState("Hardware wird geprüft … (beim ersten Mal gut eine Sekunde, um PPS-Impulse zu zählen)"))];
   }
   const matrix = report.matrix || [];
   const fixes = matrix.filter((m) => m.status === "change" && m.fix);

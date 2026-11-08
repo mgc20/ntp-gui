@@ -1,7 +1,7 @@
 // Seite „Diagnose“: Log, Ereignisse, Diagnosepaket mit Vorschau, Aufzeichnung.
 // Alles bleibt lokal: Das Paket wird nur heruntergeladen, nie hochgeladen.
 import { el, apiPost, isNum, fmtNumber, fmtZoned, serverZone } from "../util.js";
-import { card, info, badge, kv, emptyNote, toast } from "../ui.js";
+import { card, infoButton, badge, kv, emptyState, toast } from "../ui.js";
 
 // Nicht bei jedem Status-Refresh neu aufbauen – Filter, Vorschau und Scrollposition bleiben stehen.
 export const live = false;
@@ -78,7 +78,7 @@ function switchControl(label, checked, onChange, help, disabled = false) {
   return el("span", { class: "diag-switch" },
     el("label", { class: "switch" }, input, el("span", { class: "switch-track", "aria-hidden": "true" }),
       el("span", { class: "switch-text", text: label })),
-    info(help, label));
+    infoButton(help, label));
 }
 
 // --- Log -------------------------------------------------------------------------
@@ -99,7 +99,7 @@ function logCard(state) {
       const lines = Array.isArray(data.lines) ? data.lines : [];
       const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 40;
       if (!lines.length) {
-        list.replaceChildren(emptyNote(data.available === false
+        list.replaceChildren(emptyState(data.available === false
           ? "Noch kein Log vorhanden. Es entsteht, sobald der Container mit dem Supervisor läuft (`ntp-gui.log`)."
           : "Keine passenden Zeilen."));
       } else {
@@ -113,7 +113,7 @@ function logCard(state) {
       if (first || atBottom) list.scrollTop = list.scrollHeight;
       first = false;
     } catch (error) {
-      list.replaceChildren(emptyNote(error.status === 404
+      list.replaceChildren(emptyState(error.status === 404
         ? "Die Log-Schnittstelle ist in diesem Build noch nicht verfügbar."
         : `Log nicht abrufbar: ${error.message}`));
       meta.textContent = "";
@@ -130,7 +130,7 @@ function logCard(state) {
       debounce = setTimeout(() => { first = true; load(); }, 300);
     } });
   const toolbar = el("div", { class: "toolbar diag-toolbar" },
-    el("span", { class: "diag-field" }, search, info("diag_log_filter", "Log filtern")),
+    el("span", { class: "diag-field" }, search, infoButton("diag_log_filter", "Log filtern")),
     switchControl("nur Warnungen/Fehler", state.problems, (on) => { state.problems = on; first = true; load(); },
       "diag_log_problems"),
     switchControl("automatisch aktualisieren", state.auto, (on) => { state.auto = on; if (on) load(); }, "diag_log_auto"),
@@ -146,7 +146,7 @@ function logCard(state) {
   el("div", { class: "diag-legend" },
     el("span", { class: "diag-legend-item", dataset: { level: "warn" }, text: "Warnung" }),
     el("span", { class: "diag-legend-item", dataset: { level: "crit" }, text: "Fehler" }),
-    info("diag_log_level", "Einstufung der Zeilen")),
+    infoButton("diag_log_level", "Einstufung der Zeilen")),
   list);
 }
 
@@ -166,7 +166,7 @@ export function eventRow(event, sys = null) {
 }
 
 function eventsCard(state, system = () => null) {
-  const body = el("div", { class: "diag-events" }, emptyNote("lädt …"));
+  const body = el("div", { class: "diag-events" }, emptyState("lädt …"));
   const load = async () => {
     const since = Math.floor(Date.now() / 1000) - state.eventRange;
     const params = new URLSearchParams({ since: String(since), limit: "300" });
@@ -179,10 +179,10 @@ function eventsCard(state, system = () => null) {
       const events = list.filter((e) => e && typeof e === "object").sort((a, b) => (b.t || 0) - (a.t || 0));
       body.replaceChildren(events.length
         ? el("ul", { class: "diag-event-list" }, events.map((e) => eventRow(e, system())))
-        : emptyNote(filtered ? "Keine Ereignisse, die zum Filter passen."
+        : emptyState(filtered ? "Keine Ereignisse, die zum Filter passen."
           : "In diesem Zeitraum ist nichts Besonderes passiert."));
     } catch (error) {
-      body.replaceChildren(emptyNote(error.status === 404
+      body.replaceChildren(emptyState(error.status === 404
         ? "Das Ereignisprotokoll ist in diesem Build noch nicht verfügbar."
         : `Ereignisse nicht abrufbar: ${error.message}`));
     }
@@ -216,9 +216,9 @@ function eventsCard(state, system = () => null) {
     sub: "Neustarts, Quellenwechsel, GPS-Fix, Zertifikate – neueste oben." },
   el("div", { class: "toolbar diag-toolbar diag-event-filters" },
     el("label", { class: "diag-field" }, el("span", { class: "toolbar-label", text: "Art" }), kindSelect),
-    info("diag_event_kind", "Art des Ereignisses"),
+    infoButton("diag_event_kind", "Art des Ereignisses"),
     el("label", { class: "diag-field" }, el("span", { class: "toolbar-label", text: "Stufe" }), levelSelect),
-    info("diag_event_level", "Stufe")),
+    infoButton("diag_event_level", "Stufe")),
   body);
 }
 
@@ -268,12 +268,12 @@ function previewView(data) {
       ["Größe (ungepackt)", fmtBytes(total), "diag_sections"],
       ["Pseudonyme", fmtNumber((data.removed || {}).pseudonyms || 0), "diag_pseudonyms"],
     ]),
-    el("h3", { class: "diag-subhead" }, el("span", { text: "Entfernt oder ersetzt" }), info("diag_removed")),
+    el("h3", { class: "diag-subhead" }, el("span", { text: "Entfernt oder ersetzt" }), infoButton("diag_removed")),
     entries.length
       ? el("ul", { class: "diag-removed" }, entries.map(([key, count]) => el("li", {},
         el("strong", { text: `${fmtNumber(count)} ×` }), " ", el("span", { text: labels[key] || key }))))
-      : emptyNote("Der Filter musste nichts entfernen."),
-    el("h3", { class: "diag-subhead" }, el("span", { text: "So sieht das Paket aus" }), info("diag_preview")),
+      : emptyState("Der Filter musste nichts entfernen."),
+    el("h3", { class: "diag-subhead" }, el("span", { text: "So sieht das Paket aus" }), infoButton("diag_preview")),
     el("div", { class: "diag-sections" }, sections.map((s) => sectionDetails(s, (data.content || {})[s.name]))));
 }
 
@@ -294,7 +294,7 @@ function bundleCard(state) {
   // liefert der Download genau dieses Paket; sonst baut der Server neu.
   let shown = null;
 
-  const busyNote = (seconds) => emptyNote("Paket wird zusammengestellt und gefiltert … "
+  const busyNote = (seconds) => emptyState("Paket wird zusammengestellt und gefiltert … "
     + (isNum(seconds) && seconds > 0 ? `(seit ${seconds} s) ` : "")
     + (state.recording ? "Mit Aufzeichnung kann das auf einem Raspberry Pi eine bis mehrere Minuten dauern. " : "")
     + "Das Dashboard bleibt währenddessen bedienbar.");
@@ -397,21 +397,21 @@ function bundleCard(state) {
       + "**genau** ansehen, was drinsteht." },
   el("p", { class: "diag-privacy" },
     el("span", { text: "Datenschutzfilter: keine Koordinaten, Satellitenwinkel, Seriennummern, MAC- oder öffentlichen "
-      + "IP-Adressen, eigenen Domains oder Zeitzonennamen." }), info("diag_privacy", "Datenschutzfilter")),
+      + "IP-Adressen, eigenen Domains oder Zeitzonennamen." }), infoButton("diag_privacy", "Datenschutzfilter")),
   el("div", { class: "diag-options" },
     switchControl("Client-Liste einschließen (pseudonymisiert)", state.clients,
       (on) => { state.clients = on; staleView(); }, "diag_include_clients"),
     switchControl("Aufzeichnung einschließen", state.recording,
       (on) => { state.recording = on; staleView(); }, "diag_include_recording")),
   el("div", { class: "button-row" },
-    previewButton, info("diag_preview", "Vorschau"),
-    downloadButton, info("diag_download", "Herunterladen")),
+    previewButton, infoButton("diag_preview", "Vorschau"),
+    downloadButton, infoButton("diag_download", "Herunterladen")),
   output);
 }
 
 // --- Aufzeichnung -------------------------------------------------------------------------
 function recordingCard(state, readonly, system = () => null) {
-  const status = el("div", { class: "diag-recording-status" }, emptyNote("lädt …"));
+  const status = el("div", { class: "diag-recording-status" }, emptyState("lädt …"));
   const minutes = el("input", { type: "number", min: "1", max: "60", step: "1", value: String(state.minutes),
     "aria-label": "Dauer in Minuten", class: "diag-minutes", disabled: readonly,
     onchange: () => { state.minutes = Math.min(60, Math.max(1, Math.round(Number(minutes.value) || 5))); minutes.value = String(state.minutes); } });
@@ -437,7 +437,7 @@ function recordingCard(state, readonly, system = () => null) {
       show(await getJson("/api/recording"));
     } catch (error) {
       start.disabled = true;
-      status.replaceChildren(emptyNote(error.status === 404
+      status.replaceChildren(emptyState(error.status === 404
         ? "Aufzeichnen ist in diesem Build noch nicht verfügbar."
         : `Zustand nicht abrufbar: ${error.message}`));
     }
@@ -473,9 +473,9 @@ function recordingCard(state, readonly, system = () => null) {
       + "sie nur, wenn du „Aufzeichnung einschließen“ wählst – gefiltert wie alles andere." },
   el("div", { class: "button-row" },
     el("label", { class: "diag-field" }, el("span", { class: "toolbar-label", text: "Dauer (Minuten)" }), minutes),
-    info("diag_recording_duration", "Dauer"),
+    infoButton("diag_recording_duration", "Dauer"),
     start, stop),
-  readonly ? emptyNote("Das Dashboard ist schreibgeschützt (`WEB_READONLY`) – Aufzeichnen ist gesperrt.") : null,
+  readonly ? emptyState("Das Dashboard ist schreibgeschützt (`WEB_READONLY`) – Aufzeichnen ist gesperrt.") : null,
   status);
 }
 
@@ -490,7 +490,7 @@ export function render(ctx) {
     el("p", { class: "diag-privacy" },
       el("span", { text: "Nichts davon wird automatisch hochgeladen. Was das Gerät verlässt, lädst du selbst herunter – "
         + "vorher siehst du in der Vorschau genau, was drinsteht." }),
-      info("diag_no_upload", "Nichts wird hochgeladen"))),
+      infoButton("diag_no_upload", "Nichts wird hochgeladen"))),
     logCard(state),
     eventsCard(state, system),
     bundleCard(state),

@@ -1,7 +1,7 @@
 // GNSS-Störungen, GPS-Sperre (GPS-Seite) und echter Holdover-Test (Seite Uhrqualität) – 1.5.
 // Daten: GET /api/gnss und /api/holdover; Aktionen per POST (admin). Alles als Text im DOM (el/textContent).
-import { el, fmtNumber, isNum, rich, apiPost } from "../util.js";
-import { card, kv, info, badge, emptyNote, toast } from "../ui.js";
+import { el, fmtNumber, fmtDate, isNum, rich, apiPost } from "../util.js";
+import { card, kv, infoButton, badge, emptyState, toast } from "../ui.js";
 import { lineChart, stepDecimals } from "../charts.js";
 
 const STAGE = { ok: ["unauffällig", "good"], hinweis: ["Hinweis", "info"], warnung: ["Warnung", "warn"], stoerung: ["Störung", "crit"] };
@@ -16,11 +16,10 @@ const STAGE_TEXT = {
 function ms(value, digits) {
   if (!isNum(value)) return "–";
   const abs = Math.abs(value);
-  return `${fmtNumber(value, digits ?? (abs >= 100 ? 0 : abs >= 1 ? 1 : 2))} ms`;
+  return `${fmtNumber(value, digits ?? (abs >= 100 ? 0 : abs >= 1 ? 1 : 2), { group: false })} ms`;
 }
 function when(unix) {
-  if (!isNum(unix)) return "–";
-  return new Date(unix * 1000).toLocaleString("de-DE", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+  return fmtDate(unix, { date: "day" });
 }
 function span(seconds) {
   if (!isNum(seconds)) return "–";
@@ -57,10 +56,10 @@ function signalValue(signal, quiet) {
 export function gnssCard(ctx) {
   const g = ctx.data("gnss", "/api/gnss", 10);
   const head = { help: "gnss_guard", sub: "Jamming und Spoofing erkennen – nur aus gpsd und chrony, auf den Empfänger wird nichts geschrieben." };
-  if (!g) return card("Störungserkennung", head, emptyNote("Wird geladen …"));
+  if (!g) return card("Störungserkennung", head, emptyState("Wird geladen …"));
   if (!g.enabled) {
     return card("Störungserkennung", { ...head, badge: badge("aus", "muted") },
-      emptyNote(g.gps_enable ? "Die Störungserkennung ist ausgeschaltet (Einstellungen → GPS → Störungserkennung)."
+      emptyState(g.gps_enable ? "Die Störungserkennung ist ausgeschaltet (Einstellungen → GPS → Störungserkennung)."
         : "GPS ist ausgeschaltet."),
       lockBlock(ctx, g));
   }
@@ -78,7 +77,7 @@ export function gnssCard(ctx) {
     : "noch zu wenige starke Satelliten zum Vergleichen";
   return card("Störungserkennung", { ...head, badge: badge(label, tone) },
     el("div", { class: "verdict", "data-tone": tone },
-      el("span", { class: "verdict-label" }, `Stufe: ${label}`, " ", info("gnss_stage", "Stufe")),
+      el("span", { class: "verdict-label" }, `Stufe: ${label}`, " ", infoButton("gnss_stage", "Stufe")),
       el("p", { text: STAGE_TEXT[g.stage] || "" }),
       g.since && g.stage !== "ok" ? el("p", { class: "card-sub", text: `seit ${when(g.since)}` }) : null),
     kv([
@@ -138,7 +137,7 @@ function lockBlock(ctx, g) {
       if (!window.confirm("Position und Zeitabstand neu lernen? Nötig, wenn du Empfänger, Antenne oder USB-Port gewechselt oder den Empfänger umgestellt hast. Die automatische GPS-Kalibrierung misst danach ebenfalls neu und übernimmt den neuen Abstand selbst – bei einer echten Störung (Spoofing) deshalb nicht drücken.")) return;
       post(ctx, "/api/gnss", { action: "relearn" }, relearn, "Wird neu gelernt", "gnss");
     });
-    buttons.push(relearn, info("gnss_relearn", "Neu lernen"), info("gnss_moved", "Empfänger umgezogen?"));
+    buttons.push(relearn, infoButton("gnss_relearn", "Neu lernen"), infoButton("gnss_moved", "Empfänger umgezogen?"));
   }
   buttons.push(el("a", { href: "#/einstellungen?s=gps", text: "Verhalten in den Einstellungen" }));
   return el("div", {}, kv(rows), el("div", { class: "button-row" }, buttons));
@@ -164,7 +163,7 @@ function startForm(ctx, data) {
   const networkSwitch = el("span", { class: "diag-switch" },
     el("label", { class: "switch" }, network, el("span", { class: "switch-track", "aria-hidden": "true" }),
       el("span", { class: "switch-text", text: "auch Netzquellen abschalten (echter Holdover)" })),
-    info("holdover_network", "Netzquellen"));
+    infoButton("holdover_network", "Netzquellen"));
   const limit = el("input", { type: "number", min: String(d.limit_min_ms || 1), max: String(d.limit_max_ms || 1000), step: "1",
     value: String(ui.hoLimit), "aria-label": "Abbruchgrenze in Millisekunden", style: "width: 6em" });
   limit.addEventListener("input", () => { ui.hoLimit = Number(limit.value); });
@@ -180,8 +179,8 @@ function startForm(ctx, data) {
   });
   return el("div", {},
     el("div", { class: "toolbar" },
-      el("label", { class: "inline-field" }, el("span", {}, "Dauer ", info("holdover_hours", "Dauer")), hours),
-      el("label", { class: "inline-field" }, el("span", {}, "Abbruch ab (ms) ", info("holdover_limit", "Abbruchgrenze")), limit)),
+      el("label", { class: "inline-field" }, el("span", {}, "Dauer ", infoButton("holdover_hours", "Dauer")), hours),
+      el("label", { class: "inline-field" }, el("span", {}, "Abbruch ab (ms) ", infoButton("holdover_limit", "Abbruchgrenze")), limit)),
     networkSwitch,
     check.ok === false ? el("div", { class: "callout", "data-tone": "warn", text: check.reason }) : null,
     kv([["Messreferenzen", isNum(check.references) ? `${fmtNumber(check.references, 0)} erreichbare Netzquellen (mindestens ${fmtNumber(d.min_references || 2, 0)})` : "–", "holdover_refs"]]),
@@ -200,16 +199,16 @@ function runningBlock(ctx, run) {
   const points = run.points || [];
   ctx.afterRender(() => lineChart(host, { height: 170, key: "holdover-run", zeroLine: true, stats: false,
     series: [{ id: "dev", label: "ms", color: "var(--accent)", points: points.map(([t, v]) => [t, v]) }],
-    format: (v) => ms(v), axisFormat: (v, step) => `${fmtNumber(v, stepDecimals(step))} ms`,
+    format: (v) => ms(v), axisFormat: (v, step) => `${fmtNumber(v, stepDecimals(step), { group: false })} ms`,
     ariaLabel: "Zeitfehler während des Holdover-Tests", emptyText: "Erster Messpunkt nach einer Minute" }));
   return el("div", {},
     el("div", { class: "verdict", "data-tone": "warn" },
-      el("span", { class: "verdict-label" }, "Test läuft ", info("holdover_progress", "Fortschritt")),
+      el("span", { class: "verdict-label" }, "Test läuft ", infoButton("holdover_progress", "Fortschritt")),
       el("p", { text: `Bisher ${ms(run.deviation_ms)} in ${span(run.elapsed_s)} – noch ${span(run.remaining_s)}.` }),
       el("progress", { max: String((run.hours || 1) * 3600), value: String(run.elapsed_s || 0), "aria-label": "Fortschritt des Tests" })),
     kv([
       ["Zeitfehler bisher", `${ms(run.deviation_ms)} (größter Betrag ${ms(run.max_abs_ms)})`, "holdover_deviation"],
-      ["Gangabweichung", isNum(run.drift_ppm) ? `${fmtNumber(run.drift_ppm, 3)} ppm` : "nach einigen Minuten", "holdover_drift"],
+      ["Gangabweichung", isNum(run.drift_ppm) ? `${fmtNumber(run.drift_ppm, 3, { group: false })} ppm` : "nach einigen Minuten", "holdover_drift"],
       ["Abgeschaltet", `${run.include_network ? "GPS/PPS und Netzquellen" : "nur GPS/PPS"} (${fmtNumber(run.targets, 0)} Quellen)`, "holdover_network"],
       ["Abbruch ab", `± ${ms(run.limit_ms, 0)}`, "holdover_limit"],
       ["Endet", when((run.started || 0) + (run.hours || 0) * 3600), "holdover_hours"],
@@ -222,17 +221,17 @@ function runningBlock(ctx, run) {
 }
 
 function resultsBlock(results) {
-  if (!results.length) return emptyNote("Noch kein Test gelaufen.");
+  if (!results.length) return emptyState("Noch kein Test gelaufen.");
   const last = results[0];
   const [label, tone] = OUTCOME[last.outcome] || OUTCOME.aborted;
   return el("div", {},
     el("div", { class: "verdict", "data-tone": tone },
-      el("span", { class: "verdict-label" }, `Letzter Test (${when(last.started)}) `, badge(outcomeLabel(last) || label, tone), " ", info("holdover_result", "Ergebnis")),
+      el("span", { class: "verdict-label" }, `Letzter Test (${when(last.started)}) `, badge(outcomeLabel(last) || label, tone), " ", infoButton("holdover_result", "Ergebnis")),
       el("p", { text: last.sentence || "–" }),
-      isNum(last.drift_ppm) ? el("p", { class: "card-sub", text: `Gangabweichung ${fmtNumber(last.drift_ppm, 3)} ppm, größter Betrag ${ms(last.max_abs_ms)}` }) : null),
+      isNum(last.drift_ppm) ? el("p", { class: "card-sub", text: `Gangabweichung ${fmtNumber(last.drift_ppm, 3, { group: false })} ppm, größter Betrag ${ms(last.max_abs_ms)}` }) : null),
     results.length > 1 ? el("table", { class: "mini-table" },
       el("thead", {}, el("tr", {}, el("th", { text: "Start" }), el("th", { text: "Ergebnis" }), el("th", { class: "num", text: "Dauer" }),
-        el("th", { class: "num" }, "Zeitfehler ", info("holdover_deviation", "Zeitfehler")))),
+        el("th", { class: "num" }, "Zeitfehler ", infoButton("holdover_deviation", "Zeitfehler")))),
       el("tbody", {}, results.map((r) => el("tr", {},
         el("td", { text: when(r.started) }),
         el("td", { text: outcomeLabel(r) }),
@@ -244,7 +243,7 @@ export function holdoverCard(ctx) {
   const running = ctx.uiState.hoRunning;
   const data = ctx.data("holdover", "/api/holdover", running ? 15 : 60);
   const head = { help: "holdover", sub: "Wie lange hält die Uhr ohne Zeitquelle? Gemessen statt geschätzt: chrony misst die Netzquellen weiter, nutzt sie aber nicht." };
-  if (!data) return card("Holdover-Test", head, emptyNote("Wird geladen …"));
+  if (!data) return card("Holdover-Test", head, emptyState("Wird geladen …"));
   ctx.uiState.hoRunning = Boolean(data.active);
   const results = data.results || [];
   // Kopfzeile: nur echte Holdover-Läufe (alle Quellen abgewählt) mit Messergebnis (fertig oder Grenze).
@@ -252,6 +251,6 @@ export function holdoverCard(ctx) {
   const headBadge = data.active ? badge("läuft", "warn") : last ? badge(`${ms(Math.abs(last.deviation_ms))} in ${span(last.duration_s)}`, "muted") : null;
   return card("Holdover-Test", { ...head, badge: headBadge },
     data.active && data.run ? runningBlock(ctx, data.run) : startForm(ctx, data),
-    el("h3", { class: "mini-head" }, "Ergebnisse ", info("holdover_result", "Ergebnisse")),
+    el("h3", { class: "mini-head" }, "Ergebnisse ", infoButton("holdover_result", "Ergebnisse")),
     resultsBlock(results));
 }

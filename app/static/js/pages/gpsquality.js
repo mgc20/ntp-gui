@@ -1,8 +1,8 @@
 // GPS ohne PPS und schwacher Empfang (1.5): Empfangsbewertung, Rolle des GPS mit ehrlicher
 // Fehlerschranke und Antennen-Test. Daten: GET /api/gps/quality und /api/gps/antenna.
 // Alles landet als Text im DOM (el/textContent) – auch die Namen der Messungen.
-import { el, fmtNumber, isNum, rich, apiPost, holdoverNote } from "../util.js";
-import { card, kv, info, badge, emptyNote, toast } from "../ui.js";
+import { el, fmtNumber, fmtDate, isNum, rich, apiPost, holdoverNote } from "../util.js";
+import { card, kv, infoButton, badge, emptyState, toast } from "../ui.js";
 
 const LEVEL = {
   green: ["gut", "good"], yellow: ["mäßig", "warn"], red: ["zu schwach", "crit"], unknown: ["noch offen", "muted"],
@@ -12,11 +12,10 @@ function pct(share) { return isNum(share) ? `${fmtNumber(share * 100, 0)} %` : "
 function ms(seconds) {
   if (!isNum(seconds)) return "–";
   const value = seconds * 1000;
-  return `${fmtNumber(value, value >= 10 ? 0 : 1)} ms`;
+  return `${fmtNumber(value, value >= 10 ? 0 : 1, { group: false })} ms`;
 }
 function when(unix) {
-  if (!isNum(unix)) return "–";
-  return new Date(unix * 1000).toLocaleString("de-DE", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+  return fmtDate(unix, { date: "day" });
 }
 
 export function qualityData(ctx) {
@@ -42,15 +41,15 @@ function stabilityRow(stability) {
 export function receptionCard(ctx) {
   const q = qualityData(ctx);
   const head = { help: "gpsq_assessment", sub: "Über die letzten 24 Stunden aus dem gespeicherten Verlauf." };
-  if (!q) return card("Empfang", head, emptyNote("Bewertung wird geladen …"));
-  if (!q.enabled || !q.assessment) return card("Empfang", head, emptyNote(q.reason || "Nicht verfügbar."));
+  if (!q) return card("Empfang", head, emptyState("Bewertung wird geladen …"));
+  if (!q.enabled || !q.assessment) return card("Empfang", head, emptyState(q.reason || "Nicht verfügbar."));
   const a = q.assessment;
   const [label, tone] = LEVEL[a.level] || LEVEL.unknown;
   const reasons = a.reasons || [];
   const cnLabel = a.cn0_source === "used_avg" ? "Signal (Ø genutzte)" : "Signal (4 stärkste)";
   return card("Empfang", { ...head, badge: badge(label, tone) },
     el("div", { class: "verdict", "data-tone": tone },
-      el("span", { class: "verdict-label" }, "Empfangsbewertung ", info("gpsq_assessment", "Empfangsbewertung")),
+      el("span", { class: "verdict-label" }, "Empfangsbewertung ", infoButton("gpsq_assessment", "Empfangsbewertung")),
       el("p", { text: a.sentence || "–" })),
     reasons.length ? el("ul", { class: "checklist" }, reasons.map((r) => el("li", { "data-state": r.level === "red" ? "fail" : "warn" },
       el("span", { class: "check-icon", "aria-hidden": "true", text: "!" }),
@@ -63,7 +62,7 @@ export function receptionCard(ctx) {
       ["Fix gerade", stabilityRow(q.stability), "gpsq_unstet"],
       ["Datenbasis", isNum(a.covered_seconds) ? `${fmtNumber(a.covered_seconds / 3600, 1)} h Messzeit, ${fmtNumber(a.samples)} Messpunkte` : "–", "gpsq_basis"],
     ]),
-    el("p", { class: "card-sub" }, "Tipps für besseren Empfang ", info("gpsq_tips", "Tipps für besseren Empfang")));
+    el("p", { class: "card-sub" }, "Tipps für besseren Empfang ", infoButton("gpsq_tips", "Tipps für besseren Empfang")));
 }
 
 // --- Rolle des GPS ------------------------------------------------------------------
@@ -90,7 +89,7 @@ async function resetBound(ctx, button) {
 export function roleCard(ctx) {
   const q = qualityData(ctx);
   const head = { help: "gpsq_role" };
-  if (!q || !q.role) return card("Rolle des GPS", head, emptyNote(q ? (q.reason || "Nicht verfügbar.") : "Wird geladen …"));
+  if (!q || !q.role) return card("Rolle des GPS", head, emptyState(q ? (q.reason || "Nicht verfügbar.") : "Wird geladen …"));
   const role = q.role;
   const bound = q.bound || {};
   const measured = bound.measured || {};
@@ -99,7 +98,7 @@ export function roleCard(ctx) {
     ["Rolle", el("span", {}, badge(role.label, tone), role.active === true ? " – gerade genutzt" : role.active === false ? " – gerade nicht genutzt" : ""), "gpsq_role"],
   ];
   if (role.role !== "off" && isNum(role.delay)) {
-    rows.push(["Fehlerschranke", `± ${ms(role.delay / 2)} (Delay ${fmtNumber(role.delay, 3)} s, Auflösung ${fmtNumber(role.precision, 3)} s)`, "gpsq_bound"]);
+    rows.push(["Fehlerschranke", `± ${ms(role.delay / 2)} (Delay ${fmtNumber(role.delay, 3, { group: false })} s, Auflösung ${fmtNumber(role.precision, 3, { group: false })} s)`, "gpsq_bound"]);
     rows.push(["Herkunft", SOURCE_LABEL[role.bound_source] || role.bound_source, "gpsq_bound_mode"]);
   }
   if (measured.status === "measured") {
@@ -117,7 +116,7 @@ export function roleCard(ctx) {
   actions.push(el("a", { href: "#/einstellungen?s=gps", text: "Rolle und Fehlerschranke in den Einstellungen" }));
   return card("Rolle des GPS", head,
     el("div", { class: "verdict", "data-tone": tone },
-      el("span", { class: "verdict-label" }, role.label, " ", info("gpsq_role", "Rolle")),
+      el("span", { class: "verdict-label" }, role.label, " ", infoButton("gpsq_role", "Rolle")),
       el("p", { text: role.text || "" })),
     (role.warnings || []).map((text) => el("div", { class: "callout", "data-tone": "warn", text })),
     kv(rows),
@@ -160,7 +159,7 @@ async function antennaAction(ctx, body, button) {
 function comparisonTable(ctx, data) {
   const results = data.results || [];
   if (results.length < 2) {
-    return emptyNote(results.length ? "Eine Messung gespeichert – stell den Empfänger um und miss ein zweites Mal, dann erscheint hier der Vergleich."
+    return emptyState(results.length ? "Eine Messung gespeichert – stell den Empfänger um und miss ein zweites Mal, dann erscheint hier der Vergleich."
       : "Noch keine Messung. Starte die erste, stell den Empfänger um, miss erneut – hier erscheint der Vergleich.");
   }
   const cmp = data.comparison || {};
@@ -184,13 +183,13 @@ function comparisonTable(ctx, data) {
       el("label", { class: "inline-field" }, el("span", { text: "Messung B" }), pick("b", b))),
     el("table", { class: "mini-table" },
       el("thead", {}, el("tr", {}, el("th", { text: "" }), el("th", { text: "A" }), el("th", { text: "B" }),
-        el("th", {}, "B − A ", info("gpsq_antenna_compare", "Vergleich")))),
+        el("th", {}, "B − A ", infoButton("gpsq_antenna_compare", "Vergleich")))),
       el("tbody", {}, COMPARE_ROWS.map(([label, key, help]) => el("tr", {},
-        el("th", {}, label, " ", info(help, label)),
+        el("th", {}, label, " ", infoButton(help, label)),
         el("td", { text: resultCell(a, key) }), el("td", { text: resultCell(b, key) }),
-        el("td", { text: isNum(delta[key]) ? (key === "fix_share" ? `${delta[key] > 0 ? "+" : ""}${fmtNumber(delta[key] * 100, 0)} %-Pkt.` : `${delta[key] > 0 ? "+" : ""}${fmtNumber(delta[key], 0)}`) : "–" }))))),
+        el("td", { text: isNum(delta[key]) ? (key === "fix_share" ? `${fmtNumber(delta[key] * 100, 0, { signed: true })} %-Pkt.` : fmtNumber(delta[key], 0, { signed: true })) : "–" }))))),
     cmp.verdict ? el("div", { class: "verdict", "data-tone": cmp.better ? "good" : "info" },
-      el("span", { class: "verdict-label" }, "Ergebnis ", info("gpsq_antenna_compare", "Ergebnis")), el("p", { text: cmp.verdict })) : null);
+      el("span", { class: "verdict-label" }, "Ergebnis ", infoButton("gpsq_antenna_compare", "Ergebnis")), el("p", { text: cmp.verdict })) : null);
 }
 
 export function antennaCard(ctx) {
@@ -201,7 +200,7 @@ export function antennaCard(ctx) {
   const running = ctx.uiState.antennaRunning;
   const data = ctx.data("antenna", `/api/gps/antenna${query.size ? `?${query}` : ""}`, running ? 3 : 30);
   const head = { help: "gpsq_antenna", sub: "5 Minuten messen, Empfänger umstellen, erneut messen – der Vergleich zeigt, welcher Platz besser ist. Bleibt auf diesem Gerät, ohne Satellitenwinkel." };
-  if (!data) return card("Antennen-Test", head, emptyNote("Wird geladen …"));
+  if (!data) return card("Antennen-Test", head, emptyState("Wird geladen …"));
   const test = data.test || {};
   ctx.uiState.antennaRunning = Boolean(test.running);
   const body = [];
@@ -210,8 +209,8 @@ export function antennaCard(ctx) {
     const stop = el("button", { type: "button", class: "button", text: "Abbrechen", disabled: ctx.readonly ? true : null });
     stop.addEventListener("click", () => antennaAction(ctx, { action: "stop" }, stop));
     body.push(el("div", { class: "verdict", "data-tone": "info" },
-      el("span", { class: "verdict-label" }, `Messung läuft: ${test.label || "ohne Namen"}`, " ", info("gpsq_antenna", "Antennen-Test")),
-      el("p", { text: `${fmtNumber(test.elapsed, 0)} von ${fmtNumber(test.seconds, 0)} s · bisher Fix ${pct(live.fix_share)}, Signal ${isNum(live.cn0_top4) ? `${fmtNumber(live.cn0_top4, 0)} dB-Hz` : "–"}, ${isNum(live.used) ? fmtNumber(live.used, 0) : "–"} genutzte Satelliten` }),
+      el("span", { class: "verdict-label" }, `Messung läuft: ${test.label || "ohne Namen"}`, " ", infoButton("gpsq_antenna", "Antennen-Test")),
+      el("p", { text: `${fmtNumber(test.elapsed, 0)} von ${fmtNumber(test.seconds, 0, { group: false })} s · bisher Fix ${pct(live.fix_share)}, Signal ${isNum(live.cn0_top4) ? `${fmtNumber(live.cn0_top4, 0)} dB-Hz` : "–"}, ${isNum(live.used) ? fmtNumber(live.used, 0) : "–"} genutzte Satelliten` }),
       el("progress", { max: String(test.seconds || 300), value: String(test.elapsed || 0), "aria-label": "Fortschritt der Messung" })),
     el("div", { class: "button-row" }, stop));
   } else {
@@ -225,13 +224,13 @@ export function antennaCard(ctx) {
       antennaAction(ctx, { action: "start", label: label.value, seconds: data.default_seconds || 300 }, start);
     });
     body.push(el("div", { class: "toolbar" },
-      el("label", { class: "inline-field" }, el("span", {}, "Name ", info("gpsq_antenna_label", "Name der Messung")), label), start));
+      el("label", { class: "inline-field" }, el("span", {}, "Name ", infoButton("gpsq_antenna_label", "Name der Messung")), label), start));
     if (test.error) body.push(el("div", { class: "callout", text: test.error }));
   }
   body.push(comparisonTable(ctx, data));
   const results = data.results || [];
   if (results.length) {
-    body.push(el("h3", { class: "mini-head" }, "Gespeicherte Messungen ", info("gpsq_antenna_list", "Gespeicherte Messungen")));
+    body.push(el("h3", { class: "mini-head" }, "Gespeicherte Messungen ", infoButton("gpsq_antenna_list", "Gespeicherte Messungen")));
     body.push(el("table", { class: "mini-table" },
       el("thead", {}, el("tr", {}, el("th", { text: "Messung" }), el("th", { class: "num", text: "Signal" }),
         el("th", { class: "num", text: "Fix" }), el("th", { class: "num", text: "genutzt" }), el("th", { text: "" }))),
@@ -247,6 +246,6 @@ export function antennaCard(ctx) {
           el("td", {}, del));
       }))));
   }
-  body.push(el("p", { class: "card-sub" }, rich("**Tipp:** zwischen zwei Messungen nur eine Sache ändern (Platz, Kabel, USB-Port)."), " ", info("gpsq_tips", "Tipps")));
+  body.push(el("p", { class: "card-sub" }, rich("**Tipp:** zwischen zwei Messungen nur eine Sache ändern (Platz, Kabel, USB-Port)."), " ", infoButton("gpsq_tips", "Tipps")));
   return card("Antennen-Test", head, body);
 }

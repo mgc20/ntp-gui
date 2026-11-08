@@ -1,5 +1,5 @@
-import { el, rich, apiPost, apiGet, apiUpload, fmtNumber, fmtZoned, serverZone, isNum } from "../util.js";
-import { card, info, badge, kv, emptyNote, toast, copyButton, isPopoverOpen } from "../ui.js";
+import { el, rich, apiPost, apiGet, apiUpload, fmtNumber, fmtDate as fmtDateTime, fmtZoned, serverZone, isNum } from "../util.js";
+import { card, infoButton, badge, kv, emptyState, toast, copyButton, isPopoverOpen } from "../ui.js";
 import { t, has, language, setLanguage, LANGUAGES } from "../i18n.js";
 
 export const live = false; // nicht bei jedem Refresh neu aufbauen – Eingaben bleiben stehen
@@ -47,15 +47,15 @@ function languageRow() {
   return el("div", { class: "fields" }, el("div", { class: "field", id: "row-ui-language" },
     el("div", { class: "field-head" },
       el("span", { class: "field-label" }, el("label", { for: "f-ui-language", text: t("settings.language.label") }), " ",
-        info("ui_language", t("settings.language.label"))),
+        infoButton("ui_language", t("settings.language.label"))),
       el("span", { class: "field-meta" }, badge("Browser", "muted"))),
     select,
     el("p", { class: "field-help", text: t("settings.language.note") })));
 }
 
-function fmtDate(unix) {
-  return typeof unix === "number" && Number.isFinite(unix)
-    ? new Date(unix * 1000).toLocaleString("de-DE", { dateStyle: "short", timeStyle: "short" }) : "nie";
+// Datum und Uhrzeit, ohne Wert „nie“.
+function dateOrNever(unix) {
+  return fmtDateTime(unix, { empty: "nie" });
 }
 
 // Update-Hinweise: was die Migration der Einstellungen geändert hat und warum.
@@ -81,8 +81,8 @@ const KEYS_REFRESH_SECONDS = 30;
 let keysTimer = null;
 
 function keyListNodes(ctx, keys, disabled) {
-  if (keys === undefined) return [emptyNote("Schlüssel werden geladen …")];
-  if (!keys || !keys.keys || !keys.keys.length) return [emptyNote("Noch keine Schlüssel angelegt.")];
+  if (keys === undefined) return [emptyState("Schlüssel werden geladen …")];
+  if (!keys || !keys.keys || !keys.keys.length) return [emptyState("Noch keine Schlüssel angelegt.")];
   const revoke = async (key) => {
     if (!window.confirm(`Schlüssel „${key.name}“ widerrufen? Programme, die ihn nutzen, bekommen danach keinen Zugriff mehr.`)) return;
     try {
@@ -96,7 +96,7 @@ function keyListNodes(ctx, keys, disabled) {
     el("div", { class: "apikey-main" },
       el("strong", { text: key.name }), " ", badge(key.scope_label || key.scope, key.scope === "admin" ? "warn" : "info"),
       el("span", { class: "mono muted", text: ` ntpg_${key.id}…` })),
-    kv([["Angelegt", fmtDate(key.created), "api_keys"], ["Zuletzt benutzt", fmtDate(key.last_used), "api_key_used"]]),
+    kv([["Angelegt", dateOrNever(key.created), "api_keys"], ["Zuletzt benutzt", dateOrNever(key.last_used), "api_key_used"]]),
     el("button", { type: "button", class: "button", text: "Widerrufen", disabled, onclick: () => revoke(key) }))))];
 }
 
@@ -120,13 +120,13 @@ function apiCard(ctx, readonly, auth) {
   const disabled = readonly ? true : null;
   const body = [];
   if (!auth.enabled) {
-    body.push(emptyNote("Noch ist **kein Passwort** gesetzt – das Dashboard und die API sind im LAN offen. "
+    body.push(emptyState("Noch ist **kein Passwort** gesetzt – das Dashboard und die API sind im LAN offen. "
       + "Schlüssel wirken trotzdem schon mit ihrem Recht; wirklich nötig werden sie, sobald du oben ein Passwort setzt."));
   }
   if (ui.newKey) {
     const token = ui.newKey.token;
     body.push(el("div", { class: "apikey-new", role: "status" },
-      el("div", { class: "apikey-new-head" }, el("strong", { text: `Neuer Schlüssel „${ui.newKey.name}“` }), info("api_key_token", "Neuer Schlüssel")),
+      el("div", { class: "apikey-new-head" }, el("strong", { text: `Neuer Schlüssel „${ui.newKey.name}“` }), infoButton("api_key_token", "Neuer Schlüssel")),
       el("p", { class: "muted", text: "Jetzt kopieren – er wird nur dieses eine Mal angezeigt." }),
       el("div", { class: "apikey-token" },
         el("code", { class: "mono", text: token }),
@@ -147,13 +147,13 @@ function apiCard(ctx, readonly, auth) {
   };
   body.push(el("div", { class: "auth-form" },
     el("label", {}, el("span", { text: "Name" }), name),
-    el("label", {}, el("span", {}, "Recht ", info("api_key_scope", "Recht")), scope),
+    el("label", {}, el("span", {}, "Recht ", infoButton("api_key_scope", "Recht")), scope),
     el("button", { type: "button", class: "button primary", text: "Schlüssel anlegen", disabled, onclick: create })));
   const keyBox = el("div", { class: "apikey-box" }, keyListNodes(ctx, keys, disabled));
   body.push(keyBox);
   ctx.afterRender(() => watchKeys(ctx, keyBox, disabled));
   body.push(el("p", { class: "field-help" }, rich("Beschreibung aller Endpunkte samt nötigem Recht: `GET /api/v1`. "
-    + "Beispiel: `curl -H \"Authorization: Bearer ntpg_…\" http://<server>:8080/api/v1/status`"), " ", info("api_v1", "Versionierte API")));
+    + "Beispiel: `curl -H \"Authorization: Bearer ntpg_…\" http://<server>:8080/api/v1/status`"), " ", infoButton("api_v1", "Versionierte API")));
 
   const rotate = async () => {
     if (!window.confirm("Neue Instanz-Kennung erzeugen? Die alte wird verworfen.")) return;
@@ -166,7 +166,7 @@ function apiCard(ctx, readonly, auth) {
   };
   const instanceRow = el("div", { class: "instance-row" },
     kv([["Instanz-Kennung", inst ? el("code", { class: "mono", text: inst.instance_id }) : "–", "instance_id"],
-      ["Seit", inst ? fmtDate(inst.since) : "–", "instance_id"]]),
+      ["Seit", inst ? dateOrNever(inst.since) : "–", "instance_id"]]),
     el("button", { type: "button", class: "button", text: "Neu erzeugen", disabled, onclick: rotate }));
   return card("API-Schlüssel und Instanz", { id: "s-api", help: "api_keys",
     sub: "Für Skripte und Programme: eigene Schlüssel statt des Passworts, einzeln widerrufbar." },
@@ -192,7 +192,7 @@ const RESOLV_STATE = {
 function fmtAgo(unix) {
   if (typeof unix !== "number" || !Number.isFinite(unix)) return "nie";
   const age = Math.max(0, Date.now() / 1000 - unix);
-  return age < 90 ? `vor ${Math.round(age)} s` : age < 5400 ? `vor ${Math.round(age / 60)} min` : fmtDate(unix);
+  return age < 90 ? `vor ${Math.round(age)} s` : age < 5400 ? `vor ${Math.round(age / 60)} min` : dateOrNever(unix);
 }
 
 // Update-Hinweis: nur Zustand anzeigen; ein-/ausschalten über das Feld „update_check“ darunter.
@@ -212,17 +212,17 @@ function updateStatus(upd) {
     ["Installiert", upd.current_valid ? upd.current : `${upd.current || "unbekannt"} (keine Versionsnummer)`, "update_current"],
     ["Neueste auf GitHub", latestValue, "update_latest"],
     ["Letzte Prüfung", upd.last_attempt ? `${fmtAgo(upd.last_attempt)}${upd.error ? "" : " · ok"}` : "noch keine", "update_last"],
-    ["Nächste Prüfung", typeof upd.next_check === "number" ? fmtDate(upd.next_check) : "–", "update_next"],
+    ["Nächste Prüfung", typeof upd.next_check === "number" ? dateOrNever(upd.next_check) : "–", "update_next"],
   ];
   return el("div", { class: "update-status" },
-    el("h3", { class: "mini-head" }, "Update-Hinweis ", info("update_check", "Update-Hinweis")),
+    el("h3", { class: "mini-head" }, "Update-Hinweis ", infoButton("update_check", "Update-Hinweis")),
     kv(rows),
     upd.error ? el("p", { class: "field-error", role: "alert", text: `Letzte Prüfung gescheitert: ${upd.error}` }) : null);
 }
 
 function dnsStatus(dns) {
-  if (dns === undefined) return emptyNote("Zustand wird geladen …");
-  if (!dns) return emptyNote("Zustand nicht verfügbar.");
+  if (dns === undefined) return emptyState("Zustand wird geladen …");
+  if (!dns) return emptyState("Zustand nicht verfügbar.");
   const [stateText, stateTone] = DNS_STATE[dns.state] || ["unklar", "warn"];
   const resolv = dns.resolv || {};
   const [resolvText, resolvTone] = RESOLV_STATE[resolv.state] || [dns.effective_mode === "system" ? "System-DNS" : "unbekannt", "muted"];
@@ -246,9 +246,9 @@ function dnsStatus(dns) {
     kv(rows),
     dns.error ? el("p", { class: "field-error", role: "alert", text: dns.error }) : null,
     (dns.warnings || []).map((w) => el("p", { class: "field-error", text: w })),
-    dns.nts_note ? el("p", { class: "card-sub" }, el("span", { text: dns.nts_note }), info("dns_nts", "NTS und DNS")) : null,
+    dns.nts_note ? el("p", { class: "card-sub" }, el("span", { text: dns.nts_note }), infoButton("dns_nts", "NTS und DNS")) : null,
     ups.length ? el("div", {},
-      el("h3", { class: "mini-head" }, "Eigene Server ", info("dns_upstreams", "Eigene Server")),
+      el("h3", { class: "mini-head" }, "Eigene Server ", infoButton("dns_upstreams", "Eigene Server")),
       el("ul", { class: "svc-list" }, ups.map((u) => {
         const down = typeof u.down_until === "number" && u.down_until * 1000 > Date.now();
         const tone = down ? "warn" : u.ok ? "good" : u.fail ? "warn" : "muted";
@@ -257,7 +257,7 @@ function dnsStatus(dns) {
           el("span", { class: "svc-name mono", text: u.label }),
           badge(down ? "übersprungen" : u.ok ? "antwortet" : u.fail ? "Fehler" : "noch nicht gefragt", tone),
           el("span", { class: "svc-message", text: `${u.ok} ok · ${u.fail} Fehler · zuletzt ok ${fmtAgo(u.last_ok)}`
-            + (typeof u.rtt_ms === "number" ? ` · ${u.rtt_ms} ms` : "")
+            + (typeof u.rtt_ms === "number" ? ` · ${fmtNumber(u.rtt_ms, 1, { group: false })} ms` : "")
             + (u.last_error ? ` · letzter Fehler (${fmtAgo(u.last_error_t)}): ${u.last_error}` : "") }));
       }))) : null);
 }
@@ -311,7 +311,7 @@ function backupPreview(ctx, preview) {
       ["Gruppen und Regeln", `${plural(preview.groups || 0, "Gruppe", "Gruppen")}, ${plural(preview.rules || 0, "Regel", "Regeln")}`, "backup_groups"],
       ["Ereignisse", fmtNumber(preview.events || 0), "backup_events"],
       ["Kalibrierung", (isNum(cal.last_change) ? `letzte Änderung ${backupDate(ctx, cal.last_change)}` : "kein Protokoll")
-        + (isNum(cal.gps_offset) ? ` · GPS-Offset ${fmtNumber(cal.gps_offset, 4)} s` : "")
+        + (isNum(cal.gps_offset) ? ` · GPS-Offset ${fmtNumber(cal.gps_offset, 4, { group: false })} s` : "")
         + (dropped.length ? ` · ${plural(dropped.length, "ungültiger Teil", "ungültige Teile")} verworfen` : ""), "backup_calibration"],
       ["Benachrichtigungen", `${plural(channels.count || 0, "Kanal", "Kanäle")}`
         + (items.some((item) => !item.dropped && !item.enabled) ? `, ${fmtNumber(items.filter((item) => !item.dropped && !item.enabled).length)} ausgeschaltet` : "")
@@ -320,19 +320,19 @@ function backupPreview(ctx, preview) {
         + (setts.restart ? " · Zeitdienste starten danach neu" : " · ohne Neustart der Zeitdienste"), "backup_settings"],
     ]),
     items.length ? el("div", { class: "backup-reenter" },
-      el("p", { class: "field-help" }, el("strong", { text: "Benachrichtigungskanäle: " }), info("backup_channels", "Benachrichtigungskanäle")),
+      el("p", { class: "field-help" }, el("strong", { text: "Benachrichtigungskanäle: " }), infoButton("backup_channels", "Benachrichtigungskanäle")),
       el("ul", {}, items.map((item) => el("li", {}, el("strong", { text: `${item.name}: ` }), el("span", { text: channelText(item) }))))) : null,
     security.length ? el("div", { class: "backup-reenter" },
-      el("p", { class: "field-help" }, el("strong", { text: "Diese sicherheitsrelevanten Einstellungen ändern sich: " }), info("backup_security", "Sicherheitsrelevante Einstellungen")),
+      el("p", { class: "field-help" }, el("strong", { text: "Diese sicherheitsrelevanten Einstellungen ändern sich: " }), infoButton("backup_security", "Sicherheitsrelevante Einstellungen")),
       el("ul", {}, security.map((item) => el("li", { text: `${item.label}: ${item.before} → ${item.after}` })))) : null,
     dropped.length ? el("div", { class: "backup-reenter" },
-      el("p", { class: "field-help" }, el("strong", { text: "Kalibrierung – verworfen, weil ungültig: " }), info("backup_calibration", "Kalibrierung")),
+      el("p", { class: "field-help" }, el("strong", { text: "Kalibrierung – verworfen, weil ungültig: " }), infoButton("backup_calibration", "Kalibrierung")),
       el("ul", {}, dropped.map((text) => el("li", { text })))) : null,
     reenter.length ? el("div", { class: "backup-reenter" },
-      el("p", { class: "field-help" }, el("strong", { text: "Bitte nach dem Übernehmen neu eingeben: " }), info("backup_reenter", "Bitte neu eingeben")),
+      el("p", { class: "field-help" }, el("strong", { text: "Bitte nach dem Übernehmen neu eingeben: " }), infoButton("backup_reenter", "Bitte neu eingeben")),
       el("ul", {}, reenter.map((text) => el("li", { text })))) : null,
     (setts.skipped || []).length ? el("div", { class: "backup-reenter" },
-      el("p", { class: "field-help" }, el("strong", { text: "Übersprungen (ungültig oder unbekannt): " }), info("backup_settings", "Einstellungen")),
+      el("p", { class: "field-help" }, el("strong", { text: "Übersprungen (ungültig oder unbekannt): " }), infoButton("backup_settings", "Einstellungen")),
       el("ul", {}, setts.skipped.map((item) => el("li", { text: `${item.label}: ${item.why}` })))) : null,
     (setts.notes || []).length ? el("ul", { class: "backup-notes" }, setts.notes.map((text) => el("li", { text }))) : null);
 }
@@ -390,7 +390,7 @@ function backupCard(ctx, readonly) {
   const body = [
     el("p", { class: "field-help export-note backup-warning" }, el("span", {}, rich("Die Sicherung **enthält Daten über Geräte "
       + "in deinem Netz** (Adressen, Namen, Verlauf) – nicht öffentlich teilen. Für Fehlerberichte das gefilterte "
-      + "**Diagnosepaket** nehmen.")), info("backup_privacy", "Wer die Datei sehen darf")),
+      + "**Diagnosepaket** nehmen.")), infoButton("backup_privacy", "Wer die Datei sehen darf")),
     kv([
       ["Enthalten", "Einstellungen, Verlauf, Ereignisse, Geräte mit Namen, Gruppen, Regeln, Kalibrierung, Benachrichtigungskanäle", "backup_contents"],
       ["Nie enthalten", "GPS-Position, Satellitenwinkel, Passwort, API-Schlüssel, Tokens, NTS-Schlüssel", "backup_excluded"],
@@ -399,16 +399,16 @@ function backupCard(ctx, readonly) {
       el("a", { class: "button primary", href: "/api/backup", download: "", text: "Sicherung herunterladen" }),
       el("button", { type: "button", class: "button", text: "Wiederherstellen …", disabled: readonly || state.busy ? true : null,
         onclick: () => fileInput.click() }),
-      info("backup_restore", "Wiederherstellen"),
+      infoButton("backup_restore", "Wiederherstellen"),
       fileInput),
   ];
-  if (state.busy) body.push(emptyNote(state.busy));
+  if (state.busy) body.push(emptyState(state.busy));
   if (state.error) body.push(el("p", { class: "field-error", role: "alert", text: state.error }));
   if (state.preview) {
     body.push(el("h3", { class: "mini-head", text: "Vorschau – noch ist nichts geändert" }));
     body.push(backupPreview(ctx, state.preview));
     body.push(el("p", { class: "field-help" }, el("span", { text: "Das Dashboard ist während der Übernahme einige Sekunden beschäftigt." }),
-      info("backup_busy", "Während der Übernahme")));
+      infoButton("backup_busy", "Während der Übernahme")));
     body.push(el("div", { class: "button-row" },
       el("button", { type: "button", class: "button primary", text: "Übernehmen", disabled: readonly || state.busy ? true : null, onclick: take }),
       el("button", { type: "button", class: "button", text: "Verwerfen", onclick: discard })));
@@ -419,16 +419,16 @@ function backupCard(ctx, readonly) {
       el("p", {}, el("strong", { text: `Wiederhergestellt aus der Sicherung vom ${backupDate(ctx, result.created)}. ` }),
         el("span", { text: `Der vorherige Stand liegt als „${result.before}“ im Ordner „sicherungen“.` })),
       (result.reenter || []).length ? el("div", { class: "backup-reenter" },
-        el("p", { class: "field-help" }, el("strong", { text: "Jetzt bitte neu eingeben: " }), info("backup_reenter", "Bitte neu eingeben")),
+        el("p", { class: "field-help" }, el("strong", { text: "Jetzt bitte neu eingeben: " }), infoButton("backup_reenter", "Bitte neu eingeben")),
         el("ul", {}, result.reenter.map((text) => el("li", { text })))) : null));
   }
   const list = stored?.backups || [];
-  body.push(el("h3", { class: "mini-head" }, "Gespeicherte Sicherungen ", info("backup_stored", "Gespeicherte Sicherungen")));
+  body.push(el("h3", { class: "mini-head" }, "Gespeicherte Sicherungen ", infoButton("backup_stored", "Gespeicherte Sicherungen")));
   body.push(list.length
     ? el("ul", { class: "backup-list" }, list.map((item) => el("li", {},
       el("a", { href: `/api/backup?name=${encodeURIComponent(item.name)}`, download: "", text: item.name }),
       el("span", { class: "muted", text: ` · ${item.kind === "nightly" ? "nächtlich" : "vor einer Wiederherstellung"} · ${backupDate(ctx, item.t)} · ${fmtSize(item.size)}` }))))
-    : emptyNote(stored?.nightly ? "Noch keine – die erste nächtliche Sicherung entsteht gegen 3 Uhr."
+    : emptyState(stored?.nightly ? "Noch keine – die erste nächtliche Sicherung entsteht gegen 3 Uhr."
       : "Keine. Die nächtliche Sicherung schaltest du unter **Dashboard → Nächtliche Sicherung** ein."));
   return card("Sichern", { id: "s-backup", help: "backup",
     sub: "Alles außer Position und Geheimnissen in einer Datei – für eine neue SD-Karte oder einen neuen Container." }, body);
@@ -442,7 +442,7 @@ export function render(ctx) {
   const devices = ctx.data("devices", "/api/devices", 60);
   const dns = ctx.data("dns", "/api/dns", 0);
   const update = ctx.data("update", "/api/update", 60);
-  if (!schema) return [card("Einstellungen", {}, emptyNote("Wird geladen …"))];
+  if (!schema) return [card("Einstellungen", {}, emptyState("Wird geladen …"))];
   const ui = ctx.uiState;
   ui.draft = ui.draft || {};
   ui.showAdvanced = ui.showAdvanced || {};
@@ -621,7 +621,7 @@ export function render(ctx) {
     return el("div", { class: `field${error ? " has-error" : ""}`, id: `row-${field.key}` },
       el("div", { class: "field-head" },
         el("span", { class: "field-label" }, el("label", { for: `f-${field.key}`, text: field.label }), " ",
-          FIELD_HELP[field.key] ? info(FIELD_HELP[field.key], field.label) : null),
+          FIELD_HELP[field.key] ? infoButton(FIELD_HELP[field.key], field.label) : null),
         el("span", { class: "field-meta" },
           badge(sourceText, field.source === "gui" ? "info" : "muted"),
           field.restart === "none" ? badge("wirkt sofort", "muted") : null,
@@ -637,9 +637,9 @@ export function render(ctx) {
   out.push(notesCard(ctx, schema.notes, readonly));
   if (!fields.length) {
     out.push(card("Einstellungen nicht lesbar", { class: "card-alert" },
-      emptyNote("Der Server hat keine Felder geliefert – Seite neu laden oder das Container-Log ansehen.")));
+      emptyState("Der Server hat keine Felder geliefert – Seite neu laden oder das Container-Log ansehen.")));
   }
-  if (readonly) out.push(card("Einstellungen gesperrt", { class: "card-alert" }, emptyNote("`WEB_READONLY=true` ist gesetzt – hier lässt sich nur ansehen, nicht ändern.")));
+  if (readonly) out.push(card("Einstellungen gesperrt", { class: "card-alert" }, emptyState("`WEB_READONLY=true` ist gesetzt – hier lässt sich nur ansehen, nicht ändern.")));
   if (!((schema.storage || {}).persistent ?? true)) {
     out.push(card("Achtung: Einstellungen sind nicht dauerhaft", { class: "card-alert" }, el("p", {}, rich(
       "`/var/lib/chrony` liegt auf keinem Volume. Gespeichertes geht verloren, wenn der Container **neu erstellt** wird (ein Neustart reicht nicht). "
@@ -675,7 +675,7 @@ export function render(ctx) {
   const auth = schema.auth || {};
   const authBody = [];
   if (auth.source === "env") {
-    authBody.push(emptyNote(`Geschützt per Umgebungsvariable (Benutzer **${auth.user}**). Ändern nur in der Compose-Datei.`));
+    authBody.push(emptyState(`Geschützt per Umgebungsvariable (Benutzer **${auth.user}**). Ändern nur in der Compose-Datei.`));
   } else {
     const user = el("input", { type: "text", autocomplete: "username", value: auth.user || "admin", "aria-label": "Benutzername", disabled: readonly ? true : null });
     const pass = el("input", { type: "password", autocomplete: "new-password", placeholder: "mindestens 8 Zeichen", "aria-label": "Passwort", disabled: readonly ? true : null });
@@ -697,7 +697,7 @@ export function render(ctx) {
       auth.enabled ? el("button", { type: "button", class: "button", text: "Schutz entfernen", disabled: readonly ? true : null, onclick: async () => {
         try { await apiPost("/api/auth", { clear: true }); toast("Schutz entfernt"); ctx.invalidate("settings"); ctx.rerender(); } catch (error) { toast(error.message, "crit"); }
       } }) : null));
-    authBody.push(emptyNote("Gilt für das Dashboard und die API. `/healthz` bleibt für den Docker-Healthcheck offen. Kein TLS – für Zugriff von außen einen Reverse Proxy davorsetzen."));
+    authBody.push(emptyState("Gilt für das Dashboard und die API. `/healthz` bleibt für den Docker-Healthcheck offen. Kein TLS – für Zugriff von außen einen Reverse Proxy davorsetzen."));
   }
   out.push(card("Zugang zum Dashboard", { id: "s-auth" }, authBody));
   if (auth.enabled || !readonly) out.push(apiCard(ctx, readonly, auth));
@@ -727,7 +727,7 @@ export function render(ctx) {
       fileInput),
     el("p", { class: "field-help export-note" }, el("span", {}, rich("Die Sicherung ist **ungefiltert**: Sie enthält "
       + "Hostnamen, Server und Netze genau so, wie sie hier eingetragen sind. Nicht öffentlich teilen – für "
-      + "Fehlerberichte das gefilterte **Diagnosepaket** nehmen.")), info("settings_export", "Sicherung"))));
+      + "Fehlerberichte das gefilterte **Diagnosepaket** nehmen.")), infoButton("settings_export", "Sicherung"))));
 
   out.push(card("Nur per Umgebungsvariable", { sub: "Diese Werte steuern den Start selbst und lassen sich deshalb nur in der Compose-Datei setzen." },
     el("table", { class: "mini-table" }, el("tbody", {}, (schema.env_only || []).map((e) => el("tr", {},
@@ -746,4 +746,4 @@ export function render(ctx) {
   return out;
 }
 
-export { info, apiGet };
+export { apiGet };

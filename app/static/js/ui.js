@@ -1,5 +1,10 @@
 // Wiederverwendbare Bausteine: Karten, Kacheln, ⓘ-Erklärungen, Badges.
-import { el, rich, copyText, selectContents, apiPost } from "./util.js";
+//
+// T2 (1.6): Jede Seite baut aus denselben Teilen – infoButton (ⓘ), statCard (Kachel), kvRow/kv
+// (Zeile Beschriftung → Wert), rangePicker (Zeitraum), emptyState/errorState (leer bzw. Fehler)
+// und chartCard (Diagramm, das sich bei flachem oder leerem Verlauf auf eine Zeile zusammenklappt).
+// Alle Bausteine zeigt die Musterseite #/muster?dev=1 (pages/muster.js).
+import { el, rich, copyText, selectContents, apiPost, isNum, fmtTime, fmtDate } from "./util.js";
 import { HELP } from "./help.js";
 
 // --- ⓘ-Popover --------------------------------------------------------------
@@ -32,13 +37,17 @@ export function isPopoverOpen() {
   return Boolean(openPopover && openPopover.button.isConnected);
 }
 
-export function info(key, label) {
+/**
+ * ⓘ-Knopf mit Erklärung aus HELP[key]. Das Symbol ist 14 px groß, die Tippfläche 32 px (unsichtbarer
+ * Rand per CSS, verschiebt nichts im Layout); blass, bis die Maus darüber steht oder er den Fokus hat.
+ * Unbekannter Schlüssel: null (dann steht einfach kein Knopf da).
+ */
+export function infoButton(key, label) {
   const entry = HELP[key];
   if (!entry) return null;
   const button = el("button", {
     type: "button", class: "info", "aria-label": `Erklärung: ${label || entry.title}`, "aria-expanded": "false",
-    text: "i",
-  });
+  }, el("span", { class: "info-glyph", "aria-hidden": "true", text: "i" }));
   button.addEventListener("click", (event) => {
     event.stopPropagation();
     if (openPopover && openPopover.button === button) { closePopover(); return; }
@@ -62,44 +71,90 @@ export function info(key, label) {
   return button;
 }
 
+// Früherer Name – derselbe Baustein.
+export const info = infoButton;
+
 // --- Bausteine ---------------------------------------------------------------
 export function card(title, options = {}, ...children) {
   const head = el("div", { class: "card-head" },
-    el("div", { class: "card-title" }, el("h2", { text: title }), options.help ? info(options.help, title) : null,
+    el("div", { class: "card-title" }, el("h2", { text: title }), options.help ? infoButton(options.help, title) : null,
       options.badge ?? null),
     options.actions ? el("div", { class: "card-actions" }, options.actions) : null);
   return el("section", { class: `card ${options.class || ""}`, id: options.id || null },
     head, options.sub ? el("p", { class: "card-sub" }, rich(options.sub)) : null, ...children);
 }
 
-// spark: optionaler Mini-Verlauf (charts.sparkline) unter dem Wert.
-export function tile({ label, value, unit, note, tone = "muted", help, long, spark }) {
+/**
+ * Kachel mit einer Kennzahl. value: fertiger Text (über fmt* formatiert) oder Knoten.
+ * spark: optionaler Mini-Verlauf (charts.sparkline) unter dem Wert.
+ */
+export function statCard({ label, value, unit, note, tone = "muted", help, long, spark }) {
+  const shown = value instanceof Node ? value : String(value ?? "–");
   return el("div", { class: `stat${spark ? " has-spark" : ""}`, "data-tone": tone },
-    el("div", { class: "stat-label" }, el("span", { text: label }), help ? info(help, label) : null),
-    el("div", { class: "stat-value", "data-long": long || String(value).length > 11 ? "true" : null },
-      String(value), unit ? el("span", { class: "unit", text: unit }) : null),
+    el("div", { class: "stat-label" }, el("span", { text: label }), help ? infoButton(help, label) : null),
+    el("div", { class: "stat-value", "data-long": long || (typeof shown === "string" && shown.length > 11) ? "true" : null },
+      shown, unit ? el("span", { class: "unit", text: unit }) : null),
     note ? el("div", { class: "stat-note" }, note) : null,
     spark ? el("div", { class: "stat-spark" }, spark) : null);
 }
+
+// Früherer Name.
+export const tile = statCard;
 
 export function badge(text, tone = "muted", title) {
   return el("span", { class: "badge", "data-tone": tone, title: title || null, text });
 }
 
+/** Eine Zeile „Beschriftung ⓘ → Wert“ (für kv-Listen). */
+export function kvRow(key, value, help) {
+  return el("div", { class: "kv" },
+    el("dt", {}, el("span", { text: key }), help ? infoButton(help, key) : null),
+    el("dd", {}, value instanceof Node ? value : String(value ?? "–")));
+}
+
+/** Liste von Zeilen [Beschriftung, Wert, Hilfe-Schlüssel]; null-Einträge fallen weg. */
 export function kv(rows) {
-  return el("dl", { class: "kv-list" }, rows.filter(Boolean).map(([key, value, help]) =>
-    el("div", { class: "kv" },
-      el("dt", {}, el("span", { text: key }), help ? info(help, key) : null),
-      el("dd", {}, value instanceof Node ? value : String(value ?? "–")))));
+  return el("dl", { class: "kv-list" }, rows.filter(Boolean).map(([key, value, help]) => kvRow(key, value, help)));
+}
+
+/** Beschriftung eines Zeitraums: „15 min“, „6 h“, „24 h“, „7 Tage“. */
+export function rangeLabel(seconds) {
+  if (seconds < 3600) return `${Math.round(seconds / 60)} min`;
+  if (seconds <= 2 * 86400) return `${Math.round(seconds / 3600)} h`;
+  const days = Math.round(seconds / 86400);
+  return `${days} ${days === 1 ? "Tag" : "Tage"}`;
+}
+
+// Zeiträume der Verläufe (Übersicht, Quellen, Clients): 15 min bis 24 h.
+export const RANGES_LIVE = [900, 3600, 21600, 86400];
+
+/**
+ * Zeitraum-Auswahl von Minuten bis Tagen – eine Komponente für alle Seiten.
+ * options: Sekunden oder [Sekunden, Beschriftung]; value: gewählte Sekunden; onChange(sekunden).
+ * Der gedrückte Knopf wird sofort markiert (auch wenn die Seite danach nicht neu zeichnet).
+ */
+export function rangePicker({ value, onChange, options = RANGES_LIVE, label = "Zeitraum", focusKey = "range" }) {
+  const buttons = options.map((option) => {
+    const [seconds, text] = Array.isArray(option) ? option : [option, rangeLabel(option)];
+    const active = value === seconds;
+    return el("button", {
+      type: "button", class: `range${active ? " is-active" : ""}`, text, "data-focus-key": `${focusKey}:${seconds}`,
+      "aria-pressed": active ? "true" : "false",
+      onclick: (event) => {
+        for (const button of buttons) {
+          const on = button === event.currentTarget;
+          button.classList.toggle("is-active", on);
+          button.setAttribute("aria-pressed", on ? "true" : "false");
+        }
+        onChange(seconds);
+      },
+    });
+  });
+  return el("div", { class: "range-group", role: "group", "aria-label": label }, buttons);
 }
 
 export function rangeButtons(current, onChange) {
-  const options = [[900, "15 min"], [3600, "1 h"], [21600, "6 h"], [86400, "24 h"]];
-  return el("div", { class: "range-group", role: "group", "aria-label": "Zeitraum" },
-    options.map(([seconds, label]) => el("button", {
-      type: "button", class: `range${current === seconds ? " is-active" : ""}`, text: label, "data-focus-key": `range:${seconds}`,
-      "aria-pressed": current === seconds ? "true" : "false", onclick: () => onChange(seconds),
-    })));
+  return rangePicker({ value: current, onChange });
 }
 
 export function reachBar(percent, label) {
@@ -176,21 +231,172 @@ export const ACTION_LABEL = {
   uhrqualitaet: "Zur Uhrqualität →",
 };
 
-export function emptyNote(text) {
+/** Leerzustand: ein ruhiger Satz statt einer leeren Fläche. text darf **fett** und `code` enthalten. */
+export function emptyState(text) {
   return el("p", { class: "empty-note" }, rich(text));
+}
+
+// Früherer Name.
+export const emptyNote = emptyState;
+
+/**
+ * Fehlerzustand: was nicht geladen werden konnte und warum. error: {status, message} (wie
+ * ctx.dataError) oder Error. retry: true, wenn der Datencache von selbst neu fragt.
+ */
+export function errorText(error, what, retry = true) {
+  const reason = error?.message || (error?.status ? `HTTP ${error.status}` : "unbekannter Fehler");
+  return `Konnte ${what} nicht laden (${reason})${retry ? " – neuer Versuch läuft." : "."}`;
+}
+
+export function errorState(error, what, retry = true) {
+  return el("p", { class: "empty-note is-error", role: "status", text: errorText(error, what, retry) });
 }
 
 // Gemeinsamer Lade-/Fehlerzustand: Solange nichts da ist „Lade … “, nach einem Fehler aber nicht
 // endlos weiter „Lade …“, sondern was schiefging (der Datencache fragt von selbst erneut).
 export function loadingText(ctx, key, url, what) {
   const failed = ctx?.dataError ? ctx.dataError(key, url) : null;
-  return failed
-    ? `Konnte ${what} nicht laden (${failed.message || `HTTP ${failed.status}`}) – neuer Versuch läuft.`
-    : `Lade ${what} …`;
+  return failed ? errorText(failed, what) : `Lade ${what} …`;
 }
 
 export function loadingOr(ctx, key, url, what) {
-  return emptyNote(loadingText(ctx, key, url, what));
+  const failed = ctx?.dataError ? ctx.dataError(key, url) : null;
+  return failed ? errorState(failed, what) : emptyState(`Lade ${what} …`);
+}
+
+// --- chartCard ------------------------------------------------------------------
+// „Flach“ nur bei ausreichender Abdeckung: genug gültige Punkte, und keine Lücke (auch am Anfang
+// oder Ende des Zeitraums) größer als 10 % des Zeitraums oder 3 × der typische Abstand der Punkte.
+const FLAT_MIN_POINTS = 10;
+const FLAT_MAX_GAP_SHARE = 0.1;
+const FLAT_MAX_GAP_STEPS = 3;
+
+function median(values) {
+  if (!values.length) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.floor(sorted.length / 2)];
+}
+
+/**
+ * Form eines Verlaufs: "empty" (weniger als zwei Messwerte), "flat" (Spannweite höchstens
+ * max(flatAbs, |Mittel| · flatRel), mindestens FLAT_MIN_POINTS Messwerte und ohne Lücken; nie bei
+ * flat: false) oder "chart". series: [{ points: [[t, v], …] }, …]. Außerdem: points (alle Punkte,
+ * auch null), maxGap (größte Lücke in s), aroundZero (pendelt um 0: Vorzeichenwechsel oder |Mittel|
+ * kleiner als die Spannweite) und bound = max(|min|, |max|).
+ */
+export function seriesShape(series, { flatRel = 0.02, flatAbs = 0, flat: canBeFlat = true } = {}) {
+  let count = 0; let points = 0; let sum = 0; let min = Infinity; let max = -Infinity; let first = null;
+  let tMin = Infinity; let tMax = -Infinity;
+  const valid = [];
+  const steps = [];
+  for (const s of series || []) {
+    const times = [];
+    const good = [];
+    for (const point of s.points || []) {
+      const [t, v] = point;
+      points += 1;
+      if (isNum(t)) {
+        times.push(t);
+        if (t < tMin) tMin = t;
+        if (t > tMax) tMax = t;
+      }
+      if (!isNum(v)) continue;
+      count += 1; sum += v;
+      if (v < min) min = v;
+      if (v > max) max = v;
+      if (isNum(t)) {
+        good.push(t);
+        if (first === null || t < first) first = t;
+      }
+    }
+    times.sort((a, b) => a - b);
+    for (let i = 1; i < times.length; i += 1) if (times[i] > times[i - 1]) steps.push(times[i] - times[i - 1]);
+    valid.push(good.sort((a, b) => a - b));
+  }
+  if (count < 2) return { kind: "empty", count, points, first };
+  const mean = sum / count;
+  // Größte Lücke je Reihe zwischen gültigen Punkten, auch zum Anfang und Ende des Zeitraums.
+  let maxGap = 0;
+  for (const good of valid) {
+    if (!good.length) continue;
+    const edges = [tMin, ...good, tMax];
+    for (let i = 1; i < edges.length; i += 1) maxGap = Math.max(maxGap, edges[i] - edges[i - 1]);
+  }
+  const period = tMax - tMin;
+  const step = median(steps);
+  const covered = count >= FLAT_MIN_POINTS && period > 0 && isNum(step)
+    && maxGap <= FLAT_MAX_GAP_SHARE * period && maxGap <= FLAT_MAX_GAP_STEPS * step;
+  const spread = max - min;
+  const flat = canBeFlat && covered && spread <= Math.max(flatAbs, Math.abs(mean) * flatRel);
+  const aroundZero = (min < 0 && max > 0) || Math.abs(mean) < spread;
+  const bound = Math.max(Math.abs(min), Math.abs(max));
+  return { kind: flat ? "flat" : "chart", count, points, first, min, max, mean, maxGap, aroundZero, bound };
+}
+
+// Beginn der Sammlung: nur Uhrzeit, wenn er heute (in der Zeitzone des Servers) und höchstens 12 h
+// zurück liegt; sonst mit Datum – „seit 19:35“ sähe am Abend davor wie ein Zeitpunkt in der Zukunft aus.
+function sinceText(since, now, zone) {
+  const sameDay = isNum(now) && fmtDate(since, { date: "numeric", time: false, zone }) === fmtDate(now, { date: "numeric", time: false, zone });
+  const recent = isNum(now) && now - since <= 12 * 3600;
+  return sameDay && recent ? fmtTime(since, false, zone) : fmtDate(since, { date: "day", time: "short", zone });
+}
+
+/**
+ * Karte mit Verlaufsdiagramm, die sich zusammenklappt, wenn das Diagramm nichts zu sagen hat:
+ *   leer  → „Satelliten im Verlauf: sammelt seit 23:30“ (bzw. „noch keine Messwerte“; liegen Punkte
+ *           vor, aber alle ohne Wert: „keine Messwerte seit …“; Beginn vor über 12 h oder an einem
+ *           anderen Tag mit Datum)
+ *   flach → „Maximaler Fehler: stabil um ± 420 µs – Diagramm zeigen“ (Knopf klappt auf); pendelt die
+ *           Reihe um 0: „stabil innerhalb ± 400 ns“ (größter Betrag statt Mittelwert)
+ * opts: { title, help, sub, actions, id, class, series (für die Form), format(v) für den Mittelwert,
+ *         draw(host) – zeichnet das Diagramm nach dem Einhängen, key – Merkname fürs Aufklappen,
+ *         since – Beginn der Sammlung (Unix-s), now – jetzt (Standard: Uhr des Servers aus ctx.status),
+ *         zone – Zeitzone des Servers, flatRel, flatAbs, flat: false,
+ *         collapse: false – nie zusammenklappen (z. B. während Daten noch laden) }.
+ * ctx: Seitenkontext (afterRender, uiState, rerender).
+ */
+export function chartCard(ctx, opts) {
+  const shape = seriesShape(opts.series, opts);
+  const ui = ctx.uiState || {};
+  const open = ui.chartOpen || (ui.chartOpen = new Set());
+  const key = opts.key || opts.title;
+  const format = opts.format || ((v) => String(v));
+  const classes = `chart-card ${opts.class || ""}`.trim();
+  const rerender = () => (ctx.rerender ? ctx.rerender() : null);
+  if (opts.collapse !== false && (shape.kind === "empty" || (shape.kind === "flat" && !open.has(key)))) {
+    let text;
+    let toggle = null;
+    if (shape.kind === "empty") {
+      const firstPoint = (opts.series || []).flatMap((s) => s.points || []).map((p) => p[0]).filter(isNum);
+      const since = isNum(opts.since) ? opts.since : shape.first ?? (firstPoint.length ? Math.min(...firstPoint) : null);
+      const now = isNum(opts.now) ? opts.now : isNum(ctx.status?.system?.time) ? ctx.status.system.time : Date.now() / 1000;
+      const when = isNum(since) ? sinceText(since, now, opts.zone ?? null) : null;
+      // Punkte da, aber ohne einen Wert (GPS ohne Fix, Quelle aus): nicht „sammelt“, sondern „keine Messwerte“.
+      const silent = shape.count === 0 && shape.points > 0;
+      text = when ? `${silent ? "keine Messwerte" : "sammelt"} seit ${when}` : "noch keine Messwerte";
+    } else {
+      // Um 0 pendelnde Reihen (Abweichung der Uhr): der Mittelwert läge nahe 0 und verschwiege die
+      // Schwankung – dann der größte Betrag. format liefert ggf. schon „±“ oder „+“, das fällt weg.
+      text = shape.aroundZero
+        ? `stabil innerhalb ± ${format(shape.bound).replace(/^[±+]\s*/, "")} –`
+        : `stabil um ${format(shape.mean)} –`;
+      toggle = el("button", { type: "button", class: "chart-line-toggle", text: "Diagramm zeigen",
+        "data-focus-key": `chart-open:${key}`, "aria-label": `${opts.title}: Diagramm zeigen`,
+        onclick: () => { open.add(key); rerender(); } });
+    }
+    return el("section", { class: `card ${classes} is-collapsed`, id: opts.id || null, "data-shape": shape.kind },
+      el("div", { class: "chart-line" },
+        el("div", { class: "card-title" }, el("h2", { text: opts.title }), opts.help ? infoButton(opts.help, opts.title) : null),
+        el("span", { class: "chart-line-text", text }), toggle,
+        opts.actions ? el("div", { class: "card-actions" }, opts.actions) : null));
+  }
+  const host = el("div", { class: "chart-host" });
+  const fold = shape.kind === "flat" && open.has(key)
+    ? el("button", { type: "button", class: "chart-line-toggle", text: "Einklappen", "data-focus-key": `chart-close:${key}`,
+      "aria-label": `${opts.title}: Diagramm einklappen`, onclick: () => { open.delete(key); rerender(); } }) : null;
+  const actions = opts.actions || fold ? [opts.actions || null, fold] : null;
+  if (ctx.afterRender) ctx.afterRender(() => opts.draw(host));
+  return card(opts.title, { help: opts.help, sub: opts.sub, class: classes, id: opts.id, actions }, host);
 }
 
 export function toast(message, tone = "good") {

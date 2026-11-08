@@ -1,3 +1,5 @@
+import { language } from "./i18n.js";
+
 // Kleine Helfer: DOM-Bau, Formatierung, API-Zugriff.
 // Daten aus der API landen ausschließlich als Text im DOM (textContent),
 // nie als HTML – Hostnamen, Logzeilen oder Gerätenamen können so nichts
@@ -49,59 +51,123 @@ export function isNum(value) {
   return typeof value === "number" && Number.isFinite(value);
 }
 
-// Alle Zahlen im Dashboard laufen über diesen deutschen Formatierer: Komma als
-// Dezimalzeichen, Punkt als Tausendertrenner. „-0,000“ nach dem Runden wird zu „0,000“.
-const FIXED = new Map();
-export function fmtFixed(value, digits = 0) {
-  if (!isNum(value)) return "–";
-  let format = FIXED.get(digits);
-  if (!format) {
-    format = new Intl.NumberFormat("de-DE", { minimumFractionDigits: digits, maximumFractionDigits: digits });
-    FIXED.set(digits, format);
-  }
-  const text = format.format(value);
-  return /^-0(,0*)?$/.test(text) ? text.slice(1) : text;
+// --- Zahlen und Zeiten (T2) ---------------------------------------------------
+// Alle Zahlen im Dashboard laufen über fmtNumber und seine Verwandten: Intl.NumberFormat in der
+// gewählten Sprache (Deutsch: Komma als Dezimalzeichen, Punkt als Tausendertrenner) und **ohne
+// Nullen am Ende** („± 1 ms“ statt „± 1,000 ms“ – das läse sich im Deutschen wie tausend).
+// Feste Nachkommastellen nur noch für Achsenbeschriftungen (fmtFixed), wo benachbarte Striche
+// gleich breit sein sollen. `toFixed` ist in den Seiten verboten (tests/test_gui_bausteine.py).
+const LOCALES = { de: "de-DE", en: "en-GB" };
+/** Minuszeichen aller formatierten Zahlen (fmtNumber, fmtSeconds, fmtPpm, Achsen): U+2212. */
+export const MINUS = "\u2212";
+
+/** BCP-47-Tag der gewählten Sprache für Intl (Deutsch, wenn unbekannt). */
+export function locale() {
+  return LOCALES[language()] || LOCALES.de;
 }
 
-// Sekunden in eine lesbare Größe (ns/µs/ms/s).
+const NUMBER_FORMATS = new Map();
+function numberFormat(options) {
+  const key = `${locale()}|${JSON.stringify(options)}`;
+  let format = NUMBER_FORMATS.get(key);
+  if (!format) {
+    format = new Intl.NumberFormat(locale(), options);
+    NUMBER_FORMATS.set(key, format);
+  }
+  return format;
+}
+
+/**
+ * Zahl in der gewählten Sprache. digits = höchstens so viele Nachkommastellen (Nullen am Ende
+ * fallen weg). opts: { fixed: true – genau digits Stellen (nur für Achsen), sig: n – höchstens n
+ * signifikante Stellen statt digits, signed: true – „+“ vor positiven Werten (nie „+0“),
+ * group: false – ohne Tausenderpunkt (für Sekunden: „1000 s“ statt „1.000 s“, das läse sich als 1 s) }.
+ * „-0“ nach dem Runden wird zu „0“. Negative Werte stehen immer mit „−“ (MINUS) da, nie mit „-“.
+ */
+export function fmtNumber(value, digits = 0, opts = {}) {
+  if (!isNum(value)) return "–";
+  const options = opts.sig
+    ? { maximumSignificantDigits: opts.sig }
+    : { minimumFractionDigits: opts.fixed ? digits : 0, maximumFractionDigits: digits };
+  if (opts.group === false) options.useGrouping = false;
+  let text = numberFormat(options).format(value);
+  if (/^-0([.,]0*)?$/.test(text)) text = text.slice(1);
+  // Ein Minuszeichen in der ganzen App: das typografische „−“ (U+2212), mit und ohne signed.
+  if (text.startsWith("-")) return `${MINUS}${text.slice(1)}`;
+  if (!opts.signed) return text;
+  return /^0([.,]0*)?$/.test(text) ? text : `+${text}`;
+}
+
+// Feste Nachkommastellen (mit Nullen am Ende) – nur für Achsenbeschriftungen.
+export function fmtFixed(value, digits = 0) {
+  return fmtNumber(value, digits, { fixed: true });
+}
+
+// Messwert in Sekunden mit passender Einheit (ns/µs/ms/s), ohne Nullen am Ende.
+// digits: höchstens so viele Nachkommastellen in ms bzw. s; signed: „+“ vor positiven Werten.
+// Vorzeichen und Minuszeichen kommen aus fmtNumber: kein „+0 ns“, immer „−“. Ohne Tausenderpunkt.
 export function fmtSeconds(value, digits = 3, signed = false) {
   if (!isNum(value)) return "–";
   const abs = Math.abs(value);
-  const sign = signed && value > 0 ? "+" : "";
   if (abs === 0) return "0 s";
-  if (abs < 1e-6) return `${sign}${fmtFixed(value * 1e9, 0)} ns`;
-  if (abs < 1e-3) return `${sign}${fmtFixed(value * 1e6, abs < 1e-5 ? 2 : 1)} µs`;
-  // Höchstens fünf signifikante Stellen – „100.000 ms“ läse sich im Deutschen wie hunderttausend.
-  if (abs < 1) return `${sign}${fmtFixed(value * 1e3, Math.min(digits, abs >= 0.1 ? 1 : 3))} ms`;
-  return `${sign}${fmtFixed(value, digits)} s`;
+  // [Einheit, Faktor, Nachkommastellen]. Höchstens vier bis fünf signifikante Stellen.
+  const units = [
+    ["ns", 1e9, abs < 1e-8 ? 1 : 0],
+    ["µs", 1e6, abs < 1e-5 ? 2 : 1],
+    ["ms", 1e3, Math.min(digits, abs >= 0.1 ? 1 : abs >= 0.01 ? 2 : 3)],
+    ["s", 1, digits],
+  ];
+  let index = abs < 1e-6 ? 0 : abs < 1e-3 ? 1 : abs < 1 ? 2 : 3;
+  // Rundet der Wert auf 1000 der Einheit (999,96 µs → „1.000 µs“), gilt die nächstgrößere: „1 ms“.
+  while (index < 3) {
+    const [, factor, places] = units[index];
+    if (Math.abs(Number((abs * factor).toFixed(places))) < 1000) break;
+    index += 1;
+  }
+  const [unit, factor, places] = units[index];
+  return `${fmtNumber(value * factor, places, { group: false, signed })} ${unit}`;
 }
 
 export function fmtNs(value) {
   return isNum(value) ? fmtSeconds(value / 1e9, 2, true) : "–";
 }
 
+/**
+ * Zeitspanne: unter einer Sekunde mit passender Einheit (ns/µs/ms), sonst s, min, h, d – ohne
+ * Nullteile am Ende („1 h“ statt „1 h 0 min“). Negative Spannen gelten als 0.
+ */
 export function fmtDuration(seconds) {
   if (!isNum(seconds)) return "–";
+  if (seconds > 0 && seconds < 0.5) return fmtSeconds(seconds);
   const s = Math.max(0, Math.round(seconds));
+  const pair = (big, bigUnit, small, smallUnit) => (small ? `${big} ${bigUnit} ${small} ${smallUnit}` : `${big} ${bigUnit}`);
   if (s < 60) return `${s} s`;
   if (s < 3600) return `${Math.floor(s / 60)} min`;
-  if (s < 86400) return `${Math.floor(s / 3600)} h ${Math.floor((s % 3600) / 60)} min`;
-  return `${Math.floor(s / 86400)} d ${Math.floor((s % 86400) / 3600)} h`;
+  if (s < 86400) return pair(Math.floor(s / 3600), "h", Math.floor((s % 3600) / 60), "min");
+  return pair(Math.floor(s / 86400), "d", Math.floor((s % 86400) / 3600), "h");
 }
 
 export function fmtLogInterval(exponent) {
   if (!isNum(exponent)) return "–";
   const seconds = 2 ** exponent;
-  return seconds < 1 ? `${fmtFixed(seconds, 3).replace(/0+$/, "")} s` : fmtDuration(seconds);
+  return seconds < 1 ? `${fmtNumber(seconds, 3)} s` : fmtDuration(seconds);
 }
 
-export function fmtNumber(value, digits = 0) {
-  return fmtFixed(value, digits);
+/**
+ * Frequenzabweichung in ppm. Ohne digits richtet sich die Genauigkeit nach der Größe
+ * (12,3 ppm · 1,23 ppm · 0,123 ppm), Nullen am Ende fallen weg. signed: „+“ davor. Ohne
+ * Tausenderpunkt („1235 ppm“ – „1.235 ppm“ läse sich wie gut 1 ppm).
+ */
+export function fmtPpm(value, { digits, signed = false } = {}) {
+  if (!isNum(value)) return "–";
+  const abs = Math.abs(value);
+  const places = isNum(digits) ? digits : abs >= 100 ? 0 : abs >= 10 ? 1 : abs >= 1 ? 2 : 3;
+  return `${fmtNumber(value, places, { signed, group: false })} ppm`;
 }
 
-// Anfragen pro Minute: ganze Zahl, nur unter 10/min mit einer Nachkommastelle.
+// Anfragen pro Minute: ganze Zahl, nur unter 10/min mit (höchstens) einer Nachkommastelle.
 export function fmtRate(value) {
-  return isNum(value) ? fmtFixed(value, Math.abs(value) < 10 && value !== 0 ? 1 : 0) : "–";
+  return isNum(value) ? fmtNumber(value, Math.abs(value) < 10 ? 1 : 0) : "–";
 }
 
 // Zeitzone des Servers für Intl. Bevorzugt der IANA-Name (system.tz_name, z. B. „Europe/Berlin“): Damit
@@ -131,22 +197,61 @@ export function serverZone(zone) {
 }
 
 // Zeitpunkt (Unix-Sekunden) mit Intl-Optionen in der Zeitzone des Servers formatieren.
-// method: "toLocaleString", "toLocaleDateString" oder "toLocaleTimeString".
-export function fmtZoned(unix, zone, options = {}, locale = "de-DE", method = "toLocaleString") {
+// method: "toLocaleString", "toLocaleDateString" oder "toLocaleTimeString". Ohne lang: gewählte Sprache.
+export function fmtZoned(unix, zone, options = {}, lang = null, method = "toLocaleString") {
+  const tag = lang || locale();
   const z = serverZone(zone);
-  if (!z) return new Date(unix * 1000)[method](locale, options);
-  return new Date((unix + z.shift) * 1000)[method](locale, { ...options, timeZone: z.timeZone });
+  if (!z) return new Date(unix * 1000)[method](tag, options);
+  return new Date((unix + z.shift) * 1000)[method](tag, { ...options, timeZone: z.timeZone });
 }
 
 // zone: system-Objekt des Servers (tz_name/utc_offset) oder ein Offset in Sekunden.
 export function fmtTime(unix, seconds = true, zone = null) {
   const options = seconds ? { hour: "2-digit", minute: "2-digit", second: "2-digit" } : { hour: "2-digit", minute: "2-digit" };
-  return fmtZoned(unix, zone, options, "de-DE", "toLocaleTimeString");
+  return fmtZoned(unix, zone, options, null, "toLocaleTimeString");
+}
+
+const DATE_PARTS = {
+  short: { dateStyle: "short" }, medium: { dateStyle: "medium" }, long: { dateStyle: "long" },
+  numeric: { day: "2-digit", month: "2-digit", year: "numeric" }, day: { day: "2-digit", month: "2-digit" },
+};
+
+/**
+ * Zeitpunkt als Datum (und Uhrzeit) in der gewählten Sprache. value: Unix-Sekunden, Date oder
+ * ISO-Text („2026-11-08T12:34:56Z“, auch nur „2026-11-08“ – dann ohne Uhrzeit, als Kalendertag).
+ * opts: { date: "short" | "medium" | "long" | "numeric" | "day" | false, time: "short" | "medium" | false,
+ *         zone – Zeitzone des Servers (system-Objekt oder Offset), utc: true – in UTC,
+ *         empty – Text für fehlende Werte (Standard „–“) }.
+ */
+export function fmtDate(value, opts = {}) {
+  const empty = opts.empty ?? "–";
+  let unix = null;
+  let dayOnly = false;
+  if (isNum(value)) unix = value;
+  else if (value instanceof Date) unix = value.getTime() / 1000;
+  else if (typeof value === "string" && value) {
+    dayOnly = /^\d{4}-\d{2}-\d{2}$/.test(value);
+    const ms = Date.parse(dayOnly ? `${value}T00:00:00Z` : value);
+    unix = Number.isNaN(ms) ? null : ms / 1000;
+  }
+  if (!isNum(unix)) return empty;
+  const date = opts.date === undefined ? "short" : opts.date;
+  const time = dayOnly ? false : opts.time === undefined ? "short" : opts.time;
+  const datePart = date ? DATE_PARTS[date] || DATE_PARTS.short : {};
+  let options;
+  if (datePart.dateStyle || !date) {
+    options = { ...datePart, ...(time ? { timeStyle: time } : {}) };
+  } else {
+    options = { ...datePart, ...(time ? { hour: "2-digit", minute: "2-digit", ...(time === "medium" ? { second: "2-digit" } : {}) } : {}) };
+  }
+  const method = date && time ? "toLocaleString" : date ? "toLocaleDateString" : "toLocaleTimeString";
+  const zone = opts.utc || dayOnly ? 0 : opts.zone ?? null;
+  return fmtZoned(unix, zone, options, null, method);
 }
 
 // Datum und Uhrzeit des Servers für die Kopfzeile. Ohne tz_name und utc_offset (älterer Server) gilt UTC.
-export function fmtServerDateTime(sys, locale = "de-DE") {
-  return fmtZoned(sys?.time || 0, serverZone(sys) ? sys : 0, {}, locale);
+export function fmtServerDateTime(sys, lang = null) {
+  return fmtZoned(sys?.time || 0, serverZone(sys) ? sys : 0, {}, lang);
 }
 
 // Hinweis bei Verbindungsverlust: seit wann die angezeigten Werte nicht mehr frisch sind.
@@ -157,9 +262,8 @@ export function staleText(lastOkMs, zone = null) {
 
 // ISO-Zeit (z. B. gpsd „2026-11-08T12:34:56.000Z“) als „08.11.26, 12:34:56 UTC“.
 export function fmtIsoUtc(iso) {
-  const date = new Date(iso);
-  if (!iso || Number.isNaN(date.getTime())) return "–";
-  return `${date.toLocaleString("de-DE", { dateStyle: "short", timeStyle: "medium", timeZone: "UTC" })} UTC`;
+  const text = fmtDate(iso, { date: "short", time: "medium", utc: true, empty: "" });
+  return text ? `${text} UTC` : "–";
 }
 
 export function sourceLabel(source) {

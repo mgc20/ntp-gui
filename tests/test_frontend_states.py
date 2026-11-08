@@ -244,7 +244,7 @@ const data = {{ address: "192.0.2.77", name: "", generated: 1783000000, entry: {
   chrony: {{ ntp_packets: 50, ntp_last_rx: 3 }} }};
 console.log(JSON.stringify({{ t: text(cp.renderPass(ctx({{ data: () => data }}), "192.0.2.77")) }}));
 """)
-        self.assertIn("vor 3,0 s (laut chrony)", out["t"])
+        self.assertIn("vor 3 s (laut chrony)", out["t"])   # T2: ohne Nullen am Ende
         self.assertIn("Anfragen (laut chrony)", out["t"])
 
     # --- U6 Nachbesserung: Notiz nennt das echte Fenster ---------------------------------------
@@ -262,7 +262,7 @@ console.log(JSON.stringify({{ sparse: render(sparse), dense: render(dense), none
         self.assertIn("Mittel der letzten 2,4 min", out["sparse"])
         self.assertIn("Mittel der letzten 60 s", out["dense"])
         self.assertEqual(out["min"], "Mittel der letzten 2 min")
-        self.assertEqual(out["h"], "Mittel der letzten 2,0 h")
+        self.assertEqual(out["h"], "Mittel der letzten 2 h")   # T2: ohne Nullen am Ende
         self.assertIn("zu wenige", out["none"])
 
     # --- U8 ---------------------------------------------------------------------------------

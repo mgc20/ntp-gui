@@ -52,6 +52,13 @@ export const HELP = {
       + "wieder da, PPS-Ausfälle, Neustarts von Diensten, gespeicherte Einstellungen. Die Diagnose-Seite zeigt "
       + "alle Ereignisse der letzten 90 Tage mit Filtern.",
   },
+  number_format: {
+    title: "Zahlen und Einheiten",
+    text: "Zeiten stehen immer in der passenden Einheit: **ns** (Milliardstel), **µs** (Millionstel), **ms** "
+      + "(Tausendstel) oder **s** – „± 1 ms“ ist eine Millisekunde. Nullen am Ende fallen weg, damit eine Millisekunde mit "
+      + "drei Nullen nicht wie tausend aussieht. Das Dezimalzeichen folgt der gewählten Sprache (Deutsch: Komma). **ppm** heißt "
+      + "Millionstel: 1 ppm Gangabweichung sind 86 ms pro Tag.",
+  },
   chart_stats: {
     title: "Diagramme lesen",
     text: "Über jedem Verlauf steht der **aktuelle Wert** (**jetzt** = Live-Wert wie im Statusband, "
@@ -903,7 +910,7 @@ export const SELECT_STATE_SHORT = {
 
 export const HELP_GROUPS = [
   { title: "Übersicht und Diagramme", keys: ["overview_verdict", "overview_hints", "overview_best_source",
-    "overview_restarts", "overview_events", "chart_stats"] },
+    "overview_restarts", "overview_events", "chart_stats", "number_format"] },
   { title: "Grundlagen", keys: ["ntp", "chronyd", "services", "stratum", "island", "minsources", "dhcp42", "clock_control", "local_orphan",
     "setup_accuracy"] },
   { title: "Werte der Systemuhr", keys: ["reference", "system_offset", "uncertainty", "rms_offset", "frequency",

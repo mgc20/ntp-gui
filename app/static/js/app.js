@@ -1,6 +1,6 @@
 // Einstieg: Navigation, Aktualisierung, Datencache, Neustart-Anzeige.
 import { el, apiGet, storageGet, storageSet, fmtTime, fmtServerDateTime, serverZone, staleText, isNum } from "./util.js";
-import { toast, isPopoverOpen, info, badge } from "./ui.js";
+import { toast, isPopoverOpen, infoButton, badge } from "./ui.js";
 import { resetChartState } from "./charts.js";
 import * as overview from "./pages/overview.js";
 import * as sources from "./pages/sources.js";
@@ -13,6 +13,7 @@ import * as diagnose from "./pages/diagnose.js";
 import * as notify from "./pages/notify.js";
 import * as settings from "./pages/settings.js";
 import * as help from "./pages/help.js";
+import * as muster from "./pages/muster.js";
 import { t, initI18n, setLanguage, language, LANGUAGES, onLanguageChange } from "./i18n.js";
 
 // Titel als Katalogschlüssel (i18n.js) – die Route (id) bleibt deutsch, damit Lesezeichen gelten.
@@ -28,7 +29,19 @@ const PAGES = [
   { id: "benachrichtigungen", titleKey: "nav.notify", module: notify, history: false },
   { id: "einstellungen", titleKey: "nav.settings", module: settings },
   { id: "hilfe", titleKey: "nav.help", module: help },
+  // Nur für Entwicklung: Musterseite mit allen Bausteinen, erreichbar mit ?dev=1 (nicht in der Navigation).
+  { id: "muster", title: "Musterseite", module: muster, dev: true, history: false },
 ];
+
+// ?dev=1 in der Adresse (vor oder nach dem #) schaltet die Entwicklerseiten frei.
+function devMode() {
+  const hashQuery = window.location.hash.split("?")[1] || "";
+  return new URLSearchParams(window.location.search).get("dev") === "1" || new URLSearchParams(hashQuery).get("dev") === "1";
+}
+
+function pageTitle(page) {
+  return page.title || t(page.titleKey);
+}
 
 const state = {
   status: null,
@@ -58,7 +71,7 @@ function routeParts() {
 
 function currentPage() {
   const { id } = routeParts();
-  return PAGES.find((p) => p.id === id) || PAGES[0];
+  return PAGES.find((p) => p.id === id && (!p.dev || devMode())) || PAGES[0];
 }
 
 // --- Datencache für seitenbezogene Abfragen ---------------------------------
@@ -133,13 +146,13 @@ function restoreFocus(saved) {
 
 function render() {
   const page = currentPage();
-  document.title = `${t(page.titleKey)} · ${state.status?.system?.title || "ntp-gui"}`;
+  document.title = `${pageTitle(page)} · ${state.status?.system?.title || "ntp-gui"}`;
   for (const link of nav.querySelectorAll("a")) {
     const active = link.dataset.page === page.id;
     link.classList.toggle("is-active", active);
     if (active) link.setAttribute("aria-current", "page"); else link.removeAttribute("aria-current");
   }
-  if (!state.status && page.module !== help && page.module !== settings) {
+  if (!state.status && page.module !== help && page.module !== settings && page.module !== muster) {
     main.replaceChildren(el("p", { class: "empty-note", text: t("app.connecting_server") }));
     return;
   }
@@ -223,9 +236,9 @@ function renderUpdateBanner(update) {
       el("strong", { text: `Neue Version ${latest.version} verfügbar` }),
       latest.title ? el("span", { class: "update-title", text: ` – ${latest.title}` }) : null),
     update.attention ? el("span", { class: "update-attention" }, badge("Achtung beim Update", "warn"),
-      info("update_attention", "Achtung beim Update")) : null,
+      infoButton("update_attention", "Achtung beim Update")) : null,
     link ? el("a", { href: link, target: "_blank", rel: "noopener noreferrer", text: "Release-Notizen →" }) : null,
-    info("update_banner", "Neue Version verfügbar"),
+    infoButton("update_banner", "Neue Version verfügbar"),
     el("button", { type: "button", class: "icon-button update-close", "aria-label": `Hinweis auf Version ${latest.version} ausblenden`,
       text: "✕", onclick: () => { storageSet("ntp-gui-update-dismissed", latest.version); renderUpdateBanner(update); } }));
   banner.hidden = false;
@@ -318,7 +331,7 @@ function watchReload() {
 
 // --- Start -------------------------------------------------------------------------
 function buildNav() {
-  nav.replaceChildren(...PAGES.map((page) => el("a", { href: `#/${page.id}`, dataset: { page: page.id } },
+  nav.replaceChildren(...PAGES.filter((page) => !page.dev).map((page) => el("a", { href: `#/${page.id}`, dataset: { page: page.id } },
     el("span", { text: t(page.titleKey) }),
     page.id === "" || page.id === "hardware" ? el("span", { class: "nav-badge", hidden: true }) : null)));
 }

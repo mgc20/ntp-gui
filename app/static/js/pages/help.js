@@ -1,5 +1,5 @@
 import { el, rich } from "../util.js";
-import { card, info } from "../ui.js";
+import { card, infoButton } from "../ui.js";
 import { HELP, HELP_GROUPS } from "../help.js";
 import { t, language, REFERENCE } from "../i18n.js";
 
@@ -41,9 +41,9 @@ export function render(ctx) {
     card("Welcher Aufbau passt zu mir?", { class: "explain", sub: "Jede Stufe baut auf der vorigen auf. Für die meisten Heimnetze reicht die zweite Zeile." },
       el("div", { class: "table-scroll" }, el("table", { class: "setup-table" },
         el("thead", {}, el("tr", {}, [["Aufbau", null], ["Genauigkeit", "setup_accuracy"], ["Hardware", "hw_check"],
-          ["Wann sinnvoll", null]].map(([h, help]) => el("th", {}, el("span", { text: h }), help ? info(help, h) : null)))),
+          ["Wann sinnvoll", null]].map(([h, help]) => el("th", {}, el("span", { text: h }), help ? infoButton(help, h) : null)))),
         el("tbody", {}, SETUPS.map(([name, help, accuracy, hardware, when]) => el("tr", {},
-          el("th", {}, el("span", { text: name }), info(help, name)), el("td", { class: "mono", text: accuracy }),
+          el("th", {}, el("span", { text: name }), infoButton(help, name)), el("td", { class: "mono", text: accuracy }),
           el("td", { text: hardware }), el("td", { text: when }))))))),
     el("div", { class: "toolbar" }, search),
     list,

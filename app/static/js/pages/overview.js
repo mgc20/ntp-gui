@@ -1,5 +1,5 @@
-import { el, fmtSeconds, fmtNs, fmtNumber, fmtFixed, fmtRate, fmtDuration, isNum, sourceLabel, serverZone, fmtZoned } from "../util.js";
-import { card, tile, kv, badge, insightList, insightLink, insightFixes, rangeButtons, info, emptyNote, loadingOr, ACTION_LABEL } from "../ui.js";
+import { el, fmtSeconds, fmtNs, fmtNumber, fmtFixed, fmtRate, fmtDuration, fmtPpm, fmtDate, isNum, sourceLabel, serverZone, fmtZoned } from "../util.js";
+import { card, statCard, kv, badge, insightList, insightLink, insightFixes, rangeButtons, infoButton, emptyState, loadingOr, chartCard, ACTION_LABEL } from "../ui.js";
 import { lineChart, sparkline, stepDecimals } from "../charts.js";
 import { t as tr } from "../i18n.js";
 
@@ -50,12 +50,12 @@ export function recentRate(samples, window = 60) {
 // Notiz zur Rate: „Mittel der letzten 60 s“, „Mittel der letzten 2,4 min“ – das tatsächliche Fenster.
 export function rateWindowText(seconds) {
   if (!isNum(seconds) || seconds <= 0) return "noch zu wenige Messpunkte";
-  if (seconds < 90) return `Mittel der letzten ${fmtFixed(Math.round(seconds), 0)} s`;
+  if (seconds < 90) return `Mittel der letzten ${fmtNumber(Math.round(seconds), 0, { group: false })} s`;
   if (seconds < 5400) {
     const min = seconds / 60;
-    return `Mittel der letzten ${fmtFixed(min, Number.isInteger(Math.round(min * 10) / 10) ? 0 : 1)} min`;
+    return `Mittel der letzten ${fmtNumber(min, 1)} min`;
   }
-  return `Mittel der letzten ${fmtFixed(seconds / 3600, 1)} h`;
+  return `Mittel der letzten ${fmtNumber(seconds / 3600, 1)} h`;
 }
 
 const LEAP = {
@@ -64,7 +64,7 @@ const LEAP = {
 };
 
 function ppm(value) {
-  return isNum(value) ? `${fmtFixed(value, 3)} ppm` : "–";
+  return fmtPpm(value, { digits: 3 });
 }
 
 // Alles, was „chronyc tracking“ über die Systemuhr weiß – jede Zeile mit ⓘ.
@@ -90,7 +90,7 @@ export function trackingDetails(status, ref) {
     ["Schaltsekunden-Status", leap ? badge(leap[0], leap[1]) : (t.leap_status || "–"), "leap"],
     ["Aktualisierungsintervall", isNum(t.update_interval) ? fmtDuration(t.update_interval) : "–", "update_interval"],
     ["Referenzzeit", refAge === null ? "–"
-      : `${new Date(t.ref_time * 1000).toLocaleString("de-DE")} (vor ${fmtDuration(refAge)})`, "ref_time"],
+      : `${fmtDate(t.ref_time, { time: "medium", zone: serverZone(status.system) ? status.system : null })} (vor ${fmtDuration(refAge)})`, "ref_time"],
     ["Uhrensteuerung", control === true ? badge("aktiv – chrony stellt die Uhr", "good")
       : control === false ? badge("aus (-x) – nur messen und verteilen", "warn") : "unbekannt", "clock_control"],
   ]));
@@ -239,10 +239,10 @@ function hintsBlock(ctx, insights) {
       el("strong", { text: tr("overview.hints.info_count", { count: rest.length }) }),
       el("span", { class: "muted", text: ` · ${rest.map((i) => i.title).join(" · ")}` })),
     el("span", { class: "hint-summary-action", text: tr(open ? "overview.hints.hide" : "overview.hints.show") }));
-    parts.push(el("div", { class: "hint-more" }, toggle, info("overview_hints", tr("overview.hints.label"))));
+    parts.push(el("div", { class: "hint-more" }, toggle, infoButton("overview_hints", tr("overview.hints.label"))));
     if (open) parts.push(el("div", { class: "insights-rest", id: "hints-rest" }, insightList(rest, ROUTES, ctx)));
   } else if (serious.length) {
-    parts.push(el("div", { class: "hint-more hint-more-quiet" }, info("overview_hints", tr("overview.hints.label"))));
+    parts.push(el("div", { class: "hint-more hint-more-quiet" }, infoButton("overview_hints", tr("overview.hints.label"))));
   }
   return parts.length ? el("div", { class: "hero-hints" }, parts) : null;
 }
@@ -257,7 +257,7 @@ function panel({ title, help, tone = "muted", state, value, valueNote, href, lin
   }
   return el("section", { class: "card panel", "data-tone": tone, id: id || null },
     el("div", { class: "panel-head" },
-      el("div", { class: "card-title" }, el("h2", { text: title }), help ? info(help, title) : null),
+      el("div", { class: "card-title" }, el("h2", { text: title }), help ? infoButton(help, title) : null),
       state ? badge(state, tone) : null),
     value !== undefined ? el("div", { class: "panel-value" },
       el("span", { class: "panel-number", text: String(value) }),
@@ -294,7 +294,7 @@ function syncPanel(status, ref, rootDistance, issues, temp) {
   const t = status.tracking || {};
   if (!status.chrony_running) {
     return panel({ title: "Systemuhr", help: "chronyd", tone: "crit", state: "keine Antwort", value: "–",
-      valueNote: "chronyd läuft nicht", body: emptyNote("Ohne chronyd verteilt der Server keine Zeit. Das Log auf der Diagnose-Seite nennt meist den Grund."),
+      valueNote: "chronyd läuft nicht", body: emptyState("Ohne chronyd verteilt der Server keine Zeit. Das Log auf der Diagnose-Seite nennt meist den Grund."),
       href: "#/diagnose", linkLabel: "Zur Diagnose" });
   }
   const local = t.local_reference && !t.synchronised;
@@ -308,7 +308,7 @@ function syncPanel(status, ref, rootDistance, issues, temp) {
       ["Stratum", t.stratum ?? "–", "stratum"],
       ["Referenz", t.local_reference ? "LOCAL" : (sourceLabel(ref) !== "–" ? sourceLabel(ref) : t.ref_name || "–"), "reference"],
       ["Uhrensteuerung", status.system?.clock_control === false ? "aus (-x)" : status.system?.clock_control ? "aktiv" : "–", "clock_control"],
-      isNum(temp) ? ["Temperatur", `${fmtFixed(temp, 1)} °C`, "temp_now"] : null,
+      isNum(temp) ? ["Temperatur", `${fmtNumber(temp, 1)} °C`, "temp_now"] : null,
       ["Schaltsekunden-Liste", leapText(status.leap), "leap_expiry"],
     ].filter(Boolean)),
     href: "#/quellen", linkLabel: "Zu den Quellen",
@@ -399,7 +399,7 @@ function unusedStrip(status) {
   return el("div", { class: "unused-strip", role: "note" },
     el("span", { class: "unused-label", text: "Nicht genutzt" }),
     off.map((m) => el("span", { class: "unused-item" },
-      badge("aus", "muted"), el("strong", { text: m.name }), info(m.help, m.name),
+      badge("aus", "muted"), el("strong", { text: m.name }), infoButton(m.help, m.name),
       el("span", { class: "muted unused-pitch", text: ` – ${m.pitch}` }),
       el("a", { href: m.href, text: "mehr →", "aria-label": `${m.name}: mehr erfahren und einrichten` }))));
 }
@@ -470,7 +470,7 @@ function servicesPanel(services, issues, status = {}) {
     return el("li", { class: "svc", "data-tone": stTone, title: svc.state === "stopped" ? full : `${full} · ${serviceSince(svc)}` },
       el("span", { class: "svc-dot", "aria-hidden": "true" }),
       el("span", { class: "svc-name" }, el("span", { text: SERVICE_SHORT[name] || full }),
-        SERVICE_INFO[name] ? info(SERVICE_INFO[name], svc.label || name) : null),
+        SERVICE_INFO[name] ? infoButton(SERVICE_INFO[name], svc.label || name) : null),
       restarts ? el("span", { class: "svc-restarts", text: `${restarts}× neu` }) : null,
       badge(label, stTone),
       svc.message && svc.state !== "running" ? el("span", { class: "svc-message", text: svc.message }) : null);
@@ -479,7 +479,7 @@ function servicesPanel(services, issues, status = {}) {
     title: "Dienste", help: "services", tone, issues,
     state: failed ? `${failed} ausgefallen` : restarting ? "Neustart läuft" : unclear ? `${unclear} unklar` : "alle laufen",
     value: `${running} / ${names.length - off}`, valueNote: off ? `laufen · ${off} aus` : "laufen",
-    body: el("div", {}, list, opsRows(status), el("p", { class: "panel-foot" }, "Neustarts zählt der Supervisor ", info("overview_restarts", "Neustarts"))),
+    body: el("div", {}, list, opsRows(status), el("p", { class: "panel-foot" }, "Neustarts zählt der Supervisor ", infoButton("overview_restarts", "Neustarts"))),
   });
 }
 
@@ -494,10 +494,10 @@ const EVENT_LABEL = { info: "Info", warn: "Warnung", crit: "Kritisch" };
 export function eventTime(unix, system = {}) {
   const zone = serverZone(system) ? system : null;
   const now = isNum(system.time) ? system.time : Date.now() / 1000;
-  const day = (t) => fmtZoned(t || 0, zone, { day: "2-digit", month: "2-digit", year: "numeric" }, "de-DE", "toLocaleDateString");
-  const clock = fmtZoned(unix || 0, zone, { hour: "2-digit", minute: "2-digit" }, "de-DE", "toLocaleTimeString");
+  const day = (t) => fmtZoned(t || 0, zone, { day: "2-digit", month: "2-digit", year: "numeric" }, null, "toLocaleDateString");
+  const clock = fmtZoned(unix || 0, zone, { hour: "2-digit", minute: "2-digit" }, null, "toLocaleTimeString");
   return day(unix) === day(now) ? clock
-    : `${fmtZoned(unix || 0, zone, { day: "2-digit", month: "2-digit" }, "de-DE", "toLocaleDateString")} ${clock}`;
+    : `${fmtZoned(unix || 0, zone, { day: "2-digit", month: "2-digit" }, null, "toLocaleDateString")} ${clock}`;
 }
 
 function eventsPanel(ctx) {
@@ -505,8 +505,8 @@ function eventsPanel(ctx) {
   const data = ctx.data("overview-events", url, 20);
   const events = data && Array.isArray(data.events) ? data.events.slice(0, 5) : null;
   const body = events === null ? (data === undefined ? loadingOr(ctx, "overview-events", url, "Ereignisse")
-    : emptyNote("Ereignisse nicht verfügbar."))
-    : !events.length ? emptyNote("Noch keine Ereignisse – hier erscheinen Quellenwechsel, GPS-Ausfälle, Neustarts und Änderungen.")
+    : emptyState("Ereignisse nicht verfügbar."))
+    : !events.length ? emptyState("Noch keine Ereignisse – hier erscheinen Quellenwechsel, GPS-Ausfälle, Neustarts und Änderungen.")
       : el("ol", { class: "event-list" }, events.map((event) => {
         const d = new Date((event.t || 0) * 1000);
         const time = eventTime(event.t, ctx.status.system || {});
@@ -559,14 +559,14 @@ export function render(ctx) {
   ].filter(Boolean) : null;
   const offTone = offsetTone(t.system_time_offset);
   const kpis = el("div", { class: "hero-kpis" },
-    tile({ label: tr("overview.kpi.offset"), help: "system_offset", value: fmtSeconds(t.system_time_offset, 3, true), tone: offTone,
+    statCard({ label: tr("overview.kpi.offset"), help: "system_offset", value: fmtSeconds(t.system_time_offset, 3, true), tone: offTone,
       note: TONE_WORD_KEY[offTone] ? el("span", {}, badge(tr(TONE_WORD_KEY[offTone]), offTone), ` RMS ${fmtSeconds(t.rms_offset)}`) : `RMS ${fmtSeconds(t.rms_offset)}`,
       spark: sparkline(offsets, { zero: true, ...span }) }),
-    tile({ label: tr("overview.kpi.max_error"), help: "uncertainty", value: rootDistance === null ? "–" : `± ${fmtSeconds(rootDistance)}`,
+    statCard({ label: tr("overview.kpi.max_error"), help: "uncertainty", value: rootDistance === null ? "–" : `± ${fmtSeconds(rootDistance)}`,
       tone: "muted", note: tr("overview.kpi.max_error_note"), spark: sparkline(distance, { min: 0, ...span }) }),
-    tile({ label: tr("overview.kpi.frequency"), help: "frequency", value: isNum(t.frequency_ppm) ? fmtFixed(t.frequency_ppm, 3) : "–", unit: "ppm",
-      tone: "muted", note: `Skew ${isNum(t.skew_ppm) ? fmtFixed(t.skew_ppm, 3) : "–"} ppm`, spark: sparkline(freq, span) }),
-    tile({ label: tr("overview.kpi.requests"), help: "served_rate", value: fmtRate(lastRate), unit: "/min",
+    statCard({ label: tr("overview.kpi.frequency"), help: "frequency", value: fmtNumber(t.frequency_ppm, 3, { group: false }), unit: "ppm",
+      tone: "muted", note: `Skew ${fmtPpm(t.skew_ppm, { digits: 3 })}`, spark: sparkline(freq, span) }),
+    statCard({ label: tr("overview.kpi.requests"), help: "served_rate", value: fmtRate(lastRate), unit: "/min",
       tone: "muted", note: tr("overview.kpi.requests_note", { count: clientCount, n: fmtNumber(clientCount) }),
       spark: sparkline(rate, { min: 0, ...span }) }));
   const hero = el("section", { class: "card hero", "data-tone": v.tone, "aria-label": tr("overview.band_label") },
@@ -574,7 +574,7 @@ export function render(ctx) {
       el("div", { class: "hero-verdict" },
         el("span", { class: "verdict-icon", "aria-hidden": "true", text: VERDICT_ICON[v.tone] }),
         el("div", { class: "verdict-text" },
-          el("div", { class: "verdict-title" }, el("h2", { text: v.title }), info("overview_verdict", tr("overview.band_label"))),
+          el("div", { class: "verdict-title" }, el("h2", { text: v.title }), infoButton("overview_verdict", tr("overview.band_label"))),
           el("p", { class: "verdict-sub", text: v.text }),
           facts ? el("p", { class: "verdict-facts" }, facts.map((f, i) => el("span", { class: "fact", text: i ? `· ${f}` : f }))) : null)),
       kpis),
@@ -609,17 +609,21 @@ export function render(ctx) {
         ariaLabel: "Verlauf des maximalen Fehlers zu UTC" }],
     ["Frequenzfehler", "frequency", "Wie schnell der Quarz ungeregelt laufen würde.",
       { series: [{ id: "freq", label: "ppm", color: "var(--accent)", points: freq }], current: t.frequency_ppm,
-        format: (x) => `${fmtFixed(x, 3)} ppm`, axisFormat: (x, step) => `${fmtFixed(x, stepDecimals(step))} ppm`, zeroLine: false,
+        format: (x) => fmtPpm(x, { digits: 3 }), axisFormat: (x, step) => `${fmtFixed(x, stepDecimals(step))} ppm`, zeroLine: false,
         ariaLabel: "Verlauf des Frequenzfehlers" }],
     ["Beantwortete Anfragen", "served_rate", "NTP-Anfragen aus dem LAN pro Minute.",
       { series: [{ id: "rate", label: "pro Minute", color: "var(--accent)", points: rate }], current: lastRate ?? undefined,
         nowLabel: "zuletzt", format: (x) => `${fmtRate(x)}/min`, axisFormat: (x, step) => fmtNumber(x, stepDecimals(step)), min: 0,
         emptyText: "Noch keine Anfragen gemessen", ariaLabel: "Verlauf der beantworteten Anfragen pro Minute" }],
   ];
+  // Flache oder leere Verläufe klappen zu einer Zeile zusammen („stabil um ± 420 µs – Diagramm zeigen“).
+  // Die Abweichung schwankt um 0 – „flach“ heißt dort: Spannweite unter 1 µs.
+  const flat = { offset: { flatAbs: 1e-6 }, dist: { flatRel: 0.02 }, freq: { flatAbs: 0.005 }, rate: { flatRel: 0.05 } };
+  const zone = serverZone(status.system) ? status.system : null;
   for (const [title, help, sub, opts] of chartCards) {
-    const target = el("div", { class: "chart-host" });
-    charts.append(card(title, { help, sub, class: "chart-card" }, target));
-    ctx.afterRender(() => lineChart(target, { height: 200, key: `overview-${opts.series[0].id}`, ...span, ...opts }));
+    const id = opts.series[0].id;
+    charts.append(chartCard(ctx, { title, help, sub, key: `overview-${id}`, series: opts.series, format: opts.format, zone,
+      ...flat[id], draw: (host) => lineChart(host, { height: 200, key: `overview-${id}`, ...span, ...opts }) }));
   }
 
   return [
@@ -648,4 +652,4 @@ export function axisSeconds(value, step, extent) {
   return `${value === 0 ? "0" : fmtFixed(value * scale, decimals)} ${unit}`;
 }
 
-export { info };
+

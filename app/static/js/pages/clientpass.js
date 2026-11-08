@@ -2,11 +2,11 @@
 // Eine druckbare Seite je Gerät – Browser-Druck, kein Export-Endpunkt. Alle Werte landen per
 // el()/textContent im DOM. „Gefilterte Kopie“ holt eine Textfassung, die der Datenschutzfilter
 // (egress) bereinigt hat – zum Weitergeben im Forum oder Ticket.
-import { el, apiGet, fmtNumber, isNum } from "../util.js";
-import { card, info, badge, kv, emptyNote, toast, copyButton } from "../ui.js";
+import { el, apiGet, fmtNumber, fmtDate, isNum } from "../util.js";
+import { card, infoButton, badge, kv, emptyState, toast, copyButton } from "../ui.js";
 import { lineChart } from "../charts.js";
 import { axisSeconds } from "./overview.js";
-import { fmtOffset, fmtInterval, fmtDate, clientHref, qualityBadge, fmtDrift } from "./clientdetail.js";
+import { fmtOffset, fmtInterval, clientHref, qualityBadge, fmtDrift } from "./clientdetail.js";
 
 const ORIGIN = { erwartet: "erwartet (deine Angabe)", vermutet: "vermutlich", unbekannt: "unbekannt" };
 
@@ -40,10 +40,10 @@ export function renderPass(ctx, ip, serverIp) {
   const failed = data === undefined ? ctx.dataError?.(`clientpass:${ip}`, url) : null;
   if (failed) {
     return [back, card("Gerätepass", { help: "client_pass" },
-      emptyNote(failed.status === 404 ? "Zu diesem Gerät liegen keine Daten vor."
+      emptyState(failed.status === 404 ? "Zu diesem Gerät liegen keine Daten vor."
         : failed.status === 400 ? "Ungültige Adresse im Link." : `Nicht geladen: ${failed.message}`))];
   }
-  if (data === undefined) return [back, emptyNote("Lade Gerätepass …")];
+  if (data === undefined) return [back, emptyState("Lade Gerätepass …")];
   const entry = data.entry || {};
   const q = data.quality || {};
   const nts = data.nts || {};
@@ -67,7 +67,7 @@ export function renderPass(ctx, ip, serverIp) {
     el("button", { type: "button", class: "button primary", text: "Drucken", onclick: () => window.print() }),
     el("button", { type: "button", class: "button", disabled: shareBusy || null,
       text: shareBusy ? "Filtere …" : "Gefilterte Kopie", onclick: () => loadShare(ctx, ip) }),
-    info("client_pass_share", "Gefilterte Kopie"));
+    infoButton("client_pass_share", "Gefilterte Kopie"));
   const softwareText = `${data.software?.label || "unbekannt"} · ${ORIGIN[data.software?.origin] || "unbekannt"}`;
   const ntsText = !nts.server ? "NTS-Server dieser Instanz aus"
     : nts.uses ? "nutzt NTS" : nts.can === true ? "nein – könnte es" : "nein";
@@ -118,7 +118,7 @@ export function renderPass(ctx, ip, serverIp) {
         sub: serverIp ? null : "Die Adresse dieses Servers ist nicht bekannt – setze sie für **<IP-des-Servers>** ein." },
       (data.recommendations || []).length
         ? el("div", { class: "snippets" }, data.recommendations.map((r) => recommendation(r, data.server_placeholder, serverIp)))
-        : emptyNote("Keine Empfehlung – das Gerät hält seine Uhr gut.")),
+        : emptyState("Keine Empfehlung – das Gerät hält seine Uhr gut.")),
       el("p", { class: "field-help client-pass-foot" },
         badge("lokal", "muted"), " Dieser Pass bleibt auf dieser Instanz. Drucken oder „Als PDF speichern“ macht der Browser.")),
   ];
