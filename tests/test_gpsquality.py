@@ -618,10 +618,23 @@ class FlapReplayTest(unittest.TestCase):
         titles = [e[2] for e in events]
         unstet = [t for t in titles if "unstet" in t]
         self.assertEqual(len(unstet), 1, titles)
-        self.assertLessEqual(len(titles), 3, titles)   # höchstens ein Paar vor dem Erkennen
-        self.assertEqual(events[-1][1], "warn")
-        self.assertEqual(events[-1][3]["state"], "unstet")
-        self.assertGreaterEqual(events[-1][3]["changes"], statewatch.GPS_FLAP_ENTER)
+        # höchstens ein Paar vor dem Erkennen, danach nur Zusammenfassungen (1.5.4: Fenster 1 h → 2 h → 4 h …)
+        singles = [t for t in titles if t in ("GPS-Fix verloren", "GPS-Fix wieder da")]
+        self.assertLessEqual(len(singles), 2, titles)
+        self.assertLessEqual(len(titles), 7, titles)
+        first = next(e for e in events if "unstet" in e[2])
+        self.assertEqual(first[1], "info")                 # 1.5.4: nie mehr „warn“
+        self.assertIs(first[3]["notify"], False)
+        self.assertEqual(first[3]["state"], "unstet")
+        self.assertGreaterEqual(first[3]["changes"], statewatch.GPS_FLAP_ENTER)
+        after = events[events.index(first) + 1:]
+        self.assertTrue(after)
+        for event in after:
+            self.assertEqual(event[1], "info")
+            self.assertRegex(event[2], r"^GPS-Fix \d+-mal verloren in (der letzten Stunde|den letzten \d+ h), "
+                                       r"zusammen (unter 1 min|\d+ (min|h)( \d+ min)?) ohne Fix$")
+            self.assertIs(event[3]["notify"], False)
+            self.assertIs(event[3]["resolves"], False)
         stability = watch.gps_stability()
         self.assertEqual(stability["state"], "unstet")
         self.assertGreater(stability["unstet_changes"], 50)
@@ -637,31 +650,95 @@ class FlapReplayTest(unittest.TestCase):
         self.assertEqual(watch.gps_stability()["state"], "stetig")
         self.assertEqual(sum(1 for e in events if "unstet" in e[2]), 1)
 
-    def test_lost_fix_while_unstet_is_reported_early(self):
-        # Befund: im Zustand „unstet“ kam „GPS-Fix verloren“ erst nach einer Stunde.
+    def lost_while_unstet(self, sources):
         events, now = [], [0.0]
         watch = statewatch.StateWatcher(lambda *a, **k: events.append(a + (now[0],)), clock=lambda: now[0])
         for mode in ([3, 3, 1, 1] * 6):
-            watch.sample({"gps": {"mode": mode}})
+            watch.sample({"gps": {"mode": mode}, "sources": sources})
             now[0] += 10
         self.assertEqual(watch.gps_stability()["state"], "unstet")
-        lost_at = now[0]
+        lost_at = now[0] - 20
         for _ in range(400):
-            watch.sample({"gps": {"mode": 1}})
+            watch.sample({"gps": {"mode": 1}, "sources": sources})
             now[0] += 10
-        gps_events = [e for e in events if e[0] == "gps"]
-        self.assertEqual(gps_events[-1][1], "warn")
-        self.assertRegex(gps_events[-1][2], r"^GPS-Fix seit 10 min weg \(vorher \d+ Fix-Wechsel in .+\)$")
-        self.assertEqual(gps_events[-1][3]["outcome"], "fix_weg")
-        self.assertFalse(gps_events[-1][3]["fix"])
-        self.assertLessEqual(gps_events[-1][4] - lost_at, statewatch.GPS_UNSTET_LOST + 60)
-        self.assertEqual(sum(1 for e in gps_events if " weg " in e[2] or "verloren" in e[2]), 1)  # kein zweites
-        self.assertEqual(watch.gps_stability()["state"], "stetig")
-        # Fix kommt zurück → normales Ereignis (Haltezeit 60 s).
+        self.assertEqual(watch.gps_stability()["state"], "stetig")   # Episode still beendet
+        self.assertTrue(watch.gps_stability()["weak"])               # schwacher Empfang bleibt gemerkt
         for _ in range(10):
-            watch.sample({"gps": {"mode": 3}})
+            watch.sample({"gps": {"mode": 3}, "sources": sources})
             now[0] += 10
-        self.assertEqual([e[2] for e in events if e[0] == "gps"][-1], "GPS-Fix wieder da")
+        return [e for e in events if e[0] == "gps"], lost_at
+
+    def test_long_loss_while_unstet_warns_only_when_gps_matters(self):
+        # Trägt keine Netzquelle (hier: chrony nutzt keine), warnt schon der schwache Empfang nach
+        # GPS_MATTERS_LOST (10 min) – nicht erst nach 1 h.
+        alone = {"GPS": {"k": "#", "s": "?"}, "nts1": {"k": "^", "s": "?"}}
+        events, lost_at = self.lost_while_unstet(alone)
+        long = [e for e in events if "ohne Fix" in e[2] and "seit" in e[2]]
+        self.assertEqual(len(long), 1, events)
+        self.assertEqual(long[0][1], "warn")
+        self.assertRegex(long[0][2], r"^GPS seit 10 min ohne Fix – und gerade gebraucht")
+        self.assertGreaterEqual(long[0][4] - lost_at, statewatch.GPS_MATTERS_LOST)
+        self.assertLessEqual(long[0][4] - lost_at, statewatch.GPS_MATTERS_LOST + 60)
+        self.assertNotIn("notify", long[0][3])
+        back = events[-1]
+        self.assertEqual(back[1], "info")
+        self.assertRegex(back[2], r"^GPS-Fix wieder da nach 1 h \d+ min ohne Fix$")
+        self.assertNotIn("notify", back[3])                     # schließt die Warnung in den Benachrichtigungen
+        self.assertFalse([e for e in events if e[2] in ("GPS-Fix verloren", "GPS-Fix wieder da")])
+
+    def weak_run(self, phases):
+        """phases: Liste (Sekunden, mode, sources). Schwacher Empfang laut 24-h-Bewertung."""
+        events, now = [], [0.0]
+        watch = statewatch.StateWatcher(lambda *a, **k: events.append(a + (now[0],)), clock=lambda: now[0],
+                                        weak_reception=lambda: True)
+        for seconds, mode, sources in phases:
+            for _ in range(int(seconds // 10)):
+                watch.sample({"gps": {"mode": mode}, "sources": sources})
+                now[0] += 10
+        return [e for e in events if e[0] == "gps"]
+
+    def test_weak_loss_warns_soon_when_gps_matters(self):
+        alone = {"GPS": {"k": "#", "s": "*"}, "nts1": {"k": "^", "s": "?"}}
+        events = self.weak_run([(600, 3, alone), (3000, 1, alone), (600, 3, alone)])
+        warns = [e for e in events if e[1] == "warn"]
+        self.assertEqual(len(warns), 1, events)
+        self.assertRegex(warns[0][2], r"^GPS seit 10 min ohne Fix – und gerade gebraucht")
+        self.assertRegex(events[-1][2], r"^GPS-Fix wieder da nach 50 min ohne Fix$")
+        self.assertNotIn("notify", events[-1][3])
+
+    def test_info_upgrades_to_warn_when_network_fails(self):
+        carried = {"GPS": {"k": "#", "s": "?"}, "nts1": {"k": "^", "s": "*"}, "nts2": {"k": "^", "s": "+"}}
+        gone = {"GPS": {"k": "#", "s": "?"}, "nts1": {"k": "^", "s": "?"}, "nts2": {"k": "^", "s": "?"}}
+        events = self.weak_run([(600, 3, carried), (4200, 1, carried), (3600, 1, gone), (600, 3, gone)])
+        long = [e for e in events if e[2].startswith("GPS seit")]
+        self.assertEqual([e[1] for e in long], ["info", "warn"], events)
+        self.assertIn("jetzt gebraucht", long[1][2])
+        self.assertNotIn("notify", events[-1][3])   # „wieder da“ schließt die Warnung
+
+    def test_long_outage_without_extra_summary(self):
+        carried = {"GPS": {"k": "#", "s": "?"}, "nts1": {"k": "^", "s": "*"}, "nts2": {"k": "^", "s": "+"}}
+        events = self.weak_run([(600, 3, carried), (7200, 1, carried), (600, 3, carried)])
+        self.assertEqual(len([e for e in events if e[2].startswith("GPS seit")]), 1, events)
+        self.assertFalse([e for e in events if "1-mal verloren" in e[2]], events)
+
+    def test_long_loss_while_unstet_is_info_when_network_carries(self):
+        carried = {"GPS": {"k": "#", "s": "?"}, "nts1": {"k": "^", "s": "*"}, "nts2": {"k": "^", "s": "+"}}
+        events, _lost_at = self.lost_while_unstet(carried)
+        self.assertFalse([e for e in events if e[1] in ("warn", "crit")], events)
+        long = [e for e in events if e[2].startswith("GPS seit 1 h ohne Fix")]
+        self.assertEqual(len(long), 1)
+        self.assertIn("Netzquellen tragen", long[0][2])
+        self.assertIs(long[0][3]["notify"], False)
+        self.assertIs(events[-1][3]["notify"], False)
+
+    def test_pps_makes_gps_matter(self):
+        self.assertTrue(statewatch.gps_matters({"sources": {"PPS": {"k": "#", "s": "?"},
+                                                            "nts1": {"k": "^", "s": "*"}}}))
+        self.assertTrue(statewatch.gps_matters({"sources": {"GPS": {"k": "#", "s": "*"},
+                                                            "nts1": {"k": "^", "s": "+"}}}))
+        self.assertFalse(statewatch.gps_matters({"sources": {"GPS": {"k": "#", "s": "x"},
+                                                             "nts1": {"k": "^", "s": "+"}}}))
+        self.assertTrue(statewatch.gps_matters({}))
 
     def test_gps_off_closes_episode_events(self):
         events, now = [], [0.0]
@@ -936,7 +1013,7 @@ class BoundCreepTest(unittest.TestCase):
 
     def test_one_ms_creep_does_not_restart_hourly(self):
         # Nutzerfall: gemessen 0,128 → eine Stunde später 0,130 ergab früher ± 64 → ± 80 ms (zweiter Neustart).
-        first = gpsquality.decide(self.measured(0.128), None, T0)
+        first = gpsquality.decide(self.measured(0.128), {"delay": 0.1, "precision": 0.01, "t": T0 - 2 * H}, T0)
         self.assertEqual(first["delay"], 0.16)
         applied = {"delay": first["delay"], "precision": 0.01, "t": T0}
         for creep in (0.130, 0.140, 0.159):
@@ -949,6 +1026,77 @@ class BoundCreepTest(unittest.TestCase):
         self.assertEqual(d["delay"], 0.033)
         applied = {"delay": d["delay"], "precision": 0.01, "t": T0 + 13 * H}
         self.assertFalse(gpsquality.decide(self.measured(0.029), applied, T0 + 15 * H)["apply"])
+
+
+class BoundHysteresisTest(StoreCase):
+    """1.5.4, Diagnosepaket 1.5.3: Die Schranke pendelte – 04.11. ± 22 → ± 12 ms nach einer ruhigen
+    Nacht (Streuung 8,9 ms in 6 h), 05.11. wieder ± 12 → ± 22 ms (16,8 ms), jedes Mal ein Neustart
+    von chronyd. Kleiner nur noch, wenn die neue ≤ 0,6 × die jetzige ist und die 48 h hineinpassen."""
+
+    @staticmethod
+    def samples(spread_ms, hours, start=0.0, step=60.0, seed=4):
+        """GPS − Netz normalverteilt; spread_ms(h) = 95-%-Wert (≈ 1,96 σ) zur Stunde h."""
+        import random
+        rng = random.Random(seed)
+        out = []
+        n = int(hours * H / step)
+        for i in range(n):
+            t = T0 + start + i * step
+            sigma = spread_ms((start + i * step) / H) / 1000.0 / 1.96
+            out.append({"t": t, "gps": {"mode": 3, "used": 6},
+                        "sources": {"GPS": {"o": 0.0005 + rng.gauss(0, sigma), "s": "-", "k": "#"},
+                                    "net0": {"o": 0.0, "s": "*", "k": "^"}, "net1": {"o": 0.0, "s": "+", "k": "^"}}})
+        return out
+
+    def run_hours(self, spread_ms, hours):
+        rows = self.samples(spread_ms, hours)
+        changes = []
+        for h in range(6, int(hours) + 1):
+            now = T0 + h * H
+            window = [r for r in rows if r["t"] <= now]
+            decision = gpsquality.tick(cfg(), now, window)
+            if decision["apply"]:
+                changes.append((h, decision["delay"]))
+        return changes
+
+    def test_bundle_spread_history_no_flip_flop(self):
+        # 30 h um 17 ms, 12 ruhige Stunden um 9 ms, danach wieder 17 ms (wie im Paket).
+        def spread(h):
+            return 9.0 if 30 <= h < 42 else 17.0
+        changes = self.run_hours(spread, 72)
+        self.assertEqual(len(changes), 1, changes)            # nur die erste Messung ersetzt den Standard
+        self.assertGreaterEqual(changes[0][1], 0.034)
+        self.assertEqual(len(self.reloads), 1)
+
+    def test_still_grows_when_needed(self):
+        def spread(h):
+            return 40.0 if h >= 30 else 17.0
+        changes = self.run_hours(spread, 40)
+        self.assertGreaterEqual(len(changes), 2, changes)
+        self.assertGreater(changes[-1][1], changes[0][1])
+        self.assertGreaterEqual(changes[-1][1], 0.08)
+
+    def test_shrinks_after_lasting_improvement(self):
+        # Antenne ans Fenster: ab Stunde 12 dauerhaft 4 ms – nach 48 h passt auch die lange Messung.
+        def spread(h):
+            return 4.0 if h >= 12 else 40.0
+        changes = self.run_hours(spread, 72)
+        self.assertGreaterEqual(len(changes), 2, changes)
+        self.assertLess(changes[-1][1], 0.6 * changes[0][1])
+
+    def test_decide_long_blocks_shrink(self):
+        applied = {"delay": 0.04, "precision": 0.003, "t": T0}
+        measured = {"status": "measured", "delay": 0.018, "precision": 0.003, "bound": 0.009}
+        long = {"status": "measured", "delay": 0.035}
+        d = gpsquality.decide(measured, applied, T0 + 20 * H, long=long)
+        self.assertFalse(d["apply"])
+        self.assertIn("48 Stunden", d["reason"])
+        self.assertTrue(gpsquality.decide(measured, applied, T0 + 20 * H, long=lambda: dict(long, delay=0.02))["apply"])
+        # Nicht deutlich genug kleiner (> 0,6 × jetzt): bleibt, die 48 h werden gar nicht erst gelesen.
+        asked = []
+        d = gpsquality.decide(dict(measured, delay=0.026), applied, T0 + 20 * H, long=lambda: asked.append(1))
+        self.assertFalse(d["apply"])
+        self.assertEqual(asked, [])
 
 
 class NetFloorTest(StoreCase):

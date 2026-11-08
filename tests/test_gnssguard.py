@@ -27,6 +27,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _isolation  # noqa: E402,F401 – vor jedem App-Import: Host-Pfade umlenken
+import _gpsreplay  # noqa: E402
 
 import apiv1  # noqa: E402
 import chrony  # noqa: E402
@@ -176,6 +177,120 @@ class ReplayTest(unittest.TestCase):
         _det, stages, t0 = run_scenario(lambda dt: {"time_shift": 0.050} if dt < 120 else {}, after_s=1200.0)
         self.assertIsNotNone(first(stages, t0, "stoerung"))
         self.assertEqual(stages[-1][1], "ok")
+
+
+class WeakGeometryTest(unittest.TestCase):
+    """1.5.4: „GNSS-Störung: Position um 160 m gesprungen“ bei einem VK-162 drinnen (Diagnosepaket
+    1.5.3: 2D/3D im Wechsel, 3–6 Satelliten, HDOP oft 5–20) war ein Fehlalarm. Nur verlässliche
+    Fixe zählen, und ein Sprung muss anhalten (Replay: tests/_gpsreplay.py)."""
+
+    def stoerungen(self, observations):
+        det = gnssguard.Detector()
+        count, prev = 0, "ok"
+        for obs in observations:
+            stage = det.update(obs)["stage"]
+            count += stage == "stoerung" and prev != "stoerung"
+            prev = stage
+        return det, count
+
+    def test_bundle_replay_gives_no_stoerung(self):
+        for seed in (1, 2, 3, 4, 5):
+            observations = _gpsreplay.observations(seed)
+            self.assertGreater(len(observations), 30_000)          # gut 4 Tage
+            det, count = self.stoerungen(observations)
+            self.assertEqual(count, 0, seed)
+            self.assertTrue(det.last.get("position_learned"))   # die Prüfung lief (gute Fixe gab es)
+
+    def test_bundle_replay_would_alarm_on_every_3d_fix(self):
+        # Gegenprobe: ohne Satellitenzahl/HDOP/eph (jeder 3D-Fix zählt) schlägt dieselbe Folge an –
+        # die Replay-Daten sind also nicht zu brav.
+        stripped = []
+        for obs in _gpsreplay.observations(1):
+            obs = {k: v for k, v in obs.items() if k not in ("used", "hdop")}
+            if "pos" in obs:
+                obs["pos"] = (obs["pos"][0], obs["pos"][1], None)
+            stripped.append(obs)
+        _det, count = self.stoerungen(stripped)
+        self.assertGreater(count, 0)
+
+    def test_real_jump_with_good_geometry_still_detected(self):
+        start = 2 * 86400.0
+        jump = lambda t: (500.0, 8, 1.2) if start <= t < start + 1800 else None  # noqa: E731
+        det = gnssguard.Detector()
+        hit = None
+        for obs in _gpsreplay.observations(2, jump=jump):
+            if det.update(obs)["stage"] == "stoerung" and hit is None and obs["t"] >= start:
+                hit = obs["t"] - start
+        self.assertIsNotNone(hit)
+        self.assertLessEqual(hit, 60.0)
+        self.assertAlmostEqual(det.signals["position"].detail["deviation_m"], 500, delta=60)
+
+    def test_poor_fixes_ignored_for_jump_and_reference(self):
+        rng = random.Random(5)
+        det = gnssguard.Detector()
+        t = 0.0
+        while t < 2400.0:
+            det.update(dict(outdoor(t, rng), used=8, hdop=1.1))
+            t += 10.0
+        # 10 min lang 800 m daneben, aber nur 4 Satelliten bzw. HDOP 9: kein Signal, nichts gelernt.
+        learned = len(det._positions)
+        for i in range(60):
+            bad = dict(outdoor(t, rng, pos_shift=800.0), used=4 if i % 2 else 7, hdop=1.5 if i % 2 else 9.0)
+            self.assertEqual(det.update(bad)["stage"], "ok")
+            t += 10.0
+        self.assertEqual(len(det._positions), learned)
+        self.assertEqual(det.last["position_quality"], "schwach")
+
+    def test_short_jump_does_not_count(self):
+        rng = random.Random(6)
+        det = gnssguard.Detector()
+        t = 0.0
+        while t < 2400.0:
+            det.update(dict(outdoor(t, rng), used=8, hdop=1.1))
+            t += 10.0
+        for i in range(60):   # 40 s daneben (4 gute Fixe), dann 60 s wieder da – mehrmals
+            shift = 300.0 if i % 10 < 4 else 0.0
+            self.assertEqual(det.update(dict(outdoor(t, rng, pos_shift=shift), used=8, hdop=1.1))["stage"], "ok")
+            t += 10.0
+
+    def test_good_geometry_rule(self):
+        self.assertTrue(gnssguard.good_geometry(None, None, None))     # unbekannt zählt nicht dagegen
+        self.assertTrue(gnssguard.good_geometry(5, 4.0, 200.0))         # HDOP entscheidet vor eph
+        self.assertFalse(gnssguard.good_geometry(4, 1.0, 5.0))
+        self.assertFalse(gnssguard.good_geometry(9, 4.5, 5.0))
+        self.assertFalse(gnssguard.good_geometry(9, None, 80.0))
+        self.assertTrue(gnssguard.good_geometry(9, None, 30.0))
+
+    def test_observation_carries_used_and_hdop(self):
+        status = gps.parse_reports({"TPV": {"mode": 3, "lat": 1.0, "lon": 2.0},
+                                    "SKY": {"hdop": 7.5, "uSat": 4, "satellites": []}})
+        obs = gnssguard.observation(5.0, dict(status, running=True), [], {}, "GPS", (1.0, 2.0, 8.0))
+        self.assertEqual((obs["used"], obs["hdop"]), (4, 7.5))
+
+    def test_observation_zero_used_counts_as_unknown(self):
+        # Kein SKY im Abfragefenster (oder NMEA ohne GSA): gps.parse liefert 0 benutzte Satelliten.
+        # Das darf die Positionsprüfung nicht still abschalten.
+        status = gps.parse_reports({"TPV": {"mode": 3, "lat": 1.0, "lon": 2.0, "eph": 8.0}})
+        self.assertEqual(status["satellites_used"], 0)
+        obs = gnssguard.observation(5.0, dict(status, running=True), [], {}, "GPS", (1.0, 2.0, 8.0))
+        self.assertIsNone(obs["used"])
+        self.assertTrue(gnssguard.good_geometry(obs["used"], obs.get("hdop"), 8.0))
+
+    def test_active_jump_stays_active_on_weak_fixes(self):
+        rng = random.Random(7)
+        det = gnssguard.Detector()
+        t = 0.0
+        while t < 2400.0:
+            det.update(dict(outdoor(t, rng), used=8, hdop=1.1))
+            t += 10.0
+        for _ in range(30):   # 5 min gut und 800 m daneben: Störung
+            stage = det.update(dict(outdoor(t, rng, pos_shift=800.0), used=8, hdop=1.1))["stage"]
+            t += 10.0
+        self.assertEqual(stage, "stoerung")
+        for _ in range(180):  # 30 min weiter 800 m daneben, nur schwache Geometrie: bleibt aktiv
+            det.update(dict(outdoor(t, rng, pos_shift=800.0), used=4, hdop=9.0))
+            t += 10.0
+        self.assertTrue(det.signals["position"].active)
 
 
 class SignalTest(unittest.TestCase):

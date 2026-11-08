@@ -311,6 +311,7 @@ export function render(ctx) {
       const result = await apiPost("/api/settings", { changes });
       ui.draft = {}; ui.fieldErrors = {};
       toast(result.restart ? (result.reload_triggered ? "Gespeichert – Zeitdienste starten neu" : result.reload_note) : "Gespeichert");
+      for (const note of result.warnings || []) toast(note, "warn");
       if (result.reload_triggered) ctx.watchReload();
       ctx.invalidate("settings");
       ctx.refresh();

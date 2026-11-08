@@ -230,9 +230,16 @@ def _settle() -> None:
 
 class HoldoverTest:
     def __init__(self, emit: Callable[..., Any] | None = None, wall: Callable[[], float] = time.time,
-                 hold: Callable[[float | None], None] | None = None) -> None:
+                 hold: Callable[[float | None], None] | None = None,
+                 mono: Callable[[], float] | None = None) -> None:
         self._emit_fn = emit
         self.wall = wall
+        # 1.5.4: Die Frist läuft auf der monotonen Uhr – ein Sprung der Wanduhr (makestep nach dem
+        # Test, ein falsch gestelltes RTC) verlängert oder verkürzt den Test nicht. Tests, die nur die
+        # Wanduhr vorgeben, bekommen sie auch als monotone Uhr.
+        self.mono = mono or (time.monotonic if wall is time.time else wall)
+        self._mono_key: tuple[float, float] | None = None
+        self._mono_deadline = 0.0
         self._hold = hold or _write_hold
         self.lock = threading.RLock()
         self._state: dict[str, Any] | None = None
@@ -280,6 +287,23 @@ class HoldoverTest:
         store.execute("INSERT INTO holdover_state(id, json) VALUES(1, ?) "
                       "ON CONFLICT(id) DO UPDATE SET json = excluded.json",
                       (json.dumps(self.state(), separators=(",", ":")),))
+
+    def remaining(self, state: dict | None = None) -> float:
+        """Sekunden bis zum Ende des laufenden Tests – auf der monotonen Uhr.
+
+        Gespeichert (und angezeigt) wird die Frist als Wanduhrzeit. Kennt dieser Prozess den Test
+        noch nicht (Start oder Neustart des Containers), rechnet er die Restzeit einmal aus der
+        Wanduhr um – nie länger als die ganze Testdauer, nie negativ. Danach zählt nur noch die
+        monotone Uhr."""
+        state = self.state() if state is None else state
+        deadline = float(state.get("deadline") or 0.0)
+        started = float(state.get("started") or deadline)
+        key = (started, deadline)
+        if self._mono_key != key:
+            total = max(0.0, deadline - started)
+            left = min(max(0.0, deadline - self.wall()), total)
+            self._mono_key, self._mono_deadline = key, self.mono() + left
+        return self._mono_deadline - self.mono()
 
     def _points(self) -> list[tuple[float, float]]:
         try:
@@ -524,7 +548,7 @@ class HoldoverTest:
         if not select:
             # chronyd antwortet gerade nicht – Neustart erkennt der nächste Durchgang. Die Frist gilt
             # trotzdem: sonst bliebe die Sperre für Automatiken bei einem hängenden chronyd ewig stehen.
-            if self.wall() >= float(state.get("deadline") or 0.0):
+            if self.remaining(state) <= 0:
                 return self._finish("done", {}, "chronyd antwortete zum Ende nicht")
             return None
         if selectctl.lost(OWNER, state.get("changed") or [], select):
@@ -562,7 +586,7 @@ class HoldoverTest:
             self._save()
             if abs(dev) * 1000.0 > float(state.get("limit_ms") or LIMIT_DEFAULT_MS):
                 return self._finish("limit", select, f"|Zeitfehler| {fmt_ms(dev)} über der Grenze")
-        if now >= float(state.get("deadline") or 0.0):
+        if self.remaining(state) <= 0:
             return self._finish("done", select)
         return None
 
@@ -601,7 +625,7 @@ class HoldoverTest:
     def _refresh_hold(self) -> None:
         # Echte Uhr: der Supervisor vergleicht mit date +%s. Nie länger als bis kurz nach der Frist.
         try:
-            left = float(self.state().get("deadline") or 0.0) - self.wall()
+            left = self.remaining()
             self._hold(time.time() + min(HOLD_TTL, max(0.0, left) + HOLD_TTL))
         except Exception:
             pass
@@ -729,7 +753,7 @@ class HoldoverTest:
                 out["run"] = {
                     "started": state.get("started"), "deadline": state.get("deadline"), "hours": state.get("hours"),
                     "elapsed_s": round(max(0.0, now - float(state.get("started") or now))),
-                    "remaining_s": round(max(0.0, float(state.get("deadline") or now) - now)),
+                    "remaining_s": round(max(0.0, self.remaining(state))),
                     "include_network": state.get("include_network"), "limit_ms": state.get("limit_ms"),
                     "targets": len(state.get("targets") or []), "references": len(state.get("refs") or []),
                     "measured": state.get("measured"),

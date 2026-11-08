@@ -55,6 +55,10 @@ stark (→ „Störung“):
                  Name), wird er neu gelernt.
   * position     Positionssprung > 100 m bei einem stationären Empfänger (und > 3 × eph), ebenfalls
                  gegen einen Anker, der höchstens 20 m je Stunde wandert (nur im Speicher).
+                 1.5.4: Nur verlässliche Fixe zählen – 3D, ≥ 5 genutzte Satelliten, HDOP ≤ 4
+                 (ohne HDOP: eph ≤ 50 m) –, für die Referenz wie für den Sprung. Und der Sprung
+                 muss über ≥ 5 gute Fixe in Folge und ≥ 50 s anhalten. Drinnen (2D/3D im Wechsel,
+                 HDOP 5–20) gab es sonst Fehlalarme „Position um 160 m gesprungen“.
 
 Solange ein Signal anschlägt, sind seine Grundlinien eingefroren: Eine Störung, die einfach
 bleibt, wird nie zur neuen Normalität – sie endet erst, wenn die Werte zurückkommen, oder mit
@@ -150,9 +154,19 @@ POS_REF_MIN = 30                # ~5 min 3D-Fix, bevor die Referenz gilt
 POS_REF_WINDOW = 3600.0
 POS_FRESH = 30.0
 POS_ANCHOR_RATE = 20.0 / 3600.0     # Positionsanker wandert höchstens 20 m je Stunde
+# 1.5.4: Nur verlässliche Fixe zählen – für die Referenz und für den Sprung. Drinnen (VK-162,
+# 3–4 Satelliten, HDOP 5–20, 2D/3D im Wechsel) streut die Position um 100 m und mehr; ein
+# „Sprung“ daraus ist kein Spoofing. Ein Spoofer liefert dagegen ein sauberes Signal mit guter
+# Geometrie – den fängt die Prüfung weiter.
+POS_MIN_USED = 5                # mindestens so viele genutzte Satelliten
+POS_MAX_HDOP = 4.0              # HDOP höchstens …
+POS_MAX_EPH = 50.0              # … oder, ohne HDOP, gpsd-eph (95-%-Fehler, m) höchstens
+POS_PERSIST_S = 50.0            # ein Sprung zählt erst, wenn er so lange über gute Fixe anhält …
+POS_PERSIST_FIXES = 5           # … und über so viele gute Fixe in Folge (ersetzt die Bestätigung)
+POS_PERSIST_GAP = 120.0         # längere Lücke ohne guten Fix: Zählung beginnt neu
 EARTH_M = 6_371_000.0
 
-CONFIRM = {"cn0_drop": 2, "uniform": 3, "falseticker": 3, "time": 3, "position": 2}
+CONFIRM = {"cn0_drop": 2, "uniform": 3, "falseticker": 3, "time": 3, "position": 1}
 HOLD = {"weak": 120.0, "strong": 300.0}
 STALE_FACTOR = 2.0              # ohne Daten erlischt ein aktives Signal nach 2 × Haltezeit
 AUTO_LOCK_MIN_OTHERS = 2        # automatisch sperren nur, wenn so viele andere Quellen bleiben
@@ -172,6 +186,7 @@ STAGE_LEVEL = {"hinweis": "info", "warnung": "warn", "stoerung": "crit"}
 LOCK_OWNER = "gps-lock"
 RELEASE_AFTER = 1800.0          # 30 min ohne Signal → automatische Freigabe
 MAX_AUTO_RELEASES = 3           # danach bleibt die nächste Sperre bis zur Freigabe von Hand
+FREERUN_ALERT = 6 * 3600.0      # 1.5.4: so lange gesperrt ohne andere auswählbare Quelle → „Uhr läuft frei“
 SERIES_RESET = 24 * 3600.0      # nach 24 h ohne Sperre beginnt die Zählung neu
 
 _SCHEMA = [
@@ -212,6 +227,17 @@ def distance_m(a: tuple[float, float], b: tuple[float, float]) -> float:
     dy = math.radians(a[0] - b[0]) * EARTH_M
     dx = math.radians(a[1] - b[1]) * EARTH_M * math.cos(lat0)
     return math.hypot(dx, dy)
+
+
+def good_geometry(used: Any, hdop: Any, eph: Any) -> bool:
+    """Ist ein 3D-Fix verlässlich genug für den Positionsvergleich? Unbekannte Werte zählen nicht
+    gegen den Fix (ältere gpsd ohne SKY), bekannte schlechte schon."""
+    used, hdop, eph = _num(used), _num(hdop), _num(eph)
+    if used is not None and used < POS_MIN_USED:
+        return False
+    if hdop is not None:
+        return hdop <= POS_MAX_HDOP
+    return eph is None or eph <= POS_MAX_EPH
 
 
 def fmt_ms(seconds: float) -> str:
@@ -300,6 +326,7 @@ class Detector:
     sats        {Satellit: C/N0 in dB-Hz} der gerade gemeldeten Satelliten, None = keine Liste
     mode        Fix-Art (0/1 kein Fix, 2 = 2D, 3 = 3D)
     pos         (lat, lon, eph) eines 3D-Fix – bleibt in diesem Objekt, wird nie ausgegeben
+    used, hdop  genutzte Satelliten und HDOP (gpsd SKY) – nur verlässliche Fixe zählen für die Position
     gps_offset  Offset der GPS-Quelle in chrony (s), gps_state ihr Zustand (*, +, -, x, ?)
     refs        Offsets der Referenz-Netzquellen (s), ref_kind „nts“ oder „ntp“
     """
@@ -316,6 +343,9 @@ class Detector:
         self.anchor_start: float | None = None     # erster Anker des Abschnitts (Grenze fürs Wandern)
         self._pos_anchor: tuple[float, float] | None = None   # nur im Speicher, nie ausgegeben
         self._pos_anchor_t: float | None = None
+        self._jump_since: float | None = None      # Sprung über gute Fixe seit …
+        self._jump_last: float | None = None
+        self._jump_fixes = 0
         self.last: dict[str, Any] = {}
         self.pps = False                           # mit PPS gibt es keine Ausnahme „Kalibrierfehler“
         self._pps_ok = False                       # mit PPS: NMEA-Falseticker nur Sekundennummerierung
@@ -380,6 +410,8 @@ class Detector:
         self.anchor_start = None
         self._pos_anchor = None
         self._pos_anchor_t = None
+        self._jump_since = self._jump_last = None
+        self._jump_fixes = 0
         self._cn0.clear()
         self._cn0_ref.clear()
         for signal in self.signals.values():
@@ -524,6 +556,20 @@ class Detector:
         eph = _num(pos[2]) if len(pos) > 2 else None
         if lat is None or lon is None or not (-90 <= lat <= 90 and -180 <= lon <= 180):
             return None, {}, ""
+        if not good_geometry(obs.get("used"), obs.get("hdop"), eph):
+            # Schwache Geometrie: weder Referenz noch neuer Sprung (wie „keine Daten“). Ist das Signal
+            # schon aktiv, hält auch ein schwacher Fix außerhalb der Schwelle es aktiv – sonst käme nach
+            # 2 × Haltezeit „wieder unauffällig“, obwohl die falsche Position noch anliegt.
+            self.last["position_quality"] = "schwach"
+            sig = self.signals["position"]
+            if sig.active and self._pos_anchor is not None:
+                deviation = distance_m((lat, lon), self._pos_anchor)
+                threshold = max(POS_JUMP_M, POS_EPH_FACTOR * eph if eph else 0.0)
+                if deviation > threshold:
+                    detail = {"deviation_m": round_m(deviation), "threshold_m": round_m(threshold)}
+                    return True, detail, f"Position um {round_m(deviation)} m gesprungen (Empfänger steht fest)"
+            return None, {}, ""
+        self.last["position_quality"] = "gut"
         sig = self.signals["position"]
         if not sig.active:   # während eines Sprungs eingefroren (sonst lernt sie den falschen Ort)
             while self._positions and now - self._positions[0][0] > POS_REF_WINDOW:
@@ -549,8 +595,22 @@ class Detector:
         ref = self._pos_anchor
         deviation = distance_m((lat, lon), ref)
         threshold = max(POS_JUMP_M, POS_EPH_FACTOR * eph if eph else 0.0)
-        cond = deviation > threshold
-        if not cond and not sig.active:
+        jump = deviation > threshold
+        if jump:
+            if (self._jump_since is None or self._jump_last is None
+                    or now - self._jump_last > POS_PERSIST_GAP):
+                self._jump_since, self._jump_fixes = now, 0
+            self._jump_fixes += 1
+            self._jump_last = now
+        else:
+            self._jump_since = self._jump_last = None
+            self._jump_fixes = 0
+        # Ein Sprung zählt erst, wenn er über mehrere gute Fixe anhält; ist das Signal schon aktiv,
+        # reicht jeder gute Fix außerhalb der Schwelle, damit es aktiv bleibt.
+        persisted = (jump and self._jump_since is not None and now - self._jump_since >= POS_PERSIST_S
+                     and self._jump_fixes >= POS_PERSIST_FIXES)
+        cond = jump if sig.active else persisted
+        if not jump and not sig.active:
             self._positions.append((now, lat, lon))
         self.last.update(position_learned=True, position_deviation_m=round_m(deviation))
         detail = {"deviation_m": round_m(deviation), "threshold_m": round_m(threshold)}
@@ -688,6 +748,13 @@ def observation(now: float, gps_state: dict | None, sources: list[dict] | None, 
                 continue
             sats[f"{sat.get('system') or '?'}:{sat.get('prn')}"] = snr
         obs["sats"] = sats or None
+        used = _num(gps_state.get("satellites_used"))
+        if used is not None and used <= 0:
+            # 0 heißt hier „unbekannt“ (kein SKY im Abfragefenster, NMEA ohne GSA) – kein Fix kommt
+            # mit 0 Satelliten aus. Sonst wäre die Positionsprüfung still dauerhaft aus.
+            used = None
+        obs["used"] = used
+        obs["hdop"] = _num(gps_state.get("hdop"))
         if position and obs.get("mode") == 3:
             obs["pos"] = position
     select = select or {}
@@ -799,6 +866,7 @@ class Guard:
         self._alarm_saved: float | None = None
         self._relearn_wall: float | None = None      # letztes „Neu lernen“ (Wanduhr, für autocal)
         self._relearn_loaded = False
+        self._freerun_since: float | None = None     # gesperrt und keine andere Quelle seit (monotone Uhr)
 
     # --- Ereignisse --------------------------------------------------------------------------
     def _emit(self, level: str, title: str, data: dict) -> None:
@@ -818,6 +886,7 @@ class Guard:
                           "repeats": int(state.get("repeats") or 0), "series_t": _num(state.get("series_t")),
                           "auto_releases": int(state.get("auto_releases") or 0),
                           "suppress": bool(state.get("suppress")),
+                          "freerun_noted": bool(state.get("freerun_noted")),
                           "added": [t for t in state.get("added") or [] if selectctl.valid_name(t)]}
             if self.state["locked"]:
                 selectctl.register(LOCK_OWNER, self.state["targets"], self.state["added"])
@@ -887,7 +956,8 @@ class Guard:
                 raise GuardError(f"chronyc selectopts ging nicht: {exc}", conflict=True) from exc
             now = self.wall()
             state.update(locked=True, since=now, manual=manual, auto_release=auto_release, reason=reason,
-                         targets=targets, suppress=False)
+                         targets=targets, suppress=False, freerun_noted=False)
+            self._freerun_since = None
             if not manual:
                 state["series_t"] = now
             self._save_lock()
@@ -922,7 +992,9 @@ class Guard:
             elif state["auto_release"]:
                 state["auto_releases"] += 1
             duration = max(0.0, self.wall() - (state["since"] or self.wall()))
-            state.update(locked=False, since=None, manual=False, auto_release=False, reason="", targets=[])
+            state.update(locked=False, since=None, manual=False, auto_release=False, reason="", targets=[],
+                         freerun_noted=False)
+            self._freerun_since = None
             self._save_lock()
             self._emit("info", f"GPS-Sperre aufgehoben – {reason}",
                        {"subject": "gps-sperre", "released": released, "manual": manual,
@@ -1056,6 +1128,7 @@ class Guard:
             if sources is not None:   # für die Oberfläche: Bleibt nach einer Sperre noch eine Quelle?
                 refid = str(cfg.get("gps_refid") or "GPS")
                 self.other_sources = self.count_others(select, sources, set(self.targets(select, refid)))
+        self._check_freerun(state, now)
         self.enabled = bool(cfg.get("gps_enable")) and mode != "off"
         if not self.enabled:
             if self.stage != "ok":
@@ -1098,6 +1171,33 @@ class Guard:
             state["suppress"] = False
         self._auto_lock(cfg, mode, select, sources)
         return {"stage": stage, "enabled": True, "changes": result["changes"]}
+
+    def _check_freerun(self, state: dict, now: float) -> None:
+        """1.5.4: GPS gesperrt und seit FREERUN_ALERT keine andere auswählbare Quelle – die Uhr läuft
+        frei (Holdover) und driftet weg. Einmal je Sperre „crit“ mit Benachrichtigung. Ein laufender
+        Holdover-Test (wählt selbst alles ab) zählt nicht mit; eine wieder erreichbare Quelle setzt
+        die Uhr zurück. Die Frist läuft auf der monotonen Uhr; nach einem Neustart beginnt sie neu."""
+        if not state["locked"] or self.other_sources is None or _holdover_running():
+            self._freerun_since = None
+            return
+        if self.other_sources > 0:
+            self._freerun_since = None
+            return
+        if self._freerun_since is None:
+            self._freerun_since = now
+            return
+        if state.get("freerun_noted") or now - self._freerun_since < FREERUN_ALERT:
+            return
+        state["freerun_noted"] = True
+        self._save_lock()
+        names = " und ".join(state.get("targets") or []) or "GPS"
+        hours = round((now - self._freerun_since) / 3600.0)
+        how = "von Hand" if state.get("manual") else "automatisch"
+        self._emit("crit", f"GPS gesperrt, Uhr läuft frei: {names} seit über {hours} h {how} gesperrt und "
+                           "keine andere auswählbare Zeitquelle – die Uhr driftet. Sperre aufheben (GNSS-Seite) "
+                           "oder eine Netzquelle erreichbar machen.",
+                   {"subject": "gps-sperre", "freerun": True, "hours": hours, "manual": bool(state.get("manual")),
+                    "resolves": False})
 
     def _note_alarm(self) -> None:
         """Merkt sich (in SQLite, höchstens alle 10 min geschrieben), wann zuletzt „Warnung“ oder

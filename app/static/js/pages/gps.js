@@ -7,7 +7,10 @@ import { hardwareData, pickReceiver, accuracyLadder, PPS_PATH } from "./hardware
 import { receptionCard, roleCard, antennaCard } from "./gpsquality.js";
 import { gnssCard } from "./gnss.js";
 
-const WINDOWS = [[0, "gesamter Verlauf"], [3600, "letzte Stunde"], [21600, "letzte 6 h"], [86400, "letzte 24 h"]];
+// 1.5.4: kein „gesamter Verlauf“ mehr – über 30 Tage dauerte das auf einem Pi Sekunden, alle 15 s.
+// Der Server begrenzt ohnehin auf 7 Tage (CALIBRATION_MAX_WINDOW).
+const WINDOWS = [[3600, "letzte Stunde"], [21600, "letzte 6 h"], [86400, "letzte 24 h"], [604800, "letzte 7 Tage"]];
+const CAL_DEFAULT_WINDOW = 86400;
 
 // Karte „Dein Empfänger“ aus dem Hardware-Check – auch bei ausgeschaltetem GPS.
 function receiverCard(ctx, report) {
@@ -213,8 +216,9 @@ function autocalSection(ctx, applyOffer = null) {
 
 function calibrationCard(ctx, gpsSource) {
   const cfg = ctx.status.config || {};
-  const windowSeconds = ctx.uiState.calWindow ?? 0;
-  const cal = ctx.data("calibration", `/api/gps/calibration?window=${windowSeconds}`, 15);
+  const windowSeconds = WINDOWS.some(([s]) => s === ctx.uiState.calWindow) ? ctx.uiState.calWindow : CAL_DEFAULT_WINDOW;
+  // Lange Fenster seltener neu messen: 7 Tage ändern sich in 15 s nicht.
+  const cal = ctx.data("calibration", `/api/gps/calibration?window=${windowSeconds}`, windowSeconds > CAL_DEFAULT_WINDOW ? 120 : 15);
   // Für die Rückfrage beim Übernehmen: Meldet die Störungserkennung gerade etwas?
   const gnssNow = ctx.data("gnss", "/api/gnss", 10);
   const autoNow = ctx.data("autocal", "/api/gps/autocal", 60);

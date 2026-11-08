@@ -1,5 +1,5 @@
 import { el, fmtSeconds, fmtNs, fmtNumber, fmtFixed, fmtRate, fmtDuration, isNum, sourceLabel } from "../util.js";
-import { card, tile, kv, badge, insightList, insightLink, rangeButtons, info, emptyNote, ACTION_LABEL } from "../ui.js";
+import { card, tile, kv, badge, insightList, insightLink, insightFixes, rangeButtons, info, emptyNote, ACTION_LABEL } from "../ui.js";
 import { lineChart, sparkline, stepDecimals } from "../charts.js";
 import { t as tr } from "../i18n.js";
 
@@ -169,7 +169,8 @@ function hintRow(ctx, item) {
       el("div", { class: "hint-title" },
         el("strong", { text: item.title }),
         area ? el("span", { class: "hint-area", text: tr(PANEL_NAME_KEY[area]) }) : null),
-      open ? el("p", { class: "hint-text", id: textId, text: item.text }) : null),
+      open ? el("p", { class: "hint-text", id: textId, text: item.text }) : null,
+      open ? insightFixes(item, ctx) : null),
     el("div", { class: "hint-actions" },
       crit ? null : el("button", {
         type: "button", class: "link hint-toggle", "aria-expanded": open ? "true" : "false",
@@ -204,7 +205,7 @@ function hintsBlock(ctx, insights) {
       el("span", { class: "muted", text: ` · ${rest.map((i) => i.title).join(" · ")}` })),
     el("span", { class: "hint-summary-action", text: tr(open ? "overview.hints.hide" : "overview.hints.show") }));
     parts.push(el("div", { class: "hint-more" }, toggle, info("overview_hints", tr("overview.hints.label"))));
-    if (open) parts.push(el("div", { class: "insights-rest", id: "hints-rest" }, insightList(rest, ROUTES)));
+    if (open) parts.push(el("div", { class: "insights-rest", id: "hints-rest" }, insightList(rest, ROUTES, ctx)));
   } else if (serious.length) {
     parts.push(el("div", { class: "hint-more hint-more-quiet" }, info("overview_hints", tr("overview.hints.label"))));
   }

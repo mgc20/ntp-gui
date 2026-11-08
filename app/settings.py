@@ -1191,7 +1191,10 @@ SCHEMA: list[dict] = [
                 "Adresse des Browsers statt des Proxys, und der HTTPS-Hinweis erkennt, ob der Browser "
                 "verschlüsselt verbunden ist. Leer (Standard) = niemandem trauen – sonst könnte jeder "
                 "Browser eine falsche Adresse vorgeben. Über Anmeldung und Zugriff entscheiden die Köpfe "
-                "nie. Wirkt ohne Neustart."),
+                "nie. Einträge breiter als /24 (IPv4) bzw. /64 (IPv6) werden gespeichert, aber gewarnt: "
+                "Ein Proxy ist ein Gerät, kein Netz. Sieht ntp-gui Proxy-Köpfe von einer nicht "
+                "eingetragenen Adresse, bietet der Hinweis in der Übersicht an, genau diese Adresse per "
+                "Klick einzutragen. Wirkt ohne Neustart."),
     _field("web_allowed_hosts", "web", "Erlaubte Namen", "hostlist", [], _as_allowed_hosts,
            restart=RESTART_NONE, placeholder="z. B. zeit.example.org oder *.fritz.box",
            help="Namen, über die du das Dashboard ohne Passwort öffnen darfst – zusätzlich zu IP-Adressen, "
@@ -1456,7 +1459,22 @@ def save(changes: dict[str, Any]) -> dict[str, Any]:
     after = values()
     changed = [key for key in clean if before.get(key) != after.get(key)]
     restart = any(FIELDS[key]["restart"] == RESTART_SERVICES for key in changed)
-    return {"changed": changed, "restart": restart}
+    result: dict[str, Any] = {"changed": changed, "restart": restart}
+    warnings = save_warnings(clean)
+    if warnings:
+        result["warnings"] = warnings
+    return result
+
+
+def save_warnings(clean: dict[str, Any]) -> list[str]:
+    """Gültig, aber bedenklich – gespeichert wird trotzdem (z. B. ein Proxy-Eintrag als ganzes Netz)."""
+    out = []
+    if "trusted_proxies" in clean:
+        import webtransport
+        broad = webtransport.broad_entries(clean["trusted_proxies"])
+        if broad:
+            out.append("Vertrauenswürdige Proxys: " + webtransport.broad_warning(broad))
+    return out
 
 
 def reset(keys: list[str]) -> dict[str, Any]:

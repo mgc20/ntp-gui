@@ -7,7 +7,7 @@
 
 <p align="center">
   <a href="https://github.com/mgc20/ntp-gui/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/mgc20/ntp-gui/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="https://github.com/mgc20/ntp-gui/releases/latest"><img alt="Release" src="https://img.shields.io/badge/release-v1.5.3-0969da"></a>
+  <a href="https://github.com/mgc20/ntp-gui/releases/latest"><img alt="Release" src="https://img.shields.io/badge/release-v1.5.4-0969da"></a>
   <img alt="Plattformen" src="https://img.shields.io/badge/platform-amd64%20%7C%20arm64-1a7f37">
   <img alt="Image" src="https://img.shields.io/badge/image-ghcr.io-8250df">
   <a href="LICENSE"><img alt="Lizenz: MIT" src="https://img.shields.io/badge/license-MIT-59636e"></a>
@@ -875,7 +875,7 @@ Streuung (nächster Abschnitt); den Offset kalibrierst du wie unten beschrieben.
 
 ### GPS ohne PPS (z. B. VK-162): Rückfallebene mit ehrlicher Fehlerschranke
 
-Ein USB-Empfänger ohne PPS liefert die Zeit nur auf einige bis einige zehn Millisekunden genau. Mit gutem Internet sind NTS-Quellen meist genauer. Ohne Internet oder mit wackeligem Mobilfunk ist das GPS dagegen die bessere oder einzige Quelle. ntp-gui macht das GPS deshalb zur **Rückfallebene**: Es misst, wie stark das GPS gegenüber deinen Netzquellen streut (letzte 6 Stunden), und gibt chrony daraus eine ehrliche Fehlerschranke. chrony nimmt dann die guten Netzquellen und übernimmt das GPS von selbst, wenn das Internet schlecht wird oder ausfällt. Bis genug gemessen ist, gilt vorsichtig ± 100 ms. Die Schranke wächst sofort mit (höchstens stündlich) und schrumpft nur deutlich und frühestens nach 12 Stunden; jede neue Schranke bekommt 25 % Reserve, damit leichtes Kriechen chronyd nicht stündlich neu startet. Enger als das 1,5-Fache der Root Distance deiner besten genutzten NTS-Quelle wird sie nie – sonst wählte chrony das GPS ohne PPS den Netzquellen vor. Jede Anpassung steht im Ereignisprotokoll. Ein eingestelltes, aber fehlendes PPS-Gerät zählt als „ohne PPS“.
+Ein USB-Empfänger ohne PPS liefert die Zeit nur auf einige bis einige zehn Millisekunden genau. Mit gutem Internet sind NTS-Quellen meist genauer. Ohne Internet oder mit wackeligem Mobilfunk ist das GPS dagegen die bessere oder einzige Quelle. ntp-gui macht das GPS deshalb zur **Rückfallebene**: Es misst, wie stark das GPS gegenüber deinen Netzquellen streut (letzte 6 Stunden), und gibt chrony daraus eine ehrliche Fehlerschranke. chrony nimmt dann die guten Netzquellen und übernimmt das GPS von selbst, wenn das Internet schlecht wird oder ausfällt. Bis genug gemessen ist, gilt vorsichtig ± 100 ms. Die Schranke wächst sofort mit (höchstens stündlich) und schrumpft nur deutlich und frühestens nach 12 Stunden (ab 1.5.4: nur, wenn die neue Schranke höchstens 0,6 × die jetzige ist und auch die Messung der letzten 48 Stunden mit Reserve hineinpasst – sonst pendelt sie bei wechselndem Empfang und startet chronyd jedes Mal neu); jede neue Schranke bekommt 25 % Reserve, damit leichtes Kriechen chronyd nicht stündlich neu startet. Enger als das 1,5-Fache der Root Distance deiner besten genutzten NTS-Quelle wird sie nie – sonst wählte chrony das GPS ohne PPS den Netzquellen vor. Jede Anpassung steht im Ereignisprotokoll. Ein eingestelltes, aber fehlendes PPS-Gerät zählt als „ohne PPS“.
 
 | Variable | Standard | Bedeutung |
 |---|---|---|
@@ -883,7 +883,7 @@ Ein USB-Empfänger ohne PPS liefert die Zeit nur auf einige bis einige zehn Mill
 
 „Nur beobachten“ (`GPS_SELECT=noselect`) bleibt möglich, ist aber nie Standard: Dann nutzt chrony das GPS auch bei einem Internetausfall nicht. Damit die Rückfallebene greift, muss „Mindestzahl Quellen“ (`NTP_MINSOURCES`) auf 1 stehen – die GPS-Seite warnt sonst.
 
-Die GPS-Seite zeigt außerdem eine **Empfangsbewertung über 24 Stunden** (Ampel mit Begründung, auch in der Übersicht), fasst Fix-Flattern zu einem Ereignis „unstet“ zusammen und bietet einen **Antennen-Test** („5 Minuten messen“, umstellen, vergleichen). Der Antennen-Test bleibt auf deinem Gerät, ohne Satellitenwinkel. Praxistipps stehen im ⓘ: USB-Verlängerung ans Fenster, USB-3-Buchsen stören das GPS-Band, Wärmeschutzglas dämpft stark.
+Die GPS-Seite zeigt außerdem eine **Empfangsbewertung über 24 Stunden** (Ampel mit Begründung, auch in der Übersicht), fasst Fix-Flattern zu einem Ereignis „unstet“ zusammen (ab 1.5.4: bei schwachem Empfang 24 h lang keine Einzelmeldungen „verloren/wieder da“, höchstens eine Info-Zeile je Stunde; eine Warnung, wenn das GPS gebraucht wird und der Fix 10 min fehlt, sonst nach 1 h nur eine Info) und bietet einen **Antennen-Test** („5 Minuten messen“, umstellen, vergleichen). Der Antennen-Test bleibt auf deinem Gerät, ohne Satellitenwinkel. Praxistipps stehen im ⓘ: USB-Verlängerung ans Fenster, USB-3-Buchsen stören das GPS-Band, Wärmeschutzglas dämpft stark.
 
 API (lesen): `GET /api/v1/gps/quality`, `GET /api/v1/gps/antenna`.
 API (admin): `POST /api/v1/gps/antenna` (`start`/`stop`/`delete`), `POST /api/v1/gps/bound` (`{"action":"reset"}`).
@@ -1073,7 +1073,7 @@ ntp-gui erkennt, wenn das GPS gestört (Jamming) oder gefälscht (Spoofing) wird
 | Alle Satelliten fast gleich stark | schwach |
 | chrony hält das GPS für falsch | schwach (5 min lang bei ≥ 2 NTS-Quellen: stark; mit genutztem PPS und NMEA unter 0,5 s daneben: schwach) |
 | GPS-Zeit weicht vom Median von ≥ 2 NTS-Quellen ab | stark |
-| Position springt um > 100 m | stark |
+| Position springt um > 100 m – nur verlässliche Fixe (3D, ≥ 5 Satelliten, HDOP ≤ 4), ≥ 50 s anhaltend (ab 1.5.4) | stark |
 
 Ein schwacher Befund ist ein „Hinweis“, zwei zugleich eine „Warnung“, ein starker eine „Störung“. Zeit und Position werden gegen einen langsam nachgeführten Anker geprüft (höchstens 10 ms bzw. 20 m pro Stunde) – auch ein Spoofer, der die Zeit langsam wegzieht, fällt so auf. Insgesamt darf der Zeitanker höchstens 30 ms von seinem Startwert (Start bzw. letzte Änderung der GPS-Einstellungen) wegwandern, danach wird es „Störung“ – so fällt auch ein Spoofer auf, der so langsam zieht, dass chrony das GPS nie verwirft. Benachrichtigt wird standardmäßig nur bei „Störung“. Die Position verlässt das Gerät nie: Es wird nur die Abweichung in Metern genannt.
 
@@ -1102,6 +1102,12 @@ Die Seite **Uhrqualität** zeigt, was die Uhr deines Servers langfristig beeinfl
   VMs gibt es meist keinen Sensor. Einen Temperaturausgleich gibt es vorerst nicht: Mit dem
   CPU-Sensor ist der Zusammenhang oft schwach (auf einem Raspberry Pi folgte die Frequenz eher der
   Tageszeit als der CPU-Temperatur), siehe [Roadmap](ROADMAP.md).
+- **Allan-Abweichung (ab 1.5.4):** Wie stabil ist der Quarz über 10 s … 1 Tag? Gerechnet aus der
+  Frequenz, die chrony für den Quarz gelernt hat (nicht aus dem Offset – der zeigt nur, was nach dem
+  Nachregeln übrig bleibt), als log-log-Diagramm mit Tabelle und Einordnung. Faustregel: Wert × τ ≈
+  Zeitfehler, den die Uhr frei laufend in τ sammeln würde (1 ppb über 1 h ≈ 3,6 µs). Ein Pi-Quarz ohne
+  Temperaturkontrolle liegt drinnen typisch bei 1–10 ppb um 1 h. Für τ ≈ 1 Tag braucht es 4 Tage Verlauf.
+  API: `GET /api/v1/clockquality/allan`.
 - **Schaltsekunden:** TAI−UTC, letzte Schaltsekunde und wie lange die `leap-seconds.list` im
   Image noch gilt – für die Datei, die chrony wirklich liest. Läuft sie in weniger als 60 Tagen
   ab, meldet ntp-gui „Image zu alt“ – dann `docker compose pull && docker compose up -d`.
@@ -1527,6 +1533,8 @@ Nginx Proxy Manager, Zoraxy und Traefik gehen genauso. Die Anleitung dazu steht 
 
 **Der HTTPS-Hinweis nennt Ursache und Absender (ab 1.5.1):** „Dashboard über unverschlüsseltes HTTP mit Anmeldung“ sagt, wer ungeschützt kam (Adresse, Passwort oder API-Schlüssel, „zuletzt vor 3 h“, bis zu drei Absender) und warum: „direkt per HTTP“ (Lesezeichen auf `http://…:8080`, Home Assistant, Widget, Skript), „über den eingetragenen Proxy, aber der Browser sprach mit ihm nur HTTP“ oder „über eine Gegenstelle mit Proxy-Köpfen, die nicht in `TRUSTED_PROXIES` steht“. Schickt ein eingetragener Proxy keinen Proto-Kopf (nur `X-Forwarded-For` oder `X-Real-IP`, `Forwarded` ohne `proto=`), ist unbekannt, ob der Browser HTTPS sprach – dafür gibt es den Info-Hinweis „Eingetragener Proxy meldet nicht, ob HTTPS benutzt wurde“ mit den Köpfen, die der Proxy tatsächlich schickt, und einer Anleitung je Proxy. Ein Hinweis verschwindet 1 Stunde nach dem letzten ungeschützten Zugriff, wenn danach nur geschützte kommen, sonst nach 24 Stunden; Speichern von `TRUSTED_PROXIES` setzt ihn sofort zurück.
 
+**Proxy per Klick eintragen (ab 1.5.4):** Kommen Proxy-Köpfe von einer Adresse, die nicht in `TRUSTED_PROXIES` steht, nennt der Hinweis „Reverse Proxy erkannt, aber nicht eingetragen“ diese Adresse und bietet „Als vertrauenswürdigen Proxy eintragen (…/32 bzw. /128)“ an – genau die beobachtete Adresse, nie ein Netz, nur mit Admin-Recht und Rückfrage. Einträge breiter als /24 (IPv4) bzw. /64 (IPv6) werden gewarnt.
+
 | Variable | Standard | Bedeutung |
 |---|---|---|
 | `TRUSTED_PROXIES` | – (niemandem trauen) | Adressen deiner Reverse Proxys, z. B. `127.0.0.1/32,::1/128` für einen Proxy auf demselben Host. Nur von ihnen glaubt ntp-gui `X-Forwarded-For`/`-Proto` bzw. `Forwarded` (echte Client-Adresse im Zugriffsprotokoll, HTTPS-Hinweis). „all“ und `/0` sind nicht erlaubt. |
@@ -1656,6 +1664,7 @@ Einstellungen laufen) und `ntpgui_service_restarts_total`. Der mitgelieferte Ala
 | `/api/holdover` | Holdover-Test: laufender Test und Ergebnisse; `POST` (starten, abbrechen) mit Verwaltungsrecht |
 | `/api/clients/groups?by=group\|vlan\|software`, `/api/clients/quality`, `/api/clients/rules`, `/api/clients/pass?ip=` | Clients 3: Gruppen, Uhrgüte, Regeln, Gerätepass (`&share=1` = gefilterte Kopie); `POST /api/clients/groups`, `/groups/delete`, `/rules` mit Verwaltungsrecht |
 | `/api/temperature`, `/api/leap` | Temperatur und Frequenz bzw. Schaltsekunden-Liste (Seite Uhrqualität) |
+| `/api/clockquality/allan` | Allan-Abweichung der Systemuhr (Seite Uhrqualität, ab 1.5.4) |
 | `/api/v1/time` | Serverzeit mit Zeitstempeln für die Vollbild-Uhr `/clock` |
 | `/api/update` | Zustand des Update-Hinweises (ohne Netzzugriff, wenn ausgeschaltet) |
 | `/api/apikeys` (Alias `/api/keys`) | API-Schlüssel auflisten, `POST` legt an, `/api/apikeys/revoke` widerruft (nur mit Benutzer/Passwort) |
@@ -1885,7 +1894,7 @@ Updates vor. Ein Release-Build läuft ohne Cache, zieht also immer aktuelle Debi
 **Herkunft prüfen** (GitHub-CLI, sobald das Repository öffentlich ist):
 
 ```bash
-gh attestation verify oci://ghcr.io/mgc20/ntp-gui:1.5.3 -R mgc20/ntp-gui
+gh attestation verify oci://ghcr.io/mgc20/ntp-gui:1.5.4 -R mgc20/ntp-gui
 ```
 
 Scheitert ein Schritt, entsteht kein halber Release. Bei einem privaten Repository

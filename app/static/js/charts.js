@@ -954,3 +954,134 @@ export function scatterChart(container, opts) {
   svg.addEventListener("pointerdown", pick);
   svg.addEventListener("pointerleave", (event) => { if (event.pointerType === "mouse") hide(); });
 }
+
+/**
+ * Log-log-Diagramm (1.5.4: Allan-Abweichung). Eine y-Achse, x und y logarithmisch, Punkte mit
+ * Linie und senkrechtem Vertrauensbereich; blasse Punkte (muted) sind weniger aussagekräftig.
+ * opts: { points: [{x, y, lo, hi, muted}], xTicks: [Werte], xAxis(v), yAxis(v), tooltip(p) → [Zeilen],
+ *         xUnit, yUnit, height, emptyText, ariaLabel, describe(p) für die Kurzbeschreibung }
+ */
+export function logLogChart(container, opts) {
+  const height = opts.height || 260;
+  const width = Math.max(280, container.clientWidth || 640);
+  const pts = (opts.points || []).filter((p) => isNum(p.x) && isNum(p.y) && p.x > 0 && p.y > 0);
+  container.replaceChildren();
+  container.classList.add("chart-host");
+  const svg = svgEl("svg", { viewBox: `0 0 ${width} ${height}`, width: "100%", height, role: "img",
+    "aria-label": opts.ariaLabel || "Diagramm", "aria-roledescription": "Diagramm", class: "chart-svg" });
+  const figure = el("div", { class: "chart-wrap" }, svg);
+  container.append(figure);
+  if (pts.length < 2) {
+    emptyState(svg, width, height, opts.emptyText || "Noch zu wenige Messwerte", false);
+    return;
+  }
+  const xAxis = opts.xAxis || defaultFormat;
+  const yAxis = opts.yAxis || defaultFormat;
+  const ys = pts.flatMap((p) => [p.y, isNum(p.lo) && p.lo > 0 ? p.lo : p.y, isNum(p.hi) ? p.hi : p.y]);
+  const decades = (lo, hi) => {
+    const e0 = Math.floor(Math.log10(lo) + 1e-9);
+    let e1 = Math.ceil(Math.log10(hi) - 1e-9);
+    if (e1 <= e0) e1 = e0 + 1;
+    return [e0, e1];
+  };
+  const [xMin, xMax] = extent(pts.map((p) => p.x));
+  const [ye0, ye1] = decades(...extent(ys));
+  const yTicks = [];
+  for (let e = ye0; e <= ye1; e += 1) {
+    yTicks.push(10 ** e);
+    if (ye1 - ye0 <= 2 && e < ye1) yTicks.push(2 * 10 ** e, 5 * 10 ** e);
+  }
+  yTicks.sort((a, b) => a - b);
+  const lx0 = Math.log10(xMin) - 0.04; const lx1 = Math.log10(xMax) + 0.04;
+  const ly0 = ye0; const ly1 = ye1;
+  const yLabels = yTicks.map((v) => yAxis(v));
+  const pad = { top: opts.yUnit ? 22 : 12, right: 16, bottom: 40, left: 0 };
+  pad.left = Math.max(40, Math.round(Math.max(...yLabels.map((l) => l.length)) * 6.6 + 14));
+  const pw = width - pad.left - pad.right;
+  const ph = height - pad.top - pad.bottom;
+  const X = (v) => pad.left + ((Math.log10(v) - lx0) / (lx1 - lx0)) * pw;
+  const Y = (v) => pad.top + ph - ((Math.log10(Math.max(v, 10 ** ly0)) - ly0) / (ly1 - ly0)) * ph;
+
+  const grid = svgEl("g", { class: "chart-grid", "aria-hidden": "true" });
+  yTicks.forEach((v, i) => {
+    grid.append(svgEl("line", { x1: pad.left, x2: width - pad.right, y1: Y(v), y2: Y(v) }));
+    const label = svgEl("text", { x: pad.left - 8, y: Y(v) + 3.5, "text-anchor": "end", class: "chart-label" });
+    label.textContent = yLabels[i];
+    svg.append(label);
+  });
+  let xTicks = (opts.xTicks || []).filter((v) => v >= 10 ** lx0 && v <= 10 ** lx1);
+  if (!xTicks.length) {
+    xTicks = [];
+    for (let e = Math.ceil(lx0); e <= Math.floor(lx1); e += 1) xTicks.push(10 ** e);
+  }
+  let lastX = -Infinity;
+  for (const v of xTicks) {
+    const x = X(v);
+    grid.append(svgEl("line", { x1: x, x2: x, y1: pad.top, y2: pad.top + ph }));
+    if (x - lastX < 48) continue;  // Beschriftungen nicht übereinander
+    lastX = x;
+    const label = svgEl("text", { x, y: pad.top + ph + 16, "text-anchor": "middle", class: "chart-label" });
+    label.textContent = xAxis(v);
+    svg.append(label);
+  }
+  svg.append(grid);
+  svg.append(svgEl("line", { x1: pad.left, x2: width - pad.right, y1: pad.top + ph, y2: pad.top + ph, class: "chart-axis" }));
+  if (opts.yUnit) {
+    const unit = svgEl("text", { x: pad.left - 8, y: 12, "text-anchor": "end", class: "chart-unit" });
+    unit.textContent = opts.yUnit;
+    svg.append(unit);
+  }
+  if (opts.xUnit) {
+    const unit = svgEl("text", { x: width - pad.right, y: height - 4, "text-anchor": "end", class: "chart-unit" });
+    unit.textContent = opts.xUnit;
+    svg.append(unit);
+  }
+
+  const color = resolve("var(--accent)");
+  const plot = svgEl("g", { class: "chart-plot" });
+  for (const p of pts) {
+    if (isNum(p.lo) && isNum(p.hi) && p.hi > p.lo) {
+      plot.append(svgEl("line", { x1: X(p.x), x2: X(p.x), y1: Y(p.hi), y2: Y(Math.max(p.lo, 10 ** ly0)), stroke: color,
+        "stroke-width": 1.5, "stroke-opacity": p.muted ? 0.25 : 0.45, "stroke-linecap": "round" }));
+    }
+  }
+  const d = pts.map((p, i) => `${i ? "L" : "M"}${X(p.x).toFixed(1)},${Y(p.y).toFixed(1)}`).join(" ");
+  plot.append(svgEl("path", { d, fill: "none", stroke: color, "stroke-width": 2, class: "chart-line",
+    "stroke-linejoin": "round", "stroke-linecap": "round" }));
+  for (const p of pts) {
+    plot.append(svgEl("circle", { cx: X(p.x).toFixed(1), cy: Y(p.y).toFixed(1), r: 3.2, fill: color,
+      "fill-opacity": p.muted ? 0.4 : 1 }));
+  }
+  svg.append(plot);
+  if (opts.describe) svg.setAttribute("aria-label", `${opts.ariaLabel || "Diagramm"}: ${opts.describe(pts)}`);
+
+  const tooltip = el("div", { class: "tooltip", hidden: true, "aria-hidden": "true" });
+  const marker = svgEl("circle", { r: 5.5, fill: color, class: "chart-marker", visibility: "hidden" });
+  svg.append(marker);
+  figure.append(tooltip);
+  const show = (p) => {
+    marker.setAttribute("cx", X(p.x)); marker.setAttribute("cy", Y(p.y));
+    marker.setAttribute("visibility", "visible");
+    const rows = opts.tooltip ? opts.tooltip(p) : [`${xAxis(p.x)} · ${yAxis(p.y)}`];
+    tooltip.replaceChildren(el("div", { class: "tt-time", text: rows[0] }),
+      ...rows.slice(1).map((row, i) => el("div", { class: `tt-row${i ? "" : " tt-single"}` }, i ? el("span", { text: row }) : el("b", { text: row }))));
+    tooltip.hidden = false;
+    const left = (X(p.x) / width) * 100;
+    tooltip.style.left = `${left}%`;
+    tooltip.style.transform = left > 60 ? "translate(calc(-100% - 12px), 0)" : "translate(12px, 0)";
+  };
+  const hide = () => { marker.setAttribute("visibility", "hidden"); tooltip.hidden = true; };
+  const pick = (event) => {
+    const rect = svg.getBoundingClientRect();
+    const px = ((event.clientX - rect.left) / rect.width) * width;
+    let winner = null; let dist = Infinity;
+    for (const p of pts) {
+      const dx = Math.abs(X(p.x) - px);
+      if (dx < dist) { dist = dx; winner = p; }
+    }
+    if (winner && dist < 40) show(winner); else hide();
+  };
+  svg.addEventListener("pointermove", pick);
+  svg.addEventListener("pointerdown", pick);
+  svg.addEventListener("pointerleave", (event) => { if (event.pointerType === "mouse") hide(); });
+}

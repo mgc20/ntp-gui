@@ -1,5 +1,5 @@
 // Wiederverwendbare Bausteine: Karten, Kacheln, ⓘ-Erklärungen, Badges.
-import { el, rich, copyText, selectContents } from "./util.js";
+import { el, rich, copyText, selectContents, apiPost } from "./util.js";
 import { HELP } from "./help.js";
 
 // --- ⓘ-Popover --------------------------------------------------------------
@@ -116,16 +116,44 @@ export function reachRegister(reach) {
 
 const LEVEL_ICON = { ok: "✓", info: "i", warn: "!", crit: "✕" };
 
-export function insightList(items, navigate) {
+export function insightList(items, navigate, ctx) {
   if (!items || !items.length) return null;
   return el("ul", { class: "insights" }, items.map((item) => el("li", { class: "insight", "data-level": item.level },
     el("span", { class: "insight-icon", "aria-hidden": "true", text: LEVEL_ICON[item.level] || "i" }),
     el("div", { class: "insight-body" },
       el("strong", { text: item.title }),
       el("p", { text: item.text }),
+      insightFixes(item, ctx),
       insightLink(item),
       item.action ? el("a", { href: `#/${navigate[item.action] || item.action}`, class: "insight-action",
         text: ACTION_LABEL[item.action] || "Ansehen →" }) : null))));
+}
+
+// 1.5.4: „Per Klick beheben“ eines Hinweises (bisher nur: beobachteten Proxy eintragen). Der Knopf
+// schickt nur die Kennung; welche Adresse eingetragen wird, entscheidet der Server aus seiner Liste.
+const FIX_PATHS = { trust_proxy: "/api/web/proxies/trust" };
+
+export function insightFixes(item, ctx) {
+  const fixes = Array.isArray(item?.fixes) ? item.fixes.filter((f) => f && FIX_PATHS[f.kind] && f.id) : [];
+  if (!fixes.length || ctx?.readonly) return null;
+  return el("div", { class: "insight-fixes" }, fixes.map((fix) => el("button", {
+    type: "button", class: "button", text: fix.label || "Beheben",
+    onclick: async (event) => {
+      if (!window.confirm(fix.confirm || `${fix.label}?`)) return;
+      const button = event.currentTarget;
+      button.disabled = true;
+      try {
+        const result = await apiPost(FIX_PATHS[fix.kind], { id: fix.id });
+        toast(result.already ? `${result.network} war schon eingetragen` : `${result.network} eingetragen`);
+        for (const note of result.warnings || []) toast(note, "warn");
+        ctx?.invalidate?.("settings");
+        ctx?.refresh?.();
+      } catch (error) {
+        toast(error.message, "crit");
+        button.disabled = false;
+      }
+    },
+  })));
 }
 
 // Externer Link eines Hinweises (bisher nur Update-Hinweis): nur auf die Release-Seiten des Projekts.

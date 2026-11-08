@@ -271,6 +271,16 @@ def _autocal_corrects() -> bool:
     return phase in AUTOCAL_FIXING
 
 
+def _ago(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    if seconds < 90:
+        return "gut einer Minute" if seconds >= 60 else "wenigen Sekunden"
+    if seconds < 3600:
+        return f"{seconds // 60} min"
+    hours, rest = divmod(seconds // 60, 60)
+    return f"{hours} h {rest} min" if rest else f"{hours} h"
+
+
 def build(status: dict[str, Any], cfg: dict[str, Any]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
 
@@ -351,11 +361,28 @@ def build(status: dict[str, Any], cfg: dict[str, Any]) -> list[dict[str, Any]]:
                 "gereicht und der Pfad in den Einstellungen richtig?",
                 action="gps", key="gpsd_down")
         elif not gps.get("has_fix"):
-            add("warn", "GPS hat noch keinen Fix",
-                f"{gps.get('satellites_seen', 0)} Satelliten in Sicht, {gps.get('satellites_used', 0)} "
-                "genutzt. Für einen Fix braucht der Empfänger mindestens vier, mit freier Sicht "
-                "zum Himmel. Nach einem Kaltstart kann das bis zu 15 Minuten dauern.",
-                action="gps", key="gps_nofix")
+            # 1.5.4: Ohne PPS ist das GPS die Rückfallebene – tragen die Netzquellen, ist ein fehlender
+            # Fix nur eine Info. Gab es vor kurzem noch einen Fix (schwacher Empfang drinnen), sagt der
+            # Hinweis das, statt „noch keinen Fix“ wie nach einem Kaltstart.
+            summary = status.get("gps_summary") or {}
+            net_ok = any(s.get("mode") in {"^", "="} and s.get("state") in {"*", "+"} for s in sources)
+            level = "info" if net_ok and not gps.get("pps") else "warn"
+            seen = f"{gps.get('satellites_seen', 0)} Satelliten in Sicht, {gps.get('satellites_used', 0)} genutzt."
+            last_fix = summary.get("last_fix_s")
+            recent = summary.get("weak") or (isinstance(last_fix, (int, float)) and last_fix < 3600)
+            carry = (" Die Netzquellen tragen die Zeit – das GPS ist nur die Rückfallebene."
+                     if net_ok else " Gerade trägt keine Netzquelle – dann zählt das GPS.")
+            if recent:
+                ago = f" Den letzten Fix gab es vor {_ago(last_fix)}." if isinstance(last_fix, (int, float)) else ""
+                add(level, "GPS gerade ohne Fix – schwacher Empfang, kommt und geht",
+                    f"{seen}{ago} Drinnen oder am Fenster kommt und geht der Fix.{carry} Besserer Platz "
+                    "für die Antenne: GPS-Seite → Antennen-Test.",
+                    action="gps", key="gps_nofix")
+            else:
+                add(level, "GPS hat noch keinen Fix",
+                    f"{seen} Für einen Fix braucht der Empfänger mindestens vier, mit freier Sicht "
+                    f"zum Himmel. Nach einem Kaltstart kann das bis zu 15 Minuten dauern.{carry}",
+                    action="gps", key="gps_nofix")
         elif refclock:
             state = refclock.get("select_state")
             offset = refclock.get("offset")

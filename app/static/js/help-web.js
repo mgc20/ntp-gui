@@ -29,7 +29,13 @@ export const HELP_WEB = {
       + "DNS-Rebinding und die Prüfung der Herkunft beim Speichern hängen nie an diesen Köpfen. "
       + "Proxy im Host-Netzwerk auf demselben Rechner: `127.0.0.1/32,::1/128`. Proxy auf einem anderen Gerät: "
       + "dessen feste LAN-Adresse, z. B. `192.168.1.2/32` – nicht das ganze Netz, sonst könnte jedes Gerät im LAN "
-      + "eine falsche Adresse vorgeben.",
+      + "eine falsche Adresse vorgeben. Einträge breiter als `/24` (IPv4) bzw. `/64` (IPv6) speichert ntp-gui, "
+      + "warnt aber beim Speichern und mit einem Hinweis in der Übersicht. "
+      + "**Per Klick eintragen:** Kommen Anfragen mit Proxy-Köpfen von einer Adresse, die hier fehlt, nennt der "
+      + "Hinweis „Reverse Proxy erkannt, aber nicht eingetragen“ diese Adresse und bietet „Als vertrauenswürdigen "
+      + "Proxy eintragen“ an (nur mit Admin-Recht, mit Rückfrage). Eingetragen wird genau die Adresse, die ntp-gui "
+      + "selbst als Gegenstelle gesehen hat – als `/32` bzw. `/128`, nie ein Netz. Läuft der Proxy in Docker mit "
+      + "wechselnder Adresse, trag besser eine feste ein (eigenes Netz mit `ipv4_address`).",
   },
   allowed_hosts: {
     title: "Erlaubte Namen (Schutz vor DNS-Rebinding)",

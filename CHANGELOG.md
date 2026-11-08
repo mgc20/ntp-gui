@@ -4,6 +4,105 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), die Versionen folgen
 [Semantic Versioning](https://semver.org/lang/de/).
 
+## [1.5.4] – 2026-11-06
+
+Schwerpunkt: GPS bei schwachem Empfang ruhig – keine Positions-Fehlalarme, weniger Ereignisse, stabile
+Fehlerschranke (Rückmeldung: Diagnosepaket 1.5.3, VK-162 drinnen ohne PPS). Dazu die Allan-Abweichung auf
+der Seite „Uhrqualität“, Reverse Proxy per Klick eintragen und die Restpunkte aus der Abschlussprüfung.
+
+### Behoben
+- **Kein Fehlalarm „GNSS-Störung: Position um 160 m gesprungen“ mehr bei schwachem Empfang.** Für den
+  Positionssprung zählen nur noch verlässliche Fixe – 3D, mindestens 5 genutzte Satelliten, HDOP höchstens 4
+  (ohne HDOP: eph höchstens 50 m) –, für die Referenz wie für den Vergleich; 2D-Fixe und schlechte
+  Geometrie werden ignoriert. Ein Sprung zählt erst, wenn er über mindestens 5 gute Fixe und 50 s anhält.
+  Ein echter Spoofer (sauberes Signal, gute Geometrie, bleibender Sprung) wird weiter in unter einer
+  Minute erkannt. Ist die Störung schon gemeldet, halten auch schwache Fixe außerhalb der Schwelle sie
+  aufrecht – „GNSS wieder unauffällig“ kommt nicht mehr, nur weil ein Spoofer auf schlechte Geometrie
+  umschaltet. Meldet gpsd keine Satellitenliste (kein SKY im Abfragefenster, NMEA ohne GSA), gilt die
+  Satellitenzahl als unbekannt statt als 0 – sonst wäre die Positionsprüfung still dauerhaft aus. Replay der Fix-Folge aus dem Paket (4 Tage, Positionsstreuung nach HDOP): vorher rund 40
+  Störungen, jetzt keine.
+- **Weniger GPS-Ereignisse bei schwachem Empfang.** Gilt der Empfang als schwach (Episode „unstet“ oder
+  die 24-h-Bewertung meldet häufige Fix-Wechsel – auch gleich nach einem Neustart), merkt sich ntp-gui das
+  24 h lang. So lange gibt es keine Einzelmeldungen „GPS-Fix verloren/wieder da“ mehr, sondern höchstens
+  eine Info-Zeile je Stunde: „GPS-Fix 7-mal verloren in der letzten Stunde, zusammen 23 min ohne Fix“
+  (flattert es weiter, wächst das Fenster bis 6 h). „GPS-Empfang unstet“ ist nur noch eine Info ohne
+  Benachrichtigung. Wird das GPS gebraucht (keine brauchbare Netzquelle, GPS/PPS ausgewählt oder PPS
+  eingerichtet), gibt es eine Warnung (mit Benachrichtigung), sobald der Fix 10 min am Stück fehlt – kurzes
+  Flattern bleibt still. Das wird bei jedem Messpunkt neu geprüft: Fallen die Netzquellen erst während des
+  Ausfalls weg, wird aus der Info eine Warnung. Tragen die Netzquellen die Zeit, steht ein Ausfall erst nach
+  einer Stunde am Stück als stille Info im Protokoll – ohne zusätzliche Stundenzeile „1-mal verloren“ dazu. Bei gutem Empfang
+  bleibt jeder Fix-Verlust eine Warnung. Replay: vorher rund 100 GPS-Ereignisse in 4 Tagen (über die
+  Hälfte „warn“), jetzt rund 20, alle „info“.
+- **Hinweis „GPS hat noch keinen Fix“ passt zur Lage.** Gab es vor kurzem noch einen Fix, heißt er „GPS
+  gerade ohne Fix – schwacher Empfang, kommt und geht“ und nennt, wann der letzte Fix war. Tragen die
+  Netzquellen die Zeit (und ist kein PPS eingerichtet), ist er nur noch eine Info statt einer Warnung.
+- **GPS-Fehlerschranke pendelt nicht mehr** (Paket: ± 22 → ± 12 ms nach einer ruhigen Nacht, 15 h später
+  wieder ± 22 ms, jedes Mal ein Neustart von chronyd). Kleiner wird sie nur noch, wenn die gemessene
+  Streuung höchstens 0,6 × die jetzige Schranke ist und auch die Messung der letzten 48 h (nicht nur 6 h)
+  mit Reserve hineinpasst. Größer wird sie wie bisher sofort, höchstens einmal je Stunde.
+- **Kalibrierung liest nicht mehr den ganzen Verlauf** (Prüfbefund: Die Karte „GPS kalibrieren“ fragte
+  alle 15 s mit window=0 = „gesamter Verlauf“; über 30 Tage SQLite auf einem Pi 14 s und 1,1 GB). Die
+  Karte startet mit „letzte 24 h“, statt „gesamter Verlauf“ gibt es „letzte 7 Tage“ (alle 2 min neu
+  gemessen). Der Server begrenzt window auf 7 Tage (0 von älteren Dashboards = 7 Tage), lehnt NaN und
+  negative Werte mit 400 ab; die automatische Kalibrierung liest ebenso höchstens 7 Tage. Den Verlauf
+  liest ntp-gui in 6-h-Abschnitten, jeder für sich unter der Sperre – die Messschleife wartet höchstens
+  einen Abschnitt statt der ganzen Abfrage. Messung (30 Tage im 10-s-Takt, 259 000 Punkte, Testrechner):
+  vorher 4,8 s, Prozess bis 1,2 GB, Messschleife bis 0,64 s blockiert; jetzt 7 Tage 0,95 s, 24 h 0,11 s, unter 3 ms.
+- **Hängende HTTP-Verbindungen halten keinen Thread mehr fest.** Ein Client, der eine Content-Length
+  ankündigt und weniger schickt, eine still offene Keep-alive-Verbindung oder einer, der die Köpfe
+  tröpfchenweise schickt, blockierte bisher einen Thread für immer. Jetzt schließt ntp-gui eine
+  Keep-alive-Verbindung nach 125 s Leerlauf – länger als die Verbindungs-Pools gängiger Reverse Proxys
+  (Caddy 2 min, nginx 60 s), sonst gäbe es dort sporadisch 502 –, und Anfragezeile, Köpfe und Body müssen
+  ab ihrem ersten Byte in 60 s ankommen. Eine abgeschnittene Anfrage wird nicht ausgeführt; auch eine
+  vollständig gelesene, deren Frist genau im selben Moment abläuft, verliert ihre Antwort nicht mehr.
+  Antworten gehen in Stücken von 64 KiB hinaus, die Frist gilt je Stück: Ein großes Diagnosepaket oder
+  `/api/history` über eine langsame Mobil- oder VPN-Verbindung bricht nicht mehr still ab.
+- **Holdover-Test: Frist auf der monotonen Uhr.** Ein Sprung der Wanduhr verlängert oder verkürzt den
+  Test nicht mehr. Gespeichert und angezeigt wird die Frist weiter als Uhrzeit; nach einem Neustart
+  rechnet ntp-gui die Restzeit einmal daraus um – nie länger als die ganze Testdauer.
+
+### Neu
+- **Allan-Abweichung auf der Seite „Uhrqualität“:** Wie stabil ist der Quarz über 10 s … 1 Tag? Gerechnet
+  (überlappend) aus der Frequenz, die chrony in jedem Messpunkt für den Quarz meldet – nicht aus dem Offset,
+  der nur zeigt, was nach dem Nachregeln übrig bleibt. τ log-gestuft (5 je Dekade) vom Messintervall bis zu
+  einem Viertel der Messdauer, je Punkt 68-%-Bereich und Zahl unabhängiger Paare. Log-log-Diagramm mit
+  Tooltip und Tabelle, Kacheln für Bestwert, 1 Stunde und 1 Tag mit dem Zeitfehler, den die Uhr frei laufend
+  in dieser Zeit etwa sammeln würde (Wert × τ), und eine Einordnung („typisch für einen Pi-Quarz ohne
+  Temperaturkontrolle in ruhiger Umgebung“: 1–10 ppb um 1 h). Punkte unter 15 min sind blass – dort zeigt
+  die Kurve vor allem chronys Nachführung. Aufwand begrenzt (höchstens 50 000 Rasterpunkte, 20 000 Paare je
+  τ; 30 Tage Verlauf ≈ 0,7 s auf einem PC), Ergebnis 10 min zwischengespeichert. Neu: `GET
+  /api/clockquality/allan` (auch /api/v1). Das Diagnosepaket enthält die Kurve im Abschnitt Verlauf als reine
+  Zahlen (τ, Wert, n). Das Einschwingen der Frequenz nach einem Start von chronyd (neue Installation,
+  frisches chrony-data, Neustart für Kalibrierung oder Fehlerschranke) zählt nicht mit: An jedem
+  Frequenzsprung über 0,5 ppm, nach jeder Lücke über 10 min und am Anfang des Verlaufs fallen die ersten
+  45 min weg – sonst hätte die erste halbe Stunde einer Neuinstallation einen ruhigen Quarz als „üblich“
+  eingeordnet (Wert um 1 h rund 200-fach zu hoch). Gerechnet werden höchstens die letzten 30 Tage, auch bei
+  größerem `HISTORY_DAYS` (bei 365 Tagen sonst gut 1 GB Speicher). Ist der Verlauf nicht lesbar, sagt die
+  Seite das (statt „noch kein Verlauf“), die Einzelheiten stehen nur im Container-Log; das Diagnosepaket
+  wartet nicht auf eine laufende Rechnung. Aus den Stundenmitteln im Paket der Rückmeldung: rund 2 ppb über
+  1 h, 5 ppb über 6 h.
+- **Reverse Proxy per Klick eintragen** (Rückmeldung: Der Hinweis zeigte die Adresse des Proxys, das
+  richtige Eintragen gelang trotzdem tagelang nicht). Die Hinweise „Reverse Proxy erkannt, aber nicht
+  eingetragen“ und „Dashboard über unverschlüsseltes HTTP mit Anmeldung“ (Ursache: Proxy nicht
+  eingetragen) nennen die Adresse und bieten „Als vertrauenswürdigen Proxy eintragen (…/32 bzw. /128)“
+  an – mit Rückfrage, was das heißt. Eingetragen wird genau die Adresse, die ntp-gui selbst als
+  Gegenstelle gesehen hat, nie ein Netz; der Knopf schickt nur eine Kennung, die Adresse nimmt der Server
+  aus seiner eigenen Liste. Nur mit Admin-Recht (Passwort oder Admin-Schlüssel), mit demselben
+  CSRF-Schutz wie jede Einstellung; API-Schlüssel mit Leserecht sehen den Knopf nicht – und ihre Anfragen
+  schlagen auch keine Adresse dafür vor, ein Gerät mit Lese-Schlüssel kann sich also nicht selbst als
+  Proxy anbieten. Der am längsten gesehene Proxy steht zuerst, ein Neuling verdrängt ihn nicht. Ist die
+  Adresse das Gateway des Container-Netzes (rootless Docker/Podman, userland-proxy, manche NAS – dann
+  kommen dort womöglich alle Zugriffe an), warnen Hinweis und Rückfrage davor. Danach beginnt die
+  HTTPS-Prüfung neu. API: `POST /api/v1/web/proxies/trust`.
+- **Warnung bei zu breiten Proxy-Einträgen:** Ein Eintrag in „Vertrauenswürdige Proxys“ breiter als /24
+  (IPv4) bzw. /64 (IPv6) wird gespeichert, aber beim Speichern und mit einem Hinweis in der Übersicht
+  gewarnt – jedes Gerät darin dürfte sonst eine falsche Browser-Adresse und „HTTPS“ vorgeben.
+- **„GPS gesperrt, Uhr läuft frei“:** Bleibt das GPS gesperrt und gibt es 6 h lang keine andere
+  auswählbare Zeitquelle, meldet ntp-gui das einmal je Sperre als Störung (mit Benachrichtigung). Ein
+  laufender Holdover-Test zählt nicht mit. Die GNSS-Seite zeigt „Andere Quellen: keine“ bei der Sperre.
+- Hilfe: „GPS gesperrt, Uhr läuft frei“ und „Empfänger umgezogen → Position neu lernen“ an der
+  GNSS-Karte; „Vertrauenswürdige Proxys“ erklärt das Eintragen per Klick und die /24-/64-Warnung.
+
 ## [1.5.3] – 2026-11-04
 
 Schwerpunkt: Ein Holdover-Test läuft bis zum Ende – keine Automatik startet chronyd mehr dazwischen.
@@ -999,6 +1098,7 @@ Erste Veröffentlichung.
 - CI mit Unittests und Integrationstest gegen das gebaute Image; Release-Workflow,
   der das Image für amd64 und arm64 nach ghcr.io veröffentlicht.
 
+[1.5.4]: https://github.com/mgc20/ntp-gui/compare/v1.5.3...v1.5.4
 [1.5.3]: https://github.com/mgc20/ntp-gui/compare/v1.5.2...v1.5.3
 [1.5.2]: https://github.com/mgc20/ntp-gui/compare/v1.5.1...v1.5.2
 [1.5.1]: https://github.com/mgc20/ntp-gui/compare/v1.5.0...v1.5.1

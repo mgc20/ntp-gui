@@ -124,7 +124,10 @@ class BoundWaitsForHoldoverTest(Case):
             gpsquality.maybe_tick(gq_cfg, clock=lambda: 160.0)     # 1 min nach dem letzten Durchgang
             gpsquality.maybe_tick(gq_cfg, clock=lambda: 220.0)     # nur einmal vorgezogen
         self.assertEqual(len(calls), 1)
-        decision = gpsquality.tick(gq_cfg(), gq_now + 1.5 * H, samples)
+        # Nur die letzten 6 h übergeben: Sonst sähe die 48-h-Prüfung (1.5.4) ältere, unruhigere Werte,
+        # die das 6-h-Fenster schon verlassen haben, und hielte die Schranke – hier geht es ums Nachholen.
+        recent = [s for s in samples if s["t"] >= gq_now + 1.5 * H - gpsquality.BOUND_HOURS * H]
+        decision = gpsquality.tick(gq_cfg(), gq_now + 1.5 * H, recent)
         self.assertTrue(decision["apply"], decision)
         self.assertEqual(len(self.reloads), 1)
         self.assertIsNotNone(gpsquality.read_applied())

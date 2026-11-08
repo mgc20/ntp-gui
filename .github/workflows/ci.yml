@@ -2,12 +2,19 @@ name: CI
 
 on:
   push:
-    branches: ["**"]
+    # Nur main: Branches mit offenem PR liefen sonst doppelt (push + pull_request) und
+    # verbrauchten die doppelten Actions-Minuten.
+    branches: ["main"]
     # Keine Tags: Veröffentlicht wird nur über release.yml. Ein Tag-Push (z. B. beim Umzug in ein
     # neues Repository mit allen alten Tags) baute sonst jede alte Version und setzte „latest“ –
     # wer zuletzt fertig wurde, gewann.
   pull_request:
   workflow_dispatch:
+
+concurrency:
+  # Ein neuer Push bricht den alten Lauf desselben Branches/PRs ab.
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read

@@ -120,6 +120,9 @@ def _storable(sample: Any, now: float | None = None) -> bool:
     return _valid(sample) and sample["t"] <= _latest_allowed(now)
 
 
+SNAPSHOT_CHUNK = 6 * 3600  # snapshot(): so viele Sekunden Verlauf je Griff nach dem Lock
+
+
 class History:
     def __init__(self, size: int | None, path: str | None = None, days: float | None = None,
                  db_path: str | None = None) -> None:
@@ -251,21 +254,38 @@ class History:
     def _rows(self, lower: float, upper: float) -> list[dict]:
         return self._decode(self._raw_rows(lower, upper))
 
+    def _snapshot_texts(self, since: float | None) -> list[str]:
+        """Rohtexte ab since – in Abschnitten von SNAPSHOT_CHUNK Sekunden, jeder unter self._lock
+        für sich. So wartet add() der Messschleife höchstens einen Abschnitt lang, auch wenn
+        jemand Tage des Verlaufs liest (1.5.4: vorher die ganze Abfrage lang)."""
+        with self._lock:
+            lower, newest = self._bounds()
+        if newest is None:
+            return []
+        if since is not None:
+            lower = max(lower, since)
+        texts: list[str] = []
+        lo = lower
+        while lo <= newest:
+            # t ist ganzzahlig: [lo, hi] und danach hi + 1 – keine Lücke, nichts doppelt.
+            hi = min(newest, math.floor(lo) + SNAPSHOT_CHUNK - 1)
+            with self._lock:
+                texts += self._raw_rows(lo, hi)
+            lo = math.floor(hi) + 1
+            time.sleep(0)  # wartende Threads (add()) kommen zwischen zwei Abschnitten dran
+        return texts
+
     def snapshot(self, since: float | None = None) -> list[dict]:
         texts = None
-        with self._lock:
-            if self._sql:
-                try:
-                    lower, newest = self._bounds()
-                    if newest is None:
-                        return []
-                    if since is not None:
-                        lower = max(lower, since)
-                    texts = self._raw_rows(lower, newest)
-                except Exception as exc:
-                    self.error = f"Verlauf nicht lesbar: {exc}"
+        if self._sql:
+            try:
+                texts = self._snapshot_texts(since)
+            except Exception as exc:
+                self.error = f"Verlauf nicht lesbar: {exc}"
+                with self._lock:
                     data = list(self._pending)
-            else:
+        else:
+            with self._lock:
                 data = list(self._samples)
         if texts is not None:
             return self._decode(texts)
@@ -278,6 +298,41 @@ class History:
         if since is not None:
             data = [s for s in data if s.get("t", 0) >= since]
         return data
+
+    def series(self, key: str, since: float | None = None) -> list[tuple[int, float]]:
+        """(t, Wert) einer Zahl auf oberster Ebene (z. B. „freq“), zeitlich sortiert – ohne die
+        Messpunkte als JSON zu dekodieren (1.5.4, Allan-Abweichung: 30 Tage ≈ 260 000 Punkte).
+        In SQL wie snapshot() abschnittsweise, damit add() nicht lange wartet."""
+        assert key in _NUMERIC_TOP
+        out: list[tuple[int, float]] = []
+        if self._sql:
+            try:
+                with self._lock:
+                    lower, newest = self._bounds()
+                if newest is None:
+                    return []
+                if since is not None:
+                    lower = max(lower, since)
+                expr = _num_expr("j", "$." + key)
+                lo = lower
+                while lo <= newest:
+                    hi = min(newest, math.floor(lo) + SNAPSHOT_CHUNK - 1)
+                    with self._lock:
+                        rows = self._db(_cte("samples") + f"SELECT t, {expr} FROM d ORDER BY t",
+                                        {"lo": lo, "hi": hi, "p": self._pending_json()})
+                    out += [(int(t), float(v)) for t, v in rows if v is not None]
+                    lo = math.floor(hi) + 1
+                    time.sleep(0)
+                return out
+            except Exception as exc:
+                # Nicht still [] liefern – sonst zeigt die Seite „noch kein Verlauf“ statt des Fehlers.
+                self.error = f"Verlauf nicht lesbar: {exc}"
+                raise
+        for sample in self.snapshot(since):
+            value = sample.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
+                out.append((int(sample.get("t", 0)), float(value)))
+        return out
 
     def query(self, seconds: float | None = None, points: int = 600) -> list[dict]:
         """Ausschnitt der letzten `seconds` Sekunden, auf höchstens `points` verdichtet."""

@@ -42,9 +42,14 @@ export const HELP_GNSS = {
       + "Dann gibt es **ein** Ereignis „GPS-Empfang unstet“ mit Zählung statt Dutzender Paare „verloren/wieder "
       + "da“. Die Folge für chrony: Das GPS ist oft unbrauchbar, chrony stellt die Uhr dann nach den "
       + "Netzwerkquellen – **das ist richtig so**. Nach einer Stunde ohne Wechsel kommt ein Abschlussereignis "
-      + "mit der Zahl der Wechsel; bleibt der Fix **10 Minuten am Stück weg**, meldet ein Abschlussereignis "
-      + "„GPS-Fix seit 10 min weg (vorher N Fix-Wechsel in …)“ das sofort. Bei **stetig** steht dahinter, wie viele Fix-Wechsel es in der letzten "
-      + "halben Stunde trotzdem gab (unter sechs).",
+      + "mit der Zahl der Wechsel. **Ab 1.5.4** merkt sich ntp-gui den schwachen Empfang 24 Stunden lang (auch nach "
+      + "einem Neustart, aus der 24-h-Bewertung): So lange gibt es keine Einzelmeldungen „verloren/wieder da“, "
+      + "sondern höchstens eine Info-Zeile je Stunde, z. B. „GPS-Fix 7-mal verloren in der letzten Stunde, "
+      + "zusammen 23 min ohne Fix“ – flattert es weiter, wird das Fenster bis 6 Stunden länger. Eine **Warnung** "
+      + "gibt es, wenn das GPS gebraucht wird (keine brauchbare Netzquelle, GPS/PPS ausgewählt oder PPS "
+      + "eingerichtet) und der Fix **10 Minuten am Stück** fehlt; tragen die Netzquellen die Zeit, steht ein "
+      + "Ausfall erst nach einer Stunde als Info im Protokoll. Bei "
+      + "**stetig** steht dahinter, wie viele Fix-Wechsel es in der letzten halben Stunde trotzdem gab (unter sechs).",
   },
   gpsq_basis: {
     title: "Datenbasis",
@@ -96,8 +101,10 @@ export const HELP_GNSS = {
       + "mindestens der Median plus dreimal die robuste Streuung (MAD). Ein noch nicht kalibrierter Versatz "
       + "zählt mit – er ist genauso ein Fehler wie Rauschen. Gemessen wird stündlich. **Größer** wird die "
       + "Schranke, sobald die Streuung sie übersteigt (höchstens einmal je Stunde, mit etwas Reserve, damit "
-      + "chronyd nicht ständig neu startet) – eine zu kleine Schranke wäre unehrlich. **Kleiner** nur bei einer "
-      + "deutlichen Änderung (Faktor 1,5) und frühestens nach 12 h. Jede Änderung steht im Ereignisprotokoll "
+      + "chronyd nicht ständig neu startet) – eine zu kleine Schranke wäre unehrlich. **Kleiner** nur, wenn die "
+      + "neue Schranke höchstens 0,6 × die jetzige ist, auch die Streuung der **letzten 48 Stunden** (nicht nur "
+      + "der letzten 6) mit Reserve hineinpasst – sonst pendelte sie nach einer ruhigen Nacht hin und her –, "
+      + "und frühestens nach 12 h. Jede Änderung steht im Ereignisprotokoll "
       + "und startet chronyd kurz neu. **Nach einer Offset-Änderung** (von Hand, „zurücksetzen“ oder automatische "
       + "Kalibrierung) zählen nur noch Messwerte ab der Änderung (plus 15 Minuten für den Neustart) – ältere "
       + "passen nicht mehr zum laufenden Offset. Kleiner werden darf die Schranke dann schon, sobald 5,5 Stunden "
@@ -215,7 +222,11 @@ export const HELP_GNSS = {
     title: "Positionssprung",
     text: "Ein Zeitserver steht still. Springt die gemeldete Position um **mehr als 100 m** (und mehr als das Dreifache "
       + "der vom Empfänger geschätzten Ungenauigkeit), ist das ein starkes Zeichen für Spoofing. Gezählt werden nur "
-      + "3D-Fixes. Die Referenz folgt einem echten Umzug höchstens 20 m pro Stunde und bleibt während eines Sprungs "
+      + "**verlässliche** Fixe – 3D, mindestens 5 genutzte Satelliten, HDOP höchstens 4 (ohne HDOP: geschätzte "
+      + "Ungenauigkeit höchstens 50 m) –, für die Referenz wie für den Vergleich, und der Sprung muss über "
+      + "mindestens 5 solche Fixe und 50 Sekunden anhalten. Drinnen (2D/3D im Wechsel, 3–4 Satelliten, HDOP 5–20) "
+      + "streut die Position um 100 m und mehr – das ist kein Spoofing; ein Spoofer liefert dagegen ein sauberes "
+      + "Signal mit guter Geometrie und fällt weiter auf. Die Referenz folgt einem echten Umzug höchstens 20 m pro Stunde und bleibt während eines Sprungs "
       + "eingefroren – ein langsames Wegziehen fällt so ebenfalls auf. Fehlen nach einem Befund die Daten (kein "
       + "3D-Fix, GPS unerreichbar), erlischt er nach 10 Minuten mit „keine Messwerte mehr“. **Datenschutz:** Die Referenzposition liegt nur im Arbeitsspeicher von ntp-gui – sie wird nie "
       + "gespeichert, nie angezeigt und nie exportiert. Hier, im Protokoll und in Benachrichtigungen steht nur die "
@@ -238,7 +249,28 @@ export const HELP_GNSS = {
       + "chronyd – deshalb wählt der Supervisor das GPS direkt nach jedem Start von chronyd (auch nach dem Speichern "
       + "von Einstellungen) wieder ab, bevor die erste GPS-Messung da ist. Von Hand sperren ohne andere auswählbare "
       + "Quelle geht nur nach einer zweiten Bestätigung: Die Uhr liefe dann frei. "
-      + "Jede Sperre und Freigabe steht im Ereignisprotokoll.",
+      + "Jede Sperre und Freigabe steht im Ereignisprotokoll. Bleibt das GPS gesperrt und ist **6 Stunden lang keine "
+      + "andere auswählbare Quelle** da, kommt einmal je Sperre die Störungsmeldung „GPS gesperrt, Uhr läuft frei“ "
+      + "(siehe „Uhr läuft frei“).",
+  },
+  gnss_freerun: {
+    title: "GPS gesperrt, Uhr läuft frei",
+    text: "Das GPS ist gesperrt, und chrony hat keine andere auswählbare Zeitquelle – keine Netzquelle ist erreichbar "
+      + "oder alle sind abgewählt. Dann stellt niemand die Uhr: Sie läuft frei (Holdover) und driftet, bei einem "
+      + "Raspberry Pi typisch einige Millisekunden pro Stunde, je nach Temperatur auch mehr. Dauert das **6 Stunden**, "
+      + "meldet ntp-gui das einmal als Störung (mit Benachrichtigung). Was tun: Ist die Störung vorbei (Seite GNSS, "
+      + "Stufe „unauffällig“), die Sperre aufheben. Sonst eine Netzquelle erreichbar machen (Internet, Firewall, "
+      + "DNS). Während eines Holdover-Tests zählt die Zeit nicht – der wählt absichtlich alles ab.",
+  },
+  gnss_moved: {
+    title: "Empfänger umgezogen → Position neu lernen",
+    text: "Die Störungserkennung lernt, wo der Empfänger steht, und meldet einen Sprung dieser Position als möglichen "
+      + "Angriff (Spoofing). Hast du den Empfänger oder die Antenne **an einen anderen Platz** gestellt – anderes "
+      + "Fenster, anderes Stockwerk, anderer Ort – oder einen anderen Empfänger angesteckt, drück „Neu lernen“. Sonst "
+      + "meldet sie den Umzug als „Position gesprungen“. Danach lernt sie die neue Position in einigen Minuten mit "
+      + "gutem 3D-Fix. Kleine Bewegungen (Stick ein paar Zentimeter verrückt) brauchen das nicht: Gezählt wird erst ein "
+      + "Sprung über der Schwelle, der über mehrere gute Fixe anhält. Bei einer Meldung, die du dir nicht erklären kannst, "
+      + "nicht neu lernen – erst die Ursache klären.",
   },
   gnss_lock_reason: {
     title: "Grund der Sperre",
@@ -261,5 +293,5 @@ export const HELP_GROUP_GNSS = {
     "gpsq_basis", "gpsq_tips", "gpsq_role", "gpsq_bound", "gpsq_bound_mode", "gpsq_spread", "gpsq_bound_check",
     "gpsq_antenna", "gpsq_antenna_label", "gpsq_antenna_compare", "gpsq_antenna_list", "gpsq_tracked", "gpsq_strong",
     "gnss_guard", "gnss_stage", "gnss_cn0_drop", "gnss_uniform", "gnss_falseticker", "gnss_time", "gnss_position",
-    "gnss_mode", "gnss_lock", "gnss_lock_reason", "gnss_relearn"],
+    "gnss_mode", "gnss_lock", "gnss_freerun", "gnss_lock_reason", "gnss_relearn", "gnss_moved"],
 };
