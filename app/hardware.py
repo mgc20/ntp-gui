@@ -1584,6 +1584,10 @@ def build_report(cfg: dict, ctx: dict) -> dict[str, Any]:
     }
     rep["gps"]["role"] = _gps_role(cfg)
     rep["matrix"], rep["warnings"] = build_matrix(cfg, rep, ctx)
+    # 1.6 (T3): Der Willkommens-Assistent fragt „GPS gefunden?“ – öffentlich, ob ein Eintrag wie ein
+    # GPS-Empfänger aussieht (nicht nur eine leere serielle Schnittstelle).
+    for item in rep["gps"]["receivers"]:
+        item["gps_like"] = bool(item.get("_gps_like"))
     for group in (rep["gps"]["receivers"], rep["pps"], rep["ptp"]["clocks"]):
         for item in group:
             for key in [k for k in item if k.startswith("_")]:

@@ -60,6 +60,15 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
   ein Hinweis auf Kühlung); bei Unterspannung ein Hinweis auf der Übersicht.
 - Prometheus-Metriken `ntpgui_pi_undervoltage` und `ntpgui_pi_throttled`; Verlaufsfeld `pi_state`.
 - **Gerätenamen direkt in der Liste ändern** (Clients): Tippe auf ✎, gib den Namen ein, Enter speichert, Esc bricht ab. Klappt das Speichern nicht, steht der Grund direkt unter dem Feld. Ohne Schreibrecht gibt es kein ✎.
+- **Willkommens-Assistent „In 3 Minuten fertig“** (System → Einrichtung), fünf freiwillige Schritte:
+  - **Prüfen:** Daten-Volume, Recht `SYS_TIME`, GPS-Empfänger und Pi-Zustand – bei jedem Problem genau eine Abhilfe mit Compose-Zeilen zum Kopieren.
+  - **Zeitquellen:** öffentliche NTS-Server (PTB, Cloudflare, Netnod) mit einem Klick; deine bisherige Auswahl bleibt erhalten.
+  - **GPS:** ja oder nein, mit ehrlichem Hinweis, was GPS ohne PPS bringt.
+  - **Clients:** Adresse und Rechnername zum Kopieren, Schnipsel für Windows, macOS und Linux, Verweise auf die Anleitungen.
+  - **Benachrichtigung:** optional einen Kanal anlegen und eine Testnachricht schicken.
+  Geschrieben wird nur mit „Übernehmen“ – mit derselben Prüfung und Diff-Vorschau wie unter Einstellungen. „Weiter“, „Zurück“, „Später“ ändern nichts. Beim ersten Start öffnet sich der Assistent von selbst.
+- **Checkliste auf der Übersicht** („3 von 5 erledigt“, Benachrichtigung optional). Sie verschwindet, wenn du sie schließt oder einmal alles grün war, und kommt bei kurzen Synchronisationsverlusten nicht wieder.
+- API: `GET /api/v1/setup` (Leserecht) und `POST /api/v1/setup` mit `done`, `never`, `close_hint`, `close_checklist` oder `reset` (Verwaltungsrecht, gesperrt mit `WEB_READONLY`); diese Aufrufe ändern keine Einstellungen.
 
 ### Geändert
 - **Abzeichen nur bei geänderten Werten:** „geändert · zurücksetzen“. Zurücksetzen stellt den Standard ein –
@@ -102,6 +111,8 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 - PTP und Client-Detail nutzen die neue Diagrammkarte, die Ereignisse in der Diagnose die einheitliche Zeitraum-Auswahl.
 - Diagnose: Die Rohdaten der Ereignisse sind leichter anzutippen und bleiben beim automatischen Aktualisieren aufgeklappt, auch der Tastaturfokus bleibt.
 - GPS-Kalibrierung: Der Satz zur aktuellen Phase steht nur noch einmal da; bei einer Störungssperre gibt es nur noch eine rote Hinweisbox.
+- Nach einem Update von 1.5.x oder nach dem Einspielen einer Sicherung auf einer neuen Installation öffnet sich der Assistent nicht von selbst; die Übersicht zeigt einmal den Hinweis „Einrichtung prüfen“.
+- Der Knopf „Kopieren“ hat eine größere Tippfläche.
 
 ### Sicherheit
 - **Vorschau der Konfiguration:** gleiche Rechte wie das Speichern (nur Verwaltungsrecht, CSRF-/Origin-Prüfung,
@@ -144,6 +155,7 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
   läuft nur, wenn Playwright vorhanden ist, und gehört nicht zur Unit-Testsuite.
 - Neuer Test `tests/test_seiten.py` (Quellenfarben und Kontrast, Kurznamen, ausgeblendete Spalten, Karten auf dem Handy, ✎ nur mit Schreibrecht, Erklärtexte ohne Verlust). Der UI-Rundgang prüft zusätzlich die Clients bei 1440 und 390 px und misst die sichtbaren Wörter je Seite.
 - Seiten mit `live = false` (Diagnose, Hardware, Hilfe, Benachrichtigungen, Einstellungen) werden nicht mehr alle paar Sekunden neu aufgebaut, nur weil eine Karte einen leeren Hinweis zeigt.
+- Neuer Test `tests/test_einrichtung.py` (Erststart/Update-Erkennung, Rechte, „Überspringen ändert nichts“, Testaufbau ohne Volume und ohne `SYS_TIME`); der UI-Rundgang durchläuft den Assistenten bei 390 und 1440 px.
 
 ## [1.5.5] – 2026-11-08
 

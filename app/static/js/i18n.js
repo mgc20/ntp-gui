@@ -64,6 +64,7 @@ export const CORE_DE = {
     "diagnose": "Diagnose",
     "notify": "Benachrichtigungen",
     "settings": "Einstellungen",
+    "setup": "Einrichtung",
     "help": "Hilfe",
     "uhr": "Uhr & Hardware",
     "system": "System",

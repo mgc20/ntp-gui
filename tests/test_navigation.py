@@ -112,7 +112,7 @@ console.log(JSON.stringify(out));
 
     def test_gruppen_und_reiter(self):
         self.assertEqual(self.table["tabs"]["uhr"], ["clockquality", "hardware", "ptp"])
-        self.assertEqual(self.table["tabs"]["system"], ["diagnose", "notify", "settings"])
+        self.assertEqual(self.table["tabs"]["system"], ["diagnose", "notify", "settings", "setup"])
         # Standardreiter = erster: Gruppe ohne Reiter → erster Reiter, auch mit Abfrageteil.
         self.assertEqual(self.resolved("#/uhr")["redirect"], "#/uhr/qualitaet")
         self.assertEqual(self.resolved("#/uhr/")["redirect"], "#/uhr/qualitaet")

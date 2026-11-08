@@ -1,7 +1,8 @@
-import { el, fmtSeconds, fmtNs, fmtNumber, fmtFixed, fmtRate, fmtDuration, fmtPpm, fmtDate, isNum, sourceLabel, serverZone, fmtZoned } from "../util.js";
-import { card, statCard, kv, badge, insightList, insightLink, insightAction, insightFixes, rangeButtons, infoButton, emptyState, loadingOr, chartCard, ACTION_LABEL } from "../ui.js";
+import { el, apiPost, fmtSeconds, fmtNs, fmtNumber, fmtFixed, fmtRate, fmtDuration, fmtPpm, fmtDate, isNum, sourceLabel, serverZone, fmtZoned } from "../util.js";
+import { card, statCard, kv, badge, toast, insightList, insightLink, insightAction, insightFixes, rangeButtons, infoButton, emptyState, loadingOr, chartCard, ACTION_LABEL } from "../ui.js";
 import { lineChart, sparkline, stepDecimals } from "../charts.js";
 import { t as tr } from "../i18n.js";
+import { route, setupHref } from "../routes.js";
 
 
 function offsetTone(offset) {
@@ -525,6 +526,45 @@ const OFFSET_BANDS = [
 
 const TONE_WORD_KEY = { warn: "overview.kpi.tone_warn", crit: "overview.kpi.tone_crit" };
 
+// --- Einrichtung (1.6, T3) ---------------------------------------------------------
+// Update von 1.5.x: einmalig der dezente Hinweis „Einrichtung prüfen“. Erststart oder nach „Fertig“: die
+// Checkliste („3 von 5 erledigt“), bis alles grün ist oder jemand sie schließt (beides merkt sich der Server).
+async function setupAction(ctx, action) {
+  try {
+    await apiPost("/api/setup", { action });
+    // Die Karte samt ✕ verschwindet: Fokus auf den Hauptinhalt, sonst landet er auf <body>.
+    document.getElementById("main")?.focus({ preventScroll: true });
+    ctx.invalidate("setup");
+    ctx.refresh();
+  } catch (error) { toast(error.message, "crit"); }
+}
+
+export function setupCard(ctx, brief) {
+  if (!brief || ctx.readonly) return null;
+  const close = (action, label) => el("button", { type: "button", class: "icon-button", text: "✕", "aria-label": label,
+    onclick: () => setupAction(ctx, action) });
+  if (brief.hint) {
+    return el("section", { class: "card setup-note", "aria-label": tr("setup.hint.title") },
+      el("p", { class: "setup-note-text" }, el("strong", { text: tr("setup.hint.title") }), " ",
+        el("span", { text: tr("setup.hint.text") }), " ",
+        el("a", { href: route("setup"), text: tr("setup.hint.open") })),
+      close("close_hint", tr("setup.hint.close")));
+  }
+  if (!brief.checklist) return null;
+  const data = ctx.data("setup", "/api/setup", 30);
+  const list = data?.checklist;
+  if (!list?.show) return null;
+  return card(tr("setup.checklist.title", { done: list.done, total: list.total }), { id: "setup-checklist", class: "setup-checklist",
+    help: "setup",
+    actions: [el("a", { class: "button", href: route("setup"), text: tr("setup.checklist.open") }),
+      close("close_checklist", tr("setup.checklist.close"))] },
+  el("ul", { class: "setup-checklist-items" }, list.items.map((item) => el("li", { "data-ok": item.ok ? "true" : "false" },
+    el("span", { class: "setup-mark", "aria-hidden": "true", text: item.ok ? "✓" : "○" }),
+    el("a", { href: setupHref(item.id) }, tr(`setup.checklist.${item.id}`)),
+    el("span", { class: "sr-only", text: ` – ${tr(item.ok ? "setup.checklist.ok" : "setup.checklist.open_item")}` }),
+    item.optional ? el("span", { class: "muted", text: ` (${tr("setup.checklist.optional")})` }) : null))));
+}
+
 export function render(ctx) {
   const { status, history } = ctx;
   const t = status.tracking || {};
@@ -626,6 +666,7 @@ export function render(ctx) {
 
   return [
     hero,
+    setupCard(ctx, status.ui?.setup),
     panels,
     unusedStrip(status),
     el("div", { class: "toolbar section-head" },

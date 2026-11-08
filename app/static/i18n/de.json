@@ -40,6 +40,7 @@
     "diagnose": "Diagnose",
     "notify": "Benachrichtigungen",
     "settings": "Einstellungen",
+    "setup": "Einrichtung",
     "help": "Hilfe",
     "uhr": "Uhr & Hardware",
     "system": "System",
@@ -242,5 +243,132 @@
       "privacy": "Mit Datenschutzfilter."
     },
     "more": "Mehr dazu"
+  },
+  "setup": {
+    "title": "Einrichtung",
+    "what": "den Stand der Einrichtung",
+    "loading": "Wird geladen …",
+    "intro": "In drei Minuten fertig: fünf kurze Schritte, jeder freiwillig. Geändert wird nur, was du mit „Übernehmen“ bestätigst.",
+    "intro_done": "Die Einrichtung ist abgeschlossen. Du kannst jeden Schritt jederzeit wieder ansehen.",
+    "steps_label": "Schritte der Einrichtung",
+    "count": "Schritt {n} von {total}",
+    "steps": {
+      "check": "Prüfen",
+      "sources": "Zeitquellen",
+      "gps": "GPS",
+      "clients": "Clients",
+      "notify": "Benachrichtigung"
+    },
+    "lead": {
+      "check": "Was der Hardware-Check gefunden hat. Jeder rote Punkt hat genau eine Abhilfe zum Kopieren.",
+      "sources": "Woher dieser Server seine Zeit holt. Vorlagen fügen öffentliche NTS-Server hinzu – deine Auswahl bleibt.",
+      "gps": "Ein GPS-Empfänger ist optional. Hier steht ehrlich, was er bringt.",
+      "clients": "So fragen deine Geräte diesen Server nach der Zeit.",
+      "notify": "Optional: Meldungen aufs Handy oder in Home Assistant. Ohne Kanal geht nichts hinaus."
+    },
+    "nav_label": "Schritte wechseln",
+    "back": "Zurück",
+    "next": "Weiter",
+    "later": "Später",
+    "never": "Nicht mehr zeigen",
+    "finish": "Fertig",
+    "finished": "Einrichtung abgeschlossen",
+    "hidden": "Einrichtung abgeschlossen – Assistent und Checkliste werden nicht mehr gezeigt",
+    "readonly": "Nur lesen: Ohne Verwaltungsrecht (oder mit WEB_READONLY) lässt sich hier nichts übernehmen.",
+    "leave": "Im Assistenten gibt es eine Änderung, die du noch nicht übernommen hast. Seite trotzdem verlassen?",
+    "holdover_confirm": "Gerade läuft ein Holdover-Test. Übernehmen startet chronyd neu und bricht den Test ab. Trotzdem übernehmen?",
+    "preview": "Vorschau",
+    "apply": "Übernehmen",
+    "discard": "Verwerfen",
+    "preview_title": "Vorschau der Konfiguration",
+    "preview_loading": "Vorschau wird erstellt …",
+    "preview_none": "Die Konfigurationsdateien ändern sich dadurch nicht.",
+    "preview_error": "Vorschau nicht möglich: {message}",
+    "saved": "Übernommen",
+    "saved_restart": "Übernommen – Zeitdienste starten neu",
+    "status": {
+      "ok": "in Ordnung",
+      "problem": "beheben",
+      "info": "Hinweis"
+    },
+    "check": {
+      "card": "Prüfen",
+      "problems_one": "{n} Punkt braucht deine Hilfe.",
+      "problems_other": "{n} Punkte brauchen deine Hilfe.",
+      "all_ok": "Alles Nötige ist da.",
+      "again": "Neu prüfen",
+      "running": "Prüfe …",
+      "remedy": "Abhilfe:",
+      "compose": "Zeile für die Compose-Datei",
+      "full": "Ganzer Hardware-Check →"
+    },
+    "sources": {
+      "card": "Zeitquellen",
+      "what": "die Zeitquellen",
+      "sub": "NTS prüft die Antworten kryptografisch – empfehlenswert. Ob die Server erreichbar sind, prüft chrony selbst nach dem Übernehmen.",
+      "now": "Jetzt eingetragen",
+      "after": "Nach dem Übernehmen",
+      "none": "Noch keine Zeitquelle eingetragen.",
+      "new": "neu",
+      "env": "Die Liste kommt aus der Compose-Datei (NTP_SERVERS). Übernehmen speichert sie im Dashboard; dort gilt sie dann vorrangig.",
+      "templates": "Vorlagen",
+      "keep": "Eine Vorlage ergänzt nur – vorhandene Quellen bleiben stehen.",
+      "more": "Alle Quellen-Einstellungen →"
+    },
+    "gps": {
+      "card": "GPS",
+      "found": "gefunden",
+      "not_found": "nicht gefunden",
+      "optional": "Kein Empfänger erkannt – das ist in Ordnung, die Zeit kommt aus dem Netz.",
+      "honest": "Ohne PPS ist GPS eine **Rückfallebene**: Ein USB-GPS schafft nach der Kalibrierung 1–10 ms, gute Internetquellen sind meist genauer. Wird das Internet schlecht oder fällt es aus – Mobilfunk, Störung, Insel –, übernimmt das GPS von selbst.",
+      "with_pps": "Mit PPS ist das GPS genauer als jede Internetquelle und wird zur Referenz.",
+      "question": "GPS nutzen?",
+      "yes": "Ja, GPS nutzen",
+      "no": "Nein",
+      "no_receiver": "Ohne erkannten Empfänger hat GPS nichts zu lesen – prüfe zuerst Schritt 1 oder die Hardware-Seite.",
+      "pps_link": "Wie PPS geht (Anleitung) →",
+      "page_link": "Zur GPS-Seite →"
+    },
+    "clients": {
+      "card": "Clients",
+      "sub": "Trag die Adresse dieses Servers in deinen Geräten oder im Router ein. Am bequemsten verteilt der Router sie per DHCP Option 42.",
+      "address": "Adresse",
+      "hostname": "Rechnername",
+      "browser": "Im Browser",
+      "unknown": "unbekannt – setze die IP des Hosts ein",
+      "devices": "Einzelne Geräte",
+      "guides": "Anleitungen",
+      "router": "Router (Pi-hole, OPNsense, UniFi, MikroTik …): Clients → Clients einrichten →",
+      "option42": "Was DHCP Option 42 ist →",
+      "enforce": "Geräte mit fest eingebautem Zeitserver: Zeitserver erzwingen →",
+      "smarthome": "Smart Home: Anleitungen für Home Assistant, Homepage, Glance und Uptime Kuma stehen im Repository unter `docs/integrationen`."
+    },
+    "notify": {
+      "card": "Benachrichtigung",
+      "sub": "Standardmäßig ist nichts aktiv. Leg einen Kanal an und schick eine Testnachricht – oder geh einfach weiter.",
+      "none": "Noch kein Kanal angelegt.",
+      "add": "+ Kanal anlegen",
+      "no_right": "Die Kanäle sieht nur, wer das Verwaltungsrecht hat.",
+      "failed": "Die Kanäle ließen sich nicht laden."
+    },
+    "hint": {
+      "title": "Einrichtung prüfen",
+      "text": "Neu in 1.6: ein kurzer Assistent prüft Volume, Rechte, GPS und Zeitquellen.",
+      "open": "Ansehen →",
+      "close": "Hinweis „Einrichtung prüfen“ schließen"
+    },
+    "checklist": {
+      "title": "Einrichtung: {done} von {total} erledigt",
+      "open": "Einrichtung öffnen",
+      "close": "Checkliste schließen",
+      "check": "Hardware geprüft",
+      "sources": "Zeitquellen mit NTS",
+      "gps": "GPS geklärt",
+      "clients": "Erster Client fragt",
+      "notify": "Benachrichtigung",
+      "optional": "optional",
+      "ok": "erledigt",
+      "open_item": "offen"
+    }
   }
 }
