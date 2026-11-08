@@ -23,7 +23,10 @@ document.addEventListener("keydown", (event) => {
   }
 });
 window.addEventListener("resize", closePopover);
-window.addEventListener("scroll", closePopover, { passive: true });
+// Erst ab 40 px Scrollweg schließen – Touch-Ruckeln und die einklappende Adressleiste lassen es offen.
+window.addEventListener("scroll", () => {
+  if (openPopover && Math.hypot(window.scrollX - openPopover.x, window.scrollY - openPopover.y) > 40) closePopover();
+}, { passive: true });
 
 export function isPopoverOpen() {
   return Boolean(openPopover && openPopover.button.isConnected);
@@ -54,7 +57,7 @@ export function info(key, label) {
     const below = rect.bottom + 8 + node.offsetHeight < window.innerHeight;
     node.style.top = `${(below ? rect.bottom + 8 : rect.top - node.offsetHeight - 8) + window.scrollY}px`;
     button.setAttribute("aria-expanded", "true");
-    openPopover = { node, button };
+    openPopover = { node, button, x: window.scrollX, y: window.scrollY };
   });
   return button;
 }
@@ -110,8 +113,10 @@ export function reachBar(percent, label) {
 export function reachRegister(reach) {
   const bits = [];
   for (let i = 7; i >= 0; i -= 1) bits.push((reach >> i) & 1);
-  return el("div", { class: "reach-bits", title: "Letzte acht Abfragen (rechts = neueste)" },
-    bits.map((b) => el("span", { class: `bit${b ? " ok" : ""}`, "aria-label": b ? "beantwortet" : "verloren" })));
+  const answered = bits.filter(Boolean).length;
+  return el("div", { class: "reach-bits", title: "Letzte acht Abfragen (rechts = neueste)",
+    role: "img", "aria-label": `Letzte acht Abfragen: ${answered} von 8 beantwortet` },
+    bits.map((b) => el("span", { class: `bit${b ? " ok" : ""}`, "aria-hidden": "true" })));
 }
 
 const LEVEL_ICON = { ok: "✓", info: "i", warn: "!", crit: "✕" };

@@ -151,6 +151,7 @@ function logCard(state) {
 }
 
 // --- Ereignisse ------------------------------------------------------------------
+// Rohdaten eines Ereignisses (k=v) sind eingeklappt – sichtbar bleibt der Titel.
 export function eventRow(event, sys = null) {
   const data = event.data && typeof event.data === "object" ? Object.entries(event.data) : [];
   return el("li", { class: "diag-event", dataset: { level: event.level || "info" } },
@@ -159,8 +160,9 @@ export function eventRow(event, sys = null) {
       : event.level === "warn" ? "warn" : "info"),
     el("span", { class: "diag-event-kind", text: EVENT_KINDS[event.kind] || event.kind || "–" }),
     el("span", { class: "diag-event-title", text: event.display_title || event.title || "" }),
-    data.length ? el("span", { class: "diag-event-data mono",
-      text: data.map(([k, v]) => `${k}=${typeof v === "object" ? JSON.stringify(v) : v}`).join(" · ") }) : null);
+    data.length ? el("details", { class: "diag-event-raw" }, el("summary", { text: "Rohdaten" }),
+      el("code", { class: "diag-event-data mono",
+        text: data.map(([k, v]) => `${k}=${typeof v === "object" ? JSON.stringify(v) : v}`).join(" · ") })) : null);
 }
 
 function eventsCard(state, system = () => null) {

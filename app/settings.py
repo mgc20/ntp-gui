@@ -726,7 +726,7 @@ SCHEMA: list[dict] = [
                 "Paket tzdata. Standard ist richtig; leer schaltet die Ankündigung ab."),
     _field("leapsectz", "ntp", "Schaltsekunden-Zeitzone (alt)", "text", "", _as_timezone,
            env="LEAPSECTZ", advanced=True,
-           help="Nur für eigene Images mit „right/“-Zeitzonen. Leer lassen – seit 1.3.1 "
+           help="Nur für eigene Images mit „right/“-Zeitzonen. Leer lassen – dann "
                 "gilt die Schaltsekunden-Liste. Ist die Zone im Image nicht vorhanden, wird "
                 "die Liste genommen."),
 
@@ -931,18 +931,18 @@ SCHEMA: list[dict] = [
                 "gemessenen Streuung – dann gilt dieser hier nur mit PPS oder im Modus „von Hand“."),
     _field("gps_bound_mode", "gps", "Fehlerschranke ohne PPS", "select", "measured",
            _as_choice("measured", "manual"), env="GPS_BOUND_MODE",
-           options=[("measured", "gemessen – aus der Streuung gegen die Netzquellen (empfohlen)"),
-                    ("manual", "von Hand – Delay und Auflösung wie eingestellt")],
+           options=[("measured", "gemessen (empfohlen)"),
+                    ("manual", "von Hand")],
            help="Ein GPS ohne PPS (z. B. VK-162) liefert die Zeit nur auf einige bis einige zehn "
                 "Millisekunden genau. „Gemessen“ gibt chrony eine ehrliche Fehlerschranke aus der "
                 "Streuung der letzten Stunden: chrony nimmt dann die guten Netzquellen und das GPS "
                 "von selbst, wenn das Internet schlecht wird oder ausfällt (Rückfallebene). Bis "
                 "genug gemessen ist, gilt vorsichtig ± 100 ms. Jede Anpassung steht im "
                 "Ereignisprotokoll und startet chronyd kurz neu. Mit PPS wirkt diese Einstellung "
-                "nicht – dort zählt der Impuls."),
+                "nicht – dort zählt der Impuls. „Von Hand“ nimmt Delay und Auflösung wie eingestellt."),
     _field("gps_select", "gps", "Rolle bei der Quellenauswahl", "select", "auto",
            _as_choice("auto", "prefer", "noselect"), env="GPS_SELECT",
-           options=[("auto", "automatisch – chrony entscheidet (ohne PPS: Rückfallebene)"),
+           options=[("auto", "automatisch (ohne PPS: Rückfallebene)"),
                     ("prefer", "bevorzugen – GPS ist erste Wahl"),
                     ("noselect", "nur beobachten – nie zur Synchronisation")],
            help="„Automatisch“: chrony nimmt die genaueste Quelle – ohne PPS ist das GPS damit die "
@@ -992,12 +992,12 @@ SCHEMA: list[dict] = [
                 "Position den Standort verrät."),
     _field("gps_autocal", "gps", "Automatische Kalibrierung", "select", "auto",
            _as_choice("off", "suggest", "auto"), env="GPS_AUTOCAL", restart=RESTART_NONE,
-           options=[("auto", "automatisch – messen, einmal korrigieren, Drifts folgen (Standard)"),
+           options=[("auto", "automatisch (Standard)"),
                     ("suggest", "vorschlagen – du entscheidest per Klick"),
                     ("off", "aus – nichts vorschlagen, nichts ändern")],
            help="USB-GPS-Empfänger liefern die Zeit (NMEA) mit einer festen Verspätung von "
                 "typisch 20–150 ms. ntp-gui misst sie laufend gegen deine Netzwerkquellen. "
-                "„Automatisch“ (Standard ab 1.5.2) stellt den Offset ohne dein Zutun nach: messen → "
+                "„Automatisch“ (Standard) stellt den Offset ohne dein Zutun nach: messen → "
                 "einen deutlichen Versatz einmal korrigieren → danach nur kleinen Drifts folgen "
                 "(nach je 24 h Messung), nie während einer GNSS-Störung, mit Eintrag im "
                 "Ereignisprotokoll – jede Änderung lässt sich dort zurücknehmen. „Vorschlagen“ zeigt "
@@ -1019,11 +1019,11 @@ SCHEMA: list[dict] = [
     _field("gnss_guard", "gps", "Störungserkennung (Jamming/Spoofing)", "select", "report",
            _as_choice("off", "report", "lock"), env="GNSS_GUARD", restart=RESTART_NONE,
            options=[("off", "aus – nicht prüfen"),
-                    ("report", "nur melden – Ereignis und Benachrichtigung (empfohlen)"),
-                    ("lock", "automatisch sperren – GPS bei Störung abwählen")],
+                    ("report", "nur melden (empfohlen)"),
+                    ("lock", "automatisch sperren")],
            help="ntp-gui prüft laufend, ob das GPS gestört oder gefälscht wird: gleichzeitiger "
                 "Signaleinbruch aller Satelliten, unnatürlich gleichmäßige Signale, GPS-Zeit weit "
-                "weg von den NTS-Quellen, Positionssprung. „Nur melden“ schreibt ein Ereignis. "
+                "weg von den NTS-Quellen, Positionssprung. „Nur melden“ schreibt ein Ereignis und benachrichtigt. "
                 "„Automatisch sperren“ wählt das GPS bei einem starken Befund (Zeit oder Position, "
                 "nie bei reinem Signaleinbruch) per chronyc selectopts ab und gibt es nach 30 min "
                 "ohne Befund wieder frei – höchstens dreimal in Folge, danach nur von Hand. Erst "
@@ -1032,7 +1032,7 @@ SCHEMA: list[dict] = [
            _as_choice("stoerung", "warnung", "hinweis"), env="GNSS_NOTIFY", restart=RESTART_NONE,
            advanced=True,
            options=[("stoerung", "Störung – nur starke Befunde (empfohlen)"),
-                    ("warnung", "Warnung – auch zwei schwache Befunde zugleich"),
+                    ("warnung", "Warnung – auch zwei schwache Befunde"),
                     ("hinweis", "Hinweis – jeder Befund")],
            help="Ab welcher Stufe eine GNSS-Meldung über deine Benachrichtigungskanäle hinausgeht. "
                 "Schnee, ein Flugzeug oder ein Lkw vor dem Fenster lassen das Signal kurz "
@@ -1050,9 +1050,9 @@ SCHEMA: list[dict] = [
            help="Das Interface, über das PTP läuft, z. B. eth0 oder enp1s0."),
     _field("ptp_mode", "ptp", "Rolle", "select", "auto", _as_choice("auto", "master", "slave"),
            env="PTP_MODE",
-           options=[("auto", "automatisch – der beste Takt im Netz wird Grandmaster"),
-                    ("master", "Grandmaster – dieser Server gibt den Takt vor"),
-                    ("slave", "Slave – übernimmt die Zeit eines anderen Grandmasters")],
+           options=[("auto", "automatisch (bester Takt im Netz)"),
+                    ("master", "Grandmaster – gibt den Takt vor"),
+                    ("slave", "Slave – übernimmt fremden Takt")],
            help="Mit GPS ist „Grandmaster“ richtig: chrony stellt die Systemuhr nach GPS, "
                 "phc2sys überträgt sie auf die PTP-Uhr der Netzwerkkarte und ptp4l verteilt sie. "
                 "„Slave“ passt, wenn es im Netz schon einen besseren Grandmaster gibt – dann "
@@ -1062,12 +1062,12 @@ SCHEMA: list[dict] = [
     _field("ptp_profile", "ptp", "Profil", "select", "default",
            _as_choice("default", "aes67", "gptp"), env="PTP_PROFILE",
            options=[("default", "Standard (IEEE 1588 Default-Profil)"),
-                    ("aes67", "AES67 / Ravenna (Audio über IP, Media-Profil)"),
-                    ("gptp", "gPTP / IEEE 802.1AS (AVB/TSN, Automotive)")],
+                    ("aes67", "AES67 / Ravenna (Audio über IP)"),
+                    ("gptp", "gPTP / IEEE 802.1AS (AVB/TSN)")],
            help="Ein Profil legt passende Grundwerte fest, damit dieser Server mit bestimmten "
-                "Geräten zusammenspielt. Felder, die du selbst änderst, haben Vorrang. AES67: "
+                "Geräten zusammenspielt. Felder, die du selbst änderst, haben Vorrang. AES67 (Media-Profil): "
                 "UDPv4, End-to-End, 8 Sync/s, Announce alle 2 s und DSCP 46 (EF) für die "
-                "Pakete. gPTP: Ethernet direkt (L2), Peer-to-Peer, transportSpecific 1, "
+                "Pakete. gPTP (AVB/TSN, Automotive): Ethernet direkt (L2), Peer-to-Peer, transportSpecific 1, "
                 "Priority 248 und die übrigen Werte aus linuxptp configs/gPTP.cfg – alle "
                 "Switches im Weg müssen 802.1AS beherrschen."),
     _field("ptp_domain", "ptp", "Domain", "int", 0, _as_number(int, 0, 255), env="PTP_DOMAIN",
@@ -1081,9 +1081,10 @@ SCHEMA: list[dict] = [
                 "überall."),
     _field("ptp_time_stamping", "ptp", "Zeitstempel", "select", "hardware",
            _as_choice("hardware", "software"), env="PTP_TIME_STAMPING",
-           options=[("hardware", "Hardware – Nanosekunden, braucht passende NIC"),
-                    ("software", "Software – funktioniert überall, Mikrosekunden")],
-           help="Mit Software-Zeitstempeln läuft PTP auf jeder Karte, ist dann aber nicht "
+           options=[("hardware", "Hardware (Nanosekunden)"),
+                    ("software", "Software (Mikrosekunden)")],
+           help="Hardware-Zeitstempel sind auf Nanosekunden genau, brauchen aber eine passende "
+                "Netzwerkkarte. Mit Software-Zeitstempeln läuft PTP auf jeder Karte, ist dann aber nicht "
                 "genauer als gutes NTP."),
     _field("ptp_delay_mechanism", "ptp", "Laufzeitmessung", "select", "E2E",
            _as_choice("E2E", "P2P", "Auto"), env="PTP_DELAY_MECHANISM", advanced=True,

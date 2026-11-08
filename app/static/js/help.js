@@ -55,7 +55,9 @@ export const HELP = {
     title: "Diagramme lesen",
     text: "Über jedem Verlauf steht der **aktuelle Wert** (**jetzt** = Live-Wert wie im Statusband, "
       + "**letzter Wert** = letzter gespeicherter Messpunkt) und dazu **min**, **max** und **Ø** (Mittelwert) im "
-      + "gewählten Zeitraum. Die x-Achse zeigt immer den ganzen gewählten Zeitraum bis jetzt; reicht der "
+      + "gewählten Zeitraum. Der Verlauf speichert **Mittelwerte** je Zeitabschnitt, „jetzt“ ist dagegen der "
+      + "Rohwert – er kann deshalb außerhalb von min und max liegen; dann steht „min/max aus Mittelwerten“ "
+      + "daneben. Die x-Achse zeigt immer den ganzen gewählten Zeitraum bis jetzt; reicht der "
       + "Verlauf noch nicht so weit zurück, ist der Anfang grau mit „Verlauf ab …“ markiert. Fährt man mit der "
       + "Maus über das Diagramm (oder tippt darauf, oder fokussiert es mit Tab und blättert mit den "
       + "Pfeiltasten), zeigt ein Fadenkreuz Zeitpunkt und genauen Wert. "
@@ -164,8 +166,8 @@ export const HELP = {
     title: "Woher kommen die Schaltsekunden?",
     text: "Schaltsekunden werden vom IERS Monate vorher angekündigt. chrony liest diese "
       + "Ankündigungen aus einer Datei und gibt sie an die Clients weiter – sonst wären alle Uhren "
-      + "nach einer Schaltsekunde für eine Weile um eine Sekunde daneben. Seit 1.3.1 (Debian 13) "
-      + "kommt die Liste aus **leap-seconds.list** im Paket tzdata; sie wird mit jedem Image-Update "
+      + "nach einer Schaltsekunde für eine Weile um eine Sekunde daneben. Die Liste kommt"
+      + " aus **leap-seconds.list** im Paket tzdata; sie wird mit jedem Image-Update "
       + "aktuell. Die alte Zeitzone „right/UTC“ gibt es in Debian 13 nicht mehr. Eine eigene Liste "
       + "kannst du unter /config ablegen.",
   },
@@ -569,7 +571,7 @@ export const HELP = {
       + "Baudrate **ziemlich konstant**, typisch 20–150 ms. chrony kann sie nicht selbst "
       + "erkennen. Der Offset gleicht sie aus: Man lässt das GPS einige Stunden neben guten "
       + "Internet-Servern laufen, misst die mittlere Differenz und trägt sie als Offset ein. "
-      + "Das macht die automatische Kalibrierung selbst (Standard ab 1.5.2) – nach gut 6 Stunden Messung.",
+      + "Das macht die automatische Kalibrierung selbst (Standard) – nach gut 6 Stunden Messung.",
   },
   gps_delay: {
     title: "Angenommene Unsicherheit (Delay)",
@@ -577,7 +579,7 @@ export const HELP = {
       + "wird ein unkalibriertes GPS nie zum Problem, aber auch nie genutzt, solange gute "
       + "Internet-Server da sind (Zustand „D“). Der Wert muss die **echte Streuung** abdecken – "
       + "nie kleiner: Ein Delay von 0,03 s bei ± 60 ms Streuung ließ chrony das GPS guten "
-      + "NTS-Quellen vorziehen. Ohne PPS setzt ntp-gui ihn deshalb ab 1.5 selbst aus der "
+      + "NTS-Quellen vorziehen. Ohne PPS setzt ntp-gui ihn deshalb selbst aus der "
       + "gemessenen Streuung („Fehlerschranke ohne PPS: gemessen“), der Kalibrier-Assistent "
       + "schlägt nie weniger vor. In diesem Modus zeigt „Delay in chrony“ den gemessenen Wert "
       + "(bzw. den Standard), und „Vorschlag übernehmen“ setzt nur den Offset.",

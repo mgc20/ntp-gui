@@ -4,7 +4,7 @@ import { lineChart } from "../charts.js";
 import { SELECT_STATE_HELP, SELECT_STATE_SHORT } from "../help.js";
 import { axisSeconds } from "./overview.js";
 
-const STATE = {
+export const STATE = {
   "*": ["ausgewählt", "good", "state_best"],
   "+": ["kombiniert", "good", "state_combined"],
   "-": ["nicht kombiniert", "info", "state_not_combined"],
@@ -19,9 +19,15 @@ export function stateBadge(source) {
   return el("span", { class: "state-cell" }, badge(label, tone), help ? info(help, label) : null);
 }
 
+// „Grund“ nur, wenn er mehr sagt als „Zustand“ (bei * und + wäre es dasselbe Wort).
+function sameAsState(source) {
+  const key = source.select_state;
+  return Boolean(key) && (SELECT_STATE_SHORT[key] || key) === (STATE[source.state] || [])[0];
+}
+
 export function reasonCell(source) {
   const key = source.select_state;
-  if (!key) return el("span", { class: "muted", text: "–" });
+  if (!key || sameAsState(source)) return el("span", { class: "muted", text: "–" });
   const text = SELECT_STATE_SHORT[key] || key;
   return el("span", { class: "reason" }, el("span", { text }), info(SELECT_STATE_HELP[key], text));
 }
@@ -43,9 +49,9 @@ function details(source) {
   const blocks = [];
   blocks.push(el("div", { class: "detail-block" }, el("h3", { text: "Auswahl durch chrony" }), kv([
     ["Zustand", stateBadge(source)],
-    ["Grund", reasonCell(source), "select_reason"],
+    sameAsState(source) ? null : ["Grund", reasonCell(source), "select_reason"],
     ["Vertrauensbereich", isNum(source.interval_low) ? `${fmtSeconds(source.interval_low, 3, true)} … ${fmtSeconds(source.interval_high, 3, true)}` : "–", "interval"],
-    ["Bewertung", isNum(source.score) ? source.score.toFixed(2) : "–", "score"],
+    ["Bewertung", isNum(source.score) ? fmtNumber(source.score, 2) : "–", "score"],
     ["Optionen", (source.effective_options || []).join(", ") || "keine", "select_options"],
     ["Messwerte", isNum(source.samples) ? `${source.samples} über ${fmtDuration(source.span)}` : "–", "samples"],
     ["Letzte 8 Abfragen", reachRegister(source.reach || 0), "reach"],
@@ -60,7 +66,7 @@ function details(source) {
       ["Peer Dispersion", fmtSeconds(ntp.peer_dispersion), "peer_dispersion"],
       ["Root Delay / Dispersion", `${fmtSeconds(ntp.root_delay)} / ${fmtSeconds(ntp.root_dispersion)}`, "root_delay"],
       ["Präzision", isNum(ntp.precision_seconds) ? fmtSeconds(ntp.precision_seconds) : "–", "precision"],
-      ["Asymmetrie", isNum(ntp.jitter_asymmetry) ? ntp.jitter_asymmetry.toFixed(2) : "–", "jitter_asymmetry"],
+      ["Asymmetrie", isNum(ntp.jitter_asymmetry) ? fmtNumber(ntp.jitter_asymmetry, 2) : "–", "jitter_asymmetry"],
       ["NTP-Prüfungen", isNum(ntp.ntp_tests_passed) ? `${ntp.ntp_tests_passed}/${ntp.ntp_tests_total} bestanden` : "–", "ntp_tests"],
       ["Zeitstempel", `Senden: ${ntp.tx_timestamping || "–"} · Empfang: ${ntp.rx_timestamping || "–"}`, "timestamping"],
       ["Interleaved", ntp.interleaved || "–", "interleaved"],

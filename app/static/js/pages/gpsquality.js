@@ -7,7 +7,6 @@ import { card, kv, info, badge, emptyNote, toast } from "../ui.js";
 const LEVEL = {
   green: ["gut", "good"], yellow: ["mäßig", "warn"], red: ["zu schwach", "crit"], unknown: ["noch offen", "muted"],
 };
-const REASON_TONE = { red: "crit", yellow: "warn" };
 
 function pct(share) { return isNum(share) ? `${fmtNumber(share * 100, 0)} %` : "–"; }
 function ms(seconds) {

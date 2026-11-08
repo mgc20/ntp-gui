@@ -226,7 +226,7 @@ function emptyState(svg, width, height, text, loading) {
 const defaultFormat = (v) => (isNum(v) ? v.toLocaleString("de-DE", { maximumSignificantDigits: 4 }) : "–");
 
 /** Zeile über dem Diagramm: aktueller Wert groß, daneben Min · Max · Mittel. */
-function statsHeader(stats, format, clip, opts) {
+export function statsHeader(stats, format, clip, opts) {
   const item = (label, value, title) => el("span", { class: "chart-stat", title: title || null },
     el("span", { class: "chart-stat-label", text: label }), el("b", { text: value }));
   const current = isNum(opts.current) ? opts.current : stats.now;
@@ -235,9 +235,22 @@ function statsHeader(stats, format, clip, opts) {
       el("b", { text: isNum(current) ? format(current) : "–" })),
     el("span", { class: "chart-stat-group" },
       item("min", format(stats.min)), item("max", format(stats.max)), item("Ø", format(stats.mean), "Mittelwert im Zeitraum")),
+    liveOutside(opts.current, stats, format)
+      ? el("span", { class: "chart-scale-note", title: "Der Verlauf speichert Mittelwerte je Zeitabschnitt, „jetzt“ ist der Rohwert.",
+        text: "min/max aus Mittelwerten" }) : null,
     clip ? clipChip(clip) : null,
     opts.scale === "log" ? el("span", { class: "chart-scale-note", text: "log. Skala" }) : null,
     info("chart_stats", "Werte über dem Diagramm"));
+}
+
+// Nur ein übergebener Live-Wert („jetzt“) kann außerhalb der gemittelten Verlaufswerte liegen – der
+// Rückfall auf den letzten Punkt nicht (liegt der außerhalb, ist er als Spitze abgeschnitten). Was
+// gleich angezeigt wird, gilt nicht als außerhalb.
+function liveOutside(current, stats, format) {
+  if (!isNum(current)) return false;
+  if (current > stats.max) return format(current) !== format(stats.max);
+  if (current < stats.min) return format(current) !== format(stats.min);
+  return false;
 }
 
 function clipChip(clip) {
