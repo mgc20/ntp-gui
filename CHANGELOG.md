@@ -6,15 +6,10 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 
 ## [Unveröffentlicht]
 
-### Hinzugefügt
-- **Sicherheitslücken vertraulich melden:** `SECURITY.md` beschreibt den Weg über GitHub Private
-  Vulnerability Reporting; das Issue-Formular verweist darauf. `.github/CODEOWNERS` legt den
-  Standard-Prüfer fest.
-
-## [1.5.4] – 2026-11-06
+## [1.5.4] – 2026-11-08
 
 Schwerpunkt: GPS bei schwachem Empfang ruhig – keine Positions-Fehlalarme, weniger Ereignisse, stabile
-Fehlerschranke (Rückmeldung: Diagnosepaket 1.5.3, VK-162 drinnen ohne PPS). Dazu die Allan-Abweichung auf
+Fehlerschranke (Rückmeldung aus einem Diagnosepaket: USB-GPS drinnen ohne PPS). Dazu die Allan-Abweichung auf
 der Seite „Uhrqualität“, Reverse Proxy per Klick eintragen und die Restpunkte aus der Abschlussprüfung.
 
 ### Behoben
@@ -109,6 +104,14 @@ der Seite „Uhrqualität“, Reverse Proxy per Klick eintragen und die Restpunk
   laufender Holdover-Test zählt nicht mit. Die GNSS-Seite zeigt „Andere Quellen: keine“ bei der Sperre.
 - Hilfe: „GPS gesperrt, Uhr läuft frei“ und „Empfänger umgezogen → Position neu lernen“ an der
   GNSS-Karte; „Vertrauenswürdige Proxys“ erklärt das Eintragen per Klick und die /24-/64-Warnung.
+
+### Projekt
+- **Sicherheitslücken vertraulich melden:** `SECURITY.md` beschreibt den Weg über GitHub Private
+  Vulnerability Reporting; das Issue-Formular verweist darauf. `.github/CODEOWNERS` legt den
+  Standard-Prüfer fest.
+- **Release: Herkunftsnachweis scheiterte im öffentlichen Repository** („No credentials found for
+  registry ghcr.io“). Der Job „Herkunftsnachweis“ meldet sich jetzt selbst an der Registry an, bevor
+  er den Nachweis dort ablegt. Im privaten Repository war der Job bisher immer übersprungen worden.
 
 ## [1.5.3] – 2026-11-04
 
