@@ -99,6 +99,10 @@ endpoint("GET", "/metrics", "/metrics", "read",
 endpoint("POST", "/settings", "/api/settings", "admin",
          "Einstellungen ändern. Body: {\"values\": {schlüssel: wert}}. Startet bei Bedarf die "
          "Zeitdienste neu.", ["changed", "restart", "reload_triggered"])
+endpoint("POST", "/settings/preview", "/api/settings/preview", "admin",
+         "Vorschau: prüft Änderungen wie /settings (Body gleich, auch \"defaults\": [...]) und liefert je "
+         "Datei den Zeilen-Diff von chrony.conf/ptp4l.conf – schreibt nichts, startet nichts neu.",
+         ["files", "notes"])
 endpoint("POST", "/settings/reset", "/api/settings/reset", "admin",
          "Im Dashboard gespeicherte Werte entfernen. Body: {\"keys\": [...]}.",
          ["changed", "restart", "reload_triggered"])

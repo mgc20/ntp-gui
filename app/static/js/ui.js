@@ -42,10 +42,14 @@ export function isPopoverOpen() {
  * ⓘ-Knopf mit Erklärung aus HELP[key]. Das Symbol ist 14 px groß, die Tippfläche 32 px (unsichtbarer
  * Rand per CSS, verschiebt nichts im Layout); blass, bis die Maus darüber steht oder er den Fokus hat.
  * Unbekannter Schlüssel: null (dann steht einfach kein Knopf da).
+ * more = { title, text }: eigener Text im Popover (z. B. der Rest eines Feld-Hilfetexts, der unter dem
+ * Feld keinen Platz hat); der Link „In der Hilfe ansehen“ führt dann weiter zu HELP[key], falls es ihn gibt.
  */
-export function infoButton(key, label) {
-  const entry = HELP[key];
-  if (!entry) return null;
+export function infoButton(key, label, more) {
+  const found = HELP[key];
+  const extra = more && more.text ? more : null;
+  if (!found && !extra) return null;
+  const entry = extra ? { title: extra.title || found?.title || label, text: extra.text } : found;
   const button = el("button", {
     type: "button", class: "info", "aria-label": `Erklärung: ${label || entry.title}`, "aria-expanded": "false",
   }, el("span", { class: "info-glyph", "aria-hidden": "true", text: "i" }));
@@ -56,8 +60,8 @@ export function infoButton(key, label) {
     const node = el("div", { class: "popover", role: "dialog", "aria-label": entry.title },
       el("strong", { class: "popover-title", text: entry.title }),
       el("p", {}, rich(entry.text)),
-      el("a", { href: `#/hilfe?t=${key}`, class: "popover-more", text: "In der Hilfe ansehen →",
-        onclick: closePopover }));
+      found ? el("a", { href: `#/hilfe?t=${key}`, class: "popover-more", text: "In der Hilfe ansehen →",
+        onclick: closePopover }) : null);
     document.body.append(node);
     const rect = button.getBoundingClientRect();
     const width = Math.min(360, window.innerWidth - 24);

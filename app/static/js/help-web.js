@@ -62,7 +62,7 @@ export const HELP_WEB = {
     text: "Deutsch oder Englisch – gilt nur in **diesem Browser** (gespeichert im Browser, nicht auf dem Server); "
       + "jeder, der das Dashboard öffnet, wählt selbst. Ohne Wahl gilt immer Deutsch – Englisch ist noch eine Beta und gilt nur, wenn du es ausdrücklich wählst. "
       + "Oben rechts schaltet der Knopf „DE/EN“ dasselbe um. "
-      + "Ehrlich zum Stand (1.5.0): Übersetzt sind Navigation, Kopfzeile, das Statusband der Übersicht und die "
+      + "Ehrlich zum Stand: Übersetzt sind Navigation, Kopfzeile, das Statusband der Übersicht und die "
       + "Abschnitte der Einstellungen. Alles andere, die ⓘ-Erklärungen und Texte vom Server (Hinweise, Ereignisse, "
       + "Benachrichtigungen) sind vorerst deutsch; fehlt eine englische Übersetzung, steht der deutsche Text da. "
       + "Zahlen behalten das deutsche Format (Komma). Mithelfen: siehe CONTRIBUTING.md („Übersetzen“).",

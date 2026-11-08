@@ -147,8 +147,67 @@
     },
     "language": {
       "label": "Sprache des Dashboards",
-      "note": "Gilt nur in diesem Browser; ohne Wahl gilt Deutsch (English ist Beta). Übersetzt sind bisher Navigation, Kopfzeile, das Statusband der Übersicht und die Abschnitte hier – der Rest, die ⓘ-Erklärungen und Meldungen vom Server sind vorerst deutsch."
-    }
+      "note": "Gilt nur in diesem Browser; ohne Wahl gilt Deutsch (English ist Beta).",
+      "note_more": "Übersetzt sind bisher Navigation, Kopfzeile, das Statusband der Übersicht und die Abschnitte hier – der Rest, die ⓘ-Erklärungen und Meldungen vom Server sind vorerst deutsch."
+    },
+    "tabs_label": "Bereiche der Einstellungen",
+    "tab": {
+      "quellen": "Quellen",
+      "lan": "LAN-Server",
+      "gps": "GPS",
+      "ptp": "PTP",
+      "zugang": "Dashboard & Zugang",
+      "sichern": "Sichern"
+    },
+    "search": {
+      "label": "Einstellungen durchsuchen",
+      "placeholder": "Suchen: Name, Schlüssel oder Erklärung",
+      "hits_one": "{count} Treffer",
+      "hits_other": "{count} Treffer",
+      "none": "Nichts gefunden für „{query}“.",
+      "advanced": "Erweitert"
+    },
+    "only_changed": "nur Geänderte",
+    "only_changed_none": "In diesem Bereich weicht nichts vom Standard ab.",
+    "advanced": {
+      "show": "Erweitert ({count})",
+      "hide": "Erweitert ausblenden"
+    },
+    "badge": {
+      "changed": "geändert",
+      "reset": "zurücksetzen",
+      "reset_title": "Auf den Standard zurück – wirkt erst nach dem Speichern",
+      "to_default": "wird auf Standard gesetzt",
+      "undo": "rückgängig",
+      "unsaved": "ungespeichert",
+      "env": "aus {name}"
+    },
+    "savebar": {
+      "label": "Ungespeicherte Änderungen",
+      "changes_one": "{count} Änderung",
+      "changes_other": "{count} Änderungen",
+      "restart": "Neustart der Zeitdienste nötig",
+      "holdover": "bricht den laufenden Holdover-Test ab",
+      "preview": "Vorschau",
+      "save": "Speichern",
+      "discard": "Verwerfen"
+    },
+    "preview": {
+      "title": "Vorschau: das schreibt Speichern",
+      "loading": "Rechne die Konfiguration …",
+      "close": "Schließen",
+      "changed": "ändert sich",
+      "same": "bleibt gleich",
+      "new": "wird neu angelegt",
+      "unused": "nicht genutzt – bleibt, wie sie ist",
+      "custom": "eigene Datei aus /config – gilt unverändert",
+      "lines": "+{added} / −{removed} Zeilen",
+      "truncated": "Gekürzt – der Unterschied ist sehr lang.",
+      "notes": "Hinweise",
+      "none": "chrony.conf und ptp4l.conf bleiben, wie sie sind – die Änderung wirkt nur im Dashboard.",
+      "error": "Vorschau nicht möglich: {message}"
+    },
+    "leave": "Die Einstellungen haben ungespeicherte Änderungen. Trotzdem verlassen? Die Änderungen gehen verloren."
   },
   "help": {
     "german_only": "Die Erklärungen auf dieser Seite gibt es vorerst nur auf Deutsch. Übersetzungen sind willkommen – siehe CONTRIBUTING.md.",

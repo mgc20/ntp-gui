@@ -240,6 +240,41 @@ console.log(JSON.stringify(Object.fromEntries(links.map((h) => [h, r.resolve(h).
 """)
         self.assertEqual({k: v for k, v in out.items() if v}, {})
 
+    def test_einstellungen_sprungziele_landen_im_richtigen_reiter(self):
+        # Einstellungen 2.0: Reiter im Abfrageteil (?s=gps). Jedes Sprungziel im Code (Hash-Literal oder
+        # route("settings", "", "s=…")) und jedes alte (?s=web, ?s=nts …) landet in einem echten Reiter –
+        # nie stillschweigend im ersten, weil der Abschnitt unbekannt ist.
+        targets = set()
+        for path in frontend_files():
+            for _number, line in code_lines(path):
+                targets |= set(re.findall(r"#/(?:system/)?einstellungen\?s=([a-z]+)", line))
+                targets |= set(re.findall(r"""route\("settings",\s*"",\s*["'`]s=([a-z]+)""", line))
+        self.assertTrue({"gps", "web", "ptp"} <= targets, targets)
+        legacy = {"ntp": "quellen", "nts": "quellen", "dns": "quellen", "lan": "lan", "gps": "gps", "ptp": "ptp",
+                  "web": "zugang", "auth": "zugang", "api": "zugang", "backup": "sichern"}
+        out = run_node(f"""
+globalThis.document = {{ addEventListener() {{}}, createElement: () => ({{}}) }};
+globalThis.window = {{ addEventListener() {{}}, location: {{ hash: "" }} }};
+const s = await import({mod("pages/settings.js")});
+const r = await import({mod("routes.js")});
+const ids = s.TABS.map((x) => x.id);
+const probe = {json.dumps(sorted(targets | set(legacy)))};
+console.log(JSON.stringify({{ ids, tabs: Object.fromEntries(probe.map((x) => [x, s.tabFromQuery(`s=${{x}}`)])),
+  links: Object.fromEntries(ids.map((id) => {{ const hit = r.resolve(r.route("settings", "", `s=${{id}}`));
+    return [id, {{ page: hit.page?.id || null, query: hit.query, redirect: hit.redirect || null }}]; }})),
+  old: r.resolve("#/einstellungen?s=web").redirect }}));
+""")
+        self.assertEqual(out["ids"], ["quellen", "lan", "gps", "ptp", "zugang", "sichern"])
+        for target in targets:
+            with self.subTest(target=target):
+                self.assertTrue(target in out["ids"] or target in legacy, f"?s={target} hat keinen Reiter")
+        for target, tab in legacy.items():
+            self.assertEqual(out["tabs"][target], tab, target)
+        for tab_id, hit in out["links"].items():
+            with self.subTest(tab=tab_id):
+                self.assertEqual(hit, {"page": "settings", "query": f"s={tab_id}", "redirect": None})
+        self.assertEqual(out["old"], "#/system/einstellungen?s=web")
+
     def test_server_ziele_der_benachrichtigungen(self):
         import notify
         pages = sorted(set(notify.KIND_PAGES.values()))

@@ -78,6 +78,7 @@ import notify
 import providers
 import ptp
 import settings
+import confgen
 import statewatch
 import pistate
 import thermal
@@ -2193,12 +2194,21 @@ class Handler(BaseHTTPRequestHandler):
 
     def _route_post(self, path: str, data: dict, ident: dict | None = None) -> None:
         ident = ident or {"kind": "open"}
-        if path == "/api/settings":
-            # „changes“ (Dashboard) oder „values“ (so beschreibt es /api/v1)
+        if path in {"/api/settings", "/api/settings/preview"}:
+            # „changes“ (Dashboard) oder „values“ (so beschreibt es /api/v1); „defaults“: Schlüssel, die
+            # auf ihren Standard zurückgehen („zurücksetzen“ im Dashboard, wirkt erst mit dem Speichern).
             changes = data.get("changes", data.get("values"))
-            if not isinstance(changes, dict) or not changes:
+            defaults = data.get("defaults")
+            if changes is None and defaults:
+                changes = {}
+            if not isinstance(changes, dict) or not (changes or defaults):
                 raise settings.ValidationError("Keine Änderungen übergeben")
-            result = settings.save(changes)
+            if path == "/api/settings/preview":
+                # Prüft wie Speichern, rendert mit confgen – schreibt nichts, startet nichts neu.
+                # Kein Pfad aus der Anfrage: verglichen wird mit den Dateien, die confgen selbst schreibt.
+                self._send_json(confgen.preview(changes, defaults))
+                return
+            result = settings.save(changes, defaults)
             self._settings_event("Einstellungen geändert", result, ident)
             self._send_json(self._after_change(result))
         elif path == "/api/settings/reset":
