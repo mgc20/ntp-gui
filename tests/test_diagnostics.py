@@ -469,14 +469,22 @@ class WorkerTest(unittest.TestCase):
             newer = self.tmp / "recording-2.jsonl"  # neue Aufzeichnung seit der Vorschau
             newer.write_text('{"t":2}\n', encoding="utf-8")
             status["path"] = str(newer)
+            with mock.patch.object(diagnostics, "_run_worker", side_effect=AssertionError("neu gebaut")):
+                diagnostics.bundle_locked(self.cfg, dict(self.options), reuse=view["reuse"])  # was geprüft wurde
             with mock.patch.object(diagnostics, "_run_worker", wraps=diagnostics._run_worker) as run:
-                diagnostics.bundle_locked(self.cfg, dict(self.options), reuse=view["reuse"])
+                diagnostics.bundle_locked(self.cfg, dict(self.options))  # ohne Merker: die neue Aufzeichnung
             self.assertEqual(run.call_count, 1)
             view = diagnostics.preview_locked(self.cfg, dict(self.options))
             with newer.open("a", encoding="utf-8") as handle:  # Aufzeichnung wächst weiter
                 handle.write('{"t":3}\n')
+            # Mit dem Merker der Vorschau: genau deren Paket, kein zweiter Bau (auf dem Pi Minuten) –
+            # heruntergeladen wird, was geprüft wurde.
+            with mock.patch.object(diagnostics, "_run_worker", side_effect=AssertionError("neu gebaut")):
+                body, _ = diagnostics.bundle_locked(self.cfg, dict(self.options), reuse=view["reuse"])
+            self.assertEqual(body, diagnostics._last["bundle"])
+            # Ohne Merker gilt die gewachsene Aufzeichnung: neu bauen.
             with mock.patch.object(diagnostics, "_run_worker", wraps=diagnostics._run_worker) as run:
-                diagnostics.bundle_locked(self.cfg, dict(self.options), reuse=view["reuse"])
+                diagnostics.bundle_locked(self.cfg, dict(self.options))
             self.assertEqual(run.call_count, 1)
 
     def test_waiting_requests_share_one_build(self):
@@ -663,6 +671,74 @@ class WorkerTest(unittest.TestCase):
         self.assertEqual(out_cached, out_plain)
         self.assertEqual(cached.report(), plain.report())
         self.assertEqual(cached.report()["removed"]["oeffentliche_ip"], 50)
+
+
+class JobTest(unittest.TestCase):
+    """Vorschau als Hintergrund-Auftrag: keine Anfrage bleibt minutenlang offen (Reverse Proxy)."""
+
+    def setUp(self):
+        WorkerTest.setUp(self)
+        p = mock.patch.dict(diagnostics._jobs, {}, clear=True)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def _slow_worker(self, release):
+        real = diagnostics._run_worker
+
+        def slow(job):
+            release.wait(10)
+            return real(job)
+        return mock.patch.object(diagnostics, "_run_worker", side_effect=slow)
+
+    def test_pending_then_done_and_download_reuses(self):
+        import threading
+        release = threading.Event()
+        with self._slow_worker(release):
+            job = diagnostics.start_job(self.cfg, dict(self.options))
+            state = diagnostics.job_result(job, wait=0.05)
+            self.assertTrue(state["pending"])
+            self.assertEqual(state["job"], job)
+            self.assertIsInstance(state["seconds"], int)
+            # gleiche Schalter, während der Bau läuft: derselbe Auftrag
+            self.assertEqual(diagnostics.start_job(self.cfg, dict(self.options)), job)
+            release.set()
+            view = diagnostics.job_result(job, wait=10)
+        self.assertTrue(view["ok"])
+        self.assertIn("recording", view["content"])
+        with mock.patch.object(diagnostics, "_run_worker", side_effect=AssertionError("neu gebaut")):
+            body, filename = diagnostics.bundle_locked(self.cfg, dict(self.options), reuse=view["reuse"])
+        self.assertTrue(body)
+        self.assertEqual(filename, view["filename"])
+
+    def test_other_switches_other_job(self):
+        import threading
+        release = threading.Event()
+        with self._slow_worker(release):
+            a = diagnostics.start_job(self.cfg, dict(self.options))
+            b = diagnostics.start_job(self.cfg, dict(self.options, include_clients=False))
+            self.assertNotEqual(a, b)
+            release.set()
+            self.assertTrue(diagnostics.job_result(a, wait=10)["ok"])
+            self.assertTrue(diagnostics.job_result(b, wait=10)["ok"])
+
+    def test_failure_reaches_the_page(self):
+        with mock.patch.object(diagnostics, "_run_worker", side_effect=RuntimeError("Prozess weg")):
+            job = diagnostics.start_job(self.cfg, dict(self.options))
+            with self.assertRaisesRegex(RuntimeError, "Prozess weg"):
+                diagnostics.job_result(job, wait=10)
+        with mock.patch.object(diagnostics, "_run_worker", side_effect=diagnostics.LeakError([{"kind": "x"}])):
+            job = diagnostics.start_job(self.cfg, dict(self.options))
+            with self.assertRaises(diagnostics.LeakError):
+                diagnostics.job_result(job, wait=10)
+
+    def test_unknown_job(self):
+        self.assertIsNone(diagnostics.job_result("gibtsnicht"))
+
+    def test_old_jobs_are_forgotten(self):
+        for n in range(diagnostics.JOB_KEEP + 3):
+            job = diagnostics.start_job(self.cfg, dict(self.options, sections=[f"s{n}"]))
+            diagnostics.job_result(job, wait=10)
+        self.assertLessEqual(len(diagnostics._jobs), diagnostics.JOB_KEEP + 1)
 
 
 class HistoryTempSummaryTest(unittest.TestCase):

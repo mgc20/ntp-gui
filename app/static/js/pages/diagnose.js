@@ -291,22 +291,43 @@ function bundleCard(state) {
   // liefert der Download genau dieses Paket; sonst baut der Server neu.
   let shown = null;
 
-  const busyNote = () => emptyNote("Paket wird zusammengestellt und gefiltert … "
+  const busyNote = (seconds) => emptyNote("Paket wird zusammengestellt und gefiltert … "
+    + (isNum(seconds) && seconds > 0 ? `(seit ${seconds} s) ` : "")
     + (state.recording ? "Mit Aufzeichnung kann das auf einem Raspberry Pi eine bis mehrere Minuten dauern. " : "")
     + "Das Dashboard bleibt währenddessen bedienbar.");
 
-  previewButton.addEventListener("click", async () => {
-    previewButton.disabled = true;
-    downloadButton.disabled = true;
+  // Der Server baut im Hintergrund und antwortet spätestens nach etwa 10 s – fertig oder „läuft noch“
+  // (202). Keine Anfrage bleibt lange offen, sonst bricht ein Reverse Proxy sie ab (oft nach 60 s).
+  async function buildPreview(asked) {
+    let data = await getJson(`/api/diagnostics/preview?${asked}&async=1`);
+    while (data && data.pending && data.job) {
+      output.replaceChildren(busyNote(data.seconds));
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      data = await getJson(`/api/diagnostics/preview?${new URLSearchParams({ job: String(data.job) })}`);
+    }
+    return data;
+  }
+
+  // Vorschau holen und anzeigen; true, wenn sie heruntergeladen werden kann.
+  async function showPreview() {
     shown = null;
     output.replaceChildren(busyNote());
     const asked = query();
     try {
-      const data = await getJson(`/api/diagnostics/preview?${asked}`);
+      const data = await buildPreview(asked);
       output.replaceChildren(previewView(data));
       if (data && data.ok !== false && data.reuse) shown = { query: asked, reuse: String(data.reuse) };
     } catch (error) {
       output.replaceChildren(previewView(error.data || { ok: false, error: error.message }));
+    }
+    return shown !== null;
+  }
+
+  previewButton.addEventListener("click", async () => {
+    previewButton.disabled = true;
+    downloadButton.disabled = true;
+    try {
+      await showPreview();
     } finally {
       previewButton.disabled = false;
       downloadButton.disabled = false;
@@ -323,18 +344,21 @@ function bundleCard(state) {
   downloadButton.addEventListener("click", async () => {
     downloadButton.disabled = true;
     previewButton.disabled = true;
-    // Nach einer Vorschau mit denselben Schaltern ist das Paket schon fertig (dieselben Daten, sofort);
-    // sonst wird es jetzt gebaut.
+    // Heruntergeladen wird immer das Paket einer Vorschau (dieselben Daten, sofort). Gibt es zu den
+    // Schaltern noch keine, wird sie zuerst gebaut und angezeigt – so bleibt auch hier keine Anfrage
+    // minutenlang offen.
     const asked = query();
     const hadPreview = shown !== null && shown.query === asked
       && output.querySelector(".diag-preview:not([data-state=error])") !== null;
-    if (!hadPreview) {
-      shown = null;
-      output.replaceChildren(busyNote());
+    if (!hadPreview && !(await showPreview())) {
+      downloadButton.disabled = false;
+      previewButton.disabled = false;
+      toast("Diagnosepaket nicht erstellt", "crit");
+      return;
     }
-    const reuse = hadPreview ? `&${new URLSearchParams({ reuse: shown.reuse })}` : "";
+    const reuse = `&${new URLSearchParams({ reuse: shown.reuse })}`;
     try {
-      const response = await fetch(`/api/diagnostics/bundle?${asked}${reuse}`, { cache: "no-store" });
+      const response = await fetch(`/api/diagnostics/bundle?${shown.query}${reuse}`, { cache: "no-store" });
       if (!response.ok) {
         let data = null;
         try { data = await response.json(); } catch (error) { /* kein JSON */ }
@@ -351,7 +375,6 @@ function bundleCard(state) {
       link.remove();
       setTimeout(() => URL.revokeObjectURL(url), 10000);
       toast("Diagnosepaket gespeichert – nichts wurde hochgeladen");
-      if (!hadPreview) output.replaceChildren();
     } catch (error) {
       toast(`Herunterladen fehlgeschlagen: ${error.message}`, "crit");
     } finally {

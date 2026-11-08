@@ -987,6 +987,8 @@ def _bundle_of(content: dict, sanitizer: Any, truncated: dict, generated: float 
 _lock = threading.Lock()  # nie zwei Pakete gleichzeitig bauen (CPU auf dem Pi schonen)
 WORKER_TIMEOUT = 900.0
 REUSE_SECONDS = 600.0      # so lange gilt eine Vorschau für den Download
+JOB_WAIT = 10.0            # so lange wartet eine Anfrage höchstens auf einen Hintergrund-Bau
+JOB_KEEP = 4               # so viele Aufträge merkt sich der Server (für die Abfrage des Stands)
 # {"key", "t", "done", "token", "preview", "bundle", "filename"} – nur unter _lock lesen/schreiben.
 _last: dict[str, Any] = {}
 
@@ -1077,6 +1079,10 @@ def _key(cfg: dict, options: dict) -> str:
     return json.dumps([cfg, chosen, data], sort_keys=True, ensure_ascii=False, default=str)
 
 
+def _chosen(options: dict) -> dict:
+    return {k: options.get(k) for k in ("include_clients", "include_recording", "sections")}
+
+
 def _produce(cfg: dict, options: dict) -> dict:
     """Neu bauen (unter _lock). Vorher das alte Ergebnis verwerfen: Schlägt der Lauf fehl, darf
     ein späterer Download nicht stillschweigend ein älteres Paket liefern."""
@@ -1086,8 +1092,8 @@ def _produce(cfg: dict, options: dict) -> dict:
     result = _run_worker(_gather(cfg, None, options))
     token = secrets.token_hex(8)
     result["preview"]["reuse"] = token
-    _last.update(key=key, t=time.monotonic(), token=token, filename=result["preview"].get("filename"),
-                 **result)
+    _last.update(key=key, chosen=_chosen(options), t=time.monotonic(), token=token,
+                 filename=result["preview"].get("filename"), **result)
     return result
 
 
@@ -1107,20 +1113,74 @@ def preview_locked(cfg: dict, options: dict | None = None) -> dict:
 
 
 def bundle_locked(cfg: dict, options: dict | None = None, reuse: str | None = None) -> tuple[bytes, str]:
-    """(tar.gz, Dateiname). Das Ergebnis der Vorschau gilt nur mit ihrem Merker (``reuse``, kommt
-    von der Seite, wenn genau diese Vorschau angezeigt wird), mit gleichen Schaltern, gleicher
-    Aufzeichnung und höchstens REUSE_SECONDS alt – sonst wird neu gebaut."""
+    """(tar.gz, Dateiname). Mit dem Merker der angezeigten Vorschau (``reuse``), gleichen Schaltern
+    und höchstens REUSE_SECONDS alt kommt genau das Paket dieser Vorschau – auch wenn die
+    Aufzeichnung inzwischen weitergewachsen ist: Heruntergeladen wird, was geprüft wurde, und ein
+    zweiter Bau (auf dem Pi Minuten) entfällt. Sonst wird neu gebaut."""
     options = options or {}
     arrived = time.monotonic()
     with _lock:
         key = _key(cfg, options)
-        if _last and _last.get("key") == key and (
-                _last.get("t", 0.0) >= arrived
-                or (reuse and reuse == _last.get("token")
+        if _last and (
+                (_last.get("key") == key and _last.get("t", 0.0) >= arrived)
+                or (reuse and reuse == _last.get("token") and _last.get("chosen") == _chosen(options)
                     and time.monotonic() - _last.get("t", 0.0) < REUSE_SECONDS)):
             return _last["bundle"], _last.get("filename") or filename_for()
         result = _produce(cfg, options)
         return result["bundle"], result["preview"].get("filename") or filename_for()
+
+
+# ---------------------------------------------------------------------------
+# Vorschau als Hintergrund-Auftrag: Mit langer Aufzeichnung dauert der Bau auf dem Pi Minuten.
+# Eine so lange offene Anfrage bricht ein Reverse Proxy ab (Nginx Proxy Manager u. a.: 60 s).
+# Darum startet die Seite einen Auftrag, wartet höchstens JOB_WAIT und fragt dann den Stand ab.
+
+_jobs_lock = threading.Lock()
+_jobs: dict[str, dict] = {}  # id → {"chosen", "started", "done": Event, "preview" | "error"}
+
+
+def start_job(cfg: dict, options: dict) -> str:
+    """Startet den Bau im Hintergrund (läuft schon einer mit gleichen Schaltern: dessen Nummer)."""
+    import secrets
+    chosen = _chosen(options)
+    with _jobs_lock:
+        for job_id, job in _jobs.items():
+            if job["chosen"] == chosen and not job["done"].is_set():
+                return job_id
+        job_id = secrets.token_hex(8)
+        job = {"chosen": chosen, "started": time.monotonic(), "done": threading.Event()}
+        _jobs[job_id] = job
+        for old in [k for k, v in _jobs.items() if v["done"].is_set()][:-JOB_KEEP]:
+            del _jobs[old]
+
+    def run() -> None:
+        try:
+            job["preview"] = preview_locked(cfg, options)
+        except Exception as exc:  # noqa: BLE001 – LeakError und Fehler gehen an die Seite
+            job["error"] = exc
+        finally:
+            job["done"].set()
+
+    threading.Thread(target=run, name="diag-job", daemon=True).start()
+    return job_id
+
+
+def job_result(job_id: str, wait: float = 0.0) -> dict | None:
+    """Stand eines Auftrags: None (unbekannt), {"pending": True, "seconds": …} oder die Vorschau.
+    Ist der Bau fehlgeschlagen, steigt der Fehler (LeakError/RuntimeError) auf."""
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+    if job is None:
+        return None
+    if not job["done"].wait(max(0.0, wait)):
+        return {"ok": True, "pending": True, "job": job_id,
+                "seconds": int(time.monotonic() - job["started"])}
+    error = job.get("error")
+    if isinstance(error, LeakError):
+        raise error
+    if error is not None:
+        raise RuntimeError(str(error)) from None
+    return job["preview"]
 
 
 def _worker_main() -> int:

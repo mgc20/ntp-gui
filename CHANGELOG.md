@@ -6,6 +6,17 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 
 ## [Unveröffentlicht]
 
+### Behoben
+- **Diagnosepaket mit langer Aufzeichnung scheiterte hinter einem Reverse Proxy.** Vorschau und Paket
+  entstanden in einer einzigen Anfrage, die auf dem Pi mit langer Aufzeichnung über eine Minute offen
+  blieb – Proxys wie Nginx Proxy Manager brechen nach 60 s ab. Jetzt baut der Server im Hintergrund,
+  die Seite fragt alle 2 s nach und zeigt, wie lange es schon läuft; keine Anfrage bleibt länger als
+  etwa 10 s offen. „Herunterladen“ ohne Vorschau erstellt zuerst die Vorschau. Für die API gibt es
+  dafür `?async=1` und `?job=…`; ohne sie wartet `/api/v1/diagnostics/preview` wie bisher.
+- **Download nach der Vorschau baute bei laufender Aufzeichnung alles noch einmal.** Wuchs die
+  Aufzeichnung zwischen Vorschau und Download weiter, verwarf der Server das fertige Paket. Jetzt kommt
+  mit dem Merker der Vorschau genau das geprüfte Paket – was du angesehen hast, lädst du herunter.
+
 ### Hinzugefügt
 - **Datenschutz-Wächter in der CI:** prüft in jedem PR alle Dateien, neue Commits (Autor, Committer,
   Nachricht) sowie Titel und Beschreibung auf private LAN-Adressen außerhalb der Beispielnetze und echte
