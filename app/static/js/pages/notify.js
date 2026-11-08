@@ -249,10 +249,12 @@ export function render(ctx) {
   const ui = ctx.uiState;
   const disabled = ctx.readonly ? true : null;
   const out = [];
+  // Eine Zeile sichtbar; Datenschutzfilter, Entprellen und „behoben“ stehen im ⓘ der Karte.
   out.push(card("Benachrichtigungen", { help: "notify", class: "explain",
-    sub: "Meldet Probleme dorthin, wo du sie siehst: aufs Handy (ntfy, Gotify), in Home Assistant (Webhook) oder über Apprise per E-Mail, Telegram, Matrix …" },
-  el("p", {}, rich("Jede Nachricht läuft durch denselben **Datenschutzfilter** wie das Diagnosepaket: keine Koordinaten, keine öffentlichen IP-Adressen, keine eigenen Hostnamen. "
-    + "Gleiche Meldungen werden **entprellt**, und wenn ein Problem vorbei ist, kommt „behoben“ mit der Dauer. Ohne Kanal verlässt nichts den Server."))));
+    sub: "Meldet Probleme dorthin, wo du sie siehst: aufs Handy (ntfy, Gotify), in Home Assistant (Webhook) oder über Apprise. "
+      + "Per Apprise auch E-Mail, Telegram, Matrix … "
+      + "Jede Nachricht läuft durch denselben **Datenschutzfilter** wie das Diagnosepaket: keine Koordinaten, keine öffentlichen IP-Adressen, keine eigenen Hostnamen. "
+      + "Gleiche Meldungen werden **entprellt**, und wenn ein Problem vorbei ist, kommt „behoben“ mit der Dauer. Ohne Kanal verlässt nichts den Server." }));
   const failed = cfg === undefined ? ctx.dataError?.("notify", "/api/notify") : null;
   if (cfg === undefined && !failed) {
     out.push(card("Kanäle", {}, emptyState("Wird geladen …")));

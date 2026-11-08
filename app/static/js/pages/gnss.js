@@ -1,7 +1,7 @@
 // GNSS-Störungen, GPS-Sperre (GPS-Seite) und echter Holdover-Test (Seite Uhrqualität) – 1.5.
 // Daten: GET /api/gnss und /api/holdover; Aktionen per POST (admin). Alles als Text im DOM (el/textContent).
 import { el, fmtNumber, fmtDate, isNum, rich, apiPost } from "../util.js";
-import { card, kv, infoButton, badge, emptyState, toast } from "../ui.js";
+import { card, kv, infoButton, badge, emptyState, toast, explainLine } from "../ui.js";
 import { lineChart, stepDecimals } from "../charts.js";
 
 const STAGE = { ok: ["unauffällig", "good"], hinweis: ["Hinweis", "info"], warnung: ["Warnung", "warn"], stoerung: ["Störung", "crit"] };
@@ -184,8 +184,8 @@ function startForm(ctx, data) {
     networkSwitch,
     check.ok === false ? el("div", { class: "callout", "data-tone": "warn", text: check.reason }) : null,
     kv([["Messreferenzen", isNum(check.references) ? `${fmtNumber(check.references, 0)} erreichbare Netzquellen (mindestens ${fmtNumber(d.min_references || 2, 0)})` : "–", "holdover_refs"]]),
-    el("p", { class: "card-sub" }, rich("**Achtung:** Während des Tests stellt chrony die Uhr nicht nach – Clients bekommen eine ungenauere Zeit. "
-      + "Am besten nachts oder wenn nichts Zeitkritisches läuft.")),
+    explainLine("**Achtung:** Während des Tests stellt chrony die Uhr nicht nach – Clients bekommen eine ungenauere Zeit. "
+      + "Am besten nachts oder wenn nichts Zeitkritisches läuft.", { class: "card-sub" }),
     el("div", { class: "button-row" }, start));
 }
 

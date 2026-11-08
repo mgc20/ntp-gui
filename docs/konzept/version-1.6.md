@@ -464,8 +464,8 @@ neu geprüft.
 | K4 | „Noch keine Geräte gesehen“ unter gefüllter Liste | `clients.js:244` | bestätigt | gering | Bedingung korrigieren |
 | F18 | Titel bei 390 px abgeschnitten | `.topbar h1` | plausibel | gering | kurzer Titel (T2) |
 | F6 | Waagerechte Verschiebung auf der Hilfe-Seite | – | unbestätigt | – | im Playwright-Rundgang prüfen |
-| F13 | Tabellen bei 390 px ohne Schatten am Rand | `.table-scroll` | unbestätigt (Gestaltung) | – | Karten/Schatten in T2 |
-| F16 | Doppelter Phasentext Kalibrierung | – | unbestätigt (von GUI-Durchsicht beobachtet, U11) | – | in T2 |
+| F13 | Tabellen bei 390 px ohne Schatten am Rand | `.table-scroll` | bestätigt, in T2d behoben (Clients als Karten) | gering | Karten/Schatten in T2 |
+| F16 | Doppelter Phasentext Kalibrierung | `gps.js` (`autocalTexts`) | bestätigt, in T2d behoben | gering | in T2 |
 
 Kein Fehler: i18n-Speicher roh statt JSON (`writeStored`).
 

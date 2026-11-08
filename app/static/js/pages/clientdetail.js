@@ -3,7 +3,7 @@
 // „Aktiv nachmessen“. Alles kommt aus /api/clients/detail; geschrieben wird nur über
 // /api/clients/meta und /api/clients/probe (Admin).
 import { el, apiPost, fmtDuration, fmtNumber, fmtSeconds, fmtTime, fmtLogInterval, fmtPpm, fmtDate, isNum, rich } from "../util.js";
-import { card, statCard, infoButton, badge, kv, emptyState, toast, rangePicker } from "../ui.js";
+import { card, statCard, infoButton, badge, kv, emptyState, toast, rangePicker, chartCard, explainLine } from "../ui.js";
 import { lineChart } from "../charts.js";
 import { axisSeconds } from "./overview.js";
 
@@ -102,10 +102,11 @@ function probeCard(ctx, ip, detail) {
     text: busy ? "Messe …" : "Aktiv nachmessen", onclick: run });
   let body;
   if (!result) {
-    body = emptyState(detail.probe_allowed
+    body = explainLine(detail.probe_allowed
       ? "Schickt **eine** NTP-Anfrage an das Gerät (Port 123, 2 s Zeitlimit). Router, NAS und manche Kameras "
         + "laufen selbst als Zeitserver und antworten – dann siehst du ihre Uhr auch, wenn sie ihre Sendezeit verschleiern."
-      : detail.probe_blocked || "Nachmessen geht nur bei Geräten mit privater Adresse, die diesen Server schon gefragt haben.");
+      : detail.probe_blocked || "Nachmessen geht nur bei Geräten mit privater Adresse, die diesen Server schon gefragt haben.",
+    { class: "empty-note", title: "Aktiv nachmessen" });
   } else if (!result.answered || !isNum(result.offset)) {
     body = el("p", { class: "card-sub" }, el("strong", { text: `${fmtTime(result.t)}: ` }), el("span", { text: result.text }));
   } else {
@@ -260,8 +261,7 @@ function ntsCard(detail) {
     ["Nutzt NTS", nts.uses === null ? "–" : nts.uses ? `ja (${fmtNumber(nts.nts_ke || 0)} Schlüsselaustausche)` : "nein", "client_nts"],
     ["Software kann NTS", can, "client_nts"],
   ]),
-  el("p", { class: "field-help", text: nts.text || "" }),
-  el("p", { class: "field-help" }, rich(nts.how || "")));
+  explainLine([nts.text, nts.how].filter(Boolean).join(" "), { class: "field-help", title: "NTS für dieses Gerät", max: 120 }));
 }
 
 // Zähler aus chronyd („chronyc clients“). Kennt die eigene Messung das Gerät noch nicht (aus oder gerade
@@ -294,8 +294,8 @@ export function chronyCard(detail) {
       ["Intervall", fmtLogInterval(c.ntp_interval), "client_interval"],
       ["Zuletzt", isNum(c.ntp_last_rx) ? `vor ${fmtDuration(c.ntp_last_rx)}` : "–", "client_last"],
     ]),
-    known ? null : el("p", { class: "field-help", text: "Die eigene Messung kennt das Gerät noch nicht (aus oder gerade "
-      + "gestartet) – deshalb bleiben Abweichung, Verlauf und Software leer. Die Zähler oben kommen direkt von chronyd." }));
+    known ? null : explainLine("Die eigene Messung kennt das Gerät noch nicht (aus oder gerade gestartet). Deshalb bleiben "
+      + "Abweichung, Verlauf und Software leer. Die Zähler oben kommen direkt von chronyd.", { class: "field-help", title: "Laut chrony", max: 90 }));
 }
 
 // --- Seite --------------------------------------------------------------------------
@@ -327,35 +327,15 @@ export function renderDetail(ctx, ip) {
   const viaChrony = seen.source === "chrony";
   const end = ctx.status.system?.time;
 
-  const offsetHost = el("div", { class: "chart-host" });
-  const intervalHost = el("div", { class: "chart-host" });
   const offsets = samples.filter((s) => isNum(s[1])).map((s) => [s[0], s[1]]);
   const intervals = samples.filter((s) => isNum(s[4])).map((s) => [s[0], s[4]]);
   const polls = samples.filter((s) => isNum(s[2]) && s[2] > 0 && s[2] <= 17).map((s) => [s[0], 2 ** s[2]]);
-  ctx.afterRender(() => {
-    lineChart(offsetHost, {
-      key: `client-offset:${ip}`,
-      series: [{ id: "offset", label: "Abweichung", color: "var(--accent)", points: offsets }],
-      format: fmtOffset, axisFormat: axisSeconds, range, end, ariaLabel: `Abweichung der Uhr von ${title} über die Zeit`,
-      emptyText: entry.measurable === false ? "Nicht messbar – das Gerät schickt keine echte Uhrzeit" : "Noch zu wenige Messwerte",
-    });
-    lineChart(intervalHost, {
-      key: `client-interval:${ip}`,
-      series: [
-        { id: "interval", label: "Abstand der Anfragen", points: intervals },
-        { id: "poll", label: "Poll-Feld (2^poll)", points: polls },
-      ],
-      format: fmtInterval, range, end, scale: "log", zeroLine: false,
-      hidden: ctx.uiState.clientIntervalHidden || new Set(),
-      onToggle: (id) => {
-        const set = ctx.uiState.clientIntervalHidden || (ctx.uiState.clientIntervalHidden = new Set());
-        if (set.has(id)) set.delete(id); else set.add(id);
-        ctx.rerender();
-      },
-      ariaLabel: `Abstand der Anfragen und Poll-Feld von ${title}`, emptyText: "Noch zu wenige Anfragen",
-    });
-  });
-
+  const offsetSeries = [{ id: "offset", label: "Abweichung", color: "var(--accent)", points: offsets }];
+  const intervalSeries = [
+    { id: "interval", label: "Abstand der Anfragen", points: intervals },
+    { id: "poll", label: "Poll-Feld (2^poll)", points: polls },
+  ];
+  const offsetEmpty = entry.measurable === false ? "Nicht messbar – das Gerät schickt keine echte Uhrzeit" : "Noch zu wenige Messwerte";
   const setRange = (seconds) => { ctx.uiState.clientRange = seconds; ctx.rerender(); };
   const mac = detail.mac;
   const macText = mac ? `${mac.mac}${mac.random ? " (zufällig gewählt)" : ""}` : "–";
@@ -387,10 +367,29 @@ export function renderDetail(ctx, ip) {
         note: isNum(detail.quality?.drift_ppm) || isNum(detail.quality?.drift_bound_ppm)
           ? `${detail.quality.grade} · ${fmtDrift(detail.quality)}` : (detail.quality?.grade || "–") })),
     chronyCard(detail),
-    card("Abweichung über die Zeit", { help: "client_offset_chart", actions: rangeGroup(range, setRange),
-      sub: `Jede gespeicherte Anfrage ein Punkt (höchstens alle 2 min einer), ${fmtNumber(detail.retention_days || 7)} Tage lang.` },
-    offsetHost),
-    card("Abstand der Anfragen und Poll", { help: "client_interval_chart" }, intervalHost),
+    // chartCard: ohne Messwerte eine Zeile statt einer leeren Fläche; gleichbleibend → „stabil um …“.
+    chartCard(ctx, { title: "Abweichung über die Zeit", help: "client_offset_chart", key: `client-offset:${ip}`,
+      actions: rangeGroup(range, setRange), series: offsetSeries, format: fmtOffset, flatAbs: 0.0005,
+      sub: `Jede gespeicherte Anfrage ein Punkt (höchstens alle 2 min einer), ${fmtNumber(detail.retention_days || 7)} Tage lang.`,
+      emptyText: entry.measurable === false ? "nicht messbar – das Gerät schickt keine echte Uhrzeit" : undefined,
+      draw: (host) => lineChart(host, {
+        key: `client-offset:${ip}`, series: offsetSeries,
+        format: fmtOffset, axisFormat: axisSeconds, range, end, ariaLabel: `Abweichung der Uhr von ${title} über die Zeit`,
+        emptyText: offsetEmpty,
+      }) }),
+    chartCard(ctx, { title: "Abstand der Anfragen und Poll", help: "client_interval_chart", key: `client-interval:${ip}`,
+      series: intervalSeries, flat: false,
+      draw: (host) => lineChart(host, {
+        key: `client-interval:${ip}`, series: intervalSeries,
+        format: fmtInterval, range, end, scale: "log", zeroLine: false,
+        hidden: ctx.uiState.clientIntervalHidden || new Set(),
+        onToggle: (id) => {
+          const set = ctx.uiState.clientIntervalHidden || (ctx.uiState.clientIntervalHidden = new Set());
+          if (set.has(id)) set.delete(id); else set.add(id);
+          ctx.rerender();
+        },
+        ariaLabel: `Abstand der Anfragen und Poll-Feld von ${title}`, emptyText: "Noch zu wenige Anfragen",
+      }) }),
     el("div", { class: "grid-2" },
       card("Gerät", { help: "client_detail" },
         kv([
@@ -405,8 +404,8 @@ export function renderDetail(ctx, ip) {
           ["Anfragen", `${fmtNumber(seen.requests)}${viaChrony ? " (laut chrony)" : ""}`, "client_packets"],
           ["Messbar", stateBadge, "client_measurable"],
         ]),
-        el("p", { class: "field-help", text: detail.measurable_reason || "" }),
-        detail.rdns_skipped ? el("p", { class: "field-help", text: `DNS: ${detail.rdns_skipped}` }) : null),
+        explainLine([detail.measurable_reason, detail.rdns_skipped ? `DNS: ${detail.rdns_skipped}` : ""].filter(Boolean).join(" "),
+          { class: "field-help", title: "Gerät", max: 120 })),
       softwareCard(detail)),
     el("div", { class: "grid-2" }, qualityCard(detail), ntsCard(detail)),
     el("div", { class: "grid-2" }, metaCard(ctx, ip, detail), rulesCard(ctx, ip, detail)),

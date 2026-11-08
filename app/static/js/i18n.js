@@ -137,6 +137,31 @@ export const CORE_DE = {
       "details_hide": "Details ausblenden: {title}",
       "label": "Hinweise"
     }
+  },
+  // Seiten (T2 „Seiten entschlacken“): kurze Texte, die auch ohne Katalog lesbar sein müssen.
+  "pages": {
+    "clients": {
+      "name_add": "Namen geben",
+      "name_change": "Namen ändern",
+      "name_input": "Eigener Name für {address} (Enter speichert, Esc bricht ab)",
+      "name_placeholder": "z. B. NAS im Keller",
+      "name_saved": "Name gespeichert",
+      "name_removed": "Name entfernt",
+      "name_failed": "Nicht gespeichert: {message}",
+      "cards_label": "Geräte",
+      "ignore_42": "Geräte, die Option 42 ignorieren (Windows, Linux, macOS)",
+      "notes": "Hinweise zu {system} ({count})",
+      "check_line": "„Prüfen“ testet die Umleitung von hier aus."
+    },
+    "sources": {
+      "steps": "Die vier Schritte im Einzelnen",
+      "steps_line": "Messen → Mehrheit finden → beste wählen → kombinieren."
+    },
+    "diagnose": {
+      "intro": "Log, Ereignisse und Diagnosepaket für die Fehlersuche – nichts davon wird automatisch hochgeladen.",
+      "privacy": "Mit Datenschutzfilter."
+    },
+    "more": "Mehr dazu"
   }
 };
 

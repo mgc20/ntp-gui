@@ -59,6 +59,7 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 - Hardware-Check: Zeile „Stromversorgung (Pi)“ mit Hinweis auf das offizielle Netzteil (bei Hitze-Drosselung
   ein Hinweis auf Kühlung); bei Unterspannung ein Hinweis auf der Übersicht.
 - Prometheus-Metriken `ntpgui_pi_undervoltage` und `ntpgui_pi_throttled`; Verlaufsfeld `pi_state`.
+- **Gerätenamen direkt in der Liste ändern** (Clients): Tippe auf ✎, gib den Namen ein, Enter speichert, Esc bricht ab. Klappt das Speichern nicht, steht der Grund direkt unter dem Feld. Ohne Schreibrecht gibt es kein ✎.
 
 ### Geändert
 - **Abzeichen nur bei geänderten Werten:** „geändert · zurücksetzen“. Zurücksetzen stellt den Standard ein –
@@ -94,6 +95,13 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 - Alle Zeitraum-Auswahlen nutzen dieselbe Komponente (15 min bis 30 Tage).
 - Neue Erklärung „Zahlen und Einheiten“ in der Hilfe. Lange Code-Schnipsel in der Hilfe brechen um; auf dem
   Handy ist die Hilfe-Seite nicht mehr zu breit.
+- **Aufgeräumte Seiten:** Je Karte steht nur noch eine Erklärzeile, der Rest steht im ⓘ; längere Anleitungen und Hinweise sind eingeklappt. Gelöscht wurde nichts. Sichtbare Wörter ohne Hilfe: rund 27 % weniger, auf der Clients-Seite rund 60 %.
+- Zeitquellen und GPS: Die Spalte „Grund“ erscheint nur noch, wenn er etwas anderes sagt als „Zustand“.
+- **Feste Farbe je Zeitquelle:** Dieselbe Quelle hat in jedem Diagramm, nach dem Neuladen und in jedem Browser dieselbe Farbe, egal welche Quellen daneben stehen. Teilen sich zwei Quellen eine Farbe, ist eine gestrichelt. GPS, PPS und andere Referenzuhren haben eine feste Signalfarbe (PPS gestrichelt). Am Linienende steht ein kurzer, eindeutiger Name (Hostname ohne Domain, IP-Adressen unverändert).
+- Clients: Spalten ohne einen einzigen Messwert werden ausgeblendet. Auf dem Handy (bis 640 px) stehen die Geräte als Karten untereinander; die ⓘ zu allen Spalten stehen einmal über den Karten.
+- PTP und Client-Detail nutzen die neue Diagrammkarte, die Ereignisse in der Diagnose die einheitliche Zeitraum-Auswahl.
+- Diagnose: Die Rohdaten der Ereignisse sind leichter anzutippen und bleiben beim automatischen Aktualisieren aufgeklappt, auch der Tastaturfokus bleibt.
+- GPS-Kalibrierung: Der Satz zur aktuellen Phase steht nur noch einmal da; bei einer Störungssperre gibt es nur noch eine rote Hinweisbox.
 
 ### Sicherheit
 - **Vorschau der Konfiguration:** gleiche Rechte wie das Speichern (nur Verwaltungsrecht, CSRF-/Origin-Prüfung,
@@ -134,6 +142,8 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
   Nachkommastellen außerhalb von Achsen und Tausenderpunkte vor Einheiten in den Seiten.
 - UI-Rundgang mit Playwright unter `tests/ui/` (Konsolenfehler, CSP, Überbreite, Zahlmuster, ⓘ-Tippflächen);
   läuft nur, wenn Playwright vorhanden ist, und gehört nicht zur Unit-Testsuite.
+- Neuer Test `tests/test_seiten.py` (Quellenfarben und Kontrast, Kurznamen, ausgeblendete Spalten, Karten auf dem Handy, ✎ nur mit Schreibrecht, Erklärtexte ohne Verlust). Der UI-Rundgang prüft zusätzlich die Clients bei 1440 und 390 px und misst die sichtbaren Wörter je Seite.
+- Seiten mit `live = false` (Diagnose, Hardware, Hilfe, Benachrichtigungen, Einstellungen) werden nicht mehr alle paar Sekunden neu aufgebaut, nur weil eine Karte einen leeren Hinweis zeigt.
 
 ## [1.5.5] – 2026-11-08
 
