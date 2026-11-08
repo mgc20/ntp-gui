@@ -6,7 +6,25 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 
 ## [Unveröffentlicht]
 
+### Sicherheit
+- **Content-Security-Policy an jeder Antwort** (auch API und Fehlerseiten): nur eigene Skripte, Stylesheets
+  und Verbindungen, keine Inline-Skripte, keine Einbettung in fremde Seiten, Bilder zusätzlich als `data:`.
+  Im Browser über alle Seiten in beiden Farbschemata ohne Verstoß geprüft. Die Seite „Zugriff abgelehnt“
+  erscheint dafür ohne eigene Formatierung.
+
 ### Behoben
+- **`WEB_BIND` mit IPv6 (`::`, `[::1]`).** Das Dashboard brach mit „Address family for hostname not
+  supported“ ab. Jetzt startet es; `::` nimmt immer IPv4 und IPv6 an (IPV6_V6ONLY wird ausdrücklich
+  ausgeschaltet). Scheitert der Start, nennt die Meldung die passende Ursache: Port belegt (`WEB_PORT`),
+  Port unter 1024 ohne Berechtigung (CAP_NET_BIND_SERVICE oder höherer `WEB_PORT`) oder Adresse fehlt
+  (`WEB_BIND`). Mit `::1` erreicht der Docker-Healthcheck das Dashboard nicht.
+- **Einstellungen übernehmen ist jetzt alles oder nichts.** Scheiterte ein späterer Schritt (z. B. die
+  PTP-Konfiguration oder eine Prüfung von GPS-, Hotplug- oder NTS-Pfaden), lief chronyd schon mit der
+  neuen Datei, während die Meldung „bisherige Einstellungen weiter aktiv“ sagte. Jetzt werden erst alle
+  Prüfungen gerechnet, dann beide Dateien geschrieben; bei einem Fehler bleiben beide unverändert und
+  nichts wird neu gestartet. Halb geschriebene Tempdateien bleiben nicht liegen.
+- **HTTPS-Anleitung:** nennt jetzt die Zeile `proxy_set_header Host $host;` für nginx und eigene Regeln im
+  Nginx Proxy Manager – ohne sie lehnt ntp-gui jede Änderung ab („nur aus dem Dashboard heraus“).
 - **Aufräumen nur bei plausibler Systemzeit.** Sprang die Uhr weit vor (z. B. Pi ohne RTC oder falscher
   Zeitserver), löschte ntp-gui Ereignisprotokoll und Client-Verlauf nach Alter komplett. Jetzt wird nach
   Alter nur aufgeräumt, wenn chrony nicht „Not synchronised“ meldet und höchstens 1 s abweicht; der

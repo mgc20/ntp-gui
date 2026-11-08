@@ -501,5 +501,102 @@ class HomelabOptionTests(Phc2sysPlanTests):
                 self.assertNotIn("unknown option", proc.stderr + proc.stdout)
 
 
+class AtomicApplyTests(unittest.TestCase):
+    """confgen ersetzt chrony.conf und ptp4l.conf nur gemeinsam; Tempdateien bleiben nie liegen."""
+
+    ENV = {"PTP_ENABLE": "true", "PTP_INTERFACE": "eth0", "PTP_MODE": "master",
+           "NTP_POOLS": "", "GPS_WAIT_SECONDS": "0"}
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.saved = (settings.DATA_DIR, settings.SETTINGS_FILE)
+        settings.DATA_DIR = os.path.join(self.tmp, "ntp-gui")
+        settings.SETTINGS_FILE = os.path.join(settings.DATA_DIR, "settings.json")
+        settings._CACHE.update(mtime=None, data=None)
+        self.conf = os.path.join(self.tmp, "etc")
+        os.makedirs(self.conf)
+        self.chrony = os.path.join(self.conf, "chrony.conf")
+        self.ptp4l = os.path.join(self.conf, "ptp4l.conf")
+
+    def tearDown(self):
+        settings.DATA_DIR, settings.SETTINGS_FILE = self.saved
+        settings._CACHE.update(mtime=None, data=None)
+
+    def leftovers(self):
+        return [name for name in os.listdir(self.conf) if name.startswith(".ntpgui-")]
+
+    def patched(self):
+        stack = mock.patch.multiple(confgen, CHRONY_CONF=self.chrony, PTP4L_CONF=self.ptp4l,
+                                    CUSTOM_CHRONY=os.path.join(self.tmp, "none"),
+                                    CUSTOM_PTP4L=os.path.join(self.tmp, "none"), _log=mock.DEFAULT)
+        return stack
+
+    def test_apply_keeps_chrony_conf_when_ptp4l_fails(self):
+        for path in (self.chrony, self.ptp4l):
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write("ALT\n")
+        with self.patched(), mock.patch.object(confgen, "render_ptp4l", side_effect=ValueError("kaputt")):
+            self.assertRaises(ValueError, confgen.apply, dict(self.ENV))
+        for path in (self.chrony, self.ptp4l):
+            with open(path, encoding="utf-8") as handle:
+                self.assertEqual(handle.read(), "ALT\n", path)
+        self.assertEqual(self.leftovers(), [])
+
+    def test_apply_keeps_both_when_later_step_fails(self):
+        """Wirft ein Schritt nach dem Rendern (phc2sys-Plan, DNS, NTS-Pfade, GPS), bleiben beide
+        Dateien alt: Sonst läsen per Watchdog neu gestartete Dienste neue Dateien mit alten Variablen."""
+        targets = ((confgen, "phc2sys_plan"), (confgen.dnsfwd, "config_warnings"),
+                   (confgen.dnsfwd, "effective_mode"), (confgen, "gps_device_ok"),
+                   (confgen, "hotplug_paths"), (confgen, "nts_watch_paths"))
+        for owner, name in targets:
+            with self.subTest(name=name):
+                for path in (self.chrony, self.ptp4l):
+                    with open(path, "w", encoding="utf-8") as handle:
+                        handle.write("ALT\n")
+                with self.patched(), mock.patch.object(owner, name, side_effect=ValueError("kaputt")):
+                    self.assertRaises(ValueError, confgen.apply, dict(self.ENV))
+                for path in (self.chrony, self.ptp4l):
+                    with open(path, encoding="utf-8") as handle:
+                        self.assertEqual(handle.read(), "ALT\n", path)
+                self.assertEqual(self.leftovers(), [])
+
+    def test_apply_second_rename_fails_leaves_no_tempfile(self):
+        # Bekannter Restfall (siehe Kommentar in confgen.apply): Die erste Umbenennung ist schon
+        # durch, chrony.conf ist also neu. Geprüft wird nur, dass nichts liegen bleibt.
+        with open(self.chrony, "w", encoding="utf-8") as handle:
+            handle.write("ALT\n")
+        real_replace = os.replace
+        calls = []
+
+        def replace(src, dst):
+            calls.append(dst)
+            if dst == self.ptp4l:
+                raise OSError(28, "No space left on device")
+            return real_replace(src, dst)
+
+        with self.patched(), mock.patch.object(confgen.os, "replace", side_effect=replace):
+            self.assertRaises(OSError, confgen.apply, dict(self.ENV))
+        # Das Umbenennen selbst scheitert: Die bereitliegende ptp4l-Tempdatei räumt finally weg.
+        self.assertEqual(self.leftovers(), [])
+        self.assertFalse(os.path.exists(self.ptp4l))
+        with open(self.chrony, encoding="utf-8") as handle:
+            self.assertNotEqual(handle.read(), "ALT\n")
+
+    def test_apply_writes_both(self):
+        with self.patched():
+            confgen.apply(dict(self.ENV))
+        self.assertTrue(os.path.getsize(self.chrony))
+        self.assertTrue(os.path.getsize(self.ptp4l))
+        self.assertEqual(self.leftovers(), [])
+
+    def test_write_cleans_up_tempfile_on_error(self):
+        target = os.path.join(self.conf, "x.conf")
+        with mock.patch.object(confgen.os, "chmod", side_effect=OSError(1, "Operation not permitted")):
+            self.assertRaises(OSError, confgen._write, target, "inhalt\n")
+        self.assertEqual(self.leftovers(), [])
+        self.assertFalse(os.path.exists(target))
+
+
 if __name__ == "__main__":
     unittest.main()

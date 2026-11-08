@@ -448,6 +448,30 @@ kill "$old"
 """)
         self.assertEqual(out, ["alt_lebt"])
 
+    def test_reload_keeps_services_when_config_fails(self):
+        """B8: Scheitert confgen, wird nichts gestoppt oder neu gestartet – die Statusmeldung
+        „bisherige Einstellungen weiter aktiv“ stimmt dann auch."""
+        self.FUNCS = ("reload_services",)
+        out = self.run_bash("""
+write_status() { echo "STATUS:$1"; }
+apply_config() { echo apply; return 1; }
+stop_services() { echo FALSCH_stop; }
+start_services() { echo FALSCH_start; }
+reload_services
+""")
+        self.assertEqual(out, ["STATUS:running", "apply", "STATUS:error"])
+
+    def test_reload_applies_config_before_stopping(self):
+        self.FUNCS = ("reload_services",)
+        out = self.run_bash("""
+write_status() { echo "STATUS:$1"; }
+apply_config() { echo apply; }
+stop_services() { echo stop; }
+start_services() { echo start; }
+reload_services
+""")
+        self.assertEqual(out, ["STATUS:running", "apply", "stop", "start", "STATUS:done"])
+
     def test_watchdog_uses_reload_chronyd_for_certs(self):
         text = (ROOT / "docker" / "entrypoint.sh").read_text(encoding="utf-8")
         block = text[text.index('check_nts_cert "$MONO"'):]

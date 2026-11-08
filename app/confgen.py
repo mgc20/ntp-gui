@@ -614,14 +614,46 @@ def expert_env_warnings(env: dict) -> list[str]:
     return notes
 
 
-def _write(path: str, content: str) -> None:
+def _stage(path: str, content: str) -> str:
+    """Schreibt content in eine Tempdatei neben path und liefert ihren Namen (noch nicht umbenannt).
+    Scheitert das Schreiben, verschwindet die Tempdatei wieder."""
     directory = os.path.dirname(path) or "."
     os.makedirs(directory, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=directory, prefix=".ntpgui-")
-    with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        handle.write(content)
-    os.chmod(tmp, 0o644)
-    os.replace(tmp, path)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+        os.chmod(tmp, 0o644)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    return tmp
+
+
+def _write(path: str, content: str) -> None:
+    os.replace(_stage(path, content), path)
+
+
+def _write_all(files: list[tuple[str, str]]) -> None:
+    """Alle Dateien erst vollständig in Tempdateien schreiben, dann umbenennen. Scheitert eine,
+    bleibt jede Zieldatei unverändert und keine Tempdatei liegen."""
+    staged: list[tuple[str, str]] = []
+    try:
+        for path, content in files:
+            staged.append((_stage(path, content), path))
+        while staged:
+            tmp, path = staged[0]
+            os.replace(tmp, path)
+            staged.pop(0)
+    finally:
+        for tmp, _ in staged:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
 
 
 def _wait_for(path: str, seconds: int) -> bool:
@@ -652,13 +684,15 @@ def apply(env: dict | None = None) -> dict:
     if cfg["gps_pps_device"]:
         _wait_for(cfg["gps_pps_device"], wait)
 
+    # Erst beide Dateien vollständig erzeugen, dann gemeinsam ersetzen: Scheitert ptp4l.conf,
+    # darf chrony.conf nicht schon neu sein (der Supervisor meldet dann „bisherige Einstellungen aktiv“).
+    files = []
     if os.path.isfile(CUSTOM_CHRONY):
         _log("chrony", f"verwende gemountete {CUSTOM_CHRONY}")
         with open(CUSTOM_CHRONY, encoding="utf-8") as handle:
-            _write(CHRONY_CONF, handle.read())
+            files.append((CHRONY_CONF, handle.read()))
     else:
-        _write(CHRONY_CONF, render_chrony(cfg, env, nts_files=prepare_nts_files(cfg) or ()))
-    _log("chrony", f"Konfiguration geschrieben nach {CHRONY_CONF}")
+        files.append((CHRONY_CONF, render_chrony(cfg, env, nts_files=prepare_nts_files(cfg) or ())))
 
     ptp_on = bool(cfg["ptp_enable"]) and bool(cfg["ptp_interface"])
     if cfg["ptp_enable"] and not cfg["ptp_interface"]:
@@ -667,22 +701,15 @@ def apply(env: dict | None = None) -> dict:
         if os.path.isfile(CUSTOM_PTP4L):
             _log("ptp", f"verwende gemountete {CUSTOM_PTP4L}")
             with open(CUSTOM_PTP4L, encoding="utf-8") as handle:
-                _write(PTP4L_CONF, handle.read())
+                files.append((PTP4L_CONF, handle.read()))
         else:
-            _write(PTP4L_CONF, render_ptp4l(cfg, env))
-
+            files.append((PTP4L_CONF, render_ptp4l(cfg, env)))
+    # Erst ALLES berechnen, was noch werfen kann (phc2sys-Plan, DNS-Modus, Pfade, Warnungen),
+    # und erst danach die Dateien ersetzen. Wirft ein Schritt, bleiben chrony.conf/ptp4l.conf
+    # unverändert und passen weiter zu den laufenden Diensten und ihren NTPGUI_*-Variablen.
     phc = phc2sys_plan(cfg, env)
-    for note in phc["notes"]:
-        _log("ptp", note)
-    if phc["start"]:
-        direction = ("Systemuhr → PTP-Uhr" if not phc["nocontrol"] else "PTP-Uhr → Systemuhr")
-        _log("ptp", f"phc2sys {phc['options']} ({direction}, chronyd "
-                    f"{'mit -x' if phc['nocontrol'] else 'regelt weiter'})")
-
-    for note in dnsfwd.config_warnings(cfg):
-        _log("dns", note)
-
-    return {
+    dns_notes = list(dnsfwd.config_warnings(cfg))
+    result = {
         "NTPGUI_DNS_MODE": dnsfwd.effective_mode(cfg),
         "NTPGUI_GPS_START": "1" if gps_device_ok(cfg) else "0",
         "NTPGUI_GPS_ENABLE": "1" if cfg["gps_enable"] else "0",
@@ -698,6 +725,23 @@ def apply(env: dict | None = None) -> dict:
         "NTPGUI_CHRONY_NOCONTROL": "1" if phc["nocontrol"] else "0",
         "NTPGUI_NTS_WATCH": " ".join(nts_watch_paths(cfg)),
     }
+
+    # Letzter Schritt vor dem return. Restfall (bewusst nicht gelöst): _write_all benennt zwei
+    # Dateien nacheinander um. Scheitert die zweite Umbenennung (z. B. Dateisystem fällt weg),
+    # ist chrony.conf schon neu und ptp4l.conf noch alt. Ein echtes gemeinsames Ersetzen gäbe es
+    # nur über ein Verzeichnis + Symlink-Tausch; das lohnt den Umbau nicht.
+    _write_all(files)
+    _log("chrony", f"Konfiguration geschrieben nach {CHRONY_CONF}")
+
+    for note in phc["notes"]:
+        _log("ptp", note)
+    if phc["start"]:
+        direction = ("Systemuhr → PTP-Uhr" if not phc["nocontrol"] else "PTP-Uhr → Systemuhr")
+        _log("ptp", f"phc2sys {phc['options']} ({direction}, chronyd "
+                    f"{'mit -x' if phc['nocontrol'] else 'regelt weiter'})")
+    for note in dns_notes:
+        _log("dns", note)
+    return result
 
 
 def main(argv: list[str]) -> int:

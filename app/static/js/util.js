@@ -11,6 +11,8 @@ export function el(tag, attrs = {}, ...children) {
     if (key === "class") node.setAttribute("class", value);
     else if (key === "text") node.textContent = value;
     else if (key === "dataset") Object.assign(node.dataset, value);
+    // CSSOM statt style-Attribut: Die Content-Security-Policy (style-src 'self') sperrt style-Attribute.
+    else if (key === "style") node.style.cssText = value;
     else if (key.startsWith("on") && typeof value === "function") node.addEventListener(key.slice(2), value);
     else if (key === "value" && "value" in node) node.value = value;
     else if (key === "checked") node.checked = Boolean(value);
