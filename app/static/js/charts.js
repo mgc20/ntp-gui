@@ -2,19 +2,166 @@
 import { el, svgEl, isNum, fmtNumber } from "./util.js";
 import { infoButton } from "./ui.js";
 
-// Validierte Kategorienpalette (dataviz-Referenz), je Theme eigene Stufen.
-const PALETTE = {
-  light: ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948"],
-  dark: ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#008300", "#9085e9", "#e66767"],
+// Quellenfarben (T2 „Seiten entschlacken“): fest je Quelle, gleich in allen Diagrammen. Die Farbe hängt
+// allein am Namen der Quelle (FNV-1a-Hash → Platz in der Palette), nicht an ihrer Reihenfolge und nicht an
+// den anderen Quellen im Diagramm – nach einem Neuladen, auf einer anderen Seite, bei einem anderen
+// Zeitraum oder in einem anderen Browser hat dieselbe Quelle dieselbe Farbe. Teilen sich zwei Quellen eines
+// Diagramms eine Farbe, unterscheidet sie die Strichelung (nur die bleibt von der Menge abhängig).
+// Je Thema eigene Stufen, alle mit mindestens 3:1 Kontrast zum Diagrammhintergrund (--surface,
+// tests/test_seiten.py prüft das). Rot und Gelb fehlen bewusst: Sie bedeuten „kritisch“ und „Warnung“.
+export const SERIES_PALETTE = {
+  light: ["#2a78d6", "#c4511f", "#13865c", "#a36b00", "#c2457a", "#0f7c8c", "#8a5a2b", "#57606a"],
+  dark: ["#3987e5", "#e0753f", "#2bb383", "#d19a1c", "#e0699a", "#2fb3c4", "#c08a55", "#8b949e"],
 };
+// GPS, PPS und andere Referenzuhren (chrony-refclock) haben immer dieselbe Signalfarbe, die keine
+// Netzquelle bekommt.
+export const SIGNAL_COLOR = { light: "#8250df", dark: "#b392f0" };
+// Hintergrund der Diagramme (Karte, --surface in app.css) – Bezug für den Kontrasttest.
+export const CHART_BACKGROUND = { light: "#ffffff", dark: "#151b23" };
 
-// Farbe folgt der Quelle, nicht ihrer Position: einmal vergeben, bleibt sie.
-const SLOTS = new Map();
-export function colorFor(id) {
-  if (!SLOTS.has(id)) SLOTS.set(id, SLOTS.size);
-  const theme = document.documentElement.dataset.theme === "light" ? "light" : "dark";
-  const slot = SLOTS.get(id);
-  return { color: PALETTE[theme][slot % 8], dashed: slot >= 8 };
+const SIGNAL_NAME = /^(gps|pps|nmea|gnss|shm|phc|sock)\d*$/i;
+
+/** Referenzuhr (GPS, PPS, NMEA, SHM, PHC …)? Erkannt am Namen bzw. an series.signal. */
+export function isSignalSource(name) {
+  return SIGNAL_NAME.test(String(name ?? "").trim());
+}
+
+/** FNV-1a (32 bit) über den Namen – stabil, schnell, ohne Zufall. */
+export function hashName(name) {
+  let hash = 0x811c9dc5;
+  for (const char of String(name ?? "").toLowerCase()) {
+    hash ^= char.codePointAt(0);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash >>> 0;
+}
+
+// Strichmuster für Quellen, die sich im selben Diagramm eine Farbe teilen (Stufe 1, 2, 3 …).
+const DASHES = [null, "6 4", "2 3", "8 3 2 3"];
+
+/**
+ * Stufen der Strichelung für eine Menge von Quellen (Map Name → Stufe, 0 = durchgezogen). Die Farbe
+ * bleibt der Hash-Platz; nur wenn mehrere Quellen dieser Menge denselben Platz haben, bekommen alle außer
+ * der ersten (nach Name) eine Strichelung. Das Ergebnis hängt nur von der Menge ab, nicht von ihrer
+ * Reihenfolge.
+ */
+export function assignSlots(ids) {
+  const size = SERIES_PALETTE.light.length;
+  const unique = [...new Set(ids.map(String))].filter((id) => !isSignalSource(id)).sort();
+  const slots = new Map();
+  const seen = new Map();
+  for (const id of unique) {
+    const slot = hashName(id) % size;
+    const level = seen.get(slot) || 0;
+    seen.set(slot, level + 1);
+    slots.set(id, level);
+  }
+  return slots;
+}
+
+function themeName() {
+  return document.documentElement?.dataset?.theme === "light" ? "light" : "dark";
+}
+
+/**
+ * Farbe einer Quelle: immer der Hash-Platz ihres Namens. slots: Ergebnis von assignSlots für alle Quellen
+ * eines Diagramms – bestimmt nur die Strichelung bei gleicher Farbe (ohne: durchgezogen).
+ * theme: "light" | "dark" (Standard: aktuelles Thema).
+ */
+export function colorFor(id, slots = null, theme = themeName()) {
+  // PPS neben GPS im selben Diagramm: gleiche Signalfarbe, aber gestrichelt.
+  if (isSignalSource(id)) {
+    const pps = /^pps/i.test(String(id));
+    return { color: SIGNAL_COLOR[theme], dashed: pps, dash: pps ? DASHES[1] : null, signal: true };
+  }
+  const size = SERIES_PALETTE.light.length;
+  const level = (slots && slots.get(String(id))) || 0;
+  const dash = level ? DASHES[((level - 1) % (DASHES.length - 1)) + 1] : null;
+  return { color: SERIES_PALETTE[theme][hashName(id) % size], dashed: Boolean(dash), dash, signal: false };
+}
+
+// --- Kurznamen für Linien-Endbeschriftungen ----------------------------------------
+const IPV4 = /^\d{1,3}(\.\d{1,3}){3}$/;
+const HOSTNAME = /^(?=.*[a-z])[a-z0-9_-]+(\.[a-z0-9_-]+)+\.?$/i;
+// Allerweltsnamen vorn („time.cloudflare.com“, „ntp1.example.net“): dann zählt der nächste Teil.
+const GENERIC_LABEL = /^(time\d*|ntp\d*|clock\d*|tick|tock|pool|zeit|sntp|nts\d*|\d+)$/i;
+export const SHORT_MAX = 14;
+
+export function isIpAddress(text) {
+  const value = String(text ?? "").replace(/^\[|\]$/g, "");
+  return IPV4.test(value) || (value.includes(":") && /^[0-9a-f:.]+$/i.test(value));
+}
+
+function clip(text, max = SHORT_MAX) {
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+/**
+ * Kurzname für eine Linien-Endbeschriftung: IP-Adressen bleiben unverändert, Hostnamen ohne Domain
+ * („ptbtime1.ptb.de“ → „ptbtime1“; „time.cloudflare.com“ → „cloudflare“), sonst gekürzt auf SHORT_MAX.
+ */
+export function shortName(name) {
+  const value = String(name ?? "").trim();
+  if (!value || isIpAddress(value)) return value;
+  if (!HOSTNAME.test(value)) return clip(value);
+  const labels = value.replace(/\.$/, "").split(".");
+  const parts = labels.length > 1 ? labels.slice(0, -1) : labels;   // ohne Top-Level-Domain
+  const pick = parts.find((part) => !GENERIC_LABEL.test(part)) || parts[0];
+  return clip(pick);
+}
+
+// Gemeinsames Ende mehrerer Namen, nur an einer Grenze (Punkt oder Bindestrich), damit der
+// unterscheidende Teil ganz bleibt („x1.a.org“/„y1.a.org“ → „.a.org“, nicht „1.a.org“).
+function commonTail(names) {
+  let n = 0;
+  const min = Math.min(...names.map((x) => x.length));
+  while (n < min && names.every((x) => x[x.length - 1 - n] === names[0][names[0].length - 1 - n])) n += 1;
+  const tail = names[0].slice(names[0].length - n);
+  const cut = tail.search(/[.-]/);
+  return cut < 0 ? 0 : tail.length - cut;
+}
+
+// Kürzen in der Mitte: Anfang und Ende bleiben sichtbar („abcdefgh…qrstuvwxyz-1“).
+function clipMiddle(text, max) {
+  if (text.length <= max) return text;
+  const head = Math.ceil((max - 1) * 0.4);
+  return `${text.slice(0, head)}…${text.slice(text.length - (max - 1 - head))}`;
+}
+
+/**
+ * Kurznamen für alle Linien eines Diagramms (Map Name → Kurzname), immer eindeutig. Ergäben zwei
+ * Hostnamen denselben Kurznamen, behalten beide mehr vom Namen (ohne Top-Level-Domain). Bleibt es gleich,
+ * fällt das gemeinsame Ende weg und gekürzt wird in der Mitte, damit der unterscheidende Teil sichtbar
+ * bleibt; als Letztes hilft eine laufende Nummer.
+ */
+export function shortNames(names) {
+  const LONG = 22;
+  const list = [...new Set(names.map(String))];
+  const groups = (map) => {
+    const by = new Map();
+    for (const [name, short] of map) by.set(short, [...(by.get(short) || []), name]);
+    return [...by.values()].filter((g) => g.length > 1);
+  };
+  const out = new Map(list.map((n) => [n, shortName(n)]));
+  for (const group of groups(out)) {
+    for (const name of group) {
+      if (!HOSTNAME.test(name) || isIpAddress(name)) continue;
+      const labels = name.replace(/\.$/, "").split(".");
+      out.set(name, clip(labels.slice(0, Math.max(1, labels.length - 1)).join("."), LONG));
+    }
+  }
+  for (const group of groups(out)) {
+    const cut = commonTail(group);
+    for (const name of group) {
+      if (isIpAddress(name)) continue;
+      const rest = cut && cut < name.length ? name.slice(0, name.length - cut) : name;
+      out.set(name, clipMiddle(rest, LONG));
+    }
+  }
+  for (const group of groups(out)) {
+    group.slice(1).forEach((name, i) => out.set(name, `${clip(out.get(name), LONG - 3)} ${i + 2}`));
+  }
+  return out;
 }
 
 function css(name) {
@@ -27,8 +174,9 @@ function resolve(color) {
   return match ? css(match[1]) || color : color;
 }
 
-function seriesColor(series) {
-  return series.color ? { color: resolve(series.color), dashed: false } : colorFor(series.id);
+function seriesColor(series, slots = null) {
+  if (series.color) return { color: resolve(series.color), dashed: false, dash: null };
+  return series.signal && !isSignalSource(series.id) ? colorFor("GPS", null) : colorFor(series.id, slots);
 }
 
 function niceStep(span, count = 5) {
@@ -294,6 +442,8 @@ export function lineChart(container, opts) {
   const format = opts.format || defaultFormat;
   const axisFormat = opts.axisFormat || format;
   const title = opts.ariaLabel || "Verlaufsdiagramm";
+  // Farben je Quelle fest (Hash des Namens); teilen sich zwei Quellen hier eine Farbe, unterscheidet sie die Strichelung.
+  const slots = assignSlots(opts.series.filter((s) => !s.color && !s.signal).map((s) => s.id));
   container.replaceChildren();
   container.classList.add("chart-host");
 
@@ -309,7 +459,7 @@ export function lineChart(container, opts) {
   if (opts.series.length > 1) {
     const legend = el("div", { class: "legend", role: "group", "aria-label": "Serien ein- und ausblenden" });
     for (const series of opts.series) {
-      const { color, dashed } = seriesColor(series);
+      const { color, dashed } = seriesColor(series, slots);
       const off = hidden.has(series.id);
       legend.append(el("button", {
         type: "button", class: `legend-item${off ? " is-off" : ""}`, "data-focus-key": `legend:${key}:${series.id}`,
@@ -353,7 +503,14 @@ export function lineChart(container, opts) {
   let lo; let hi; const ticks = []; let Y;
   const pad = { top: 10, right: 14, bottom: 26, left: 0 };
   const labelled = visible.length > 1 && visible.length <= 8;
-  if (labelled) pad.right = 96;
+  // Endbeschriftungen nur mit Kurznamen (Hostname ohne Domain, IP unverändert); Platz rechts nach dem
+  // längsten Kurznamen, damit nichts abgeschnitten wird.
+  const ends = labelled ? shortNames(visible.map((s) => s.short || s.label)) : new Map();
+  const endText = (series) => ends.get(String(series.short || series.label)) || series.label;
+  if (labelled) {
+    const longest = Math.max(4, ...visible.map((s) => endText(s).length));
+    pad.right = Math.round(Math.min(Math.max(60, longest * 6.8 + 22), Math.max(96, width * 0.3)));
+  }
   if (log) {
     const [vMin, vMax] = extent(all.map((p) => p[1]));
     const e0 = Math.floor(Math.log10(vMin));
@@ -484,7 +641,7 @@ export function lineChart(container, opts) {
   };
   const withArea = visible.length === 1 && (opts.area ?? single) !== false;
   for (const series of visible) {
-    const { color, dashed } = seriesColor(series);
+    const { color, dash } = seriesColor(series, slots);
     const segments = segmentsOf(series.points);
     if (withArea) {
       const baseValue = log ? lo : Math.max(lo, Math.min(0, hi));
@@ -502,7 +659,7 @@ export function lineChart(container, opts) {
     }
     const d = segments.map((seg) => seg.map(([t, v], i) => `${i ? "L" : "M"}${X(t).toFixed(1)},${Y(v).toFixed(1)}`).join(" ")).join(" ");
     plot.append(svgEl("path", { d, fill: "none", stroke: color, "stroke-width": 2, class: "chart-line",
-      "stroke-linejoin": "round", "stroke-linecap": "round", "stroke-dasharray": dashed ? "6 4" : null }));
+      "stroke-linejoin": "round", "stroke-linecap": "round", "stroke-dasharray": dash || null }));
     // Einzelpunkte (zwischen zwei Lücken) als Punkt, sonst wären sie unsichtbar.
     for (const seg of segments) {
       if (seg.length === 1) plot.append(svgEl("circle", { cx: X(seg[0][0]), cy: Y(seg[0][1]), r: 2.5, fill: color }));
@@ -537,19 +694,19 @@ export function lineChart(container, opts) {
   };
   // Direkte Beschriftung am Linienende (bis 8 Serien), Kollisionen auseinanderschieben.
   if (labelled) {
-    const ends = drawn.map(({ series, color }) => ({ y: Y(lastOf(series)[1]), label: series.label, color }))
+    const marks = drawn.map(({ series, color }) => ({ y: Y(lastOf(series)[1]), label: endText(series), color }))
       .sort((a, b) => a.y - b.y);
     const gap = 14;
-    for (let i = 1; i < ends.length; i += 1) if (ends[i].y - ends[i - 1].y < gap) ends[i].y = ends[i - 1].y + gap;
+    for (let i = 1; i < marks.length; i += 1) if (marks[i].y - marks[i - 1].y < gap) marks[i].y = marks[i - 1].y + gap;
     const bottom = pad.top + ph;
-    if (ends.length && ends[ends.length - 1].y > bottom) {
-      ends[ends.length - 1].y = bottom;
-      for (let i = ends.length - 2; i >= 0; i -= 1) if (ends[i + 1].y - ends[i].y < gap) ends[i].y = ends[i + 1].y - gap;
+    if (marks.length && marks[marks.length - 1].y > bottom) {
+      marks[marks.length - 1].y = bottom;
+      for (let i = marks.length - 2; i >= 0; i -= 1) if (marks[i + 1].y - marks[i].y < gap) marks[i].y = marks[i + 1].y - gap;
     }
-    for (const end of ends) {
+    for (const end of marks) {
       svg.append(svgEl("circle", { cx: width - pad.right + 7, cy: end.y, r: 3, fill: end.color }));
       const text = svgEl("text", { x: width - pad.right + 13, y: end.y + 4, class: "chart-end-label" });
-      text.textContent = end.label.length > 12 ? `${end.label.slice(0, 11)}…` : end.label;
+      text.textContent = end.label;
       svg.append(text);
     }
   } else if (visible.length === 1) {

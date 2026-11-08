@@ -1,5 +1,6 @@
+import { t as tr } from "../i18n.js";
 import { el, apiGet, apiPost, fmtDuration, fmtNumber, fmtRate, fmtLogInterval, isNum, rich } from "../util.js";
-import { card, statCard, infoButton, badge, rangeButtons, emptyState, toast, copyButton, loadingOr, loadingText } from "../ui.js";
+import { card, statCard, infoButton, badge, rangeButtons, emptyState, toast, copyButton, loadingOr, loadingText, explainLine } from "../ui.js";
 import { lineChart, stepDecimals } from "../charts.js";
 import { requestRate, recentRateInfo, rateWindowText } from "./overview.js";
 import { renderDetail, fmtOffset, offsetTone, fmtInterval, clientHref, STATE_TONE, STATE_SHORT, qualityBadge, fmtDrift } from "./clientdetail.js";
@@ -49,19 +50,17 @@ function offsetData(ctx) {
   return ctx.data("clientoffsets", "/api/clients/offsets", 10);
 }
 
-function offsetCells(entry) {
-  if (!entry) {
-    return [el("td", { class: "num muted", text: "–" }), el("td", { class: "muted", text: "–" })];
-  }
-  const tone = entry.measurable ? offsetTone(entry.ewma) : "muted";
-  const range = entry.measurable && isNum(entry.min) && isNum(entry.max)
+// Inhalt der Spalten „Uhr geht falsch um“ und „messbar“ – die Zelle (<td> bzw. <dd>) baut render().
+function offsetValue(entry) {
+  if (!entry || !entry.measurable) return el("span", { class: "muted", text: "–" });
+  const range = isNum(entry.min) && isNum(entry.max)
     ? `${fmtOffset(entry.min)} … ${fmtOffset(entry.max)} · ${fmtNumber(entry.count)} Messungen` : null;
-  return [
-    el("td", { class: "num" }, entry.measurable
-      ? el("span", { class: "offset-value", "data-tone": tone, title: range || null, text: fmtOffset(entry.ewma) })
-      : el("span", { class: "muted", text: "–" })),
-    el("td", {}, badge(STATE_SHORT[entry.state] || "–", STATE_TONE[entry.state] || "muted", entry.state_text)),
-  ];
+  return el("span", { class: "offset-value", "data-tone": offsetTone(entry.ewma), title: range, text: fmtOffset(entry.ewma) });
+}
+
+function offsetState(entry) {
+  if (!entry) return el("span", { class: "muted", text: "–" });
+  return badge(STATE_SHORT[entry.state] || "–", STATE_TONE[entry.state] || "muted", entry.state_text);
 }
 
 function clientmonNote(mon) {
@@ -223,8 +222,9 @@ function groupRow(ctx, group, by) {
 function emptyGroupsNote(ctx) {
   const known = (ctx.status.clients || []).length;
   if (!known) return emptyState("Noch keine Geräte gesehen.");
-  return emptyState(`Gruppen zählen nur Geräte aus der eigenen Messung – die hat noch keins gesehen (Messung aus oder `
-    + `gerade gestartet). chrony kennt ${fmtNumber(known)} ${known === 1 ? "Gerät" : "Geräte"}, siehe Liste oben.`);
+  return explainLine(`Noch leer – chrony kennt ${fmtNumber(known)} ${known === 1 ? "Gerät" : "Geräte"} (Liste oben), die eigene Messung `
+    + "noch keins. Gruppen zählen nur Geräte aus der eigenen Messung; die ist aus oder gerade gestartet.",
+  { class: "empty-note", title: "Gruppen und Netze" });
 }
 
 function groupsCard(ctx, names) {
@@ -343,8 +343,8 @@ function selfTest(status, ip) {
   const target = "time.google.com";
   // Feste Adresse von time.google.com: Ein Name würde die DNS-Umschreibung testen, nicht die Firewall.
   const natTarget = "216.239.35.0";
-  return el("div", { class: "enforce-selftest" },
-    el("h3", { class: "mini-head" }, "Selbsttest auf einem Gerät ", infoButton("enforce_selftest")),
+  return el("details", { class: "enforce-selftest explain-more" },
+    el("summary", {}, "Selbsttest auf einem Gerät ", infoButton("enforce_selftest")),
     el("p", { class: "card-sub" }, rich(`Frage auf einem Gerät einen **öffentlichen** Server ab. Kommt die Antwort mit `
       + `**Stratum ${stratum}** und **Referenz-ID ${ref}**, hat die Umleitung gegriffen – das sind die Werte `
       + `dieses Servers. **Per Name** prüfst du die DNS-Umschreibung, **per IP-Adresse** die Firewall-Umleitung `
@@ -400,10 +400,11 @@ function enforceSection(ctx, ip) {
       el("div", { class: "enforce-group" }, group("dns", "DNS-Umschreibung", "enforce_dns")),
       el("div", { class: "enforce-group" }, group("nat", "Firewall-Umleitung", "enforce_nat"))),
     el("div", { class: "enforce-panel" },
-      el("p", { class: "card-sub" }, rich(selected.intro || "")),
+      explainLine(selected.intro || "", { title: selected.title }),
       el("div", { class: "enforce-blocks" }, (selected.blocks || []).map((b) => snippet(b.title, b.code))),
-      (selected.notes || []).length ? el("ul", { class: "enforce-notes" },
-        selected.notes.map((n) => el("li", {}, rich(n)))) : null,
+      (selected.notes || []).length ? el("details", { class: "explain-more" },
+        el("summary", { text: tr("pages.clients.notes", { system: selected.title, count: fmtNumber(selected.notes.length) }) }),
+        el("ul", { class: "enforce-notes" }, selected.notes.map((n) => el("li", {}, rich(n))))) : null,
       selected.kind === "nat" ? el("p", { class: "enforce-hint" }, "Warum Masquerade? ", infoButton("enforce_hairpin")) : null),
     el("details", { class: "enforce-names" },
       el("summary", {}, `Umgeleitete Namen (${fmtNumber(names.length)}) `, infoButton("enforce_hostnames")),
@@ -417,9 +418,138 @@ function enforceSection(ctx, ip) {
     el("div", { class: "enforce-check" },
       el("h3", { class: "mini-head" }, "Prüfung ", infoButton("enforce_check")),
       checkResult ? checkView(checkResult)
-        : emptyState("„Prüfen“ fragt ein paar bekannte Namen über den DNS-Server dieses Containers ab und schickt je eine "
-          + "NTP-Anfrage an die Antwort und an zwei öffentliche Server. Es werden keine Daten übertragen.")),
+        : el("p", { class: "empty-note" }, `${tr("pages.clients.check_line")} `, infoButton(null, "Was „Prüfen“ macht", {
+          title: "Prüfung", text: "„Prüfen“ fragt ein paar bekannte Namen über den DNS-Server dieses Containers ab und schickt je eine "
+          + "NTP-Anfrage an die Antwort und an zwei öffentliche Server. Es werden keine Daten übertragen." }))),
     selfTest(ctx.status, data.server_ip));
+}
+
+// --- Geräteliste: Spalten, Karten, Name direkt bearbeiten (T2 „Seiten entschlacken“) ------------
+const MOBILE_QUERY = "(max-width: 640px)";
+
+export function isMobile() {
+  try { return Boolean(window.matchMedia && window.matchMedia(MOBILE_QUERY).matches); } catch (error) { return false; }
+}
+
+const STAR_TITLE = "* aus der eigenen Messung – chrony kennt das Gerät seit seinem letzten Neustart nicht";
+
+/**
+ * Spalten der Geräteliste (ohne „Gerät“). has(c): hat diese Zeile einen Messwert? cell(c): Inhalt.
+ * lastAge(c): Sekunden seit der letzten Anfrage (chrony oder eigene Messung) oder null.
+ */
+export function clientColumns({ offsets = {}, scores = {}, lastAge = () => null } = {}) {
+  const off = (c) => offsets[c.address];
+  const measurable = (c) => Boolean(off(c) && off(c).measurable && isNum(off(c).ewma));
+  return [
+    { key: "packets", label: "Anfragen", help: "client_packets", num: true,
+      has: (c) => isNum(c.ntp_packets) || isNum(off(c)?.requests),
+      cell: (c) => (isNum(c.ntp_packets) ? fmtNumber(c.ntp_packets)
+        : isNum(off(c)?.requests) ? `${fmtNumber(off(c).requests)}*` : "–"),
+      title: (c) => (isNum(c.ntp_packets) ? null : STAR_TITLE) },
+    { key: "dropped", label: "Verworfen", help: "client_dropped", num: true,
+      has: (c) => isNum(c.ntp_dropped), cell: (c) => fmtNumber(c.ntp_dropped) },
+    { key: "interval", label: "Intervall", help: "client_interval", num: true,
+      has: (c) => isNum(c.ntp_interval), cell: (c) => fmtLogInterval(c.ntp_interval) },
+    { key: "last", label: "Zuletzt", help: "client_last", num: true,
+      has: (c) => isNum(lastAge(c)),
+      cell: (c) => (isNum(lastAge(c)) ? `vor ${fmtDuration(lastAge(c))}${isNum(c.ntp_last_rx) ? "" : "*"}` : "–"),
+      title: (c) => (isNum(c.ntp_last_rx) ? null : STAR_TITLE) },
+    { key: "offset", label: "Uhr geht falsch um", help: "client_offset", num: true,
+      has: measurable, cell: (c) => offsetValue(off(c)) },
+    { key: "state", label: "messbar", help: "client_measurable",
+      has: (c) => Boolean(off(c) && off(c).state), cell: (c) => offsetState(off(c)) },
+    { key: "score", label: "Güte", help: "client_score", num: true,
+      has: (c) => isNum(scores[c.address]?.score), cell: (c) => scoreCell(scores[c.address]) },
+  ];
+}
+
+/** Nur Spalten, in denen mindestens eine Zeile einen Messwert hat. */
+export function visibleColumns(columns, rows) {
+  return columns.filter((col) => rows.some((row) => col.has(row)));
+}
+
+function scoreCell(q) {
+  return q && isNum(q.score) ? el("span", { class: "score-value", "data-tone": q.tone || "muted",
+    title: q.grade || null, text: String(q.score) }) : el("span", { class: "muted", text: "–" });
+}
+
+// Name direkt in der Liste: ✎ öffnet ein Feld, Enter speichert (POST /api/clients/meta, nur der Name –
+// die Notiz bleibt), Esc bricht ab. Der Zustand liegt in uiState, damit das Neuzeichnen alle paar
+// Sekunden weder Eingabe noch Cursor verliert. Schreibgeschützt (WEB_READONLY): kein ✎.
+function nameEditor(ctx, { address, name, where, names }) {
+  const link = clientLink({ address, name });
+  const edit = ctx.uiState.nameEdit;
+  const key = `${where}:${address}`;
+  if (ctx.readonly) return link;
+  if (!edit || edit.address !== address) {
+    const open = el("button", { type: "button", class: "name-edit", "data-focus-key": `name-edit:${key}`,
+      "aria-label": `${tr(name ? "pages.clients.name_change" : "pages.clients.name_add")}: ${name || address}`,
+      title: tr(name ? "pages.clients.name_change" : "pages.clients.name_add"),
+      onclick: () => {
+        ctx.uiState.nameEdit = { address, value: name || "", error: "", busy: false, focus: true, where };
+        ctx.rerender();
+      } }, el("span", { "aria-hidden": "true", text: "✎" }));
+    return el("span", { class: "name-cell" }, link, open);
+  }
+  const field = el("input", { type: "text", class: "name-input", maxlength: "64", value: edit.value,
+    placeholder: tr("pages.clients.name_placeholder"), "data-focus-key": `name-input:${key}`, disabled: edit.busy || null,
+    "aria-label": tr("pages.clients.name_input", { address }),
+    "aria-invalid": edit.error ? "true" : null, "aria-describedby": edit.error ? `name-error-${where}` : null });
+  const remember = () => { edit.value = field.value; edit.selection = [field.selectionStart, field.selectionEnd]; };
+  field.addEventListener("input", () => { remember(); if (edit.error) { edit.error = ""; } });
+  field.addEventListener("keyup", remember);
+  field.addEventListener("click", remember);
+  field.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      ctx.uiState.nameEdit = null;
+      ctx.uiState.nameFocus = `name-edit:${key}`;
+      ctx.rerender();
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      saveName(ctx, edit, key, names);
+    }
+  });
+  if (edit.where === where) {
+    ctx.afterRender(() => {
+      if (!field.isConnected || edit.busy) return;
+      if (edit.focus || document.activeElement === document.body || document.activeElement === field) {
+        field.focus({ preventScroll: true });
+        const [a, b] = edit.selection || [field.value.length, field.value.length];
+        try { field.setSelectionRange(a, b); } catch (error) { /* Feldtyp ohne Auswahl */ }
+        edit.focus = false;
+      }
+    });
+  }
+  return el("span", { class: "name-cell is-editing" },
+    el("span", { class: "name-edit-box" }, field,
+      el("span", { class: "mono client-sub", text: address })),
+    edit.error ? el("span", { class: "inline-error", id: `name-error-${where}`, role: "alert", text: edit.error }) : null);
+}
+
+async function saveName(ctx, edit, key, names) {
+  if (edit.busy) return;
+  edit.busy = true;
+  ctx.rerender();
+  try {
+    const result = await apiPost("/api/clients/meta", { ip: edit.address, name: edit.value });
+    if (names) names[edit.address] = result.name || undefined;
+    ctx.uiState.nameEdit = null;
+    ctx.uiState.nameFocus = `name-edit:${key}`;
+    toast(tr(result.name ? "pages.clients.name_saved" : "pages.clients.name_removed"));
+    ctx.invalidate("clientoffsets");
+    ctx.invalidate("clientoverview");
+    ctx.invalidate("clientgroups");
+    ctx.invalidate(`clientdetail:${edit.address}`);
+    ctx.rerender();
+    ctx.refresh();
+  } catch (error) {
+    edit.busy = false;
+    edit.focus = true;
+    edit.error = tr("pages.clients.name_failed", { message: error.message });
+    ctx.rerender();
+  }
 }
 
 export function render(ctx) {
@@ -435,6 +565,12 @@ export function render(ctx) {
   const recent = recentRateInfo(history);
   const lastRate = recent.rate;
   const filter = (ctx.uiState.clientFilter || "").toLowerCase();
+  // Nach Esc oder Speichern im Namensfeld: Fokus zurück auf das ✎ der Zeile.
+  if (ctx.uiState.nameFocus) {
+    const want = ctx.uiState.nameFocus;
+    ctx.uiState.nameFocus = null;
+    ctx.afterRender(() => document.querySelector(`[data-focus-key="${CSS.escape(want)}"]`)?.focus({ preventScroll: true }));
+  }
   const knownIp = serverAddress(status);
   const ip = knownIp || IP_PLACEHOLDER;
   const mon = offsetData(ctx);
@@ -456,40 +592,44 @@ export function render(ctx) {
 
   const quality = qualityData(ctx);
   const scores = (quality && quality.scores) || {};
-  const scoreCell = (q) => (q && isNum(q.score) ? el("span", { class: "score-value", "data-tone": q.tone || "muted",
-    title: q.grade || null, text: String(q.score) }) : el("span", { class: "muted", text: "–" }));
   const input = el("input", { type: "search", placeholder: "Filtern …", value: ctx.uiState.clientFilter || "",
     "aria-label": "Clients filtern" });
-  const bodyRows = (needle) => rows.filter((c) => !needle || (c.address || "").toLowerCase().includes(needle)
+  // Spalten ohne einen einzigen Messwert fallen weg (z. B. „Güte“, solange keine Uhr bewertbar ist).
+  const columns = clientColumns({ offsets, scores, lastAge });
+  const shown = visibleColumns(columns, rows);
+  const mobile = isMobile();
+  const sorted = (needle) => rows.filter((c) => !needle || (c.address || "").toLowerCase().includes(needle)
     || (names[c.address] || "").toLowerCase().includes(needle))
-    .sort((a, b) => (lastAge(a) ?? 1e12) - (lastAge(b) ?? 1e12))
-    .map((c) => el("tr", {},
-      el("td", {}, clientLink({ address: c.address, name: names[c.address] })),
-      el("td", { class: "num", text: isNum(c.ntp_packets) ? fmtNumber(c.ntp_packets)
-        : isNum(offsets[c.address]?.requests) ? `${fmtNumber(offsets[c.address].requests)}*` : "–",
-        title: isNum(c.ntp_packets) ? "" : "* aus der eigenen Messung – chrony kennt das Gerät seit seinem letzten Neustart nicht" }),
-      el("td", { class: "num", text: fmtNumber(c.ntp_dropped) }),
-      el("td", { class: "num", text: fmtLogInterval(c.ntp_interval) }),
-      el("td", { class: "num", text: isNum(lastAge(c)) ? `vor ${fmtDuration(lastAge(c))}${isNum(c.ntp_last_rx) ? "" : "*"}` : "–",
-        title: isNum(c.ntp_last_rx) ? "" : "* aus der eigenen Messung – chrony kennt das Gerät seit seinem letzten Neustart nicht" }),
-      ...offsetCells(offsets[c.address]),
-      el("td", { class: "num" }, scoreCell(scores[c.address]))));
-  const tbody = el("tbody", {}, bodyRows(filter));
+    .sort((a, b) => (lastAge(a) ?? 1e12) - (lastAge(b) ?? 1e12));
+  const nameCell = (c, where) => nameEditor(ctx, { address: c.address, name: names[c.address], where, names });
+  const bodyRows = (needle) => sorted(needle).map((c) => (mobile
+    ? el("li", { class: "client-card" },
+      el("div", { class: "client-card-head" }, nameCell(c, "card")),
+      el("dl", { class: "client-card-facts" }, shown.map((col) => el("div", { class: "client-card-fact" },
+        el("dt", { text: col.label }),
+        el("dd", { class: col.num ? "num" : null, title: col.title ? col.title(c) : null }, col.cell(c))))))
+    : el("tr", {},
+      el("td", {}, nameCell(c, "table")),
+      ...shown.map((col) => el("td", { class: col.num ? "num" : null, title: col.title ? col.title(c) : null }, col.cell(c))))));
+  const tbody = mobile ? el("ul", { class: "client-cards", "aria-label": tr("pages.clients.cards_label") }, bodyRows(filter))
+    : el("tbody", {}, bodyRows(filter));
   // Nur die Zeilen tauschen – ein Neuaufbau der Seite würde dem Feld den Fokus nehmen.
   input.addEventListener("input", () => {
     ctx.uiState.clientFilter = input.value;
     tbody.replaceChildren(...bodyRows(input.value.toLowerCase()));
   });
-  const table = el("div", { class: "table-scroll" }, el("table", {},
+  // Handy (≤ 640 px): Karten statt einer Tabelle, die man seitlich schieben müsste. Die Erklärungen der
+  // Spalten (ⓘ im Tabellenkopf) stehen einmal über den Karten, die zum Sternchen sichtbar darunter.
+  const starred = shown.some((col) => col.title && rows.some((c) => col.title(c)));
+  const table = mobile ? el("div", { class: "client-cards-wrap" },
+    el("p", { class: "client-card-legend" },
+      el("span", {}, "Gerät ", infoButton("client_address")),
+      shown.map((col) => el("span", {}, `${col.label} `, infoButton(col.help)))),
+    tbody,
+    starred ? el("p", { class: "field-help", text: STAR_TITLE }) : null) : el("div", { class: "table-scroll" }, el("table", { class: "clients-table" },
     el("thead", {}, el("tr", {},
       el("th", {}, "Gerät ", infoButton("client_address")),
-      el("th", { class: "num" }, "Anfragen ", infoButton("client_packets")),
-      el("th", { class: "num" }, "Verworfen ", infoButton("client_dropped")),
-      el("th", { class: "num" }, "Intervall ", infoButton("client_interval")),
-      el("th", { class: "num" }, "Zuletzt ", infoButton("client_last")),
-      el("th", { class: "num" }, "Uhr geht falsch um ", infoButton("client_offset")),
-      el("th", {}, "messbar ", infoButton("client_measurable")),
-      el("th", { class: "num" }, "Güte ", infoButton("client_score")))),
+      shown.map((col) => el("th", { class: col.num ? "num" : null }, `${col.label} `, infoButton(col.help))))),
     tbody));
 
   const chartHost = el("div", { class: "chart-host" });
@@ -500,8 +640,12 @@ export function render(ctx) {
     emptyText: "Noch keine Anfragen gemessen",
   }));
 
+  // Eine Zeile sichtbar (Adresse), Erklärung und FRITZ!Box-Hinweis im ⓘ; die Anleitungen für Geräte, die
+  // Option 42 ignorieren, eingeklappt.
   const setup = card("Clients einrichten", { help: "dhcp42",
-    sub: `Adresse dieses Servers: ${knownIp ? `**${knownIp}**` : "**unbekannt** – setze die IP des Hosts ein"}. Am bequemsten per DHCP Option 42 – dann übernehmen viele Geräte den Server automatisch.` },
+    sub: `Adresse dieses Servers: ${knownIp ? `**${knownIp}**` : "**unbekannt** – setze die IP des Hosts ein"}. Am bequemsten per DHCP Option 42 – dann übernehmen viele Geräte den Server automatisch. `
+      + "Die FRITZ!Box verteilt Option 42 nicht frei – dort Geräte direkt einstellen oder einen anderen DHCP-Server (z. B. Pi-hole) nutzen. "
+      + "Für Geräte mit fest eingebautem Server hilft **Zeitserver erzwingen** weiter unten." },
     el("div", { class: "snippets" },
       snippet("dnsmasq / Pi-hole", `dhcp-option=42,${ip}`),
       snippet("ISC dhcpd", `option ntp-servers ${ip};`),
@@ -509,14 +653,12 @@ export function render(ctx) {
       snippet("MikroTik RouterOS", `/ip dhcp-server network set [find] ntp-server=${ip}`),
       snippet("OPNsense / pfSense", `Dienste → DHCP-Server → Interface → NTP-Server 1: ${ip}`),
       snippet("UniFi", `Einstellungen → Netzwerke → DHCP → NTP-Server: ${ip}`)),
-    el("h3", { class: "mini-head", text: "Geräte, die Option 42 ignorieren" }),
+    el("details", { class: "explain-more" }, el("summary", { text: tr("pages.clients.ignore_42") }),
     el("div", { class: "snippets" },
       snippet("Windows (als Administrator)", `w32tm /config /manualpeerlist:"${ip},0x8" /syncfromflags:manual /update\nw32tm /resync /force\nw32tm /query /status`),
       snippet("Linux mit systemd-timesyncd", `# /etc/systemd/timesyncd.conf\n[Time]\nNTP=${ip}\n\nsudo systemctl restart systemd-timesyncd\ntimedatectl timesync-status`),
       snippet("Linux mit chrony", `# /etc/chrony/chrony.conf (bzw. /etc/chrony.conf)\nserver ${ip} iburst\n\nsudo systemctl restart chrony\nchronyc sources`),
-      snippet("macOS", `sudo systemsetup -setnetworktimeserver ${ip}\nsudo sntp -sS ${ip}`)),
-    emptyState("Die FRITZ!Box verteilt Option 42 nicht frei – dort Geräte direkt einstellen oder einen anderen DHCP-Server (z. B. Pi-hole) nutzen. "
-      + "Für Geräte mit fest eingebautem Server hilft **Zeitserver erzwingen** weiter unten."));
+      snippet("macOS", `sudo systemsetup -setnetworktimeserver ${ip}\nsudo sntp -sS ${ip}`))));
 
   return [
     el("div", { class: "stat-row" },

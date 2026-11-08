@@ -1,7 +1,7 @@
 // Hardware-Check: Was kann dieses Gerät von dem, was ntp-gui kann?
 // Alle Werte aus /api/hardware landen nur als Text im DOM (el/textContent).
 import { el, apiGet, fmtNumber, fmtTime, isNum, rich } from "../util.js";
-import { card, kv, infoButton, badge, emptyState, toast, copyButton } from "../ui.js";
+import { card, kv, infoButton, badge, emptyState, toast, copyButton, explainLine } from "../ui.js";
 
 // Kein Neuaufbau alle paar Sekunden: Kopierbare Ausschnitte bleiben markierbar,
 // aufgeklappte Details bleiben offen. Neu geladen wird per Knopf oder Seitenwechsel.
@@ -170,7 +170,7 @@ function receiverBlock(r, report) {
         ["PPS-Weg", path.label, "hw_pps_path"],
         ["Genauigkeit", r.accuracy || "–", "hw_accuracy"],
       ])),
-    el("p", { class: "hw-note" }, rich(path.text)),
+    explainLine(path.text, { class: "hw-note" }),
     accuracyLadder(r, report));
 }
 
@@ -194,7 +194,7 @@ function gpsCard(report) {
     body.push(kv([
       ["Rolle des GPS", `${role.label}${isNum(role.bound) ? ` · Fehlerschranke ± ${fmtNumber(role.bound * 1000, 0, { group: false })} ms` : ""}`, "gpsq_role"],
     ]));
-    body.push(el("p", { class: "hw-note", text: role.text || "" }));
+    body.push(explainLine(role.text || "", { class: "hw-note" }));
   }
   return card("GPS-Empfänger", { help: "hw_receiver" }, body);
 }
@@ -269,7 +269,7 @@ function ptpCard(report) {
   return card("PTP-Uhren und Netzwerkkarten", { help: "hw_ptp_clocks" },
     el("h3", { class: "mini-head" }, "PTP-Hardwareuhren ", infoButton("hw_ptp_clocks", "PTP-Hardwareuhren")), clockTable,
     el("h3", { class: "mini-head hw-gap" }, "Netzwerkkarten ", infoButton("hw_nic_class", "Netzwerkkarten")), nicTable,
-    bridge ? el("p", { class: "hw-note" }, rich("Der Container läuft im **Bridge-Netz** und sieht nur seine virtuelle Karte. Die echten Karten des Hosts erscheinen erst mit `network_mode: host`.")) : null);
+    bridge ? explainLine("Der Container läuft im **Bridge-Netz** und sieht nur seine virtuelle Karte. Die echten Karten des Hosts erscheinen erst mit `network_mode: host`.", { class: "hw-note" }) : null);
 }
 
 function permissionsCard(report) {
@@ -298,9 +298,9 @@ function permissionsCard(report) {
     const rules = ["device_cgroup_rules:",
       isNum(majors.pps) ? `  - "c ${majors.pps}:* rwm"   # /dev/ppsN – PPS` : null,
       isNum(majors.ptp) ? `  - "c ${majors.ptp}:* rwm"   # /dev/ptpN – PTP-Hardwareuhr` : null].filter(Boolean).join("\n");
-    body.push(el("p", { class: "hw-note" }, rich(p.dev_mounted
+    body.push(explainLine(p.dev_mounted
       ? "`/dev` ist eingehängt – damit der Container PPS- und PTP-Geräte auch **öffnen** darf, braucht er Regeln mit diesen Nummern. Für die All-in-one-Compose in die `.env` schreiben:"
-      : "Wenn du `/dev` einhängst (All-in-one-Compose), braucht der Container Regeln mit diesen Nummern. Für die `.env`:")),
+      : "Wenn du `/dev` einhängst (All-in-one-Compose), braucht der Container Regeln mit diesen Nummern. Für die `.env`:", { class: "hw-note" }),
     el("div", { class: "snippets" }, snippet(env, ".env"), snippet(rules, "oder direkt in der Compose-Datei")));
   }
   return card("Rechte & Geräte im Container", { help: "hw_caps" }, body);
@@ -327,7 +327,7 @@ function rtcCard(report, ctx) {
       rtc.present ? ["Beim Start übernommen", yesNo(rtc.hctosys), "hw_hctosys"] : null,
       nocert !== undefined ? ["Zertifikatszeit beim Start prüfen", nocert ? "nein (sicher ohne RTC)" : "ja", "nocerttimecheck"] : null,
     ]),
-    el("p", { class: "hw-note" }, rich(note)));
+    explainLine(note, { class: "hw-note" }));
 }
 
 // --- Pi-Zustand (1.6, T4): Unterspannung, Drosselung, Takt, Lüfter ---------------------
@@ -357,7 +357,8 @@ export function pistateCard(report) {
     ? `${fmtNumber(pi.freq_mhz, 0)} MHz${isNum(pi.freq_max_mhz) ? ` (höchstens ${fmtNumber(pi.freq_max_mhz, 0)} MHz)` : ""}` : null;
   const fan = isNum(pi.fan_rpm) ? (pi.fan_rpm > 0 ? `${fmtNumber(pi.fan_rpm, 0)} U/min` : "steht (0 U/min)") : null;
   const note = flagSeen(uv)
-    ? "Der Pi bekommt zu wenig Spannung. Dann senkt er den Takt, Last und Temperatur am Quarz schwanken – das zeigt sich als Sprünge in Frequenz und Offset. Am zuverlässigsten ist das **offizielle Netzteil** (Pi 5: 27 W, 5,1 V/5 A; Pi 4: 15 W, 5,1 V/3 A) mit kurzem Kabel."
+    ? "Zu wenig Spannung: Am zuverlässigsten hilft das **offizielle Netzteil** (Pi 5: 27 W, 5,1 V/5 A; Pi 4: 15 W, 5,1 V/3 A) mit kurzem Kabel. "
+      + "Bei Unterspannung senkt der Pi den Takt, Last und Temperatur am Quarz schwanken – das zeigt sich als Sprünge in Frequenz und Offset."
     : flagSeen(pi.throttled) || flagSeen(pi.soft_temp_limit) || flagSeen(pi.capped)
       ? "Die Spannung reicht, aber der Pi senkt den Takt – meist wegen Hitze. Kühlkörper oder Lüfter helfen."
       : "Keine Unterspannung, keine Drosselung – die Stromversorgung stört die Uhr nicht.";
@@ -370,7 +371,7 @@ export function pistateCard(report) {
       freq ? ["Takt", freq, "pi_freq"] : null,
       fan ? ["Lüfter", fan, "pi_fan"] : null,
     ]),
-    el("p", { class: "hw-note" }, rich(note)));
+    explainLine(note, { class: "hw-note" }));
 }
 
 const TEMP_KIND = { thermal: "Thermalzone", hwmon: "Sensorchip (hwmon)", w1: "1-Wire (DS18B20)" };
@@ -398,7 +399,7 @@ function temperatureCard(report) {
         el("td", { text: s.label || s.name || "–" }),
         el("td", { text: isNum(s.celsius) ? `${fmtNumber(s.celsius, 1)} °C` : "kein Wert" }),
         el("td", {}, s.id === chosen ? badge("ja", "good") : "")))))) : null,
-    el("p", { class: "hw-note" }, rich(note)));
+    explainLine(note, { class: "hw-note" }));
 }
 
 function headCard(report, ctx) {

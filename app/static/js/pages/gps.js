@@ -1,7 +1,7 @@
 import { el, fmtSeconds, fmtDuration, fmtNumber, fmtIsoUtc, fmtDate, isNum, rich, apiPost, holdoverNote } from "../util.js";
 import { card, statCard, kv, infoButton, badge, emptyState, toast, chartCard } from "../ui.js";
 import { lineChart, skyPlot, snrBars } from "../charts.js";
-import { stateBadge, reasonCell } from "./sources.js";
+import { stateBadge, reasonCell, reasonDiffers } from "./sources.js";
 import { axisSeconds } from "./overview.js";
 import { hardwareData, pickReceiver, accuracyLadder, PPS_PATH } from "./hardware.js";
 import { receptionCard, roleCard, antennaCard } from "./gpsquality.js";
@@ -166,13 +166,34 @@ function autocalChanges(ctx, auto) {
     })));
 }
 
+/**
+ * Texte der automatischen Kalibrierung ohne Doppelungen (F16): Der Server baut den Plan aus dem Satz der
+ * Phase („misst seit …“) – und die Entscheidung trägt oft denselben Satz. Jeder Satz steht nur einmal da:
+ * im Plan, sonst in der Zeile „Phase“, sonst in „Entscheidung“. Bei einer Störungssperre steht der Plan
+ * (mit dem Sperrtext) als rote Hinweisbox da statt einer zweiten Box mit fast demselben Text.
+ */
+export function autocalTexts(auto) {
+  const norm = (text) => String(text || "").replace(/\s+/g, " ").trim();
+  const plan = norm(auto?.plan) || null;
+  const phaseRaw = norm(auto?.phase?.text);
+  const reasonRaw = norm(auto?.decision?.reason);
+  const inPlan = (text) => Boolean(text && plan && plan.includes(text));
+  const phaseText = phaseRaw && !inPlan(phaseRaw) ? phaseRaw : null;
+  const reason = reasonRaw && !inPlan(reasonRaw) && reasonRaw !== phaseText
+    && !(phaseText && phaseText.includes(reasonRaw)) ? reasonRaw : null;
+  const held = Boolean(auto?.decision?.guard_hold);
+  const holdInText = [plan, phaseText, reason].some((t) => t && t.includes("Gesperrt wegen GNSS-Störung"));
+  return { plan, phaseText, reason, held, holdCallout: held && !holdInText };
+}
+
 // Offset von Hand geändert (z. B. „zurücksetzen“), während die automatische Kalibrierung läuft:
 // sagen, was sie als Nächstes tut, und den Kalibrier-Vorschlag mit einem Klick anbieten.
 function autocalPlan(auto, applyOffer) {
   if (!auto.plan) return null;
   const manual = auto.manual_change;
-  // Bei einer Störungssperre nicht zum Übernehmen einladen – erst Antenne und Umgebung prüfen.
-  if (!manual || auto.decision?.guard_hold) return el("p", { text: auto.plan });
+  // Störungssperre: der Plan enthält den Sperrtext – als rote Box, ohne Einladung zum Übernehmen.
+  if (auto.decision?.guard_hold) return el("div", { class: "callout", "data-tone": "crit" }, el("p", { text: auto.plan }));
+  if (!manual) return el("p", { text: auto.plan });
   const parts = [el("p", { text: auto.plan })];
   if (applyOffer) parts.push(el("div", { class: "cal-apply" }, applyOffer()));
   return el("div", { class: "callout" }, parts);
@@ -194,10 +215,10 @@ function autocalSection(ctx, applyOffer = null) {
   ];
   if (auto.mode !== "off") {
     const phase = auto.phase || null;
-    const held = Boolean(decision.guard_hold);
+    const texts = autocalTexts(auto);
     parts.push(kv([
-      phase ? ["Phase", el("span", {}, badge(phase.label, phase.tone || "muted"), " ", phase.text || ""), "autocal_phase"] : null,
-      ["Entscheidung", el("span", {}, badge(actionLabel, actionTone), " ", decision.reason || "–"), "autocal_decision"],
+      phase ? ["Phase", el("span", {}, badge(phase.label, phase.tone || "muted"), texts.phaseText ? ` ${texts.phaseText}` : null), "autocal_phase"] : null,
+      ["Entscheidung", el("span", {}, badge(actionLabel, actionTone), texts.reason ? ` ${texts.reason}` : null), "autocal_decision"],
       isNum(decision.bias_ms) ? ["Gemessene Abweichung", `${fmtMs(decision.bias_ms, true)} (Streuung ± ${fmtMs(decision.spread_ms)})`, "autocal_bias"] : null,
       isNum(decision.threshold_ms) ? ["Schwelle", fmtMs(decision.threshold_ms), "autocal_threshold"] : null,
       decision.reference ? ["Vergleichsquellen", autocalReference(decision), "autocal_reference"] : null,
@@ -207,8 +228,8 @@ function autocalSection(ctx, applyOffer = null) {
     ]));
     const plan = autocalPlan(auto, applyOffer);
     if (plan) parts.push(plan);
-    if (held) {
-      parts.push(el("div", { class: "callout", "data-tone": "crit" },
+    if (texts.held) {
+      if (texts.holdCallout) parts.push(el("div", { class: "callout", "data-tone": "crit" },
         el("p", { text: "Gesperrt wegen GNSS-Störung – hier entscheidest du. Empfänger, Antenne oder USB-Port gewechselt? Dann Karte „GNSS-Störungen“ → „Neu lernen“: Die Automatik misst danach neu und korrigiert selbst. Sonst den gemessenen Versatz bitte nicht von Hand übernehmen, sondern Antenne und Umgebung prüfen – während einer Störung könnte er von einem Spoofer stammen." })));
     } else if (decision.action === "suggest" && isNum(decision.new_offset)) {
       const delay = isNum(decision.new_delay) ? `, Delay ${configSeconds(decision.new_delay)}` : "";
@@ -384,7 +405,7 @@ export function render(ctx) {
   const chronyCard = card("GPS in chrony", { help: "gps_value", sub: "Wie chrony das GPS gerade bewertet." },
     gpsSource ? kv([
       ["Zustand", stateBadge(gpsSource), "gps_source_state"],
-      ["Grund", reasonCell(gpsSource), "gps_select_reason"],
+      reasonDiffers(gpsSource) ? ["Grund", reasonCell(gpsSource), "gps_select_reason"] : null,
       ["Offset der letzten Messung", fmtSeconds(gpsSource.offset, 3, true), "source_offset"],
       ["Jitter", isNum(gpsSource.std_dev) ? fmtSeconds(gpsSource.std_dev) : "–", "jitter"],
       ["Eingestellter Offset", `${configSeconds(cfg.gps_offset)}`, "gps_offset"],

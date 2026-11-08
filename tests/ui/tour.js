@@ -17,6 +17,10 @@
 // Abstand, Tastenkürzel nicht im Suchfeld. Dazu die Einstellungen (settingsChecks): Reiter, Höhe < 2500 px
 // bei 1440 px, Suche, „nur Geänderte“, Speicherleiste, Vorschau-Dialog, Nachfrage beim Verlassen.
 //
+// Dazu die Clients (clientsChecks: Karten bei 390 px, Name direkt bearbeiten mit Enter/Esc) und die sichtbare
+// Wortzahl je Seite (wordCounts, Ausgabe „words“; TOUR_WORDS_ONLY=1 misst nur sie). Dazu pagesChecks mit erfundenen
+// Antworten: Clients mit Messwert (Zellen, ⓘ auf dem Handy) und Rohdaten der Ereignisse (TOUR_PAGES_ONLY=1).
+//
 // Aufruf: node tests/ui/tour.js [Basis-URL]   (Standard http://127.0.0.1:18300, oder TOUR_BASE)
 // Ausgabe: JSON mit „problems“ (leer = alles gut) und einer Zeile je Route. Rückgabecode 1 bei Problemen.
 // Bildschirmfotos landen in TOUR_SHOTS, wenn gesetzt. TOUR_NAV_ONLY=1 prüft nur die Navigation.
@@ -505,15 +509,202 @@ async function settingsChecks(browser) {
   return { found, lines };
 }
 
+// Clients (1.6, T2 „Seiten entschlacken“): bei 390 px Karten statt Tabelle ohne Überbreite, bei 1440 px die
+// Tabelle; Name direkt in der Liste: ✎ öffnet das Feld (Fokus darin), Esc bricht ab (Fokus zurück auf ✎, nichts
+// gespeichert), Enter speichert (Name steht danach in der Liste); zum Schluss wird der Name wieder entfernt.
+async function clientsChecks(browser) {
+  const found = [];
+  const lines = [];
+  const NAME = "Rundgang-Gerät";
+  for (const width of [1440, 390]) {
+    const ctx = await browser.newContext({ viewport: { width, height: 900 } });
+    const page = await ctx.newPage();
+    const errors = [];
+    page.on("pageerror", (e) => errors.push(e.message));
+    await page.goto(`${BASE}/#/clients`, { waitUntil: "load" });
+    await page.waitForTimeout(2000);
+    const layout = await page.evaluate(() => ({
+      cards: document.querySelectorAll("#main .client-card").length,
+      table: Boolean(document.querySelector("#main table.clients-table")),
+      overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      wide: [...document.querySelectorAll("#main .client-card")].filter((c) => c.scrollWidth > c.clientWidth + 1).length,
+      edit: document.querySelectorAll("#main .name-edit").length,
+    }));
+    lines.push(`clients ${width}: cards=${layout.cards} table=${layout.table} edit=${layout.edit}`);
+    if (width <= 640 && (!layout.cards || layout.table)) found.push(`${width} Clients: Karten statt Tabelle erwartet ${JSON.stringify(layout)}`);
+    if (width > 640 && (layout.cards || !layout.table)) found.push(`${width} Clients: Tabelle erwartet ${JSON.stringify(layout)}`);
+    if (layout.overflow > 0 || layout.wide) found.push(`${width} Clients: Überbreite ${JSON.stringify(layout)}`);
+    if (!layout.edit) { found.push(`${width} Clients: kein ✎ zum Umbenennen`); await ctx.close(); continue; }
+    const ip = await page.evaluate(() => document.querySelector("#main .name-cell .client-link")?.getAttribute("href")?.split("/").pop());
+    const cellText = () => page.evaluate((h) => document.querySelector(`#main .client-link[href$="/${h}"]`)?.closest(".name-cell")?.textContent || "", ip);
+    // Esc bricht ab.
+    await page.click("#main .name-edit");
+    await page.waitForTimeout(300);
+    const opened = await page.evaluate(() => ({ input: Boolean(document.querySelector("#main .name-input")),
+      focus: document.activeElement?.classList.contains("name-input") }));
+    if (!opened.input || !opened.focus) found.push(`${width} Name bearbeiten: Feld nicht offen/fokussiert ${JSON.stringify(opened)}`);
+    await page.keyboard.type("Abbruch");
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(400);
+    const cancelled = await page.evaluate(() => ({ input: Boolean(document.querySelector("#main .name-input")),
+      focus: document.activeElement?.classList.contains("name-edit") }));
+    if (cancelled.input || !cancelled.focus || (await cellText()).includes("Abbruch")) found.push(`${width} Esc im Namensfeld: ${JSON.stringify(cancelled)}`);
+    // Enter speichert.
+    await page.click("#main .name-edit");
+    await page.waitForTimeout(300);
+    await page.fill("#main .name-input", NAME);
+    await page.keyboard.press("Enter");
+    await page.waitForTimeout(2500);
+    const saved = await cellText();
+    if (!saved.includes(NAME)) found.push(`${width} Enter im Namensfeld speichert nicht: „${saved}“`);
+    if (await page.evaluate(() => document.querySelector("#main .inline-error")?.textContent || "")) found.push(`${width} Fehlermeldung nach dem Speichern`);
+    const after = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+    if (after > 0) found.push(`${width} Clients mit Namen: Überbreite ${after}`);
+    // Aufräumen: Name wieder entfernen.
+    await page.click(`#main .name-edit`);
+    await page.waitForTimeout(300);
+    await page.fill("#main .name-input", "");
+    await page.keyboard.press("Enter");
+    await page.waitForTimeout(1500);
+    if ((await cellText()).includes(NAME)) found.push(`${width} Name ließ sich nicht wieder entfernen`);
+    if (errors.length) found.push(`${width} Clients Seitenfehler: ${errors.join(" | ")}`);
+    await ctx.close();
+  }
+  return { found, lines };
+}
+
+// Nachbesserung T2d, mit erfundenen Antworten (page.route), weil das erfundene chronyc weder messbare Clients
+// noch Ereignisse liefert:
+//   * Clients mit Messwert: keine Zelle in einer Zelle (td td, dd td), bei 390 px dieselben Spalten-ⓘ wie bei
+//     1440 px in der Geräteliste, die Erklärung zum „*“ sichtbar;
+//   * Diagnose, Ereignisse bei 390 px: „Rohdaten“ mit mindestens 24 px Tippfläche; aufgeklappt und mit Fokus
+//     bleibt beides über das Neuladen nach 30 s erhalten.
+async function pagesChecks(browser) {
+  const found = [];
+  const lines = [];
+  const infos = {};
+  const offsets = { available: true, names: {}, clients: {
+    "192.0.2.10": { measurable: true, ewma: 0.0012, min: 0.001, max: 0.0014, count: 12, state: "ok", requests: 25 },
+    "192.0.2.99": { measurable: false, state: "verschleiert", requests: 4, last_seen: Math.floor(Date.now() / 1000) } } };
+  for (const width of [1440, 390]) {
+    const ctx = await browser.newContext({ viewport: { width, height: 900 } });
+    const page = await ctx.newPage();
+    await page.route("**/api/clients/offsets*", (route) => route.fulfill({ json: offsets }));
+    await page.route("**/api/status*", async (route) => {
+      const response = await route.fetch();
+      const body = await response.json();
+      delete body.clientmon;
+      await route.fulfill({ response, json: body });
+    });
+    await page.goto(`${BASE}/#/clients`, { waitUntil: "load" });
+    await page.waitForTimeout(2500);
+    const got = await page.evaluate(() => {
+      const list = [...document.querySelectorAll("#main .card")].find((c) => /Geräte, die diesen Server fragen/.test(c.textContent));
+      return { nested: document.querySelectorAll("#main td td, #main dd td, #main td dd, #main dd dd").length,
+        value: Boolean(document.querySelector("#main .offset-value")),
+        infos: list ? [...list.querySelectorAll("button.info")].map((b) => b.getAttribute("aria-label")).sort() : [],
+        star: list ? list.innerText.includes("* aus der eigenen Messung") : false,
+        cells: [...document.querySelectorAll("#main table.clients-table td.num")].filter((td) => td.querySelector(".offset-value"))
+          .map((td) => { const a = td.getBoundingClientRect(); const b = td.querySelector(".offset-value").getBoundingClientRect();
+            return Math.round(a.right - b.right); }) };
+    });
+    infos[width] = got.infos;
+    lines.push(`pages clients ${width}: nested=${got.nested} infos=${got.infos.length} star=${got.star}`);
+    if (!got.value) found.push(`${width} Clients: erfundener Messwert nicht sichtbar`);
+    if (got.nested) found.push(`${width} Clients: ${got.nested} verschachtelte Zellen`);
+    if (got.cells.some((gap) => gap > 16)) found.push(`${width} Clients: Abweichung nicht rechtsbündig ${JSON.stringify(got.cells)}`);
+    if (width <= 640 && !got.star) found.push(`${width} Clients: Erklärung zum * fehlt`);
+    await ctx.close();
+  }
+  if (JSON.stringify(infos[390]) !== JSON.stringify(infos[1440])) {
+    found.push(`Clients: ⓘ bei 390 px ${JSON.stringify(infos[390])} ≠ 1440 px ${JSON.stringify(infos[1440])}`);
+  }
+
+  const ctx = await browser.newContext({ viewport: { width: 390, height: 900 } });
+  const page = await ctx.newPage();
+  await page.clock.install();
+  const now = Math.floor(Date.now() / 1000);
+  const events = [{ t: now - 60, kind: "service", level: "info", title: "Dienst gestartet", data: { pid: 4711, grund: "Rundgang" } },
+    { t: now - 120, kind: "source", level: "warn", title: "Quelle gewechselt", data: { von: "a", nach: "b" } }];
+  let served = 0;
+  await page.route("**/api/events?*", (route) => { served += 1; return route.fulfill({ json: { events } }); });
+  await page.goto(`${BASE}/#/system/diagnose`, { waitUntil: "load" });
+  await page.clock.runFor(2500);
+  await page.waitForTimeout(300);
+  const summary = page.locator("#main details.diag-event-raw summary").first();
+  if (!(await summary.count())) {
+    found.push("Diagnose: keine Ereignisse mit Rohdaten");
+  } else {
+    const box = await summary.boundingBox();
+    if (!box || box.height < 24) found.push(`Diagnose: „Rohdaten“ nur ${box && box.height.toFixed(1)} px hoch`);
+    await summary.focus();
+    await page.keyboard.press("Enter");
+    lines.push(`pages diagnose 390: vor dem Neuladen ${JSON.stringify(await page.evaluate(() => ({ open: document.querySelector("#main details.diag-event-raw")?.open, n: document.querySelectorAll("#main details.diag-event-raw").length, key: document.querySelector("#main details.diag-event-raw")?.dataset.key, focus: document.activeElement?.tagName })))}`);
+    const before = served;
+    await page.evaluate(() => { document.querySelector("#main .diag-events").dataset.mark = "1"; });
+    await page.clock.runFor(31000);
+    await page.waitForTimeout(500);
+    const after = await page.evaluate(() => {
+      const first = document.querySelector("#main details.diag-event-raw");
+      return { open: Boolean(first && first.open), focus: document.activeElement === first?.querySelector("summary"),
+        same: document.querySelector("#main .diag-events")?.dataset.mark === "1", active: document.activeElement?.tagName };
+    });
+    lines.push(`pages diagnose 390: summary=${box && box.height.toFixed(1)} reloads=${served - before} open=${after.open} focus=${after.focus}`);
+    if (served <= before) found.push("Diagnose: Ereignisse nach 30 s nicht neu geladen");
+    if (!after.open || !after.focus) found.push(`Diagnose: Rohdaten nach dem Neuladen ${JSON.stringify(after)}`);
+  }
+  await ctx.close();
+  return { found, lines };
+}
+
+// Sichtbare Wortzahl je Seite (1.6, T2 „Seiten entschlacken“): innerText des Inhalts bei 1440 px, helles Thema.
+// Geschlossene ⓘ-Popover stehen nicht im DOM, zugeklappte <details> zählt innerText nicht mit (nur die Zusammenfassung).
+// Wort = Folge ohne Leerraum mit mindestens einem Buchstaben oder einer Ziffer.
+const WORD_ROUTES = ["/#/", "/#/quellen", "/#/gps", "/#/clients", "/#/clients/192.0.2.10", "/#/uhr/qualitaet",
+  "/#/uhr/hardware", "/#/uhr/ptp", "/#/system/diagnose", "/#/system/benachrichtigungen", "/#/system/einstellungen", "/#/hilfe"];
+
+async function wordCounts(browser) {
+  const ctx = await browser.newContext({ colorScheme: "light", viewport: { width: 1440, height: 900 } });
+  const counts = {};
+  for (const route of WORD_ROUTES) {
+    const page = await ctx.newPage();
+    await page.goto(BASE + route, { waitUntil: "load" });
+    await page.waitForTimeout(2500);
+    counts[route] = await page.evaluate(() => (document.getElementById("main").innerText.split(/\s+/)
+      .filter((w) => /[\p{L}\p{N}]/u.test(w))).length);
+    await page.close();
+  }
+  await ctx.close();
+  return counts;
+}
+
 (async () => {
   const browser = await chromium.launch();
   const results = [];
   let nav = { found: [], lines: [] };
+  let words = {};
   try {
+    if (process.env.TOUR_WORDS_ONLY) {
+      console.log(JSON.stringify({ words: await wordCounts(browser) }, null, 1));
+      return;
+    }
+    if (process.env.TOUR_PAGES_ONLY) {
+      const result = await pagesChecks(browser);
+      console.log(JSON.stringify(result, null, 1));
+      process.exitCode = result.found.length ? 1 : 0;
+      return;
+    }
     nav = await navChecks(browser);
     const settingsResult = await settingsChecks(browser);
     nav.found.push(...settingsResult.found);
     nav.lines.push(...settingsResult.lines);
+    const clientsResult = await clientsChecks(browser);
+    nav.found.push(...clientsResult.found);
+    nav.lines.push(...clientsResult.lines);
+    const pagesResult = await pagesChecks(browser);
+    nav.found.push(...pagesResult.found);
+    nav.lines.push(...pagesResult.lines);
+    words = await wordCounts(browser);
     // TOUR_NAV_ONLY=1: nur die Navigationsprüfungen (schneller Durchlauf beim Arbeiten an der Navigation).
     for (const theme of process.env.TOUR_NAV_ONLY ? [] : ["light", "dark"]) {
       for (const width of [1440, 390]) {
@@ -562,7 +753,7 @@ async function settingsChecks(browser) {
   const problems = results.filter((x) => x.console.length || x.csp.length || x.forbidden.length || x.overflow > 0
     || x.overlaps.length || x.info.hitOk < x.info.count);
   if (nav.found.length) problems.push({ check: "navigation", found: nav.found });
-  console.log(JSON.stringify({ problems, summary: [...nav.lines, ...results.map((x) => `${x.theme} ${x.width} ${x.route} ovf=${x.overflow} `
+  console.log(JSON.stringify({ problems, words, summary: [...nav.lines, ...results.map((x) => `${x.theme} ${x.width} ${x.route} ovf=${x.overflow} `
     + `coll=${x.collapsed} info=${x.info.hitOk}/${x.info.count} ${x.info.size || ""} overlap=${x.overlaps.length}`)] }, null, 1));
   process.exit(problems.length ? 1 : 0);
 })().catch((e) => { console.error(String(e)); process.exit(2); });

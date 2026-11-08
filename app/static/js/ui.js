@@ -4,6 +4,7 @@
 // (Zeile Beschriftung → Wert), rangePicker (Zeitraum), emptyState/errorState (leer bzw. Fehler)
 // und chartCard (Diagramm, das sich bei flachem oder leerem Verlauf auf eine Zeile zusammenklappt).
 // Alle Bausteine zeigt die Musterseite #/muster?dev=1 (pages/muster.js).
+import { t as tr } from "./i18n.js";
 import { el, rich, copyText, selectContents, apiPost, isNum, fmtTime, fmtDate } from "./util.js";
 import { HELP } from "./help.js";
 import { actionHref } from "./routes.js";
@@ -44,12 +45,15 @@ export function isPopoverOpen() {
  * Unbekannter Schlüssel: null (dann steht einfach kein Knopf da).
  * more = { title, text }: eigener Text im Popover (z. B. der Rest eines Feld-Hilfetexts, der unter dem
  * Feld keinen Platz hat); der Link „In der Hilfe ansehen“ führt dann weiter zu HELP[key], falls es ihn gibt.
+ * more.withHelp: unter dem eigenen Text steht zusätzlich die Erklärung aus HELP[key] (Karten, deren
+ * Untertitel ins ⓘ gewandert ist – so bleibt beides an einem Knopf).
  */
 export function infoButton(key, label, more) {
   const found = HELP[key];
   const extra = more && more.text ? more : null;
   if (!found && !extra) return null;
-  const entry = extra ? { title: extra.title || found?.title || label, text: extra.text } : found;
+  const entry = extra ? { title: extra.title || found?.title || label, text: extra.text,
+    also: extra.withHelp && found ? found.text : null } : found;
   const button = el("button", {
     type: "button", class: "info", "aria-label": `Erklärung: ${label || entry.title}`, "aria-expanded": "false",
   }, el("span", { class: "info-glyph", "aria-hidden": "true", text: "i" }));
@@ -60,6 +64,7 @@ export function infoButton(key, label, more) {
     const node = el("div", { class: "popover", role: "dialog", "aria-label": entry.title },
       el("strong", { class: "popover-title", text: entry.title }),
       el("p", {}, rich(entry.text)),
+      entry.also ? el("p", { class: "popover-also" }, rich(entry.also)) : null,
       found ? el("a", { href: `#/hilfe?t=${key}`, class: "popover-more", text: "In der Hilfe ansehen →",
         onclick: closePopover }) : null);
     document.body.append(node);
@@ -79,14 +84,74 @@ export function infoButton(key, label, more) {
 // Früherer Name – derselbe Baustein.
 export const info = infoButton;
 
+// --- Eine Erklärzeile (T2 „Seiten entschlacken“) -------------------------------
+// Je Karte und Feld steht höchstens eine Erklärzeile sichtbar da; der Rest wandert ins ⓘ (nichts wird
+// gelöscht). Länger als LINE_MAX Zeichen → sichtbar bleibt der erste Satz (bzw. der Teil vor einem
+// Gedankenstrich), der Rest steht im Popover.
+export const LINE_MAX = 140;
+
+// Hervorhebungen (**…**, `…`) dürfen nicht mitten durchgeschnitten werden.
+function balanced(text) {
+  return (text.split("**").length - 1) % 2 === 0 && (text.split("`").length - 1) % 2 === 0;
+}
+
+/**
+ * Text in { first, rest } teilen: first passt in eine Zeile (≤ max Zeichen), rest geht ins ⓘ.
+ * Geteilt wird am letzten Satzende vor max, sonst an einem Gedankenstrich („ – “); ohne passende
+ * Stelle bleibt der Text ganz (rest leer).
+ */
+export function splitExplain(text, max = LINE_MAX) {
+  const value = String(text ?? "").trim();
+  if (value.length <= max) return { first: value, rest: "" };
+  const cuts = [];
+  const dashes = [];
+  const sentence = /[.!?…](?=\s+[„"(A-ZÄÖÜ0-9*`])/g;
+  for (let m = sentence.exec(value); m; m = sentence.exec(value)) {
+    // Abkürzungen („z. B.“, „d. h.“, „ca.“) sind kein Satzende.
+    if (!/(^|[\s(])[\p{L}\d]{1,2}\.$/u.test(value.slice(0, m.index + 1))) cuts.push([m.index + 1, m.index + 1]);
+  }
+  const dash = / – /g;
+  for (let m = dash.exec(value); m; m = dash.exec(value)) dashes.push([m.index, m.index + 3]);
+  const usable = (list) => list.filter(([end]) => end <= max && end >= 20 && balanced(value.slice(0, end)))
+    .sort((a, b) => b[0] - a[0]);
+  // Lieber ein ganzer Satz; nur ohne passendes Satzende am Gedankenstrich teilen.
+  const fits = usable(cuts).length ? usable(cuts) : usable(dashes);
+  if (!fits.length) return { first: value, rest: "" };
+  const [end, next] = fits[0];
+  let first = value.slice(0, end).trim();
+  let rest = value.slice(next).trim();
+  if (value.slice(end, next) === " – " && !/[.!?…]$/.test(first)) first = `${first} …`;
+  if (rest) rest = rest.charAt(0).toUpperCase() + rest.slice(1);
+  return { first, rest };
+}
+
+/**
+ * Erklärzeile: Absatz mit höchstens einer Zeile Text; der Rest (und HELP[help]) im ⓘ dahinter.
+ * opts: { help, title, class (Standard „card-sub“), tag }.
+ */
+export function explainLine(text, opts = {}) {
+  if (!text) return null;
+  const { first, rest } = splitExplain(text, opts.max);
+  const more = rest ? infoButton(opts.help, opts.title || tr("pages.more"), { title: opts.title, text: rest, withHelp: true })
+    : opts.help ? infoButton(opts.help, opts.title) : null;
+  return el(opts.tag || "p", { class: opts.class || "card-sub" }, rich(first), more ? " " : null, more);
+}
+
 // --- Bausteine ---------------------------------------------------------------
+// options.sub: Untertitel – eine Zeile sichtbar, ein längerer Rest steht im ⓘ der Karte (zusammen mit
+// der Erklärung aus options.help).
 export function card(title, options = {}, ...children) {
+  const sub = typeof options.sub === "string" ? splitExplain(options.sub) : null;
+  const button = sub && sub.rest
+    ? infoButton(options.help, title, { title, text: sub.rest, withHelp: true })
+    : options.help ? infoButton(options.help, title) : null;
+  const subNode = sub ? (sub.first ? el("p", { class: "card-sub" }, rich(sub.first)) : null)
+    : options.sub ? el("p", { class: "card-sub" }, options.sub) : null;
   const head = el("div", { class: "card-head" },
-    el("div", { class: "card-title" }, el("h2", { text: title }), options.help ? infoButton(options.help, title) : null,
-      options.badge ?? null),
+    el("div", { class: "card-title" }, el("h2", { text: title }), button, options.badge ?? null),
     options.actions ? el("div", { class: "card-actions" }, options.actions) : null);
   return el("section", { class: `card ${options.class || ""}`, id: options.id || null },
-    head, options.sub ? el("p", { class: "card-sub" }, rich(options.sub)) : null, ...children);
+    head, subNode, ...children);
 }
 
 /**
@@ -187,10 +252,18 @@ export function insightList(items, ctx) {
     el("span", { class: "insight-icon", "aria-hidden": "true", text: LEVEL_ICON[item.level] || "i" }),
     el("div", { class: "insight-body" },
       el("strong", { text: item.title }),
-      el("p", { text: item.text }),
+      // Eine Zeile sichtbar, der Rest des Hinweises im ⓘ (T2 „Seiten entschlacken“).
+      hintLine(item),
       insightFixes(item, ctx),
       insightLink(item),
       insightAction(item)))));
+}
+
+function hintLine(item) {
+  const { first, rest } = splitExplain(item.text || "");
+  if (!rest) return el("p", { text: first });
+  return el("p", {}, el("span", { text: first }), " ",
+    infoButton(null, item.title || "Hinweis", { title: item.title || "Hinweis", text: rest }));
 }
 
 // Link „Zur … →“ eines Hinweises: Ziel aus der Routentabelle (routes.js), unbekannte Aktion ohne Link.
@@ -242,9 +315,15 @@ export const ACTION_LABEL = {
   diagnose: "Zur Diagnose →", notify: "Zu den Benachrichtigungen →",
 };
 
-/** Leerzustand: ein ruhiger Satz statt einer leeren Fläche. text darf **fett** und `code` enthalten. */
-export function emptyState(text) {
-  return el("p", { class: "empty-note" }, rich(text));
+/**
+ * Leerzustand: ein ruhiger Satz statt einer leeren Fläche. text darf **fett** und `code` enthalten.
+ * Längere Texte: eine Zeile sichtbar, der Rest im ⓘ dahinter (opts: { help, title }).
+ */
+export function emptyState(text, opts = {}) {
+  const { first, rest } = splitExplain(text);
+  if (!rest) return el("p", { class: "empty-note" }, rich(first));
+  return el("p", { class: "empty-note" }, rich(first), " ",
+    infoButton(opts.help, opts.title || tr("pages.more"), { title: opts.title || tr("pages.more"), text: rest, withHelp: true }));
 }
 
 // Früherer Name.
@@ -362,7 +441,7 @@ function sinceText(since, now, zone) {
  * opts: { title, help, sub, actions, id, class, series (für die Form), format(v) für den Mittelwert,
  *         draw(host) – zeichnet das Diagramm nach dem Einhängen, key – Merkname fürs Aufklappen,
  *         since – Beginn der Sammlung (Unix-s), now – jetzt (Standard: Uhr des Servers aus ctx.status),
- *         zone – Zeitzone des Servers, flatRel, flatAbs, flat: false,
+ *         zone – Zeitzone des Servers, flatRel, flatAbs, flat: false, emptyText – eigener Text für „leer“,
  *         collapse: false – nie zusammenklappen (z. B. während Daten noch laden) }.
  * ctx: Seitenkontext (afterRender, uiState, rerender).
  */
@@ -384,7 +463,7 @@ export function chartCard(ctx, opts) {
       const when = isNum(since) ? sinceText(since, now, opts.zone ?? null) : null;
       // Punkte da, aber ohne einen Wert (GPS ohne Fix, Quelle aus): nicht „sammelt“, sondern „keine Messwerte“.
       const silent = shape.count === 0 && shape.points > 0;
-      text = when ? `${silent ? "keine Messwerte" : "sammelt"} seit ${when}` : "noch keine Messwerte";
+      text = opts.emptyText || (when ? `${silent ? "keine Messwerte" : "sammelt"} seit ${when}` : "noch keine Messwerte");
     } else {
       // Um 0 pendelnde Reihen (Abweichung der Uhr): der Mittelwert läge nahe 0 und verschwiege die
       // Schwankung – dann der größte Betrag. format liefert ggf. schon „±“ oder „+“, das fällt weg.

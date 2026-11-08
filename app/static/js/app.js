@@ -275,9 +275,11 @@ async function refresh() {
     document.body.classList.remove("is-stale");
     showStale(false);
     renderHeader();
-    // Offene Erklärung nicht wegreißen: dann nur die Kopfzeile aktualisieren.
+    // Offene Erklärung nicht wegreißen: dann nur die Kopfzeile aktualisieren. Seiten mit live = false nur dann
+    // neu aufbauen, wenn #main selbst bloß den Platzhalter zeigt – nicht wegen eines leeren Hinweises in einer
+    // Karte (sonst klappte z. B. die Diagnose alle paar Sekunden alles zu und verlöre den Fokus).
     if (page.module.live !== false && !isPopoverOpen()) render();
-    else if (!main.childElementCount || main.querySelector(".empty-note:only-child")) render();
+    else if (!main.childElementCount || main.querySelector(":scope > .empty-note:only-child")) render();
   } catch (error) {
     state.failed += 1;
     document.body.classList.add("is-stale");

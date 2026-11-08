@@ -28,7 +28,7 @@ import _isolation  # noqa: E402,F401
 
 import settings  # noqa: E402
 
-NAMESPACES = ("app", "nav", "overview", "settings", "help")
+NAMESPACES = ("app", "nav", "overview", "settings", "help", "pages")
 KEY_LITERAL = re.compile(r"""["'`]((?:%s)\.[a-z0-9_]+(?:\.[a-z0-9_]+)*)["'`]""" % "|".join(NAMESPACES))
 HTML_ATTR = re.compile(r'data-i18n(?:-title|-aria-label)?="([^"]+)"')
 PLACEHOLDER = re.compile(r"\{(\w+)\}")

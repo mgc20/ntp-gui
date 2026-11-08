@@ -857,7 +857,8 @@ details.enforce-names { margin-top: 10px; }
 .diag-event-kind { color: var(--ink-muted); font-size: 12.5px; text-transform: uppercase; letter-spacing: .03em; }
 .diag-event-title { flex: 1 1 260px; min-width: 0; }
 .diag-event-raw { flex-basis: 100%; font-size: 12px; color: var(--ink-muted); }
-.diag-event-raw summary { cursor: pointer; width: max-content; }
+/* Tippfläche mindestens 24 px (Ziel 32 px); Zeilenhöhe statt flex, damit das Aufklapp-Dreieck bleibt. */
+.diag-event-raw summary { cursor: pointer; width: max-content; min-height: 32px; line-height: 32px; }
 .diag-event-data { display: block; margin-top: 2px; background: none; padding: 0; color: var(--ink-muted); font-size: 12px; word-break: break-all; }
 
 .diag-output { margin-top: 12px; }
@@ -1109,3 +1110,38 @@ kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fon
   .settings-tools .settings-search { flex-basis: 100%; max-width: none; }
   .preview-dialog { padding: 12px; }
 }
+
+/* ---------- Seiten entschlacken (1.6, T2) ---------- */
+/* Eingeklappte Erklärungen und Anleitungen (zählen nicht zur sichtbaren Wortzahl). */
+details.explain-more { border: 1px solid var(--border-soft); border-radius: 10px; background: var(--surface-2);
+  padding: 8px 12px; margin-top: 12px; }
+details.explain-more > summary { cursor: pointer; font-size: 13.5px; font-weight: 600; display: flex; align-items: center;
+  gap: 6px; min-height: 24px; }
+details.explain-more[open] > summary { margin-bottom: 8px; }
+.popover p.popover-also { padding-top: 8px; border-top: 1px solid var(--border-soft); }
+
+/* Geräteliste: Name direkt bearbeiten */
+.name-cell { display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; max-width: 100%; }
+.name-edit { display: inline-grid; place-items: center; width: 28px; height: 28px; flex: none; padding: 0; border: 0;
+  border-radius: 8px; background: transparent; color: var(--ink-muted); cursor: pointer; font-size: 14px; line-height: 1; }
+.name-edit:hover, .name-edit:focus-visible { color: var(--info-ink); background: var(--accent-soft); }
+.name-cell.is-editing { display: flex; flex-direction: column; align-items: stretch; gap: 4px; }
+.name-edit-box { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.name-input { width: min(220px, 100%); min-width: 0; font: inherit; font-size: 14px; padding: 5px 8px; border-radius: 8px;
+  border: 1px solid var(--accent); background: var(--surface); color: var(--ink); }
+.name-input[aria-invalid="true"] { border-color: var(--crit); }
+.inline-error { color: var(--crit-ink); font-size: 12.5px; }
+
+/* Handy (≤ 640 px): Geräte als Karten statt Tabelle (kein seitliches Schieben). */
+.client-card-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; margin: 0 0 10px;
+  color: var(--ink-muted); font-size: 12px; }
+.client-card-legend > span { display: inline-flex; align-items: center; gap: 2px; }
+.client-cards-wrap > .field-help { margin: 10px 0 0; }
+.client-cards { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.client-card { border: 1px solid var(--border-soft); border-radius: 12px; background: var(--surface-2); padding: 10px 12px;
+  min-width: 0; }
+.client-card-head { display: flex; align-items: center; gap: 6px; min-width: 0; overflow-wrap: anywhere; }
+.client-card-facts { margin: 8px 0 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 12px; }
+.client-card-fact { min-width: 0; }
+.client-card-fact dt { color: var(--ink-muted); font-size: 12px; }
+.client-card-fact dd { margin: 0; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }

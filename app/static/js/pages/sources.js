@@ -1,3 +1,4 @@
+import { t as tr } from "../i18n.js";
 import { el, fmtSeconds, fmtDuration, fmtLogInterval, fmtNumber, fmtDate, isNum, rich } from "../util.js";
 import { card, kv, badge, infoButton, reachRegister, rangeButtons, emptyState, chartCard } from "../ui.js";
 import { lineChart } from "../charts.js";
@@ -25,6 +26,11 @@ function sameAsState(source) {
   return Boolean(key) && (SELECT_STATE_SHORT[key] || key) === (STATE[source.state] || [])[0];
 }
 
+/** Sagt „Grund“ etwas anderes als „Zustand“? Nur dann steht er da (Tabelle, Details, GPS-Seite). */
+export function reasonDiffers(source) {
+  return Boolean(source && source.select_state) && !sameAsState(source);
+}
+
 export function reasonCell(source) {
   const key = source.select_state;
   if (!key || sameAsState(source)) return el("span", { class: "muted", text: "–" });
@@ -49,7 +55,7 @@ function details(source) {
   const blocks = [];
   blocks.push(el("div", { class: "detail-block" }, el("h3", { text: "Auswahl durch chrony" }), kv([
     ["Zustand", stateBadge(source)],
-    sameAsState(source) ? null : ["Grund", reasonCell(source), "select_reason"],
+    reasonDiffers(source) ? ["Grund", reasonCell(source), "select_reason"] : null,
     ["Vertrauensbereich", isNum(source.interval_low) ? `${fmtSeconds(source.interval_low, 3, true)} … ${fmtSeconds(source.interval_high, 3, true)}` : "–", "interval"],
     ["Bewertung", isNum(source.score) ? fmtNumber(source.score, 2) : "–", "score"],
     ["Optionen", (source.effective_options || []).join(", ") || "keine", "select_options"],
@@ -137,6 +143,9 @@ export function render(ctx) {
   const expanded = ctx.uiState.expandedSources || (ctx.uiState.expandedSources = new Set());
 
   const rows = [];
+  // Spalte „Grund“ nur, wenn er bei mindestens einer Quelle mehr sagt als „Zustand“.
+  const showReason = sources.some(reasonDiffers);
+  const columns = showReason ? 10 : 9;
   for (const source of sources) {
     const open = expanded.has(source.name);
     const label = source.hostname || source.name;
@@ -157,25 +166,27 @@ export function render(ctx) {
       el("td", { class: "num", text: isNum(source.std_dev) ? fmtSeconds(source.std_dev) : "–" }),
       el("td", { class: "num", text: uncertainty(source) }),
       el("td", {}, stateBadge(source)),
-      el("td", {}, reasonCell(source))));
-    if (open) rows.push(el("tr", { class: "src-detail" }, el("td", { colspan: 10 }, details(source))));
+      showReason ? el("td", {}, reasonCell(source)) : null));
+    if (open) rows.push(el("tr", { class: "src-detail" }, el("td", { colspan: columns }, details(source))));
   }
 
   const head = [
     ["Quelle", "hostname_vs_ip"], ["Typ", "source_type"], ["Stratum", "stratum", "num"], ["Intervall", "poll", "num"],
     ["Letzte 8", "reach"], ["Offset", "source_offset", "num"], ["Jitter", "jitter", "num"],
-    ["Unsicherheit", "interval", "num"], ["Zustand", "state_combined"], ["Grund", "select_reason"],
-  ];
+    ["Unsicherheit", "interval", "num"], ["Zustand", "state_combined"], showReason ? ["Grund", "select_reason"] : null,
+  ].filter(Boolean);
   const table = el("div", { class: "table-scroll" }, el("table", { class: "sources-table" },
     el("thead", {}, el("tr", {}, head.map(([label, help, cls]) => el("th", { class: cls || null },
       el("span", { text: label }), infoButton(help, label))))),
-    el("tbody", {}, rows.length ? rows : el("tr", {}, el("td", { colspan: 10, class: "empty-note", text: "Keine Zeitquellen konfiguriert." })))));
+    el("tbody", {}, rows.length ? rows : el("tr", {}, el("td", { colspan: columns, class: "empty-note", text: "Keine Zeitquellen konfiguriert." })))));
 
   // Offset je Quelle
   const names = [...new Set(history.flatMap((s) => Object.keys(s.sources || {})))];
   const labelOf = (name) => (sources.find((s) => s.name === name) || {}).hostname || name;
   const hidden = ctx.uiState.hiddenSeries || (ctx.uiState.hiddenSeries = new Set());
-  const offsetSeries = names.map((name) => ({ id: name, label: labelOf(name),
+  // Farbe fest je Quelle (charts.colorFor), Referenzuhren (GPS/PPS) in der Signalfarbe.
+  const isRefclock = (name) => (sources.find((s) => s.name === name) || {}).mode === "#";
+  const offsetSeries = names.map((name) => ({ id: name, label: labelOf(name), signal: isRefclock(name),
     points: history.map((s) => [s.t, (s.sources || {})[name]?.o ?? null]) }));
   // Noch kein Verlauf → eine Zeile „sammelt seit …“ statt einer leeren Fläche. Nie „flach“:
   // Offsets mehrerer Quellen sind auch bei kleiner Spannweite aussagekräftig.
@@ -197,12 +208,14 @@ export function render(ctx) {
     card("Zeitquellen", { help: "source_type", sub: "Klick auf eine Zeile zeigt alles, was chrony über die Quelle weiß." }, table),
     ntsServerCard(status.nts_server),
     offsetCard,
-    card("So wählt chrony seine Quellen", { class: "explain" },
+    card("So wählt chrony seine Quellen", { class: "explain", help: "select_reason",
+      sub: tr("pages.sources.steps_line") },
+      el("details", { class: "explain-more" }, el("summary", { text: tr("pages.sources.steps") }),
       el("ol", { class: "steps" },
         el("li", {}, rich("**Messen**: Jede Quelle wird regelmäßig gefragt. Aus Offset, Laufzeit und Streuung entsteht ein **Vertrauensbereich**, in dem die echte Zeit laut dieser Quelle liegt.")),
         el("li", {}, rich("**Mehrheit finden**: chrony sucht den Bereich, in dem sich die meisten Vertrauensbereiche überschneiden. Wer nicht dazugehört, ist **Falseticker (x)** und wird ignoriert.")),
         el("li", {}, rich("**Beste wählen**: Unter den übrigen wird die beste Quelle **ausgewählt** (Zeichen `*`) – kleinste Unsicherheit, stabil, ohne Hin-und-her-Springen.")),
         el("li", {}, rich("**Kombinieren**: Quellen, die fast so gut sind, werden **kombiniert (+)** und mitgemittelt. Deutlich schlechtere bleiben **nicht kombiniert (−)** – sie stehen als Reserve bereit."))),
-      emptyState("Bevorzugte Quellen („prefer“) gewinnen, solange sie plausibel sind. „Nur beobachten“ („noselect“) misst ohne zu nutzen.")),
+      emptyState("Bevorzugte Quellen („prefer“) gewinnen, solange sie plausibel sind. „Nur beobachten“ („noselect“) misst ohne zu nutzen."))),
   ].filter(Boolean);
 }

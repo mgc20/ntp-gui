@@ -1,5 +1,5 @@
 import { el, fmtNs, fmtNumber, isNum, rich } from "../util.js";
-import { card, statCard, kv, infoButton, badge, emptyState } from "../ui.js";
+import { card, statCard, kv, infoButton, badge, emptyState, chartCard } from "../ui.js";
 import { route } from "../routes.js";
 import { t as tr } from "../i18n.js";
 import { lineChart } from "../charts.js";
@@ -158,19 +158,25 @@ export function render(ctx) {
         ["Zeit rückverfolgbar", ptp.timeTraceable === "1" || ptp.timeTraceable === true ? "ja" : "nein", "ptp_time_traceable"],
       ]))));
 
-    const offsetHost = el("div", { class: "chart-host" });
-    const delayHost = el("div", { class: "chart-host" });
-    ctx.afterRender(() => {
-      lineChart(offsetHost, { series: [{ id: "ptp-off", label: "Offset", color: "var(--accent)",
-        points: history.map((s) => [s.t, s.ptp?.offset_ns ?? null]) }], format: (v) => fmtNs(v), range: ctx.range, end: ctx.status.system?.time, ariaLabel: "Offset zum PTP-Master",
-        axisFormat: (v, step, extent) => axisSeconds(v / 1e9, step / 1e9, extent / 1e9), emptyText: ptp.is_grandmaster ? "Als Grandmaster gibt es keinen Offset zu einem Master" : undefined });
-      lineChart(delayHost, { series: [{ id: "ptp-delay", label: "Laufzeit", color: "var(--accent)",
-        points: history.map((s) => [s.t, s.ptp?.delay_ns ?? null]) }], format: (v) => fmtNs(v), range: ctx.range, end: ctx.status.system?.time, ariaLabel: "Laufzeit zum PTP-Master",
-        axisFormat: (v, step, extent) => axisSeconds(v / 1e9, step / 1e9, extent / 1e9), zeroLine: false });
-    });
+    // Diagramme als chartCard: leer → eine Zeile „sammelt seit …“, gleichbleibend → „stabil um …“.
+    const offsetSeries = [{ id: "ptp-off", label: "Offset", color: "var(--accent)",
+      points: history.map((s) => [s.t, s.ptp?.offset_ns ?? null]) }];
+    const delaySeries = [{ id: "ptp-delay", label: "Laufzeit", color: "var(--accent)",
+      points: history.map((s) => [s.t, s.ptp?.delay_ns ?? null]) }];
+    const axis = (v, step, extent) => axisSeconds(v / 1e9, step / 1e9, extent / 1e9);
+    const since = history.length ? history[0].t : null;
+    const zone = ctx.status.system?.tz_name || isNum(ctx.status.system?.utc_offset) ? ctx.status.system : null;
     out.push(el("div", { class: "grid-2" },
-      card("Offset zum Master", { help: "offset_from_master" }, offsetHost),
-      card("Laufzeit zum Master", { help: "mean_path_delay" }, delayHost)));
+      chartCard(ctx, { title: "Offset zum Master", help: "offset_from_master", key: "ptp-offset", series: offsetSeries,
+        format: (v) => fmtNs(v), flatAbs: 50, since, zone,
+        emptyText: ptp.is_grandmaster ? "als Grandmaster gibt es keinen Offset zu einem Master" : undefined,
+        draw: (host) => lineChart(host, { series: offsetSeries, format: (v) => fmtNs(v), range: ctx.range, end: ctx.status.system?.time,
+          ariaLabel: "Offset zum PTP-Master", axisFormat: axis,
+          emptyText: ptp.is_grandmaster ? "Als Grandmaster gibt es keinen Offset zu einem Master" : undefined }) }),
+      chartCard(ctx, { title: "Laufzeit zum Master", help: "mean_path_delay", key: "ptp-delay", series: delaySeries,
+        format: (v) => fmtNs(v), since, zone,
+        draw: (host) => lineChart(host, { series: delaySeries, format: (v) => fmtNs(v), range: ctx.range, end: ctx.status.system?.time,
+          ariaLabel: "Laufzeit zum PTP-Master", axisFormat: axis, zeroLine: false }) })));
     if ((metrics.transitions || []).length) {
       out.push(card("Letzte Zustandswechsel", { help: "port_state" }, el("ol", { class: "transitions" },
         metrics.transitions.map((t) => el("li", {}, el("span", { class: "mono", text: `${t.from} → ${t.to}` }),

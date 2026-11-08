@@ -17,6 +17,11 @@ Der Rundgang öffnet jede Route bei 1440 und 390 px, hell und dunkel, und meldet
   ungespeicherten Änderungen, Tastaturfokus nach „Verwerfen“ und „zurücksetzen“, alte Sprungziele
   (`?s=dns`, `?s=api`) auch beim wiederholten Sprung und der Schalter „Nächtliche Sicherung“ im Reiter „Sichern“.
 
+- auf der Clients-Seite: bei 390 px Karten statt Tabelle ohne Überbreite, bei 1440 px die Tabelle, Name direkt in
+  der Liste (✎ öffnet das Feld, Esc bricht ab, Enter speichert; der Name wird danach wieder entfernt),
+- die sichtbare Wortzahl je Seite (`words` in der Ausgabe: innerText des Inhalts bei 1440 px, hell, ohne
+  geschlossene ⓘ-Popover und zugeklappte `<details>`).
+
 ## Dateien
 
 - `fake_chronyc.py` – erfundenes `chronyc` mit leicht schwankenden Werten, nur Beispieladressen aus
@@ -35,6 +40,8 @@ tests/ui/rundgang.sh            # Port 18300 (der Containertest belegt 18080–1
 tests/ui/rundgang.sh 18301      # anderer Port
 TOUR_SHOTS=/tmp/fotos tests/ui/rundgang.sh   # zusätzlich Bildschirmfotos (helles Thema)
 TOUR_NAV_ONLY=1 tests/ui/rundgang.sh          # nur die Navigationsprüfungen (Reiter, untere Leiste, „Mehr“, Speicherleiste)
+TOUR_WORDS_ONLY=1 tests/ui/rundgang.sh        # nur die Wortzahl je Seite messen
+TOUR_PAGES_ONLY=1 tests/ui/rundgang.sh        # nur Clients mit Messwert und Rohdaten der Ereignisse (erfundene Antworten)
 ```
 
 Läuft der Server schon (z. B. mit `NTPGUI_CHRONYC=tests/ui/fake_chronyc.py`), genügt:

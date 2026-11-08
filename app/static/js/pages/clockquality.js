@@ -1,7 +1,7 @@
 // Seite „Uhrqualität“ (1.4): Temperatur ↔ Frequenz, Schaltsekunden, Vollbild-Uhr; ab 1.5 echter Holdover-Test,
 // ab 1.5.4 Allan-Abweichung (wie stabil ist der Quarz über 10 s … 1 Tag).
 import { el, isNum, fmtFixed, fmtNumber, fmtSeconds, fmtPpm, fmtDate, rich } from "../util.js";
-import { card, statCard, kv, badge, emptyState, infoButton, loadingOr, rangePicker } from "../ui.js";
+import { card, statCard, kv, badge, emptyState, infoButton, loadingOr, rangePicker, explainLine } from "../ui.js";
 import { lineChart, logLogChart, scatterChart, stepDecimals } from "../charts.js";
 import { holdoverCard } from "./gnss.js";
 
@@ -92,12 +92,12 @@ function temperatureSection(ctx, data, loading) {
     statCard({ label: "Zusammenhang r", help: "temp_correlation", value: fmtNumber(r, 2),
       note: !isNum(r) ? "zu wenige Punkte" : Math.abs(r) >= 0.5 ? "deutlich" : Math.abs(r) >= 0.2 ? "schwach" : "kaum", tone: "muted" })),
   data.reason === "no_value"
-    ? el("p", { class: "hw-note" }, rich("Der gewählte Sensor liefert gerade **keinen plausiblen Wert** (−40 bis 125 °C) – "
-      + "neue Messpunkte bekommen keine Temperatur. Der **Hardware-Check** zeigt alle Sensoren und ihre Werte."))
+    ? explainLine("Der gewählte Sensor liefert gerade **keinen plausiblen Wert** (−40 bis 125 °C) – "
+      + "neue Messpunkte bekommen keine Temperatur. Der **Hardware-Check** zeigt alle Sensoren und ihre Werte.", { class: "hw-note" })
     : null,
-  el("p", { class: "hw-note" }, rich(enoughRange ? readiness(summary)
+  explainLine(enoughRange ? readiness(summary)
     : `Für die Bewertung braucht es einen Zeitraum von mindestens ${READY_DAYS} Tagen – wähle oben in dieser Karte `
-      + "**3 Tage** oder mehr. Der kürzere Zeitraum zeigt nur den Verlauf."))));
+      + "**3 Tage** oder mehr. Der kürzere Zeitraum zeigt nur den Verlauf.", { class: "hw-note" })));
 
   const scatter = el("div", { class: "chart-host" });
   const tempChart = el("div", { class: "chart-host" });
@@ -198,10 +198,10 @@ function allanSection(data, loading) {
       note: `Raster ${fmtTau(data.tau0)}, ${fmtNumber((data.coverage || 0) * 100, 0)} % belegt`
         + ((data.segments || 0) > 1 ? `, ${fmtNumber(data.segments - 1, 0)}× Einschwingen nach Neustart/Sprung weggelassen` : ""),
       tone: "muted" })),
-  adevLine(data) ? el("p", { class: "hw-note" }, rich(adevLine(data))) : null,
+  adevLine(data) ? explainLine(adevLine(data), { class: "hw-note" }) : null,
   host,
-  el("p", { class: "card-sub" }, rich(`Blasse Punkte (τ unter ${fmtTau(data.short_tau)}) zeigen vor allem, wie chrony die Frequenz `
-    + "nachführt, nicht den Quarz. Senkrechte Striche: Bereich, in dem der wahre Wert mit 68 % liegt.")),
+  explainLine(`Blasse Punkte (τ unter ${fmtTau(data.short_tau)}) zeigen vor allem, wie chrony die Frequenz `
+    + "nachführt, nicht den Quarz. Senkrechte Striche: Bereich, in dem der wahre Wert mit 68 % liegt.", { class: "card-sub" }),
   table);
   return { node, draw: () => logLogChart(host, {
     height: 260, ariaLabel: "Allan-Abweichung über τ", emptyText: "Noch zu wenige Punkte",
@@ -271,8 +271,8 @@ function clockSection(ctx) {
   const publicText = !field ? "–" : field.value ? "ja – Uhr und /api/v1/time ohne Passwort" : "nein – wie das Dashboard geschützt";
   return card("Vollbild-Uhr", { help: "clock_page",
     actions: el("a", { class: "button primary", href: "/clock", text: "Uhr öffnen" }) },
-  el("p", { class: "card-sub" }, rich("Große Uhrzeit (Ortszeit und UTC), Datum und Kalenderwoche für Wandmonitor oder Tablet – "
-    + "abgeglichen mit der Serveruhr statt mit der Uhr des Geräts. Taste **F** für Vollbild.")),
+  explainLine("Große Uhrzeit (Ortszeit und UTC), Datum und Kalenderwoche für Wandmonitor oder Tablet – "
+    + "abgeglichen mit der Serveruhr statt mit der Uhr des Geräts. Taste **F** für Vollbild.", { class: "card-sub" }),
   kv([
     ["Ohne Anmeldung erreichbar", publicText, "clock_public"],
     ["Genauigkeit der Anzeige", "± halbe Laufzeit (RTT), wird auf der Uhr angezeigt", "clock_sync"],

@@ -218,5 +218,29 @@
       "status": "Overall state as JSON (the same data as the dashboard)",
       "healthz": "Short liveness check for containers and load balancers"
     }
+  },
+  "pages": {
+    "clients": {
+      "name_add": "Add a name",
+      "name_change": "Rename",
+      "name_input": "Own name for {address} (Enter saves, Esc cancels)",
+      "name_placeholder": "e.g. NAS in the basement",
+      "name_saved": "Name saved",
+      "name_removed": "Name removed",
+      "name_failed": "Not saved: {message}",
+      "cards_label": "Devices",
+      "ignore_42": "Devices that ignore option 42 (Windows, Linux, macOS)",
+      "notes": "Notes on {system} ({count})",
+      "check_line": "“Check” tests the redirection from here."
+    },
+    "sources": {
+      "steps": "The four steps in detail",
+      "steps_line": "Measure → find the majority → pick the best → combine."
+    },
+    "diagnose": {
+      "intro": "Log, events and diagnostic bundle for troubleshooting – nothing is uploaded automatically.",
+      "privacy": "With privacy filter."
+    },
+    "more": "More"
   }
 }

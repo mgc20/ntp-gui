@@ -1,7 +1,8 @@
 // Seite „Diagnose“: Log, Ereignisse, Diagnosepaket mit Vorschau, Aufzeichnung.
 // Alles bleibt lokal: Das Paket wird nur heruntergeladen, nie hochgeladen.
+import { t as tr } from "../i18n.js";
 import { el, apiPost, isNum, fmtNumber, fmtZoned, serverZone } from "../util.js";
-import { card, infoButton, badge, kv, emptyState, toast } from "../ui.js";
+import { card, infoButton, badge, kv, emptyState, toast, rangePicker } from "../ui.js";
 
 // Nicht bei jedem Status-Refresh neu aufbauen – Filter, Vorschau und Scrollposition bleiben stehen.
 export const live = false;
@@ -152,6 +153,23 @@ function logCard(state) {
 
 // --- Ereignisse ------------------------------------------------------------------
 // Rohdaten eines Ereignisses (k=v) sind eingeklappt – sichtbar bleibt der Titel.
+function eventKey(event) {
+  return `${event.t ?? ""}|${event.kind ?? ""}|${event.title ?? ""}`;
+}
+
+// Neuaufbau der Liste (alle 30 s, Filter): aufgeklappte Rohdaten bleiben offen, der Fokus bleibt auf
+// ihrer Zusammenfassung.
+function keepRawState(body, rebuild) {
+  const open = new Set([...body.querySelectorAll("details.diag-event-raw[open]")].map((d) => d.dataset.key));
+  const active = document.activeElement;
+  const focused = active && body.contains(active) ? active.closest("details.diag-event-raw")?.dataset.key : null;
+  rebuild();
+  for (const details of body.querySelectorAll("details.diag-event-raw")) {
+    if (open.has(details.dataset.key)) details.open = true;
+    if (focused && details.dataset.key === focused) details.querySelector("summary")?.focus({ preventScroll: true });
+  }
+}
+
 export function eventRow(event, sys = null) {
   const data = event.data && typeof event.data === "object" ? Object.entries(event.data) : [];
   return el("li", { class: "diag-event", dataset: { level: event.level || "info" } },
@@ -160,7 +178,7 @@ export function eventRow(event, sys = null) {
       : event.level === "warn" ? "warn" : "info"),
     el("span", { class: "diag-event-kind", text: EVENT_KINDS[event.kind] || event.kind || "–" }),
     el("span", { class: "diag-event-title", text: event.display_title || event.title || "" }),
-    data.length ? el("details", { class: "diag-event-raw" }, el("summary", { text: "Rohdaten" }),
+    data.length ? el("details", { class: "diag-event-raw", dataset: { key: eventKey(event) } }, el("summary", { text: "Rohdaten" }),
       el("code", { class: "diag-event-data mono",
         text: data.map(([k, v]) => `${k}=${typeof v === "object" ? JSON.stringify(v) : v}`).join(" · ") })) : null);
 }
@@ -177,29 +195,19 @@ function eventsCard(state, system = () => null) {
       const data = await getJson(`/api/events?${params}`);
       const list = Array.isArray(data) ? data : (data && Array.isArray(data.events) ? data.events : []);
       const events = list.filter((e) => e && typeof e === "object").sort((a, b) => (b.t || 0) - (a.t || 0));
-      body.replaceChildren(events.length
+      keepRawState(body, () => body.replaceChildren(events.length
         ? el("ul", { class: "diag-event-list" }, events.map((e) => eventRow(e, system())))
         : emptyState(filtered ? "Keine Ereignisse, die zum Filter passen."
-          : "In diesem Zeitraum ist nichts Besonderes passiert."));
+          : "In diesem Zeitraum ist nichts Besonderes passiert.")));
     } catch (error) {
       body.replaceChildren(emptyState(error.status === 404
         ? "Das Ereignisprotokoll ist in diesem Build noch nicht verfügbar."
         : `Ereignisse nicht abrufbar: ${error.message}`));
     }
   };
-  const buttons = EVENT_RANGES.map(([seconds, label]) => el("button", {
-    type: "button", class: `range${state.eventRange === seconds ? " is-active" : ""}`, text: label,
-    "aria-pressed": state.eventRange === seconds ? "true" : "false",
-    onclick: (event) => {
-      state.eventRange = seconds;
-      for (const b of buttons) {
-        const active = b === event.currentTarget;
-        b.classList.toggle("is-active", active);
-        b.setAttribute("aria-pressed", active ? "true" : "false");
-      }
-      load();
-    },
-  }));
+  // Zeitraum: derselbe Baustein wie auf allen anderen Seiten (ui.rangePicker).
+  const ranges = rangePicker({ value: state.eventRange, options: EVENT_RANGES, label: "Zeitraum", focusKey: "eventrange",
+    onChange: (seconds) => { state.eventRange = seconds; load(); } });
   const select = (options, value, label, onPick) => {
     const node = el("select", { "aria-label": label }, options.map(([v, text]) =>
       el("option", { value: v, selected: v === value ? true : null, text })));
@@ -212,7 +220,7 @@ function eventsCard(state, system = () => null) {
   load();
   every(30000, body, load);
   return card("Ereignisse", { help: "diag_events",
-    actions: el("div", { class: "range-group", role: "group", "aria-label": "Zeitraum" }, buttons),
+    actions: ranges,
     sub: "Neustarts, Quellenwechsel, GPS-Fix, Zertifikate – neueste oben." },
   el("div", { class: "toolbar diag-toolbar diag-event-filters" },
     el("label", { class: "diag-field" }, el("span", { class: "toolbar-label", text: "Art" }), kindSelect),
@@ -396,8 +404,9 @@ function bundleCard(state) {
     sub: "Für ein GitHub-Issue oder für jemanden, der dir hilft. Vor dem Herunterladen kannst du dir "
       + "**genau** ansehen, was drinsteht." },
   el("p", { class: "diag-privacy" },
-    el("span", { text: "Datenschutzfilter: keine Koordinaten, Satellitenwinkel, Seriennummern, MAC- oder öffentlichen "
-      + "IP-Adressen, eigenen Domains oder Zeitzonennamen." }), infoButton("diag_privacy", "Datenschutzfilter")),
+    el("span", { text: `${tr("pages.diagnose.privacy")} ` }), infoButton("diag_privacy", "Datenschutzfilter", { title: "Datenschutzfilter",
+      text: "Datenschutzfilter: keine Koordinaten, Satellitenwinkel, Seriennummern, MAC- oder öffentlichen "
+      + "IP-Adressen, eigenen Domains oder Zeitzonennamen.", withHelp: true })),
   el("div", { class: "diag-options" },
     switchControl("Client-Liste einschließen (pseudonymisiert)", state.clients,
       (on) => { state.clients = on; staleView(); }, "diag_include_clients"),
@@ -485,12 +494,12 @@ export function render(ctx) {
   const state = uiState(ctx);
   const system = () => ctx.status?.system || null;
   return [
-    card("Diagnose", { help: "diag_page", class: "explain",
-      sub: "Log, Ereignisse und ein Diagnosepaket für die Fehlersuche." },
+    // Eine Zeile: wofür die Seite ist und dass nichts hochgeladen wird; der Rest im ⓘ.
+    card("Diagnose", { help: "diag_page", class: "explain" },
     el("p", { class: "diag-privacy" },
-      el("span", { text: "Nichts davon wird automatisch hochgeladen. Was das Gerät verlässt, lädst du selbst herunter – "
-        + "vorher siehst du in der Vorschau genau, was drinsteht." }),
-      infoButton("diag_no_upload", "Nichts wird hochgeladen"))),
+      el("span", { text: `${tr("pages.diagnose.intro")} ` }),
+      infoButton("diag_no_upload", "Nichts wird hochgeladen", { title: "Nichts wird hochgeladen", withHelp: true,
+        text: "Was das Gerät verlässt, lädst du selbst herunter – vorher siehst du in der Vorschau genau, was drinsteht." }))),
     logCard(state),
     eventsCard(state, system),
     bundleCard(state),
