@@ -1541,7 +1541,7 @@ Nginx Proxy Manager, Zoraxy und Traefik gehen genauso. Die Anleitung dazu steht 
 
 ### Sprache / Language
 
-Das Dashboard gibt es auf Deutsch und – als ersten Schritt – auf Englisch. Die Sprache wählst du mit dem Knopf „DE/EN“ oben rechts oder unter Einstellungen → Dashboard. Sie gilt nur in deinem Browser; ohne Wahl gilt die Sprache des Browsers. Übersetzt sind bisher Navigation, Kopfzeile, das Statusband der Übersicht und die Abschnitte der Einstellungen; die ⓘ-Erklärungen sind vorerst deutsch. Wie du beim Übersetzen hilfst, steht in [CONTRIBUTING.md](CONTRIBUTING.md#übersetzen).
+Das Dashboard gibt es auf Deutsch und – als Beta – auf Englisch. Die Sprache wählst du mit dem Knopf „DE/EN“ oben rechts oder unter Einstellungen → Dashboard. Sie gilt nur in deinem Browser; ohne Wahl gilt Deutsch, Englisch nur, wenn du es ausdrücklich wählst („English (Beta)“). Übersetzt sind bisher Navigation, Kopfzeile, das Statusband der Übersicht und die Abschnitte der Einstellungen; die ⓘ-Erklärungen sind vorerst deutsch. Wie du beim Übersetzen hilfst, steht in [CONTRIBUTING.md](CONTRIBUTING.md#übersetzen).
 
 #### Schutz vor DNS-Rebinding
 

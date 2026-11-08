@@ -104,9 +104,55 @@ export function fmtRate(value) {
   return isNum(value) ? fmtFixed(value, Math.abs(value) < 10 && value !== 0 ? 1 : 0) : "–";
 }
 
-export function fmtTime(unix, seconds = true) {
-  return new Date(unix * 1000).toLocaleTimeString("de-DE", seconds
-    ? { hour: "2-digit", minute: "2-digit", second: "2-digit" } : { hour: "2-digit", minute: "2-digit" });
+// Zeitzone des Servers für Intl. Bevorzugt der IANA-Name (system.tz_name, z. B. „Europe/Berlin“): Damit
+// steht jedes Ereignis mit der Sommer-/Winterzeit seines eigenen Tages da. Kennt der Browser den Namen
+// nicht (oder der Server liefert keinen), gilt system.utc_offset – der stimmt nur für die aktuelle Zeit.
+// Ohne beides (älterer Server): Zeitzone des Browsers. „zone“ darf auch eine Zahl sein (nur Offset).
+const ZONES = new Map();
+export function knownZone(name) {
+  if (typeof name !== "string" || !name || name.length > 64) return false;
+  if (!ZONES.has(name)) {
+    let ok = false;
+    try { new Intl.DateTimeFormat("de-DE", { timeZone: name }); ok = true; } catch (error) { ok = false; }
+    ZONES.set(name, ok);
+  }
+  return ZONES.get(name);
+}
+
+export function serverZone(zone) {
+  if (isNum(zone)) return { timeZone: "UTC", shift: zone };
+  if (!zone || typeof zone !== "object") return null;
+  // system.timezone ist meist nur die Abkürzung („CEST“) – als IANA-Name nur mit „/“ brauchbar.
+  for (const name of [zone.tz_name, typeof zone.timezone === "string" && zone.timezone.includes("/") ? zone.timezone : null]) {
+    if (knownZone(name)) return { timeZone: name, shift: 0 };
+  }
+  if (isNum(zone.utc_offset)) return { timeZone: "UTC", shift: zone.utc_offset };
+  return null;
+}
+
+// Zeitpunkt (Unix-Sekunden) mit Intl-Optionen in der Zeitzone des Servers formatieren.
+// method: "toLocaleString", "toLocaleDateString" oder "toLocaleTimeString".
+export function fmtZoned(unix, zone, options = {}, locale = "de-DE", method = "toLocaleString") {
+  const z = serverZone(zone);
+  if (!z) return new Date(unix * 1000)[method](locale, options);
+  return new Date((unix + z.shift) * 1000)[method](locale, { ...options, timeZone: z.timeZone });
+}
+
+// zone: system-Objekt des Servers (tz_name/utc_offset) oder ein Offset in Sekunden.
+export function fmtTime(unix, seconds = true, zone = null) {
+  const options = seconds ? { hour: "2-digit", minute: "2-digit", second: "2-digit" } : { hour: "2-digit", minute: "2-digit" };
+  return fmtZoned(unix, zone, options, "de-DE", "toLocaleTimeString");
+}
+
+// Datum und Uhrzeit des Servers für die Kopfzeile. Ohne tz_name und utc_offset (älterer Server) gilt UTC.
+export function fmtServerDateTime(sys, locale = "de-DE") {
+  return fmtZoned(sys?.time || 0, serverZone(sys) ? sys : 0, {}, locale);
+}
+
+// Hinweis bei Verbindungsverlust: seit wann die angezeigten Werte nicht mehr frisch sind.
+export function staleText(lastOkMs, zone = null) {
+  if (!isNum(lastOkMs)) return "Keine Verbindung zum Server – die angezeigten Werte sind veraltet.";
+  return `Keine Verbindung zum Server – Werte veraltet seit ${fmtTime(lastOkMs / 1000, true, zone)}. Neuer Versuch läuft.`;
 }
 
 export function sourceLabel(source) {

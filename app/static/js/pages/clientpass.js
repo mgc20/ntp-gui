@@ -97,7 +97,9 @@ export function renderPass(ctx, ip, serverIp) {
           ["NTP-Version", isNum(entry.version) ? String(entry.version) : "–", "client_version"],
           ["Typischer Abstand", fmtInterval(entry.interval), "client_typical_interval"],
           ["Zuerst gesehen", fmtDate(entry.first_seen), "client_seen"],
-          ["Letzte Anfrage", isNum(entry.last_seen) ? `${fmtDate(entry.last_seen)} (vor ${fmtInterval(Math.max(0, now - entry.last_seen))})` : "–", "client_seen"],
+          ["Letzte Anfrage", isNum(entry.last_seen) ? `${fmtDate(entry.last_seen)} (vor ${fmtInterval(Math.max(0, now - entry.last_seen))})`
+            : isNum(data.chrony?.ntp_last_rx) ? `vor ${fmtInterval(Math.max(0, data.chrony.ntp_last_rx))} (laut chrony)` : "–", "client_seen"],
+          ...(isNum(entry.last_seen) || !data.chrony ? [] : [["Anfragen (laut chrony)", fmtNumber(data.chrony.ntp_packets ?? 0), "client_packets"]]),
           ["Messbar", entry.state_text || "–", "client_measurable"],
           ["NTS", ntsText, "client_nts"],
         ]),

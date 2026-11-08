@@ -567,11 +567,61 @@ def clock_control() -> dict:
     return {"clock_control": None, "chronyd_pid": None}
 
 
+_IANA_NAME = re.compile(r"^(UTC|[A-Za-z][A-Za-z0-9_+-]*(/[A-Za-z0-9_+-]+){1,2})$")
+
+
+def iana_timezone(env: dict | None = None, localtime: str = "/etc/localtime",
+                  timezone_file: str = "/etc/timezone") -> str | None:
+    """IANA-Name der Zeitzone des Servers: TZ-Variable, sonst /etc/timezone, sonst das Ziel des Links
+    /etc/localtime (…/zoneinfo/Europe/Berlin). None, wenn nichts davon einen gültigen Namen liefert
+    (POSIX-Angaben wie „CET-1CEST,M3.5.0,M10.5.0/3“ kennt Intl nicht)."""
+    env = os.environ if env is None else env
+
+    def ok(name: Any) -> str | None:
+        name = str(name or "").strip().lstrip(":")
+        if name.startswith("posix/") or name.startswith("right/"):
+            name = name.split("/", 1)[1]
+        return name if _IANA_NAME.match(name) and ".." not in name else None
+    tz = env.get("TZ")
+    if tz:
+        tz = str(tz).lstrip(":")
+        if "/zoneinfo/" in tz:
+            tz = tz.split("/zoneinfo/", 1)[1]
+        return ok(tz)
+    try:
+        with open(timezone_file, encoding="utf-8") as handle:
+            name = ok(handle.readline())
+        if name:
+            return name
+    except OSError:
+        pass
+    try:
+        target = os.path.realpath(localtime)
+    except OSError:
+        return None
+    if "/zoneinfo/" in target:
+        return ok(target.split("/zoneinfo/", 1)[1])
+    return None
+
+
+def chrony_client_row(addr: str | None) -> dict | None:
+    """Zeile aus „chronyc clients“ zu einer (bereinigten) Adresse – für Detailseite und Gerätepass."""
+    if addr is None:
+        return None
+    return next((c for c in chrony.clients() if clientinfo.clean_ip(c.get("address")) == addr), None)
+
+
 def system_info(cfg: dict) -> dict:
     info = {
         "hostname": socket.gethostname(),
         "time": time.time(),
         "timezone": time.strftime("%Z"),
+        # Abstand zu UTC in Sekunden: Die Abkürzung oben („CEST“) kennt Intl im Browser nicht – damit
+        # zeigt die Kopfzeile die Uhrzeit des Servers statt der des Browsers.
+        "utc_offset": time.localtime().tm_gmtoff,
+        # IANA-Name der Zeitzone („Europe/Berlin“), falls bekannt: Damit formatiert der Browser jedes
+        # Ereignis sommerzeitrichtig; utc_offset gilt nur für jetzt und bleibt der Rückfall.
+        "tz_name": iana_timezone(),
         "uptime_seconds": int(time.monotonic() - START_MONO),
         "title": cfg["web_title"],
         "refresh_seconds": cfg["web_refresh_seconds"],
@@ -1807,7 +1857,10 @@ class Handler(BaseHTTPRequestHandler):
             seconds = env_like(query.get("range"), float(clientmon.SAMPLE_RETENTION))
             seconds = max(60.0, min(seconds, float(clientmon.SAMPLE_RETENTION)))
             try:
-                result = clientinfo.detail(query.get("ip"), settings.values(), time.time() - seconds)
+                # Auch Geräte, die nur chronyd kennt, haben eine Detailseite (die Liste verlinkt jedes).
+                row = chrony_client_row(clientinfo.clean_ip(query.get("ip")))
+                result = clientinfo.detail(query.get("ip"), settings.values(), time.time() - seconds,
+                                           chrony_row=row)
             except clientinfo.MetaError as exc:
                 self._error(HTTPStatus.BAD_REQUEST, str(exc))
                 return
@@ -1838,7 +1891,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._error(HTTPStatus.BAD_REQUEST, "Ungültige IP-Adresse.")
                 return
             cfg = settings.values()
-            data = clients3.device_pass(addr, cfg)
+            data = clients3.device_pass(addr, cfg, chrony_row=chrony_client_row(addr))
             if data is None:
                 self._error(HTTPStatus.NOT_FOUND, "Dieses Gerät ist (noch) nicht bekannt.")
                 return

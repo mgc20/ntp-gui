@@ -1,6 +1,6 @@
 // Seite „Diagnose“: Log, Ereignisse, Diagnosepaket mit Vorschau, Aufzeichnung.
 // Alles bleibt lokal: Das Paket wird nur heruntergeladen, nie hochgeladen.
-import { el, apiPost, isNum, fmtNumber } from "../util.js";
+import { el, apiPost, isNum, fmtNumber, fmtZoned, serverZone } from "../util.js";
 import { card, info, badge, kv, emptyNote, toast } from "../ui.js";
 
 // Nicht bei jedem Status-Refresh neu aufbauen – Filter, Vorschau und Scrollposition bleiben stehen.
@@ -65,9 +65,10 @@ function fmtBytes(bytes) {
   return `${fmtNumber(bytes / 1024 / 1024, 1)} MB`;
 }
 
-function fmtDateTime(unix) {
+// Zeitpunkt in der Zeitzone des Servers – wie Kopfzeile und Ereigniskarte der Übersicht (sys: system aus /api/status).
+export function fmtDateTime(unix, sys = null) {
   if (!isNum(unix)) return "–";
-  return new Date(unix * 1000).toLocaleString("de-DE", { day: "2-digit", month: "2-digit",
+  return fmtZoned(unix, serverZone(sys) ? sys : null, { day: "2-digit", month: "2-digit",
     hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
@@ -150,10 +151,10 @@ function logCard(state) {
 }
 
 // --- Ereignisse ------------------------------------------------------------------
-function eventRow(event) {
+export function eventRow(event, sys = null) {
   const data = event.data && typeof event.data === "object" ? Object.entries(event.data) : [];
   return el("li", { class: "diag-event", dataset: { level: event.level || "info" } },
-    el("span", { class: "diag-event-time mono", text: fmtDateTime(event.t) }),
+    el("span", { class: "diag-event-time mono", text: fmtDateTime(event.t, sys) }),
     badge(LEVEL_LABEL[event.level] || event.level || "Info", event.level === "crit" ? "crit"
       : event.level === "warn" ? "warn" : "info"),
     el("span", { class: "diag-event-kind", text: EVENT_KINDS[event.kind] || event.kind || "–" }),
@@ -162,7 +163,7 @@ function eventRow(event) {
       text: data.map(([k, v]) => `${k}=${typeof v === "object" ? JSON.stringify(v) : v}`).join(" · ") }) : null);
 }
 
-function eventsCard(state) {
+function eventsCard(state, system = () => null) {
   const body = el("div", { class: "diag-events" }, emptyNote("lädt …"));
   const load = async () => {
     const since = Math.floor(Date.now() / 1000) - state.eventRange;
@@ -175,7 +176,7 @@ function eventsCard(state) {
       const list = Array.isArray(data) ? data : (data && Array.isArray(data.events) ? data.events : []);
       const events = list.filter((e) => e && typeof e === "object").sort((a, b) => (b.t || 0) - (a.t || 0));
       body.replaceChildren(events.length
-        ? el("ul", { class: "diag-event-list" }, events.map(eventRow))
+        ? el("ul", { class: "diag-event-list" }, events.map((e) => eventRow(e, system())))
         : emptyNote(filtered ? "Keine Ereignisse, die zum Filter passen."
           : "In diesem Zeitraum ist nichts Besonderes passiert."));
     } catch (error) {
@@ -407,7 +408,7 @@ function bundleCard(state) {
 }
 
 // --- Aufzeichnung -------------------------------------------------------------------------
-function recordingCard(state, readonly) {
+function recordingCard(state, readonly, system = () => null) {
   const status = el("div", { class: "diag-recording-status" }, emptyNote("lädt …"));
   const minutes = el("input", { type: "number", min: "1", max: "60", step: "1", value: String(state.minutes),
     "aria-label": "Dauer in Minuten", class: "diag-minutes", disabled: readonly,
@@ -421,8 +422,8 @@ function recordingCard(state, readonly) {
     start.hidden = active;
     stop.hidden = !active;
     const state_ = active
-      ? `läuft${isNum(data.ends) ? ` bis ${fmtDateTime(data.ends)}` : ""}`
-      : data.available ? `fertig${isNum(data.started) ? ` (gestartet ${fmtDateTime(data.started)})` : ""}` : "keine Aufzeichnung";
+      ? `läuft${isNum(data.ends) ? ` bis ${fmtDateTime(data.ends, system())}` : ""}`
+      : data.available ? `fertig${isNum(data.started) ? ` (gestartet ${fmtDateTime(data.started, system())})` : ""}` : "keine Aufzeichnung";
     status.replaceChildren(kv([
       ["Zustand", active ? badge(state_, "info") : state_, "diag_recording_status"],
       ["Einträge", isNum(data.entries) ? fmtNumber(data.entries) : "–", "diag_recording_entries"],
@@ -480,6 +481,7 @@ function recordingCard(state, readonly) {
 export function render(ctx) {
   clearTimers();
   const state = uiState(ctx);
+  const system = () => ctx.status?.system || null;
   return [
     card("Diagnose", { help: "diag_page", class: "explain",
       sub: "Log, Ereignisse und ein Diagnosepaket für die Fehlersuche." },
@@ -488,8 +490,8 @@ export function render(ctx) {
         + "vorher siehst du in der Vorschau genau, was drinsteht." }),
       info("diag_no_upload", "Nichts wird hochgeladen"))),
     logCard(state),
-    eventsCard(state),
+    eventsCard(state, system),
     bundleCard(state),
-    recordingCard(state, ctx.readonly),
+    recordingCard(state, ctx.readonly, system),
   ];
 }

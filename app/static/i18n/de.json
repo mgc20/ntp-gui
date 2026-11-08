@@ -10,7 +10,7 @@
     "clock_link_label": "Vollbild-Uhr öffnen",
     "theme_title": "Hell / Dunkel",
     "theme_label": "Hell oder dunkel umschalten",
-    "language_title": "Sprache: Deutsch / English",
+    "language_title": "Sprache: Deutsch / English (Beta)",
     "language_label": "Sprache wechseln (Language)"
   },
   "nav": {
@@ -126,7 +126,7 @@
     },
     "language": {
       "label": "Sprache des Dashboards",
-      "note": "Gilt nur in diesem Browser; ohne Wahl gilt die Sprache des Browsers. Übersetzt sind bisher Navigation, Kopfzeile, das Statusband der Übersicht und die Abschnitte hier – der Rest, die ⓘ-Erklärungen und Meldungen vom Server sind vorerst deutsch."
+      "note": "Gilt nur in diesem Browser; ohne Wahl gilt Deutsch (English ist Beta). Übersetzt sind bisher Navigation, Kopfzeile, das Statusband der Übersicht und die Abschnitte hier – der Rest, die ⓘ-Erklärungen und Meldungen vom Server sind vorerst deutsch."
     }
   },
   "help": {

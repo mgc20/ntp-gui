@@ -789,7 +789,10 @@ def probe(ip: Any, known: Callable[[str], bool], query: Callable[..., dict | Non
 # ---------------------------------------------------------------------------
 
 def detail(ip: Any, cfg: dict, since: float | None = None,
-           resolver: Callable[[str], Any] = socket.gethostbyaddr) -> dict | None:
+           resolver: Callable[[str], Any] = socket.gethostbyaddr,
+           chrony_row: dict | None = None) -> dict | None:
+    """Detailseite eines Clients. chrony_row: die Zeile aus „chronyc clients“ zu dieser Adresse – damit
+    hat auch ein Gerät, das nur chronyd kennt (Messung aus oder gerade gestartet), eine Detailseite."""
     addr = clean_ip(ip)
     if addr is None:
         raise MetaError("Ungültige IP-Adresse.")
@@ -799,7 +802,7 @@ def detail(ip: Any, cfg: dict, since: float | None = None,
         history = clientmon.samples(addr, since)
     except Exception:  # noqa: BLE001
         history = []
-    if entry is None and not history and not meta:
+    if entry is None and not history and not meta and not chrony_row:
         return None
     entry = dict(entry or {})
     # Zuerst gesehen: auch ein älterer gespeicherter Messpunkt zählt (Tabelle nach Verlust neu begonnen).
@@ -818,14 +821,24 @@ def detail(ip: Any, cfg: dict, since: float | None = None,
         "rdns": rdns,
         "rdns_skipped": rdns_reason,
         "mac": mac,
-        "measurable_reason": measurable_reason(entry),
+        "measurable_reason": (measurable_reason(entry) if entry or history or not chrony_row
+                              else "Die eigene Messung hat noch keine Anfrage gesehen – chronyd kennt das Gerät aber "
+                                   "schon (Zähler in der Karte „Laut chrony“)."),
         "software": software,
         "silent": silent_reason(entry, time.time()) if entry else None,
         "probe_allowed": is_lan(addr) and not is_link_local(addr) and bool(entry),
         "probe_blocked": LINK_LOCAL_PROBE if is_link_local(addr) else None,
         "retention_days": clientmon.SAMPLE_RETENTION // 86400,
+        "chrony": _chrony_view(chrony_row),
     }
     return out
+
+
+def _chrony_view(row: dict | None) -> dict | None:
+    """Nur die Zähler aus chronyd, die die Detailseite zeigt."""
+    if not row:
+        return None
+    return {key: row.get(key) for key in ("ntp_packets", "ntp_dropped", "ntp_interval", "ntp_last_rx")}
 
 
 def fmt_offset(value: float) -> str:

@@ -1353,11 +1353,14 @@ def _offset_stats(samples: list) -> dict:
     return {"n": len(offs), "median": _median(offs), "p95": _quantile([abs(o) for o in offs], 0.95)}
 
 
-def device_pass(ip: Any, cfg: dict, now: float | None = None) -> dict | None:
-    """Alles für den Gerätepass (lokale Druckseite). None, wenn das Gerät unbekannt ist."""
+def device_pass(ip: Any, cfg: dict, now: float | None = None, chrony_row: dict | None = None) -> dict | None:
+    """Alles für den Gerätepass (lokale Druckseite). None, wenn das Gerät unbekannt ist.
+    chrony_row: Zeile aus „chronyc clients“ – wie die Detailseite hat auch ein Gerät, das nur chronyd
+    kennt, einen Pass (sonst führte der Link der Detailseite ins Leere)."""
     now = time.time() if now is None else now
     # Ohne Reverse-DNS: der Pass soll keine DNS-Anfrage auslösen.
-    detail = clientinfo.detail(ip, {**cfg, "clients_rdns": False}, now - clientmon.SAMPLE_RETENTION)
+    detail = clientinfo.detail(ip, {**cfg, "clients_rdns": False}, now - clientmon.SAMPLE_RETENTION,
+                               chrony_row=chrony_row)
     if detail is None:
         return None
     addr = detail["address"]
@@ -1389,6 +1392,7 @@ def device_pass(ip: Any, cfg: dict, now: float | None = None) -> dict | None:
                   "p95": _quantile([h[3] for h in hours if _num(h[3]) is not None], 0.95)},
         "quality": extras["quality"], "nts": extras["nts"], "rule": extras["rule"],
         "silent": detail.get("silent"),
+        "chrony": detail.get("chrony"),
         "recommendations": recommendations(key, entry, extras["quality"], extras["nts"], detail.get("silent")),
         "server_placeholder": SERVER_PLACEHOLDER,
     }
@@ -1437,13 +1441,21 @@ def pass_text(data: dict, now: float | None = None, share: bool = False) -> str:
         f"Uhrgüte: {q.get('score') if q.get('score') is not None else '–'} ({q.get('grade') or '–'})",
         q_drift,
         f"NTS: {'nutzt NTS' if (data.get('nts') or {}).get('uses') else 'nein'}",
-        f"Letzte Anfrage: {_fmt_ago(now - entry['last_seen']) if _num(entry.get('last_seen')) else '–'}",
+        f"Letzte Anfrage: {_last_request(entry, data.get('chrony'), now)}",
         "Empfehlung:",
     ]
     for rec in data.get("recommendations") or []:
         lines.append(f"- {rec['title']}")
         lines.extend("    " + line for line in str(rec["code"]).split("\n"))
     return "\n".join(lines) + "\n"
+
+
+def _last_request(entry: dict, chrony_view: dict | None, now: float) -> str:
+    if _num(entry.get("last_seen")) is not None:
+        return _fmt_ago(now - entry["last_seen"])
+    if chrony_view and _num(chrony_view.get("ntp_last_rx")) is not None:
+        return f"{_fmt_ago(chrony_view['ntp_last_rx'])} (laut chrony)"
+    return "–"
 
 
 class PassLeak(ValueError):

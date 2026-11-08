@@ -1,5 +1,5 @@
-import { el, fmtSeconds, fmtNs, fmtNumber, fmtFixed, fmtRate, fmtDuration, isNum, sourceLabel } from "../util.js";
-import { card, tile, kv, badge, insightList, insightLink, insightFixes, rangeButtons, info, emptyNote, ACTION_LABEL } from "../ui.js";
+import { el, fmtSeconds, fmtNs, fmtNumber, fmtFixed, fmtRate, fmtDuration, isNum, sourceLabel, serverZone, fmtZoned } from "../util.js";
+import { card, tile, kv, badge, insightList, insightLink, insightFixes, rangeButtons, info, emptyNote, loadingOr, ACTION_LABEL } from "../ui.js";
 import { lineChart, sparkline, stepDecimals } from "../charts.js";
 import { t as tr } from "../i18n.js";
 
@@ -21,6 +21,41 @@ export function requestRate(samples) {
     out.push([b.t, delta >= 0 ? (delta / (b.t - a.t)) * 60 : null]);
   }
   return out;
+}
+
+// „Anfragen/min jetzt“: Mittel über das letzte Zeitfenster (Standard 60 s) statt nur über das letzte
+// Messintervall – bei 10 s Abstand sprang ein Gerät, das alle 20 s fragt, sonst zwischen 6 und 0/min.
+// Nach einem Zählerrücksprung (Neustart von chronyd) zählt nur die Zeit danach. Liegen die Punkte
+// weiter auseinander als das Fenster (lange Zeiträume), gilt das letzte Intervall. Kein Wert: null.
+// recentRateInfo liefert zusätzlich, über wie viele Sekunden gemittelt wurde (für eine ehrliche Notiz).
+export function recentRateInfo(samples, window = 60) {
+  const pts = (samples || []).filter((s) => s && isNum(s.t) && isNum(s.served));
+  if (pts.length < 2) return { rate: null, seconds: null };
+  const b = pts[pts.length - 1];
+  let a = null;
+  for (let i = pts.length - 2; i >= 0; i -= 1) {
+    const p = pts[i];
+    if (p.served > pts[i + 1].served || p.t >= pts[i + 1].t) break; // Zählerrücksprung oder Zeit rückwärts
+    if (a && b.t - p.t > window) break;
+    a = p;
+    if (b.t - p.t >= window) break;
+  }
+  return a && b.t > a.t ? { rate: ((b.served - a.served) / (b.t - a.t)) * 60, seconds: b.t - a.t } : { rate: null, seconds: null };
+}
+
+export function recentRate(samples, window = 60) {
+  return recentRateInfo(samples, window).rate;
+}
+
+// Notiz zur Rate: „Mittel der letzten 60 s“, „Mittel der letzten 2,4 min“ – das tatsächliche Fenster.
+export function rateWindowText(seconds) {
+  if (!isNum(seconds) || seconds <= 0) return "noch zu wenige Messpunkte";
+  if (seconds < 90) return `Mittel der letzten ${fmtFixed(Math.round(seconds), 0)} s`;
+  if (seconds < 5400) {
+    const min = seconds / 60;
+    return `Mittel der letzten ${fmtFixed(min, Number.isInteger(Math.round(min * 10) / 10) ? 0 : 1)} min`;
+  }
+  return `Mittel der letzten ${fmtFixed(seconds / 3600, 1)} h`;
 }
 
 const LEAP = {
@@ -453,17 +488,28 @@ const SERVICE_SHORT = { chronyd: "chronyd", gpsd: "gpsd", ptp4l: "ptp4l", phc2sy
 
 const EVENT_LABEL = { info: "Info", warn: "Warnung", crit: "Kritisch" };
 
+// Uhrzeit eines Ereignisses in der Zeitzone des Servers (wie die Kopfzeile): mit system.tz_name
+// sommerzeitrichtig für den Tag des Ereignisses, sonst mit utc_offset, ohne beides (alter Server)
+// in der Zeitzone des Browsers.
+export function eventTime(unix, system = {}) {
+  const zone = serverZone(system) ? system : null;
+  const now = isNum(system.time) ? system.time : Date.now() / 1000;
+  const day = (t) => fmtZoned(t || 0, zone, { day: "2-digit", month: "2-digit", year: "numeric" }, "de-DE", "toLocaleDateString");
+  const clock = fmtZoned(unix || 0, zone, { hour: "2-digit", minute: "2-digit" }, "de-DE", "toLocaleTimeString");
+  return day(unix) === day(now) ? clock
+    : `${fmtZoned(unix || 0, zone, { day: "2-digit", month: "2-digit" }, "de-DE", "toLocaleDateString")} ${clock}`;
+}
+
 function eventsPanel(ctx) {
-  const data = ctx.data("overview-events", "/api/events?limit=5", 20);
+  const url = "/api/events?limit=5";
+  const data = ctx.data("overview-events", url, 20);
   const events = data && Array.isArray(data.events) ? data.events.slice(0, 5) : null;
-  const today = new Date().toDateString();
-  const body = events === null ? emptyNote("lädt …")
+  const body = events === null ? (data === undefined ? loadingOr(ctx, "overview-events", url, "Ereignisse")
+    : emptyNote("Ereignisse nicht verfügbar."))
     : !events.length ? emptyNote("Noch keine Ereignisse – hier erscheinen Quellenwechsel, GPS-Ausfälle, Neustarts und Änderungen.")
       : el("ol", { class: "event-list" }, events.map((event) => {
         const d = new Date((event.t || 0) * 1000);
-        const time = d.toDateString() === today
-          ? d.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" })
-          : `${d.toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit" })} ${d.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" })}`;
+        const time = eventTime(event.t, ctx.status.system || {});
         const level = event.level === "crit" || event.level === "warn" ? event.level : "info";
         return el("li", { class: "event", "data-level": level },
           el("time", { class: "event-time", datetime: d.toISOString(), title: `vor ${fmtDuration(Date.now() / 1000 - (event.t || 0))}`, text: time }),
@@ -488,9 +534,7 @@ export function render(ctx) {
   const insights = status.insights || [];
   const rootDistance = isNum(t.root_delay) && isNum(t.root_dispersion) ? t.root_delay / 2 + t.root_dispersion : null;
   const rate = requestRate(history);
-  // Letzter gültiger Wert: nach einem Zählerreset ist der jüngste Punkt leer.
-  let lastRate = null;
-  for (let i = rate.length - 1; i >= 0; i -= 1) if (isNum(rate[i][1])) { lastRate = rate[i][1]; break; }
+  const lastRate = recentRate(history);
   const ref = sources.find((s) => s.state === "*");
   // Temperatur: letzter Messpunkt des Verlaufs (nur wenn ein Sensor aufzeichnet, höchstens 5 min alt).
   const lastSample = history.length ? history[history.length - 1] : null;
