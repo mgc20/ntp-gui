@@ -81,20 +81,20 @@ Erst ein schlankes 1.5.0 ✅, dann kurze 1.5.x-Releases (Entscheidung E15).
 
 | Thema | Nutzen | Aufwand | Stufe |
 |---|---|---|---|
-| GPS ohne PPS und schwacher Empfang (z. B. VK-162): Empfangsbewertung, Antennen-Test, ehrliches Profil | ★★★ | ◆ | 1.5.0 ✅ |
-| DNS/NAT-Schleifen erkennen und erklären (AdGuard-Umschreibung, UniFi-Umleitung) | ★★★ | ◆ | 1.5.0 ✅ |
+| GPS ohne PPS und schwacher Empfang (z. B. einfache USB-Empfänger): Empfangsbewertung, Antennen-Test, ehrliches Profil | ★★★ | ◆ | 1.5.0 ✅ |
+| DNS/NAT-Schleifen erkennen und erklären (DNS-Umschreibung, Firewall-Umleitung) | ★★★ | ◆ | 1.5.0 ✅ |
 | GNSS-Störungen erkennen (Jamming/Spoofing) und GPS vorübergehend sperren | ★★★ | ◆◆ | 1.5.0 ✅ |
 | Clients 3: Regeln je Gerät, Gruppen/VLAN-Ansichten, Uhrgüte je Gerät, NTS für Clients, Gerätepass | ★★★ | ◆◆ | 1.5.0 ✅ |
 | Echter Holdover-Test („wie lange hält die Uhr ohne Quelle?“) | ★★ | ◆ | 1.5.0 ✅ |
 | HTTPS fürs Dashboard über Caddy-Vorlage (ab 1.5.1: Caddy-Beispiel als eigener Stack in docs/integrationen/https.md) | ★★ | ◆ | 1.5.0 ✅ |
-| Mehrsprachigkeit: Gerüst, dann englische Oberfläche (Weblate) | ★★★ | ◆◆◆ | Gerüst 1.5.0 ✅, Oberfläche 1.5.x |
-| u-blox-Empfänger auslesen (Firmware, Jamming-Anzeige, Fähigkeiten) | ★★ | ◆◆ | 1.5.x |
+| Mehrsprachigkeit: Gerüst, dann englische Oberfläche (Weblate) | ★★★ | ◆◆◆ | Gerüst 1.5.0 ✅, Oberfläche 1.7 |
+| u-blox-Empfänger auslesen (Firmware, Jamming-Anzeige, Fähigkeiten) | ★★ | ◆◆ | 1.7 |
 | GPS-Automatik einfach und sichtbar: messen → einmal korrigieren → kleinen Drifts folgen; kein GNSS-Fehlalarm nach Offset-Änderung | ★★★ | ◆◆ | 1.5.1 ✅ |
 | HTTPS-Hinweis nennt Ursache, Absender und Proxy-Köpfe; aktive Hinweise im Diagnosepaket | ★★ | ◆ | 1.5.1 ✅ |
 | Allan-Abweichung | ★★ | ◆◆ | 1.5.4 ✅ |
 | GPS bei schwachem Empfang ruhig: keine Positions-Fehlalarme, weniger Ereignisse, stabile Fehlerschranke | ★★★ | ◆ | 1.5.4 ✅ |
-| Verbund: Übersicht und Gegenmessung; Einstellungen teilen (experimentell) | ★★ | ◆◆ | 1.5.x |
-| Einstellungen als Datei (TOML) | ★ | ◆ | 1.5.x |
+| Verbund: Übersicht und Gegenmessung; Einstellungen teilen (experimentell) | ★★ | ◆◆ | 1.7.x |
+| Einstellungen als Datei (TOML) | ★ | ◆ | 1.7.x |
 | Temperaturausgleich: Fit, Vorschlag, anwenden mit 24-h-Probelauf | ★ (★★ ohne GPS) | ◆◆ | später |
 | MQTT mit Home-Assistant-Discovery | ★★ | ◆◆ | nur auf Nachfrage |
 
@@ -110,42 +110,62 @@ schlechter Geometrie, Fix-Flattern als stündliche Info statt Einzelmeldungen, W
 gebraucht wird, Fehlerschranke pendelt nicht mehr), Allan-Abweichung auf der Seite „Uhrqualität“,
 Reverse Proxy per Klick eintragen und die Restpunkte aus der Abschlussprüfung 1.5.0.
 
-**Als Nächstes (1.5.5 und folgende):**
+Die bisher hier als „Als Nächstes“ geführten Punkte sind verteilt: u-blox lesen und gpsd-`jam`,
+Englisch, Schwellen aus echten Daten (Empfang, GPS-Automatik, GNSS-Störung), DNS-Filter lesen,
+Verbund 1 und TOML in den 1.7-Entwurf; Empfangsbewertung und Client-Gruppen im Diagnosepaket nach
+1.6.1. Temperaturausgleich
+bleibt zurückgestellt: In den bisherigen Daten folgt die Frequenz eher der Tageszeit als der
+CPU-Temperatur; sinnvoll erst mit einem Sensor nahe am Quarz.
 
-- **u-blox und gpsd-Jamming:** u-blox lesen (Firmware, Fähigkeiten, Jamming-Anzeige aus MON-HW bzw.
-  gpsd 3.26 `jam` als weiterer Befund der Störungserkennung).
-- **Englisch, nächste Scheiben:** Seiten GPS, Zeitquellen, Clients und Einstellungsfelder;
-  Server-Texte (Hinweise, Ereignisse, Benachrichtigungen) als Schlüssel; Weblate-Projekt.
-- **Schwellen aus echten Daten nachschärfen:** Empfangsampel und „unstet“ (bisher aus einem
-  VK-162 drinnen und synthetischen Tagen), GNSS-Störungsschwellen gegen echte
-  Jamming-/Spoofing-Aufzeichnungen, Mindest-Schranke ± 10 ms für NMEA, Schwellen der
-  GPS-Automatik (6-h-Messung, 10 ms für den Schritt in einem Zug) an weiteren Empfängern.
-- ~~**Aus der Abschlussprüfung 1.5.0:**~~ erledigt in 1.5.4 (GPS-Sperre ohne andere Quelle ≥ 6 h →
-  Störung, Hilfe „Empfänger umgezogen“, Warnung bei `TRUSTED_PROXIES` breiter als /24 bzw. /64,
-  Holdover-Frist auf der monotonen Uhr, Proxy per Klick eintragen).
-- **Optional:** AdGuard-Home-API lesen (eigener Ausgangs-Zweck, opt-in), Empfangsbewertung und
-  Client-Gruppen ins Diagnosepaket (gefiltert).
-- **Danach:** Verbund 1, Einstellungen als Datei (TOML).
-- **Später:** Temperatur-Fit mit Vorschlag und Temperaturausgleich anwenden (24-h-Probelauf).
-  Zurückgestellt, weil der Nutzen mit dem CPU-Sensor gering ist: Auf dem Pi des Nutzers folgt die
-  Frequenz eher der Tageszeit als der CPU-Temperatur (Bereich 1,33–1,63 ppm). Sinnvoll erst mit
-  einem Sensor nahe am Quarz oder klarem Zusammenhang in den aufgezeichneten Daten.
+## 1.6 – „Zuhause besser“: lokal, mit Spaß und in Ordnung gebracht
 
-## 1.6 und später
+Begründung, Bewertung und Abnahme: [docs/konzept/version-1.6.md](docs/konzept/version-1.6.md).
+**Rein lokal:** keine neue Verbindung nach außen, keine neue Abhängigkeit, keine neue Automatik,
+die in die Zeit eingreift. Community-Funktionen kommen erst mit 1.7.
+
+| Thema | Nutzen | Aufwand | Stufe |
+|---|---|---|---|
+| Grundreinigung: alle bestätigten Fehler aus der Fehlersuche (Last, Robustheit, Zeitzone, Verbindungsverlust, Kontraste) | ★★★ | ◆◆ | 1.6.0 |
+| Pi-Zustand: Unterspannung, Drosselung, Takt, Lüfter | ★★★ | ◆ | 1.6.0 |
+| Sicherung und Wiederherstellung (ohne Position, ohne Tokens, mit Vorschau) 🔒 | ★★★ | ◆◆ | 1.6.0 |
+| GUI-Erneuerung: einheitliche Bausteine und Zahlenformate, Navigation mit 7 Einträgen, Einstellungen 2.0 | ★★★ | ◆◆ | 1.6.0 |
+| Willkommens-Assistent „In 3 Minuten fertig“ mit Checkliste | ★★★ | ◆◆ | 1.6.0 |
+| Uhr-Werkstatt: `/clock`-Designs, Kiosk, Ton auf der Sekunde, „Wie falsch geht dein Gerät?“ | ★★ | ◆ | 1.6.0 |
+| „Heute“-Zeitleiste: Zustandsband 24 h, Ereignismarker in allen Diagrammen, Tagesbericht | ★★ | ◆◆ | 1.6.0 |
+| Ruhiger Betrieb (Neustart-Koordinator), Hilfe mit Unterseiten, PPS-Bastelanleitung, Prometheus erweitert | ★★ | ◆◆ | 1.6.1 |
+| Satelliten-Spuren und Abschattungskarte (Winkel nur lokal, 24 h, nie exportiert) 🔒, Zeit-Kuriositäten | ★★ | ◆◆ | 1.6.2 |
+| Wochenbericht als Druckseite, Stratum-Baum | ★★ | ◆◆ | 1.6.3 |
+
+Englisch gibt es bis 1.7 nur auf ausdrücklichen Wunsch als „English (Beta)“; Standard ist Deutsch.
+
+## 1.7 – Nach außen öffnen, ohne die Privatsphäre zu öffnen (Entwurf)
+
+Entwurf mit offenen Fragen: [docs/konzept/version-1.7-entwurf.md](docs/konzept/version-1.7-entwurf.md).
+Alles, was die Instanz verlässt, ist opt-in, standardmäßig aus und läuft durch den Datenschutzfilter.
 
 | Thema | Nutzen | Aufwand |
 |---|---|---|
-| GPS-Empfänger aus dem Dashboard einrichten (u-blox-Voreinstellungen, mit Sicherung und „zurück“) | ★★ | ◆◆◆ |
-| „Von außen prüfen“-Knopf (gegen den Server-Test der Community) 🔒 | ★★★ | ◆ |
+| Englisch komplett (Seiten, Einstellungen, Server-Texte, Weblate) | ★★★ | ◆◆◆ |
+| Hardware- und Empfangsbericht „Mit der Community teilen“ (über GitHub, mit Vorschau) + u-blox lesen 🔒 | ★★★ | ◆◆ |
+| Uhrqualität 2: Holdover-Prognose, „Was bringt mein GPS?“ | ★★ | ◆ |
+| Zeitwächter-Ping an einen eigenen Dienst (Uptime Kuma, Healthchecks) 🔒 | ★★ | ◆ |
+| Danach: TOML, „Von außen prüfen“ 🔒, Verbund 1, GPS-Startwerte aus der HCL, u-blox schreiben (experimentell) | ★★ | ◆◆ |
+
+## Später
+
+| Thema | Nutzen | Aufwand |
+|---|---|---|
 | Gemeinsame virtuelle IP für zwei Instanzen (keepalived/VRRP, Doku) | ★ | ◆ |
+| Temperaturausgleich (erst mit Sensor nahe am Quarz) | ★ (★★ ohne GPS) | ◆◆ |
+| MQTT mit Home-Assistant-Discovery, nur auf Nachfrage | ★★ | ◆◆ |
 | Profi-PTP mit `ts2phc` (PPS direkt in i210/i226/TimeHAT), experimentell | ★★ | ◆◆◆ |
 | Funkuhr-Empfänger (DCF77), nur bei Nachfrage | ★ | ◆◆ |
 
 ## Community-Dienste (eigenes Repository, freiwillig)
 
 Gestaffelt nach Nutzen für alle – auch für Menschen ohne ntp-gui. **Erster eigener Dienst:**
-Zeit-Check-Website und Server-Test (Selbsttest des eigenen Anschlusses) auf dem VPS des
-Maintainers – Architektur, Aufwand, Kosten und Recht in
+Zeit-Check-Website und Server-Test (Selbsttest des eigenen Anschlusses) auf einem VPS des
+Projekts – Architektur, Aufwand, Kosten und Recht in
 [version-1.5.md, Abschnitt 4.6](docs/konzept/version-1.5.md#46-erster-konkreter-schritt-zeit-check-website--server-test-auf-dem-vps-des-maintainers).
 
 | Dienst | Nutzen | Aufwand |
