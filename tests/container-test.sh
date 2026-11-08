@@ -203,6 +203,10 @@ done
 contains "Vorschau als Hintergrund-Auftrag wird fertig" "$JOBV" '"reuse"'
 REUSE=$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['reuse'])" "$JOBV" 2>/dev/null)
 check "Download nimmt das Paket der Vorschau" 200 "$(http --max-time 10 "http://127.0.0.1:18080/api/diagnostics/bundle?clients=1&reuse=$REUSE")"
+# Pi-Zustand (T4): im Container ohne Pi-sysfs keine Karte, keine Fehlermeldung, nur gelesen.
+HWJ=$(curl -s --max-time 30 http://127.0.0.1:18080/api/hardware)
+check "Pi-Zustand: ohne Pi keine Karte" "False" "$(python3 -c "import json,sys; print(bool((json.loads(sys.argv[1]).get('pistate') or {}).get('available')))" "$HWJ" 2>/dev/null)"
+check "Pi-Zustand: keine Fehler im Log" "0" "$(docker logs "${PREFIX}-a" 2>&1 | grep -ci 'pistate\|get_throttled' || true)"
 check "Ungültiger Merker -> 409 statt langem Bau" 409 "$(http 'http://127.0.0.1:18080/api/diagnostics/bundle?clients=1&reuse=falsch')"
 check "Unbekannter Auftrag -> 404" 404 "$(http 'http://127.0.0.1:18080/api/diagnostics/preview?job=gibtsnicht')"
 CM=$(curl -s --max-time 10 http://127.0.0.1:18080/api/clients/offsets)

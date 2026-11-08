@@ -81,12 +81,12 @@ KIND_LABELS = {
     "service": "Dienste", "reload": "Neuladen", "settings": "Einstellungen", "source": "Zeitquellen",
     "gps": "GPS", "pps": "PPS", "calibration": "Kalibrierung", "cert": "Zertifikat",
     "leap": "Schaltsekunde", "startup": "Start", "clients": "Clients", "api": "API", "dns": "DNS für ntp-gui",
-    "update": "Update-Hinweis", "other": "Sonstiges",
+    "update": "Update-Hinweis", "pi": "Pi-Zustand", "other": "Sonstiges",
 }
 # Seite im Dashboard, auf die der Link einer Meldung zeigt.
 KIND_PAGES = {"gps": "gps", "pps": "gps", "calibration": "gps", "source": "quellen", "clients": "clients",
               "service": "diagnose", "reload": "diagnose", "cert": "einstellungen", "settings": "einstellungen",
-              "leap": "quellen", "dns": "einstellungen", "update": "einstellungen"}
+              "leap": "quellen", "dns": "einstellungen", "update": "einstellungen", "pi": "hardware"}
 
 MAX_CHANNELS = 10
 QUEUE_MAX = 50                     # Meldungen je Kanal; bei Überlauf fällt die älteste weg
@@ -455,7 +455,7 @@ def _record(channel_id: str, ok: bool, error: str | None = None, dropped: int = 
 # Arten, deren info-Ereignisse wirklich ein vorheriges Problem beenden („wieder da“, „läuft wieder“,
 # „erneuert“, „wieder im Rahmen“ …). Andere Arten (Kalibrierung, Einstellungen, Sonstiges) haben keine
 # solchen Paare. Neue Quellen können data.resolves = true/false setzen, ohne hier etwas zu ändern.
-RESOLVING_KINDS = ("gps", "pps", "service", "source", "reload", "cert", "clients", "dns")
+RESOLVING_KINDS = ("gps", "pps", "service", "source", "reload", "cert", "clients", "dns", "pi")
 # Arten, deren Ereignisse für sich stehen: auch „warn“ ist kein offenes Problem. „Neue Version 1.5.0 –
 # Achtung beim Update“ darf weder die nächste Achtung-Version unterdrücken noch von einem späteren
 # Info-Ereignis als „behoben … – Dauer 30 Tage“ geschlossen werden.

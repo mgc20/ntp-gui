@@ -80,6 +80,8 @@ bleiben leer – die Metriken gibt es nur, wenn die Funktion an ist.
 | `ntpgui_holdover_test_running` | 1 = Holdover-Test läuft (Clients bekommen ungenauere Zeit) |
 | `ntpgui_pps_live{device=…}` | 1 = PPS-Pulse kommen an |
 | `ntpgui_temperature_celsius` | Temperatur des gewählten Sensors |
+| `ntpgui_pi_undervoltage` | 1 = Raspberry Pi meldet gerade Unterspannung (nur auf dem Pi) |
+| `ntpgui_pi_throttled` | 1 = Raspberry Pi drosselt gerade den Takt (nur auf dem Pi, mit Firmware-Bitfeld) |
 | `ntpgui_leapseconds_list_days_left` | Tage bis zum Ablauf der Schaltsekunden-Liste |
 | `ntpgui_nts_server_cert_days_left` | Tage bis zum Ablauf des NTS-Zertifikats |
 | `ntpgui_update_available` | 1 = neuere Version auf GitHub (nur mit Update-Hinweis) |

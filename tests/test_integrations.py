@@ -67,6 +67,9 @@ def full_metrics() -> str:
             mock.patch.object(server.ptp, "status", return_value=PTP),
             mock.patch.object(server, "services_status", return_value=SERVICES),
             mock.patch.object(server.thermal.MONITOR, "last", {"t": time.time(), "celsius": 41.0}),
+            mock.patch.object(server.pistate.MONITOR, "last", {"t": time.time(), "state": {
+                "available": True, "undervoltage": {"now": False, "since_boot": True},
+                "throttled": {"now": False, "since_boot": False}}}),
             mock.patch.object(server.leap, "file_path", return_value=str(FIXTURES / "leap-seconds.list")),
             # Die Liste aus dem Fixture, nicht die tzdata-Datei des Hosts (fehlt in schlanken Images)
             mock.patch.object(server.leap, "chrony_source",
@@ -125,7 +128,8 @@ class MetricsCoverageTest(unittest.TestCase):
     def test_fake_enables_everything(self):
         for name in ("ntpgui_gps_fix_mode", "ntpgui_ptp_offset_seconds", "ntpgui_nts_server_cert_days_left",
                      "ntpgui_temperature_celsius", "ntpgui_leapseconds_list_days_left", "ntpgui_update_available",
-                     "ntpgui_pps_live", "ntpgui_service_up", "ntpgui_max_error_seconds", "ntpgui_sources_usable"):
+                     "ntpgui_pps_live", "ntpgui_service_up", "ntpgui_max_error_seconds", "ntpgui_sources_usable",
+                     "ntpgui_pi_undervoltage", "ntpgui_pi_throttled"):
             self.assertIn(name, self.exposed)
 
     def test_every_metric_has_help(self):

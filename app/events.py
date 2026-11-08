@@ -33,7 +33,7 @@ from typing import Any
 import store
 
 KINDS = ("service", "reload", "settings", "source", "gps", "pps", "calibration", "cert",
-         "leap", "startup", "clients", "api", "notify", "dns", "update", "other")
+         "leap", "startup", "clients", "api", "notify", "dns", "update", "pi", "other")
 LEVELS = ("info", "warn", "crit")
 
 RETENTION_DAYS = 90

@@ -6,6 +6,17 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 
 ## [Unveröffentlicht]
 
+### Hinzugefügt
+- **Pi-Zustand:** Neue Karte auf der Seite Hardware: meldet der Raspberry Pi Unterspannung oder drosselt er
+  den Takt – jetzt und seit dem Start des Pi –, dazu aktueller Takt und Lüfterdrehzahl. Gelesen wird nur aus
+  sysfs (Firmware-Bitfeld `get_throttled`, Sensor `rpi_volt`, `fan1_input`, `cpufreq`), ohne `vcgencmd`,
+  ohne zusätzliche Rechte, ohne neues Volume. Auf PCs und VMs erscheint die Karte nicht.
+- Ereignisse „Unterspannung erkannt“ und „Takt gedrosselt“: entprellt, genau eines je Episode – auch über
+  einen Neustart des Dashboards hinweg –, „… vorbei“ nach 10 Minuten Ruhe.
+- Hardware-Check: Zeile „Stromversorgung (Pi)“ mit Hinweis auf das offizielle Netzteil (bei Hitze-Drosselung
+  ein Hinweis auf Kühlung); bei Unterspannung ein Hinweis auf der Übersicht.
+- Prometheus-Metriken `ntpgui_pi_undervoltage` und `ntpgui_pi_throttled`; Verlaufsfeld `pi_state`.
+
 ## [1.5.5] – 2026-11-08
 
 Schwerpunkt: Grundreinigung vor 1.6 – das Diagnosepaket kommt auch mit langer Aufzeichnung hinter einem

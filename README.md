@@ -265,9 +265,11 @@ sie nicht, weil schon das Schließen über die DTR-Leitung manche Boards zurück
 | **Plattform** | Raspberry-Pi-Modell, VM und Hypervisor, Docker Desktop/WSL, Netzwerkmodus (Host/Bridge). |
 | **Container-Rechte** | `SYS_TIME`, `NET_ADMIN`, `NET_RAW`, ob `/dev` eingehängt ist, Major-Nummern für PPS/PTP. |
 | **RTC** | Hat das System eine Echtzeituhr – und wie weit liegt sie daneben? Ohne RTC startet ein Pi mit falscher Zeit. |
+| **Pi-Zustand** | Nur auf dem Raspberry Pi: Unterspannung und Takt-Drosselung (jetzt und seit dem Start des Pi), aktueller Takt und Lüfterdrehzahl – gelesen aus sysfs (`get_throttled`, `rpi_volt`), ohne `vcgencmd` und ohne zusätzliche Rechte. Wechsel erscheinen als Ereignis „Unterspannung erkannt“ bzw. „Takt gedrosselt“, dazu die Metriken `ntpgui_pi_undervoltage` und `ntpgui_pi_throttled`. Auf PCs fehlt die Karte. |
 
 Darunter steht eine **Matrix**: NTP-Server, Uhr stellen, NTS, USB-GPS, GPS + PPS, PTP mit
-Hardware- bzw. Software-Zeitstempeln, PTP→NTP-Brücke und GPS→PTP-Grandmaster – jeweils mit
+Hardware- bzw. Software-Zeitstempeln, PTP→NTP-Brücke, GPS→PTP-Grandmaster und auf dem Pi die
+Stromversorgung (mit Hinweis auf das offizielle Netzteil) – jeweils mit
 *geht*, *geht mit Änderung*, *eingeschränkt*, *geht nicht* oder *unklar*, der erreichbaren
 Genauigkeit und bei „geht mit Änderung“ dem fertigen Ausschnitt für Compose-Datei, `.env`
 oder Boot-Konfiguration.

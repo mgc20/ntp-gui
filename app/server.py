@@ -78,6 +78,7 @@ import providers
 import ptp
 import settings
 import statewatch
+import pistate
 import thermal
 import updatecheck
 import webtransport
@@ -386,6 +387,10 @@ def collect_sample() -> dict:
         temp = None
     if temp is not None:
         sample["temp"] = temp
+    # 1.6 (T4): Unterspannung/Drosselung am Pi – entprellte Ereignisse, ein Feld im Verlauf; wirft nie.
+    pi_value = pistate.severity(pistate.MONITOR.sample(events.emit))
+    if pi_value is not None:
+        sample["pi_state"] = pi_value
     if gps.enabled():
         g = gps.status()
         sample["gps"] = {"used": _num(g.get("satellites_used")), "seen": _num(g.get("satellites_seen")),
@@ -1096,6 +1101,15 @@ def build_metrics() -> str:
         _metric(lines, "ntpgui_nts_server_cert_days_left", nts.get("days_left"),
                 "Days until the NTS server certificate expires")
 
+    pi = pistate.MONITOR.metrics_state()
+    if pi is not None:
+        uv, thr = pi.get("undervoltage") or {}, pi.get("throttled") or {}
+        if uv.get("now") is not None:
+            _metric(lines, "ntpgui_pi_undervoltage", 1 if uv["now"] else 0,
+                    "1 when the Raspberry Pi reports under-voltage right now (firmware/hwmon, last history sample)")
+        if thr.get("now") is not None:
+            _metric(lines, "ntpgui_pi_throttled", 1 if thr["now"] else 0,
+                    "1 when the Raspberry Pi firmware throttles the CPU right now (last history sample)")
     last = thermal.MONITOR.last
     if isinstance(last.get("t"), (int, float)) and time.time() - last["t"] < 900:
         _metric(lines, "ntpgui_temperature_celsius", last.get("celsius"),
