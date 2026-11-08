@@ -118,6 +118,8 @@ der Seite „Uhrqualität“, Reverse Proxy per Klick eintragen und die Restpunk
 - **Release: Herkunftsnachweis scheiterte im öffentlichen Repository** („No credentials found for
   registry ghcr.io“). Der Job „Herkunftsnachweis“ meldet sich jetzt selbst an der Registry an, bevor
   er den Nachweis dort ablegt. Im privaten Repository war der Job bisher immer übersprungen worden.
+- **Release: SBOM-Werkzeuge mit drei Versuchen.** Der Download von syft scheiterte zweimal
+  nacheinander mit HTTP 504; syft und Grype werden jetzt bis zu dreimal mit Wartezeit geholt.
 
 ## [1.5.3] – 2026-11-04
 

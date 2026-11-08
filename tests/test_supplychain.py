@@ -74,6 +74,20 @@ class SupplyChainTest(unittest.TestCase):
         self.assertIn("github.event.repository.private == false", text)
         self.assertIn("needs.attest.result == 'skipped'", text)
 
+    def test_scanner_downloads_retry(self):
+        # Release 1.5.4: Der syft-Download lieferte zweimal nacheinander 504. Drei Versuche je
+        # Werkzeug, nur der letzte darf den Release abbrechen, und alle Nutzer lesen jeden Versuch.
+        text = RELEASE.read_text(encoding="utf-8")
+        for tool in ("syft", "grype"):
+            with self.subTest(tool=tool):
+                for attempt in (1, 2, 3):
+                    self.assertIn(f"id: {tool}{attempt}\n", text)
+                self.assertNotIn(f"steps.{tool}.", text)
+                expr = " || ".join(f"steps.{tool}{n}.outputs.cmd" for n in (1, 2, 3))
+                self.assertIn(expr, text)
+                last = text.split(f"id: {tool}3\n", 1)[1].split("uses:", 1)[0]
+                self.assertNotIn("continue-on-error", last)
+
     def test_base_image_pinned_by_digest(self):
         froms = [line for line in (ROOT / "Dockerfile").read_text(encoding="utf-8").splitlines()
                  if line.startswith("FROM ")]

@@ -138,18 +138,61 @@ jobs:
           outputs: type=image,name=${{ steps.image.outputs.name }},push-by-digest=true,name-canonical=true,push=true
 
       # --- Lieferkette: SBOM und Schwachstellen am hochgeladenen Digest, je Architektur ------
-      - name: syft bereitstellen
-        id: syft
+      # Die Installer laden von github.com/anchore/*/releases. Diese Downloads liefern zeitweise
+      # 504 (Release 1.5.4: zwei Läufe nacheinander). Darum bis zu drei Versuche mit Wartezeit;
+      # die Action bleibt dieselbe, festgenagelte. Erst der dritte Fehlschlag bricht ab.
+      - name: syft bereitstellen (Versuch 1)
+        id: syft1
+        continue-on-error: true
         uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
 
-      - name: Grype bereitstellen
-        id: grype
+      - name: syft – kurz warten vor Versuch 2
+        if: steps.syft1.outcome == 'failure'
+        run: sleep 30
+
+      - name: syft bereitstellen (Versuch 2)
+        id: syft2
+        if: steps.syft1.outcome == 'failure'
+        continue-on-error: true
+        uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+
+      - name: syft – kurz warten vor Versuch 3
+        if: steps.syft2.outcome == 'failure'
+        run: sleep 60
+
+      - name: syft bereitstellen (Versuch 3)
+        id: syft3
+        if: steps.syft2.outcome == 'failure'
+        uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+
+      - name: Grype bereitstellen (Versuch 1)
+        id: grype1
+        continue-on-error: true
+        uses: anchore/scan-action/download-grype@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
+
+      - name: Grype – kurz warten vor Versuch 2
+        if: steps.grype1.outcome == 'failure'
+        run: sleep 30
+
+      - name: Grype bereitstellen (Versuch 2)
+        id: grype2
+        if: steps.grype1.outcome == 'failure'
+        continue-on-error: true
+        uses: anchore/scan-action/download-grype@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
+
+      - name: Grype – kurz warten vor Versuch 3
+        if: steps.grype2.outcome == 'failure'
+        run: sleep 60
+
+      - name: Grype bereitstellen (Versuch 3)
+        id: grype3
+        if: steps.grype2.outcome == 'failure'
         uses: anchore/scan-action/download-grype@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
 
       - name: SBOM und Schwachstellen-Bericht (je Architektur)
         env:
-          SYFT: ${{ steps.syft.outputs.cmd }}
-          GRYPE: ${{ steps.grype.outputs.cmd }}
+          SYFT: ${{ steps.syft1.outputs.cmd || steps.syft2.outputs.cmd || steps.syft3.outputs.cmd }}
+          GRYPE: ${{ steps.grype1.outputs.cmd || steps.grype2.outputs.cmd || steps.grype3.outputs.cmd }}
           REF: ${{ steps.image.outputs.name }}@${{ steps.push.outputs.digest }}
         run: |
           set -euo pipefail
@@ -177,7 +220,7 @@ jobs:
 
       - name: Schwachstellen-Sperre (kritisch und behebbar, je Architektur)
         env:
-          GRYPE: ${{ steps.grype.outputs.cmd }}
+          GRYPE: ${{ steps.grype1.outputs.cmd || steps.grype2.outputs.cmd || steps.grype3.outputs.cmd }}
           REF: ${{ steps.image.outputs.name }}@${{ steps.push.outputs.digest }}
         run: |
           set -euo pipefail
