@@ -497,11 +497,15 @@ class LintTest(unittest.TestCase):
         self.assertEqual(found, [])
 
     def test_musterseite_nur_mit_dev(self):
+        # Seit T2 „Navigation“ steht die Routentabelle in routes.js; die Navigation baut nur aus NAV.
         app = (JS / "app.js").read_text(encoding="utf-8")
-        self.assertRegex(app, r'id: "muster".*dev: true')
+        routes = (JS / "routes.js").read_text(encoding="utf-8")
+        self.assertRegex(routes, r'id: "muster".*dev: true')
         self.assertIn('get("dev") === "1"', app)
-        self.assertIn("PAGES.filter((page) => !page.dev)", app)
-        self.assertIn("(!p.dev || devMode())", app)
+        self.assertIn("(!p.dev || dev)", routes)
+        self.assertIn("resolve(window.location.hash, devMode())", app)
+        nav = routes[routes.index("export const NAV"):routes.index("export const PAGES")]
+        self.assertNotIn("muster", nav)
 
     def test_keine_inline_styles(self):
         """Strenge CSP (style-src 'self'): keine style-Attribute im HTML und kein setAttribute("style")."""

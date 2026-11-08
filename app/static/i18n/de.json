@@ -11,7 +11,22 @@
     "theme_title": "Hell / Dunkel",
     "theme_label": "Hell oder dunkel umschalten",
     "language_title": "Sprache: Deutsch / English (Beta)",
-    "language_label": "Sprache wechseln (Language)"
+    "language_label": "Sprache wechseln (Language)",
+    "title_short": "NTP-GUI",
+    "bottom_label": "Hauptbereiche",
+    "more": "Mehr",
+    "more_label": "Weitere Bereiche",
+    "ptp_off": "Nicht genutzt – in {link} einschalten.",
+    "ptp_off_link": "Einstellungen → PTP",
+    "shortcuts": {
+      "hint": "Tastenkürzel (?)",
+      "title": "Tastenkürzel",
+      "search": "Suche der Seite (falls vorhanden)",
+      "help": "Diese Übersicht",
+      "then": "dann",
+      "close": "Schließen",
+      "note": "Die Kürzel wirken nicht, solange du in einem Eingabefeld tippst."
+    }
   },
   "nav": {
     "label": "Bereiche",
@@ -25,7 +40,13 @@
     "diagnose": "Diagnose",
     "notify": "Benachrichtigungen",
     "settings": "Einstellungen",
-    "help": "Hilfe"
+    "help": "Hilfe",
+    "uhr": "Uhr & Hardware",
+    "system": "System",
+    "short": {
+      "overview": "Übersicht",
+      "sources": "Quellen"
+    }
   },
   "overview": {
     "band_label": "Gesamtzustand",
@@ -130,6 +151,13 @@
     }
   },
   "help": {
-    "german_only": "Die Erklärungen auf dieser Seite gibt es vorerst nur auf Deutsch. Übersetzungen sind willkommen – siehe CONTRIBUTING.md."
+    "german_only": "Die Erklärungen auf dieser Seite gibt es vorerst nur auf Deutsch. Übersetzungen sind willkommen – siehe CONTRIBUTING.md.",
+    "api": {
+      "title": "API & Automatisierung",
+      "intro": "Für Monitoring, Skripte und Home Assistant. Ist ein Passwort gesetzt, brauchst du einen API-Schlüssel (Einstellungen → Dashboard → API-Schlüssel); nur /healthz ist immer offen.",
+      "metrics": "Messwerte im Prometheus-Format",
+      "status": "Gesamtzustand als JSON (dieselben Daten wie das Dashboard)",
+      "healthz": "Kurze Lebenszeichen-Prüfung für Container und Load-Balancer"
+    }
   }
 }

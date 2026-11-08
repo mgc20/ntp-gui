@@ -83,10 +83,12 @@ KIND_LABELS = {
     "leap": "Schaltsekunde", "startup": "Start", "clients": "Clients", "api": "API", "dns": "DNS für ntp-gui",
     "update": "Update-Hinweis", "pi": "Pi-Zustand", "other": "Sonstiges",
 }
-# Seite im Dashboard, auf die der Link einer Meldung zeigt.
+# Seite im Dashboard, auf die der Link einer Meldung zeigt – Pfade wie die Routen in
+# app/static/js/routes.js (seit 1.6; alte Pfade leitet das Dashboard weiter).
 KIND_PAGES = {"gps": "gps", "pps": "gps", "calibration": "gps", "source": "quellen", "clients": "clients",
-              "service": "diagnose", "reload": "diagnose", "cert": "einstellungen", "settings": "einstellungen",
-              "leap": "quellen", "dns": "einstellungen", "update": "einstellungen", "pi": "hardware"}
+              "service": "system/diagnose", "reload": "system/diagnose", "cert": "system/einstellungen",
+              "settings": "system/einstellungen", "leap": "quellen", "dns": "system/einstellungen",
+              "update": "system/einstellungen", "pi": "uhr/hardware"}
 
 MAX_CHANNELS = 10
 QUEUE_MAX = 50                     # Meldungen je Kanal; bei Überlauf fällt die älteste weg

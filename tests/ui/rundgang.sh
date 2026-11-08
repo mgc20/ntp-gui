@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # UI-Rundgang starten: Server mit erfundenem chronyc in einem Temp-Verzeichnis, tour.js, Server beenden.
-# Aufruf aus dem Repository: tests/ui/rundgang.sh [Port]   (Standard 18095)
+# Aufruf aus dem Repository: tests/ui/rundgang.sh [Port]   (Standard 18300)
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
-PORT="${1:-18095}"
+PORT="${1:-18300}"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/ntpgui-ui-XXXXXX")"
 mkdir -p "$TMP/data" "$TMP/run" "$TMP/etc"
 

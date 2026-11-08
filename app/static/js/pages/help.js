@@ -13,6 +13,15 @@ const SETUPS = [
   ["+ PTP", "ptp_vs_ntp", "< 1 µs im LAN", "NIC mit Hardware-Zeitstempeln (z. B. Intel i210, gebraucht ab ~30 €)", "Nur sinnvoll mit GPS+PPS als Referenz und Clients, die PTP können. Für Audio-over-IP – AES67 (Dante nur im AES67-Modus), Ravenna –, Labore, zum Lernen."],
 ];
 
+// Früher in der Fußzeile (bis 1.5): die Adressen für Monitoring und Skripte.
+const API_LINKS = [["/metrics", "help.api.metrics"], ["/api/status", "help.api.status"], ["/healthz", "help.api.healthz"]];
+
+function apiCard() {
+  return card(t("help.api.title"), { id: "api", help: "api_keys", sub: t("help.api.intro") },
+    el("dl", { class: "api-links" }, API_LINKS.map(([href, key]) => el("div", { class: "api-link" },
+      el("dt", {}, el("a", { href, class: "mono", text: href })), el("dd", { text: t(key) })))));
+}
+
 export function render(ctx) {
   const query = (ctx.uiState.helpQuery || "").toLowerCase();
   const focus = new URLSearchParams(window.location.hash.split("?")[1] || "").get("t");
@@ -47,5 +56,6 @@ export function render(ctx) {
           el("td", { text: hardware }), el("td", { text: when }))))))),
     el("div", { class: "toolbar" }, search),
     list,
+    apiCard(),
   ];
 }

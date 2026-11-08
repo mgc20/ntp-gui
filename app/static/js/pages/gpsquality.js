@@ -113,7 +113,7 @@ export function roleCard(ctx) {
     button.addEventListener("click", () => resetBound(ctx, button));
     actions.push(button);
   }
-  actions.push(el("a", { href: "#/einstellungen?s=gps", text: "Rolle und Fehlerschranke in den Einstellungen" }));
+  actions.push(el("a", { href: "#/system/einstellungen?s=gps", text: "Rolle und Fehlerschranke in den Einstellungen" }));
   return card("Rolle des GPS", head,
     el("div", { class: "verdict", "data-tone": tone },
       el("span", { class: "verdict-label" }, role.label, " ", infoButton("gpsq_role", "Rolle")),

@@ -1,5 +1,7 @@
 import { el, fmtNs, fmtNumber, isNum, rich } from "../util.js";
-import { card, statCard, kv, infoButton, badge, emptyState, copyButton } from "../ui.js";
+import { card, statCard, kv, infoButton, badge, emptyState } from "../ui.js";
+import { route } from "../routes.js";
+import { t as tr } from "../i18n.js";
 import { lineChart } from "../charts.js";
 import { axisSeconds } from "./overview.js";
 import { hardwareData, matrixList } from "./hardware.js";
@@ -64,40 +66,24 @@ function nicTable(nics, report) {
     }))));
 }
 
-const COMPOSE = `services:
-  ntp-gui:
-    image: ghcr.io/mgc20/ntp-gui:latest
-    network_mode: host            # PTP braucht die echte Netzwerkkarte
-    cap_add: [SYS_TIME, NET_ADMIN, NET_RAW]
-    devices:
-      - /dev/ptp0:/dev/ptp0       # PTP-Uhr der Karte (siehe Tabelle)
-      - /dev/ttyAMA0:/dev/ttyAMA0 # GPS am UART (USB-Stick: /dev/ttyACM0)
-      - /dev/pps0:/dev/pps0       # PPS – ohne ihn ist ein Grandmaster kaum sinnvoll
-    environment:
-      PTP_ENABLE: "true"
-      PTP_INTERFACE: eth0
-      PTP_MODE: master            # chrony stellt die Systemuhr nach GPS/PPS,
-                                  # phc2sys kopiert sie in die PTP-Uhr der Karte,
-                                  # ptp4l verteilt diese Uhr im Netz
-      PHC2SYS_ENABLE: "true"      # Pflicht: koppelt Systemuhr → PTP-Uhr der Karte
-                                  # (ohne phc2sys läuft die Kartenuhr frei)
-      GPS_ENABLE: "true"
-      GPS_DEVICE: /dev/ttyAMA0
-      GPS_PPS_DEVICE: /dev/pps0
-    volumes:
-      - chrony-data:/var/lib/chrony
-volumes:
-  chrony-data:`;
-
 // Die Seite wird alle paar Sekunden neu aufgebaut – aufgeklappte Details sollen offen bleiben.
 function keepOpen(ctx, id) {
   return { class: "more", open: ctx.uiState[id] ? true : null,
     ontoggle: (event) => { ctx.uiState[id] = event.currentTarget.open; } };
 }
 
+// PTP aus (1.6, T2): der Reiter bleibt, zeigt aber nur eine Zeile statt einer Seite voller leerer Karten.
+function offLine() {
+  const [before, after = ""] = tr("app.ptp_off").split("{link}");
+  return el("p", { class: "empty-note ptp-off" }, before,
+    el("a", { href: route("settings", "", "s=ptp"), text: tr("app.ptp_off_link") }), after,
+    infoButton("ptp_requirements", "Voraussetzungen für PTP"));
+}
+
 export function render(ctx) {
   const { status, history } = ctx;
   const ptp = status.ptp || {};
+  if (!ptp.enabled) return [offLine()];
   const devices = ctx.data("devices", "/api/devices", 30);
   const report = hardwareData(ctx);
   const matrixRows = (report?.matrix || []).filter((m) => ["ptp_hw", "ptp_sw", "ptp_to_ntp", "gps_to_ptp"].includes(m.key));
@@ -132,7 +118,7 @@ export function render(ctx) {
     sub: "Live geprüft. Graue Punkte lassen sich nicht automatisch prüfen." },
     matrixRows.length ? [el("h3", { class: "mini-head" }, "Was mit dieser Hardware geht ", infoButton("hw_matrix", "Was mit dieser Hardware geht")),
       matrixList(matrixRows),
-      el("p", { class: "hw-more" }, el("a", { href: "#/hardware", text: "Alle Fähigkeiten im Hardware-Check →" })),
+      el("p", { class: "hw-more" }, el("a", { href: route("hardware"), text: "Alle Fähigkeiten im Hardware-Check →" })),
       el("h3", { class: "mini-head hw-gap" }, "Einzelprüfungen ", infoButton("ptp_requirements", "Einzelprüfungen"))] : null,
     devices ? checklist(devices.ptp_checks, report) : emptyState("Wird geprüft …")));
   out.push(card("Netzwerkkarten", { help: "phc", sub: "Fähigkeiten laut `ethtool -T`." },
@@ -194,13 +180,6 @@ export function render(ctx) {
     out.unshift(card("PTP ist eingeschaltet, läuft aber nicht", { class: "card-alert" },
       el("p", {}, rich("ptp4l antwortet nicht. Die häufigsten Gründe stehen in der Prüfliste unten. Im Log steht der konkrete Fehler – z. B. `ioctl SIOCSHWTSTAMP failed` (fehlende Rechte oder keine Hardware-Zeitstempel).")),
     ));
-  } else {
-    out.push(card("PTP einschalten", { help: "ptp_requirements" },
-      el("p", {}, rich("PTP ist aus. Zum Einschalten in den Einstellungen das Interface wählen und PTP aktivieren. Der Container muss dafür im Host-Netzwerk laufen – so sieht die Compose-Datei dann aus:")),
-      el("div", { class: "snippet" }, el("div", { class: "snippet-head" }, el("strong", { text: "docker-compose.yml – GPS-Grandmaster" }), copyButton(COMPOSE)),
-        el("pre", { class: "code", text: COMPOSE })),
-      el("p", { class: "hw-note" }, rich("Ohne PPS die Zeilen für `/dev/pps0` und `GPS_PPS_DEVICE` weglassen – dann aber besser **Slave** statt Master. Welche Geräte es bei dir gibt, zeigt der **Hardware-Check**.")),
-      el("p", {}, el("a", { href: "#/einstellungen?s=ptp", class: "button", text: "Zu den PTP-Einstellungen" }))));
   }
   if (ptp.enabled && (ptp.log || []).length) {
     out.push(card("ptp4l-Log", {}, el("pre", { class: "log", text: ptp.log.join("\n") })));

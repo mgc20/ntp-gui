@@ -139,7 +139,7 @@ function lockBlock(ctx, g) {
     });
     buttons.push(relearn, infoButton("gnss_relearn", "Neu lernen"), infoButton("gnss_moved", "Empfänger umgezogen?"));
   }
-  buttons.push(el("a", { href: "#/einstellungen?s=gps", text: "Verhalten in den Einstellungen" }));
+  buttons.push(el("a", { href: "#/system/einstellungen?s=gps", text: "Verhalten in den Einstellungen" }));
   return el("div", {}, kv(rows), el("div", { class: "button-row" }, buttons));
 }
 

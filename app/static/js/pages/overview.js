@@ -1,9 +1,8 @@
 import { el, fmtSeconds, fmtNs, fmtNumber, fmtFixed, fmtRate, fmtDuration, fmtPpm, fmtDate, isNum, sourceLabel, serverZone, fmtZoned } from "../util.js";
-import { card, statCard, kv, badge, insightList, insightLink, insightFixes, rangeButtons, infoButton, emptyState, loadingOr, chartCard, ACTION_LABEL } from "../ui.js";
+import { card, statCard, kv, badge, insightList, insightLink, insightAction, insightFixes, rangeButtons, infoButton, emptyState, loadingOr, chartCard, ACTION_LABEL } from "../ui.js";
 import { lineChart, sparkline, stepDecimals } from "../charts.js";
 import { t as tr } from "../i18n.js";
 
-export const ROUTES = { gps: "gps", sources: "quellen", settings: "einstellungen", clients: "clients", ptp: "ptp", hardware: "hardware" };
 
 function offsetTone(offset) {
   if (!isNum(offset)) return "muted";
@@ -214,8 +213,7 @@ function hintRow(ctx, item) {
         onclick: () => { if (open) openSet.delete(key); else openSet.add(key); ctx.rerender(); },
       }, tr(open ? "overview.hints.less" : "overview.hints.details")),
       insightLink(item),
-      item.action ? el("a", { href: `#/${ROUTES[item.action] || item.action}`, class: "insight-action",
-        text: ACTION_LABEL[item.action] || "Ansehen →" }) : null));
+      insightAction(item)));
 }
 
 function hintsBlock(ctx, insights) {
@@ -240,7 +238,7 @@ function hintsBlock(ctx, insights) {
       el("span", { class: "muted", text: ` · ${rest.map((i) => i.title).join(" · ")}` })),
     el("span", { class: "hint-summary-action", text: tr(open ? "overview.hints.hide" : "overview.hints.show") }));
     parts.push(el("div", { class: "hint-more" }, toggle, infoButton("overview_hints", tr("overview.hints.label"))));
-    if (open) parts.push(el("div", { class: "insights-rest", id: "hints-rest" }, insightList(rest, ROUTES, ctx)));
+    if (open) parts.push(el("div", { class: "insights-rest", id: "hints-rest" }, insightList(rest, ctx)));
   } else if (serious.length) {
     parts.push(el("div", { class: "hint-more hint-more-quiet" }, infoButton("overview_hints", tr("overview.hints.label"))));
   }
@@ -295,7 +293,7 @@ function syncPanel(status, ref, rootDistance, issues, temp) {
   if (!status.chrony_running) {
     return panel({ title: "Systemuhr", help: "chronyd", tone: "crit", state: "keine Antwort", value: "–",
       valueNote: "chronyd läuft nicht", body: emptyState("Ohne chronyd verteilt der Server keine Zeit. Das Log auf der Diagnose-Seite nennt meist den Grund."),
-      href: "#/diagnose", linkLabel: "Zur Diagnose" });
+      href: "#/system/diagnose", linkLabel: "Zur Diagnose" });
   }
   const local = t.local_reference && !t.synchronised;
   const tone = t.synchronised ? offsetTone(t.system_time_offset) : "warn";
@@ -386,7 +384,7 @@ function ptpPanel(status, issues) {
       ["Laufzeit", fmtNs(ptp.meanPathDelay), "mean_path_delay"],
       ["Interface", ptp.interface || ptp.ptp_interface || "–", "ptp_interface"],
     ]),
-    href: "#/ptp", linkLabel: "Zur PTP-Seite",
+    href: "#/uhr/ptp", linkLabel: "Zur PTP-Seite",
   });
 }
 
@@ -394,7 +392,7 @@ function ptpPanel(status, issues) {
 function unusedStrip(status) {
   const off = [];
   if (!(status.gps || {}).enabled) off.push({ name: "GPS", help: "gps", href: "#/gps", pitch: "macht den Server zur Stratum-1-Quelle, unabhängig vom Internet" });
-  if (!(status.ptp || {}).enabled) off.push({ name: "PTP", help: "ptp", href: "#/ptp", pitch: "verteilt die Zeit im LAN auf Mikrosekunden genau" });
+  if (!(status.ptp || {}).enabled) off.push({ name: "PTP", help: "ptp", href: "#/uhr/ptp", pitch: "verteilt die Zeit im LAN auf Mikrosekunden genau" });
   if (!off.length) return null;
   return el("div", { class: "unused-strip", role: "note" },
     el("span", { class: "unused-label", text: "Nicht genutzt" }),
@@ -443,7 +441,7 @@ function opsRows(status) {
         : el("span", {}, `${n.enabled} aktiv `, badge("zugestellt", "good"));
   return kv([
     ["DNS für ntp-gui", dnsValue, "dns_modes"],
-    ["Benachrichtigungen", el("a", { href: "#/benachrichtigungen" }, notifyValue), "notify"],
+    ["Benachrichtigungen", el("a", { href: "#/system/benachrichtigungen" }, notifyValue), "notify"],
   ]);
 }
 
@@ -517,7 +515,7 @@ function eventsPanel(ctx) {
           el("span", { class: "event-title", text: event.display_title || event.title || "" }));
       }));
   return panel({ title: "Letzte Ereignisse", help: "overview_events", tone: "muted", body,
-    href: "#/diagnose", linkLabel: "Alle Ereignisse" });
+    href: "#/system/diagnose", linkLabel: "Alle Ereignisse" });
 }
 
 const OFFSET_BANDS = [

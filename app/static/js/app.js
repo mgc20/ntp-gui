@@ -15,23 +15,11 @@ import * as settings from "./pages/settings.js";
 import * as help from "./pages/help.js";
 import * as muster from "./pages/muster.js";
 import { t, initI18n, setLanguage, language, LANGUAGES, onLanguageChange } from "./i18n.js";
+import { NAV, resolve, route, tabsOf, navOf } from "./routes.js";
+import { createShortcuts, shortcutList } from "./shortcuts.js";
 
-// Titel als Katalogschlüssel (i18n.js) – die Route (id) bleibt deutsch, damit Lesezeichen gelten.
-const PAGES = [
-  { id: "", titleKey: "nav.overview", module: overview, history: true },
-  { id: "quellen", titleKey: "nav.sources", module: sources, history: true },
-  { id: "gps", titleKey: "nav.gps", module: gps, history: true },
-  { id: "ptp", titleKey: "nav.ptp", module: ptp, history: true },
-  { id: "uhrqualitaet", titleKey: "nav.clockquality", module: clockquality, history: false },
-  { id: "hardware", titleKey: "nav.hardware", module: hardware, history: false },
-  { id: "clients", titleKey: "nav.clients", module: clients, history: true },
-  { id: "diagnose", titleKey: "nav.diagnose", module: diagnose, history: false },
-  { id: "benachrichtigungen", titleKey: "nav.notify", module: notify, history: false },
-  { id: "einstellungen", titleKey: "nav.settings", module: settings },
-  { id: "hilfe", titleKey: "nav.help", module: help },
-  // Nur für Entwicklung: Musterseite mit allen Bausteinen, erreichbar mit ?dev=1 (nicht in der Navigation).
-  { id: "muster", title: "Musterseite", module: muster, dev: true, history: false },
-];
+// Routentabelle, alte Routen und Reiter stehen in routes.js (ohne DOM, in Node getestet).
+const MODULES = { overview, sources, gps, clients, clockquality, hardware, ptp, diagnose, notify, settings, help, muster };
 
 // ?dev=1 in der Adresse (vor oder nach dem #) schaltet die Entwicklerseiten frei.
 function devMode() {
@@ -58,20 +46,27 @@ const state = {
 const main = document.getElementById("main");
 const nav = document.getElementById("nav");
 
-// #/<seite>/<unterpfad> – der Unterpfad (z. B. die Adresse auf #/clients/192.168.1.5) geht als
-// ctx.subpath an die Seite.
-function routeParts() {
-  const raw = window.location.hash.replace(/^#\/?/, "").split("?")[0] || "";
-  const slash = raw.indexOf("/");
-  const id = (slash < 0 ? raw : raw.slice(0, slash)).toLowerCase();
-  let sub = slash < 0 ? "" : raw.slice(slash + 1);
-  try { sub = decodeURIComponent(sub); } catch (error) { sub = ""; }
-  return { id, sub };
+// #/<seite>/<unterpfad> – der Unterpfad (z. B. die Adresse auf #/clients/192.0.2.5) geht als
+// ctx.subpath an die Seite. Alte Routen löst resolve() zu ihrem Ziel auf; die Adresszeile stellt
+// redirectLegacy() um.
+function currentRoute() {
+  let found = resolve(window.location.hash, devMode());
+  if (found.redirect) found = resolve(found.redirect, devMode());
+  return found.redirect ? resolve("#/") : found;
 }
 
 function currentPage() {
-  const { id } = routeParts();
-  return PAGES.find((p) => p.id === id && (!p.dev || devMode())) || PAGES[0];
+  const page = currentRoute().page;
+  return { ...page, module: MODULES[page.id] };
+}
+
+// Alte Lesezeichen (#/ptp, #/einstellungen?s=gps, #/hardware/…): Adresse ersetzen, ohne Verlaufseintrag.
+// Der folgende hashchange zeichnet die neue Seite.
+function redirectLegacy() {
+  const found = resolve(window.location.hash, devMode());
+  if (!found.redirect) return false;
+  window.location.replace(found.redirect);
+  return true;
 }
 
 // --- Datencache für seitenbezogene Abfragen ---------------------------------
@@ -145,14 +140,12 @@ function restoreFocus(saved) {
 }
 
 function render() {
+  const route = currentRoute();
   const page = currentPage();
   document.title = `${pageTitle(page)} · ${state.status?.system?.title || "ntp-gui"}`;
-  for (const link of nav.querySelectorAll("a")) {
-    const active = link.dataset.page === page.id;
-    link.classList.toggle("is-active", active);
-    if (active) link.setAttribute("aria-current", "page"); else link.removeAttribute("aria-current");
-  }
-  if (!state.status && page.module !== help && page.module !== settings && page.module !== muster) {
+  markActive(page);
+  renderTabs(page);
+  if (!state.status && !["help", "settings", "muster"].includes(page.id)) {
     main.replaceChildren(el("p", { class: "empty-note", text: t("app.connecting_server") }));
     return;
   }
@@ -163,7 +156,7 @@ function render() {
     history: state.history,
     range: state.range,
     uiState: state.uiState,
-    subpath: page.id ? routeParts().sub : "",
+    subpath: route.sub,
     readonly: Boolean(state.status?.ui?.readonly),
     setRange: (seconds) => { state.range = seconds; storageSet("ntp-gui-range", seconds); refresh(); },
     rerender: () => render(),
@@ -194,6 +187,9 @@ function renderHeader() {
   const sys = status.system || {};
   document.getElementById("title").textContent = sys.title || "ntp-gui";
   document.getElementById("hostname").textContent = sys.hostname || "";
+  // Handy: sichtbar nur „NTP-GUI“ – voller Titel und Rechnername im Titelattribut und im „Mehr“-Menü.
+  document.getElementById("title-wrap")?.setAttribute("title", [sys.title, sys.hostname].filter(Boolean).join(" · "));
+  renderMoreHost();
   // Uhrzeit des Servers, nicht die des Browsers (sys.timezone ist nur die Abkürzung, z. B. „CEST“).
   const zone = serverZone(sys) ? sys.timezone || "" : "UTC";
   document.getElementById("clock").textContent = `${fmtServerDateTime(sys, language() === "en" ? "en-GB" : "de-DE")} ${zone}`;
@@ -205,8 +201,8 @@ function renderHeader() {
   pill.title = v.title;
   const serious = (status.insights || []).filter((i) => i.level === "warn" || i.level === "crit");
   // Übersicht zählt alle Probleme, „Hardware“ nur die aus dem Hardware-Check.
-  setBadge("", serious.length);
-  setBadge("hardware", serious.filter((i) => i.action === "hardware").length);
+  setBadge("overview", serious.length);
+  setBadge("uhr", serious.filter((i) => i.action === "hardware").length);
   renderUpdateBanner(status.update);
   document.getElementById("footer-note").textContent =
     t("app.footer", { version: sys.version || "", time: fmtTime(sys.time, true, serverZone(sys) ? sys : 0),
@@ -244,11 +240,22 @@ function renderUpdateBanner(update) {
   banner.hidden = false;
 }
 
-function setBadge(pageId, count) {
-  const badgeNode = nav.querySelector(`a[data-page="${pageId}"] .nav-badge`);
-  if (!badgeNode) return;
-  badgeNode.textContent = count ? String(count) : "";
-  badgeNode.hidden = !count;
+// Zähler an einem Navigationseintrag – oben, in der unteren Leiste, im „Mehr“-Menü und am Reiter
+// „Hardware“. „Mehr“ zählt zusammen, was sich darunter verbirgt.
+const badges = {};
+
+function setBadge(navId, count) {
+  badges[navId] = count || 0;
+  paintBadges();
+}
+
+function paintBadges() {
+  const counts = { ...badges, more: MORE.reduce((sum, id) => sum + (badges[id] || 0), 0), "tab-hardware": badges.uhr || 0 };
+  for (const node of document.querySelectorAll("[data-badge]")) {
+    const count = counts[node.dataset.badge] || 0;
+    node.textContent = count ? String(count) : "";
+    node.hidden = !count;
+  }
 }
 
 // --- Aktualisierung ------------------------------------------------------------
@@ -329,12 +336,150 @@ function watchReload() {
   setTimeout(poll, 800);
 }
 
-// --- Start -------------------------------------------------------------------------
-function buildNav() {
-  nav.replaceChildren(...PAGES.filter((page) => !page.dev).map((page) => el("a", { href: `#/${page.id}`, dataset: { page: page.id } },
-    el("span", { text: t(page.titleKey) }),
-    page.id === "" || page.id === "hardware" ? el("span", { class: "nav-badge", hidden: true }) : null)));
+// --- Navigation ----------------------------------------------------------------------
+// Oben (Desktop) alle sieben Einträge, auf dem Handy (≤ 640 px, app.css) stattdessen die untere Leiste
+// mit vier Einträgen und „Mehr“. Gruppen („Uhr & Hardware“, „System“) zeigen über dem Inhalt Reiter.
+const MORE = NAV.filter((n) => !n.bottom).map((n) => n.id);
+const bottombar = document.getElementById("bottombar");
+const tabsNav = document.getElementById("tabs");
+let moreButton = null;
+let moreMenu = null;
+
+function navLink(entry, label, extra = {}) {
+  return el("a", { href: entry.href, dataset: { nav: entry.id }, ...extra },
+    el("span", { class: "nav-label", text: label }),
+    el("span", { class: "nav-badge", hidden: true, dataset: { badge: entry.id } }));
 }
+
+function buildNav() {
+  nav.replaceChildren(...NAV.map((entry) => navLink(entry, t(entry.titleKey))));
+  buildBottomBar();
+  paintBadges();
+}
+
+function buildBottomBar() {
+  if (!bottombar) return;
+  closeMore(false);
+  moreButton = el("button", { type: "button", class: "bottom-more", "aria-expanded": "false", "aria-controls": "more-menu",
+    onclick: () => (moreMenu.hidden ? openMore() : closeMore(true)) },
+  el("span", { class: "nav-label", text: t("app.more") }),
+  el("span", { class: "nav-badge", hidden: true, dataset: { badge: "more" } }));
+  moreMenu = el("div", { id: "more-menu", class: "more-menu", hidden: true },
+    el("p", { class: "more-host", id: "more-host" }),
+    el("ul", { "aria-label": t("app.more_label") }, NAV.filter((n) => MORE.includes(n.id)).map((entry) =>
+      el("li", {}, navLink(entry, t(entry.titleKey), { onclick: chooseMore })))));
+  bottombar.replaceChildren(
+    ...NAV.filter((n) => n.bottom).map((entry) => navLink(entry, t(entry.shortKey || entry.titleKey))),
+    moreButton, moreMenu);
+  renderMoreHost();
+  markActive(currentPage());
+}
+
+// Rechnername im „Mehr“-Menü (auf dem Handy steht in der Kopfzeile nur „NTP-GUI“).
+function renderMoreHost() {
+  const node = document.getElementById("more-host");
+  if (!node) return;
+  const sys = state.status?.system || {};
+  const parts = [sys.title, sys.hostname].filter(Boolean);
+  node.textContent = parts.length ? parts.join(" · ") : "";
+  node.hidden = !parts.length;
+}
+
+function openMore() {
+  if (!moreMenu) return;
+  moreMenu.hidden = false;
+  moreButton.setAttribute("aria-expanded", "true");
+  moreMenu.querySelector("a")?.focus();
+}
+
+// focusButton: Fokus zurück auf „Mehr“ (Esc, zweiter Klick) – nicht, wenn ein Eintrag gewählt wurde.
+function closeMore(focusButton) {
+  if (!moreMenu || moreMenu.hidden) return;
+  moreMenu.hidden = true;
+  moreButton.setAttribute("aria-expanded", "false");
+  if (focusButton) moreButton.focus();
+}
+
+// Eintrag im Menü gewählt: Menü zu, Fokus auf den Inhalt (nicht auf <body>) – auch wenn der Eintrag
+// zur schon aktiven Seite führt und kein hashchange folgt.
+function chooseMore() {
+  closeMore(false);
+  main.focus({ preventScroll: true });
+}
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && moreMenu && !moreMenu.hidden) {
+    event.preventDefault();
+    closeMore(true);
+  }
+});
+// Klick daneben schließt; der Fokus kehrt auf „Mehr“ zurück, wenn er im Menü stand.
+document.addEventListener("pointerdown", (event) => {
+  if (!moreMenu || moreMenu.hidden || moreMenu.contains(event.target) || moreButton.contains(event.target)) return;
+  closeMore(moreMenu.contains(document.activeElement));
+});
+// Fokus verlässt das Menü (Tab hinaus): zuklappen, damit es nicht offen über dem Inhalt stehen bleibt.
+// relatedTarget ist null, wenn der Fokus das Dokument verlässt (Tab hinter den letzten Eintrag) – das
+// zählt ebenfalls als Verlassen – nicht aber während eines Klicks oder Tippens: Safari fokussiert Knöpfe
+// beim Klick nicht (relatedTarget null), sonst ginge das Menü beim zweiten Klick auf „Mehr“ zu und gleich
+// wieder auf. Klicks daneben behandelt der pointerdown-Handler.
+let pointerDown = false;
+document.addEventListener("pointerdown", () => { pointerDown = true; }, true);
+for (const type of ["pointerup", "pointercancel"]) document.addEventListener(type, () => { pointerDown = false; }, true);
+bottombar?.addEventListener("focusout", (event) => {
+  if (!moreMenu || moreMenu.hidden) return;
+  if (event.relatedTarget ? !bottombar.contains(event.relatedTarget) : !pointerDown) closeMore(false);
+});
+
+function markActive(page) {
+  for (const link of document.querySelectorAll("#nav a[data-nav], #bottombar a[data-nav]")) {
+    const active = link.dataset.nav === page.nav;
+    link.classList.toggle("is-active", active);
+    if (active) link.setAttribute("aria-current", "page"); else link.removeAttribute("aria-current");
+  }
+  moreButton?.classList.toggle("is-active", MORE.includes(page.nav));
+}
+
+// Reiterleiste einer Gruppe: echte Links (Mittelklick, Lesezeichen), aria-current am aktiven Reiter,
+// Pfeiltasten wechseln den Fokus zwischen den Reitern. Nur neu bauen, wenn sich Gruppe oder Sprache
+// ändern – sonst verlöre ein fokussierter Reiter den Fokus (bei jeder Aktualisierung und beim Wechsel
+// per Enter innerhalb der Gruppe). Innerhalb der Gruppe nur den aktiven Reiter umschalten.
+function renderTabs(page) {
+  if (!tabsNav) return;
+  const tabs = page.tab ? tabsOf(page.nav) : [];
+  const key = tabs.length ? `${language()}|${page.nav}` : "";
+  if (tabsNav.dataset.key === key) {
+    for (const link of tabsNav.querySelectorAll("a.tab")) {
+      const active = link.getAttribute("href") === route(page.id);
+      link.classList.toggle("is-active", active);
+      if (active) link.setAttribute("aria-current", "page"); else link.removeAttribute("aria-current");
+    }
+    return;
+  }
+  tabsNav.dataset.key = key;
+  if (!tabs.length) { tabsNav.hidden = true; tabsNav.replaceChildren(); return; }
+  const group = navOf(page);
+  tabsNav.setAttribute("aria-label", t(group.titleKey));
+  tabsNav.replaceChildren(el("h2", { class: "tabs-title", text: t(group.titleKey) }),
+    el("div", { class: "tabs-row" }, tabs.map((tab) => el("a", {
+      href: route(tab.id), class: `tab${tab.id === page.id ? " is-active" : ""}`,
+      "aria-current": tab.id === page.id ? "page" : null },
+    el("span", { text: t(tab.titleKey) }),
+    tab.id === "hardware" ? el("span", { class: "nav-badge", hidden: true, dataset: { badge: "tab-hardware" } }) : null))));
+  tabsNav.hidden = false;
+  paintBadges();
+}
+
+tabsNav?.addEventListener("keydown", (event) => {
+  if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key) || event.altKey || event.ctrlKey || event.metaKey) return;
+  const links = [...tabsNav.querySelectorAll("a.tab")];
+  const index = links.indexOf(document.activeElement);
+  if (index < 0) return;
+  event.preventDefault();
+  const next = event.key === "Home" ? 0 : event.key === "End" ? links.length - 1
+    : (index + (event.key === "ArrowRight" ? 1 : -1) + links.length) % links.length;
+  links[next].focus();
+});
 
 // Auf schmalen Bildschirmen scrollt die Navigation seitwärts. Ein weicher Rand
 // zeigt, dass es links bzw. rechts weitergeht; der aktive Eintrag wird sichtbar
@@ -379,6 +524,8 @@ window.addEventListener("resize", () => {
   resizeTimer = setTimeout(() => { if (currentPage().module.live !== false) render(); }, 200);
 });
 window.addEventListener("hashchange", () => {
+  if (redirectLegacy()) return;
+  closeMore(false);
   state.uiState.scrolled = false;
   resetChartState();
   window.scrollTo(0, 0);
@@ -400,16 +547,65 @@ function initLanguage() {
   });
   onLanguageChange(() => {
     show();
-    const counts = [...nav.querySelectorAll(".nav-badge")].map((n) => [n.closest("a")?.dataset.page, n.textContent]);
     buildNav();
-    for (const [page, text] of counts) setBadge(page, Number(text) || 0);
     renderHeader();
     render();
     revealActiveNav(false);
   });
 }
 
+// --- Tastenkürzel ------------------------------------------------------------------------
+let shortcutDialog = null;
+
+function showShortcuts() {
+  if (!shortcutDialog || shortcutDialog.dataset.lang !== language()) {
+    shortcutDialog?.remove();
+    shortcutDialog = el("dialog", { class: "shortcuts-dialog", "aria-labelledby": "shortcuts-title", dataset: { lang: language() } },
+      el("div", { class: "shortcuts-head" },
+        el("h2", { id: "shortcuts-title", text: t("app.shortcuts.title") }),
+        el("button", { type: "button", class: "icon-button", "aria-label": t("app.shortcuts.close"), text: "✕",
+          onclick: () => shortcutDialog.close() })),
+      el("dl", { class: "shortcuts-list" }, shortcutList().map(([keys, label]) => el("div", { class: "shortcut" },
+        el("dt", {}, keys.map((k, i) => [i ? el("span", { class: "muted", text: ` ${t("app.shortcuts.then")} ` }) : null,
+          el("kbd", { text: k })])),
+        el("dd", { text: t(label) })))),
+      el("p", { class: "muted shortcuts-note", text: t("app.shortcuts.note") }));
+    // Klick auf den abgedunkelten Rand schließt.
+    shortcutDialog.addEventListener("click", (event) => { if (event.target === shortcutDialog) shortcutDialog.close(); });
+    document.body.append(shortcutDialog);
+  }
+  if (!shortcutDialog.open) shortcutDialog.showModal();
+}
+
+const onShortcut = createShortcuts({
+  go: (navId) => {
+    const entry = NAV.find((n) => n.id === navId);
+    if (entry) window.location.hash = entry.href.slice(1);
+  },
+  // „/“: Suchfeld der Seite (Hilfe, Clients, Log der Diagnose …), sonst nichts.
+  search: () => {
+    const field = main.querySelector('input[type="search"]');
+    if (!field) return false;
+    field.focus();
+    field.select?.();
+    return true;
+  },
+  help: showShortcuts,
+});
+document.addEventListener("keydown", (event) => {
+  if (shortcutDialog?.open || isPopoverOpen() || (moreMenu && !moreMenu.hidden)) return;
+  onShortcut(event);
+});
+document.getElementById("shortcuts-button")?.addEventListener("click", showShortcuts);
+
+// „Zum Inhalt springen“: Fokus auf den Inhalt, ohne den Hash (die Route) zu ändern.
+document.querySelector(".skip-link")?.addEventListener("click", (event) => {
+  event.preventDefault();
+  main.focus();
+});
+
 await initI18n();
+redirectLegacy();
 buildNav();
 initTheme();
 initLanguage();

@@ -14,7 +14,7 @@ const CAL_DEFAULT_WINDOW = 86400;
 
 // Karte „Dein Empfänger“ aus dem Hardware-Check – auch bei ausgeschaltetem GPS.
 function receiverCard(ctx, report) {
-  const link = el("a", { href: "#/hardware", class: "insight-action", text: "Details → Hardware-Check" });
+  const link = el("a", { href: "#/uhr/hardware", class: "insight-action", text: "Details → Hardware-Check" });
   if (!report) return card("Dein Empfänger", { help: "gps_receiver_card" }, emptyState("Hardware wird geprüft …"));
   const receiver = pickReceiver(report);
   if (!receiver) {
@@ -78,7 +78,7 @@ function disabledView(ctx) {
             el("li", {}, rich("Genauigkeit **unter 1 µs** – tausendfach besser.")),
             el("li", {}, rich("Voraussetzung für einen sinnvollen **PTP-Grandmaster**.")),
             el("li", {}, rich("Am Raspberry Pi über GPIO (`dtoverlay=pps-gpio`), Beispiel: Jeff Geerlings time-pi."))))),
-      el("p", {}, el("a", { href: "#/einstellungen?s=gps", class: "button", text: "GPS in den Einstellungen einschalten" }))),
+      el("p", {}, el("a", { href: "#/system/einstellungen?s=gps", class: "button", text: "GPS in den Einstellungen einschalten" }))),
   ];
 }
 
@@ -184,7 +184,7 @@ function autocalSection(ctx, applyOffer = null) {
   if (!auto) return el("div", { class: "autocal" }, head, emptyState("Wird geladen …"));
   const decision = auto.decision || {};
   const [actionLabel, actionTone] = AUTOCAL_ACTION[decision.action] || AUTOCAL_ACTION.none;
-  const settingsLink = el("a", { href: "#/einstellungen?s=gps", text: "Modus in den Einstellungen ändern" });
+  const settingsLink = el("a", { href: "#/system/einstellungen?s=gps", text: "Modus in den Einstellungen ändern" });
   const parts = [
     head,
     el("div", { class: "cal-status", "data-tone": AUTOCAL_TONE[auto.mode] || "muted" },

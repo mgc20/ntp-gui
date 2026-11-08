@@ -282,7 +282,7 @@ export function render(ctx) {
   out.push(card("Link zum Dashboard", { help: "notify_link" },
     kv([["Adresse", cfg.dashboard_url ? el("span", { class: "mono", text: cfg.dashboard_url }) : "nicht gesetzt – Nachrichten ohne Link", "notify_link"]]),
     el("p", { class: "field-help" }, rich("Einstellen unter **Einstellungen → Dashboard → Erweitert** (`NOTIFY_DASHBOARD_URL`). "),
-      el("a", { href: "#/einstellungen?s=web", text: "Zu den Einstellungen →" }))));
+      el("a", { href: "#/system/einstellungen?s=web", text: "Zu den Einstellungen →" }))));
   out.push(el("p", { class: "field-help notify-foot" }, `Stand ${fmtTime(Date.now() / 1000)} · Wiederholung nach 30 s, 2 min und 10 min, danach verworfen (steht dann im Ereignisprotokoll).`));
   return out;
 }
