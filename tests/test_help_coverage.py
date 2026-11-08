@@ -1,12 +1,12 @@
 """Mechanische Prüfung der ⓘ-Erklärungen im Dashboard.
 
-1. Jeder Hilfe-Schlüssel, den eine Seite benutzt (info("…"), help: "…", dritte
-   Spalte einer kv-Zeile, Tabellenköpfe mit `help`-Spalte), steht in HELP
+1. Jeder Hilfe-Schlüssel, den eine Seite benutzt (infoButton("…") bzw. info("…"), help: "…",
+   dritte Spalte einer kv-Zeile oder kvRow, Tabellenköpfe mit `help`-Spalte), steht in HELP
    (help.js + help-*.js). Ein fehlender Schlüssel fällt im Browser nicht
    auf – info() liefert dann einfach keinen Knopf.
 2. Jeder HELP-Schlüssel erscheint auf der Hilfe-Seite (HELP_GROUPS bzw.
    HELP_GROUP_HARDWARE), sonst führt „In der Hilfe ansehen“ ins Leere.
-3. Jede kv-Zeile und jede Kachel auf den Seiten hat eine Erklärung.
+3. Jede kv-Zeile (kv/kvRow) und jede Kachel (statCard/tile) auf den Seiten hat eine Erklärung.
 
 Kein Node nötig: Der JS-Text wird mit einem kleinen Scanner gelesen, der
 Strings, Template-Literale und Kommentare überspringt.
@@ -220,8 +220,17 @@ def _kv_rows(text: str):
             yield line, label, items[2] if len(items) >= 3 else None
 
 
+def _kv_row_calls(text: str):
+    """(Zeile, Beschriftung, Hilfe-Ausdruck oder None) je kvRow(label, value, help)."""
+    for line, args in _calls(text, "kvRow"):
+        items = _split_top(args)
+        label = (_literals(items[0]) or [items[0]])[0] if items else "?"
+        yield line, label, items[2] if len(items) >= 3 else None
+
+
 def _tiles(text: str):
-    for line, args in _calls(text, "tile"):
+    calls = [*_calls(text, "tile"), *_calls(text, "statCard")]
+    for line, args in calls:
         args = args.strip()
         if not args.startswith("{"):
             continue
@@ -287,13 +296,13 @@ def used_keys():
     for path in PAGES + [JS / "ui.js"]:
         text = path.read_text(encoding="utf-8")
         name = path.name
-        for line, args in _calls(text, "info"):
+        for line, args in [*_calls(text, "info"), *_calls(text, "infoButton")]:
             first = _split_top(args)[0] if args.strip() else ""
             found += [(name, line, key) for key in _literals(first)]
         for match in re.finditer(r"\bhelp\s*:\s*", text):
             line = text.count("\n", 0, match.start()) + 1
             found += [(name, line, key) for key in _literals(_expression(text, match.end()))]
-        for line, _label, expr in _kv_rows(text):
+        for line, _label, expr in [*_kv_rows(text), *_kv_row_calls(text)]:
             if expr:
                 found += [(name, line, key) for key in _literals(expr)]
         for line, expr in list(_help_columns(text)) + list(_destructured_tables(text)):
@@ -351,7 +360,7 @@ class HelpCoverageTest(unittest.TestCase):
         bare = []
         for path in PAGES:
             text = path.read_text(encoding="utf-8")
-            rows = [(l, lab, e) for l, lab, e in _kv_rows(text)] + list(_tiles(text))
+            rows = [*_kv_rows(text), *_kv_row_calls(text), *_tiles(text)]
             for line, label, expr in rows:
                 if expr is None or expr in {"null", "undefined", '""'}:
                     if f"{path.name}:{label}" not in NO_HELP_OK:

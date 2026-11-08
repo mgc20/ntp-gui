@@ -1,5 +1,5 @@
-import { el, fmtSeconds, fmtDuration, fmtNumber, fmtIsoUtc, isNum, rich, apiPost, holdoverNote } from "../util.js";
-import { card, tile, kv, info, badge, emptyNote, toast } from "../ui.js";
+import { el, fmtSeconds, fmtDuration, fmtNumber, fmtIsoUtc, fmtDate, isNum, rich, apiPost, holdoverNote } from "../util.js";
+import { card, statCard, kv, infoButton, badge, emptyState, toast, chartCard } from "../ui.js";
 import { lineChart, skyPlot, snrBars } from "../charts.js";
 import { stateBadge, reasonCell } from "./sources.js";
 import { axisSeconds } from "./overview.js";
@@ -15,18 +15,18 @@ const CAL_DEFAULT_WINDOW = 86400;
 // Karte „Dein Empfänger“ aus dem Hardware-Check – auch bei ausgeschaltetem GPS.
 function receiverCard(ctx, report) {
   const link = el("a", { href: "#/hardware", class: "insight-action", text: "Details → Hardware-Check" });
-  if (!report) return card("Dein Empfänger", { help: "gps_receiver_card" }, emptyNote("Hardware wird geprüft …"));
+  if (!report) return card("Dein Empfänger", { help: "gps_receiver_card" }, emptyState("Hardware wird geprüft …"));
   const receiver = pickReceiver(report);
   if (!receiver) {
     return card("Dein Empfänger", { help: "gps_receiver_card" },
       el("div", { class: "verdict", "data-tone": "info" }, el("p", { text: "Kein GPS-Empfänger gefunden – weder am Host noch im Container." })),
-      emptyNote("USB-Sticks erscheinen als `/dev/ttyACM0` oder `/dev/ttyUSB0`, GPS-HATs am Raspberry Pi als `/dev/ttyAMA0` bzw. `/dev/serial0`."),
+      emptyState("USB-Sticks erscheinen als `/dev/ttyACM0` oder `/dev/ttyUSB0`, GPS-HATs am Raspberry Pi als `/dev/ttyAMA0` bzw. `/dev/serial0`."),
       link);
   }
   const path = PPS_PATH[receiver.pps_path] || PPS_PATH.unknown;
   return card("Dein Empfänger", { help: "gps_receiver_card", badge: receiver.configured ? null : badge("nicht eingetragen", "muted", "Erster gefundener Empfänger – in den Einstellungen ist ein anderes Gerät eingetragen") },
     el("div", { class: "verdict", "data-tone": receiver.tone || "info" },
-      el("span", { class: "verdict-label" }, receiver.product || receiver.dev || "Empfänger", " ", info("hw_verdict", "Urteil")),
+      el("span", { class: "verdict-label" }, receiver.product || receiver.dev || "Empfänger", " ", infoButton("hw_verdict", "Urteil")),
       el("p", { text: receiver.verdict || "–" })),
     el("div", { class: "hw-item-grid" },
       kv([
@@ -46,19 +46,19 @@ function ppsTile(gps, cfg, report) {
   const receiver = pickReceiver(report);
   if (source) {
     if (source.state === "live") {
-      return tile({ label: "PPS", help: "hw_pps_state", value: "live", unit: isNum(source.rate_hz) ? `${fmtNumber(source.rate_hz, 1)} Hz` : "",
+      return statCard({ label: "PPS", help: "hw_pps_state", value: "live", unit: isNum(source.rate_hz) ? `${fmtNumber(source.rate_hz, 1)} Hz` : "",
         tone: source.configured ? "good" : "warn", note: source.configured ? source.dev : `${source.dev} – nicht eingetragen` });
     }
-    return tile({ label: "PPS", help: "hw_pps_state", value: "keine Impulse", tone: source.configured ? "crit" : "warn",
+    return statCard({ label: "PPS", help: "hw_pps_state", value: "keine Impulse", tone: source.configured ? "crit" : "warn",
       note: `${source.dev} · ${source.state === "never" ? "noch nie ein Impuls" : "kein Fix? Kabel/Pin?"}` });
   }
-  if (gps.pps_missing) return tile({ label: "PPS", help: "pps", value: "fehlt", tone: "crit", note: `${gps.pps_missing} fehlt im Container` });
+  if (gps.pps_missing) return statCard({ label: "PPS", help: "pps", value: "fehlt", tone: "crit", note: `${gps.pps_missing} fehlt im Container` });
   if (gps.pps) {
     const seen = report?.gps?.gpsd_pps?.seen;
-    return tile({ label: "PPS", help: "hw_gpsd_pps", value: seen === false ? "keine Impulse" : seen ? "live" : "aktiv",
+    return statCard({ label: "PPS", help: "hw_gpsd_pps", value: seen === false ? "keine Impulse" : seen ? "live" : "aktiv",
       tone: seen === false ? "warn" : "good", note: gps.pps });
   }
-  return tile({ label: "PPS", help: "pps", value: "kein PPS", tone: "muted",
+  return statCard({ label: "PPS", help: "pps", value: "kein PPS", tone: "muted",
     note: receiver ? (PPS_PATH[receiver.pps_path] || PPS_PATH.unknown).label : "USB-Empfänger: ms-Genauigkeit" });
 }
 
@@ -86,9 +86,15 @@ function disabledView(ctx) {
 const AUTOCAL_TONE = { off: "muted", suggest: "info", auto: "good" };
 const AUTOCAL_ACTION = { none: ["keine Änderung", "muted"], suggest: ["Vorschlag", "warn"], apply: ["wird geändert", "good"] };
 
+// Einstellwert in Sekunden (Offset, Delay aus chrony.conf): volle Genauigkeit, deutsches Komma, ohne
+// Nullen am Ende – „0,123 s“ statt „0.123 s“.
+function configSeconds(value) {
+  const number = typeof value === "string" && value.trim() !== "" ? Number(value) : value;
+  return isNum(number) ? `${fmtNumber(number, 6, { group: false })} s` : `${value ?? "–"} s`;
+}
+
 function fmtWhen(unix) {
-  if (!isNum(unix)) return "–";
-  return new Date(unix * 1000).toLocaleString("de-DE", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
+  return fmtDate(unix, { date: "numeric" });
 }
 
 // Nach einer Offset-Änderung wartet die Messung erst die Einschwingzeit ab – der
@@ -99,7 +105,7 @@ function measuringLabel(ctx, since) {
 }
 
 function fmtMs(value, signed = false) {
-  return isNum(value) ? `${signed && value > 0 ? "+" : ""}${fmtNumber(value, 1)} ms` : "–";
+  return isNum(value) ? `${fmtNumber(value, 1, { signed, group: false })} ms` : "–";
 }
 
 function autocalReference(decision) {
@@ -110,13 +116,13 @@ function autocalReference(decision) {
 }
 
 async function rollbackAutocal(ctx, button, change) {
-  const text = `Offset von ${change.new_offset} s auf ${change.old_offset} s zurücksetzen? chrony startet dafür kurz neu.${holdoverNote(ctx)}`;
+  const text = `Offset von ${configSeconds(change.new_offset)} auf ${configSeconds(change.old_offset)} zurücksetzen? chrony startet dafür kurz neu.${holdoverNote(ctx)}`;
   if (!window.confirm(text)) return;
   button.disabled = true;
   try {
     const result = await apiPost("/api/gps/autocal/rollback", { steps: 1 });
-    toast(result.reload_triggered ? `Zurückgenommen – Offset ${result.restored_offset} s, Zeitdienste starten neu`
-      : `Zurückgenommen – Offset ${result.restored_offset} s`);
+    toast(result.reload_triggered ? `Zurückgenommen – Offset ${configSeconds(result.restored_offset)}, Zeitdienste starten neu`
+      : `Zurückgenommen – Offset ${configSeconds(result.restored_offset)}`);
     ctx.watchReload();
     ctx.invalidate("autocal");
     ctx.invalidate("calibration");
@@ -129,15 +135,15 @@ async function rollbackAutocal(ctx, button, change) {
 
 function autocalChanges(ctx, auto) {
   const changes = auto.changes || [];
-  if (!changes.length) return emptyNote("Bisher keine automatischen Änderungen.");
+  if (!changes.length) return emptyState("Bisher keine automatischen Änderungen.");
   const rollback = auto.rollback || {};
   return el("table", { class: "mini-table" },
     el("thead", {}, el("tr", {},
       el("th", { text: "Zeit" }),
       el("th", { text: "Art" }),
-      el("th", {}, "Offset ", info("gps_offset", "Offset")),
-      el("th", {}, "Grund ", info("autocal_changes", "Änderungen")),
-      el("th", {}, info("autocal_rollback", "Rückgängig")))),
+      el("th", {}, "Offset ", infoButton("gps_offset", "Offset")),
+      el("th", {}, "Grund ", infoButton("autocal_changes", "Änderungen")),
+      el("th", {}, infoButton("autocal_rollback", "Rückgängig")))),
     el("tbody", {}, changes.map((change) => {
       let action = null;
       if (change.kind === "auto" && change.rolled_back) {
@@ -145,7 +151,7 @@ function autocalChanges(ctx, auto) {
       } else if (change.kind === "auto" && rollback.possible && rollback.change_id === change.id) {
         const button = el("button", { type: "button", class: "button", text: "Rückgängig",
           disabled: ctx.readonly || auto.readonly ? true : null,
-          title: `Offset wieder auf ${change.old_offset} s setzen` });
+          title: `Offset wieder auf ${configSeconds(change.old_offset)} setzen` });
         button.addEventListener("click", () => rollbackAutocal(ctx, button, change));
         action = button;
       } else if (change.kind === "auto" && rollback.change_id === change.id && rollback.reason) {
@@ -154,7 +160,7 @@ function autocalChanges(ctx, auto) {
       return el("tr", {},
         el("td", { text: fmtWhen(change.t) }),
         el("td", { text: change.kind === "rollback" ? "Rücknahme" : "automatisch" }),
-        el("td", { text: `${change.old_offset} s → ${change.new_offset} s` }),
+        el("td", { text: `${configSeconds(change.old_offset)} → ${configSeconds(change.new_offset)}` }),
         el("td", { text: change.reason || "–" }),
         el("td", {}, action));
     })));
@@ -174,8 +180,8 @@ function autocalPlan(auto, applyOffer) {
 
 function autocalSection(ctx, applyOffer = null) {
   const auto = ctx.data("autocal", "/api/gps/autocal", 60);
-  const head = el("h3", { class: "mini-head" }, "Automatische Kalibrierung ", info("autocal_mode", "Automatische Kalibrierung"));
-  if (!auto) return el("div", { class: "autocal" }, head, emptyNote("Wird geladen …"));
+  const head = el("h3", { class: "mini-head" }, "Automatische Kalibrierung ", infoButton("autocal_mode", "Automatische Kalibrierung"));
+  if (!auto) return el("div", { class: "autocal" }, head, emptyState("Wird geladen …"));
   const decision = auto.decision || {};
   const [actionLabel, actionTone] = AUTOCAL_ACTION[decision.action] || AUTOCAL_ACTION.none;
   const settingsLink = el("a", { href: "#/einstellungen?s=gps", text: "Modus in den Einstellungen ändern" });
@@ -205,11 +211,11 @@ function autocalSection(ctx, applyOffer = null) {
       parts.push(el("div", { class: "callout", "data-tone": "crit" },
         el("p", { text: "Gesperrt wegen GNSS-Störung – hier entscheidest du. Empfänger, Antenne oder USB-Port gewechselt? Dann Karte „GNSS-Störungen“ → „Neu lernen“: Die Automatik misst danach neu und korrigiert selbst. Sonst den gemessenen Versatz bitte nicht von Hand übernehmen, sondern Antenne und Umgebung prüfen – während einer Störung könnte er von einem Spoofer stammen." })));
     } else if (decision.action === "suggest" && isNum(decision.new_offset)) {
-      const delay = isNum(decision.new_delay) ? `, Delay ${decision.new_delay} s` : "";
-      parts.push(emptyNote(`Vorschlag: Offset ${decision.new_offset} s${delay} – übernimm ihn oben mit „Vorschlag übernehmen“, wenn der Messzeitraum passt.`));
+      const delay = isNum(decision.new_delay) ? `, Delay ${configSeconds(decision.new_delay)}` : "";
+      parts.push(emptyState(`Vorschlag: Offset ${configSeconds(decision.new_offset)}${delay} – übernimm ihn oben mit „Vorschlag übernehmen“, wenn der Messzeitraum passt.`));
     }
   }
-  parts.push(el("h3", { class: "mini-head" }, "Letzte automatische Änderungen ", info("autocal_changes", "Änderungen")));
+  parts.push(el("h3", { class: "mini-head" }, "Letzte automatische Änderungen ", infoButton("autocal_changes", "Änderungen")));
   parts.push(autocalChanges(ctx, auto));
   return el("div", { class: "autocal" }, parts);
 }
@@ -225,7 +231,7 @@ function calibrationCard(ctx, gpsSource) {
   const body = [];
   let applyOffer = null;   // „Vorschlag übernehmen“ auch im Hinweis der automatischen Kalibrierung
 
-  body.push(el("p", {}, rich("Ein USB-Empfänger meldet die Zeit mit einer festen **Verspätung** (NMEA-Zeile + serielle Übertragung + USB-Puffer, typisch 20–150 ms). Der Assistent vergleicht das GPS laufend mit den genutzten Netzwerkquellen und schlägt den passenden Korrekturwert vor."), " ", info("gps_offset", "Warum ein Offset?")));
+  body.push(el("p", {}, rich("Ein USB-Empfänger meldet die Zeit mit einer festen **Verspätung** (NMEA-Zeile + serielle Übertragung + USB-Puffer, typisch 20–150 ms). Der Assistent vergleicht das GPS laufend mit den genutzten Netzwerkquellen und schlägt den passenden Korrekturwert vor."), " ", infoButton("gps_offset", "Warum ein Offset?")));
   body.push(el("div", { class: "toolbar" }, el("span", { class: "toolbar-label", text: "Messzeitraum" }),
     el("div", { class: "range-group" }, WINDOWS.map(([seconds, label]) => el("button", {
       type: "button", class: `range${windowSeconds === seconds ? " is-active" : ""}`, text: label,
@@ -233,7 +239,7 @@ function calibrationCard(ctx, gpsSource) {
     })))));
 
   if (!cal) {
-    body.push(emptyNote("Messung wird geladen …"));
+    body.push(emptyState("Messung wird geladen …"));
     body.push(autocalSection(ctx));
     return card("GPS kalibrieren", { help: "gps_offset", id: "kalibrierung" }, body);
   }
@@ -242,10 +248,10 @@ function calibrationCard(ctx, gpsSource) {
     badge({ ready: "Vorschlag bereit", calibrated: "bereits kalibriert", preliminary: "vorläufig", insufficient: "zu wenig Daten" }[cal.status] || cal.status, tone),
     el("span", { text: cal.message })));
   if (autoNow?.mode === "auto" && cal.status === "ready" && !autoNow.decision?.guard_hold) {
-    body.push(emptyNote("Du musst nichts tun: Die automatische Kalibrierung übernimmt den Wert selbst (Stand unten unter „Automatische Kalibrierung“). „Vorschlag übernehmen“ brauchst du nur, wenn du nicht warten willst."));
+    body.push(emptyState("Du musst nichts tun: Die automatische Kalibrierung übernimmt den Wert selbst (Stand unten unter „Automatische Kalibrierung“). „Vorschlag übernehmen“ brauchst du nur, wenn du nicht warten willst."));
   }
   if (isNum(cal.since_offset_change)) {
-    body.push(emptyNote(`Gemessen wird nur seit der letzten Offset-Änderung (ab ${fmtWhen(cal.since_offset_change)}) – ältere Werte passen nicht mehr zum eingestellten Offset.`));
+    body.push(emptyState(`Gemessen wird nur seit der letzten Offset-Änderung (ab ${fmtWhen(cal.since_offset_change)}) – ältere Werte passen nicht mehr zum eingestellten Offset.`));
   }
 
   if (isNum(cal.bias)) {
@@ -264,11 +270,11 @@ function calibrationCard(ctx, gpsSource) {
       el("table", { class: "cal-table" },
         el("thead", {}, el("tr", {}, el("th", { text: "" }), el("th", { text: "aktuell" }), el("th", { text: "Vorschlag" }))),
         el("tbody", {},
-          el("tr", {}, el("th", {}, "Offset ", info("gps_offset", "Offset")), el("td", { text: `${cal.current_offset} s` }),
-            el("td", { class: offsetChanged ? "changed" : "", text: `${cal.suggested_offset} s` })),
-          el("tr", {}, el("th", {}, "Delay ", info("gps_delay", "Delay")),
-            el("td", { text: delayManaged ? `${cal.current_delay} s (${delaySourceLabel})` : `${cal.current_delay} s` }),
-            el("td", { class: delayChanged ? "changed" : "", text: delayManaged ? "automatisch gemessen" : `${cal.suggested_delay} s` }))))));
+          el("tr", {}, el("th", {}, "Offset ", infoButton("gps_offset", "Offset")), el("td", { text: `${configSeconds(cal.current_offset)}` }),
+            el("td", { class: offsetChanged ? "changed" : "", text: `${configSeconds(cal.suggested_offset)}` })),
+          el("tr", {}, el("th", {}, "Delay ", infoButton("gps_delay", "Delay")),
+            el("td", { text: delayManaged ? `${configSeconds(cal.current_delay)} (${delaySourceLabel})` : `${configSeconds(cal.current_delay)}` }),
+            el("td", { class: delayChanged ? "changed" : "", text: delayManaged ? "automatisch gemessen" : `${configSeconds(cal.suggested_delay)}` }))))));
 
     const role = el("select", { id: "cal-role", "aria-label": "Rolle des GPS" },
       [["auto", "automatisch – chrony entscheidet"], ["prefer", "bevorzugen – GPS ist erste Wahl"]].map(([value, label]) =>
@@ -276,14 +282,14 @@ function calibrationCard(ctx, gpsSource) {
     const applyButton = (label) => {
       const button = el("button", { type: "button", class: "button primary", text: label,
         disabled: ctx.readonly || cal.status === "insufficient" ? true : null,
-        title: `Offset ${cal.suggested_offset} s übernehmen` });
+        title: `Offset ${configSeconds(cal.suggested_offset)} übernehmen` });
       button.addEventListener("click", async () => {
         const hold = autoNow?.decision?.guard_hold;
         const disturbed = gnssNow && (["warnung", "stoerung"].includes(gnssNow.stage) || gnssNow.lock?.locked);
         if ((hold || disturbed) && !window.confirm("Die GNSS-Störungserkennung meldet gerade eine Warnung oder Störung"
           + (hold ? " (die automatische Kalibrierung ist deshalb gesperrt)" : "") + ". Ein Versatz während einer möglichen "
           + "Störung kann von einem Spoofer stammen. Prüfe zuerst Antenne und Umgebung. Trotzdem übernehmen?")) return;
-        if (holdoverNote(ctx) && !window.confirm(`Offset ${cal.suggested_offset} s übernehmen? chrony startet dafür kurz neu.${holdoverNote(ctx)}`)) return;
+        if (holdoverNote(ctx) && !window.confirm(`Offset ${configSeconds(cal.suggested_offset)} übernehmen? chrony startet dafür kurz neu.${holdoverNote(ctx)}`)) return;
         button.disabled = true;
         try {
           const changes = { gps_offset: cal.suggested_offset, gps_select: role.value };
@@ -302,14 +308,14 @@ function calibrationCard(ctx, gpsSource) {
     };
     const apply = applyButton("Vorschlag übernehmen");
     if (cal.status === "ready" && offsetChanged) {
-      applyOffer = () => applyButton(`Vorschlag übernehmen (Offset ${cal.suggested_offset} s)`);
+      applyOffer = () => applyButton(`Vorschlag übernehmen (Offset ${configSeconds(cal.suggested_offset)})`);
     }
     body.push(el("div", { class: "cal-apply" },
-      el("label", { class: "inline-field" }, el("span", {}, "Rolle ", info("gps_role", "Rolle")), role), apply));
+      el("label", { class: "inline-field" }, el("span", {}, "Rolle ", infoButton("gps_role", "Rolle")), role), apply));
     if (delayManaged) {
-      body.push(emptyNote("Den Delay (die Fehlerschranke) misst ntp-gui im Modus „gemessen“ selbst – „Übernehmen“ setzt nur Offset und Rolle. Delay von Hand: Einstellungen → GPS → „Fehlerschranke ohne PPS: von Hand“."));
+      body.push(emptyState("Den Delay (die Fehlerschranke) misst ntp-gui im Modus „gemessen“ selbst – „Übernehmen“ setzt nur Offset und Rolle. Delay von Hand: Einstellungen → GPS → „Fehlerschranke ohne PPS: von Hand“."));
     }
-    body.push(emptyNote(autoNow?.mode === "auto"
+    body.push(emptyState(autoNow?.mode === "auto"
       ? "Nach dem Übernehmen startet chrony neu (die Messhistorie bleibt erhalten). Die Abweichung im Diagramm sollte danach um 0 schwanken. Nach einem Wechsel von Empfänger, USB-Port oder Firmware misst die Automatik neu und korrigiert selbst."
       : "Nach dem Übernehmen startet chrony neu (die Messhistorie bleibt erhalten). Die Abweichung im Diagramm sollte danach um 0 schwanken. Neu kalibrieren nach einem Wechsel von Empfänger, USB-Port oder Firmware."));
 
@@ -331,7 +337,7 @@ function calibrationCard(ctx, gpsSource) {
     body.push(el("div", { class: "callout" }, rich("**Darum steht das GPS auf „Unsicherheit zu groß“:** Das ist so gewollt. "
       + "Ohne PPS ist das GPS die **Rückfallebene** mit ehrlicher Fehlerschranke (siehe „Rolle des GPS“): Solange die "
       + "Netzwerkquellen genauer sind, nimmt chrony sie; wird das Internet schlecht oder fällt aus, übernimmt das GPS von selbst."),
-      " ", info("gpsq_role", "Rolle des GPS")));
+      " ", infoButton("gpsq_role", "Rolle des GPS")));
   } else if (gpsSource && gpsSource.select_state === "large_distance") {
     body.push(el("div", { class: "callout" }, rich("**Darum steht das GPS auf „Unsicherheit zu groß“:** Mit Delay "
       + `${delayNow} s nimmt chrony an, die GPS-Zeit könne bis zu ${fmtSeconds(delayNow / 2)} daneben liegen – die Netzwerkquellen sind viel genauer. `
@@ -348,7 +354,7 @@ function delayCell(cfg) {
   if (bound.managed && isNum(bound.delay)) {
     return `${bound.delay} s (${bound.source === "measured" ? "gemessen" : "vorsichtiger Standard"}, ± ${fmtSeconds(bound.delay / 2)})`;
   }
-  return `${cfg.gps_delay} s (eingestellt)`;
+  return `${configSeconds(cfg.gps_delay)} (eingestellt)`;
 }
 
 export function render(ctx) {
@@ -360,18 +366,18 @@ export function render(ctx) {
   const report = hardwareData(ctx);
 
   const tiles = el("div", { class: "stat-row" },
-    tile({ label: "Fix", help: "fix", value: gps.running ? (gps.mode_label || "–") : "gpsd offline",
+    statCard({ label: "Fix", help: "fix", value: gps.running ? (gps.mode_label || "–") : "gpsd offline",
       tone: gps.has_fix ? "good" : gps.running ? "warn" : "crit", note: gps.device || "" }),
-    tile({ label: "Satelliten", help: "satellites", value: `${gps.satellites_used ?? 0} / ${gps.satellites_seen ?? 0}`,
+    statCard({ label: "Satelliten", help: "satellites", value: `${gps.satellites_used ?? 0} / ${gps.satellites_seen ?? 0}`,
       tone: (gps.satellites_used || 0) >= 4 ? "good" : "warn", note: "genutzt / sichtbar" }),
-    tile({ label: "HDOP", help: "dop", value: isNum(gps.hdop) ? fmtNumber(gps.hdop, 2) : "–",
+    statCard({ label: "HDOP", help: "dop", value: isNum(gps.hdop) ? fmtNumber(gps.hdop, 2) : "–",
       tone: isNum(gps.hdop) ? (gps.hdop < 2 ? "good" : gps.hdop < 5 ? "warn" : "crit") : "muted",
       note: `PDOP ${isNum(gps.pdop) ? fmtNumber(gps.pdop, 2) : "–"} · VDOP ${isNum(gps.vdop) ? fmtNumber(gps.vdop, 2) : "–"}` }),
-    tile({ label: "Signal", help: "snr", value: isNum(gps.snr_avg) ? fmtNumber(gps.snr_avg, 1) : "–", unit: "dB-Hz",
+    statCard({ label: "Signal", help: "snr", value: isNum(gps.snr_avg) ? fmtNumber(gps.snr_avg, 1) : "–", unit: "dB-Hz",
       tone: isNum(gps.snr_avg) ? (gps.snr_avg >= 35 ? "good" : gps.snr_avg >= 25 ? "warn" : "crit") : "muted",
       note: `Ø der genutzten · max. ${gps.snr_max ?? "–"}` }),
     ppsTile(gps, cfg, report),
-    tile({ label: "In chrony", help: "gps_role", value: gpsSource ? ({ "*": "ausgewählt", "+": "kombiniert", "-": "beobachtet", x: "Falseticker", "?": "keine Daten" }[gpsSource.state] || gpsSource.state) : "–",
+    statCard({ label: "In chrony", help: "gps_role", value: gpsSource ? ({ "*": "ausgewählt", "+": "kombiniert", "-": "beobachtet", x: "Falseticker", "?": "keine Daten" }[gpsSource.state] || gpsSource.state) : "–",
       tone: gpsSource ? ({ "*": "good", "+": "good", "-": "muted", x: "crit", "?": "crit" }[gpsSource.state] || "muted") : "muted",
       note: gpsSource ? `Offset ${fmtSeconds(gpsSource.offset, 3, true)}` : "Refclock nicht aktiv" }));
 
@@ -381,10 +387,10 @@ export function render(ctx) {
       ["Grund", reasonCell(gpsSource), "gps_select_reason"],
       ["Offset der letzten Messung", fmtSeconds(gpsSource.offset, 3, true), "source_offset"],
       ["Jitter", isNum(gpsSource.std_dev) ? fmtSeconds(gpsSource.std_dev) : "–", "jitter"],
-      ["Eingestellter Offset", `${cfg.gps_offset} s`, "gps_offset"],
+      ["Eingestellter Offset", `${configSeconds(cfg.gps_offset)}`, "gps_offset"],
       ["Delay in chrony", delayCell(cfg), "gps_delay"],
       ["Rolle", { auto: "automatisch", prefer: "bevorzugt", noselect: "nur beobachten" }[cfg.gps_select] || cfg.gps_select, "gps_role"],
-    ]) : emptyNote("Die GPS-Zeile fehlt in chrony – meist weil das Gerät beim Start nicht vorhanden war. Der Hinweis oben auf der Übersicht nennt den Grund."));
+    ]) : emptyState("Die GPS-Zeile fehlt in chrony – meist weil das Gerät beim Start nicht vorhanden war. Der Hinweis oben auf der Übersicht nennt den Grund."));
 
   const sky = el("div", { class: "chart-host" });
   const bars = el("div", { class: "chart-host" });
@@ -394,19 +400,26 @@ export function render(ctx) {
   const systems = Object.entries(gps.systems || {});
   const satCard = card("Satelliten", { help: "skyplot", sub: "Ausgefüllt = für den Fix genutzt. Fehlen ganze Himmelsrichtungen, verdeckt dort etwas die Sicht." },
     el("div", { class: "sky-layout" }, sky,
-      el("div", {}, el("h3", { class: "mini-head" }, "Signalstärke je Satellit ", info("snr", "Signalstärke")), bars,
+      el("div", {}, el("h3", { class: "mini-head" }, "Signalstärke je Satellit ", infoButton("snr", "Signalstärke")), bars,
         systems.length ? el("table", { class: "mini-table" },
-          el("thead", {}, el("tr", {}, el("th", {}, "System ", info("gnss", "Systeme")), el("th", { class: "num", text: "sichtbar" }), el("th", { class: "num", text: "genutzt" }))),
+          el("thead", {}, el("tr", {}, el("th", {}, "System ", infoButton("gnss", "Systeme")), el("th", { class: "num", text: "sichtbar" }), el("th", { class: "num", text: "genutzt" }))),
           el("tbody", {}, systems.map(([name, v]) => el("tr", {}, el("td", { text: name }), el("td", { class: "num", text: v.seen }), el("td", { class: "num", text: v.used }))))) : null)));
 
-  const satHost = el("div", { class: "chart-host" });
-  ctx.afterRender(() => lineChart(satHost, {
-    series: [
-      { id: "gps-used", label: "genutzt", points: history.map((s) => [s.t, s.gps?.used ?? null]) },
-      { id: "gps-seen", label: "sichtbar", points: history.map((s) => [s.t, s.gps?.seen ?? null]) },
-    ], format: (v) => fmtNumber(v, 0), axisFormat: (v, step) => fmtNumber(v, step < 1 ? 1 : 0), height: 180, min: 0, minSpan: 12,
-    range: ctx.range, end: ctx.status.system?.time, ariaLabel: "Satelliten genutzt und sichtbar",
-  }));
+  const satSeries = [
+    { id: "gps-used", label: "genutzt", points: history.map((s) => [s.t, s.gps?.used ?? null]) },
+    { id: "gps-seen", label: "sichtbar", points: history.map((s) => [s.t, s.gps?.seen ?? null]) },
+  ];
+  // Leer → „sammelt seit …“; gleichbleibende Zahl → eine Zeile mit Knopf „Diagramm zeigen“.
+  const satHistory = chartCard(ctx, {
+    title: "Satelliten im Verlauf", help: "satellites", key: "gps-sats", series: satSeries,
+    sub: "Bricht die Zahl regelmäßig ein, verdeckt zu bestimmten Zeiten etwas die Sicht.",
+    format: (v) => `${fmtNumber(v, 0)} Satelliten`, since: history.length ? history[0].t : null,
+    zone: ctx.status.system?.tz_name || isNum(ctx.status.system?.utc_offset) ? ctx.status.system : null,
+    draw: (host) => lineChart(host, {
+      series: satSeries, format: (v) => fmtNumber(v, 0), axisFormat: (v, step) => fmtNumber(v, step < 1 ? 1 : 0), height: 180, min: 0, minSpan: 12,
+      range: ctx.range, end: ctx.status.system?.time, ariaLabel: "Satelliten genutzt und sichtbar",
+    }),
+  });
 
   const facts = card("Empfänger", { help: "gps" }, kv([
     ["Gerät", `${gps.device || "–"}${gps.driver ? ` (${gps.driver})` : ""}`, "gps_device"],
@@ -427,7 +440,7 @@ export function render(ctx) {
     calibrationCard(ctx, gpsSource),
     satCard,
     antennaCard(ctx),
-    card("Satelliten im Verlauf", { help: "satellites", sub: "Bricht die Zahl regelmäßig ein, verdeckt zu bestimmten Zeiten etwas die Sicht." }, satHost),
+    satHistory,
     card("Was bringt GPS hier?", { class: "explain", help: "gps_value" }, el("p", {}, rich(
       "Ohne PPS bleibt die Genauigkeit im Millisekundenbereich – so gut wie die PTB über eine gute Festnetzleitung. "
       + "Der Wert liegt in der **Unabhängigkeit**: Die Zeit stimmt auch ohne Internet, sie ist gegen falsche Internetzeit abgesichert, "

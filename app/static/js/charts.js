@@ -1,6 +1,6 @@
 // SVG-Diagramme ohne Bibliothek: Linien (mehrere Serien), Himmelskarte, Balken.
-import { el, svgEl, isNum } from "./util.js";
-import { info } from "./ui.js";
+import { el, svgEl, isNum, fmtNumber } from "./util.js";
+import { infoButton } from "./ui.js";
 
 // Validierte Kategorienpalette (dataviz-Referenz), je Theme eigene Stufen.
 const PALETTE = {
@@ -223,7 +223,7 @@ function emptyState(svg, width, height, text, loading) {
   svg.append(group);
 }
 
-const defaultFormat = (v) => (isNum(v) ? v.toLocaleString("de-DE", { maximumSignificantDigits: 4 }) : "–");
+const defaultFormat = (v) => fmtNumber(v, 0, { sig: 4 });
 
 /** Zeile über dem Diagramm: aktueller Wert groß, daneben Min · Max · Mittel. */
 export function statsHeader(stats, format, clip, opts) {
@@ -240,7 +240,7 @@ export function statsHeader(stats, format, clip, opts) {
         text: "min/max aus Mittelwerten" }) : null,
     clip ? clipChip(clip) : null,
     opts.scale === "log" ? el("span", { class: "chart-scale-note", text: "log. Skala" }) : null,
-    info("chart_stats", "Werte über dem Diagramm"));
+    infoButton("chart_stats", "Werte über dem Diagramm"));
 }
 
 // Nur ein übergebener Live-Wert („jetzt“) kann außerhalb der gemittelten Verlaufswerte liegen – der
@@ -328,7 +328,7 @@ export function lineChart(container, opts) {
     clip = { up, text: `Spitze ${format(up ? range.max : range.min)} ausgeblendet` };
   }
   if (stats) container.append(statsHeader(stats, format, clip, opts));
-  else if (clip) container.append(el("div", { class: "chart-stats" }, clipChip(clip), info("chart_stats", "Werte über dem Diagramm")));
+  else if (clip) container.append(el("div", { class: "chart-stats" }, clipChip(clip), infoButton("chart_stats", "Werte über dem Diagramm")));
 
   const svg = svgEl("svg", { viewBox: `0 0 ${width} ${height}`, width: "100%", height, role: "img",
     "aria-label": title, "aria-roledescription": "Diagramm", class: "chart-svg" });

@@ -41,6 +41,22 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
   ein Hinweis auf Kühlung); bei Unterspannung ein Hinweis auf der Übersicht.
 - Prometheus-Metriken `ntpgui_pi_undervoltage` und `ntpgui_pi_throttled`; Verlaufsfeld `pi_state`.
 
+### Geändert
+- **Zahlen ohne Nullen am Ende:** Zeiten stehen immer in der passenden Einheit (ns, µs, ms, s), also „± 1 ms“ statt
+  „± 1,000 ms“, und an Einheitengrenzen „1 ms“ statt „1.000 µs“. Dezimalzeichen, Datum und Uhrzeit folgen der
+  gewählten Sprache. Negative Zahlen tragen überall dasselbe Minuszeichen (−), es gibt kein „+0 ns“ mehr, und
+  Werte mit Einheit (ppm, ppb, ns bis s) stehen ohne Tausenderpunkt da („12345 ppb“).
+- **Ruhigere Diagramme:** Ein leerer Verlauf steht als eine Zeile da („Satelliten im Verlauf: sammelt seit
+  23:30“, bei älterem Beginn mit Datum; „keine Messwerte seit …“, wenn Daten fehlen). Ein gleichmäßiger Verlauf
+  ebenfalls („Maximaler Fehler zu UTC: stabil um 420 µs – Diagramm zeigen“), Werte, die um 0 pendeln, als
+  „stabil innerhalb ± 400 ns“. Verläufe mit Lücken klappen nicht zusammen. Bisher belegte jedes davon rund
+  300 px. Gilt für Übersicht, Zeitquellen und GPS.
+- **ⓘ leichter zu treffen:** Das Symbol ist kleiner (14 px), die Tippfläche 24 px groß, ohne benachbarte Knöpfe
+  zu überdecken. Blass, bis die Maus darauf zeigt oder es den Tastaturfokus hat.
+- Alle Zeitraum-Auswahlen nutzen dieselbe Komponente (15 min bis 30 Tage).
+- Neue Erklärung „Zahlen und Einheiten“ in der Hilfe. Lange Code-Schnipsel in der Hilfe brechen um; auf dem
+  Handy ist die Hilfe-Seite nicht mehr zu breit.
+
 ### Sicherheit
 - **Wiederherstellen ohne Vertrauensvorschuss:** Das Manifest ist nicht signiert. Darum filtert ntp-gui
   beim Einspielen jede Zeile genauso wie beim Erstellen: keine Position, keine Satellitenwinkel und keine
@@ -66,6 +82,15 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
   Messpunkte nach dem Sicherungszeitpunkt oder in der Zukunft werden nicht übernommen, die Vorschau nennt
   ihre Zahl. Abgelehnte Dateien bekommen eine klare Meldung (HTTP 422), und nichts bleibt
   liegen.
+
+### Intern
+- Gemeinsame Bausteine in `ui.js` (`infoButton`, `statCard`, `kvRow`, `rangePicker`, `emptyState`/`errorState`,
+  `chartCard`) und Formatierer in `util.js` (`fmtNumber`, `fmtSeconds`, `fmtDuration`, `fmtPpm`, `fmtDate`).
+  Musterseite `#/muster` nur mit `?dev=1`.
+- Neuer Test `tests/test_gui_bausteine.py`: verbietet `toFixed`, eigene `toLocale*`-Formate, feste
+  Nachkommastellen außerhalb von Achsen und Tausenderpunkte vor Einheiten in den Seiten.
+- UI-Rundgang mit Playwright unter `tests/ui/` (Konsolenfehler, CSP, Überbreite, Zahlmuster, ⓘ-Tippflächen);
+  läuft nur, wenn Playwright vorhanden ist, und gehört nicht zur Unit-Testsuite.
 
 ## [1.5.5] – 2026-11-08
 

@@ -797,7 +797,7 @@ class HelpTextTest(unittest.TestCase):
         self.assertIn("gnss_freerun: {", js)
         self.assertIn('title: "Empfänger umgezogen → Position neu lernen"', js)
         page = (ROOT / "app" / "static" / "js" / "pages" / "gnss.js").read_text(encoding="utf-8")
-        self.assertIn('info("gnss_moved"', page)
+        self.assertIn('infoButton("gnss_moved"', page)
         self.assertIn('"gnss_freerun"', page)
 
 

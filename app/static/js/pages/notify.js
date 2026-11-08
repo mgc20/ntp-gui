@@ -2,8 +2,8 @@
 // Tokens kommen vom Server nie zurück – nur „gesetzt“ (secret_set). Adressen mit Pfad/Abfrage nur gekürzt
 // (url_hidden): Dort stecken oft Zugangsdaten (Webhook-ID, ?auth=…). Ändert sich Ziel oder Art, muss das
 // Token neu eingegeben werden – der Server schickt ein gespeichertes Token nie an ein neues Ziel.
-import { el, rich, apiPost, fmtTime } from "../util.js";
-import { card, info, badge, kv, emptyNote, toast, isPopoverOpen } from "../ui.js";
+import { el, rich, apiPost, fmtTime, fmtDate } from "../util.js";
+import { card, infoButton, badge, kv, emptyState, toast, isPopoverOpen } from "../ui.js";
 
 export const live = false; // Eingaben im Editor bleiben stehen; der Zustand wird gezielt nachgeladen
 
@@ -27,8 +27,7 @@ const REFRESH_SECONDS = 15;
 let refreshTimer = null;
 
 function fmtWhen(unix) {
-  return typeof unix === "number" && Number.isFinite(unix)
-    ? new Date(unix * 1000).toLocaleString("de-DE", { dateStyle: "short", timeStyle: "medium" }) : "nie";
+  return fmtDate(unix, { time: "medium", empty: "nie" });
 }
 
 function blankDraft(cfg) {
@@ -71,7 +70,7 @@ function switchControl(checked, label, onChange, disabled) {
 
 function fieldBlock(label, help, control, note) {
   return el("div", { class: "field" },
-    el("div", { class: "field-head" }, el("span", { class: "field-label" }, el("span", { text: label }), " ", info(help, label))),
+    el("div", { class: "field-head" }, el("span", { class: "field-label" }, el("span", { text: label }), " ", infoButton(help, label))),
     control,
     note ? el("p", { class: "field-help" }, rich(note)) : null);
 }
@@ -116,7 +115,7 @@ function channelCard(ctx, cfg, channel, disabled) {
     el("div", { class: "notify-channel-head" },
       el("strong", { text: channel.name }), " ", badge(channel.type_label || channel.type, "info"), " ",
       el("span", { class: "mono muted", text: channel.id, title: "Kennung – so steht der Kanal im Ereignisprotokoll" }), " ",
-      badge(stateText, tone), info("notify_status", "Zustellstand")),
+      badge(stateText, tone), infoButton("notify_status", "Zustellstand")),
     kv([
       ["Ziel", el("span", { class: "mono", text: target }), "notify_target"],
       ["Token", channel.secret_set ? "gesetzt (wird nie angezeigt)" : "keins", "notify_secret"],
@@ -256,24 +255,24 @@ export function render(ctx) {
     + "Gleiche Meldungen werden **entprellt**, und wenn ein Problem vorbei ist, kommt „behoben“ mit der Dauer. Ohne Kanal verlässt nichts den Server."))));
   const failed = cfg === undefined ? ctx.dataError?.("notify", "/api/notify") : null;
   if (cfg === undefined && !failed) {
-    out.push(card("Kanäle", {}, emptyNote("Wird geladen …")));
+    out.push(card("Kanäle", {}, emptyState("Wird geladen …")));
     return out;
   }
   if (failed) {
-    out.push(card("Kanäle", { class: "card-alert" }, emptyNote(failed.status === 401 || failed.status === 403
+    out.push(card("Kanäle", { class: "card-alert" }, emptyState(failed.status === 401 || failed.status === 403
       ? "Die Kanäle sieht nur, wer das Verwaltungsrecht hat (Passwort oder Schlüssel mit „verwalten“)."
       : `Konnte die Kanäle nicht laden (${failed.message || `HTTP ${failed.status}`}).`)));
     return out;
   }
   if (!cfg) {
-    out.push(card("Kanäle", { class: "card-alert" }, emptyNote("Konnte die Kanäle nicht laden – dafür braucht es das Verwaltungsrecht.")));
+    out.push(card("Kanäle", { class: "card-alert" }, emptyState("Konnte die Kanäle nicht laden – dafür braucht es das Verwaltungsrecht.")));
     return out;
   }
-  if (ctx.readonly) out.push(card("Gesperrt", { class: "card-alert" }, emptyNote("`WEB_READONLY=true` ist gesetzt – Kanäle lassen sich nur ansehen.")));
+  if (ctx.readonly) out.push(card("Gesperrt", { class: "card-alert" }, emptyState("`WEB_READONLY=true` ist gesetzt – Kanäle lassen sich nur ansehen.")));
   const channels = cfg.channels || [];
   const list = channels.length
     ? el("ul", { class: "notify-list" }, channels.map((c) => channelCard(ctx, cfg, c, disabled)))
-    : emptyNote("Noch kein Kanal angelegt. Am schnellsten geht **ntfy**: App aufs Handy, ein Thema ausdenken, hier eintragen, Testnachricht senden.");
+    : emptyState("Noch kein Kanal angelegt. Am schnellsten geht **ntfy**: App aufs Handy, ein Thema ausdenken, hier eintragen, Testnachricht senden.");
   const full = channels.length >= ((cfg.limits || {}).channels || 10);
   out.push(card("Kanäle", { help: "notify_channel",
     actions: ui.notifyDraft ? null : el("button", { type: "button", class: "button primary", text: "+ Kanal", disabled: disabled || full ? true : null,

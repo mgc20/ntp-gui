@@ -2,8 +2,8 @@
 // Verlauf der Abweichung, Abstand/Poll, Zustand mit Grund, vermutete Software, Name/Notiz,
 // „Aktiv nachmessen“. Alles kommt aus /api/clients/detail; geschrieben wird nur über
 // /api/clients/meta und /api/clients/probe (Admin).
-import { el, apiPost, fmtDuration, fmtNumber, fmtSeconds, fmtTime, fmtLogInterval, isNum, rich } from "../util.js";
-import { card, tile, info, badge, kv, emptyNote, toast } from "../ui.js";
+import { el, apiPost, fmtDuration, fmtNumber, fmtSeconds, fmtTime, fmtLogInterval, fmtPpm, fmtDate, isNum, rich } from "../util.js";
+import { card, statCard, infoButton, badge, kv, emptyState, toast, rangePicker } from "../ui.js";
 import { lineChart } from "../charts.js";
 import { axisSeconds } from "./overview.js";
 
@@ -27,28 +27,18 @@ export function offsetTone(value) {
 
 export function fmtInterval(seconds) {
   if (!isNum(seconds)) return "–";
-  if (seconds < 10) return `${fmtNumber(seconds, 1)} s`;
+  if (seconds < 10) return `${fmtNumber(seconds, 1, { group: false })} s`;
   return fmtDuration(seconds);
-}
-
-export function fmtDate(unix) {
-  if (!isNum(unix)) return "–";
-  return new Date(unix * 1000).toLocaleString("de-DE", { dateStyle: "short", timeStyle: "short" });
 }
 
 export function clientHref(address) {
   return `#/clients/${encodeURIComponent(address)}`;
 }
 
-const RANGES = [[3600, "1 h"], [21600, "6 h"], [86400, "24 h"], [604800, "7 Tage"]];
+const RANGES = [3600, 21600, 86400, 604800];
 
 function rangeGroup(current, onChange) {
-  return el("div", { class: "range-group", role: "group", "aria-label": "Zeitraum" },
-    RANGES.map(([seconds, label]) => el("button", {
-      type: "button", class: `range${current === seconds ? " is-active" : ""}`, text: label,
-      "data-focus-key": `clientrange:${seconds}`, "aria-pressed": current === seconds ? "true" : "false",
-      onclick: () => onChange(seconds),
-    })));
+  return rangePicker({ value: current, onChange, options: RANGES, focusKey: "clientrange" });
 }
 
 // --- Name und Notiz ---------------------------------------------------------------
@@ -85,7 +75,7 @@ function metaCard(ctx, ip, detail) {
   el("div", { class: "fields" },
     el("label", { class: "field" }, el("span", { class: "field-label", text: "Name" }), name),
     el("label", { class: "field" }, el("span", { class: "field-label", text: "Notiz" }), note)),
-  readonly ? emptyNote("Änderungen sind gesperrt (WEB_READONLY).")
+  readonly ? emptyState("Änderungen sind gesperrt (WEB_READONLY).")
     : el("div", { class: "button-row" }, el("button", { type: "button", class: "button primary", text: "Speichern", onclick: save })));
 }
 
@@ -112,7 +102,7 @@ function probeCard(ctx, ip, detail) {
     text: busy ? "Messe …" : "Aktiv nachmessen", onclick: run });
   let body;
   if (!result) {
-    body = emptyNote(detail.probe_allowed
+    body = emptyState(detail.probe_allowed
       ? "Schickt **eine** NTP-Anfrage an das Gerät (Port 123, 2 s Zeitlimit). Router, NAS und manche Kameras "
         + "laufen selbst als Zeitserver und antworten – dann siehst du ihre Uhr auch, wenn sie ihre Sendezeit verschleiern."
       : detail.probe_blocked || "Nachmessen geht nur bei Geräten mit privater Adresse, die diesen Server schon gefragt haben.");
@@ -141,7 +131,7 @@ function softwareCard(detail) {
     el("div", { class: "client-guess-head" }, el("strong", { text: c.label }),
       badge(c.confidence, c.confidence === "wahrscheinlich" ? "good" : "muted")),
     el("ul", { class: "client-guess-reasons" }, (c.reasons || []).map((r) => el("li", { text: r }))))))
-    : emptyNote("Zu wenig Hinweise für eine Vermutung."),
+    : emptyState("Zu wenig Hinweise für eine Vermutung."),
   (sw.basis || []).length ? el("p", { class: "field-help", text: `Grundlage: ${sw.basis.join(" · ")}` }) : null);
 }
 
@@ -151,19 +141,19 @@ export function qualityBadge(q) {
   return badge(`${q.score} · ${q.grade}`, q.tone || "muted", q.text || null);
 }
 
-export function fmtPpm(value) {
-  if (!isNum(value)) return "–";
-  return `${value >= 0 ? "+" : "−"}${fmtNumber(Math.abs(value), Math.abs(value) < 10 ? 1 : 0)} ppm`;
+// Gang eines Clients: ganze ppm, unter 10 ppm mit einer Nachkommastelle, immer mit Vorzeichen.
+function driftPpm(value) {
+  return fmtPpm(value, { digits: isNum(value) && Math.abs(value) < 10 ? 1 : 0, signed: true });
 }
 
 // Gangabweichung aus der Uhrgüte: gemessen (drift_ppm) oder – bei gleichmäßigen Abständen – nur eine
 // Obergrenze (drift_bound_ppm), weil fester Versatz und Gang dann nicht zu trennen sind.
 export function fmtDrift(q) {
   if (!q) return "–";
-  if (isNum(q.drift_ppm)) return fmtPpm(q.drift_ppm);
+  if (isNum(q.drift_ppm)) return driftPpm(q.drift_ppm);
   if (isNum(q.drift_bound_ppm)) {
     const v = Math.abs(q.drift_bound_ppm);
-    return `höchstens ${fmtNumber(v, v < 10 ? 1 : 0)} ppm`;
+    return `höchstens ${fmtNumber(v, v < 10 ? 1 : 0, { group: false })} ppm`;
   }
   return "–";
 }
@@ -175,7 +165,7 @@ function qualityCard(detail) {
   return card("Uhrgüte", { help: "client_quality", badge: qualityBadge(q),
     sub: q.text || null },
   kv([
-    ["Gangabweichung", isNum(q.drift_ppm) ? `${fmtPpm(q.drift_ppm)}${isNum(q.drift_err_ppm) ? ` (± ${fmtNumber(q.drift_err_ppm, 1)})` : ""}` : fmtDrift(q), "client_drift"],
+    ["Gangabweichung", isNum(q.drift_ppm) ? `${driftPpm(q.drift_ppm)}${isNum(q.drift_err_ppm) ? ` (± ${fmtNumber(q.drift_err_ppm, 1)})` : ""}` : fmtDrift(q), "client_drift"],
     ["Abfrage-Intervall", fmtInterval(q.interval), "client_typical_interval"],
     ["Streuung", isNum(q.jitter) ? `± ${fmtOffset(q.jitter).replace(/^[+−]/, "")}` : "–", "client_quality_parts"],
     ["Messungen ausgewertet", fmtNumber(q.n || 0), "client_quality"],
@@ -187,7 +177,7 @@ function qualityCard(detail) {
         el("span", { class: "quality-part-fill", style: `width:${(c.points / c.max) * 100}%` })),
       el("span", { class: "quality-part-points", text: `${c.points}/${c.max}` }),
       el("span", { class: "field-help", text: c.text })))) : null,
-  parts.length ? el("p", { class: "field-help" }, "Wie die Punkte entstehen: ", info("client_quality_parts")) : null);
+  parts.length ? el("p", { class: "field-help" }, "Wie die Punkte entstehen: ", infoButton("client_quality_parts")) : null);
 }
 
 function numberInput(value, attrs) {
@@ -234,7 +224,7 @@ function rulesCard(ctx, ip, detail) {
     }
   };
   const field = (label, help, control, note) => el("div", { class: "field" },
-    el("div", { class: "field-head" }, el("span", { class: "field-label" }, el("span", { text: label }), " ", info(help, label))),
+    el("div", { class: "field-head" }, el("span", { class: "field-label" }, el("span", { text: label }), " ", infoButton(help, label))),
     control, note ? el("p", { class: "field-help", text: note }) : null);
   const open = [rule.silent_alarm ? "„fragt nicht mehr“ ist gemeldet" : null,
     rule.offset_alarm ? "„weicht ab“ ist gemeldet" : null].filter(Boolean);
@@ -254,7 +244,7 @@ function rulesCard(ctx, ip, detail) {
     "Ereignisse bleiben im Protokoll, gehen aber nicht als Benachrichtigung hinaus."),
     field("Erwartete Client-Software", "client_rule_expect", expect,
       "Was auf dem Gerät läuft, wenn du es weißt – zählt in der Ansicht „nach Software“ und im Gerätepass vor der Vermutung.")),
-  readonly ? emptyNote("Änderungen sind gesperrt (WEB_READONLY).")
+  readonly ? emptyState("Änderungen sind gesperrt (WEB_READONLY).")
     : el("div", { class: "button-row" }, el("button", { type: "button", class: "button primary", text: "Regeln speichern", onclick: save })));
 }
 
@@ -317,16 +307,16 @@ export function renderDetail(ctx, ip) {
   const failed = detail === undefined ? ctx.dataError?.(`clientdetail:${ip}`, url) : null;
   if (failed && failed.status === 400) {
     return [back, card(ip, { help: "client_detail" },
-      emptyNote("Ungültige Adresse – im Link steht keine IPv4- oder IPv6-Adresse. Wähle das Gerät in der Client-Liste aus."))];
+      emptyState("Ungültige Adresse – im Link steht keine IPv4- oder IPv6-Adresse. Wähle das Gerät in der Client-Liste aus."))];
   }
   if (failed && failed.status !== 404) {
     return [back, card(ip, { help: "client_detail" },
-      emptyNote(`Die Daten des Geräts ließen sich nicht laden (${failed.message}). Ich versuche es gleich noch einmal.`))];
+      emptyState(`Die Daten des Geräts ließen sich nicht laden (${failed.message}). Ich versuche es gleich noch einmal.`))];
   }
-  if (detail === undefined && !failed) return [back, emptyNote("Lade Daten des Geräts …")];
+  if (detail === undefined && !failed) return [back, emptyState("Lade Daten des Geräts …")];
   if (!detail || !detail.address) {
     return [back, card(ip, { help: "client_detail" },
-      emptyNote("Zu diesem Gerät liegen keine Daten vor – es hat diesen Server nicht gefragt, seit die Messung läuft, "
+      emptyState("Zu diesem Gerät liegen keine Daten vor – es hat diesen Server nicht gefragt, seit die Messung läuft, "
         + "oder seine Daten sind älter als 30 Tage."))];
   }
   const entry = detail.entry || {};
@@ -380,19 +370,19 @@ export function renderDetail(ctx, ip) {
       detail.name ? el("span", { class: "mono client-sub", text: detail.address }) : null,
       detail.rdns ? el("span", { class: "mono client-sub", text: detail.rdns }) : null,
       el("a", { class: "button client-pass-link", href: `${clientHref(detail.address)}/pass`, text: "Gerätepass" }),
-      info("client_pass", "Gerätepass")),
+      infoButton("client_pass", "Gerätepass")),
     el("div", { class: "stat-row" },
-      tile({ label: "Uhr geht falsch um", help: "client_offset", value: entry.measurable ? fmtOffset(entry.ewma) : "–",
+      statCard({ label: "Uhr geht falsch um", help: "client_offset", value: entry.measurable ? fmtOffset(entry.ewma) : "–",
         tone: entry.measurable ? offsetTone(entry.ewma) : "muted",
         note: entry.measurable && isNum(entry.min) ? `${fmtOffset(entry.min)} … ${fmtOffset(entry.max)}` : (entry.state_text || (viaChrony ? "eigene Messung: noch keine" : "noch keine Anfrage")) }),
-      tile({ label: "Zuletzt", help: "client_seen", value: isNum(age) ? `vor ${fmtDuration(age)}` : "–",
+      statCard({ label: "Zuletzt", help: "client_seen", value: isNum(age) ? `vor ${fmtDuration(age)}` : "–",
         tone: detail.silent ? "warn" : "muted", note: detail.silent || seen.lastText }),
-      tile({ label: "Typischer Abstand", help: "client_typical_interval", value: fmtInterval(entry.interval),
+      statCard({ label: "Typischer Abstand", help: "client_typical_interval", value: fmtInterval(entry.interval),
         tone: isNum(entry.interval) && entry.interval < 8 ? "warn" : "muted",
         note: isNum(entry.poll) ? `Poll-Feld ${entry.poll}${entry.poll === 0 ? " (nicht gesetzt)" : ""}` : "Poll-Feld unbekannt" }),
-      tile({ label: "NTP-Version", help: "client_version", value: isNum(entry.version) ? String(entry.version) : "–",
+      statCard({ label: "NTP-Version", help: "client_version", value: isNum(entry.version) ? String(entry.version) : "–",
         tone: "muted", note: `${fmtNumber(seen.requests)} Anfragen${viaChrony ? " (laut chrony)" : ""}` }),
-      tile({ label: "Uhrgüte", help: "client_quality", value: isNum(detail.quality?.score) ? String(detail.quality.score) : "–",
+      statCard({ label: "Uhrgüte", help: "client_quality", value: isNum(detail.quality?.score) ? String(detail.quality.score) : "–",
         unit: isNum(detail.quality?.score) ? "/100" : null, tone: detail.quality?.tone || "muted",
         note: isNum(detail.quality?.drift_ppm) || isNum(detail.quality?.drift_bound_ppm)
           ? `${detail.quality.grade} · ${fmtDrift(detail.quality)}` : (detail.quality?.grade || "–") })),
