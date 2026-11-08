@@ -3,3 +3,6 @@ contact_links:
   - name: Roadmap
     url: https://github.com/mgc20/ntp-gui/blob/main/ROADMAP.md
     about: Was geplant ist – bitte vor einer neuen Idee kurz reinschauen.
+  - name: Sicherheitslücke melden
+    url: https://github.com/mgc20/ntp-gui/security/advisories/new
+    about: Bitte vertraulich melden, nicht als öffentliches Issue (siehe SECURITY.md).
