@@ -28,6 +28,10 @@ auf (DNS/NAT-Schleifen, „mehr Client-Messungen“, GPS ohne PPS, VPS für Comm
 staffelt 1.5.0 schlank, Rest in 1.5.x; 1.6 bringt u-blox schreiben, erster eigener Dienst ist
 Zeit-Check-Website + Server-Test.
 
+**Planung 1.6 und 1.7 (08.11.2026):** [version-1.6.md](version-1.6.md) ist rein lokal (Fehler,
+Oberfläche, Spielereien, Sicherung); die ersten Community-Funktionen stehen im
+[Entwurf 1.7](version-1.7-entwurf.md).
+
 **Gegenprüfung (01.11.2026):** Das volle 1.4 ist für einen Maintainer eher 3–4 Monate Arbeit;
 [version-1.4.md](version-1.4.md#realistischer-gesamtaufwand-gegenprüfung) schlägt ein schlankes
 1.4 vor. Jedes Dokument endet mit **„Offene Fragen“** – dort stehen die Entscheidungen, die nur
@@ -42,6 +46,8 @@ der Maintainer treffen kann.
 | [bausteine.md](bausteine.md) | Geprüfte Open-Source-Bausteine mit Empfehlung (übernehmen / Sidecar / klein selbst / weglassen) und Quellen | wenn eine Funktion Fremdsoftware brauchen könnte |
 | [version-1.4.md](version-1.4.md) | Staffelung 1.4 / 1.5 / später, Bewertung je Thema, Abhängigkeiten zu 1.3, Abnahmekriterien, Sicherheit | beim Planen und Abnehmen der nächsten Versionen |
 | [version-1.5.md](version-1.5.md) | Planung 1.5 (GNSS-Werkbank, Clients 3, DNS/NAT-Schleifen, Uhrqualität, Englisch), 1.6 und später, erster eigener Community-Dienst (Zeit-Check + Server-Test), offene Fragen an den Maintainer | beim Planen von 1.5 und der Community-Dienste |
+| [version-1.6.md](version-1.6.md) | Plan 1.6 „Zuhause besser“ (rein lokal): Themen T1–T7, Reihenfolge, Abnahmekriterien, entschiedene Fragen, bestätigte Fehler | beim Umsetzen von 1.6 |
+| [version-1.7-entwurf.md](version-1.7-entwurf.md) | Entwurf 1.7 „Nach außen öffnen“: Englisch komplett, Hardware-Bericht, Zeitwächter-Ping, VPS-Spur, offene Fragen | beim Planen von 1.7 |
 | [community-dienste.md](community-dienste.md) | Architektur der Dienste im eigenen Repository, Missbrauchs- und Datenschutz, Datenverträge mit ntp-gui, Startempfehlung | bevor am Community-Repository gearbeitet wird |
 
 ## So sind die Dokumente gedacht

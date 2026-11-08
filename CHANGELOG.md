@@ -6,6 +6,12 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 
 ## [Unveröffentlicht]
 
+### Hinzugefügt
+- **Pläne für 1.6 und 1.7:** `docs/konzept/version-1.6.md` (rein lokal: Grundreinigung, Pi-Zustand,
+  Sicherung, GUI-Erneuerung, Willkommens-Assistent, Uhr-Werkstatt, „Heute“-Zeitleiste; offene Fragen
+  entschieden) und `docs/konzept/version-1.7-entwurf.md` (Community-Funktionen). Die ROADMAP folgt
+  dieser Staffelung.
+
 ## [1.5.4] – 2026-11-08
 
 Schwerpunkt: GPS bei schwachem Empfang ruhig – keine Positions-Fehlalarme, weniger Ereignisse, stabile
