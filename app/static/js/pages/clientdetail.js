@@ -2,7 +2,7 @@
 // Verlauf der Abweichung, Abstand/Poll, Zustand mit Grund, vermutete Software, Name/Notiz,
 // „Aktiv nachmessen“. Alles kommt aus /api/clients/detail; geschrieben wird nur über
 // /api/clients/meta und /api/clients/probe (Admin).
-import { el, apiPost, fmtDuration, fmtNumber, fmtSeconds, fmtTime, isNum, rich } from "../util.js";
+import { el, apiPost, fmtDuration, fmtNumber, fmtSeconds, fmtTime, fmtLogInterval, isNum, rich } from "../util.js";
 import { card, tile, info, badge, kv, emptyNote, toast } from "../ui.js";
 import { lineChart } from "../charts.js";
 import { axisSeconds } from "./overview.js";
@@ -274,6 +274,40 @@ function ntsCard(detail) {
   el("p", { class: "field-help" }, rich(nts.how || "")));
 }
 
+// Zähler aus chronyd („chronyc clients“). Kennt die eigene Messung das Gerät noch nicht (aus oder gerade
+// gestartet), steht hier wenigstens, was chrony weiß – statt „keine Daten“.
+export function ownKnown(detail) {
+  return Boolean(detail.entry && Object.keys(detail.entry).length) || (detail.samples || []).length > 0;
+}
+
+// Kennt nur chrony das Gerät, kommen „Zuletzt“ und „Anfragen“ aus chronyd – sonst widerspräche die
+// Kachelreihe („0 Anfragen“) der Karte „Laut chrony“ darunter.
+export function seenFacts(detail, now = Date.now() / 1000) {
+  const entry = detail.entry || {};
+  const c = !ownKnown(detail) && detail.chrony ? detail.chrony : null;
+  if (c) {
+    return { age: isNum(c.ntp_last_rx) ? Math.max(0, c.ntp_last_rx) : null, requests: isNum(c.ntp_packets) ? c.ntp_packets : 0,
+      lastText: "laut chrony", source: "chrony" };
+  }
+  return { age: isNum(entry.last_seen) ? Math.max(0, now - entry.last_seen) : null, requests: entry.requests || 0,
+    lastText: fmtDate(entry.last_seen), source: "own" };
+}
+
+export function chronyCard(detail) {
+  const c = detail.chrony;
+  if (!c) return null;
+  const known = ownKnown(detail);
+  return card("Laut chrony", { help: "client_packets" },
+    kv([
+      ["Anfragen", fmtNumber(c.ntp_packets), "client_packets"],
+      ["Verworfen", fmtNumber(c.ntp_dropped), "client_dropped"],
+      ["Intervall", fmtLogInterval(c.ntp_interval), "client_interval"],
+      ["Zuletzt", isNum(c.ntp_last_rx) ? `vor ${fmtDuration(c.ntp_last_rx)}` : "–", "client_last"],
+    ]),
+    known ? null : el("p", { class: "field-help", text: "Die eigene Messung kennt das Gerät noch nicht (aus oder gerade "
+      + "gestartet) – deshalb bleiben Abweichung, Verlauf und Software leer. Die Zähler oben kommen direkt von chronyd." }));
+}
+
 // --- Seite --------------------------------------------------------------------------
 export function renderDetail(ctx, ip) {
   const range = ctx.uiState.clientRange || 86400;
@@ -298,7 +332,9 @@ export function renderDetail(ctx, ip) {
   const entry = detail.entry || {};
   const samples = detail.samples || [];
   const title = detail.name || detail.address;
-  const age = isNum(entry.last_seen) ? Math.max(0, Date.now() / 1000 - entry.last_seen) : null;
+  const seen = seenFacts(detail);
+  const age = seen.age;
+  const viaChrony = seen.source === "chrony";
   const end = ctx.status.system?.time;
 
   const offsetHost = el("div", { class: "chart-host" });
@@ -348,18 +384,19 @@ export function renderDetail(ctx, ip) {
     el("div", { class: "stat-row" },
       tile({ label: "Uhr geht falsch um", help: "client_offset", value: entry.measurable ? fmtOffset(entry.ewma) : "–",
         tone: entry.measurable ? offsetTone(entry.ewma) : "muted",
-        note: entry.measurable && isNum(entry.min) ? `${fmtOffset(entry.min)} … ${fmtOffset(entry.max)}` : (entry.state_text || "noch keine Anfrage") }),
+        note: entry.measurable && isNum(entry.min) ? `${fmtOffset(entry.min)} … ${fmtOffset(entry.max)}` : (entry.state_text || (viaChrony ? "eigene Messung: noch keine" : "noch keine Anfrage")) }),
       tile({ label: "Zuletzt", help: "client_seen", value: isNum(age) ? `vor ${fmtDuration(age)}` : "–",
-        tone: detail.silent ? "warn" : "muted", note: detail.silent || fmtDate(entry.last_seen) }),
+        tone: detail.silent ? "warn" : "muted", note: detail.silent || seen.lastText }),
       tile({ label: "Typischer Abstand", help: "client_typical_interval", value: fmtInterval(entry.interval),
         tone: isNum(entry.interval) && entry.interval < 8 ? "warn" : "muted",
         note: isNum(entry.poll) ? `Poll-Feld ${entry.poll}${entry.poll === 0 ? " (nicht gesetzt)" : ""}` : "Poll-Feld unbekannt" }),
       tile({ label: "NTP-Version", help: "client_version", value: isNum(entry.version) ? String(entry.version) : "–",
-        tone: "muted", note: `${fmtNumber(entry.requests || 0)} Anfragen` }),
+        tone: "muted", note: `${fmtNumber(seen.requests)} Anfragen${viaChrony ? " (laut chrony)" : ""}` }),
       tile({ label: "Uhrgüte", help: "client_quality", value: isNum(detail.quality?.score) ? String(detail.quality.score) : "–",
         unit: isNum(detail.quality?.score) ? "/100" : null, tone: detail.quality?.tone || "muted",
         note: isNum(detail.quality?.drift_ppm) || isNum(detail.quality?.drift_bound_ppm)
           ? `${detail.quality.grade} · ${fmtDrift(detail.quality)}` : (detail.quality?.grade || "–") })),
+    chronyCard(detail),
     card("Abweichung über die Zeit", { help: "client_offset_chart", actions: rangeGroup(range, setRange),
       sub: `Jede gespeicherte Anfrage ein Punkt (höchstens alle 2 min einer), ${fmtNumber(detail.retention_days || 7)} Tage lang.` },
     offsetHost),
@@ -375,7 +412,7 @@ export function renderDetail(ctx, ip) {
           ["Gruppe", detail.group ? `${detail.group.name} (${detail.group.network})` : "ohne Gruppe", "client_group"],
           ["Zuerst gesehen", fmtDate(entry.first_seen), "client_seen"],
           ["Zuletzt gesehen", fmtDate(entry.last_seen), "client_seen"],
-          ["Anfragen", fmtNumber(entry.requests || 0), "client_packets"],
+          ["Anfragen", `${fmtNumber(seen.requests)}${viaChrony ? " (laut chrony)" : ""}`, "client_packets"],
           ["Messbar", stateBadge, "client_measurable"],
         ]),
         el("p", { class: "field-help", text: detail.measurable_reason || "" }),

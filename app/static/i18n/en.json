@@ -10,7 +10,7 @@
     "clock_link_label": "Open full-screen clock",
     "theme_title": "Light / dark",
     "theme_label": "Switch between light and dark",
-    "language_title": "Language: Deutsch / English",
+    "language_title": "Language: Deutsch / English (Beta)",
     "language_label": "Change language (Sprache)"
   },
   "nav": {
@@ -126,7 +126,7 @@
     },
     "language": {
       "label": "Dashboard language",
-      "note": "Applies to this browser only; without a choice the browser language is used. So far the navigation, the header, the status band on the overview and the sections here are translated – everything else, the ⓘ explanations and messages from the server are German for now."
+      "note": "Applies to this browser only; without a choice German is used (English is in beta). So far the navigation, the header, the status band on the overview and the sections here are translated – everything else, the ⓘ explanations and messages from the server are German for now."
     }
   },
   "help": {

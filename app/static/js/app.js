@@ -1,5 +1,5 @@
 // Einstieg: Navigation, Aktualisierung, Datencache, Neustart-Anzeige.
-import { el, apiGet, storageGet, storageSet, fmtTime } from "./util.js";
+import { el, apiGet, storageGet, storageSet, fmtTime, fmtServerDateTime, serverZone, staleText, isNum } from "./util.js";
 import { toast, isPopoverOpen, info, badge } from "./ui.js";
 import { resetChartState } from "./charts.js";
 import * as overview from "./pages/overview.js";
@@ -39,6 +39,7 @@ const state = {
   timer: null,
   failed: 0,
   reload: null,
+  lastOk: null,   // Serverzeit (ms) der letzten erfolgreichen Abfrage – für „veraltet seit …“
 };
 
 const main = document.getElementById("main");
@@ -180,7 +181,9 @@ function renderHeader() {
   const sys = status.system || {};
   document.getElementById("title").textContent = sys.title || "ntp-gui";
   document.getElementById("hostname").textContent = sys.hostname || "";
-  document.getElementById("clock").textContent = `${new Date(sys.time * 1000).toLocaleString(language() === "en" ? "en-GB" : "de-DE")} ${sys.timezone || ""}`;
+  // Uhrzeit des Servers, nicht die des Browsers (sys.timezone ist nur die Abkürzung, z. B. „CEST“).
+  const zone = serverZone(sys) ? sys.timezone || "" : "UTC";
+  document.getElementById("clock").textContent = `${fmtServerDateTime(sys, language() === "en" ? "en-GB" : "de-DE")} ${zone}`;
   // Dieselbe Bewertung wie das Statusband der Übersicht – Kopfzeile und Übersicht
   // dürfen sich nie widersprechen. Schmal: nur Punkt + Kurztext.
   const v = overview.verdict(status, status.insights || []);
@@ -193,7 +196,8 @@ function renderHeader() {
   setBadge("hardware", serious.filter((i) => i.action === "hardware").length);
   renderUpdateBanner(status.update);
   document.getElementById("footer-note").textContent =
-    t("app.footer", { version: sys.version || "", time: fmtTime(sys.time), seconds: sys.refresh_seconds });
+    t("app.footer", { version: sys.version || "", time: fmtTime(sys.time, true, serverZone(sys) ? sys : 0),
+      seconds: sys.refresh_seconds });
 }
 
 // --- Update-Hinweis (opt-in) ---------------------------------------------------
@@ -246,7 +250,9 @@ async function refresh() {
     state.status = status;
     if (history) state.history = history.samples || [];
     state.failed = 0;
+    state.lastOk = (isNum(status?.system?.time) ? status.system.time : Date.now() / 1000) * 1000;
     document.body.classList.remove("is-stale");
+    showStale(false);
     renderHeader();
     // Offene Erklärung nicht wegreißen: dann nur die Kopfzeile aktualisieren.
     if (page.module.live !== false && !isPopoverOpen()) render();
@@ -256,10 +262,31 @@ async function refresh() {
     document.body.classList.add("is-stale");
     document.getElementById("sync-pill").dataset.state = "crit";
     document.getElementById("sync-label").textContent = t("app.no_connection");
+    showStale(true);
   }
+  // Verborgener Tab: nicht weiter abfragen – visibilitychange holt beim Zurückkehren sofort neu.
+  if (document.hidden) return;
   const every = Math.max(1, state.status?.system?.refresh_seconds || 5) * 1000;
+  clearTimeout(state.timer); // zwei überlappende Abfragen (online + Timer) dürfen keine zweite Kette starten
   state.timer = setTimeout(refresh, state.failed ? Math.min(30000, every * (state.failed + 1)) : every);
 }
+
+// Verbindungsverlust sichtbar machen: Inhalt bleibt stehen, darüber steht, seit wann er veraltet ist.
+function showStale(stale) {
+  const banner = document.getElementById("stale-banner");
+  if (!banner) return;
+  if (!stale) { banner.hidden = true; banner.textContent = ""; return; }
+  const sys = state.status?.system;
+  banner.textContent = staleText(state.lastOk, serverZone(sys) ? sys : 0);
+  banner.hidden = false;
+}
+
+// Netz wieder da oder Tab wieder sichtbar: sofort abfragen statt bis zu 30 s Backoff abzuwarten.
+window.addEventListener("online", () => { state.failed = 0; refresh(); });
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) clearTimeout(state.timer);
+  else refresh();
+});
 
 // --- Neustart der Zeitdienste verfolgen ------------------------------------------
 function watchReload() {
@@ -347,7 +374,8 @@ window.addEventListener("hashchange", () => {
   revealActiveNav(true);
 });
 
-// Sprache: je Browser (localStorage), Standard = Browsersprache. Der Knopf schaltet reihum.
+// Sprache: je Browser (localStorage), Standard = Deutsch – Englisch (Beta) nur auf ausdrücklichen Wunsch.
+// Der Knopf schaltet reihum.
 function initLanguage() {
   const button = document.getElementById("lang-toggle");
   const code = document.getElementById("lang-code");

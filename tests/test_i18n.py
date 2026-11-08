@@ -241,6 +241,37 @@ console.log(JSON.stringify({
         for prefix in ("app.", "nav.", "overview."):
             self.assertEqual({k for k in full if k.startswith(prefix)}, {k for k in core if k.startswith(prefix)}, prefix)
 
+    INIT_SCRIPT = """
+import { readFileSync } from "node:fs";
+const stored = %(stored)s;
+globalThis.window = { localStorage: { getItem: () => stored, setItem() {} } };
+Object.defineProperty(globalThis, "navigator", { value: { languages: ["en-US", "de-DE"], language: "en-US" }, configurable: true });
+globalThis.document = { documentElement: { lang: "" }, querySelectorAll: () => [], title: "" };
+globalThis.fetch = async (u) => ({ ok: true, json: async () => JSON.parse(readFileSync(%(static)s + u.replace("/static", ""), "utf8")) });
+const i18n = await import(%(module)s);
+const lang = await i18n.initI18n();
+console.log(JSON.stringify({ lang, en: i18n.LANGUAGES.find((l) => l.code === "en").label }));
+"""
+
+    def run_init(self, stored):
+        module = json.dumps((JS / "i18n.js").resolve().as_uri())
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / "run.mjs"
+            script.write_text(self.INIT_SCRIPT % {"module": module, "stored": json.dumps(stored),
+                                                  "static": json.dumps(str(STATIC))}, encoding="utf-8")
+            result = subprocess.run(["node", str(script)], capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def test_default_is_german_even_for_english_browser(self):
+        # F4 (1.6): Englisch ist Beta – ohne ausdrückliche Wahl gilt Deutsch, auch bei englischem Browser.
+        out = self.run_init(None)
+        self.assertEqual(out["lang"], "de")
+        self.assertIn("Beta", out["en"])
+
+    def test_explicit_english_choice_is_kept(self):
+        self.assertEqual(self.run_init("en")["lang"], "en")
+
     def test_syntax_of_touched_modules(self):
         for name in ("i18n.js", "app.js", "pages/overview.js", "pages/settings.js", "pages/help.js", "help-web.js"):
             with self.subTest(module=name):

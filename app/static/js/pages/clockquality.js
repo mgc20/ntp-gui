@@ -1,11 +1,14 @@
 // Seite „Uhrqualität“ (1.4): Temperatur ↔ Frequenz, Schaltsekunden, Vollbild-Uhr; ab 1.5 echter Holdover-Test,
 // ab 1.5.4 Allan-Abweichung (wie stabil ist der Quarz über 10 s … 1 Tag).
 import { el, isNum, fmtFixed, fmtNumber, fmtSeconds, rich } from "../util.js";
-import { card, tile, kv, badge, emptyNote, info } from "../ui.js";
+import { card, tile, kv, badge, emptyNote, info, loadingOr } from "../ui.js";
 import { lineChart, logLogChart, scatterChart, stepDecimals } from "../charts.js";
 import { holdoverCard } from "./gnss.js";
 
 const RANGES = [[86400, "1 Tag"], [3 * 86400, "3 Tage"], [7 * 86400, "7 Tage"], [30 * 86400, "30 Tage"]];
+// Ab so vielen Tagen im gewählten Zeitraum lässt sich der Zusammenhang Temperatur ↔ Frequenz bewerten
+// (wie thermal.summarize: need_days).
+const READY_DAYS = 3;
 
 const NO_SENSOR = {
   none: "Dieses System stellt keinen Temperatursensor bereit – typisch für virtuelle Maschinen und Docker Desktop. "
@@ -47,10 +50,22 @@ function readiness(summary) {
   return `Es wird weiter gesammelt (bisher ${missing.join(", ")}). Für eine Aussage braucht es **1–3 Tage mit Tag-/Nacht-Wechsel**.`;
 }
 
-function temperatureSection(ctx, data) {
+// Der Zeitraum gilt nur für die Temperaturauswertung – deshalb sitzen die Knöpfe in dieser Karte und
+// nur, wenn es einen Sensor gibt (ohne Sensor änderten sie nichts).
+function rangeActions(ctx) {
+  const ui = ctx.uiState;
+  return el("div", { class: "toolbar" },
+    el("span", { class: "toolbar-label", text: "Zeitraum" }),
+    rangeGroup(ui.uqRange, (seconds) => { ui.uqRange = seconds; ctx.rerender(); }));
+}
+
+function temperatureSection(ctx, data, loading) {
   const out = [];
+  const ui = ctx.uiState;
+  if (data) ui.uqTempAvailable = Boolean(data.available);
   if (!data) {
-    out.push(card("Temperatur und Frequenz", { help: "temp_freq" }, emptyNote("lädt …")));
+    // Beim Umschalten des Zeitraums Knöpfe stehen lassen, solange der Sensor zuletzt da war.
+    out.push(card("Temperatur und Frequenz", { help: "temp_freq", actions: ui.uqTempAvailable ? rangeActions(ctx) : null }, loading));
     return out;
   }
   if (!data.available) {
@@ -67,7 +82,8 @@ function temperatureSection(ctx, data) {
   const sensor = data.sensor || {};
   const r = summary.correlation;
   const tone = summary.ready ? "good" : "muted";
-  out.push(card("Temperatur und Frequenz", { help: "temp_freq",
+  const enoughRange = (ui.uqRange || 0) >= READY_DAYS * 86400;
+  out.push(card("Temperatur und Frequenz", { help: "temp_freq", actions: rangeActions(ctx),
     sub: "Zu jedem Messpunkt speichert ntp-gui die Temperatur. So zeigt sich, wie stark der Quarz mit ihr wandert – "
       + "die Grundlage für einen Temperaturausgleich ab 1.5. Hier wird nur gemessen, nichts verstellt." },
   el("div", { class: "stat-row" },
@@ -83,7 +99,9 @@ function temperatureSection(ctx, data) {
     ? el("p", { class: "hw-note" }, rich("Der gewählte Sensor liefert gerade **keinen plausiblen Wert** (−40 bis 125 °C) – "
       + "neue Messpunkte bekommen keine Temperatur. Der **Hardware-Check** zeigt alle Sensoren und ihre Werte."))
     : null,
-  el("p", { class: "hw-note" }, rich(readiness(summary)))));
+  el("p", { class: "hw-note" }, rich(enoughRange ? readiness(summary)
+    : `Für die Bewertung braucht es einen Zeitraum von mindestens ${READY_DAYS} Tagen – wähle oben in dieser Karte `
+      + "**3 Tage** oder mehr. Der kürzere Zeitraum zeigt nur den Verlauf."))));
 
   const scatter = el("div", { class: "chart-host" });
   const tempChart = el("div", { class: "chart-host" });
@@ -150,9 +168,9 @@ function adevLine(data) {
   return line;
 }
 
-function allanSection(data) {
+function allanSection(data, loading) {
   const title = "Allan-Abweichung";
-  if (!data) return card(title, { help: "adev" }, emptyNote("lädt …"));
+  if (!data) return card(title, { help: "adev" }, loading);
   if (!data.available) {
     return card(title, { help: "adev", badge: badge("sammelt", "muted") },
       emptyNote(ADEV_REASON[data.reason] || ADEV_REASON.few),
@@ -209,8 +227,8 @@ function fmtDate(iso) {
   return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString("de-DE", { day: "numeric", month: "long", year: "numeric", timeZone: "UTC" });
 }
 
-function leapSection(info_, status) {
-  if (!info_) return card("Schaltsekunden", { help: "leap_overview" }, emptyNote("lädt …"));
+function leapSection(info_, status, loading) {
+  if (!info_) return card("Schaltsekunden", { help: "leap_overview" }, loading);
   const chrony = info_.chrony_leap || status?.tracking?.leap_status;
   const chronyRow = ["Leap-Status von chrony", CHRONY_LEAP[chrony] || chrony || "–", "leap"];
   if (info_.reason === "disabled") {
@@ -274,19 +292,19 @@ function clockSection(ctx) {
 export function render(ctx) {
   const ui = ctx.uiState;
   if (!ui.uqRange) ui.uqRange = 7 * 86400;
-  const temp = ctx.data("temperature", `/api/temperature?range=${ui.uqRange}&points=1500`, 60);
+  const tempUrl = `/api/temperature?range=${ui.uqRange}&points=1500`;
+  const temp = ctx.data("temperature", tempUrl, 60);
   const leapInfo = ctx.data("leap", "/api/leap", 300);
   const allanData = ctx.data("allan", "/api/clockquality/allan", 600);
-  const adev = allanSection(allanData);
+  const adev = allanSection(allanData, loadingOr(ctx, "allan", "/api/clockquality/allan", "Allan-Abweichung"));
   if (adev.draw) ctx.afterRender(adev.draw);
   return [
     el("div", { class: "toolbar section-head" },
-      el("h2", { class: "section-title" }, "Uhrqualität ", info("uq_page", "Uhrqualität")),
-      el("span", { class: "toolbar-label", text: "Zeitraum" }),
-      rangeGroup(ui.uqRange, (seconds) => { ui.uqRange = seconds; ctx.rerender(); })),
+      el("h2", { class: "section-title" }, "Uhrqualität ", info("uq_page", "Uhrqualität"))),
     holdoverCard(ctx),
-    ...temperatureSection(ctx, temp),
+    ...temperatureSection(ctx, temp, loadingOr(ctx, "temperature", tempUrl, "Temperaturdaten")),
     adev.node || adev,
-    el("div", { class: "grid-2" }, leapSection(leapInfo, ctx.status), clockSection(ctx)),
+    el("div", { class: "grid-2" }, leapSection(leapInfo, ctx.status, loadingOr(ctx, "leap", "/api/leap", "Schaltsekunden-Daten")),
+      clockSection(ctx)),
   ];
 }

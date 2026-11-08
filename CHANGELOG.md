@@ -6,6 +6,11 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 
 ## [Unveröffentlicht]
 
+### Geändert
+- **Das Dashboard startet immer auf Deutsch**, auch wenn der Browser auf Englisch steht. Englisch heißt
+  „English (Beta)“ und gilt nur, wenn du es ausdrücklich wählst (DE/EN oder Einstellungen → Dashboard);
+  eine schon gespeicherte Wahl bleibt. Vollständiges Englisch kommt mit 1.7.
+
 ### Sicherheit
 - **Content-Security-Policy an jeder Antwort** (auch API und Fehlerseiten): nur eigene Skripte, Stylesheets
   und Verbindungen, keine Inline-Skripte, keine Einbettung in fremde Seiten, Bilder zusätzlich als `data:`.
@@ -13,6 +18,23 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
   erscheint dafür ohne eigene Formatierung.
 
 ### Behoben
+- **Zeiten zeigen die Zeit des Servers.** Uhrzeit in der Kopfzeile, „aktualisiert …“ in der Fußzeile,
+  „Letzte Ereignisse“ und das Ereignisprotokoll der Diagnose standen bisher in der Zeitzone des Browsers
+  mit dem Zeitzonen-Etikett des Servers daneben. Jetzt folgen sie dem Server, samt Sommer-/Winterzeit des
+  jeweiligen Tages (`/api/status` liefert dafür `system.tz_name` und `system.utc_offset`).
+- **Verbindung weg:** Oben steht „Keine Verbindung zum Server – Werte veraltet seit hh:mm:ss“. Kommt das Netz
+  zurück oder holst du den Tab wieder nach vorn, fragt das Dashboard sofort neu; ein Tab im Hintergrund fragt
+  nicht weiter ab.
+- **Kein endloses „Lade …“ mehr:** Lässt sich ein Teil einer Seite nicht laden (Clients, Uhrqualität,
+  Übersicht), steht dort der Grund und „neuer Versuch läuft“.
+- **Clients:**
+  - „Gruppen und Netze“ meldet nicht mehr „Noch keine Geräte gesehen“, während die Liste Geräte zeigt.
+  - Jedes Gerät hat eine Detailseite, auch wenn es bisher nur chronyd kennt. Kacheln und Gerätepass
+    zeigen dann die Werte von chrony statt „0 Anfragen“ bzw. 404.
+  - „Anfragen/min“ springt nicht mehr zwischen 6 und 0, Übersicht und Clients zeigen denselben Wert, und
+    die Kachel nennt das tatsächliche Mittelungsfenster.
+- **Uhrqualität:** Die Zeitraum-Knöpfe stehen in der Karte „Temperatur und Frequenz“, wo sie wirken; ohne
+  Temperatursensor erscheinen sie nicht. Kein falsches „es wird weiter gesammelt“ mehr.
 - **`WEB_BIND` mit IPv6 (`::`, `[::1]`).** Das Dashboard brach mit „Address family for hostname not
   supported“ ab. Jetzt startet es; `::` nimmt immer IPv4 und IPv6 an (IPV6_V6ONLY wird ausdrücklich
   ausgeschaltet). Scheitert der Start, nennt die Meldung die passende Ursache: Port belegt (`WEB_PORT`),

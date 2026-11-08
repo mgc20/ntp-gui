@@ -461,6 +461,22 @@ class MetaTest(TempDataMixin, unittest.TestCase):
         self.assertIn("Wohnzimmer Fernseher", values["name"])
 
 
+class ChronyOnlyDetailTest(unittest.TestCase):
+    """U4 (1.6): clientinfo.detail mit der Zeile aus „chronyc clients“, ohne eigene Messung."""
+
+    def test_detail_from_chrony_row(self):
+        with mock.patch.object(clientmon, "client", return_value=None), \
+                mock.patch.object(clientmon, "samples", return_value=[]), \
+                mock.patch.object(clientinfo, "all_meta", return_value={}):
+            self.assertIsNone(clientinfo.detail("192.0.2.10", {}, 0, resolver=lambda ip: None))
+            out = clientinfo.detail("192.0.2.10", {}, 0, resolver=lambda ip: None,
+                                    chrony_row={"address": "192.0.2.10", "ntp_packets": 50})
+        self.assertIsNotNone(out)
+        self.assertEqual(out["chrony"]["ntp_packets"], 50)
+        self.assertEqual(out["samples"], [])
+        self.assertFalse(out["probe_allowed"])
+
+
 class RdnsTest(unittest.TestCase):
     def setUp(self):
         clientinfo._RDNS.clear()
@@ -910,6 +926,19 @@ class HttpTest(unittest.TestCase):
         self.assertEqual(self.request("GET", "/api/clients/detail?ip=evil", headers=self.basic())[0], 400)
         status, offsets = self.request("GET", "/api/clients/offsets", headers=self.basic())
         self.assertEqual(offsets["names"], {"192.168.1.40": "Server Keller"})
+
+    def test_detail_for_client_only_chrony_knows(self):
+        # U4 (1.6): Die Liste verlinkt auch Geräte, die nur chronyd kennt – deren Detailseite darf nicht 404 sein.
+        import chrony
+        row = {"address": "192.168.1.77", "ntp_packets": 50, "ntp_dropped": 0, "ntp_interval": 6.0, "ntp_last_rx": 3}
+        with mock.patch.object(chrony, "clients", return_value=[row]), \
+                mock.patch.object(clientinfo, "reverse_name", return_value=None):
+            status, detail = self.request("GET", "/api/clients/detail?ip=192.168.1.77", headers=self.basic())
+            other = self.request("GET", "/api/clients/detail?ip=192.168.1.99", headers=self.basic())[0]
+        self.assertEqual(status, 200, detail)
+        self.assertEqual(detail["chrony"]["ntp_packets"], 50)
+        self.assertEqual(detail["entry"], {})
+        self.assertEqual(other, 404)  # wen weder chrony noch die Messung kennt, bleibt unbekannt
 
     def test_probe_unknown_client(self):
         status, payload = self.request("POST", "/api/clients/probe", {"ip": "192.168.1.77"}, self.basic())

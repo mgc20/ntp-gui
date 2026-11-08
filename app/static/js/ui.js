@@ -175,6 +175,19 @@ export function emptyNote(text) {
   return el("p", { class: "empty-note" }, rich(text));
 }
 
+// Gemeinsamer Lade-/Fehlerzustand: Solange nichts da ist „Lade … “, nach einem Fehler aber nicht
+// endlos weiter „Lade …“, sondern was schiefging (der Datencache fragt von selbst erneut).
+export function loadingText(ctx, key, url, what) {
+  const failed = ctx?.dataError ? ctx.dataError(key, url) : null;
+  return failed
+    ? `Konnte ${what} nicht laden (${failed.message || `HTTP ${failed.status}`}) – neuer Versuch läuft.`
+    : `Lade ${what} …`;
+}
+
+export function loadingOr(ctx, key, url, what) {
+  return emptyNote(loadingText(ctx, key, url, what));
+}
+
 export function toast(message, tone = "good") {
   const node = el("div", { class: "toast", "data-tone": tone, role: "status", text: message });
   document.body.append(node);

@@ -817,7 +817,10 @@ export const HELP = {
   served_rate: {
     title: "Beantwortete Anfragen",
     text: "Wie viele NTP-Anfragen dieser Server im Verlauf beantwortet hat (pro Minute). Steigt, "
-      + "sobald die Adresse per DHCP verteilt ist.",
+      + "sobald die Adresse per DHCP verteilt ist. Die Zahl in der Kachel ist ein Mittel über die jüngsten Messpunkte "
+      + "des Verlaufs, mindestens über eine Minute – das letzte Messintervall allein (10 s) spränge bei wenigen Geräten "
+      + "zwischen 0 und 6/min hin und her. Bei langen Zeiträumen (6 h, 24 h) liegen die Punkte weiter auseinander; "
+      + "dann ist es das Mittel über den letzten Abstand. Über welche Spanne gemittelt wurde, steht unter dem Wert.",
   },
   clock_control: {
     title: "Uhrensteuerung",

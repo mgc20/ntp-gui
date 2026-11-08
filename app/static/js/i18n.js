@@ -14,7 +14,7 @@
 
 export const LANGUAGES = [
   { code: "de", label: "Deutsch" },
-  { code: "en", label: "English" },
+  { code: "en", label: "English (Beta)" },  // nur Navigation, Kopfzeile, Teile der Übersicht übersetzt
 ];
 export const REFERENCE = "de";
 const STORAGE_KEY = "ntp-gui-lang";
@@ -34,7 +34,7 @@ export const CORE_DE = {
     "clock_link_label": "Vollbild-Uhr öffnen",
     "theme_title": "Hell / Dunkel",
     "theme_label": "Hell oder dunkel umschalten",
-    "language_title": "Sprache: Deutsch / English",
+    "language_title": "Sprache: Deutsch / English (Beta)",
     "language_label": "Sprache wechseln (Language)"
   },
   "nav": {
@@ -221,10 +221,15 @@ async function load(lang) {
   }
 }
 
-/** Beim Start: gespeicherte Wahl, sonst Browsersprache; Deutsch wird immer mitgeladen (Rückfall). */
+/**
+ * Beim Start: gespeicherte Wahl, sonst Deutsch; Deutsch wird immer mitgeladen (Rückfall).
+ * Bewusst KEINE automatische Wahl nach Browsersprache: Englisch ist noch Beta (große Teile der Seiten
+ * sind fest deutsch) und gilt nur, wenn es jemand ausdrücklich gewählt hat. browserLanguage() bleibt
+ * für später exportiert.
+ */
 export async function initI18n() {
   const stored = readStored();
-  const wanted = supported(stored) ? stored : browserLanguage();
+  const wanted = supported(stored) ? stored : REFERENCE;
   // Deutsch ist der Rückfall für alles – bei einem kurzen Netzfehler lieber nochmal versuchen.
   for (let attempt = 0; attempt < 3 && !await load(REFERENCE); attempt += 1) {
     await new Promise((done) => setTimeout(done, 300 * (attempt + 1)));

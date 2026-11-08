@@ -783,6 +783,16 @@ class PassTest(TempData):
         self.assertIn(clients3.SERVER_PLACEHOLDER, data["recommendations"][0]["code"])
         self.assertIsNone(clients3.device_pass("192.168.1.41", {}))
 
+    def test_pass_for_device_only_chrony_knows(self):
+        """Nachbesserung U4: Die Detailseite verlinkt den Pass auch für Geräte, die nur chronyd kennt."""
+        row = {"address": "192.0.2.77", "ntp_packets": 50, "ntp_dropped": 0, "ntp_interval": 6, "ntp_last_rx": 3}
+        self.assertIsNone(clients3.device_pass("192.0.2.77", {}))
+        data = clients3.device_pass("192.0.2.77", {}, chrony_row=row)
+        self.assertIsNotNone(data)
+        self.assertEqual(data["chrony"]["ntp_packets"], 50)
+        self.assertIn("Letzte Anfrage: vor 3", clients3.pass_text(data))
+        self.assertIn("(laut chrony)", clients3.pass_text(data))
+
     def test_shared_copy_is_filtered(self):
         import diagnostics
         with mock.patch.object(diagnostics, "_known_names", return_value=[]):
@@ -928,6 +938,17 @@ class HttpTest(unittest.TestCase):
         self.assertNotIn("192.168.1.40", shared["text"])
         self.assertEqual(self.request("GET", "/api/clients/pass?ip=evil", headers=self.basic())[0], 400)
         self.assertEqual(self.request("GET", "/api/clients/pass?ip=192.168.1.99", headers=self.basic())[0], 404)
+        # Gerät, das nur chronyd kennt: Detailseite und Gerätepass antworten beide (kein toter Link).
+        row = {"address": "192.0.2.77", "ntp_packets": 50, "ntp_dropped": 0, "ntp_interval": 6, "ntp_last_rx": 3}
+        with mock.patch.object(chrony, "clients", return_value=[row]), \
+                mock.patch.object(clientinfo, "reverse_name", return_value=None):
+            status, only = self.request("GET", "/api/clients/detail?ip=192.0.2.77", headers=self.basic())
+            self.assertEqual(status, 200, only)
+            self.assertNotIn("Noch keine Anfrage gesehen", only["measurable_reason"])
+            self.assertIn("chronyd kennt", only["measurable_reason"])
+            status, pass_only = self.request("GET", "/api/clients/pass?ip=192.0.2.77", headers=self.basic())
+            self.assertEqual(status, 200, pass_only)
+            self.assertEqual(pass_only["chrony"]["ntp_packets"], 50)
         status, _ = self.request("POST", "/api/clients/groups/delete", {"id": group["id"]}, self.basic())
         self.assertEqual(status, 200)
         self.assertEqual(self.request("POST", "/api/clients/groups/delete", {"id": group["id"]}, self.basic())[0], 404)

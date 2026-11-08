@@ -1,7 +1,7 @@
 import { el, apiGet, apiPost, fmtDuration, fmtNumber, fmtRate, fmtLogInterval, isNum, rich } from "../util.js";
-import { card, tile, info, badge, rangeButtons, emptyNote, toast, copyButton } from "../ui.js";
+import { card, tile, info, badge, rangeButtons, emptyNote, toast, copyButton, loadingOr, loadingText } from "../ui.js";
 import { lineChart, stepDecimals } from "../charts.js";
-import { requestRate } from "./overview.js";
+import { requestRate, recentRateInfo, rateWindowText } from "./overview.js";
 import { renderDetail, fmtOffset, offsetTone, fmtInterval, clientHref, STATE_TONE, STATE_SHORT, qualityBadge, fmtDrift } from "./clientdetail.js";
 import { renderPass } from "./clientpass.js";
 
@@ -95,7 +95,7 @@ function miniList(title, help, items, total, cell, empty) {
 
 function overviewCard(ctx) {
   const data = ctx.data("clientoverview", "/api/clients/overview", 15);
-  if (data === undefined) return card("Netzüberblick", { help: "clients_overview" }, emptyNote("Lade Überblick …"));
+  if (data === undefined) return card("Netzüberblick", { help: "clients_overview" }, loadingOr(ctx, "clientoverview", "/api/clients/overview", "Überblick"));
   if (!data || !Array.isArray(data.histogram)) {
     return card("Netzüberblick", { help: "clients_overview" }, emptyNote("Überblick nicht verfügbar."));
   }
@@ -138,7 +138,7 @@ function worstClocks(ctx) {
     (item) => el("span", { class: "worst-clock" }, qualityBadge(item),
       isNum(item.drift_ppm) || isNum(item.drift_bound_ppm)
         ? el("span", { class: "field-help", text: ` ${fmtDrift(item)}` }) : null),
-    data === undefined ? "Lade Uhrgüte …" : "Noch kein Gerät bewertbar (es braucht mindestens 4 Messungen).");
+    data === undefined ? loadingText(ctx, "clientquality", "/api/clients/quality", "Uhrgüte") : "Noch kein Gerät bewertbar (es braucht mindestens 4 Messungen).");
 }
 
 const GROUP_BYS = [["group", "Gruppe"], ["vlan", "VLAN"], ["software", "Software"]];
@@ -218,16 +218,26 @@ function groupRow(ctx, group, by) {
   ];
 }
 
+// Gruppen zählen nur Geräte aus der eigenen (passiven) Messung, die Liste oben kommt von chronyd.
+// Kennt chrony schon Geräte, darf hier nicht „noch keine Geräte“ stehen.
+function emptyGroupsNote(ctx) {
+  const known = (ctx.status.clients || []).length;
+  if (!known) return emptyNote("Noch keine Geräte gesehen.");
+  return emptyNote(`Gruppen zählen nur Geräte aus der eigenen Messung – die hat noch keins gesehen (Messung aus oder `
+    + `gerade gestartet). chrony kennt ${fmtNumber(known)} ${known === 1 ? "Gerät" : "Geräte"}, siehe Liste oben.`);
+}
+
 function groupsCard(ctx, names) {
   const by = ctx.uiState.groupBy || "group";
-  const data = ctx.data("clientgroups", `/api/clients/groups?by=${by}`, 30);
+  const groupsUrl = `/api/clients/groups?by=${by}`;
+  const data = ctx.data("clientgroups", groupsUrl, 30);
   ctx.uiState.groupNames = names;
   const switcher = el("div", { class: "range-group", role: "group", "aria-label": "Ansicht der Gruppen" },
     GROUP_BYS.map(([key, label]) => el("button", { type: "button", class: `range${by === key ? " is-active" : ""}`,
       text: label, "aria-pressed": by === key ? "true" : "false", "data-focus-key": `groupby:${key}`,
       onclick: () => { ctx.uiState.groupBy = key; ctx.rerender(); } })),
     info("clients_group_by", "Ansicht"));
-  if (data === undefined) return card("Gruppen und Netze", { help: "clients_groups", actions: switcher }, emptyNote("Lade Gruppen …"));
+  if (data === undefined) return card("Gruppen und Netze", { help: "clients_groups", actions: switcher }, loadingOr(ctx, "clientgroups", groupsUrl, "Gruppen"));
   if (!data || !Array.isArray(data.groups)) {
     return card("Gruppen und Netze", { help: "clients_groups", actions: switcher }, emptyNote("Gruppen nicht verfügbar."));
   }
@@ -241,7 +251,7 @@ function groupsCard(ctx, names) {
       el("th", { class: "num" }, "Uhrgüte ", info("client_quality")),
       el("th", { "aria-label": "Aktion" }))),
     el("tbody", {}, data.groups.map((g) => groupRow(ctx, g, by)))))
-    : emptyNote("Noch keine Geräte gesehen.");
+    : emptyGroupsNote(ctx);
   return card("Gruppen und Netze", { help: "clients_groups", actions: switcher,
     sub: by === "group" ? "Benenne Netze („IoT = 10.0.30.0/24“) – das spezifischste Netz gewinnt. Die Zahlen "
       + "zeigen je Gruppe, wie gut die Uhren gehen." : by === "vlan"
@@ -354,9 +364,10 @@ function selfTest(status, ip) {
 
 function enforceSection(ctx, ip) {
   const query = ip && isIp(ip) ? `&ip=${encodeURIComponent(ip)}` : "";
-  const data = ctx.data("enforce", `/api/enforce/snippets?system=all${query}`, 300);
+  const enforceUrl = `/api/enforce/snippets?system=all${query}`;
+  const data = ctx.data("enforce", enforceUrl, 300);
   if (data === undefined) {
-    return card("Zeitserver erzwingen", { help: "enforce" }, emptyNote("Lade Anleitungen …"));
+    return card("Zeitserver erzwingen", { help: "enforce" }, loadingOr(ctx, "enforce", enforceUrl, "Anleitungen"));
   }
   if (!data || !Array.isArray(data.snippets)) {
     return card("Zeitserver erzwingen", { help: "enforce" }, emptyNote("Anleitungen nicht verfügbar."));
@@ -421,7 +432,8 @@ export function render(ctx) {
   const clients = status.clients || [];
   const stats = status.serverstats || {};
   const rate = requestRate(history);
-  const lastRate = rate.length ? rate[rate.length - 1][1] : null;
+  const recent = recentRateInfo(history);
+  const lastRate = recent.rate;
   const filter = (ctx.uiState.clientFilter || "").toLowerCase();
   const knownIp = serverAddress(status);
   const ip = knownIp || IP_PLACEHOLDER;
@@ -510,8 +522,8 @@ export function render(ctx) {
     el("div", { class: "stat-row" },
       tile({ label: "Clients", help: "client_packets", value: fmtNumber(rows.length), tone: rows.length ? "good" : "muted",
         note: "seit dem Start von chrony" }),
-      tile({ label: "Anfragen", help: "served_rate", value: isNum(lastRate) ? fmtNumber(lastRate, 1) : "–", unit: "/min",
-        tone: "muted", note: `${fmtNumber(stats.ntp_packets_received)} insgesamt` }),
+      tile({ label: "Anfragen", help: "served_rate", value: fmtRate(lastRate), unit: "/min",
+        tone: "muted", note: `${rateWindowText(recent.seconds)} · ${fmtNumber(stats.ntp_packets_received)} insgesamt` }),
       tile({ label: "Verworfen", help: "client_dropped", value: fmtNumber(stats.ntp_packets_dropped ?? 0),
         tone: (stats.ntp_packets_dropped || 0) > 0 ? "warn" : "muted", note: "z. B. durch Begrenzung" }),
       tile({ label: "Größte Abweichung", help: "client_offset", value: fmtOffset(worst),
