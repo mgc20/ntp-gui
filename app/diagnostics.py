@@ -91,6 +91,14 @@ DEFAULT_SECTIONS = ["meta", "hints", "config", "chrony", "gps", "ptp", "hardware
 TEXT_SECTIONS = {"config", "chrony", "logs", "recording"}
 
 
+class BusyError(RuntimeError):
+    """Es laufen schon genug Hintergrund-Bauten."""
+
+
+class StaleError(RuntimeError):
+    """Der Merker einer Vorschau gilt nicht mehr (zu alt, andere Schalter/Einstellungen, ersetzt)."""
+
+
 class LeakError(RuntimeError):
     """Der Datenschutzfilter hat nach dem Filtern noch etwas gefunden."""
 
@@ -115,7 +123,7 @@ def options_from_query(query: dict) -> dict:
     opts = {"include_clients": _flag(query.get("clients", "0")),
             "include_recording": _flag(query.get("recording", "0"))}
     if query.get("sections"):
-        opts["sections"] = [s for s in str(query["sections"]).split(",") if s in SECTION_TITLES]
+        opts["sections"] = list(dict.fromkeys(s for s in str(query["sections"]).split(",") if s in SECTION_TITLES))
     return opts
 
 
@@ -988,7 +996,8 @@ _lock = threading.Lock()  # nie zwei Pakete gleichzeitig bauen (CPU auf dem Pi s
 WORKER_TIMEOUT = 900.0
 REUSE_SECONDS = 600.0      # so lange gilt eine Vorschau für den Download
 JOB_WAIT = 10.0            # so lange wartet eine Anfrage höchstens auf einen Hintergrund-Bau
-JOB_KEEP = 4               # so viele Aufträge merkt sich der Server (für die Abfrage des Stands)
+JOB_KEEP = 4               # so viele erledigte Aufträge merkt sich der Server (für die Abfrage des Stands)
+JOB_MAX_PENDING = 2        # mehr gleichzeitige Hintergrund-Bauten lehnt der Server ab (CPU auf dem Pi)
 # {"key", "t", "done", "token", "preview", "bundle", "filename"} – nur unter _lock lesen/schreiben.
 _last: dict[str, Any] = {}
 
@@ -1054,8 +1063,8 @@ def _run_worker(job: dict) -> dict:
 
 
 def _recording_identity() -> Any:
-    """Welche Aufzeichnung gerade gilt (Pfad, Größe, Änderungszeit) – eine neue oder weiter
-    wachsende Aufzeichnung darf kein altes Ergebnis wiederverwenden."""
+    """Welche Aufzeichnung gerade gilt (Pfad, Größe, Änderungszeit) – ohne Merker darf eine neue oder
+    weiter wachsende Aufzeichnung kein altes Ergebnis wiederverwenden (mit Merker: siehe bundle_locked)."""
     try:
         import providers
         status = providers.status() if hasattr(providers, "status") else {}
@@ -1083,6 +1092,11 @@ def _chosen(options: dict) -> dict:
     return {k: options.get(k) for k in ("include_clients", "include_recording", "sections")}
 
 
+def _reuse_key(cfg: dict, options: dict) -> str:
+    """Schalter und Einstellungen (die bestimmen auch die Filterbegriffe), aber nicht die Aufzeichnung."""
+    return json.dumps([cfg, _chosen(options)], sort_keys=True, ensure_ascii=False, default=str)
+
+
 def _produce(cfg: dict, options: dict) -> dict:
     """Neu bauen (unter _lock). Vorher das alte Ergebnis verwerfen: Schlägt der Lauf fehl, darf
     ein späterer Download nicht stillschweigend ein älteres Paket liefern."""
@@ -1092,7 +1106,7 @@ def _produce(cfg: dict, options: dict) -> dict:
     result = _run_worker(_gather(cfg, None, options))
     token = secrets.token_hex(8)
     result["preview"]["reuse"] = token
-    _last.update(key=key, chosen=_chosen(options), t=time.monotonic(), token=token,
+    _last.update(key=key, reuse_key=_reuse_key(cfg, options), t=time.monotonic(), token=token,
                  filename=result["preview"].get("filename"), **result)
     return result
 
@@ -1113,18 +1127,22 @@ def preview_locked(cfg: dict, options: dict | None = None) -> dict:
 
 
 def bundle_locked(cfg: dict, options: dict | None = None, reuse: str | None = None) -> tuple[bytes, str]:
-    """(tar.gz, Dateiname). Mit dem Merker der angezeigten Vorschau (``reuse``), gleichen Schaltern
-    und höchstens REUSE_SECONDS alt kommt genau das Paket dieser Vorschau – auch wenn die
+    """(tar.gz, Dateiname). Mit dem Merker der angezeigten Vorschau (``reuse``), gleichen Schaltern und
+    Einstellungen und höchstens REUSE_SECONDS alt kommt genau das Paket dieser Vorschau – auch wenn die
     Aufzeichnung inzwischen weitergewachsen ist: Heruntergeladen wird, was geprüft wurde, und ein
-    zweiter Bau (auf dem Pi Minuten) entfällt. Sonst wird neu gebaut."""
+    zweiter Bau (auf dem Pi Minuten) entfällt. Gilt der Merker nicht mehr, StaleError statt eines
+    langen Baus in derselben Anfrage (die Seite holt dann eine neue Vorschau). Ohne Merker: neu bauen."""
     options = options or {}
     arrived = time.monotonic()
     with _lock:
         key = _key(cfg, options)
-        if _last and (
-                (_last.get("key") == key and _last.get("t", 0.0) >= arrived)
-                or (reuse and reuse == _last.get("token") and _last.get("chosen") == _chosen(options)
-                    and time.monotonic() - _last.get("t", 0.0) < REUSE_SECONDS)):
+        if reuse:
+            if (_last and reuse == _last.get("token") and _last.get("reuse_key") == _reuse_key(cfg, options)
+                    and time.monotonic() - _last.get("t", 0.0) < REUSE_SECONDS):
+                return _last["bundle"], _last.get("filename") or filename_for()
+            raise StaleError("Die Vorschau gilt nicht mehr (älter als 10 Minuten, andere Schalter oder "
+                             "Einstellungen, oder inzwischen eine andere Vorschau). Bitte neu erstellen.")
+        if _last and _last.get("key") == key and _last.get("t", 0.0) >= arrived:
             return _last["bundle"], _last.get("filename") or filename_for()
         result = _produce(cfg, options)
         return result["bundle"], result["preview"].get("filename") or filename_for()
@@ -1136,29 +1154,46 @@ def bundle_locked(cfg: dict, options: dict | None = None, reuse: str | None = No
 # Darum startet die Seite einen Auftrag, wartet höchstens JOB_WAIT und fragt dann den Stand ab.
 
 _jobs_lock = threading.Lock()
-_jobs: dict[str, dict] = {}  # id → {"chosen", "started", "done": Event, "preview" | "error"}
+_jobs: dict[str, dict] = {}  # id → {"key", "started", "done": Event, "ended", "preview" | "error"}
+
+
+def _prune_jobs() -> None:
+    """Unter _jobs_lock: erledigte Aufträge nach REUSE_SECONDS vergessen, höchstens JOB_KEEP behalten."""
+    now = time.monotonic()
+    for job_id in [k for k, v in _jobs.items() if v["done"].is_set() and now - v["ended"] > REUSE_SECONDS]:
+        del _jobs[job_id]
+    for job_id in [k for k, v in _jobs.items() if v["done"].is_set()][:-JOB_KEEP]:
+        del _jobs[job_id]
 
 
 def start_job(cfg: dict, options: dict) -> str:
-    """Startet den Bau im Hintergrund (läuft schon einer mit gleichen Schaltern: dessen Nummer)."""
+    """Startet den Bau im Hintergrund. Läuft schon einer mit gleichen Schaltern und Einstellungen:
+    dessen Nummer. Laufen schon JOB_MAX_PENDING andere: BusyError."""
     import secrets
-    chosen = _chosen(options)
+    key = _reuse_key(cfg, options)
     with _jobs_lock:
-        for job_id, job in _jobs.items():
-            if job["chosen"] == chosen and not job["done"].is_set():
+        _prune_jobs()
+        pending = [k for k, v in _jobs.items() if not v["done"].is_set()]
+        for job_id in pending:
+            if _jobs[job_id]["key"] == key:
                 return job_id
-        job_id = secrets.token_hex(8)
-        job = {"chosen": chosen, "started": time.monotonic(), "done": threading.Event()}
+        if len(pending) >= JOB_MAX_PENDING:
+            raise BusyError("Es werden gerade schon Diagnosepakete erstellt – bitte warten, bis sie fertig sind.")
+        job_id = secrets.token_hex(16)
+        job = {"key": key, "started": time.monotonic(), "done": threading.Event(), "ended": 0.0}
         _jobs[job_id] = job
-        for old in [k for k, v in _jobs.items() if v["done"].is_set()][:-JOB_KEEP]:
-            del _jobs[old]
 
     def run() -> None:
         try:
             job["preview"] = preview_locked(cfg, options)
-        except Exception as exc:  # noqa: BLE001 – LeakError und Fehler gehen an die Seite
+        except (LeakError, RuntimeError) as exc:  # eigene Meldungen, gehen so an die Seite
             job["error"] = exc
+        except Exception as exc:  # noqa: BLE001 – Details nur ins Log, nicht an die Seite
+            print(f"diagnostics: Hintergrund-Bau fehlgeschlagen: {type(exc).__name__}: {exc}",
+                  file=__import__("sys").stderr, flush=True)
+            job["error"] = RuntimeError("Diagnose-Prozess fehlgeschlagen (Details im Container-Log)")
         finally:
+            job["ended"] = time.monotonic()
             job["done"].set()
 
     threading.Thread(target=run, name="diag-job", daemon=True).start()
@@ -1176,10 +1211,8 @@ def job_result(job_id: str, wait: float = 0.0) -> dict | None:
         return {"ok": True, "pending": True, "job": job_id,
                 "seconds": int(time.monotonic() - job["started"])}
     error = job.get("error")
-    if isinstance(error, LeakError):
-        raise error
     if error is not None:
-        raise RuntimeError(str(error)) from None
+        raise error
     return job["preview"]
 
 

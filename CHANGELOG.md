@@ -15,7 +15,10 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
   dafür `?async=1` und `?job=…`; ohne sie wartet `/api/v1/diagnostics/preview` wie bisher.
 - **Download nach der Vorschau baute bei laufender Aufzeichnung alles noch einmal.** Wuchs die
   Aufzeichnung zwischen Vorschau und Download weiter, verwarf der Server das fertige Paket. Jetzt kommt
-  mit dem Merker der Vorschau genau das geprüfte Paket – was du angesehen hast, lädst du herunter.
+  mit dem Merker der Vorschau genau das geprüfte Paket – was du angesehen hast, lädst du herunter. Gilt
+  der Merker nicht mehr (älter als 10 Minuten, andere Schalter oder geänderte Einstellungen), antwortet
+  der Server mit 409 statt minutenlang neu zu bauen; die Seite erstellt dann eine neue Vorschau.
+  Höchstens zwei Hintergrund-Bauten gleichzeitig (sonst 429), damit der Pi nicht ausgelastet wird.
 
 ### Hinzugefügt
 - **Datenschutz-Wächter in der CI:** prüft in jedem PR alle Dateien, neue Commits (Autor, Committer,

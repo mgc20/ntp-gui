@@ -358,7 +358,13 @@ function bundleCard(state) {
     }
     const reuse = `&${new URLSearchParams({ reuse: shown.reuse })}`;
     try {
-      const response = await fetch(`/api/diagnostics/bundle?${shown.query}${reuse}`, { cache: "no-store" });
+      let response = await fetch(`/api/diagnostics/bundle?${shown.query}${reuse}`, { cache: "no-store" });
+      // 409: Die Vorschau gilt nicht mehr (zu alt, Einstellungen geändert, anderswo ersetzt). Statt eines
+      // langen Baus in dieser Anfrage eine neue Vorschau im Hintergrund – und die dann herunterladen.
+      if (response.status === 409 && await showPreview()) {
+        response = await fetch(`/api/diagnostics/bundle?${shown.query}&${new URLSearchParams({ reuse: shown.reuse })}`,
+          { cache: "no-store" });
+      }
       if (!response.ok) {
         let data = null;
         try { data = await response.json(); } catch (error) { /* kein JSON */ }

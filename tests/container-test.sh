@@ -203,6 +203,7 @@ done
 contains "Vorschau als Hintergrund-Auftrag wird fertig" "$JOBV" '"reuse"'
 REUSE=$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['reuse'])" "$JOBV" 2>/dev/null)
 check "Download nimmt das Paket der Vorschau" 200 "$(http --max-time 10 "http://127.0.0.1:18080/api/diagnostics/bundle?clients=1&reuse=$REUSE")"
+check "Ungültiger Merker -> 409 statt langem Bau" 409 "$(http 'http://127.0.0.1:18080/api/diagnostics/bundle?clients=1&reuse=falsch')"
 check "Unbekannter Auftrag -> 404" 404 "$(http 'http://127.0.0.1:18080/api/diagnostics/preview?job=gibtsnicht')"
 CM=$(curl -s --max-time 10 http://127.0.0.1:18080/api/clients/offsets)
 if python3 -c "

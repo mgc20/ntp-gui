@@ -439,13 +439,28 @@ class WorkerTest(unittest.TestCase):
         self.assertEqual(filename, view["filename"])
         self.assertEqual(folders, {filename[:-len(".tar.gz")]})
 
-    def test_download_without_matching_token_rebuilds(self):
+    def test_download_without_token_rebuilds_wrong_token_is_stale(self):
         view = diagnostics.preview_locked(self.cfg, dict(self.options))
-        for reuse in (None, "", "falsch"):
+        for reuse in (None, ""):
             with mock.patch.object(diagnostics, "_run_worker", wraps=diagnostics._run_worker) as run:
                 diagnostics.bundle_locked(self.cfg, dict(self.options), reuse=reuse)
             self.assertEqual(run.call_count, 1, reuse)
         self.assertNotEqual(diagnostics._last["token"], view["reuse"])  # jeder Lauf ein neuer Merker
+        # Ein Merker, der nicht (mehr) gilt: kein langer Bau in derselben Anfrage, sondern 409.
+        with mock.patch.object(diagnostics, "_run_worker", side_effect=AssertionError("neu gebaut")):
+            for reuse in ("falsch", view["reuse"]):
+                with self.assertRaises(diagnostics.StaleError, msg=reuse):
+                    diagnostics.bundle_locked(self.cfg, dict(self.options), reuse=reuse)
+
+    def test_token_expires_and_settings_change_is_stale(self):
+        view = diagnostics.preview_locked(self.cfg, dict(self.options))
+        with mock.patch.object(diagnostics, "_run_worker", side_effect=AssertionError("neu gebaut")):
+            with self.assertRaises(diagnostics.StaleError):  # neuer Filterbegriff in den Einstellungen
+                diagnostics.bundle_locked(dict(self.cfg, web_title="Neu"), dict(self.options), reuse=view["reuse"])
+            with mock.patch.object(diagnostics, "REUSE_SECONDS", 0.0), self.assertRaises(diagnostics.StaleError):
+                diagnostics.bundle_locked(self.cfg, dict(self.options), reuse=view["reuse"])
+            body, _ = diagnostics.bundle_locked(self.cfg, dict(self.options), reuse=view["reuse"])
+        self.assertTrue(body)
 
     def test_failed_preview_leaves_nothing_to_reuse(self):
         view = diagnostics.preview_locked(self.cfg, dict(self.options))
@@ -453,9 +468,8 @@ class WorkerTest(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 diagnostics.preview_locked(self.cfg, dict(self.options))
         self.assertEqual(diagnostics._last, {})
-        with mock.patch.object(diagnostics, "_run_worker", wraps=diagnostics._run_worker) as run:
+        with self.assertRaises(diagnostics.StaleError):
             diagnostics.bundle_locked(self.cfg, dict(self.options), reuse=view["reuse"])
-        self.assertEqual(run.call_count, 1)
 
     def test_new_recording_rebuilds(self):
         import providers
@@ -545,11 +559,10 @@ class WorkerTest(unittest.TestCase):
             diagnostics.preview_locked(self.cfg, dict(self.options))
         self.assertEqual(run.call_count, 1)
 
-    def test_other_options_rebuild(self):
+    def test_other_options_are_stale(self):
         view = diagnostics.preview_locked(self.cfg, dict(self.options))
-        with mock.patch.object(diagnostics, "_run_worker", wraps=diagnostics._run_worker) as run:
+        with self.assertRaises(diagnostics.StaleError):  # nie ein Paket mit anderen Schaltern als angezeigt
             diagnostics.bundle_locked(self.cfg, dict(self.options, include_clients=False), reuse=view["reuse"])
-        self.assertEqual(run.call_count, 1)
 
     def test_killed_worker_names_the_signal(self):
         import subprocess
@@ -731,14 +744,55 @@ class JobTest(unittest.TestCase):
             with self.assertRaises(diagnostics.LeakError):
                 diagnostics.job_result(job, wait=10)
 
+    def test_settings_change_starts_new_job(self):
+        import threading
+        release = threading.Event()
+        with self._slow_worker(release):
+            a = diagnostics.start_job(self.cfg, dict(self.options))
+            b = diagnostics.start_job(dict(self.cfg, web_title="Neu"), dict(self.options))
+            self.assertNotEqual(a, b)
+            release.set()
+            diagnostics.job_result(a, wait=10)
+            diagnostics.job_result(b, wait=10)
+
+    def test_at_most_two_pending_jobs(self):
+        import threading
+        release = threading.Event()
+        with self._slow_worker(release):
+            jobs = [diagnostics.start_job(self.cfg, dict(self.options, sections=[s]))
+                    for s in ("chrony", "gps")]
+            with self.assertRaises(diagnostics.BusyError):
+                diagnostics.start_job(self.cfg, dict(self.options, sections=["logs"]))
+            release.set()
+            for job in jobs:
+                diagnostics.job_result(job, wait=10)
+        diagnostics.job_result(diagnostics.start_job(self.cfg, dict(self.options, sections=["logs"])), wait=10)
+
+    def test_foreign_error_text_stays_in_log(self):
+        with mock.patch.object(diagnostics, "_run_worker", side_effect=OSError("/geheim/pfad")), \
+                mock.patch("sys.stderr", new_callable=io.StringIO) as err:
+            job = diagnostics.start_job(self.cfg, dict(self.options))
+            with self.assertRaises(RuntimeError) as ctx:
+                diagnostics.job_result(job, wait=10)
+        self.assertNotIn("/geheim", str(ctx.exception))
+        self.assertIn("/geheim/pfad", err.getvalue())
+
+    def test_sections_deduplicated(self):
+        self.assertEqual(diagnostics.options_from_query({"sections": "chrony,chrony,gps,chrony"})["sections"],
+                         ["chrony", "gps"])
+
     def test_unknown_job(self):
         self.assertIsNone(diagnostics.job_result("gibtsnicht"))
 
     def test_old_jobs_are_forgotten(self):
+        names = list(diagnostics.SECTION_TITLES)
         for n in range(diagnostics.JOB_KEEP + 3):
-            job = diagnostics.start_job(self.cfg, dict(self.options, sections=[f"s{n}"]))
+            job = diagnostics.start_job(self.cfg, dict(self.options, sections=[names[n]]))
             diagnostics.job_result(job, wait=10)
         self.assertLessEqual(len(diagnostics._jobs), diagnostics.JOB_KEEP + 1)
+        with mock.patch.object(diagnostics, "REUSE_SECONDS", 0.0):
+            diagnostics.start_job(self.cfg, dict(self.options, sections=["meta"]))
+        self.assertLessEqual(len(diagnostics._jobs), 1)  # erledigte nach Ablauf vergessen
 
 
 class HistoryTempSummaryTest(unittest.TestCase):

@@ -106,10 +106,10 @@ export const HELP_DIAGNOSE = {
   },
   diag_download: {
     title: "Herunterladen",
-    text: "Speichert das Paket im Browser. Steht hier gerade eine Vorschau (mit denselben Schaltern, höchstens "
-      + "10 Minuten alt, die Aufzeichnung seitdem unverändert), bekommst du **genau dieses** Paket sofort; sonst "
-      + "wird es mit dem aktuellen Stand neu erzeugt. Es wird nirgendwohin geschickt. Für ein GitHub-Issue kannst du die Datei einfach "
-      + "anhängen.",
+    text: "Speichert das Paket im Browser – immer **genau das Paket der angezeigten Vorschau**, auch wenn die "
+      + "Aufzeichnung inzwischen weiterläuft. Gibt es keine passende Vorschau (andere Schalter, geänderte "
+      + "Einstellungen oder älter als 10 Minuten), wird sie zuerst erstellt und angezeigt. Es wird nirgendwohin "
+      + "geschickt. Für ein GitHub-Issue kannst du die Datei einfach anhängen.",
   },
   diag_recording: {
     title: "Aufzeichnung",
