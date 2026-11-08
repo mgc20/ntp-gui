@@ -196,11 +196,11 @@ mkdir ntp-gui && cd ntp-gui
 curl -fsSLo docker-compose.yml \
   https://raw.githubusercontent.com/mgc20/ntp-gui/main/docker-compose.all-in-one.yml
 docker compose up -d
-# Dashboard: http://<host>:8080  ->  Seite „Hardware“
+# Dashboard: http://<host>:8080  ->  Uhr & Hardware → Hardware
 ```
 
 1. **Kopieren und starten** – so wie sie ist, läuft die Datei auf jedem Linux-Host.
-2. **Seite „Hardware“ öffnen** – sie erkennt Empfänger, PPS, PTP-Karten und fehlende
+2. **„Uhr & Hardware“ → Reiter „Hardware“ öffnen** – sie erkennt Empfänger, PPS, PTP-Karten und fehlende
    Rechte und nennt die Blöcke, die du einkommentieren musst, mit fertigem Ausschnitt.
 3. **Einkommentieren** – Optionszeilen sind eingerückt und beginnen mit `#` und **zwei**
    Leerzeichen (`      #  - NET_ADMIN`); genau diese drei Zeichen löschen, alles davor
@@ -252,7 +252,7 @@ ist. Gilt nur für Linux-Hosts – Docker Desktop (macOS/Windows) reicht keine U
   <img alt="Hardware-Seite: Was diese Hardware kann – NTP-Server geht, USB-GPS nicht angeschlossen, Hardware-PTP nicht möglich wegen virtueller Netzwerkkarte" src="docs/screenshots/hardware-light.png">
 </picture>
 
-Die Seite **Hardware** beantwortet die Frage „Was kann *diese* Hardware von dem, was ntp-gui
+Der Reiter **Hardware** (Bereich „Uhr & Hardware“) beantwortet die Frage „Was kann *diese* Hardware von dem, was ntp-gui
 kann?“ – ohne dass du `dmesg`, `ethtool` und `/proc` selbst lesen musst. Sie liest nur
 (sysfs, `/proc`, `/dev`, die Geräteliste von gpsd, chrony-Tracking); serielle Geräte öffnet
 sie nicht, weil schon das Schließen über die DTR-Leitung manche Boards zurücksetzt.
@@ -1540,6 +1540,16 @@ Nginx Proxy Manager, Zoraxy und Traefik gehen genauso. Die Anleitung dazu steht 
 | Variable | Standard | Bedeutung |
 |---|---|---|
 | `TRUSTED_PROXIES` | – (niemandem trauen) | Adressen deiner Reverse Proxys, z. B. `127.0.0.1/32,::1/128` für einen Proxy auf demselben Host. Nur von ihnen glaubt ntp-gui `X-Forwarded-For`/`-Proto` bzw. `Forwarded` (echte Client-Adresse im Zugriffsprotokoll, HTTPS-Hinweis). „all“ und `/0` sind nicht erlaubt. |
+
+### Navigation und Tastenkürzel
+
+Sieben Bereiche: Übersicht · Zeitquellen · GPS · Clients · Uhr & Hardware (Reiter Uhrqualität,
+Hardware, PTP) · System (Reiter Diagnose, Benachrichtigungen, Einstellungen) · Hilfe. Auf dem Handy
+sitzen Übersicht, Quellen, GPS und Clients in einer Leiste unten, der Rest unter „Mehr“. Alte
+Lesezeichen aus 1.5 und früher leiten automatisch auf die neue Adresse weiter.
+
+Mit der Tastatur: `g o` Übersicht, `g s` Zeitquellen, `g g` GPS, `g c` Clients, `g u` Uhr & Hardware,
+`g y` System, `/` Suche der Seite, `?` Übersicht der Kürzel. In Eingabefeldern sind die Kürzel aus.
 
 ### Sprache / Language
 

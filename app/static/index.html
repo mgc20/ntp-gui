@@ -19,7 +19,7 @@
         <path d="M12 6.75V12l3.5 2.25" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
       </svg>
       <div class="brand-text">
-        <h1 id="title">ntp-gui</h1>
+        <h1 id="title-wrap"><span id="title" class="title-long">ntp-gui</span><span class="title-short" data-i18n="app.title_short">NTP-GUI</span></h1>
         <p class="subtitle"><span id="hostname"></span> · <span id="clock"></span></p>
       </div>
     </div>
@@ -44,11 +44,15 @@
 <!-- Außerhalb der klebenden Kopfzeile: scrollt mit weg und frisst auf dem Handy keinen Platz. -->
 <div id="update-banner" class="update-banner" hidden></div>
 
+<!-- Reiterleiste der Gruppen „Uhr & Hardware“ und „System“ (app.js renderTabs). -->
+<nav id="tabs" class="tabs" hidden></nav>
 <main id="main" tabindex="-1"></main>
 
 <footer class="footer">
   <span id="footer-note"></span>
-  <span class="footer-links"><a href="/metrics">/metrics</a> · <a href="/api/status">/api/status</a> · <a href="/healthz">/healthz</a></span>
+  <button type="button" id="shortcuts-button" class="link footer-button" data-i18n="app.shortcuts.hint">Tastenkürzel (?)</button>
 </footer>
+<!-- Handy (≤ 640 px): untere Leiste mit „Mehr“ (app.js buildBottomBar). -->
+<nav id="bottombar" class="bottombar" aria-label="Hauptbereiche" data-i18n-aria-label="app.bottom_label"></nav>
 </body>
 </html>

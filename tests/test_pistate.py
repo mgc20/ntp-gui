@@ -269,7 +269,7 @@ class WiringTest(unittest.TestCase):
     def test_event_kind_and_notify(self):
         self.assertIn("pi", events.KINDS)
         self.assertEqual(notify.KIND_LABELS["pi"], "Pi-Zustand")
-        self.assertEqual(notify.KIND_PAGES["pi"], "hardware")
+        self.assertEqual(notify.KIND_PAGES["pi"], "uhr/hardware")
         self.assertIn("pi", notify.RESOLVING_KINDS)  # „… vorbei“ schließt die Meldung
         diagnose = (JS / "pages" / "diagnose.js").read_text(encoding="utf-8")
         self.assertIn('pi: "Pi-Zustand"', diagnose)

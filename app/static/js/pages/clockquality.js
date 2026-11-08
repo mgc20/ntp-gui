@@ -70,7 +70,7 @@ function temperatureSection(ctx, data, loading) {
       emptyState(NO_SENSOR[data.reason] || NO_SENSOR.none),
       kv([["Temperatursensor", data.setting === "off" ? "aus" : "nicht verfügbar", "temp_sensor"],
         ["Gefundene Sensoren", String(candidates), "temp_candidates"]]),
-      el("p", { class: "card-sub" }, el("a", { href: "#/hardware", text: "Zum Hardware-Check →" }))));
+      el("p", { class: "card-sub" }, el("a", { href: "#/uhr/hardware", text: "Zum Hardware-Check →" }))));
     return out;
   }
   const summary = data.summary || {};

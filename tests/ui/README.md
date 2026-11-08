@@ -25,15 +25,16 @@ Voraussetzung: Node mit Playwright und Chromium (`npm install -g playwright && n
 Fehlt Playwright, beendet sich `rundgang.sh` ohne Fehler mit einem Hinweis.
 
 ```sh
-tests/ui/rundgang.sh            # Port 18095 (der Containertest nutzt 18090)
-tests/ui/rundgang.sh 18096      # anderer Port
+tests/ui/rundgang.sh            # Port 18300 (der Containertest belegt 18080–18188)
+tests/ui/rundgang.sh 18301      # anderer Port
 TOUR_SHOTS=/tmp/fotos tests/ui/rundgang.sh   # zusätzlich Bildschirmfotos (helles Thema)
+TOUR_NAV_ONLY=1 tests/ui/rundgang.sh          # nur die Navigationsprüfungen (Reiter, untere Leiste, „Mehr“, Speicherleiste)
 ```
 
 Läuft der Server schon (z. B. mit `NTPGUI_CHRONYC=tests/ui/fake_chronyc.py`), genügt:
 
 ```sh
-node tests/ui/tour.js http://127.0.0.1:18095
+node tests/ui/tour.js http://127.0.0.1:18300
 ```
 
 Ausgabe ist JSON: `problems` listet die Routen mit Befund (leer = alles in Ordnung), `summary` eine

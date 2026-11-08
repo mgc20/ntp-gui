@@ -972,7 +972,7 @@ details.adev-table tr.is-muted td { color: var(--ink-muted); }
 
 /* Druck: nur der Inhalt (Gerätepass), ohne Kopfzeile, Navigation und Knöpfe. */
 @media print {
-  .topbar, .nav, .footer, .update-banner, .no-print, .info, .copy { display: none !important; }
+  .topbar, .nav, .tabs, .bottombar, .footer, .update-banner, .no-print, .info, .copy { display: none !important; }
   body { background: #fff; color: #000; }
   main { padding: 0 !important; max-width: none !important; }
   .card { box-shadow: none !important; break-inside: avoid; border-color: #bbb; }
@@ -984,3 +984,74 @@ details.adev-table tr.is-muted td { color: var(--ink-muted); }
 .backup-reenter ul, .backup-notes, .backup-list { margin: 6px 0 0; padding-left: 20px; }
 .backup-list li { overflow-wrap: anywhere; }
 .backup-result { margin-top: 12px; }
+
+/* ---------- 1.6 (T2): Navigation – Reiter, untere Leiste, Tastenkürzel ---------- */
+.title-short { display: none; }
+.nav-badge[hidden] { display: none; }
+/* Reiterleiste der Gruppen „Uhr & Hardware“ und „System“: echte Links, aktiver Reiter unterstrichen. */
+.tabs { max-width: var(--page-max); margin: 0 auto; padding: clamp(14px, 2.5vw, 26px) clamp(14px, 3vw, 32px) 0; }
+.tabs[hidden] { display: none; }
+.tabs:not([hidden]) + main { padding-top: 14px; }
+.tabs-title { font-size: 13px; font-weight: 600; color: var(--ink-muted); margin: 0 0 4px; }
+.tabs-row { display: flex; flex-wrap: wrap; gap: 2px 4px; border-bottom: 1px solid var(--border-soft); }
+.tab { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 6px 12px; margin-bottom: -1px;
+  color: var(--ink-2); font-size: 14px; font-weight: 500; border-bottom: 2px solid transparent; text-decoration: none; }
+.tab:hover { color: var(--ink); text-decoration: none; }
+.tab.is-active { color: var(--ink); border-bottom-color: var(--accent); }
+/* Untere Leiste: nur auf dem Handy (siehe unten). */
+.bottombar { display: none; }
+.footer-button { font-size: 12.5px; color: var(--ink-muted); }
+.footer-button:hover { color: var(--accent); }
+.ptp-off { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin: 4px 0 0; }
+.ptp-off a { margin: 0 2px; }
+.api-links { margin: 0; display: grid; gap: 8px; }
+.api-link { display: grid; grid-template-columns: minmax(110px, max-content) 1fr; gap: 4px 16px; align-items: baseline; }
+.api-link dt, .api-link dd { margin: 0; }
+.api-link dd { color: var(--ink-2); }
+kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; min-width: 22px;
+  display: inline-block; text-align: center; padding: 1px 6px; border: 1px solid var(--border); border-bottom-width: 2px;
+  border-radius: 6px; background: var(--surface-2); color: var(--ink); }
+.shortcuts-dialog { width: min(420px, calc(100vw - 32px)); padding: 16px 18px; border: 1px solid var(--border);
+  border-radius: 14px; background: var(--surface); color: var(--ink); box-shadow: 0 16px 48px #0008; }
+.shortcuts-dialog::backdrop { background: #0007; }
+.shortcuts-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.shortcuts-head h2 { font-size: 16px; }
+.shortcuts-list { margin: 0; display: grid; gap: 6px; }
+.shortcut { display: grid; grid-template-columns: 110px 1fr; gap: 12px; align-items: center; }
+.shortcut dt, .shortcut dd { margin: 0; }
+.shortcuts-note { font-size: 12.5px; margin: 12px 0 0; }
+
+@media (max-width: 640px) {
+  /* Kopfzeile: kurzer Titel; voller Titel und Rechnername im Titelattribut und im „Mehr“-Menü. */
+  .title-long { display: none; }
+  .title-short { display: inline; }
+  .topbar .nav { display: none; }
+  .footer-button { display: none; }
+  .api-link { grid-template-columns: 1fr; }
+  .tabs-row { gap: 0; }
+  .tab { padding: 6px 8px; font-size: 13.5px; }
+  /* Inhalt endet über der Leiste – auch mit Home-Indikator (safe-area). */
+  /* Nicht auf der Uhrseite /clock (lädt app.css mit, hat aber keine untere Leiste). */
+  body:not(.clock-page) { padding-bottom: calc(60px + env(safe-area-inset-bottom, 0px)); }
+  /* Klebende Speicherleiste der Einstellungen über der Leiste (57 px) statt dahinter. */
+  .save-bar { bottom: calc(68px + env(safe-area-inset-bottom, 0px)); }
+  .bottombar { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); position: fixed; left: 0; right: 0; bottom: 0;
+    z-index: 30; padding: 0 4px env(safe-area-inset-bottom, 0px); background: var(--bg); border-top: 1px solid var(--border); }
+  .bottombar > a, .bottom-more { position: relative; display: flex; align-items: center; justify-content: center; gap: 4px;
+    min-height: 56px; min-width: 0; padding: 6px 2px; color: var(--ink-2); font: inherit; font-size: 12.5px; font-weight: 500;
+    text-align: center; text-decoration: none; background: none; border: 0; border-top: 2px solid transparent; cursor: pointer; }
+  .bottombar .nav-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bottombar > a.is-active, .bottom-more.is-active { color: var(--ink); border-top-color: var(--accent); }
+  /* Zähler oben rechts in der Zelle, damit „Übersicht“ nicht abgeschnitten wird. */
+  .bottombar > a .nav-badge, .bottom-more .nav-badge { position: absolute; top: 3px; right: 4px; min-width: 16px; height: 16px;
+    font-size: 10.5px; padding: 0 4px; }
+  .more-menu { position: absolute; right: 8px; bottom: calc(100% + 8px); min-width: 220px; max-width: calc(100vw - 16px);
+    padding: 8px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); box-shadow: 0 12px 36px #0007; }
+  .more-menu[hidden] { display: none; }
+  .more-host { margin: 2px 8px 6px; font-size: 12.5px; color: var(--ink-muted); overflow-wrap: anywhere; }
+  .more-menu ul { list-style: none; margin: 0; padding: 0; }
+  .more-menu a { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 44px; padding: 8px 10px;
+    border-radius: 8px; color: var(--ink); text-decoration: none; }
+  .more-menu a:hover, .more-menu a.is-active { background: var(--accent-soft); text-decoration: none; }
+  .toast { bottom: calc(72px + env(safe-area-inset-bottom, 0px)); }
+}

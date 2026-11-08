@@ -7,6 +7,13 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 ## [Unveröffentlicht]
 
 ### Hinzugefügt
+- **Untere Leiste auf dem Handy** (bis 640 px): Übersicht, Quellen, GPS, Clients und „Mehr“ für die übrigen
+  Bereiche. „Mehr“ schließt mit Esc, einem Tipp daneben oder Tab aus dem Menü heraus. Die Leiste verdeckt
+  keinen Inhalt, auch nicht die Speicherleiste der Einstellungen oder den Bereich über dem Home-Indikator.
+- **Tastenkürzel:** `g o` Übersicht, `g s` Zeitquellen, `g g` GPS, `g c` Clients, `g u` Uhr & Hardware,
+  `g y` System, `/` springt in die Suche der Seite (falls es eine gibt), `?` zeigt alle Kürzel. Solange du in
+  einem Eingabefeld tippst oder Strg, Alt oder Cmd hältst, sind sie aus. Reiter lassen sich mit den
+  Pfeiltasten wechseln, der Fokus bleibt dabei auf dem Reiter.
 - **Sichern und wiederherstellen** (Einstellungen → Sichern): Mit „Sicherung herunterladen“ bekommst du eine
   `.tar.gz`, in der alles steckt, was du sonst bei einer neuen SD-Karte oder einem neuen Container verlierst:
   Einstellungen, Verlauf der Messwerte, Ereignisprotokoll, Geräte mit eigenen Namen und Notizen, Gruppen,
@@ -42,6 +49,17 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 - Prometheus-Metriken `ntpgui_pi_undervoltage` und `ntpgui_pi_throttled`; Verlaufsfeld `pi_state`.
 
 ### Geändert
+- **Navigation mit sieben statt elf Einträgen:** Übersicht · Zeitquellen · GPS · Clients · Uhr & Hardware ·
+  System · Hilfe. Unter „Uhr & Hardware“ findest du die Reiter Uhrqualität, Hardware und PTP, unter „System“
+  die Reiter Diagnose, Benachrichtigungen und Einstellungen. Neue, kurze Adressen wie `#/uhr/ptp` oder
+  `#/system/einstellungen`; alte Lesezeichen (`#/ptp`, `#/hardware`, `#/einstellungen?s=gps` …) leiten ohne
+  zusätzlichen Eintrag im Browserverlauf weiter. Links in Benachrichtigungen und Hinweisen führen direkt auf
+  die neuen Seiten.
+- Ist PTP ausgeschaltet, zeigt der Reiter PTP nur noch eine Zeile mit dem Weg zum Einschalten statt einer
+  Seite voller leerer Karten.
+- Auf dem Handy steht oben nur noch „NTP-GUI“; den vollen Titel und den Rechnernamen siehst du im Menü „Mehr“.
+- `/metrics`, `/api/status` und `/healthz` stehen nicht mehr in der Fußzeile, sondern in der Hilfe unter
+  „API & Automatisierung“.
 - **Zahlen ohne Nullen am Ende:** Zeiten stehen immer in der passenden Einheit (ns, µs, ms, s), also „± 1 ms“ statt
   „± 1,000 ms“, und an Einheitengrenzen „1 ms“ statt „1.000 µs“. Dezimalzeichen, Datum und Uhrzeit folgen der
   gewählten Sprache. Negative Zahlen tragen überall dasselbe Minuszeichen (−), es gibt kein „+0 ns“ mehr, und

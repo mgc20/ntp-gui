@@ -35,7 +35,22 @@ export const CORE_DE = {
     "theme_title": "Hell / Dunkel",
     "theme_label": "Hell oder dunkel umschalten",
     "language_title": "Sprache: Deutsch / English (Beta)",
-    "language_label": "Sprache wechseln (Language)"
+    "language_label": "Sprache wechseln (Language)",
+    "title_short": "NTP-GUI",
+    "bottom_label": "Hauptbereiche",
+    "more": "Mehr",
+    "more_label": "Weitere Bereiche",
+    "ptp_off": "Nicht genutzt – in {link} einschalten.",
+    "ptp_off_link": "Einstellungen → PTP",
+    "shortcuts": {
+      "hint": "Tastenkürzel (?)",
+      "title": "Tastenkürzel",
+      "search": "Suche der Seite (falls vorhanden)",
+      "help": "Diese Übersicht",
+      "then": "dann",
+      "close": "Schließen",
+      "note": "Die Kürzel wirken nicht, solange du in einem Eingabefeld tippst."
+    }
   },
   "nav": {
     "label": "Bereiche",
@@ -49,7 +64,13 @@ export const CORE_DE = {
     "diagnose": "Diagnose",
     "notify": "Benachrichtigungen",
     "settings": "Einstellungen",
-    "help": "Hilfe"
+    "help": "Hilfe",
+    "uhr": "Uhr & Hardware",
+    "system": "System",
+    "short": {
+      "overview": "Übersicht",
+      "sources": "Quellen"
+    }
   },
   "overview": {
     "band_label": "Gesamtzustand",

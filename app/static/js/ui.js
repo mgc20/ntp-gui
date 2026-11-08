@@ -6,6 +6,7 @@
 // Alle Bausteine zeigt die Musterseite #/muster?dev=1 (pages/muster.js).
 import { el, rich, copyText, selectContents, apiPost, isNum, fmtTime, fmtDate } from "./util.js";
 import { HELP } from "./help.js";
+import { actionHref } from "./routes.js";
 
 // --- ⓘ-Popover --------------------------------------------------------------
 let openPopover = null;
@@ -176,7 +177,7 @@ export function reachRegister(reach) {
 
 const LEVEL_ICON = { ok: "✓", info: "i", warn: "!", crit: "✕" };
 
-export function insightList(items, navigate, ctx) {
+export function insightList(items, ctx) {
   if (!items || !items.length) return null;
   return el("ul", { class: "insights" }, items.map((item) => el("li", { class: "insight", "data-level": item.level },
     el("span", { class: "insight-icon", "aria-hidden": "true", text: LEVEL_ICON[item.level] || "i" }),
@@ -185,8 +186,13 @@ export function insightList(items, navigate, ctx) {
       el("p", { text: item.text }),
       insightFixes(item, ctx),
       insightLink(item),
-      item.action ? el("a", { href: `#/${navigate[item.action] || item.action}`, class: "insight-action",
-        text: ACTION_LABEL[item.action] || "Ansehen →" }) : null))));
+      insightAction(item)))));
+}
+
+// Link „Zur … →“ eines Hinweises: Ziel aus der Routentabelle (routes.js), unbekannte Aktion ohne Link.
+export function insightAction(item) {
+  const href = item?.action ? actionHref(item.action) : null;
+  return href ? el("a", { href, class: "insight-action", text: ACTION_LABEL[item.action] || "Ansehen →" }) : null;
 }
 
 // 1.5.4: „Per Klick beheben“ eines Hinweises (bisher nur: beobachteten Proxy eintragen). Der Knopf
@@ -228,7 +234,8 @@ export function insightLink(item) {
 export const ACTION_LABEL = {
   gps: "Zur GPS-Seite →", sources: "Zu den Quellen →", settings: "Zu den Einstellungen →",
   clients: "Zu den Clients →", ptp: "Zur PTP-Seite →", hardware: "Zur Hardware-Seite →",
-  uhrqualitaet: "Zur Uhrqualität →",
+  clockquality: "Zur Uhrqualität →", uhrqualitaet: "Zur Uhrqualität →",
+  diagnose: "Zur Diagnose →", notify: "Zu den Benachrichtigungen →",
 };
 
 /** Leerzustand: ein ruhiger Satz statt einer leeren Fläche. text darf **fett** und `code` enthalten. */
