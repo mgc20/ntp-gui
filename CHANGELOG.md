@@ -6,6 +6,12 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 
 ## [Unveröffentlicht]
 
+## [1.6.2] – 2026-11-09
+
+Schwerpunkt: Auswertung eines Diagnosepakets – DoH-Server, die nur HTTP/2 sprechen, werden klar erkannt, die
+eigenen DNS-Server melden verständliche Gründe, automatische GPS-Anpassungen starten nicht mehr alle Dienste neu,
+das Diagnosepaket bleibt vollständig lesbar, und das Dashboard hängt nicht mehr nach abgebrochenen Verbindungen.
+
 ### Behoben
 - **Dashboard-Server hängt nicht mehr nach abgebrochenen Verbindungen:** Bricht ein Browser oder Proxy seine Verbindung genau zwischen Annahme-Signal und Annahme ab, wartete der Server-Thread bis zur nächsten Verbindung – und ein Neustart des Dashboards konnte so lange hängen. Der lauschende Socket ist jetzt nicht blockierend.
 
@@ -1448,6 +1454,7 @@ Erste Veröffentlichung.
 - CI mit Unittests und Integrationstest gegen das gebaute Image; Release-Workflow,
   der das Image für amd64 und arm64 nach ghcr.io veröffentlicht.
 
+[1.6.2]: https://github.com/mgc20/ntp-gui/compare/v1.6.1...v1.6.2
 [1.6.1]: https://github.com/mgc20/ntp-gui/compare/v1.6.0...v1.6.1
 [1.6.0]: https://github.com/mgc20/ntp-gui/compare/v1.5.5...v1.6.0
 [1.5.5]: https://github.com/mgc20/ntp-gui/compare/v1.5.4...v1.5.5
