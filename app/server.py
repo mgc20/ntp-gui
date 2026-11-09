@@ -94,7 +94,7 @@ PTP4L_CONF = os.environ.get("PTP4L_CONF", "/etc/linuxptp/ptp4l.conf")
 RUN_DIR = os.environ.get("NTPGUI_RUN_DIR", "/run/ntp-gui")
 START_MONO = time.monotonic()  # Laufzeit nach monotoner Uhr – ein Uhrsprung verfälscht sie nicht
 MAX_BODY = 64 * 1024
-VERSION = os.environ.get("NTPGUI_VERSION", "1.6.1")
+VERSION = os.environ.get("NTPGUI_VERSION", "1.6.2")
 EVENTS_INTERVAL = 5.0          # so oft liest der Server die Supervisor-Ereignisse ein
 CALIBRATION_DEFAULT_WINDOW = 86400.0  # /api/gps/calibration ohne window: letzte 24 h
 CALIBRATION_MAX_WINDOW = 7 * 86400.0  # … und höchstens 7 Tage (0 = „so viel wie möglich“ = 7 Tage)
