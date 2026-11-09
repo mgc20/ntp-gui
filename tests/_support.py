@@ -48,6 +48,12 @@ class JoiningHTTPServer:
         class _Server(ThreadingHTTPServer):
             daemon_threads = True
 
+            def server_activate(self):
+                # Wie QuietHTTPServer: nicht blockierend lauschen, sonst kann shutdown() hängen, wenn ein
+                # Client seine Verbindung zwischen select() und accept() abbricht.
+                super().server_activate()
+                self.socket.setblocking(False)
+
             def process_request(self, request, client_address):
                 thread = threading.Thread(target=self.process_request_thread,
                                           args=(request, client_address), daemon=True)
