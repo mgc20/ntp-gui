@@ -6,6 +6,13 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 
 ## [Unveröffentlicht]
 
+## [1.6.0] – 2026-11-09
+
+Schwerpunkt: ruhiger, verständlicher, rein lokal. Neue Navigation mit sieben Bereichen, Einstellungen in
+Reitern mit Suche und Vorschau, Willkommens-Assistent „In 3 Minuten fertig“, Sichern und Wiederherstellen,
+Pi-Zustand (Unterspannung, Drosselung), Uhr-Werkstatt auf `/clock` und die „Heute“-Zeitleiste mit
+Ereignismarkern und Tagesbericht. Keine neue Verbindung nach außen. Englisch bleibt Beta.
+
 ### Hinzugefügt
 - **Einstellungen in Reitern:** Quellen · LAN-Server · GPS · PTP · Dashboard & Zugang · Sichern, jeder Reiter mit
   eigener Adresse (`#/system/einstellungen?s=gps` …). Alte Sprungziele wie `?s=web`, `?s=nts` oder `?s=dns`
@@ -45,6 +52,7 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
   bleiben erhalten, damit keine Lücke entsteht. Danach steht „Wiederhergestellt aus Sicherung vom …“ im
   Ereignisprotokoll. Übernommene alte Ereignisse lösen keine Benachrichtigungen aus, und die Geräte der
   laufenden Client-Messung sind sofort sichtbar.
+  Die Vorschau nennt auch die Benachrichtigungskanäle, die es nur hier gibt und die beim Übernehmen samt Token gelöscht oder durch die Fassung aus der Sicherung ersetzt werden.
 - **Nächtliche Sicherung** (Einstellungen → Sichern, Standard aus): Gegen 3 Uhr landet eine Sicherung im
   Datenverzeichnis, die letzten 7 Nächte bleiben. Unter „Gespeicherte Sicherungen“ kannst du sie
   herunterladen.
@@ -137,16 +145,15 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 - **Fehlerschranke der GPS-Automatik:** Ohne gespeicherte Schranke vergleicht sie mit dem Delay, den chrony wirklich nutzt, statt mit 0,2 s; eine Verkleinerung unterliegt damit wieder den Schutzregeln (12-h-Sperre, 48-h-Prüfung).
 - **Empfangsbewertung:** Satelliten und dB-Hz stehen mit einer Nachkommastelle im Text, damit Zahl und Ampel nicht mehr widersprüchlich wirken.
 - **PPS-Impulsrate:** wird aus den Impuls-Zeitstempeln berechnet; eine 1-Hz-PPS erscheint nicht mehr als „1,67 Impulse/s“.
-- **Pi-Zustand:** Nach einem Neustart des Dashboards wird eine offene Unterspannungs- oder Drosselungs-Episode mit „… vorbei“ geschlossen.
 - **RTC-Abweichung** steht in ganzen Sekunden statt mit Scheingenauigkeit.
 - **7-/30-Tage-Diagramme:** Der letzte Punkt springt vor dem Speichern nicht mehr.
 - **Allan-Abweichung** funktioniert auch mit einem Messintervall von 600 s.
-- **Wiederherstellen:** Die Vorschau nennt jetzt die Benachrichtigungskanäle, die beim Übernehmen samt Token gelöscht oder ersetzt werden; der Bestätigungsdialog verspricht den Tokenerhalt nur noch, wo er zutrifft.
 - Abfragewerte wie `nan` oder `inf` (z. B. `/api/history?points=nan`) führen nicht mehr zu HTTP 500, sondern zum Standardwert.
 
 ### Sicherheit
+- Basis-Image auf den aktuellen Stand von Debian trixie-slim angehoben.
+- **Wiederherstellen:** Auch der gespeicherte Zustand der Client-Regeln läuft beim Einspielen durch den Positionsfilter und ist größenbegrenzt; ein verändertes Archiv kann so keine Positionsangaben in die Datenbank bringen.
 - **Eingeschleuste Anfragen (HTTP-Desync):** Schickt ein Client einen Inhalt mit, den ntp-gui nicht liest (z. B. bei `GET /healthz`), per `Transfer-Encoding: chunked` oder mit widersprüchlichen `Content-Length`-Köpfen, kann dieser Inhalt nicht mehr als zweite Anfrage laufen. Hinter einem Reverse Proxy wie Caddy ließ sich sonst ohne Anmeldung eine Anfrage vor die Anfragen anderer Nutzer schieben. ntp-gui schließt in diesen Fällen die Verbindung; chunked lehnt es mit 501 ab, widersprüchliche Längen mit 400.
-- **Wiederherstellen:** Der gespeicherte Zustand der Client-Regeln läuft beim Einspielen durch denselben Positionsfilter wie beim Erstellen einer Sicherung und ist begrenzt; ein verändertes Archiv kann so keine Positionsangaben mehr in die Datenbank schmuggeln.
 - **Vorschau der Konfiguration:** gleiche Rechte wie das Speichern (nur Verwaltungsrecht, CSRF-/Origin-Prüfung,
   Größengrenze); sie liest nur die Dateien, die ntp-gui selbst erzeugt, nie einen Pfad aus der Anfrage.
   Passwort, Tokens und DoH-Adressen stehen ohnehin nicht in den Konfigurationsdateien; frei eingetragene Zeilen
@@ -1403,6 +1410,8 @@ Erste Veröffentlichung.
 - CI mit Unittests und Integrationstest gegen das gebaute Image; Release-Workflow,
   der das Image für amd64 und arm64 nach ghcr.io veröffentlicht.
 
+[1.6.0]: https://github.com/mgc20/ntp-gui/compare/v1.5.5...v1.6.0
+[1.5.5]: https://github.com/mgc20/ntp-gui/compare/v1.5.4...v1.5.5
 [1.5.4]: https://github.com/mgc20/ntp-gui/compare/v1.5.3...v1.5.4
 [1.5.3]: https://github.com/mgc20/ntp-gui/compare/v1.5.2...v1.5.3
 [1.5.2]: https://github.com/mgc20/ntp-gui/compare/v1.5.1...v1.5.2
