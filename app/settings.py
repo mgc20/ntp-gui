@@ -32,6 +32,8 @@ import threading
 import time
 from typing import Any, Callable
 
+import numfmt
+
 DATA_DIR = os.environ.get("NTPGUI_DATA_DIR", "/var/lib/chrony/ntp-gui")
 SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json")
 
@@ -1948,7 +1950,7 @@ def _migrate_3_4(data: dict) -> list[dict]:
                  "den Wert bewusst gewählt, stell die Kalibrierung auf „vorschlagen“.")
         keys.append("gps_offset")
     elif _offset_value(stored.get("gps_offset")):
-        text += (f" Dein gespeicherter Offset ({stored['gps_offset']} s) ist der Ausgangspunkt; die Automatik "
+        text += (f" Dein gespeicherter Offset ({numfmt.number(_offset_value(stored.get('gps_offset')), 6, group=False)} s) ist der Ausgangspunkt; die Automatik "
                  "verstellt ihn nur, wenn die Messung deutlich etwas anderes zeigt. Hast du ihn bewusst anders "
                  "gewählt (z. B. wegen eines asymmetrischen Netzes), stell die Kalibrierung auf „vorschlagen“.")
         keys.append("gps_offset")

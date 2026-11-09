@@ -26,6 +26,7 @@ import threading
 import time
 from typing import Any
 
+import numfmt
 import devices
 from devices import (CAP_NET_ADMIN, CAP_NET_RAW, CAP_SYS_NICE, CAP_SYS_TIME, dev_path,
                      dev_root, proc_root, sys_root)
@@ -973,7 +974,7 @@ def _fmt_rate(rate: float | None) -> str:
         return "Impulse"
     if 0.8 <= rate <= 1.2:
         return "1 Impuls/s"
-    return f"{rate:g} Impulse/s"
+    return f"{numfmt.number(rate, 2, group=False)} Impulse/s"
 
 
 def _pi_power_row(pi: dict) -> dict[str, Any]:
@@ -1094,7 +1095,7 @@ def build_matrix(cfg: dict, rep: dict, ctx: dict) -> tuple[list[dict], list[str]
     elif synced and rtc["drift_seconds"] is not None and abs(rtc["drift_seconds"]) > 120:
         hint = " (Pi 5: Akku an J5 fehlt?)" if plat["board"]["family"] in {"pi5", "cm5"} else ""
         rows.append(_row("nts", "NTS", "limited",
-                         f"Die Echtzeituhr ({rtc['name'] or 'rtc0'}) geht um {abs(rtc['drift_seconds']):.0f} s "
+                         f"Die Echtzeituhr ({rtc['name'] or 'rtc0'}) geht um {numfmt.number(abs(rtc['drift_seconds']), group=False)} s "
                          f"falsch{hint}. Nach einem Neustart ohne Netz stimmt die Zeit dann nicht, und NTS "
                          "braucht „Zertifikatszeit beim Start nicht prüfen“.", active=nts_active))
     else:
@@ -1163,7 +1164,7 @@ def build_matrix(cfg: dict, rep: dict, ctx: dict) -> tuple[list[dict], list[str]
             role_text = f" Rolle: {role['label']}." if role.get("label") and role.get("role") != "off" else ""
             if role.get("role") == "fallback":
                 role_text = (f" Rolle: Rückfallebene – chrony nimmt gute Netzquellen und das GPS, wenn das "
-                             f"Internet schlecht wird oder ausfällt (Fehlerschranke ± {role['bound'] * 1000:.0f} ms).")
+                             f"Internet schlecht wird oder ausfällt (Fehlerschranke ± {numfmt.number(role['bound'] * 1000)} ms).")
             rows.append(_row("gps_usb", title_usb, "ok",
                              f"Empfänger {label} ({main['interface']}) liefert Zeit über NMEA – "
                              "Genauigkeit 1–10 ms nach Kalibrierung ("
@@ -1481,7 +1482,7 @@ def build_matrix(cfg: dict, rep: dict, ctx: dict) -> tuple[list[dict], list[str]
     if nics and not any(n.get("ethtool") for n in nics):
         warnings.append("ethtool fehlt – Hardware-Zeitstempel der Netzwerkkarten sind nicht prüfbar.")
     if synced and rtc["present"] and rtc["drift_seconds"] is not None and abs(rtc["drift_seconds"]) > 120:
-        warnings.append(f"Die Echtzeituhr weicht um {abs(rtc['drift_seconds']):.0f} s ab.")
+        warnings.append(f"Die Echtzeituhr weicht um {numfmt.number(abs(rtc['drift_seconds']), group=False)} s ab.")
     if ptp_on and cfg.get("ptp_clock_class") == 6 and gps_pps_row["status"] != "ok":
         warnings.append("PTP Clock Class 6 („an GPS gekoppelt“) ist gesetzt, aber GPS+PPS läuft nicht – "
                         "Clients vertrauen dann einer ungenauen Zeit. 248 setzen, bis PPS stabil ist.")

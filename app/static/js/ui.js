@@ -260,10 +260,25 @@ export function insightList(items, ctx) {
 }
 
 function hintLine(item) {
-  const { first, rest } = splitExplain(item.text || "");
-  if (!rest) return el("p", { text: first });
-  return el("p", {}, el("span", { text: first }), " ",
-    infoButton(null, item.title || "Hinweis", { title: item.title || "Hinweis", text: rest }));
+  return oneLine(item.text, item.title || "Hinweis");
+}
+
+// 1.6.1: Zeile eines Hinweises – genau EINE sichtbare Zeile (erster Satz, zu lang wird per CSS mit „…“
+// gekürzt). Der ganze Text steht dann im ⓘ dahinter (nichts wird gelöscht). Kurze Ein-Satz-Texte ohne ⓘ.
+export const HINT_LINE_MAX = LINE_MAX;
+const HINT_LINE_SAFE = 60; // so kurz passt der Satz auch bei 390 px in eine Zeile
+
+export function hintFirst(text) {
+  return splitExplain(text || "", HINT_LINE_MAX).first;
+}
+
+export function oneLine(text, title, opts = {}) {
+  const value = String(text ?? "").trim();
+  if (!value) return null;
+  const first = hintFirst(value);
+  const more = opts.info !== false && (first !== value || first.length > HINT_LINE_SAFE)
+    ? infoButton(null, title, { title, text: value }) : null;
+  return el("p", { class: "hint-line", id: opts.id || null }, el("span", { class: "hint-line-text", text: first }), more);
 }
 
 // Link „Zur … →“ eines Hinweises: Ziel aus der Routentabelle (routes.js), unbekannte Aktion ohne Link.

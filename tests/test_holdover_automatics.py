@@ -298,7 +298,7 @@ class AutocalWaitsForHoldoverTest(unittest.TestCase):
         self.assertEqual(d["deferred"], "holdover")
         self.assertEqual(self.h.saved, [])
         self.assertEqual(self.h.reloads, 0)
-        self.assertEqual(self.deferred, ["GPS-Offset 0.05 s → 0.055 s"])
+        self.assertEqual(self.deferred, ["GPS-Offset 0,05 s → 0,055 s"])
         self.running = False
         d = self.tick(now + 8 * H)
         self.assertEqual(d["action"], "apply")

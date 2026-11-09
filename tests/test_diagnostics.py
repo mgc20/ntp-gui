@@ -203,6 +203,7 @@ class DiagnosticsTest(unittest.TestCase):
             content = diagnostics.build(self.cfg)
             self.assertLess(time.monotonic() - start, 5.0)
         self.assertIn("Zeitüberschreitung", content["hardware"]["fehler"])
+        self.assertIn("nach 0,3 s", content["hardware"]["fehler"])  # deutsches Zahlformat (Nutzer liest das Paket)
 
     def test_failing_collector_is_reported(self):
         def broken(cfg, options):
@@ -461,6 +462,15 @@ class WorkerTest(unittest.TestCase):
                 diagnostics.bundle_locked(self.cfg, dict(self.options), reuse=view["reuse"])
             body, _ = diagnostics.bundle_locked(self.cfg, dict(self.options), reuse=view["reuse"])
         self.assertTrue(body)
+
+    def test_worker_timeout_message_uses_german_number_format(self):
+        import subprocess
+        with mock.patch.object(diagnostics, "WORKER_TIMEOUT", 2.5), \
+                mock.patch("subprocess.run", side_effect=subprocess.TimeoutExpired("python3", 2.5)), \
+                mock.patch("sys.stderr"):
+            with self.assertRaises(RuntimeError) as caught:
+                diagnostics._run_worker({})
+        self.assertEqual(str(caught.exception), "Das Diagnosepaket wurde nach 2,5 s nicht fertig.")
 
     def test_failed_preview_leaves_nothing_to_reuse(self):
         view = diagnostics.preview_locked(self.cfg, dict(self.options))

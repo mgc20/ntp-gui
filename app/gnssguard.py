@@ -105,6 +105,7 @@ import time
 from collections import deque
 from typing import Any, Callable
 
+import numfmt
 import selectctl
 import store
 
@@ -241,9 +242,7 @@ def good_geometry(used: Any, hdop: Any, eph: Any) -> bool:
 
 
 def fmt_ms(seconds: float) -> str:
-    value = abs(seconds) * 1000.0
-    text = f"{value:.0f}" if value >= 10 else f"{value:.1f}"
-    return text.replace(".", ",") + " ms"
+    return f"{numfmt.adaptive(abs(seconds) * 1000.0)} ms"
 
 
 def round_m(metres: float) -> int:
@@ -462,7 +461,7 @@ class Detector:
         if not cond and not sig.active:
             self._cn0_ref = {}
         text = (f"Signale von {detail.get('satellites')} Satelliten gleichzeitig um "
-                f"{detail.get('drop_db', 0):.0f} dB eingebrochen") if cond else ""
+                f"{numfmt.number(detail.get('drop_db', 0))} dB eingebrochen") if cond else ""
         self.last["cn0_drop_db"] = round(drop, 1) if drop is not None else None
         self.last["cn0_satellites"] = len(eligible)
         return cond, detail, text
@@ -479,7 +478,7 @@ class Detector:
         detail = {"satellites": len(values), "stdev_db": round(sd, 2)}
         self.last["cn0_stdev_db"] = round(sd, 2)
         text = (f"{len(values)} Satelliten mit fast gleicher Signalstärke "
-                f"(Streuung {sd:.1f} dB)".replace(".", ",")) if cond else ""
+                f"(Streuung {numfmt.number(sd, 1)} dB)") if cond else ""
         return cond, detail, text
 
     # --- Zeit -----------------------------------------------------------------------------------

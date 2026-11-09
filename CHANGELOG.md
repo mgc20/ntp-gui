@@ -6,6 +6,16 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 
 ## [Unveröffentlicht]
 
+### Behoben
+- **Übersicht auf breiten Bildschirmen:** Ab etwa 1800 px wurden die Kennzahl-Kacheln so hoch wie die Hinweisliste – mit großen leeren Flächen und den Mini-Diagrammen ganz unten. Die Kacheln haben jetzt ihre natürliche Höhe, das Mini-Diagramm steht direkt unter dem Wert, die Hinweise laufen über die Kartenbreite (auf sehr breiten Bildschirmen höchstens 1200 px). Ebenso auf „Uhrqualität“: keine gestreckte Karte mehr neben „Schaltsekunden“.
+- **Hinweise wieder in einer Zeile:** Jeder Hinweis der Übersicht zeigt Titel und eine Zeile, den ganzen Text unter „Details“ bzw. im ⓘ. Informationen sehen aus wie die Warnungen darüber; ein Knopf wie „Als vertrauenswürdigen Proxy eintragen“ ist auch zugeklappt sichtbar. Die Zeile „… Informationen“ zählt Erfolgsmeldungen getrennt („3 Informationen · 1 in Ordnung“).
+- **Deutsches Zahlformat** in allen Texten des Servers – Hinweise, Ereignistitel, Benachrichtigungen, Hardware-Check, Diagnosepaket: „Abweichung 1,4 ms“ statt „1.4 ms“, „−“ als Minus, keine Nullen am Ende.
+- **Nicht eingetragener Reverse Proxy:** ein einziger Hinweis mit Ursache und Knopf statt zusätzlich „Dashboard über unverschlüsseltes HTTP mit Anmeldung“. Liefen dabei Anmeldedaten im Klartext durchs LAN, heißt er „Anmeldung unverschlüsselt über nicht eingetragenen Proxy“ und nennt die Adresse. Die HTTP-Warnung bleibt für echte Klartext-Zugriffe ohne Proxy.
+- **„Eigene DNS-Server nicht erreichbar“ ohne Grund:** War der erste eigene DNS-Server tot und der zweite etwas langsamer, zählte dessen Antwort in der verkürzten Restzeit als Ausfall. Lehnen die Server Anfragen ab (REFUSED), heißt der Hinweis jetzt „Eigene DNS-Server lehnen Anfragen ab“.
+
+### Intern
+- Zentraler Formathelfer `app/numfmt.py` (gleiche Regeln wie `fmtNumber` im Frontend) und Test `tests/test_zahlformat.py`, der deutsches Format in allen Hinweistexten erzwingt. UI-Rundgang `heroChecks` (`TOUR_HERO_ONLY=1`): Höhe der Kacheln, Leerflächen, eine Zeile je Hinweis bei 390/1440/2000/2560 px.
+
 ## [1.6.0] – 2026-11-09
 
 Schwerpunkt: ruhiger, verständlicher, rein lokal. Neue Navigation mit sieben Bereichen, Einstellungen in

@@ -981,6 +981,163 @@ async function timelineChecks(browser) {
 // Sichtbare Wortzahl je Seite (1.6, T2 „Seiten entschlacken“): innerText des Inhalts bei 1440 px, helles Thema.
 // Geschlossene ⓘ-Popover stehen nicht im DOM, zugeklappte <details> zählt innerText nicht mit (nur die Zusammenfassung).
 // Wort = Folge ohne Leerraum mit mindestens einem Buchstaben oder einer Ziffer.
+// --- Statusband der Übersicht (1.6.1) --------------------------------------------------------------------
+// Erfundene Hinweise (page.route auf /api/status): 2 Warnungen + 4 weitere (3 Infos, 1 Erfolg) – so viele, dass das
+// alte Layout die Kennzahl-Kacheln auf die Höhe der Hinweisliste streckte. Bei 390, 1440 und 2000 px, hell und dunkel:
+// Kacheln < 220 px hoch, Sparkline direkt unter der Notiz, keine leere Fläche > 150 px in einem Block der Karte, keine
+// Überbreite; jeder Hinweis zeigt höchstens EINE Textzeile (Rest im ⓘ bzw. unter „Details“); die Zeile „… Informationen“
+// zählt den Erfolgshinweis nicht als Information. TOUR_HERO_ONLY=1 prüft nur das; TOUR_HERO_SHOTS=<Ordner> legt
+// Bildschirmfotos ab (hero_<Breite>_<Thema>.png). Nur Beispieladressen (RFC 5737).
+const HERO_INSIGHTS = [
+  { level: "ok", key: "synced", title: "Synchron mit GPS", text: "Stratum 1: Die Systemuhr folgt GPS, aktuelle Abweichung 1,4 µs." },
+  { level: "warn", key: "unreach:192.0.2.1", action: "sources", title: "ntp1.example antwortet nicht",
+    text: "Die letzten acht Anfragen an diese Quelle blieben ohne Antwort. Ursachen: Name nicht auflösbar, Port 123/udp nach außen gesperrt, Server außer Betrieb." },
+  { level: "warn", key: "storage", title: "Einstellungen gehen beim Neuerstellen verloren",
+    text: "/var/lib/chrony liegt nicht auf einem Volume. Im Dashboard gespeicherte Einstellungen und der Verlauf verschwinden, wenn der Container neu erstellt wird. In der Compose-Datei ein Volume für /var/lib/chrony anlegen." },
+  { level: "info", key: "no_auth", action: "settings", title: "Dashboard ohne Passwort",
+    text: "Jeder im LAN kann die Einstellungen ändern. Ein Passwort lässt sich unter System → Einstellungen → Dashboard & Zugang setzen." },
+  { level: "info", key: "gps_distance", action: "gps", title: "GPS wird nur beobachtet, nicht genutzt",
+    text: "chrony bewertet das GPS als zu unsicher: Die angenommene Unsicherheit ist viel größer als die der Netzwerkquellen. Mit Internet ist das unkritisch und ohne PPS so gewollt: Das GPS ist die Rückfallebene und springt ein, wenn das Internet ausfällt." },
+  { level: "info", key: "web_proxy_untrusted", action: "settings", title: "Reverse Proxy erkannt, aber nicht eingetragen",
+    text: "Ist das dein Proxy, trag ihn mit dem Knopf ein – dann erkennt ntp-gui, ob der Browser HTTPS benutzt. Anfragen mit Anmeldung tragen Proxy-Köpfe (X-Forwarded-For/-Proto), kommen aber von 127.0.0.1, die nicht in „Vertrauenswürdige Proxys“ steht.",
+    fixes: [{ kind: "trust_proxy", id: "0123456789abcdef", label: "Als vertrauenswürdigen Proxy eintragen (127.0.0.1/32)", confirm: "?" }] },
+  { level: "ok", key: "gps_used", title: "GPS wird genutzt", text: "Das GPS fließt in die Zeit ein (Abweichung 1,4 ms)." },
+];
+
+function heroState() {
+  const hero = document.querySelector("#main .hero");
+  if (!hero) return null;
+  const box = (el) => el.getBoundingClientRect();
+  // Größte leere Fläche in einem Block: Lücke zwischen zwei Kindern (von oben nach unten) oder unter dem letzten.
+  const emptyBelow = (el) => {
+    const r = box(el);
+    const kids = [...el.children].filter((c) => c.getClientRects().length).map(box).sort((a, b) => a.top - b.top);
+    let covered = r.top;
+    let gap = 0;
+    for (const k of kids) {
+      gap = Math.max(gap, k.top - covered);
+      covered = Math.max(covered, k.bottom);
+    }
+    return Math.round(Math.max(gap, r.bottom - covered));
+  };
+  const blocks = [".hero-verdict", ".hero-kpis .stat", ".hero-hints"].flatMap((sel) => [...hero.querySelectorAll(sel)]);
+  const tiles = [...hero.querySelectorAll(".hero-kpis .stat")].map((tile) => {
+    const note = tile.querySelector(".stat-note") || tile.querySelector(".stat-value");
+    const spark = tile.querySelector(".stat-spark");
+    return { height: Math.round(box(tile).height),
+      gap: spark && note ? Math.round(box(spark).top - box(note).bottom) : 0 };
+  });
+  // Sichtbarer Text je Hinweis: jede Textzeile (p) eines Hinweises – höchstens eine Zeile hoch.
+  const lines = [...hero.querySelectorAll(".hint-row, .insight")].map((item) => {
+    const texts = [...item.querySelectorAll("p")].filter((p) => p.getClientRects().length);
+    const lh = (p) => parseFloat(getComputedStyle(p).lineHeight) || parseFloat(getComputedStyle(p).fontSize) * 1.5;
+    return { title: (item.querySelector("strong") || item).textContent.trim().slice(0, 40),
+      rows: texts.map((p) => Math.round(box(p).height / lh(p) * 10) / 10) };
+  });
+  // Je Hinweiszeile: Höhe und Abstand vom Textende (Titel oder Zeile) bis zur ersten Aktion rechts.
+  const rows = [...hero.querySelectorAll(".hint-row")].map((row) => {
+    const texts = [...row.querySelectorAll(".hint-title strong, .hint-line-text, .hint-text")].filter((n) => n.getClientRects().length);
+    const right = Math.max(...texts.map((n) => box(n).right));
+    const actions = row.querySelector(".hint-actions");
+    const act = actions ? [...actions.children].filter((c) => c.getClientRects().length).map(box) : [];
+    const sameLine = act.filter((a) => a.top < box(row).top + 30);
+    return { level: row.dataset.level, height: Math.round(box(row).height), fix: Boolean(row.querySelector(".insight-fixes")),
+      jump: sameLine.length ? Math.round(Math.min(...sameLine.map((a) => a.left)) - right) : 0 };
+  });
+  const summary = hero.querySelector(".hint-summary-text");
+  return { tiles, lines, rows, cards: hero.querySelectorAll(".insight").length, empty: blocks.map((b) => ({ cls: b.className.split(" ")[0], empty: emptyBelow(b) })),
+    hero: Math.round(box(hero).height), width: Math.round(box(hero).width),
+    heroOverflow: hero.scrollWidth - hero.clientWidth,
+    overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    summary: summary ? summary.textContent : "" };
+}
+
+async function heroChecks(browser) {
+  const found = [];
+  const lines = [];
+  const shots = process.env.TOUR_HERO_SHOTS || "";
+  for (const theme of ["dark", "light"]) {
+    for (const width of [390, 1440, 2000, 2560]) {
+      const ctx = await browser.newContext({ colorScheme: theme, viewport: { width, height: 1000 } });
+      await ctx.addInitScript((t) => { try { localStorage.setItem("ntp-gui-theme", JSON.stringify(t)); } catch (e) { /* egal */ } }, theme);
+      const page = await ctx.newPage();
+      const errors = [];
+      page.on("pageerror", (e) => errors.push(e.message));
+      await page.route("**/api/status*", async (route) => {
+        const response = await route.fetch();
+        const body = await response.json();
+        body.insights = HERO_INSIGHTS;
+        await route.fulfill({ response, json: body });
+      });
+      await page.goto(`${BASE}/#/`, { waitUntil: "load" });
+      await page.waitForSelector("#main .hero .hint-summary", { timeout: 8000 }).catch(() => {});
+      await page.waitForTimeout(1500);
+      const toggle = await page.$("#main .hero .hint-summary");
+      if (toggle) { await toggle.click(); await page.waitForTimeout(500); }
+      const st = await page.evaluate(heroState);
+      const tag = `Statusband ${width} ${theme}`;
+      if (!st) { found.push(`${tag}: keine Karte`); await ctx.close(); continue; }
+      lines.push(`hero ${width} ${theme}: h=${st.hero} tiles=${st.tiles.map((t) => `${t.height}/${t.gap}`).join(",")} `
+        + `empty=${Math.max(...st.empty.map((e) => e.empty))} lines=${st.lines.map((l) => l.rows.join("+") || "0").join(",")}`);
+      for (const tile of st.tiles) {
+        if (tile.height >= 220) found.push(`${tag}: Kennzahl-Kachel ${tile.height} px hoch (≥ 220)`);
+        if (tile.gap > 24) found.push(`${tag}: Sparkline ${tile.gap} px unter der Notiz (> 24)`);
+      }
+      for (const block of st.empty) {
+        if (block.empty > 150) found.push(`${tag}: leere Fläche ${block.empty} px in ${block.cls}`);
+      }
+      if (st.overflow > 0 || st.heroOverflow > 0) found.push(`${tag}: Überbreite ${st.overflow}/${st.heroOverflow} px`);
+      for (const item of st.lines) {
+        if (item.rows.length > 1 || item.rows.some((r) => r > 1.5)) found.push(`${tag}: Hinweis „${item.title}“ zeigt ${item.rows.join("+")} Zeilen`);
+      }
+      // Ausgeklappte Infos sind dieselben kompakten Zeilen wie die Warnungen (keine größeren Karten), und
+      // auf breiten Bildschirmen stehen die Aktionen nicht über 600 px hinter dem Textende.
+      if (st.cards) found.push(`${tag}: ${st.cards} Hinweise als große Karte (.insight) statt als Zeile`);
+      const warnMax = Math.max(0, ...st.rows.filter((r) => r.level === "warn").map((r) => r.height));
+      // (Zeilen mit „Beheben“-Knopf ausgenommen: Der Knopf darf bei 390 px eine Zeile mehr brauchen.)
+      for (const row of st.rows.filter((r) => r.level !== "warn" && r.level !== "crit" && !r.fix)) {
+        if (warnMax && row.height > warnMax + 12) found.push(`${tag}: Info-Zeile ${row.height} px hoch, Warnungen ${warnMax} px`);
+      }
+      const jump = Math.max(0, ...st.rows.map((r) => r.jump));
+      // Kurzer Text, Aktionen rechtsbündig: bei 1440 px knapp 800 px – breiter darf es nicht werden
+      // (vor 1.6.1 bei 2560 px rund 1350 px, die Liste lief über die volle Kartenbreite).
+      if (jump > 850) found.push(`${tag}: Aktion steht ${jump} px hinter dem Textende (> 850)`);
+      lines.push(`hero ${width} ${theme}: rows=${st.rows.map((r) => `${r.level}:${r.height}`).join(",")} jump=${jump}`);
+      if (!/3 Informationen/.test(st.summary) || !/1 in Ordnung/.test(st.summary)) {
+        found.push(`${tag}: Zusammenfassung „${st.summary.trim().slice(0, 60)}“ statt „3 Informationen · 1 in Ordnung“`);
+      }
+      if (errors.length) found.push(`${tag}: ${errors.join("; ")}`);
+      if (shots) {
+        const hero = await page.$("#main .hero");
+        await hero.screenshot({ path: `${shots}/hero_${width}_${theme}.png` });
+        await page.screenshot({ path: `${shots}/seite_${width}_${theme}.png` });
+      }
+      await ctx.close();
+    }
+  }
+  // Uhrqualität bei 2000 px: Vollbild-Uhr und Schaltsekunden nebeneinander – keine Karte auf die Höhe der
+  // anderen gestreckt (bisher über 200 px leer unter der Vollbild-Uhr).
+  for (const width of [2000]) {
+    const ctx = await browser.newContext({ viewport: { width, height: 1000 } });
+    const page = await ctx.newPage();
+    await page.goto(`${BASE}/#/uhr/qualitaet`, { waitUntil: "load" });
+    await page.waitForSelector("#main .grid-natural .card", { timeout: 8000 }).catch(() => {});
+    await page.waitForTimeout(1500);
+    const cards = await page.$$eval("#main .grid-natural > .card", (nodes) => nodes.map((card) => {
+      const r = card.getBoundingClientRect();
+      const kids = [...card.children].filter((c) => c.getClientRects().length).map((c) => c.getBoundingClientRect());
+      const bottom = Math.max(r.top, ...kids.map((k) => k.bottom));
+      return { title: (card.querySelector("h2") || card).textContent.trim().slice(0, 30), empty: Math.round(r.bottom - bottom) };
+    }));
+    if (cards.length < 2) found.push(`Uhrqualität ${width}: Karten Schaltsekunden/Vollbild-Uhr nicht gefunden`);
+    for (const c of cards) if (c.empty > 80) found.push(`Uhrqualität ${width}: ${c.empty} px leer unter „${c.title}“`);
+    lines.push(`uhrqualitaet ${width}: ${cards.map((c) => `${c.title}=${c.empty}`).join(", ")}`);
+    if (shots) await page.screenshot({ path: `${shots}/uhrqualitaet_${width}.png`, fullPage: true });
+    await ctx.close();
+  }
+  return { found, lines };
+}
+
 const WORD_ROUTES = ["/#/", "/#/quellen", "/#/gps", "/#/clients", "/#/clients/192.0.2.10", "/#/uhr/qualitaet",
   "/#/uhr/hardware", "/#/uhr/ptp", "/#/system/diagnose", "/#/system/benachrichtigungen", "/#/system/einstellungen", "/#/hilfe"];
 
@@ -1184,6 +1341,7 @@ async function setupChecks(browser) {
       return;
     }
     const setupResult = process.env.TOUR_WORDS_ONLY || process.env.TOUR_PAGES_ONLY || process.env.TOUR_TIMELINE_ONLY
+      || process.env.TOUR_HERO_ONLY
       ? (await apiJson("/api/setup", { action: "done" }), { found: [], lines: [] }) : await setupChecks(browser);
     nav.found.push(...setupResult.found);
     nav.lines.push(...setupResult.lines);
@@ -1193,6 +1351,12 @@ async function setupChecks(browser) {
     }
     if (process.env.TOUR_TIMELINE_ONLY) {
       const result = await timelineChecks(browser);
+      console.log(JSON.stringify(result, null, 1));
+      process.exitCode = result.found.length ? 1 : 0;
+      return;
+    }
+    if (process.env.TOUR_HERO_ONLY) {
+      const result = await heroChecks(browser);
       console.log(JSON.stringify(result, null, 1));
       process.exitCode = result.found.length ? 1 : 0;
       return;
@@ -1221,6 +1385,9 @@ async function setupChecks(browser) {
     const timelineResult = await timelineChecks(browser);
     nav.found.push(...timelineResult.found);
     nav.lines.push(...timelineResult.lines);
+    const heroResult = await heroChecks(browser);
+    nav.found.push(...heroResult.found);
+    nav.lines.push(...heroResult.lines);
     words = await wordCounts(browser);
     // TOUR_NAV_ONLY=1: nur die Navigationsprüfungen (schneller Durchlauf beim Arbeiten an der Navigation).
     for (const theme of process.env.TOUR_NAV_ONLY ? [] : ["light", "dark"]) {

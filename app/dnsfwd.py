@@ -337,6 +337,11 @@ def hard_failure(exc: BaseException) -> bool:
     return getattr(exc, "errno", None) in (errno.ECONNREFUSED, errno.ENETUNREACH, errno.EHOSTUNREACH)
 
 
+def _is_timeout(exc: BaseException) -> bool:
+    """Zeitüberschreitung (eigene Frist oder Socket-Timeout) – im Unterschied zu einer Ablehnung."""
+    return isinstance(exc, TimeoutError) or str(exc) == "Zeitüberschreitung"
+
+
 def rcode_of(msg: bytes) -> int:
     return header(msg)[1] & 0xF
 
@@ -1048,6 +1053,10 @@ class Forwarder:
         Wechselt der Server zwischen „nicht erreichbar“ und „antwortet wieder“, meldet
         on_upstream das (Ereignis je Server, 1.5) – bisher gab es nur den Gesamtzustand."""
         started = time.monotonic()
+        # 1.6.1: Bekam der Server nur den Rest der Frist (ein Server davor hat sie aufgebraucht), sagt eine
+        # Zeitüberschreitung nichts über ihn – sie zählt nicht zum Ausfall (sonst galten bei einem toten
+        # ersten Server nach drei Anfragen auch langsame, aber erreichbare Server als „nicht erreichbar“).
+        shortened = deadline - started < UPSTREAM_TIMEOUT * 0.9
         try:
             data = up.exchange(query, deadline)
             if rcode_of(data) == RCODE_REFUSED:
@@ -1055,13 +1064,15 @@ class Forwarder:
         except (OSError, ssl.SSLError, DnsError, http.client.HTTPException, ValueError) as exc:
             text = " ".join(str(exc).split())[:160] or exc.__class__.__name__
             went_down = False
+            cut_short = shortened and _is_timeout(exc)
             with self._lock:
                 up.fail += 1
-                up.streak += 1
+                if not cut_short:
+                    up.streak += 1
                 up.last_error, up.last_error_t = text, self.clock()
                 # Eine einzelne Zeitüberschreitung kann an einem langsamen Namen liegen –
                 # erst mehrere in Folge (oder ein harter Fehler) gelten als Ausfall.
-                if hard_failure(exc) or up.streak >= DOWN_AFTER:
+                if not cut_short and (hard_failure(exc) or up.streak >= DOWN_AFTER):
                     up.down_until = time.monotonic() + DOWN_SECONDS
                     if not up.reported_down:
                         up.reported_down = went_down = True

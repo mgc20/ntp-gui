@@ -104,8 +104,11 @@
     },
     "hints": {
       "serious_label": "Warnings and faults",
+      "rest_label": "Notes and confirmations",
       "info_count_one": "{count} info item",
       "info_count_other": "{count} info items",
+      "ok_count_one": "{count} all good",
+      "ok_count_other": "{count} all good",
       "show": "show",
       "hide": "hide",
       "details": "Details",

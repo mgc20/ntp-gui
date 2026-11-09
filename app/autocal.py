@@ -111,6 +111,7 @@ import threading
 import time
 from typing import Any, Callable
 
+import numfmt
 import settings
 
 STATE_FILE = "autocal.json"
@@ -175,15 +176,20 @@ def _num(value: Any) -> float | None:
 
 def _ms(seconds: float) -> str:
     """Sekunden als „12,3 ms“ (deutsches Komma)."""
-    return f"{seconds * 1000:.1f}".replace(".", ",") + " ms"
+    return numfmt.ms(seconds, 1)
 
 
 def _signed_ms(seconds: float) -> str:
-    return ("+" if seconds > 0 else "") + _ms(seconds)
+    return numfmt.ms(seconds, 1, signed=True)
+
+
+def _off(seconds: Any) -> str:
+    """GPS-Offset (chrony-Wert in Sekunden) für Texte und Ereignisse: „0,145 s“, „−0,02 s“."""
+    return numfmt.number(seconds, 6, group=False, empty="?")
 
 
 def _hours(seconds: float) -> str:
-    return f"{seconds / 3600:.1f}".replace(".", ",") + " h"
+    return f"{numfmt.number(seconds / 3600, 1, group=False)} h"
 
 
 def _when(t: float) -> str:
@@ -399,7 +405,7 @@ def decide(cfg: dict, calibration_result: dict | None, last_change: dict | None,
         return _result("none", f"Die Abweichung von {_signed_ms(bias)} liegt unter der Schwelle von "
                        f"{_ms(thr)}{extra} – keine Änderung nötig.", cfg, phase="calibrated", **base)
     if not (OFFSET_LIMITS[0] <= target <= OFFSET_LIMITS[1]):
-        return _result("none", f"Der rechnerische Offset {target} s läge außerhalb des erlaubten "
+        return _result("none", f"Der rechnerische Offset {_off(target)} s läge außerhalb des erlaubten "
                        "Bereichs von −2 bis 2 s. Prüfe Gerät und Einstellungen.", cfg, phase="check", **base)
 
     full_step_ms = round((target - current) * 1000, 3)
@@ -407,20 +413,20 @@ def decide(cfg: dict, calibration_result: dict | None, last_change: dict | None,
                          step_ms=full_step_ms, phase="suggest", **base)
     if mode == "suggest":
         suggestion["reason"] = (f"Das GPS liegt {_signed_ms(bias)} neben den Netzwerkquellen. "
-                                f"Vorschlag: Offset {target} s – übernimm ihn mit „Vorschlag übernehmen“.")
+                                f"Vorschlag: Offset {_off(target)} s – übernimm ihn mit „Vorschlag übernehmen“.")
         return suggestion
 
     # --- Modus „automatisch“ -------------------------------------------------
     if spread > MAX_SPREAD:
         suggestion.update(phase="check", reason=(
             f"Die Messwerte streuen um {_ms(spread)} – zu unruhig für eine automatische Änderung. "
-            f"Vorschlag zum Prüfen: Offset {target} s."))
+            f"Vorschlag zum Prüfen: Offset {_off(target)} s."))
         return suggestion
     if abs(bias) > MAX_AUTO_BIAS:
         suggestion.update(phase="check", reason=(
             f"Eine Abweichung von {_signed_ms(bias)} ist für einen USB-Empfänger ungewöhnlich groß "
             "(falsches Gerät? falsche Zeitzone im Empfänger?). Automatisch wird nichts geändert; "
-            f"Vorschlag zum Prüfen: {target} s."))
+            f"Vorschlag zum Prüfen: {_off(target)} s."))
         return suggestion
     shift = _num(cal.get("half_shift"))
     steady = shift is None or abs(shift) <= max(FAST_MIN_BIAS, abs(bias) * FAST_MAX_SHIFT_SHARE)
@@ -442,7 +448,7 @@ def decide(cfg: dict, calibration_result: dict | None, last_change: dict | None,
         reason = (f"Ohne PPS ist das GPS die Rückfallebene: Es lag {_signed_ms(bias)} neben "
                   f"{int(window_count)} Netzwerkquelle(n), {refs} "
                   f"(Messung über {_hours(duration)}, Schwelle {_ms(thr)}) – deutlich und belastbar. "
-                  f"Darum die ganze Korrektur in einem Schritt: Offset {current} s → {target} s.")
+                  f"Darum die ganze Korrektur in einem Schritt: Offset {_off(current)} s → {_off(target)} s.")
         return _result("apply", reason, cfg, new_offset=target, new_delay=round(suggested_delay, 4),
                        step_ms=full_step_ms, final_step=True, fast=True, phase="correct", **base)
     if candidate and duration < SMALL_MIN_SECONDS:
@@ -486,11 +492,11 @@ def decide(cfg: dict, calibration_result: dict | None, last_change: dict | None,
     new_delay = suggested_delay if final else max(current_delay, suggested_delay)
     if final:
         reason = (f"Das GPS lag {_signed_ms(bias)} neben {int(window_count)} Netzwerkquelle(n) "
-                  f"(Messung über {_hours(duration)}). Offset {current} s → {new_offset} s.")
+                  f"(Messung über {_hours(duration)}). Offset {_off(current)} s → {_off(new_offset)} s.")
     else:
         reason = (f"Das GPS lag {_signed_ms(bias)} neben {int(window_count)} Netzwerkquelle(n). "
-                  f"Teilschritt von höchstens {_ms(max_step)}: Offset {current} s → "
-                  f"{new_offset} s; der Rest folgt frühestens in 24 h nach neuer Messung.")
+                  f"Teilschritt von höchstens {_ms(max_step)}: Offset {_off(current)} s → "
+                  f"{_off(new_offset)} s; der Rest folgt frühestens in 24 h nach neuer Messung.")
     return _result("apply", reason, cfg, new_offset=new_offset, new_delay=round(new_delay, 4),
                    step_ms=round((new_offset - current) * 1000, 3), final_step=final,
                    phase="correct" if clear else "follow", next_change_at=now + AUTO_INTERVAL, **base)
@@ -663,8 +669,8 @@ def check_active(cfg: dict, change: dict | None) -> dict:
         running = None
     if running is not None and abs(running - want) > OFFSET_EPS:
         return {"active": False, "since": None,
-                "reason": f"In der laufenden chrony-Konfiguration steht noch Offset {running} s "
-                          f"statt {want} s."}
+                "reason": f"In der laufenden chrony-Konfiguration steht noch Offset {_off(running)} s "
+                          f"statt {_off(want)} s."}
     t = _num((change or {}).get("t"))
     if t is None:
         return {"active": True, "since": None, "reason": ""}
@@ -810,7 +816,7 @@ def _deps(overrides: dict | None = None) -> dict:
 
 
 def _holdover_defers(deps: dict, decision: dict, cfg: dict) -> bool:
-    what = f"GPS-Offset {_cfg_float(cfg, 'gps_offset', 0.0)} s → {decision.get('new_offset')} s"
+    what = f"GPS-Offset {_off(_cfg_float(cfg, 'gps_offset', 0.0))} s → {_off(decision.get('new_offset'))} s"
     try:
         return bool(deps["holdover_defer"](what))
     except Exception:
@@ -970,7 +976,7 @@ def tick(cfg: dict, now: float | None = None, deps: dict | None = None,
                     or abs(float(last["offset"]) - decision["new_offset"]) >= MIN_THRESHOLD:
                 state["last_suggestion"] = {"offset": decision["new_offset"], "t": now}
                 _emit(deps, "calibration", "info",
-                      f"GPS-Kalibrierung: neuer Vorschlag {decision['new_offset']} s",
+                      f"GPS-Kalibrierung: neuer Vorschlag {_off(decision['new_offset'])} s",
                       {"new_offset": decision["new_offset"], "new_delay": decision["new_delay"],
                        "bias_ms": decision.get("bias_ms"), "reason": decision["reason"]})
         decision.pop("nts_distance", None)   # Laufzeit zu Servern: nur für die Schranke, nicht speichern
@@ -1045,7 +1051,7 @@ def _apply(cfg: dict, decision: dict, state: dict, deps: dict, now: float) -> di
     decision["reload_triggered"] = reloaded
     decision["change_id"] = entry["id"]
     _emit(deps, "calibration", "info",
-          f"GPS-Offset automatisch angepasst: {old_offset} s → {decision['new_offset']} s",
+          f"GPS-Offset automatisch angepasst: {_off(old_offset)} s → {_off(decision['new_offset'])} s",
           {"old_offset": old_offset, "new_offset": decision["new_offset"],
            "old_delay": old_delay, "new_delay": entry["new_delay"],
            "bias_ms": decision.get("bias_ms"), "step_ms": decision.get("step_ms"),
@@ -1123,8 +1129,8 @@ def rollback(steps: int = 1, cfg: dict | None = None, now: float | None = None,
         undo = active[-steps:]
         current = _cfg_float(cfg, "gps_offset", 0.0)
         if abs(current - float(undo[-1]["new_offset"])) > OFFSET_EPS:
-            raise AutocalError(f"Der Offset steht inzwischen auf {current} s statt auf "
-                               f"{undo[-1]['new_offset']} s – er wurde seitdem von Hand geändert. "
+            raise AutocalError(f"Der Offset steht inzwischen auf {_off(current)} s statt auf "
+                               f"{_off(undo[-1]['new_offset'])} s – er wurde seitdem von Hand geändert. "
                                "Eine Rücknahme würde deine Änderung überschreiben; stelle den Wert "
                                "bei Bedarf in den Einstellungen ein.")
         restore_offset = float(undo[0]["old_offset"])
@@ -1167,7 +1173,7 @@ def rollback(steps: int = 1, cfg: dict | None = None, now: float | None = None,
         state["last_suggestion"] = None
         save(state, file)
     _emit(deps, "calibration", "warn",
-          f"GPS-Kalibrierung zurückgenommen: {current} s → {restore_offset} s",
+          f"GPS-Kalibrierung zurückgenommen: {_off(current)} s → {_off(restore_offset)} s",
           {"old_offset": current, "new_offset": restore_offset, "steps": steps, "reason": ROLLBACK_NOTE})
     return {"ok": True, "restored_offset": restore_offset,
             "restored_delay": changes.get("gps_delay", current_delay),
@@ -1277,7 +1283,7 @@ def _phase(cfg: dict, mode: str, decision: dict, observed: dict, fast: bool, nex
         at = next_tick_at if next_tick_at is not None and next_tick_at > now else now
         label = f"korrigiert bei nächster Prüfung (≈ {_clock(at)})"
         text = (f"Die nächste stündliche Prüfung (≈ {_clock(at)}) stellt den Offset von "
-                f"{_cfg_float(cfg, 'gps_offset', 0.0)} s auf {decision.get('new_offset')} s, wenn die Messung "
+                f"{_off(_cfg_float(cfg, 'gps_offset', 0.0))} s auf {_off(decision.get('new_offset'))} s, wenn die Messung "
                 "dann noch dasselbe zeigt.")
     elif key == "calibrated":
         label = "kalibriert – folgt nur kleinen Drifts"
@@ -1304,7 +1310,7 @@ def _phase(cfg: dict, mode: str, decision: dict, observed: dict, fast: bool, nex
             decision.get("reason") or "")
     elif key == "suggest":
         label = "Vorschlag bereit"
-        text = f"Vorschlag: Offset {decision.get('new_offset')} s – im Modus „vorschlagen“ übernimmst du ihn selbst."
+        text = f"Vorschlag: Offset {_off(decision.get('new_offset'))} s – im Modus „vorschlagen“ übernimmst du ihn selbst."
     elif key == "readonly":
         label = "nur lesen"
         text = "Die Einstellungen sind gesperrt (WEB_READONLY) – es wird nichts automatisch geändert."
@@ -1329,7 +1335,7 @@ def _plan(cfg: dict, mode: str, phase: dict, manual: dict | None, fast: bool,
         head = ("Die GNSS-Störungserkennung wurde neu gelernt – die Messung hat neu begonnen, Werte und Meldungen "
                 "davor zählen nicht mehr. ")
     if manual:
-        head = (f"Der Offset wurde am {_when(manual['since'])} von Hand auf {manual['offset']} s gesetzt. "
+        head = (f"Der Offset wurde am {_when(manual['since'])} von Hand auf {_off(manual['offset'])} s gesetzt. "
                 f"Die Messung beginnt ab {_when(manual['measuring_since'])} neu. ")
     if mode == "suggest":
         return head + phase["text"] + " Im Modus „vorschlagen“ ändert sich nichts von allein."

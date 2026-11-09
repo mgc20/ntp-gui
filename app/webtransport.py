@@ -482,6 +482,13 @@ class TransportWatch:
                         "seine Adresse oft wechselt – dann so klein wie möglich (z. B. das Docker-Netz "
                         "172.18.0.0/24 statt 172.16.0.0/12).",
             })
+        # 1.6.1: Kamen Anmeldedaten nur deshalb „per HTTP“ an, weil ein Proxy-Kopf von einer nicht
+        # eingetragenen Gegenstelle kam, ist das dieselbe Ursache wie „Reverse Proxy erkannt, aber nicht
+        # eingetragen“ – ntp-gui kann HTTPS dann gar nicht erkennen. Ein Hinweis (mit Knopf) statt zweien:
+        # Diese Einträge stehen im Proxy-Hinweis, die HTTP-Warnung zählt nur echte Klartext-Zugriffe.
+        folded = [e for e in plain if e["key"][0] == "untrusted"] if untrusted else []
+        if folded:
+            plain = [e for e in plain if e["key"][0] != "untrusted"]
         if plain:
             parts = []
             for entry in plain[:SHOW_SOURCES]:
@@ -572,26 +579,65 @@ class TransportWatch:
                         "du diesen Hinweis übergehen.",
             })
         if untrusted:
+            # Knopf nur für Adressen, die mit Verwaltungsrecht kamen (peers) – genannt werden aber auch die,
+            # über die nur ein Lese-Schlüssel im Klartext lief (gefaltete Einträge, wie bis 1.6.0 in der
+            # HTTP-Warnung): Wer die Warnung liest, muss wissen, um welches Gerät es geht. Solche Adressen
+            # stehen nie neben „Eingetragen wird genau diese Adresse“, sondern mit einer Rückfrage.
             fixes = self._fixes(peers)
+            named_peers = list(peers)
+            for entry in folded:
+                if entry["key"][2] not in named_peers:
+                    named_peers.append(entry["key"][2])
+            readonly = [p for p in named_peers if p not in peers]
             gateways = default_gateways()
-            gateway_peers = [p for p in peers[:SHOW_SOURCES] if _same_ip(p, gateways)]
-            named = ", ".join(peers[:SHOW_SOURCES])
-            more = len(peers) - SHOW_SOURCES
-            source = (f"von {named}{f' (und {more} weiteren)' if more > 0 else ''}" if peers
-                      else "von einer Adresse")
+            gateway_peers = [p for p in named_peers[:SHOW_SOURCES] if _same_ip(p, gateways)]
+
+            def listing(addrs: list[str]) -> str:
+                more = len(addrs) - SHOW_SOURCES
+                return ", ".join(addrs[:SHOW_SOURCES]) + (f" (und {more} weiteren)" if more > 0 else "")
+
+            source = f"von {listing(named_peers)}" if named_peers else "von einer Adresse"
+            fix_how = ("trag ihn mit dem Knopf ein" if fixes else
+                       "trag ihn unter „Vertrauenswürdige Proxys“ ein")
+            tail = (f"kommen aber {source}, die nicht in „Vertrauenswürdige Proxys“ (TRUSTED_PROXIES) "
+                    f"{'stehen' if len(named_peers) > 1 else 'steht'}. "
+                    "ntp-gui ignoriert diese Köpfe deshalb – jeder könnte sie fälschen. Folge: Das "
+                    "Zugriffsprotokoll zeigt den Proxy statt des Browsers, und ntp-gui kann nicht "
+                    "erkennen, ob der Browser HTTPS benutzt.")
+            exact = (" Eingetragen wird genau diese Adresse" if fixes else
+                     " Trag nur die feste Adresse des Proxys ein")
+            exact += (", kein ganzes Netz (Proxy im Host-Netzwerk auf demselben Rechner: "
+                      "127.0.0.1/32 und ::1/128).")
+            if readonly:
+                exact += (f" {listing(readonly)} kam nur mit Lese-Schlüssel – darum kein Knopf. Prüf vorher, ob "
+                          f"{'das wirklich dein Proxy ist' if len(readonly) == 1 else 'das wirklich deine Proxys sind'}.")
+            gateway_text = "".join(" " + GATEWAY_WARNING.format(peer=p) for p in gateway_peers)
+            if folded:
+                # Anmeldedaten liefen im Klartext durchs LAN (Proxy auf einem anderen Gerät, nicht
+                # 127.0.0.1): eine Sicherheitswarnung – das steht im Titel und im ersten (sichtbaren) Satz.
+                kinds = set().union(*(e["kinds"] for e in folded))
+                plain_peers = list(dict.fromkeys(e["key"][2] for e in folded))
+                text = (f"Anmeldedaten kamen unverschlüsselt über {listing(plain_peers)} an – ist das dein Proxy, "
+                        f"{fix_how}. "
+                        f"Zuletzt {ago(now - folded[0]['at'])}: {self._kinds(kinds)}, auf der Strecke Proxy → "
+                        "ntp-gui per HTTP. Basic-Auth und Bearer-Schlüssel sind nur Base64 bzw. "
+                        "Klartext – jedes Gerät auf dem Weg kann sie mitlesen. Anfragen mit Anmeldung tragen "
+                        "Proxy-Köpfe (X-Forwarded-For/-Proto), " + tail + " Ob der Browser mit dem Proxy "
+                        "HTTPS spricht, prüft ntp-gui erst, wenn der Proxy eingetragen ist – darum steht hier "
+                        "keine eigene HTTP-Warnung." + exact + gateway_text + " "
+                        + "Als Warnung gilt das bis 24 Stunden nach dem letzten unverschlüsselten Zugriff "
+                        "(1 Stunde, wenn danach nur noch geschützte kommen).")
+                title = "Anmeldung unverschlüsselt über nicht eingetragenen Proxy"
+            else:
+                text = (f"Ist das dein Proxy, {fix_how} – dann erkennt ntp-gui, ob der Browser HTTPS benutzt. "
+                        "Anfragen mit Anmeldung tragen Proxy-Köpfe (X-Forwarded-For/-Proto), " + tail
+                        + exact + gateway_text)
+                title = "Reverse Proxy erkannt, aber nicht eingetragen"
             out.append({
-                "level": "info", "key": "web_proxy_untrusted", "action": "settings",
+                "level": "warn" if folded else "info", "key": "web_proxy_untrusted", "action": "settings",
                 **({"fixes": fixes} if fixes else {}),
-                "title": "Reverse Proxy erkannt, aber nicht eingetragen",
-                "text": "Anfragen mit Anmeldung tragen Proxy-Köpfe (X-Forwarded-For/-Proto), kommen aber "
-                        f"{source}, die nicht in „Vertrauenswürdige Proxys“ (TRUSTED_PROXIES) "
-                        f"{'stehen' if len(peers) > 1 else 'steht'}. "
-                        "ntp-gui ignoriert diese Köpfe deshalb – jeder könnte sie fälschen. Folge: Das "
-                        "Zugriffsprotokoll zeigt den Proxy statt des Browsers, und ntp-gui kann nicht "
-                        "erkennen, ob der Browser HTTPS benutzt. Ist das dein Proxy, trag ihn mit dem Knopf "
-                        "unten ein – genau diese Adresse, kein ganzes Netz (Proxy im Host-Netzwerk auf "
-                        "demselben Rechner: 127.0.0.1/32 und ::1/128)."
-                        + "".join(" " + GATEWAY_WARNING.format(peer=p) for p in gateway_peers),
+                "title": title,
+                "text": text,
             })
         return out
 

@@ -24,6 +24,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import dnsfwd  # noqa: E402
+import numfmt  # noqa: E402
 import settings  # noqa: E402
 
 CHRONY_CONF = os.environ.get("CHRONY_CONF", "/etc/chrony/chrony.conf")
@@ -132,7 +133,7 @@ def render_chrony(cfg: dict, env: dict | None = None, warn=_log,
         # chrony gute Netzquellen vorzieht und das GPS als Rückfallebene nimmt.
         clock = gps_refclock_values(cfg)
         if clock["source"] in {"measured", "default"}:
-            lines.append(f"# GPS ohne PPS: Rückfallebene, Fehlerschranke ± {clock['delay'] / 2 * 1000:.0f} ms "
+            lines.append(f"# GPS ohne PPS: Rückfallebene, Fehlerschranke ± {numfmt.number(clock['delay'] / 2 * 1000)} ms "
                          + ("(gemessen)" if clock["source"] == "measured" else "(Standard, noch nicht gemessen)"))
         parts = [
             f"refclock SHM {int(env.get('GPS_SHM_UNIT', '0') or 0)} refid {cfg['gps_refid']}",

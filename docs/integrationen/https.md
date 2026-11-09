@@ -25,7 +25,8 @@ nötig.
 
 `TRUSTED_PROXIES` lässt sich auch im Dashboard setzen: **Einstellungen → Dashboard & Zugang → Erweitert →
 Vertrauenswürdige Proxys**. Einfacher (ab 1.5.4): Kommen Anfragen mit Proxy-Köpfen von einer Adresse,
-die dort fehlt, zeigt die Übersicht „Reverse Proxy erkannt, aber nicht eingetragen“ mit dem Knopf
+die dort fehlt, zeigt die Übersicht „Reverse Proxy erkannt, aber nicht eingetragen“ (bzw. als Warnung
+„Anmeldung unverschlüsselt über nicht eingetragenen Proxy“, wenn der Proxy auf einem anderen Gerät läuft) mit dem Knopf
 **„Als vertrauenswürdigen Proxy eintragen (…/32)“**. Er trägt genau die Adresse ein, die ntp-gui als
 Gegenstelle gesehen hat (nur mit Admin-Recht, mit Rückfrage). Einträge breiter als /24 bzw. /64 warnt
 ntp-gui an.

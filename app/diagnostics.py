@@ -32,6 +32,7 @@ from concurrent.futures import ThreadPoolExecutor, wait as futures_wait
 from typing import Any, Callable
 
 import egress
+import numfmt
 
 RUN_DIR = os.environ.get("NTPGUI_RUN_DIR", "/run/ntp-gui")
 CHRONY_CONF = os.environ.get("CHRONY_CONF", "/etc/chrony/chrony.conf")
@@ -551,7 +552,7 @@ def _collect(cfg: dict, names: list[str], options: dict) -> dict:
     futures_wait(list(futures.values()), timeout=DEADLINE)
     for name, future in futures.items():
         if not future.done():
-            results[name] = {"fehler": f"Zeitüberschreitung nach {DEADLINE:g} s – Abschnitt fehlt"}
+            results[name] = {"fehler": f"Zeitüberschreitung nach {numfmt.number(DEADLINE, 3, group=False)} s – Abschnitt fehlt"}
             continue
         try:
             results[name] = future.result()
@@ -1047,7 +1048,7 @@ def _run_worker(job: dict) -> dict:
     except (OSError, ValueError):
         return _package(job)
     except subprocess.TimeoutExpired:
-        message = f"Das Diagnosepaket wurde nach {WORKER_TIMEOUT:g} s nicht fertig."
+        message = f"Das Diagnosepaket wurde nach {numfmt.number(WORKER_TIMEOUT, 3, group=False)} s nicht fertig."
         print(f"diagnostics: {message}", file=sys.stderr, flush=True)
         raise RuntimeError(message) from None
     try:

@@ -9,16 +9,12 @@ from __future__ import annotations
 
 from typing import Any
 
+import numfmt
+
 
 def _ms(seconds: float | None) -> str:
-    if seconds is None:
-        return "?"
-    value = abs(seconds)
-    if value >= 1:
-        return f"{seconds:.2f} s"
-    if value >= 1e-3:
-        return f"{seconds * 1e3:.1f} ms"
-    return f"{seconds * 1e6:.0f} µs"
+    """Messwert in Sekunden mit Einheit, deutsch („1,4 ms“, „−250 µs“) – wie fmtSeconds im Dashboard."""
+    return numfmt.seconds(seconds, 2, empty="?")
 
 
 NTS_CERT_WARN_DAYS = 14
@@ -75,14 +71,14 @@ def nts_server_insights(nts: dict[str, Any]) -> list[dict[str, Any]]:
     if isinstance(days, (int, float)):
         if days < 0:
             add("crit", "NTS-Zertifikat abgelaufen",
-                f"Das Zertifikat des NTS-Servers ist seit {abs(days):.0f} Tagen abgelaufen. Clients "
+                f"Das Zertifikat des NTS-Servers ist seit {numfmt.number(abs(days))} Tagen abgelaufen. Clients "
                 "lehnen den Schlüsselaustausch ab und bekommen keine abgesicherte Zeit mehr. Ein neues "
                 "Zertifikat ablegen – ntp-gui bemerkt die geänderte Datei innerhalb von etwa einer "
                 "Minute und startet chronyd neu, damit er es lädt.",
                 "nts_cert_expired")
         elif days < NTS_CERT_WARN_DAYS:
             add("warn", "NTS-Zertifikat läuft bald ab",
-                f"Das Zertifikat des NTS-Servers ist nur noch {days:.0f} Tage gültig. Danach lehnen "
+                f"Das Zertifikat des NTS-Servers ist nur noch {numfmt.number(days)} Tage gültig. Danach lehnen "
                 "die Clients den Schlüsselaustausch ab. Rechtzeitig erneuern – sobald sich die Datei "
                 "ändert, startet ntp-gui chronyd automatisch neu (chrony liest Zertifikate nur "
                 "beim Start).", "nts_cert_expiring")
@@ -230,7 +226,18 @@ def dns_insights(dns: dict[str, Any], cfg: dict[str, Any], sources: list[dict] |
     if dns.get("nts_note"):
         add("info", "NTS hängt an einem einzigen DNS-Server", str(dns["nts_note"]), "dns_nts_single")
     state = dns.get("state")
-    if state == "fallback":
+    ups = [u for u in dns.get("upstreams") or [] if isinstance(u, dict)]
+    refused = bool(ups) and all("REFUSED" in str(u.get("last_error") or "") for u in ups)
+    if state == "fallback" and refused:
+        # 1.6.1: REFUSED ist eine Antwort – die Server sind erreichbar, sie lehnen nur ab.
+        add("warn", "Eigene DNS-Server lehnen Anfragen ab",
+            "Die eingetragenen DNS-Server antworten, lehnen die Anfragen von ntp-gui aber ab (REFUSED). "
+            "ntp-gui fragt deshalb den ursprünglichen DNS des Containers"
+            + (" – unverschlüsselt" if mode in ("dot", "doh") else "")
+            + ". Meist erlaubt der Server nur bestimmte Netze (Zugriffsliste, z. B. ohne das Docker-Netz) "
+            "oder ist nur für eigene Zonen zuständig. Erlaube dort das Netz des Containers oder trag einen "
+            "Server ein, der beliebige Namen auflöst.", "dns_fallback")
+    elif state == "fallback":
         add("warn", "Eigene DNS-Server nicht erreichbar",
             "Keiner der eingetragenen DNS-Server hat zuletzt geantwortet. ntp-gui fragt deshalb den "
             "ursprünglichen DNS des Containers"
