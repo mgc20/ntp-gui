@@ -2510,6 +2510,14 @@ class QuietHTTPServer(ThreadingHTTPServer):
             return
         super().handle_error(request, client_address)
 
+    def server_activate(self):
+        # Lauschender Socket nicht blockierend: select() meldet eine wartende Verbindung, der Client
+        # bricht sie aber vor accept() ab (RST) – ein blockierendes accept() wartete dann bis zur
+        # nächsten Verbindung, und shutdown() hinge so lange. So liefert accept() BlockingIOError,
+        # das socketserver still übergeht. Angenommene Verbindungen bleiben blockierend (mit Timeout).
+        super().server_activate()
+        self.socket.setblocking(False)
+
 
 class QuietHTTPServer6(QuietHTTPServer):
     """Dasselbe für eine IPv6-Adresse in WEB_BIND. „::“ nimmt auch IPv4 an: IPV6_V6ONLY wird

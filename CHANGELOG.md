@@ -7,6 +7,12 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 ## [Unveröffentlicht]
 
 ### Behoben
+- **Dashboard-Server hängt nicht mehr nach abgebrochenen Verbindungen:** Bricht ein Browser oder Proxy seine Verbindung genau zwischen Annahme-Signal und Annahme ab, wartete der Server-Thread bis zur nächsten Verbindung – und ein Neustart des Dashboards konnte so lange hängen. Der lauschende Socket ist jetzt nicht blockierend.
+
+### Intern
+- Ursache des sporadisch hängenden Testlaufs gefunden (derselbe Fehler im Testserver, `tests/_support.py`); neuer Test `tests/test_accept_haenger.py`.
+
+### Behoben
 - **DoH-Server, die nur HTTP/2 sprechen:** ntp-gui fragt per HTTP/1.1 und kündigt das jetzt auch an (ALPN „http/1.1“). Antwortet der Server trotzdem nur mit HTTP/2, steht statt Binärzeichen oder „Broken pipe“ klar da: „spricht nur HTTP/2 … – nimm DNS-over-TLS oder einen DoH-Server, der HTTP/1.1 kann“. Dafür horcht ntp-gui vor der ersten Anfrage an einen DoH-Server kurz (0,1 s), ob der Server ungefragt sendet.
 - **Verständliche Fehler der eigenen DNS-Server:** z. B. „verweigert die Verbindung auf Port 853 – DNS-over-TLS dort nicht eingeschaltet oder Firewall?“ oder „Zertifikat abgelehnt – Name in der Adresse und Uhrzeit prüfen“. Der Hinweis „Eigene DNS-Server nicht erreichbar“ nennt den letzten Fehler je Server. Fehlertexte aus dem Netz (Ereignisse, Benachrichtigungen, Status) enthalten nur noch druckbare Zeichen und sind begrenzt.
 - **Kein wiederholter DNS-Ausfall nach Neustarts:** Ein schon gemeldeter, unveränderter Ausfall wird nach einem Neustart des DNS-Weiterleiters nicht erneut gemeldet.
