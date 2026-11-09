@@ -40,6 +40,7 @@
     "diagnose": "Diagnostics",
     "notify": "Notifications",
     "settings": "Settings",
+    "setup": "Setup",
     "help": "Help",
     "uhr": "Clock & hardware",
     "system": "System",
@@ -242,5 +243,132 @@
       "privacy": "With privacy filter."
     },
     "more": "More"
+  },
+  "setup": {
+    "title": "Setup",
+    "what": "the setup state",
+    "loading": "Loading …",
+    "intro": "Done in three minutes: five short steps, each optional. Only what you confirm with “Apply” is changed.",
+    "intro_done": "Setup is complete. You can revisit any step at any time.",
+    "steps_label": "Setup steps",
+    "count": "Step {n} of {total}",
+    "steps": {
+      "check": "Check",
+      "sources": "Time sources",
+      "gps": "GPS",
+      "clients": "Clients",
+      "notify": "Notifications"
+    },
+    "lead": {
+      "check": "What the hardware check found. Every red item has exactly one fix to copy.",
+      "sources": "Where this server gets its time from. Templates add public NTS servers – your selection stays.",
+      "gps": "A GPS receiver is optional. Here is honestly what it brings.",
+      "clients": "This is how your devices ask this server for the time.",
+      "notify": "Optional: messages to your phone or Home Assistant. Without a channel nothing leaves the server."
+    },
+    "nav_label": "Change step",
+    "back": "Back",
+    "next": "Next",
+    "later": "Later",
+    "never": "Don't show again",
+    "finish": "Done",
+    "finished": "Setup complete",
+    "hidden": "Setup complete – the assistant and checklist won't be shown again",
+    "readonly": "Read only: without admin rights (or with WEB_READONLY) nothing can be applied here.",
+    "leave": "There is a change in the assistant you have not applied yet. Leave the page anyway?",
+    "holdover_confirm": "A holdover test is running. Applying restarts chronyd and stops the test. Apply anyway?",
+    "preview": "Preview",
+    "apply": "Apply",
+    "discard": "Discard",
+    "preview_title": "Configuration preview",
+    "preview_loading": "Creating preview …",
+    "preview_none": "The configuration files do not change.",
+    "preview_error": "Preview not possible: {message}",
+    "saved": "Applied",
+    "saved_restart": "Applied – time services are restarting",
+    "status": {
+      "ok": "fine",
+      "problem": "fix",
+      "info": "note"
+    },
+    "check": {
+      "card": "Check",
+      "problems_one": "{n} item needs your help.",
+      "problems_other": "{n} items need your help.",
+      "all_ok": "Everything needed is there.",
+      "again": "Check again",
+      "running": "Checking …",
+      "remedy": "Fix:",
+      "compose": "Line for the Compose file",
+      "full": "Full hardware check →"
+    },
+    "sources": {
+      "card": "Time sources",
+      "what": "the time sources",
+      "sub": "NTS verifies the answers cryptographically – recommended. chrony itself checks whether the servers are reachable after applying.",
+      "now": "Configured now",
+      "after": "After applying",
+      "none": "No time source configured yet.",
+      "new": "new",
+      "env": "The list comes from the Compose file (NTP_SERVERS). Applying stores it in the dashboard, where it then takes precedence.",
+      "templates": "Templates",
+      "keep": "A template only adds – existing sources stay.",
+      "more": "All source settings →"
+    },
+    "gps": {
+      "card": "GPS",
+      "found": "found",
+      "not_found": "not found",
+      "optional": "No receiver detected – that is fine, the time comes from the network.",
+      "honest": "Without PPS, GPS is a **fallback**: a USB GPS reaches 1–10 ms after calibration, good internet sources are usually more accurate. If the internet gets bad or fails – mobile, outage, island –, GPS takes over by itself.",
+      "with_pps": "With PPS the GPS is more accurate than any internet source and becomes the reference.",
+      "question": "Use GPS?",
+      "yes": "Yes, use GPS",
+      "no": "No",
+      "no_receiver": "Without a detected receiver GPS has nothing to read – check step 1 or the hardware page first.",
+      "pps_link": "How PPS works (guide) →",
+      "page_link": "To the GPS page →"
+    },
+    "clients": {
+      "card": "Clients",
+      "sub": "Enter this server's address in your devices or your router. Most convenient: the router hands it out via DHCP option 42.",
+      "address": "Address",
+      "hostname": "Host name",
+      "browser": "In the browser",
+      "unknown": "unknown – use the host's IP",
+      "devices": "Single devices",
+      "guides": "Guides",
+      "router": "Router (Pi-hole, OPNsense, UniFi, MikroTik …): Clients → set up clients →",
+      "option42": "What DHCP option 42 is →",
+      "enforce": "Devices with a built-in time server: enforce time server →",
+      "smarthome": "Smart home: guides for Home Assistant, Homepage, Glance and Uptime Kuma are in the repository under `docs/integrationen`."
+    },
+    "notify": {
+      "card": "Notifications",
+      "sub": "Nothing is active by default. Create a channel and send a test message – or simply move on.",
+      "none": "No channel yet.",
+      "add": "+ Add channel",
+      "no_right": "Channels are visible with admin rights only.",
+      "failed": "Could not load the channels."
+    },
+    "hint": {
+      "title": "Review setup",
+      "text": "New in 1.6: a short assistant checks volume, permissions, GPS and time sources.",
+      "open": "Have a look →",
+      "close": "Close the “Review setup” note"
+    },
+    "checklist": {
+      "title": "Setup: {done} of {total} done",
+      "open": "Open setup",
+      "close": "Close checklist",
+      "check": "Hardware checked",
+      "sources": "Time sources with NTS",
+      "gps": "GPS decided",
+      "clients": "First client asks",
+      "notify": "Notifications",
+      "optional": "optional",
+      "ok": "done",
+      "open_item": "open"
+    }
   }
 }

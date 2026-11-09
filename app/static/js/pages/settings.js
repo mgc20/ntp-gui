@@ -6,13 +6,23 @@ import { route } from "../routes.js";
 
 export const live = false; // nicht bei jedem Refresh neu aufbauen – Eingaben bleiben stehen
 
-const PRESETS = [
+// Vorlagen für Zeitquellen – feste Liste im Code (auch im Willkommens-Assistenten, pages/setup.js).
+export const PRESETS = [
   ["PTB (NTS)", [["server", "ptbtime1.ptb.de", true], ["server", "ptbtime2.ptb.de", true], ["server", "ptbtime3.ptb.de", true]]],
   ["Cloudflare (NTS)", [["server", "time.cloudflare.com", true]]],
   ["Netnod (NTS)", [["server", "nts.netnod.se", true]]],
   ["de.pool.ntp.org", [["pool", "de.pool.ntp.org", false]]],
   ["pool.ntp.org", [["pool", "pool.ntp.org", false]]],
 ];
+
+/** Quellenliste plus Vorlage: vorhandene Einträge bleiben, nur fehlende Server kommen hinten dazu. */
+export function withPreset(items, entries) {
+  const next = JSON.parse(JSON.stringify(items || []));
+  for (const [type, host, nts] of entries) {
+    if (!next.some((r) => r.host === host)) next.push({ type, host, nts, prefer: false, noselect: false, options: "" });
+  }
+  return next;
+}
 
 // ⓘ neben einzelnen Feldern: verweist auf die ausführliche Erklärung in der Hilfe.
 // Die sichtbare Zeile unter jedem Feld („hint“) und der Rest im ⓘ („more“) kommen vom Server (Schema).
@@ -562,7 +572,7 @@ const PREVIEW_STATUS = {
   unused: "settings.preview.unused", custom: "settings.preview.custom",
 };
 
-function previewFile(file) {
+export function previewFile(file) {
   const lines = Array.isArray(file.diff) ? file.diff : [];
   const added = lines.filter((l) => l.startsWith("+") && !l.startsWith("+++")).length;
   const removed = lines.filter((l) => l.startsWith("-") && !l.startsWith("---")).length;
@@ -861,11 +871,7 @@ export function render(ctx) {
             onclick: () => commit([...items, { type: "server", host: "", nts: false, prefer: false, noselect: false, options: "" }]) }),
           el("span", { class: "muted", text: "Vorlagen:" }),
           PRESETS.map(([label, entries]) => el("button", { type: "button", class: "chip", disabled, text: label, onclick: () => {
-            const next = clone(items);
-            for (const [t, h, nts] of entries) {
-              if (!next.some((r) => r.host === h)) next.push({ type: t, host: h, nts, prefer: false, noselect: false, options: "" });
-            }
-            commit(next);
+            commit(withPreset(items, entries));
           } }))));
     }
     draw(rows.map((r) => ({ options: "", ...r })));

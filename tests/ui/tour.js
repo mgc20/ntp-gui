@@ -17,6 +17,13 @@
 // Abstand, Tastenkürzel nicht im Suchfeld. Dazu die Einstellungen (settingsChecks): Reiter, Höhe < 2500 px
 // bei 1440 px, Suche, „nur Geänderte“, Speicherleiste, Vorschau-Dialog, Nachfrage beim Verlassen.
 //
+// Zuerst der Willkommens-Assistent (setupChecks): rundgang.sh startet mit leerem Datenverzeichnis = Erststart. Bei
+// 390 px öffnet die Startseite den Assistenten von selbst, alle fünf Schritte nur mit „Weiter“, dann „Später“ –
+// danach darf sich nichts geändert haben (Einstellungen, setup_done). Bei 1440 px dasselbe mit Vorlage und Vorschau
+// (ohne Übernehmen) und am Ende „Fertig“ – danach öffnet sich nichts mehr von selbst, und die Übersicht zeigt die
+// Checkliste. Je Schritt: Überschrift hat den Fokus, genau ein Schritt mit aria-current, keine Überbreite, keine
+// Tippfläche unter 24 px (ⓘ prüft infoHitCheck), keine CSP-Verstöße.
+//
 // Dazu die Clients (clientsChecks: Karten bei 390 px, Name direkt bearbeiten mit Enter/Esc) und die sichtbare
 // Wortzahl je Seite (wordCounts, Ausgabe „words“; TOUR_WORDS_ONLY=1 misst nur sie). Dazu pagesChecks mit erfundenen
 // Antworten: Clients mit Messwert (Zellen, ⓘ auf dem Handy) und Rohdaten der Ereignisse (TOUR_PAGES_ONLY=1).
@@ -31,7 +38,9 @@ const SHOTS = process.env.TOUR_SHOTS || "";
 // Kanonische Routen seit 1.6 (app/static/js/routes.js).
 const routes = ["/#/", "/#/quellen", "/#/gps", "/#/clients", "/#/clients/192.0.2.10", "/#/clients/192.0.2.10/pass",
   "/#/uhr/qualitaet", "/#/uhr/hardware", "/#/uhr/ptp", "/#/system/diagnose", "/#/system/benachrichtigungen",
-  "/#/system/einstellungen", "/#/hilfe", "/clock", "/?dev=1#/muster", "/#/muster"];
+  "/#/system/einstellungen", "/#/system/einrichtung", "/#/system/einrichtung/quellen", "/#/system/einrichtung/gps",
+  "/#/system/einrichtung/clients", "/#/system/einrichtung/benachrichtigung", "/#/hilfe", "/clock", "/?dev=1#/muster",
+  "/#/muster"];
 // Alte Routen (bis 1.5) und Gruppen ohne Reiter → erwartete Adresse nach der Weiterleitung (location.replace,
 // kein Verlaufseintrag). Alte Lesezeichen dürfen nie auf einer leeren Seite landen.
 const redirects = {
@@ -678,12 +687,187 @@ async function wordCounts(browser) {
   return counts;
 }
 
+// --- Willkommens-Assistent (1.6, T3) ----------------------------------------------------------------------
+async function apiJson(path, body) {
+  const opts = body === undefined ? {} : { method: "POST", headers: { "Content-Type": "application/json", "X-NTP-GUI": "1" },
+    body: JSON.stringify(body) };
+  const response = await fetch(BASE + path, opts);
+  return response.json();
+}
+
+async function settingsValues() {
+  const schema = await apiJson("/api/settings");
+  return JSON.stringify((schema.fields || []).map((f) => [f.key, f.value]));
+}
+
+// Läuft im Browser: Zustand eines Schritts.
+function setupStepState() {
+  const small = [];
+  for (const node of document.querySelectorAll("#main button:not(.info), #main .button, #main .chip, .setup-steps a, .setup-nav a, "
+    + ".setup-links a, .setup-choice, .setup-checklist-items a, #main .copy, #main .field-help a")) {
+    const r = node.getBoundingClientRect();
+    if (!r.width || !r.height) continue;
+    if (r.width < 24 || r.height < 24) small.push(`${(node.textContent || node.getAttribute("aria-label") || "").trim().slice(0, 24)} ${Math.round(r.width)}x${Math.round(r.height)}`);
+  }
+  const title = document.getElementById("setup-step-title");
+  return {
+    hash: location.hash,
+    title: title ? title.textContent.trim() : null,
+    focused: document.activeElement === title,
+    current: document.querySelectorAll('.setup-steps a[aria-current="step"]').length,
+    overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    small,
+    csp: window.__csp || [],
+  };
+}
+
+// Läuft im Browser: Wo steht der Tastaturfokus? (BODY = verloren)
+function focusWhere() {
+  const node = document.activeElement;
+  if (!node || node === document.body) return "BODY";
+  return `${node.tagName}.${node.className || ""}[${(node.textContent || node.getAttribute("aria-label") || "").trim().slice(0, 30)}]`;
+}
+
+async function setupChecks(browser) {
+  const found = [];
+  const lines = [];
+  const start = await apiJson("/api/setup");
+  if (start.install !== "fresh" || start.done || !start.auto_open) {
+    found.push(`Assistent: kein Erststart im Testaufbau ${JSON.stringify({ install: start.install, done: start.done })}`);
+  }
+  const values = await settingsValues();
+  for (const width of [390, 1440]) {
+    const ctx = await browser.newContext({ viewport: { width, height: 900 } });
+    await ctx.addInitScript(() => {
+      window.__csp = [];
+      document.addEventListener("securitypolicyviolation", (e) => window.__csp.push(`${e.violatedDirective} ${e.blockedURI}`));
+    });
+    const page = await ctx.newPage();
+    const errors = [];
+    page.on("pageerror", (e) => errors.push(e.message));
+    page.on("console", (m) => { if (m.type() === "error") errors.push(m.text()); });
+    page.on("dialog", (d) => d.accept());
+    await page.goto(`${BASE}/`, { waitUntil: "load" });
+    await page.waitForTimeout(2500);
+    let st = await page.evaluate(setupStepState);
+    if (st.hash !== "#/system/einrichtung") found.push(`${width} Assistent erscheint beim Erststart nicht von selbst (${st.hash})`);
+    for (let i = 0; i < 5; i += 1) {
+      st = await page.evaluate(setupStepState);
+      const want = `Schritt ${i + 1} von 5`;
+      if (!st.title || !st.title.includes(want)) found.push(`${width} Schritt ${i + 1}: Überschrift „${st.title}“`);
+      if (i > 0 && !st.focused) found.push(`${width} Schritt ${i + 1}: Fokus nicht auf der Überschrift`);
+      if (st.current !== 1) found.push(`${width} Schritt ${i + 1}: ${st.current} Schritte mit aria-current`);
+      if (st.overflow > 0) found.push(`${width} Schritt ${i + 1}: ${st.overflow} px Überbreite`);
+      if (st.small.length) found.push(`${width} Schritt ${i + 1}: Tippfläche < 24 px: ${st.small.slice(0, 4).join(" | ")}`);
+      if (st.csp.length) found.push(`${width} Schritt ${i + 1}: CSP ${st.csp.slice(0, 2).join(" | ")}`);
+      if (i === 3) {
+        // Loopback-Adresse aus dem Browser (der Rundgang läuft auf 127.0.0.1) nie als kopierbare Adresse anbieten.
+        const loop = await page.$$eval("#main code", (n) => n.map((c) => c.textContent).filter((x) => /^(127\.|localhost$|::1$)/.test(x)));
+        if (loop.length) found.push(`${width} Clients: Loopback-Adresse zum Kopieren angeboten (${loop.join(", ")})`);
+      }
+      if (i === 0) {
+        const checks = await page.$$eval(".setup-check", (n) => n.length);
+        if (!checks) found.push(`${width} Prüfen: keine Prüfpunkte`);
+      }
+      if (i === 1 && width === 1440) {
+        // Vorlage mit einem Klick, Vorschau (Diff), dann verwerfen – ohne Übernehmen wird nichts geschrieben.
+        // Per Tastatur: Der Chip ist danach gesperrt, die Übernehmen-Zeile verschwindet nach „Verwerfen“ – der
+        // Fokus darf in beiden Fällen nicht auf <body> fallen.
+        const chip = await page.$('.setup-presets .chip:not([disabled])');
+        if (!chip) found.push("1440 Zeitquellen: keine Vorlage klickbar");
+        else {
+          await chip.focus();
+          await page.keyboard.press("Enter");
+          await page.waitForTimeout(300);
+          const afterChip = await page.evaluate(focusWhere);
+          if (afterChip === "BODY") found.push("1440 Zeitquellen: Fokus nach Enter auf einer Vorlage verloren");
+          const added = await page.$$eval(".setup-sources .badge", (n) => n.filter((b) => b.textContent === "neu").length);
+          if (!added) found.push("1440 Zeitquellen: Vorlage fügt nichts hinzu");
+          await page.click('.setup-apply button:has-text("Vorschau")');
+          await page.waitForTimeout(1200);
+          const diff = await page.$$eval(".setup-preview .preview-file", (n) => n.length);
+          if (!diff) found.push("1440 Zeitquellen: Vorschau ohne Diff");
+          await page.focus('.setup-apply button:has-text("Verwerfen")');
+          await page.keyboard.press("Enter");
+          await page.waitForTimeout(300);
+          const afterDiscard = await page.evaluate(focusWhere);
+          if (afterDiscard === "BODY") found.push("1440 Zeitquellen: Fokus nach „Verwerfen“ verloren");
+          lines.push(`setup focus: chip ${afterChip} · verwerfen ${afterDiscard}`);
+        }
+      }
+      if (i < 4) {
+        // „Weiter“ per Tastatur: Fokus auf den Knopf, Enter.
+        await page.focus(".setup-nav a.primary");
+        await page.keyboard.press("Enter");
+        await page.waitForTimeout(1200);
+      }
+    }
+    if (width === 390) {
+      // „Zurück“ einmal, dann wieder vor – und „Später“: nichts geschrieben.
+      await page.click('.setup-nav a:has-text("Zurück")');
+      await page.waitForTimeout(800);
+      st = await page.evaluate(setupStepState);
+      if (!st.title?.includes("Schritt 4 von 5") || !st.focused) found.push(`390 Zurück: ${JSON.stringify({ title: st.title, focused: st.focused })}`);
+      await page.goBack();
+      await page.waitForTimeout(800);
+      await page.click('.setup-nav a:has-text("Später")');
+      await page.waitForTimeout(1500);
+      const after = await apiJson("/api/setup");
+      if (after.done) found.push("390 Später: setup_done gesetzt");
+      if (await settingsValues() !== values) found.push("390 Überspringen hat Einstellungen geändert");
+      const card = await page.$("#setup-checklist");
+      if (!card) found.push("390 Übersicht: Checkliste fehlt nach „Später“");
+      // Derselbe Browser öffnet die Startseite erneut: kein zweites Mal von selbst.
+      await page.goto(`${BASE}/`, { waitUntil: "load" });
+      await page.waitForTimeout(2000);
+      const again = await page.evaluate(() => location.hash);
+      if (again === "#/system/einrichtung") found.push("390 Assistent öffnet sich ein zweites Mal von selbst");
+    } else {
+      await page.click('.setup-nav button:has-text("Fertig")');
+      await page.waitForTimeout(2000);
+      const after = await apiJson("/api/setup");
+      if (!after.done) found.push("1440 Fertig: setup_done fehlt");
+      if (await settingsValues() !== values) found.push("1440 ohne Übernehmen wurden Einstellungen geändert");
+      const hash = await page.evaluate(() => location.hash);
+      if (hash !== "#/") found.push(`1440 Fertig: landet auf ${hash}`);
+      const card = await page.evaluate(() => {
+        const node = document.getElementById("setup-checklist");
+        return node ? node.querySelector("h2")?.textContent || "" : null;
+      });
+      if (card === null) found.push("1440 Übersicht: Checkliste fehlt");
+      else if (!/\d von 5 erledigt/.test(card)) found.push(`1440 Checkliste: „${card}“`);
+      lines.push(`setup checklist: ${card}`);
+      if (card !== null) {
+        // Schließen per Tastatur: Karte weg, Fokus nicht auf <body>.
+        await page.focus('#setup-checklist button[aria-label="Checkliste schließen"]');
+        await page.keyboard.press("Enter");
+        await page.waitForTimeout(1500);
+        const gone = !(await page.$("#setup-checklist"));
+        const where = await page.evaluate(focusWhere);
+        if (!gone) found.push("1440 Checkliste: ✕ schließt die Karte nicht");
+        if (where === "BODY") found.push("1440 Checkliste: Fokus nach ✕ verloren");
+        lines.push(`setup checklist close: ${gone ? "weg" : "da"} · Fokus ${where}`);
+      }
+    }
+    if (errors.length) found.push(`${width} Assistent: ${errors.slice(0, 3).join(" | ")}`);
+    lines.push(`setup ${width}: ${found.length ? "Befund" : "ok"}`);
+    await ctx.close();
+  }
+  return { found, lines };
+}
+
 (async () => {
   const browser = await chromium.launch();
   const results = [];
   let nav = { found: [], lines: [] };
   let words = {};
   try {
+    // Erststart (leeres Datenverzeichnis): erst den Assistenten durchgehen und mit „Fertig“ abschließen – sonst
+    // öffnete die Startseite in jedem neuen Browser-Kontext wieder den Assistenten.
+    const setupResult = process.env.TOUR_WORDS_ONLY || process.env.TOUR_PAGES_ONLY
+      ? (await apiJson("/api/setup", { action: "done" }), { found: [], lines: [] }) : await setupChecks(browser);
+    nav.found.push(...setupResult.found);
+    nav.lines.push(...setupResult.lines);
     if (process.env.TOUR_WORDS_ONLY) {
       console.log(JSON.stringify({ words: await wordCounts(browser) }, null, 1));
       return;
@@ -694,7 +878,9 @@ async function wordCounts(browser) {
       process.exitCode = result.found.length ? 1 : 0;
       return;
     }
-    nav = await navChecks(browser);
+    const navResult = await navChecks(browser);
+    nav.found.push(...navResult.found);
+    nav.lines.push(...navResult.lines);
     const settingsResult = await settingsChecks(browser);
     nav.found.push(...settingsResult.found);
     nav.lines.push(...settingsResult.lines);

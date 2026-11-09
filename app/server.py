@@ -75,6 +75,7 @@ import insights
 import instance
 import leap
 import notify
+import onboarding  # vor dem eigenen Code: merkt sich, ob das Datenverzeichnis schon Daten hatte
 import providers
 import ptp
 import settings
@@ -351,6 +352,20 @@ apiv1.endpoint("GET", "/time", None, "read",
                "dann ohne Quellennamen.",
                ["t1", "t2", "synchronised", "level", "accuracy", "stratum", "leap", "source_kind", "source",
                 "public"])
+
+# 1.6 (T3): Willkommens-Assistent – Zustand, Prüfpunkte und Checkliste; Schreiben nur mit Verwaltungsrecht.
+apiv1.endpoint("GET", "/setup", "/api/setup", "read",
+               "Willkommens-Assistent: Erststart oder Update, ob die Einrichtung abgeschlossen ist, Prüfpunkte aus "
+               "dem Hardware-Check (Volume, SYS_TIME, GPS, Pi-Zustand) je mit einer Abhilfe und die Checkliste der "
+               "Übersicht. Liest nur.",
+               ["install", "done", "auto_open", "hint", "readonly", "can_write", "checks", "checklist", "sources",
+                "gps", "clients", "notify"])
+apiv1.endpoint("POST", "/setup", "/api/setup", "admin",
+               "Zustand des Assistenten ändern. Body: {\"action\": \"done\"} (Einrichtung abgeschlossen), \"never\" "
+               "(abgeschlossen, auch die Checkliste nicht mehr zeigen), "
+               "\"close_hint\" (Hinweis „Einrichtung prüfen“ schließen), \"close_checklist\" (Checkliste schließen) "
+               "oder \"reset\" (wieder anzeigen). Ändert keine Einstellungen.",
+               ["install", "done", "hint_closed", "checklist_closed"])
 
 apiv1.endpoint("GET", "/update", "/api/update", "read",
                "Update-Hinweis (opt-in, Einstellung update_check): installierte und neueste Version auf GitHub, "
@@ -855,6 +870,8 @@ def build_status() -> dict:
             "auth": auth_info(),
             "storage": settings.storage_info(),
             "reload": reload_status(),
+            # 1.6 (T3): Assistent von selbst öffnen (Erststart) bzw. Hinweis „Einrichtung prüfen“ (Update).
+            "setup": onboarding.brief(env_flag("WEB_READONLY")),
         },
     }
     # GPS-Seite: wirklich aktiver PPS-Refclock und der Delay, den chrony nutzt (gemessen/Standard).
@@ -923,6 +940,21 @@ def _notify_summary() -> dict:
     enabled = [c for c in channels if c.get("enabled")]
     failing = [c for c in enabled if (c.get("status") or {}).get("state") == "error"]
     return {"channels": len(channels), "enabled": len(enabled), "failing": len(failing)}
+
+
+def setup_payload(readonly: bool, can_write: bool) -> dict:
+    """GET /api/setup (1.6, T3): Prüfpunkte aus dem Hardware-Check (zwischengespeichert, 30 s) und Checkliste."""
+    cfg = settings.values()
+    try:
+        report = hardware.report(cfg)
+    except Exception:  # der Assistent darf am Hardware-Check nie scheitern
+        report = None
+    try:
+        channels = len(notify.list_channels())
+    except Exception:
+        channels = 0
+    return onboarding.summary(cfg, report, settings.storage_info(), chrony.tracking(), len(chrony.clients()),
+                              channels, readonly, can_write)
 
 
 def _update_status() -> dict:
@@ -1968,6 +2000,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"keys": apikeys.list(), "auth_enabled": auth_info()["enabled"]})
         elif path == "/api/v1/instance":
             self._send_json(instance.info())
+        elif path == "/api/setup":
+            self._send_json(setup_payload(readonly=env_flag("WEB_READONLY"), can_write=not self._read_only_key()))
         elif path == "/api/update":
             self._send_json(updatecheck.checker(VERSION).status())
         elif path == "/metrics":
@@ -2240,6 +2274,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._error(HTTPStatus.CONFLICT, str(exc))
                 return
             self._settings_event("Einstellungen wiederhergestellt", result, ident)
+            onboarding.restored()  # Sicherung auf frischer Installation: „Einrichtung prüfen“ statt Assistent
             self._send_json(self._after_change(result))
         elif path == "/api/restore/cancel":
             token = data.get("token")
@@ -2355,6 +2390,13 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"ok": True, "auth": auth_info()})
         elif path == "/api/web/proxies/trust":
             self._trust_proxy(data, ident)
+        elif path == "/api/setup":
+            try:
+                result = onboarding.action(data.get("action"))
+            except ValueError as exc:
+                self._error(HTTPStatus.BAD_REQUEST, str(exc))
+                return
+            self._send_json({k: result.get(k) for k in ("install", "done", "hint_closed", "checklist_closed")})
         elif path == "/api/reload":
             self._send_json({"reload_triggered": trigger_reload()})
         else:
@@ -2438,6 +2480,8 @@ def main() -> None:
             print(f"[web] WARNUNG: WEB_ALLOWED_HOSTS enthält „{entry}“ – das gibt auch fremde Namen "
                   f"unter {entry[2:]} frei (DNS-Rebinding möglich). Besser nur den eigenen Namen "
                   f"eintragen, z. B. meinzeit.{entry[2:]}", flush=True)
+    # 1.6 (T3): Erststart oder Update festschreiben, bevor irgendetwas anderes ins Datenverzeichnis schreibt.
+    onboarding.remember()
     # 1.5.3: Folgen eines laufenden Holdover-Tests (keine Quelle ausgewählt …) nur als „info“, ohne Meldung.
     events.add_filter(holdover.event_filter)
     holdover.configure(trigger_reload=trigger_reload)

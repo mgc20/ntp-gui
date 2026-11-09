@@ -216,6 +216,16 @@ export const HELP = {
       + "braucht eine Gruppenrichtlinie oder `w32tm`.",
   },
 
+  setup: {
+    title: "Einrichtung (Willkommens-Assistent)",
+    text: "Fünf kurze Schritte unter **System → Einrichtung**: Hardware prüfen (Volume, Recht SYS_TIME, GPS, "
+      + "Pi-Zustand – je mit einer Abhilfe zum Kopieren), Zeitquellen mit NTS-Vorlagen, GPS ja/nein, Adresse für "
+      + "die Clients und optional eine Benachrichtigung. Jeder Schritt ist freiwillig; geändert wird nur, was du mit "
+      + "„Übernehmen“ bestätigst – über dieselbe Prüfung und Vorschau wie die Einstellungen. Beim ersten Start "
+      + "erscheint der Assistent von selbst, nach einem Update nur ein Hinweis. Die Checkliste auf der Übersicht "
+      + "verschwindet, wenn alles erledigt ist oder du sie schließt. Nichts davon verlässt den Server.",
+  },
+
   // ------------------------------------------------------------ Quellenliste
   source_type: {
     title: "Typ der Quelle",
@@ -911,7 +921,7 @@ export const SELECT_STATE_SHORT = {
 export const HELP_GROUPS = [
   { title: "Übersicht und Diagramme", keys: ["overview_verdict", "overview_hints", "overview_best_source",
     "overview_restarts", "overview_events", "chart_stats", "number_format"] },
-  { title: "Grundlagen", keys: ["ntp", "chronyd", "services", "stratum", "island", "minsources", "dhcp42", "clock_control", "local_orphan",
+  { title: "Grundlagen", keys: ["ntp", "chronyd", "services", "stratum", "island", "minsources", "dhcp42", "setup", "clock_control", "local_orphan",
     "setup_accuracy"] },
   { title: "Werte der Systemuhr", keys: ["reference", "system_offset", "uncertainty", "rms_offset", "frequency",
     "skew", "root_delay", "root_dispersion", "leap", "leap_source", "update_interval", "ref_time"] },

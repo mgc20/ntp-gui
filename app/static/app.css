@@ -550,7 +550,7 @@ pre.log { max-height: 260px; overflow: auto; white-space: pre-wrap; word-break: 
 .snippet { min-width: 0; }
 .snippet pre.code { overflow-x: auto; }
 .snippet-head { display: flex; justify-content: space-between; align-items: center; font-size: 13.5px; }
-.copy { padding: 3px 9px; font-size: 12px; }
+.copy { padding: 3px 9px; font-size: 12px; min-height: 26px; }  /* Tippfläche ≥ 24 px (T3-Rundgang) */
 .transitions { margin: 0; padding-left: 18px; font-size: 13.5px; }
 
 /* ---------- Hardware-Check ---------- */
@@ -1145,3 +1145,58 @@ details.explain-more[open] > summary { margin-bottom: 8px; }
 .client-card-fact { min-width: 0; }
 .client-card-fact dt { color: var(--ink-muted); font-size: 12px; }
 .client-card-fact dd { margin: 0; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+
+/* Willkommens-Assistent (1.6, T3): Schrittanzeige, Prüfpunkte, Weiter/Zurück. Tippflächen ≥ 32 px. */
+.setup-head-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px 14px; flex-wrap: wrap; }
+.setup-intro { margin: 0; color: var(--ink-2); font-size: 14px; flex: 1 1 260px; min-width: 0; }
+.setup-steps { list-style: none; margin: 14px 0 6px; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.setup-steps a { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 4px 10px 4px 4px;
+  border: 1px solid var(--border-soft); border-radius: 999px; color: var(--ink-2); font-size: 13px; text-decoration: none; }
+.setup-steps a:hover { border-color: var(--accent); text-decoration: none; }
+.setup-steps a.is-current { border-color: var(--accent); background: var(--accent-soft); color: var(--ink); font-weight: 600; }
+.setup-step-no { display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 50%;
+  background: var(--surface-2); border: 1px solid var(--border); font-size: 12px; font-variant-numeric: tabular-nums; }
+.setup-steps a.is-current .setup-step-no { background: var(--accent); border-color: var(--accent); color: var(--on-status); }
+.setup-title { margin: 12px 0 4px; font-size: 18px; }
+.setup-title:focus { outline: none; }
+.setup-title:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 4px; }
+.setup-count { color: var(--ink-muted); font-weight: 500; font-size: 14px; }
+.setup-checks { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.setup-check { border: 1px solid var(--border-soft); border-left-width: 3px; border-radius: 10px; padding: 10px 12px; min-width: 0;
+  overflow-wrap: anywhere; }
+.setup-check[data-tone="good"] { border-left-color: var(--good); }
+.setup-check[data-tone="crit"] { border-left-color: var(--crit); }
+.setup-check[data-tone="info"] { border-left-color: var(--accent); }
+.setup-check-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.setup-check-text, .setup-remedy { margin: 6px 0 0; font-size: 13.5px; }
+.setup-check .snippet { margin-top: 8px; }
+.setup-sources { list-style: none; margin: 0 0 8px; padding: 0; display: grid; gap: 6px; }
+.setup-sources li { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; overflow-wrap: anywhere; }
+.setup-presets { display: flex; flex-wrap: wrap; gap: 6px; }
+.setup-presets .chip { min-height: 32px; }
+.setup-apply { margin-top: 12px; }
+.setup-preview { margin-top: 12px; min-width: 0; }
+.setup-preview .diff { max-height: 320px; overflow: auto; }
+.setup-found { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 0 0 8px; }
+.setup-choices { border: 0; margin: 10px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 8px 18px; min-width: 0; }
+.setup-choices legend { font-weight: 600; font-size: 14px; margin-bottom: 6px; padding: 0; }
+.setup-choice { display: inline-flex; align-items: center; gap: 8px; min-height: 32px; cursor: pointer; }
+.setup-choice input { width: 18px; height: 18px; margin: 0; }
+.setup-copy { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; overflow-wrap: anywhere; }
+.setup-links { margin: 0; padding-left: 18px; display: grid; gap: 6px; font-size: 13.5px; }
+.setup-links a { display: inline-block; min-height: 24px; padding: 2px 0; }
+/* Einzeln stehende Links („Ganzer Hardware-Check →“ …): 24 px Tippfläche wie .setup-links */
+.setup-more a { display: inline-block; min-height: 24px; padding: 4px 0; }
+.setup-nav { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin: 4px 0 18px; }
+.setup-nav-end { display: flex; gap: 8px; flex-wrap: wrap; margin-left: auto; }
+.setup-nav .button, .setup-head .button { min-height: 36px; }
+/* Übersicht: Checkliste und dezenter Hinweis nach einem Update */
+.setup-checklist-items { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px 18px;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 210px), 1fr)); }
+.setup-checklist-items li { display: flex; align-items: center; gap: 8px; min-height: 32px; min-width: 0; }
+.setup-checklist-items a { display: inline-block; padding: 4px 0; }
+.setup-mark { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; flex: none;
+  border: 1px solid var(--border); color: var(--ink-muted); font-size: 12px; }
+.setup-checklist-items li[data-ok="true"] .setup-mark { background: var(--good-soft); border-color: transparent; color: var(--good-ink); }
+.setup-note { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding-top: 10px; padding-bottom: 10px; }
+.setup-note-text { margin: 0; font-size: 14px; min-width: 0; }

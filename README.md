@@ -162,6 +162,17 @@ dieser Version (der Hinweis steht auch in jeder Compose-Vorlage). Das Image ist 
 `ghcr.io/congp20/ntp-gui` nach `ghcr.io/mgc20/ntp-gui` umgezogen; am alten Ort erscheinen
 keine neuen Versionen mehr.
 
+Beim ersten Öffnen des Dashboards (leeres Datenverzeichnis) erscheint der **Willkommens-Assistent**
+„In 3 Minuten fertig“: fünf Schritte – Prüfen (Volume, `SYS_TIME`, GPS, Pi-Zustand, je mit einer
+Compose-Zeile zum Kopieren), Zeitquellen (NTS-Vorlagen PTB, Cloudflare, Netnod – deine Auswahl bleibt),
+GPS ja/nein, Adresse und Schnipsel für die Clients, optional eine Benachrichtigung. Jeder Schritt ist
+freiwillig; gespeichert wird nur mit „Übernehmen“, mit derselben Prüfung und Vorschau wie unter
+Einstellungen. Danach zeigt die Übersicht eine Checkliste („3 von 5 erledigt“), bis alles erledigt ist oder
+du sie schließt. Nach einem Update von 1.5.x öffnet sich nichts von selbst, die Übersicht zeigt einmalig den
+Hinweis „Einrichtung prüfen“. Jederzeit erreichbar unter **System → Einrichtung**; mit `WEB_READONLY`
+nur lesend. Der Zustand liegt in `DATA_DIR/einrichtung.json` und gehört nicht in die Sicherung (er
+beschreibt das Gerät, nicht die Einstellungen). Nichts davon verlässt den Server.
+
 Prüfen, ob der Server antwortet (von einem Client aus – `chronyc -h` funktioniert
 hier nicht, weil der Kommando-Port des Containers bewusst deaktiviert ist):
 
@@ -1679,6 +1690,7 @@ Einstellungen laufen) und `ntpgui_service_restarts_total`. Der mitgelieferte Ala
 | `/api/clockquality/allan` | Allan-Abweichung der Systemuhr (Seite Uhrqualität, ab 1.5.4) |
 | `/api/v1/time` | Serverzeit mit Zeitstempeln für die Vollbild-Uhr `/clock` |
 | `/api/update` | Zustand des Update-Hinweises (ohne Netzzugriff, wenn ausgeschaltet) |
+| `/api/setup` | Willkommens-Assistent: Erststart oder Update, Prüfpunkte mit Abhilfe, Checkliste der Übersicht; `POST {"action": "done"\|"never"\|"close_hint"\|"close_checklist"\|"reset"}` mit Verwaltungsrecht (ändert keine Einstellungen) |
 | `/api/apikeys` (Alias `/api/keys`) | API-Schlüssel auflisten, `POST` legt an, `/api/apikeys/revoke` widerruft (nur mit Benutzer/Passwort) |
 | `/api/v1/instance` | Zufällige Instanz-Kennung; `POST /api/instance/rotate` erzeugt eine neue (nur mit Benutzer/Passwort) |
 | `/api/v1/…` | Versionierte, stabile API (Alias der Pfade oben); `GET /api/v1` beschreibt alle Endpunkte samt nötigem Recht, siehe [API & Automatisierung](#api--automatisierung) |

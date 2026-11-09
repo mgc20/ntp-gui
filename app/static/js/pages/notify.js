@@ -30,7 +30,7 @@ function fmtWhen(unix) {
   return fmtDate(unix, { time: "medium", empty: "nie" });
 }
 
-function blankDraft(cfg) {
+export function blankDraft(cfg) {
   const d = cfg.defaults || {};
   return { id: null, name: "", type: "ntfy", url: "", urlHidden: false, urlShown: "", origType: null, secret: "", clearSecret: false, secretSet: false,
     min_level: d.min_level || "warn", kinds: [], debounce_min: d.debounce_min ?? 15,
@@ -82,7 +82,7 @@ function kindsText(channel, cfg) {
 }
 
 // --- Liste der Kanäle --------------------------------------------------------------
-function channelCard(ctx, cfg, channel, disabled) {
+export function channelCard(ctx, cfg, channel, disabled) {
   const ui = ctx.uiState;
   const st = channel.status || {};
   const [stateText, tone] = STATE_BADGE[st.state] || STATE_BADGE.never;
@@ -137,7 +137,7 @@ function channelCard(ctx, cfg, channel, disabled) {
 }
 
 // --- Editor --------------------------------------------------------------------------
-function editorCard(ctx, cfg, disabled) {
+export function editorCard(ctx, cfg, disabled) {
   const ui = ctx.uiState;
   const d = ui.notifyDraft;
   const fields = TYPE_FIELDS[d.type] || TYPE_FIELDS.webhook;

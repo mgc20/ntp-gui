@@ -32,10 +32,32 @@ export const PAGES = [
   { id: "diagnose", path: "system/diagnose", nav: "system", tab: true, titleKey: "nav.diagnose", history: false },
   { id: "notify", path: "system/benachrichtigungen", nav: "system", tab: true, titleKey: "nav.notify", history: false },
   { id: "settings", path: "system/einstellungen", nav: "system", tab: true, titleKey: "nav.settings" },
+  // 1.6 (T3): Willkommens-Assistent – Reiter „Einrichtung“ unter System, kein eigener Navigationseintrag.
+  // Die Schritte sind Unterpfade (#/system/einrichtung/quellen), damit „Zurück“ im Browser einen Schritt zurückgeht.
+  { id: "setup", path: "system/einrichtung", nav: "system", tab: true, titleKey: "nav.setup", history: false },
   { id: "help", path: "hilfe", nav: "help", titleKey: "nav.help" },
   // Nur für Entwicklung: Musterseite mit allen Bausteinen, erreichbar mit ?dev=1 (nicht in der Navigation).
   { id: "muster", path: "muster", nav: null, title: "Musterseite", dev: true, history: false },
 ];
+
+/**
+ * Schritte des Willkommens-Assistenten (pages/setup.js) als Unterpfade von #/system/einrichtung; key = Kennung
+ * des Punkts in der Checkliste (GET /api/setup), die auf der Übersicht auf den Schritt verlinkt.
+ */
+export const SETUP_STEPS = [
+  { id: "pruefen", key: "check" },
+  { id: "quellen", key: "sources" },
+  { id: "gps", key: "gps" },
+  { id: "clients", key: "clients" },
+  { id: "benachrichtigung", key: "notify" },
+];
+
+/** Link auf einen Schritt des Assistenten (Index oder Kennung der Checkliste). */
+export function setupHref(step) {
+  const index = typeof step === "number" ? step : SETUP_STEPS.findIndex((s) => s.key === step);
+  const at = Math.max(0, Math.min(SETUP_STEPS.length - 1, index));
+  return route("setup", at > 0 ? SETUP_STEPS[at].id : "");
+}
 
 /** Gruppenpfade ohne Reiter → erster Reiter. */
 export const GROUPS = { uhr: "uhr/qualitaet", system: "system/diagnose" };
@@ -122,6 +144,7 @@ export function navOf(page) {
 export const ACTION_PAGES = {
   gps: "gps", sources: "sources", clients: "clients", settings: "settings", ptp: "ptp", hardware: "hardware",
   clockquality: "clockquality", diagnose: "diagnose", notify: "notify", uhrqualitaet: "clockquality",
+  setup: "setup",
 };
 
 /** Link eines Hinweises oder null, wenn die Aktion unbekannt ist. */

@@ -17,6 +17,14 @@ Der Rundgang öffnet jede Route bei 1440 und 390 px, hell und dunkel, und meldet
   ungespeicherten Änderungen, Tastaturfokus nach „Verwerfen“ und „zurücksetzen“, alte Sprungziele
   (`?s=dns`, `?s=api`) auch beim wiederholten Sprung und der Schalter „Nächtliche Sicherung“ im Reiter „Sichern“.
 
+- zuerst der Willkommens-Assistent: Der Testaufbau startet mit leerem Datenverzeichnis (Erststart). Bei 390 und
+  1440 px öffnet die Startseite den Assistenten von selbst; alle fünf Schritte per „Weiter“ (Tastatur), je Schritt
+  Fokus auf der Überschrift, genau ein `aria-current="step"`, keine Überbreite, keine Tippfläche unter 24 px. Bei
+  390 px danach „Später“ – Einstellungen und `setup_done` unverändert, kein zweites automatisches Öffnen; bei
+  1440 px eine NTS-Vorlage per Tastatur mit Vorschau (Diff) und „Verwerfen“ (Fokus darf dabei nie auf `<body>`
+  fallen), dann „Fertig“ – danach die Checkliste auf der Übersicht, die sich per Tastatur schließen lässt (Fokus
+  danach auf dem Hauptinhalt). Einzeln stehende Links zählen bei der 24-px-Prüfung mit; im Schritt Clients wird
+  keine Loopback-Adresse zum Kopieren angeboten. In `TOUR_WORDS_ONLY`/`TOUR_PAGES_ONLY` wird der Assistent nur per API abgeschlossen.
 - auf der Clients-Seite: bei 390 px Karten statt Tabelle ohne Überbreite, bei 1440 px die Tabelle, Name direkt in
   der Liste (✎ öffnet das Feld, Esc bricht ab, Enter speichert; der Name wird danach wieder entfernt),
 - die sichtbare Wortzahl je Seite (`words` in der Ausgabe: innerText des Inhalts bei 1440 px, hell, ohne

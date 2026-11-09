@@ -12,6 +12,7 @@ import * as clients from "./pages/clients.js";
 import * as diagnose from "./pages/diagnose.js";
 import * as notify from "./pages/notify.js";
 import * as settings from "./pages/settings.js";
+import * as setup from "./pages/setup.js";
 import * as help from "./pages/help.js";
 import * as muster from "./pages/muster.js";
 import { t, initI18n, setLanguage, language, LANGUAGES, onLanguageChange } from "./i18n.js";
@@ -19,7 +20,7 @@ import { NAV, resolve, route, tabsOf, navOf } from "./routes.js";
 import { createShortcuts, shortcutList } from "./shortcuts.js";
 
 // Routentabelle, alte Routen und Reiter stehen in routes.js (ohne DOM, in Node getestet).
-const MODULES = { overview, sources, gps, clients, clockquality, hardware, ptp, diagnose, notify, settings, help, muster };
+const MODULES = { overview, sources, gps, clients, clockquality, hardware, ptp, diagnose, notify, settings, setup, help, muster };
 
 // ?dev=1 in der Adresse (vor oder nach dem #) schaltet die Entwicklerseiten frei.
 function devMode() {
@@ -269,6 +270,7 @@ async function refresh() {
       page.history ? apiGet(`/api/history?range=${state.range}&points=600`) : Promise.resolve(null),
     ]);
     state.status = status;
+    openSetupOnce(status);
     if (history) state.history = history.samples || [];
     state.failed = 0;
     state.lastOk = (isNum(status?.system?.time) ? status.system.time : Date.now() / 1000) * 1000;
@@ -292,6 +294,22 @@ async function refresh() {
   const every = Math.max(1, state.status?.system?.refresh_seconds || 5) * 1000;
   clearTimeout(state.timer); // zwei überlappende Abfragen (online + Timer) dürfen keine zweite Kette starten
   state.timer = setTimeout(refresh, state.failed ? Math.min(30000, every * (state.failed + 1)) : every);
+}
+
+// 1.6 (T3): Erststart (frische Installation, Einrichtung nicht abgeschlossen) – der Willkommens-Assistent
+// erscheint von selbst, aber nur beim Öffnen der Startseite und nur einmal je Browser (localStorage): Wer
+// „Später“ wählt und zur Übersicht geht, findet dort die Checkliste und landet nicht immer wieder im Assistenten.
+// Ohne Schreibrecht (WEB_READONLY) meldet der Server auto_open = false.
+let setupChecked = false;
+function openSetupOnce(status) {
+  if (setupChecked) return false;
+  setupChecked = true;
+  const hash = window.location.hash;
+  if (!status?.ui?.setup?.auto_open || (hash && hash !== "#/" && hash !== "#")) return false;
+  if (storageGet("ntp-gui-setup-opened", false)) return false;
+  storageSet("ntp-gui-setup-opened", true);
+  window.location.replace(route("setup")); // hashchange zeichnet den Assistenten
+  return true;
 }
 
 // Verbindungsverlust sichtbar machen: Inhalt bleibt stehen, darüber steht, seit wann er veraltet ist.

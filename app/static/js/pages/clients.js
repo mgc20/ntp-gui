@@ -7,11 +7,12 @@ import { renderDetail, fmtOffset, offsetTone, fmtInterval, clientHref, STATE_TON
 import { renderPass } from "./clientpass.js";
 
 // Platzhalter, wenn die LAN-Adresse nicht bekannt ist – in den Beispielen gut sichtbar.
-const IP_PLACEHOLDER = "<IP-des-Servers>";
+export const IP_PLACEHOLDER = "<IP-des-Servers>";
 
 // Loopback und das Standard-Docker-Bridge-Netz (172.17.0.0/16) sind von anderen
 // Geräten im LAN aus nicht erreichbar – solche Adressen nie als Serveradresse zeigen.
-function usableAddress(addr) {
+// Auch im Willkommens-Assistenten (pages/setup.js): Loopback und Docker-Brücke helfen keinem Gerät im Netz.
+export function usableAddress(addr) {
   if (!addr) return false;
   const a = String(addr).toLowerCase().replace(/^\[|\]$/g, "");
   if (a === "localhost" || a === "::1" || a === "0.0.0.0" || a.startsWith("127.")) return false;
@@ -25,7 +26,7 @@ function isIp(text) {
 }
 
 // Adresse, unter der Clients diesen Server erreichen – oder null, wenn keine bekannt ist.
-function serverAddress(status) {
+export function serverAddress(status) {
   const host = window.location.hostname;
   if (usableAddress(host) && isIp(host)) return host.replace(/^\[|\]$/g, "");
   const addresses = (status.system || {}).addresses || [];
@@ -35,7 +36,17 @@ function serverAddress(status) {
   return usableAddress(host) ? host : null;
 }
 
-function snippet(title, code) {
+// Schnipsel für Geräte, die Option 42 ignorieren – auch im Willkommens-Assistenten (pages/setup.js).
+export function clientSnippets(ip) {
+  return [
+    snippet("Windows (als Administrator)", `w32tm /config /manualpeerlist:"${ip},0x8" /syncfromflags:manual /update\nw32tm /resync /force\nw32tm /query /status`),
+    snippet("Linux mit systemd-timesyncd", `# /etc/systemd/timesyncd.conf\n[Time]\nNTP=${ip}\n\nsudo systemctl restart systemd-timesyncd\ntimedatectl timesync-status`),
+    snippet("Linux mit chrony", `# /etc/chrony/chrony.conf (bzw. /etc/chrony.conf)\nserver ${ip} iburst\n\nsudo systemctl restart chrony\nchronyc sources`),
+    snippet("macOS", `sudo systemsetup -setnetworktimeserver ${ip}\nsudo sntp -sS ${ip}`),
+  ];
+}
+
+export function snippet(title, code) {
   const pre = el("pre", { class: "code", text: code });
   const copy = copyButton(code, pre);
   return el("div", { class: "snippet" }, el("div", { class: "snippet-head" }, el("strong", { text: title }), copy), pre);
@@ -654,11 +665,7 @@ export function render(ctx) {
       snippet("OPNsense / pfSense", `Dienste → DHCP-Server → Interface → NTP-Server 1: ${ip}`),
       snippet("UniFi", `Einstellungen → Netzwerke → DHCP → NTP-Server: ${ip}`)),
     el("details", { class: "explain-more" }, el("summary", { text: tr("pages.clients.ignore_42") }),
-    el("div", { class: "snippets" },
-      snippet("Windows (als Administrator)", `w32tm /config /manualpeerlist:"${ip},0x8" /syncfromflags:manual /update\nw32tm /resync /force\nw32tm /query /status`),
-      snippet("Linux mit systemd-timesyncd", `# /etc/systemd/timesyncd.conf\n[Time]\nNTP=${ip}\n\nsudo systemctl restart systemd-timesyncd\ntimedatectl timesync-status`),
-      snippet("Linux mit chrony", `# /etc/chrony/chrony.conf (bzw. /etc/chrony.conf)\nserver ${ip} iburst\n\nsudo systemctl restart chrony\nchronyc sources`),
-      snippet("macOS", `sudo systemsetup -setnetworktimeserver ${ip}\nsudo sntp -sS ${ip}`))));
+    el("div", { class: "snippets" }, clientSnippets(ip))));
 
   return [
     el("div", { class: "stat-row" },
