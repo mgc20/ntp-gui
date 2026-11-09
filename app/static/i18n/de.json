@@ -242,7 +242,68 @@
       "intro": "Log, Ereignisse und Diagnosepaket für die Fehlersuche – nichts davon wird automatisch hochgeladen.",
       "privacy": "Mit Datenschutzfilter."
     },
-    "more": "Mehr dazu"
+    "more": "Mehr dazu",
+    "timeline": {
+      "title": "Heute – letzte 24 Stunden",
+      "sub": "Eine Farbe je 5 Minuten. Tippe auf eine Stelle oder wähle sie mit den Pfeiltasten und Enter – dann siehst du, wie es dort aussah.",
+      "what": "die Zeitleiste",
+      "band_label": "Zustand der letzten 24 Stunden",
+      "band_hint": "Pfeiltasten: 5 Minuten weiter, Bild auf/ab: eine Stunde, Pos1/Ende: Anfang/Ende, Enter: so sah es dort aus.",
+      "legend_label": "Farben im Band",
+      "now": "jetzt",
+      "state": {
+        "good": "synchron",
+        "warn": "Warnung",
+        "crit": "Fehler",
+        "holdover": "Holdover",
+        "none": "keine Daten"
+      },
+      "group": {
+        "source": "Quellenwechsel",
+        "gps": "GPS-Ausfall",
+        "restart": "Neustart",
+        "pi": "Pi-Spannung",
+        "warn": "Warnung"
+      },
+      "filter_label": "Ereignisse in Band und Diagrammen",
+      "marker_more_one": "und {count} weiteres",
+      "marker_more_other": "und {count} weitere",
+      "events_count_one": "{count} Ereignis",
+      "events_count_other": "{count} Ereignisse",
+      "events_marked_one": "{count} Ereignis markiert",
+      "events_marked_other": "{count} Ereignisse markiert",
+      "moment": {
+        "title": "So sah es um {time} aus",
+        "what": "den Messpunkt",
+        "loading": "Lade den Messpunkt …",
+        "none": "Kein Messpunkt in der Nähe – hier fehlt der Verlauf.",
+        "state": "Zustand",
+        "source": "Quelle",
+        "no_source": "keine – die Uhr läuft frei",
+        "offset": "Abweichung",
+        "bound": "Fehlerschranke",
+        "satellites": "Satelliten",
+        "satellites_value": "{used} genutzt von {seen}",
+        "point": "Messpunkt von",
+        "events": "Ereignisse um diese Zeit",
+        "close": "Schließen"
+      },
+      "report": {
+        "title": "Tagesbericht",
+        "yesterday": "Gestern",
+        "synced": "{pct} % synchron",
+        "worst": "schlechtester Wert ± {value}",
+        "devices_one": "{n} Gerät",
+        "devices_other": "{n} Geräte",
+        "gps": "GPS {hours} h nutzbar",
+        "pi_0": "Pi ohne Unterspannung",
+        "pi_1": "Pi zeitweise gedrosselt",
+        "pi_2": "Pi mit Unterspannung",
+        "partial": "Verlauf nur über {hours} h",
+        "empty": "Der erste Tagesbericht erscheint nach dem ersten ganzen Tag mit Verlauf.",
+        "pending": "Der Tagesbericht für gestern wird gerade berechnet – gleich noch einmal nachsehen."
+      }
+    }
   },
   "setup": {
     "title": "Einrichtung",

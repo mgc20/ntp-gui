@@ -89,6 +89,21 @@ endpoint("GET", "/events", "/api/events", "read",
          ["events"],
          {"since": "ab Unix-Zeit", "until": "bis Unix-Zeit", "kinds": "Arten, mit Komma getrennt",
           "level": "Mindeststufe: info, warn oder crit", "limit": "höchstens so viele (1–5000)"})
+endpoint("GET", "/timeline", "/api/timeline", "read",
+         "„Heute“-Zeitleiste: Zustandsband der letzten 24 h in 5-Minuten-Fenstern (states: g synchron, "
+         "w Warnung, c Fehler, h Holdover, n keine Daten), Ereignismarker darin und Tagesbericht für gestern. "
+         "Vorverdichtet, ohne Rohverlauf.",
+         ["now", "start", "end", "bucket", "states", "runs", "markers", "report", "thresholds"])
+endpoint("GET", "/timeline/markers", "/api/timeline/markers", "read",
+         "Ereignismarker für Diagramme (Quellenwechsel, GPS-Ausfall, Neustart, Pi-Spannung, Warnungen), "
+         "älteste zuerst, höchstens 2000.",
+         ["since", "until", "groups", "markers"],
+         {"range": "Zeitraum in Sekunden bis jetzt (Standard 86400, höchstens 31 Tage)"})
+endpoint("GET", "/timeline/at", "/api/timeline/at", "read",
+         "„So sah es um … aus“: Quelle, Offset, Fehlerschranke und Anzahl der Satelliten aus dem "
+         "nächstgelegenen Messpunkt (höchstens 10 min entfernt) und Ereignisse daneben. Keine Satellitenwinkel.",
+         ["t", "sample", "events"],
+         {"t": "Zeitpunkt (Unix-Zeit)"})
 endpoint("GET", "/instance", None, "read",
          "Zufällige Kennung dieser Instanz (nicht aus der Hardware abgeleitet).",
          ["instance_id", "since", "note"])

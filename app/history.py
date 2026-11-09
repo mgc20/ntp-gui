@@ -65,6 +65,7 @@ except ImportError:  # pragma: no cover – Python ohne sqlite3
 
 import gpsquality
 import store
+import timeline
 
 _NUMERIC_TOP = ("offset", "rms", "freq", "skew", "root_delay", "root_dispersion",
                 "stratum", "served", "clients", "temp", "pi_state")
@@ -403,6 +404,95 @@ class History:
         params["w"] = width
         return None, _aggregate(self._db, table, params)
 
+    # --- Zeitleiste (1.6, T7) ----------------------------------------------------
+    def band_counts(self, lower: float, upper: float) -> dict[int, dict]:
+        """Zähler je Zustand (timeline.state_counts) je 5-Minuten-Fenster b = t // ROLLUP_SECONDS in
+        [lower, upper]. Aus der Vorverdichtung (samples_5m, Feld „z“); nur die Fenster, die der Puffer der
+        letzten Minuten berührt, werden aus Rohpunkten neu gezählt (höchstens ein, zwei Fenster)."""
+        lo_b, hi_b = int(lower) // ROLLUP_SECONDS, int(upper) // ROLLUP_SECONDS
+        out: dict[int, dict] = {}
+        if not self._sql:
+            groups: dict[int, list[dict]] = {}
+            for sample in self.snapshot(lo_b * ROLLUP_SECONDS):
+                b = int(sample["t"]) // ROLLUP_SECONDS
+                if lo_b <= b <= hi_b:
+                    groups.setdefault(b, []).append(sample)
+            return {b: timeline.state_counts(chunk) for b, chunk in groups.items()}
+        with self._lock:
+            rows = self._db("SELECT b, json FROM samples_5m WHERE b >= ? AND b <= ?", (lo_b, hi_b))
+            pending = [s for s in self._pending if _valid(s) and lo_b <= int(s["t"]) // ROLLUP_SECONDS <= hi_b]
+            touched: dict[int, dict[int, Any]] = {}
+            for b in {int(s["t"]) // ROLLUP_SECONDS for s in pending}:
+                raw = self._db("SELECT t, json FROM samples WHERE t >= ? AND t < ?",
+                               (b * ROLLUP_SECONDS, (b + 1) * ROLLUP_SECONDS))
+                touched[b] = {int(t): text for t, text in raw}
+        for b, text in rows:
+            try:
+                point = json.loads(text)
+            except (TypeError, ValueError):
+                continue
+            z = point.get("z") if isinstance(point, dict) else None
+            out[b] = z if isinstance(z, dict) else timeline.state_counts([point])
+        for b, raw in touched.items():
+            merged: dict[int, Any] = dict(raw)
+            for sample in pending:
+                if int(sample["t"]) // ROLLUP_SECONDS == b:
+                    merged[int(sample["t"])] = sample
+            chunk = []
+            for value in merged.values():
+                if isinstance(value, str):
+                    try:
+                        value = json.loads(value)
+                    except ValueError:
+                        continue
+                chunk.append(value)
+            out[b] = timeline.state_counts(chunk)
+        return out
+
+    def nearest(self, at: float, window: float) -> dict | None:
+        """Der Messpunkt, der `at` am nächsten liegt (höchstens `window` Sekunden entfernt), sonst None."""
+        best = None
+        if self._sql:
+            with self._lock:
+                rows = self._db("SELECT t, json FROM samples WHERE t >= ? AND t <= ? "
+                                "ORDER BY abs(t - ?), t LIMIT 1", (at - window, at + window, at))
+                pending = [s for s in self._pending if _valid(s) and abs(s["t"] - at) <= window]
+            if rows:
+                try:
+                    best = json.loads(rows[0][1])
+                except (TypeError, ValueError):
+                    best = None
+            for sample in pending:
+                if best is None or abs(sample["t"] - at) < abs(best.get("t", 0) - at):
+                    best = sample
+            return best
+        for sample in self.snapshot(at - window):
+            if abs(sample.get("t", 0) - at) <= window and (best is None or abs(sample["t"] - at) < abs(best["t"] - at)):
+                best = sample
+        return best
+
+    def report_rows(self, start: float, end: float) -> list[tuple]:
+        """Messpunkte in [start, end) für den Tagesbericht, zeitlich sortiert, ohne JSON zu dekodieren:
+        (t, offset, Quelle ausgewählt, clients, GPS-Feld vorhanden, GPS-Fix-Modus, pi_state)."""
+        if self._sql:
+            sql = (_cte("samples") + "SELECT t, " + _num_expr("j", "$.offset") + ", "
+                   "EXISTS (SELECT 1 FROM json_each(j, '$.sources') e WHERE json_extract(e.value, '$.s') = '*'), "
+                   + _num_expr("j", "$.clients") + ", json_type(j, '$.gps') = 'object', "
+                   + _num_expr("j", "$.gps.mode") + ", " + _num_expr("j", "$.pi_state") + " FROM d ORDER BY t")
+            with self._lock:
+                params = {"lo": start, "hi": math.ceil(end) - 1, "p": self._pending_json()}
+            return [tuple(row) for row in self._db(sql, params)]
+        out = []
+        for s in self.snapshot(start):
+            if not start <= s.get("t", 0) < end:
+                continue
+            gps = s.get("gps")
+            num = lambda v: v if isinstance(v, (int, float)) and not isinstance(v, bool) else None  # noqa: E731
+            out.append((s["t"], num(s.get("offset")), timeline.selected_source(s) is not None, num(s.get("clients")),
+                        isinstance(gps, dict), num(gps.get("mode")) if isinstance(gps, dict) else None,
+                        num(s.get("pi_state"))))
+        return out
+
     def stats(self) -> dict:
         """Zustand für Diagnose/Statusseite (ohne Messwerte)."""
         info = {"backend": self.backend, "days": self.days, "size": self.size,
@@ -563,6 +653,9 @@ def _store_bucket(conn, b: int, rows: list[tuple]) -> None:
         conn.execute("DELETE FROM samples_5m WHERE b = ?", (b,))
         return
     merged = downsample(chunk, 1)[0]
+    # 1.6 (T7): Zähler je Zustand für das Zustandsband (timeline.py) – so liest das Band 288 Zeilen statt
+    # des Rohverlaufs. Ältere Zeilen ohne „z“ leitet timeline aus dem gemittelten Punkt ab.
+    merged["z"] = timeline.state_counts(chunk)
     conn.execute("INSERT OR REPLACE INTO samples_5m(b, t, json) VALUES(?, ?, ?)",
                  (b, int(merged["t"]), _dumps(merged)))
 

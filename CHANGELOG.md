@@ -75,6 +75,10 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 - **„Wie falsch geht dein Gerät?“** (`/clock` → „Mein Gerät“): wie weit die Uhr deines Handys oder PCs danebenliegt, groß und mit Ampel. Die Messung bleibt in deinem Browser und wird weder gespeichert noch gesendet.
 - Kleines Osterei am 30. Juni und 31. Dezember: ein Hinweis, dass heute 23:59:60 möglich wäre.
 - `/api/v1/time` liefert zusätzlich `leap_next`, das Datum der nächsten angekündigten Schaltsekunde.
+- **„Heute“-Zeitleiste auf der Übersicht:** Ein Band zeigt die letzten 24 Stunden in 5-Minuten-Abschnitten (synchron, Warnung, Fehler, Holdover), darüber Marker für Quellenwechsel, GPS-Ausfall, Neustart, Pi-Spannung und Warnungen. Tippst du auf eine Stelle (oder nutzt Tab, Pfeiltasten und Enter), öffnet sich „So sah es um … aus“: Quelle, Abweichung, Fehlerschranke und Anzahl der Satelliten – nie Satellitenwinkel oder Position.
+- **Ereignismarker in allen Zeitdiagrammen:** dünne Linie mit Symbol, per Tastatur erreichbar; dicht liegende Ereignisse werden zusammengefasst. Marker-Arten lassen sich ausblenden, das merkt sich dein Browser.
+- **Tagesbericht für gestern:** Anteil synchron, schlechtester Wert, Zahl der Geräte, GPS-Stunden und Pi-Spannung. Der Server rechnet ihn einmal nach Mitternacht im Hintergrund.
+- API: `/api/v1/timeline`, `/api/v1/timeline/markers` und `/api/v1/timeline/at` (Leserecht).
 
 ### Geändert
 - **Abzeichen nur bei geänderten Werten:** „geändert · zurücksetzen“. Zurücksetzen stellt den Standard ein –
@@ -184,6 +188,9 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 - Neuer Test `tests/test_seiten.py` (Quellenfarben und Kontrast, Kurznamen, ausgeblendete Spalten, Karten auf dem Handy, ✎ nur mit Schreibrecht, Erklärtexte ohne Verlust). Der UI-Rundgang prüft zusätzlich die Clients bei 1440 und 390 px und misst die sichtbaren Wörter je Seite.
 - Seiten mit `live = false` (Diagnose, Hardware, Hilfe, Benachrichtigungen, Einstellungen) werden nicht mehr alle paar Sekunden neu aufgebaut, nur weil eine Karte einen leeren Hinweis zeigt.
 - Neuer Test `tests/test_einrichtung.py` (Erststart/Update-Erkennung, Rechte, „Überspringen ändert nichts“, Testaufbau ohne Volume und ohne `SYS_TIME`); der UI-Rundgang durchläuft den Assistenten bei 390 und 1440 px.
+- Die 5-Minuten-Vorverdichtung des Verlaufs speichert zusätzlich Zähler je Zustand; ältere Zeilen werden beim Lesen abgeleitet. Neue Tests `tests/test_uhr_werkstatt.py` und `tests/test_timeline.py` (Replay eines Tages, Tagesbericht gegen eine unabhängige SQL-Rechnung, Laufzeit mit 30 Tagen Verlauf).
+- `test_backup_requires_admin` wartet auf das Aufräumen der Download-Datei: Unter Last las der Test das Verzeichnis, bevor der Server-Thread die Datei gelöscht hatte (sporadischer Fehlschlag, kein Produktfehler).
+
 
 ## [1.5.5] – 2026-11-08
 

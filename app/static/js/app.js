@@ -1,7 +1,7 @@
 // Einstieg: Navigation, Aktualisierung, Datencache, Neustart-Anzeige.
 import { el, apiGet, storageGet, storageSet, fmtTime, fmtServerDateTime, serverZone, staleText, isNum, serverClock, serverNow, reloadSettled } from "./util.js";
 import { toast, isPopoverOpen, infoButton, badge } from "./ui.js";
-import { resetChartState } from "./charts.js";
+import { resetChartState, setChartMarkers } from "./charts.js";
 import * as overview from "./pages/overview.js";
 import * as sources from "./pages/sources.js";
 import * as gps from "./pages/gps.js";
@@ -123,6 +123,10 @@ for (const type of ["pointerup", "pointercancel"]) window.addEventListener(type,
 window.addEventListener("blur", () => gate.pointerUp());
 main.addEventListener("focusout", () => gate.focusOut());
 
+// Seiten mit Zeitdiagrammen – nur dort werden Ereignismarker geladen.
+const CHART_PAGES = new Set(["overview", "sources", "gps", "ptp", "clients", "clockquality", "muster"]);
+const MARKER_RANGE = 31 * 86400;
+
 function render({ background = false } = {}) {
   if (gate.blocks(background, main, document.activeElement)) return;
   const route = currentRoute();
@@ -137,6 +141,8 @@ function render({ background = false } = {}) {
   }
   const scroll = window.scrollY;
   pendingAfter = [];
+  // 1.6 (T7): Ereignismarker für alle Zeitdiagramme der Seite (höchstens 31 Tage, einmal je Minute).
+  setChartMarkers(CHART_PAGES.has(page.id) ? data("chart-markers", `/api/timeline/markers?range=${MARKER_RANGE}`, 60)?.markers : []);
   const ctx = {
     status: state.status || {},
     history: state.history,

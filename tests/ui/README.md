@@ -31,6 +31,10 @@ Der Rundgang öffnet jede Route bei 1440 und 390 px, hell und dunkel, und meldet
   Serverzeit (Browseruhr per `page.clock` 5 min daneben, `/api/v1/time` erfunden) zeigt bei 390 und 1440 px, normal und
   im Rotlicht-Modus, die richtige Uhrzeit (DOM: Ziffern, Wortuhr-Satz, Zeigerwinkel und Phase des Sekundenzeigers) samt
   Schaltsekunden-Banner am 30.6.; dazu Kiosk, E-Ink mit zweiter Zeitzone und unzulässige Parameter ohne Überbreite,
+- die „Heute“-Zeitleiste der Übersicht mit einem erfundenen Tag (Holdover 03:00–04:30, drei Ereignisse) bei 390 und
+  1440 px: genau drei Marker an der richtigen Stelle, Holdover-Abschnitt im Band, Marker im Diagramm, Tagesbericht-Satz,
+  Tippflächen ≥ 24 px; per Tastatur Band → Pos1 → Enter öffnet „So sah es um … aus“ (ohne Satellitenwinkel), Esc gibt den
+  Fokus ans Band zurück, Tab erreicht den ersten Marker, Enter öffnet den Dialog; der Filter blendet eine Art aus,
 - die sichtbare Wortzahl je Seite (`words` in der Ausgabe: innerText des Inhalts bei 1440 px, hell, ohne
   geschlossene ⓘ-Popover und zugeklappte `<details>`).
 
@@ -55,6 +59,7 @@ TOUR_NAV_ONLY=1 tests/ui/rundgang.sh          # nur die Navigationsprüfungen (R
 TOUR_WORDS_ONLY=1 tests/ui/rundgang.sh        # nur die Wortzahl je Seite messen
 TOUR_PAGES_ONLY=1 tests/ui/rundgang.sh        # nur Clients mit Messwert und Rohdaten der Ereignisse (erfundene Antworten)
 TOUR_CLOCK_ONLY=1 tests/ui/rundgang.sh        # nur die Uhr-Werkstatt /clock (Designs, Kiosk, E-Ink, Ruhe zwischen den Minuten, Leiste bei offenem Panel)
+TOUR_TIMELINE_ONLY=1 tests/ui/rundgang.sh     # nur „Heute“-Zeitleiste: Band, Marker, Tagesbericht, Tastatur (erfundener Tag)
 ```
 
 Läuft der Server schon (z. B. mit `NTPGUI_CHRONYC=tests/ui/fake_chronyc.py`), genügt:

@@ -3,6 +3,7 @@ import { card, statCard, kv, badge, toast, insightList, insightLink, insightActi
 import { lineChart, sparkline, stepDecimals } from "../charts.js";
 import { t as tr } from "../i18n.js";
 import { route, setupHref } from "../routes.js";
+import { timelineCard, dailyReportCard } from "../timeline.js";
 
 
 function offsetTone(offset) {
@@ -667,6 +668,9 @@ export function render(ctx) {
   return [
     hero,
     setupCard(ctx, status.ui?.setup),
+    // 1.6 (T7): „Was war um 03:12?“ – Zustandsband der letzten 24 h mit Ereignismarkern, darunter der Tagesbericht.
+    timelineCard(ctx),
+    dailyReportCard(ctx),
     panels,
     unusedStrip(status),
     el("div", { class: "toolbar section-head" },

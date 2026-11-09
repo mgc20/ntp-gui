@@ -1250,7 +1250,13 @@ class HttpTest(_DataDir, unittest.TestCase):
         self.assertEqual(raw[:2], b"\x1f\x8b")
         status, _raw, _resp = self.request("GET", "/api/backup", headers={"Authorization": f"Bearer {self.admin_key}"})
         self.assertEqual(status, 200)
-        self.assertEqual(os.listdir(os.path.join(self.data_dir, backup.DOWNLOAD_DIR)), [])
+        # Der Server löscht die Download-Datei erst nach dem Senden (finally in _send_backup); unter Last kann der
+        # Client die Antwort schon haben, bevor der Server-Thread aufgeräumt hat – deshalb kurz darauf warten.
+        folder = os.path.join(self.data_dir, backup.DOWNLOAD_DIR)
+        deadline = time.monotonic() + 5
+        while os.listdir(folder) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertEqual(os.listdir(folder), [])
 
     def test_restore_auth_and_csrf(self):
         _status, data, _resp = self.request("GET", "/api/backup", headers=self.basic())

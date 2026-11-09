@@ -1,6 +1,7 @@
 // SVG-Diagramme ohne Bibliothek: Linien (mehrere Serien), Himmelskarte, Balken.
-import { el, svgEl, isNum, fmtNumber } from "./util.js";
+import { el, svgEl, isNum, fmtNumber, storageGet, storageSet } from "./util.js";
 import { infoButton } from "./ui.js";
+import { t as tr } from "./i18n.js";
 
 // Quellenfarben (T2 „Seiten entschlacken“): fest je Quelle, gleich in allen Diagrammen. Die Farbe hängt
 // allein am Namen der Quelle (FNV-1a-Hash → Platz in der Palette), nicht an ihrer Reihenfolge und nicht an
@@ -420,6 +421,150 @@ function splitUnit(labels) {
   return unit ? { unit, labels: numbers } : { unit: null, labels };
 }
 
+// --- Ereignismarker (1.6, T7) -----------------------------------------------------------------------
+// Jedes Zeitdiagramm (lineChart) zeigt Ereignisse aus dem Protokoll als dünne senkrechte Linie mit einem
+// Symbol darüber: Quellenwechsel, GPS-Ausfall, Neustart, Pi-Spannung, übrige Warnungen. Die Marker liefert
+// /api/timeline/markers (app.js setzt sie mit setChartMarkers für die ganze Seite). Liegen Ereignisse enger als
+// eine Tippfläche beieinander, werden sie zu einem Marker mit Anzahl zusammengefasst – bei vielen Ereignissen
+// bleibt das Diagramm ruhig. Die Symbole sind echte Knöpfe (Tab erreicht sie, Enter/Fokus zeigt den Text);
+// welche Arten erscheinen, merkt sich der Browser (markerFilterControl).
+export const MARKER_GROUPS = [
+  { id: "source", glyph: "⇄" },
+  { id: "gps", glyph: "◎" },
+  { id: "restart", glyph: "↻" },
+  { id: "pi", glyph: "π" },
+  { id: "warn", glyph: "!" },
+];
+const MARKER_FILTER_KEY = "ntp-gui-marker-filter";
+export const MARKER_GAP = 26;   // px – enger beieinander → ein Marker mit Anzahl (Tippfläche 24 px)
+const MARKER_TIP_MAX = 6;       // so viele Titel im Tooltip, der Rest als „und n weitere“
+const LEVEL_ORDER = { info: 0, warn: 1, crit: 2 };
+let CHART_MARKERS = [];
+
+/** Marker für alle Diagramme der Seite setzen (Liste aus /api/timeline/markers). */
+export function setChartMarkers(list) {
+  CHART_MARKERS = Array.isArray(list) ? list.filter((m) => m && isNum(m.t)) : [];
+}
+
+/** Ausgeblendete Arten (Set der ids) – je Browser gemerkt. */
+export function hiddenMarkerGroups() {
+  const stored = storageGet(MARKER_FILTER_KEY, []);
+  return new Set(Array.isArray(stored) ? stored.filter((id) => MARKER_GROUPS.some((g) => g.id === id)) : []);
+}
+
+export function markerGlyph(group) {
+  return (MARKER_GROUPS.find((g) => g.id === group) || MARKER_GROUPS[MARKER_GROUPS.length - 1]).glyph;
+}
+
+export function markerGroupLabel(group) {
+  return tr(`pages.timeline.group.${MARKER_GROUPS.some((g) => g.id === group) ? group : "warn"}`);
+}
+
+/** Marker im Zeitraum [t0, t1] ohne ausgeblendete Arten, zeitlich sortiert. */
+export function visibleMarkers(list, t0, t1, hidden = hiddenMarkerGroups()) {
+  return (list || []).filter((m) => m && isNum(m.t) && m.t >= t0 && m.t <= t1 && !hidden.has(m.group))
+    .sort((a, b) => a.t - b.t);
+}
+
+/**
+ * Marker zu Gruppen zusammenfassen: Liegt ein Marker näher als gap Pixel am vorigen Haufen, gehört er dazu.
+ * X: Zeit → Pixel. Ergebnis: [{ x (Mitte), t (erster), items, group (Art des schwersten), level (schwerste Stufe) }].
+ * Reine Funktion (in Node getestet).
+ */
+export function clusterMarkers(list, X, gap = MARKER_GAP) {
+  const clusters = [];
+  for (const m of [...list].sort((a, b) => a.t - b.t)) {
+    const x = X(m.t);
+    const last = clusters[clusters.length - 1];
+    if (last && x - last.x1 < gap) {
+      last.items.push(m); last.x1 = x;
+    } else {
+      clusters.push({ x0: x, x1: x, items: [m] });
+    }
+  }
+  return clusters.map((c) => {
+    let worst = c.items[0];
+    for (const m of c.items) if ((LEVEL_ORDER[m.level] || 0) > (LEVEL_ORDER[worst.level] || 0)) worst = m;
+    return { x: (c.x0 + c.x1) / 2, t: c.items[0].t, items: c.items, group: worst.group, level: worst.level || "info" };
+  });
+}
+
+function markerText(cluster, stamp) {
+  const titles = cluster.items.slice(0, MARKER_TIP_MAX).map((m) => `${stamp(m.t)} ${m.title}`);
+  const more = cluster.items.length - MARKER_TIP_MAX;
+  if (more > 0) titles.push(tr("pages.timeline.marker_more", { count: more }));
+  return titles;
+}
+
+/**
+ * Marker-Knöpfe über einer Fläche (Diagramm oder Zustandsband) – Linien zeichnet der Aufrufer selbst.
+ * host: Element mit position: relative. opts: { clusters, width (Bezugsbreite der x-Werte), top (y-Mitte der
+ * Knöpfe in Prozent der Höhe von host), stamp(t) → Uhrzeit, key (Fokus-Schlüssel), onActivate(cluster) –
+ * Enter/Klick (Standard: Text zeigen), tipTop – y des Tooltips in Prozent }.
+ */
+export function markerButtons(host, opts) {
+  const tip = el("div", { class: "tooltip chart-event-tip", hidden: true, "aria-hidden": "true" });
+  let shown = null;
+  const hide = () => { tip.hidden = true; shown = null; };
+  const show = (cluster, x) => {
+    shown = cluster;
+    tip.replaceChildren(...markerText(cluster, opts.stamp).map((line) => el("div", { class: "tt-row chart-event-row", text: line })));
+    const left = (x / opts.width) * 100;
+    // An der Seite mit mehr Platz verankern: rechts vom Marker mit „left“, links davon mit „right“. So bemisst der
+    // Browser die Breite nach dem Platz auf dieser Seite (mindestens die halbe Fläche) – mit „left“ + translate
+    // schrumpfte der Tooltip am rechten Rand auf wenige Pixel und brach Zeichen für Zeichen um.
+    const leftSide = left > 50;
+    tip.style.left = leftSide ? "auto" : `${left}%`;
+    tip.style.right = leftSide ? `${100 - left}%` : "auto";
+    tip.style.top = `${opts.tipTop ?? 0}%`;
+    tip.style.transform = leftSide ? "translate(-14px, 0)" : "translate(14px, 0)";
+    tip.hidden = false;
+  };
+  for (const cluster of opts.clusters) {
+    const lines = markerText(cluster, opts.stamp);
+    const count = cluster.items.length;
+    const label = `${markerGroupLabel(cluster.group)}${count > 1 ? ` (${tr("pages.timeline.events_count", { count })})` : ""}: ${lines.join("; ")}`;
+    const button = el("button", { type: "button", class: "chart-event", "data-group": cluster.group, "data-level": cluster.level,
+      "aria-label": label, "data-focus-key": `marker:${opts.key}:${cluster.t}` },
+    el("span", { class: "chart-event-glyph", "aria-hidden": "true", text: count > 1 ? String(Math.min(count, 99)) : markerGlyph(cluster.group) }));
+    button.style.left = `${(cluster.x / opts.width) * 100}%`;
+    button.style.top = `${opts.top}%`;
+    button.addEventListener("pointerenter", () => show(cluster, cluster.x));
+    button.addEventListener("pointerleave", (event) => { if (event.pointerType === "mouse" && document.activeElement !== button) hide(); });
+    button.addEventListener("focus", () => show(cluster, cluster.x));
+    button.addEventListener("blur", () => hide());
+    button.addEventListener("keydown", (event) => { if (event.key === "Escape" && shown) { event.stopPropagation(); hide(); } });
+    button.addEventListener("click", () => {
+      if (opts.onActivate) opts.onActivate(cluster, button);
+      else if (shown === cluster) hide(); else show(cluster, cluster.x);
+    });
+    host.append(button);
+  }
+  host.append(tip);
+}
+
+/**
+ * Filter nach Art: eine Reihe Umschaltknöpfe (aria-pressed) mit Symbol und Namen. Gilt für alle Diagramme und
+ * das Zustandsband; onChange() zeichnet neu.
+ */
+export function markerFilterControl(onChange) {
+  const hidden = hiddenMarkerGroups();
+  return el("div", { class: "marker-filter", role: "group", "aria-label": tr("pages.timeline.filter_label") },
+    MARKER_GROUPS.map((group) => {
+      const on = !hidden.has(group.id);
+      return el("button", { type: "button", class: `range marker-toggle${on ? " is-active" : ""}`, "data-group": group.id,
+        "aria-pressed": on ? "true" : "false", "data-focus-key": `marker-filter:${group.id}`,
+        onclick: () => {
+          const now = hiddenMarkerGroups();
+          if (now.has(group.id)) now.delete(group.id); else now.add(group.id);
+          storageSet(MARKER_FILTER_KEY, [...now]);
+          if (onChange) onChange();
+        } },
+      el("span", { class: "chart-event-glyph", "data-group": group.id, "aria-hidden": "true", text: group.glyph }),
+      markerGroupLabel(group.id));
+    }), infoButton("chart_markers", tr("pages.timeline.filter_label")));
+}
+
 /**
  * Liniendiagramm (eine y-Achse, Zeit auf x).
  * opts: { series: [{id, label, color?, points: [[t, v], ...]}], format(v), axisFormat(v, step, extent),
@@ -428,7 +573,8 @@ function splitUnit(labels) {
  *         current – Live-Wert für „jetzt“ (sonst „letzter Wert“ aus dem Verlauf), nowLabel,
  *         range, end – x-Achse = gewählter Zeitraum bis jetzt (sonst: so weit die Daten reichen),
  *         robust (Standard: an) – Ausreißer abschneiden, scale: "linear" | "log",
- *         bands: [{from, to, tone: "warn"|"crit"|"good", label}] – Schwellen, nur wenn im Bild }
+ *         bands: [{from, to, tone: "warn"|"crit"|"good", label}] – Schwellen, nur wenn im Bild,
+ *         events – eigene Marker (Standard: die der Seite, setChartMarkers), false = keine }
  */
 export function lineChart(container, opts) {
   const height = opts.height || 220;
@@ -540,10 +686,13 @@ export function lineChart(container, opts) {
     for (let v = lo; v <= hi + step / 2; v += step) ticks.push(Math.abs(v) < step / 1e6 ? 0 : v);
     ticks.step = step;
   }
+  // Ereignismarker im Zeitraum: Platz für die Symbolreihe über der Fläche.
+  const marks = opts.events === false ? [] : visibleMarkers(Array.isArray(opts.events) ? opts.events : CHART_MARKERS, t0, t1);
   const axisExtent = Math.max(Math.abs(lo), Math.abs(hi));
   const split = splitUnit(ticks.map((v) => (log ? axisFormat(v, v) : axisFormat(v, ticks.step, axisExtent))));
   const tickLabels = split.labels;
   if (split.unit) pad.top = 20;
+  if (marks.length) pad.top += 20;
   const ph = height - pad.top - pad.bottom;
   Y = log
     ? (v) => pad.top + ph - ((Math.log10(Math.min(hi, Math.max(v, lo))) - Math.log10(lo)) / (Math.log10(hi) - Math.log10(lo))) * ph
@@ -716,13 +865,27 @@ export function lineChart(container, opts) {
     if (last) svg.append(svgEl("circle", { cx: X(last[0]), cy: Y(last[1]), r: 3.5, fill: color, class: "chart-last" }));
   }
 
+  // --- Ereignismarker ------------------------------------------------------------
+  const clusters = marks.length ? clusterMarkers(marks, X) : [];
+  if (clusters.length) {
+    const lines = svgEl("g", { class: "chart-events", "aria-hidden": "true" });
+    for (const cluster of clusters) {
+      lines.append(svgEl("line", { x1: cluster.x, x2: cluster.x, y1: pad.top - 8, y2: pad.top + ph, class: "chart-event-line",
+        "data-level": cluster.level }));
+    }
+    svg.append(lines);
+    markerButtons(figure, { clusters, width, top: ((pad.top - 15) / height) * 100, tipTop: ((pad.top + 4) / height) * 100,
+      stamp: (t) => fmtStamp(t, span), key });
+  }
+
   // --- Beschreibung für Screenreader ------------------------------------------
   const summary = drawn.map(({ series }) => {
     const last = lastOf(series);
     return `${drawn.length > 1 ? `${series.label} ` : ""}${last ? format(last[1]) : "–"}`;
   }).join(", ");
   const statText = stats ? `, min ${format(stats.min)}, max ${format(stats.max)}` : "";
-  svg.setAttribute("aria-label", `${title}: zuletzt ${summary}${statText}; ${all.length} Messwerte von ${fmtStamp(d0, span)} bis ${fmtStamp(d1, span)}`);
+  const eventText = marks.length ? `; ${tr("pages.timeline.events_marked", { count: marks.length })}` : "";
+  svg.setAttribute("aria-label", `${title}: zuletzt ${summary}${statText}; ${all.length} Messwerte von ${fmtStamp(d0, span)} bis ${fmtStamp(d1, span)}${eventText}`);
   const hintId = `${id}-hint`;
   svg.setAttribute("aria-describedby", hintId);
   const live = el("div", { class: "sr-only", "aria-live": "polite" });
