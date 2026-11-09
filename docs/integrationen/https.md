@@ -21,9 +21,9 @@ nötig.
 | **Host-Kopf unverändert weitergeben** (Standard bei Caddy, NPM, Zoraxy, Traefik) | ntp-gui vergleicht beim Speichern die Herkunft (`Origin`) mit dem Host. Schreibt der Proxy den Host um, lehnt ntp-gui jede Änderung ab („Anfrage abgelehnt (nur aus dem Dashboard heraus)“). Bei reinem nginx selbst eintragen: `proxy_set_header Host $host;` – nginx schickt sonst den Namen aus `proxy_pass` (z. B. `127.0.0.1:8080`). |
 | **`WEB_BIND=127.0.0.1`**, wenn der Proxy auf demselben Host läuft | Dann ist das Dashboard nur noch über HTTPS erreichbar, nicht mehr nebenher über `http://host:8080`. Läuft der Proxy auf einem anderen Gerät, `WEB_BIND` lassen und Port 8080 per Firewall nur für den Proxy öffnen. |
 | **`TRUSTED_PROXIES`** = Adresse des Proxys | Nur dann glaubt ntp-gui `X-Forwarded-For` und `X-Forwarded-Proto`: Das Zugriffsprotokoll (`WEB_ACCESS_LOG=true`) nennt den Browser statt des Proxys, und der HTTPS-Hinweis erkennt den verschlüsselten Weg. Standard ist leer – **niemandem trauen**, sonst könnte jeder Browser eine falsche Adresse vorgeben. Nie ein ganzes Netz eintragen, nur den Proxy (`/32` bzw. `/128`). Über Anmeldung und Zugriff entscheiden die Köpfe nie. |
-| **Erlaubte Namen** bzw. **`WEB_ALLOWED_HOSTS`**, wenn ohne Passwort | Ohne Passwort beantwortet ntp-gui nur IP-Adressen, einteilige Namen und lokale Endungen (`.lan`, `.local`, `.home.arpa`, `.internal` …) – Schutz vor DNS-Rebinding. Ein Name wie `zeit.example.com` muss dann unter **Einstellungen → Dashboard → Erweitert → Erlaubte Namen** oder in `WEB_ALLOWED_HOSTS` stehen (beide gelten). Mit Passwort gilt jeder Name. Die Vollbild-Uhr `/clock` mit „Vollbild-Uhr ohne Anmeldung“ antwortet über jeden Namen. |
+| **Erlaubte Namen** bzw. **`WEB_ALLOWED_HOSTS`**, wenn ohne Passwort | Ohne Passwort beantwortet ntp-gui nur IP-Adressen, einteilige Namen und lokale Endungen (`.lan`, `.local`, `.home.arpa`, `.internal` …) – Schutz vor DNS-Rebinding. Ein Name wie `zeit.example.com` muss dann unter **Einstellungen → Dashboard & Zugang → Erlaubte Namen** oder in `WEB_ALLOWED_HOSTS` stehen (beide gelten). Mit Passwort gilt jeder Name. Die Vollbild-Uhr `/clock` mit „Vollbild-Uhr ohne Anmeldung“ antwortet über jeden Namen. |
 
-`TRUSTED_PROXIES` lässt sich auch im Dashboard setzen: **Einstellungen → Dashboard → Erweitert →
+`TRUSTED_PROXIES` lässt sich auch im Dashboard setzen: **Einstellungen → Dashboard & Zugang → Erweitert →
 Vertrauenswürdige Proxys**. Einfacher (ab 1.5.4): Kommen Anfragen mit Proxy-Köpfen von einer Adresse,
 die dort fehlt, zeigt die Übersicht „Reverse Proxy erkannt, aber nicht eingetragen“ mit dem Knopf
 **„Als vertrauenswürdigen Proxy eintragen (…/32)“**. Er trägt genau die Adresse ein, die ntp-gui als
@@ -69,7 +69,7 @@ volumes:
 
 Hat ntp-gui einen anderen Port (`WEB_PORT`), `127.0.0.1:8080` anpassen. Endet der Name nicht auf
 `.lan`, `.local`, `.home.arpa`, `.internal` o. Ä. und ist kein Passwort gesetzt, ihn zusätzlich
-unter **Einstellungen → Dashboard → Erweitert → Erlaubte Namen** (oder in `WEB_ALLOWED_HOSTS`)
+unter **Einstellungen → Dashboard & Zugang → Erlaubte Namen** (oder in `WEB_ALLOWED_HOSTS`)
 eintragen – Schutz vor DNS-Rebinding.
 
 Caddy setzt `X-Forwarded-For` und `X-Forwarded-Proto` selbst und überschreibt, was ein Browser

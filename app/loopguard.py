@@ -315,7 +315,8 @@ def sentence(host: str | None, addr: str, cause: str) -> str:
 
 REMEDY = {
     "dns": "Der DNS-Server im LAN schreibt den Namen auf ntp-gui um, und ntp-gui fragt denselben DNS. "
-           "Abhilfe: unter Einstellungen → „DNS für ntp-gui“ eigene Server (DoT/DoH) eintragen, oder im "
+           "Abhilfe: unter System → Einstellungen → Quellen → „DNS für ntp-gui“ eigene Server (DoT/DoH) "
+           "eintragen, oder im "
            "DNS-Server eine Ausnahme für die IP von ntp-gui anlegen (AdGuard: „client=~<IP>“ in der Regel "
            "bzw. eigener Client ohne Umschreibung).",
     "nat": "Der Router leitet ausgehendes NTP (UDP 123) auch von ntp-gui auf ntp-gui um. Abhilfe: in der "

@@ -13,7 +13,7 @@ const READY_DAYS = 3;
 const NO_SENSOR = {
   none: "Dieses System stellt keinen Temperatursensor bereit – typisch für virtuelle Maschinen und Docker Desktop. "
     + "Ohne Messwert gibt es hier nichts aufzuzeichnen; die Uhr funktioniert trotzdem.",
-  off: "Die Aufzeichnung ist abgeschaltet (Einstellungen → Dashboard → Temperatursensor = „off“).",
+  off: "Die Aufzeichnung ist abgeschaltet (System → Einstellungen → Dashboard & Zugang → Erweitert → Temperatursensor = „off“).",
   missing: "Der eingestellte Sensor ist nicht (mehr) da – abgesteckt oder umbenannt? Der Hardware-Check zeigt, "
     + "welche Sensoren es gibt; „auto“ wählt selbst einen.",
   no_value: "Es gibt Sensoren, aber keiner liefert gerade einen plausiblen Wert (−40 bis 125 °C). Der Hardware-Check "
@@ -225,7 +225,7 @@ function leapSection(info_, status, loading) {
     return card("Schaltsekunden", { help: "leap_overview", badge: badge("abgeschaltet", "warn") },
       emptyState("chrony kennt keine Schaltsekunden – die Einstellung „Schaltsekunden-Liste“ ist leer. Der Server kündigt "
         + "dann keine Schaltsekunde an und fügt sie nicht ein; er und seine Clients lägen danach eine Sekunde daneben, "
-        + "bis sie nachregeln. Standard ist /usr/share/zoneinfo/leap-seconds.list (Einstellungen → Zeitquellen, erweitert)."),
+        + "bis sie nachregeln. Standard ist /usr/share/zoneinfo/leap-seconds.list (System → Einstellungen → Quellen → „Zeitquellen (NTP)“ → Erweitert → „Schaltsekunden-Liste“)."),
       kv([chronyRow, ["Datei", "keine", "leap_source"]]));
   }
   const tz = info_.reason === "tz" ? info_.leapsectz : null;

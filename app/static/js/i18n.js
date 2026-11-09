@@ -41,7 +41,7 @@ export const CORE_DE = {
     "more": "Mehr",
     "more_label": "Weitere Bereiche",
     "ptp_off": "Nicht genutzt – in {link} einschalten.",
-    "ptp_off_link": "Einstellungen → PTP",
+    "ptp_off_link": "System → Einstellungen → PTP",
     "shortcuts": {
       "hint": "Tastenkürzel (?)",
       "title": "Tastenkürzel",

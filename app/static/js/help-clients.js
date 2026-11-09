@@ -231,7 +231,7 @@ export const HELP_CLIENTS = {
   },
   client_rule_offset: {
     title: "Eigene Alarm-Schwelle",
-    text: "Ersetzt für dieses Gerät die allgemeine Schwelle (Einstellungen → „Alarm, wenn eine Client-Uhr "
+    text: "Ersetzt für dieses Gerät die allgemeine Schwelle (System → Einstellungen → LAN-Server → Erweitert → „Alarm, wenn eine Client-Uhr "
       + "abweicht“). Gemeldet wird, wenn die Abweichung mindestens zweimal hintereinander **und** mindestens "
       + "so viele Minuten über der Schwelle liegt – „|Abweichung| > X für M Minuten“. „Wieder im Rahmen“ erst "
       + "unter der halben Schwelle. Sinnvoll z. B. 50 ms für eine Zeiterfassung, 2000 ms für eine Kamera.",
@@ -258,7 +258,7 @@ export const HELP_CLIENTS = {
   client_nts: {
     title: "NTS für Clients",
     text: "NTS sichert die Zeit kryptografisch ab. Nutzen können es Geräte nur, wenn der **NTS-Server** dieser "
-      + "Instanz an ist (Einstellungen → NTS) und ihre Software NTS spricht: chrony ab 4.0 und NTPsec ja; "
+      + "Instanz an ist (System → Einstellungen → Quellen → „NTS (Network Time Security)“ → Erweitert → „NTS-Server für das LAN anbieten“) und ihre Software NTS spricht: chrony ab 4.0 und NTPsec ja; "
       + "Windows, systemd-timesyncd, Apple, Smartphones und die meisten IoT-Geräte nein. Ob ein Gerät NTS "
       + "**nutzt**, zeigt chrony über die Zahl seiner NTS-KE-Schlüsselaustausche (`chronyc clients -k`, zählt "
       + "seit dem letzten Start von chrony). NTS-Clients schreiben Zufall statt Uhrzeit in die Anfrage – passiv "

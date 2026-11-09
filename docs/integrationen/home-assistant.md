@@ -6,7 +6,7 @@ Assistant fragt, ntp-gui antwortet. Eine einzige Anfrage pro Minute füllt alle 
 
 ## 1. API-Schlüssel anlegen
 
-Im Dashboard unter **Einstellungen → API-Schlüssel** einen Schlüssel mit Recht **nur lesen**
+Im Dashboard unter **Einstellungen → Dashboard & Zugang → API-Schlüssel** einen Schlüssel mit Recht **nur lesen**
 anlegen, z. B. „Home Assistant“. Er wird nur einmal angezeigt (`ntpg_…`). Ein Lese-Schlüssel
 kann nichts ändern – geht er verloren, widerrufst du ihn einfach.
 
@@ -107,7 +107,7 @@ rest:
 
       - name: "Zeitserver Update verfügbar"
         unique_id: ntpgui_update
-        # nur mit eingeschaltetem Update-Hinweis (Einstellungen → Dashboard)
+        # nur mit eingeschaltetem Update-Hinweis (Einstellungen → Dashboard & Zugang)
         value_template: "{{ value_json.update.available | default(false) }}"
         device_class: update
 ```

@@ -22,7 +22,7 @@ leben. Er sagt **nicht**, ob die Zeit stimmt.
 ## 2. JSON-Abfrage: ist die Zeit synchron?
 
 `/api/v1/time` ist klein und meldet `synchronised`. Mit einem Lese-Schlüssel
-(**Einstellungen → API-Schlüssel**, Recht **nur lesen**):
+(**Einstellungen → Dashboard & Zugang → API-Schlüssel**, Recht **nur lesen**):
 
 | Feld | Wert |
 |---|---|

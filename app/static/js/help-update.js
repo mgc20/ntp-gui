@@ -1,4 +1,4 @@
-// Erklärungen zum Update-Hinweis (Einstellungen → Dashboard, Banner oben). Wird in help.js in HELP
+// Erklärungen zum Update-Hinweis (System → Einstellungen → Dashboard & Zugang, Banner oben). Wird in help.js in HELP
 // übernommen; die Schlüssel stehen gesammelt in HELP_GROUP_UPDATE, damit sie auf der Hilfe-Seite erscheinen.
 export const HELP_UPDATE = {
   update_check: {

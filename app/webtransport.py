@@ -30,7 +30,7 @@ SCHEMES = ("http", "https")
 
 
 def parse_networks(items: Iterable[str] | None) -> list:
-    """Liste aus den Einstellungen → ip_network-Objekte; Ungültiges wird übersprungen."""
+    """Liste aus den Einstellungen in ip_network-Objekte umwandeln; Ungültiges wird übersprungen."""
     out = []
     for item in items or []:
         try:
@@ -425,8 +425,8 @@ class TransportWatch:
                             + gateway +
                             "Nur bestätigen, wenn dort wirklich dein Proxy läuft (Caddy, Nginx Proxy "
                             "Manager, Zoraxy, Traefik …). Ein anderes Gerät mit dieser Adresse könnte "
-                            "sonst eine falsche Browser-Adresse vorgeben. Rückgängig: Einstellungen → "
-                            "Dashboard → „Vertrauenswürdige Proxys“."),
+                            "sonst eine falsche Browser-Adresse vorgeben. Rückgängig: System → "
+                            "Einstellungen → Dashboard & Zugang → Erweitert → „Vertrauenswürdige Proxys“."),
             })
         return out
 

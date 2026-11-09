@@ -28,10 +28,14 @@ Wiederherstellen in zwei Schritten (stage_upload → preview → apply):
     Ordner unter DATA_DIR; dort bleibt er höchstens PENDING_TTL Sekunden.
   * Prüfung ohne tar.extract(): nur bekannte Dateinamen, nur reguläre Dateien (keine Links,
     Gerätedateien, Ordner), kein absoluter Pfad, kein „..“, dazu tarfile.data_filter als zweite
-    Meinung; Größe je Teil und entpackt insgesamt begrenzt (Gzip-Bombe), PAX-/Langname-Köpfe
-    höchstens 64 KiB; Prüfsummen aus dem Manifest; Format- und Schema-Version höchstens die
-    eigene (ältere werden migriert, neuere abgelehnt); die Datenbank muss genau das Schema der
-    Allowlist haben (keine Views, Trigger, Indizes, fremden Tabellen).
+    Meinung; Größe je Teil (daten.sqlite: upload_db_limit(), aus 30 Tagen Verlauf plus Client-Daten
+    gemessen, höchstens UPLOAD_DB_CAP) und entpackt insgesamt begrenzt, Verhältnis entpackt/Upload höchstens MAX_RATIO
+    (Gzip-Bombe), freier Platz mit DISK_RESERVE – alles aus den Tar-Köpfen, BEVOR ein Teil
+    geschrieben wird; manifest.json zuerst (Format, Versionen, angekündigte Größen);
+    PAX-/Langname-Köpfe höchstens 64 KiB; Prüfsummen aus dem Manifest; Format- und
+    Schema-Version höchstens die eigene (ältere werden migriert, neuere abgelehnt); die
+    Datenbank muss genau das Schema der Allowlist haben (keine Views, Trigger, Indizes, fremden
+    Tabellen).
   * apply: erst eine Sicherung des jetzigen Stands nach DATA_DIR/sicherungen, dann alles oder nichts:
     Einstellungen und Kalibrierung als geprüfte temporäre Dateien, dann die Datenbank in EINER
     Transaktion auf der gemeinsamen Verbindung (store.lock): je Tabelle DELETE + INSERT … SELECT aus
@@ -79,6 +83,7 @@ from pathlib import PurePosixPath
 from typing import Any, Callable, Iterable
 
 import egress
+import history
 import settings
 import store
 
@@ -93,9 +98,42 @@ DB_PART = "daten.sqlite"
 PARTS = (MANIFEST, SETTINGS_PART, AUTOCAL_PART, DB_PART)
 
 MAX_UPLOAD = 200 * 1024 * 1024          # Upload (komprimiert)
-PART_LIMITS = {MANIFEST: 1024 * 1024, SETTINGS_PART: 4 * 1024 * 1024, AUTOCAL_PART: 8 * 1024 * 1024,
-               DB_PART: 1024 * 1024 * 1024}
-MAX_UNPACKED = sum(PART_LIMITS.values()) + 1024 * 1024   # entpackt insgesamt, mit Tar-Köpfen
+MIB = 1024 * 1024
+# Grenze für daten.sqlite, gemessen mit backup.create() (1.6.0): 30 Tage Verlauf bei 10 s mit sechs Quellen,
+# GPS und vollen Nachkommastellen ergeben 175 MiB (≈ 5,8 MiB je Tag); dazu Client-Daten an ihren
+# Obergrenzen (2 Mio. Messpunkte, 2000 Clients mit 30 Tagen Stundenwerten, 50 000 Ereignisse) ≈ 177 MiB,
+# zusammen 352 MiB. Reserve: 8 MiB je Verlaufstag (PTP, mehr Quellen) und 256 MiB für den Rest – bei 30 Tagen
+# 496 MiB. Ein größerer HISTORY_DAYS hebt die Grenze mit an, aber für hochgeladene Sicherungen höchstens
+# bis UPLOAD_DB_CAP: Mehr passt bei echten Messwerten (Packverhältnis 2,5 bis 4,5) ohnehin nicht durch
+# MAX_UPLOAD, und so bleibt eine 1-GB-Datei (T5) auch bei großem HISTORY_DAYS über die Größe abgelehnt.
+# Nur das Zurückspielen der eigenen automatischen Sicherung (_rollback, Datei vom Gerät selbst) nutzt die
+# ungedeckelte Grenze db_limit(), damit es auch bei langem Verlauf gelingt.
+DB_LIMIT_PER_DAY = 8 * MIB
+DB_LIMIT_BASE = 256 * MIB
+UPLOAD_DB_CAP = MAX_UPLOAD * 9 // 2      # 900 MiB, unter 10^9 Byte
+
+
+def db_limit(days: float | None = None) -> int:
+    """Größte daten.sqlite, die dieser Aufbau selbst erzeugen kann (HISTORY_DAYS, mindestens 30 Tage)."""
+    days = history.retention_days() if days is None else days
+    return int(DB_LIMIT_BASE + DB_LIMIT_PER_DAY * max(history.DEFAULT_DAYS, days))
+
+
+def upload_db_limit(days: float | None = None) -> int:
+    """Größte erlaubte daten.sqlite in einer hochgeladenen Sicherung: db_limit(), gedeckelt bei UPLOAD_DB_CAP."""
+    return min(db_limit(days), UPLOAD_DB_CAP)
+
+
+PART_LIMITS = {MANIFEST: 1 * MIB, SETTINGS_PART: 4 * MIB, AUTOCAL_PART: 8 * MIB, DB_PART: upload_db_limit()}
+MAX_UNPACKED = sum(PART_LIMITS.values()) + 1 * MIB   # entpackt insgesamt, mit Tar-Köpfen
+# Entpackt höchstens so viel mal größer als der Upload. Gemessen: echte Messwerte 2,5 bis 4,5; 30 Tage fast
+# gleicher Messpunkte (ohne chrony, alle Felder leer) knapp 17, periodische Testdaten gut 19. Nullen packt
+# gzip etwa 1000 : 1. Erst ab RATIO_FLOOR, denn kleine, fast leere Datenbanken packen sich noch besser.
+MAX_RATIO = 100
+RATIO_FLOOR = 32 * MIB
+# Freier Platz, der nach dem Entpacken im Datenverzeichnis bleiben muss: Verlauf, Ereignisse und SQLite
+# (WAL) schreiben weiter, und das Übernehmen braucht noch Platz für die automatische Sicherung.
+DISK_RESERVE = 128 * MIB
 MAX_META_HEADER = 64 * 1024              # PAX-Kopf / GNU-Langname
 PENDING_TTL = 15 * 60.0                  # so lange bleibt ein geprüfter Upload liegen
 CHUNK = 64 * 1024
@@ -838,7 +876,7 @@ def _show(name: str) -> str:
     return text if len(text) <= 60 else text[:57] + "…"
 
 
-def _check_member(member: tarfile.TarInfo, workdir: str, seen: dict) -> None:
+def _check_member(member: tarfile.TarInfo, workdir: str, seen: dict, limits: dict | None = None) -> None:
     name = member.name
     path = PurePosixPath(name)
     if name.startswith(("/", "\\")) or re.match(r"^[A-Za-z]:", name) or "\\" in name or ".." in path.parts \
@@ -856,9 +894,10 @@ def _check_member(member: tarfile.TarInfo, workdir: str, seen: dict) -> None:
                            + ", ".join(PARTS) + ".")
     if name in seen:
         raise RestoreError(f"„{name}“ steht doppelt in der Sicherung – abgelehnt.")
-    if member.size > PART_LIMITS[name]:
+    limits = PART_LIMITS if limits is None else limits
+    if member.size > limits[name]:
         raise RestoreError(f"„{name}“ ist zu groß ({member.size // (1024 * 1024)} MiB, erlaubt "
-                           f"{PART_LIMITS[name] // (1024 * 1024)} MiB) – abgelehnt.")
+                           f"{limits[name] // (1024 * 1024)} MiB) – abgelehnt.")
     try:
         tarfile.data_filter(member, workdir)  # zweite Meinung: Pfade, Links, Gerätedateien, Rechte
     except tarfile.FilterError as exc:
@@ -866,32 +905,118 @@ def _check_member(member: tarfile.TarInfo, workdir: str, seen: dict) -> None:
                            f"{type(exc).__name__}) – abgelehnt.") from None
 
 
-def unpack(archive: str, workdir: str) -> dict[str, str]:
-    """Prüft das Archiv und schreibt die Teile nach workdir (feste Namen). Gibt {Teil: SHA-256}."""
-    hashes: dict[str, str] = {}
+def _manifest_sizes(data: bytes) -> tuple[dict[str, int], str | None]:
+    """Vorab aus manifest.json: {Teil: angekündigte Größe} und ggf. der Grund zur Ablehnung. Prüft nur,
+    was ohne die übrigen Teile geht (Format, Versionen, Pflichtteile); Prüfsummen später in check_manifest."""
     try:
+        manifest = json.loads(data.decode("utf-8"))
+    except (ValueError, UnicodeError, RecursionError):
+        return {}, "manifest.json in der Sicherung ist kein gültiges JSON – abgelehnt."
+    try:
+        check_manifest_head(manifest)
+    except RestoreError as exc:
+        return {}, str(exc)
+    sizes = {}
+    for item in manifest["parts"]:
+        size = item.get("size")
+        if not isinstance(size, int) or isinstance(size, bool) or size < 0:
+            return {}, f"manifest.json nennt keine gültige Größe für „{item['name']}“ – abgelehnt."
+        sizes[item["name"]] = size
+    return sizes, None
+
+
+def _size_text(size: int, up: bool = True) -> str:
+    """Größe für Meldungen: unter 1 MiB in KiB, sonst in MiB; Bedarf aufgerundet, freier Platz abgerundet."""
+    unit, name = (1024, "KiB") if size < MIB else (MIB, "MiB")
+    return f"{-(-size // unit) if up else size // unit} {name}"
+
+
+def _check_space(member: tarfile.TarInfo, workdir: str, declared: int, compressed: int,
+                 max_unpacked: int | None = None, reserve: int = DISK_RESERVE) -> None:
+    """Vor dem Schreiben: Summe der Tar-Köpfe gegen Gesamtgrenze, Packverhältnis und freien Platz (mit
+    reserve, die danach frei bleiben muss)."""
+    max_unpacked = MAX_UNPACKED if max_unpacked is None else max_unpacked
+    if declared > max_unpacked:
+        raise RestoreError("Die Sicherung entpackt sich zu mehr als erlaubt (Schutz vor einer „Gzip-Bombe“, "
+                           f"höchstens {max_unpacked // MIB} MiB) – abgelehnt.")
+    if declared > RATIO_FLOOR and declared > MAX_RATIO * compressed:
+        raise RestoreError(f"„{member.name}“ wäre entpackt über {MAX_RATIO}-mal so groß wie der Upload "
+                           "(Schutz vor einer „Gzip-Bombe“) – das ist keine Sicherung von ntp-gui. Abgelehnt.")
+    try:
+        free = shutil.disk_usage(workdir).free
+    except OSError:
+        return
+    if free < member.size:
+        raise RestoreError(f"Zu wenig freier Speicher im Datenverzeichnis: „{member.name}“ braucht "
+                           f"{_size_text(member.size)}, frei sind nur {_size_text(free, up=False)}. Bitte erst "
+                           "Platz schaffen.")
+    if free - member.size < reserve:
+        raise RestoreError(f"Zu wenig freier Speicher im Datenverzeichnis: „{member.name}“ braucht "
+                           f"{_size_text(member.size)}, frei sind {_size_text(free, up=False)}, und "
+                           f"{reserve // MIB} MiB müssen für den laufenden Betrieb frei bleiben – "
+                           "abgelehnt. Bitte erst Platz schaffen.")
+
+
+def unpack(archive: str, workdir: str, own: bool = False) -> dict[str, str]:
+    """Prüft das Archiv und schreibt die Teile nach workdir (feste Namen). Gibt {Teil: SHA-256}.
+
+    Größen werden aus den Tar-Köpfen geprüft, BEVOR ein Byte des Teils geschrieben wird: je Teil
+    (PART_LIMITS), insgesamt (MAX_UNPACKED), im Verhältnis zum Upload (MAX_RATIO) und gegen den freien
+    Platz (DISK_RESERVE). manifest.json muss vorn stehen; die übrigen Teile müssen genau die dort genannte
+    Größe haben. Danach begrenzt _Limited noch den tatsächlich entpackten Strom.
+
+    own=True nur für die eigene automatische Sicherung beim Zurückspielen nach einem Fehler (_rollback):
+    daten.sqlite darf dann bis db_limit() groß sein (ohne UPLOAD_DB_CAP), und DISK_RESERVE gilt nicht – der
+    Teil muss nur in den freien Platz passen. Sonst bliebe der Nutzer bei knappem Platz im Mischstand."""
+    hashes: dict[str, str] = {}
+    limits, max_unpacked, reserve = PART_LIMITS, MAX_UNPACKED, DISK_RESERVE
+    if own:
+        extra = max(0, db_limit() - PART_LIMITS[DB_PART])
+        limits = {**PART_LIMITS, DB_PART: PART_LIMITS[DB_PART] + extra}
+        max_unpacked, reserve = MAX_UNPACKED + extra, 0
+    try:
+        compressed = os.path.getsize(archive)
+        declared = 0
+        sizes: dict[str, int] = {}
+        manifest_error: str | None = None
         with open(archive, "rb") as raw:
             gz = gzip.GzipFile(fileobj=raw, mode="rb")
-            limited = io.BufferedReader(_Limited(gz, MAX_UNPACKED), CHUNK)
+            limited = io.BufferedReader(_Limited(gz, max_unpacked), CHUNK)
             with tarfile.open(fileobj=limited, mode="r|", tarinfo=_SafeTarInfo) as tar:
                 for member in tar:
-                    _check_member(member, workdir, hashes)
+                    _check_member(member, workdir, hashes, limits)
+                    declared += member.size
+                    _check_space(member, workdir, declared, compressed, max_unpacked, reserve)
+                    if member.name != MANIFEST:
+                        if MANIFEST not in hashes:
+                            raise RestoreError("manifest.json muss als erste Datei in der Sicherung stehen – "
+                                               "abgelehnt.")
+                        if manifest_error:
+                            raise RestoreError(manifest_error)
+                        if member.size != sizes.get(member.name):
+                            raise RestoreError(f"Größe von „{member.name}“ stimmt nicht mit manifest.json "
+                                               "überein – abgelehnt.")
                     source = tar.extractfile(member)
                     if source is None:
                         raise RestoreError(f"„{member.name}“ lässt sich nicht lesen – abgelehnt.")
                     digest, written = hashlib.sha256(), 0
+                    head = bytearray() if member.name == MANIFEST else None
                     target = os.path.join(workdir, member.name)
                     fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
                     with os.fdopen(fd, "wb") as out:
                         for chunk in iter(lambda: source.read(CHUNK), b""):
                             written += len(chunk)
-                            if written > PART_LIMITS[member.name]:
+                            if written > limits[member.name]:
                                 raise RestoreError(f"„{member.name}“ ist zu groß – abgelehnt.")
                             digest.update(chunk)
                             out.write(chunk)
+                            if head is not None:
+                                head += chunk
                     if written != member.size:
                         raise RestoreError(f"„{member.name}“ ist unvollständig – die Datei ist beschädigt.")
                     hashes[member.name] = digest.hexdigest()
+                    if head is not None:
+                        sizes, manifest_error = _manifest_sizes(bytes(head))
     except RestoreError:
         raise
     except (tarfile.TarError, EOFError, OSError, zlib.error, gzip.BadGzipFile, RecursionError, MemoryError,
@@ -912,7 +1037,8 @@ def _read_json(path: str, what: str) -> Any:
         raise RestoreError(f"{what} in der Sicherung ist kein gültiges JSON – abgelehnt.") from None
 
 
-def check_manifest(manifest: Any, hashes: dict[str, str], workdir: str) -> dict:
+def check_manifest_head(manifest: Any) -> tuple[int, int, int, dict[str, dict]]:
+    """Format, Versionen und Liste der Teile – ohne Prüfsummen (geht schon vor dem Entpacken der Teile)."""
     if not isinstance(manifest, dict) or manifest.get("format") != FORMAT:
         raise RestoreError("Die Datei ist keine Sicherung von ntp-gui (manifest.json passt nicht).")
     try:
@@ -938,6 +1064,11 @@ def check_manifest(manifest: Any, hashes: dict[str, str], workdir: str) -> dict:
         listed[item["name"]] = item
     if set(listed) != set(PARTS) - {MANIFEST}:
         raise RestoreError("manifest.json passt nicht zu den Dateien der Sicherung – abgelehnt.")
+    return fmt, dump_schema, settings_schema, listed
+
+
+def check_manifest(manifest: Any, hashes: dict[str, str], workdir: str) -> dict:
+    fmt, dump_schema, settings_schema, listed = check_manifest_head(manifest)
     for name, item in listed.items():
         expected = str(item.get("sha256") or "").lower()
         if not secrets.compare_digest(expected, hashes[name]):
@@ -1874,7 +2005,7 @@ def _rollback(before: str, channels: list[dict] | None) -> bool:
         workdir = tempfile.mkdtemp(prefix="zurueck-", dir=staging_root())
         _ACTIVE.add(os.path.basename(workdir))
     try:
-        hashes = unpack(path, workdir)
+        hashes = unpack(path, workdir, own=True)
         info = check_manifest(_read_json(os.path.join(workdir, MANIFEST), "manifest.json"), hashes, workdir)
         check_dump(os.path.join(workdir, DB_PART), info["dump"])
         plan = _settings_plan(_read_json(os.path.join(workdir, SETTINGS_PART), "einstellungen.json"))

@@ -132,7 +132,8 @@ def ptp_role_insights(cfg: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
-DNS_MODE_HINT = ("Stell unter Einstellungen → „DNS für ntp-gui“ eigene Server ein – am robustesten "
+DNS_MODE_HINT = ("Stell unter System → Einstellungen → Quellen → „DNS für ntp-gui“ eigene Server ein – "
+                 "am robustesten "
                  "DNS-over-TLS oder DNS-over-HTTPS, weil die auch eine Umleitung von Port 53 nicht "
                  "trifft. Alternativ nimmst du ntp-gui im DNS-Server von der Umschreibung aus.")
 
@@ -194,7 +195,8 @@ def dns_insights(dns: dict[str, Any], cfg: dict[str, Any], sources: list[dict] |
     if dns.get("effective_mode") == "system":
         add("warn", "DNS-Modus ohne Server",
             f"Eingestellt ist „{dns.get('mode_label') or mode}“, aber es ist kein Server eingetragen. "
-            "ntp-gui nutzt deshalb weiter den System-DNS. Trag unter Einstellungen → „DNS für ntp-gui“ "
+            "ntp-gui nutzt deshalb weiter den System-DNS. Trag unter System → Einstellungen → Quellen → "
+            "„DNS für ntp-gui“ "
             "mindestens einen Server ein.", "dns_no_servers")
         return out
     if dns.get("error"):
@@ -221,8 +223,9 @@ def dns_insights(dns: dict[str, Any], cfg: dict[str, Any], sources: list[dict] |
         add("warn", "Adresse des DoT/DoH-Servers nicht ermittelbar",
             f"ntp-gui kann die Adresse von {', '.join(dict.fromkeys(unpinned))} nicht über den "
             "System-DNS herausfinden – typisch bei „dns: 127.0.0.1“ in der Compose-Datei, weil der "
-            "System-DNS dann wieder ntp-gui selbst ist. Trag die Adresse unter Einstellungen → "
-            "„DNS für ntp-gui“ → „Feste Adressen für DoT/DoH“ ein, z. B. dns.quad9.net=9.9.9.9. "
+            "System-DNS dann wieder ntp-gui selbst ist. Trag die Adresse unter System → Einstellungen → "
+            "Quellen → „DNS für ntp-gui“ → Erweitert → „Feste Adressen für DoT/DoH“ ein, "
+            "z. B. dns.quad9.net=9.9.9.9. "
             "Das Zertifikat wird weiter gegen den Namen geprüft.", "dns_pin_needed")
     if dns.get("nts_note"):
         add("info", "NTS hängt an einem einzigen DNS-Server", str(dns["nts_note"]), "dns_nts_single")
@@ -436,7 +439,7 @@ def build(status: dict[str, Any], cfg: dict[str, Any]) -> list[dict[str, Any]]:
     if not (ui.get("auth") or {}).get("enabled") and not ui.get("readonly"):
         add("info", "Dashboard ohne Passwort",
             "Jeder im LAN kann die Einstellungen ändern. Ein Passwort lässt sich unter "
-            "Einstellungen → Dashboard setzen.", action="settings", key="no_auth")
+            "System → Einstellungen → Dashboard & Zugang setzen.", action="settings", key="no_auth")
 
     if status.get("client_count") == 0 and tracking.get("synchronised"):
         add("info", "Noch keine Clients",

@@ -1396,8 +1396,8 @@ def host_rejection_text(host: str) -> str:
             "an IP-Adressen, localhost, den eigenen Hostnamen, einteilige Namen, lokale Namen (*.local, "
             "*.lan, *.home.arpa, *.internal) und erlaubte Namen. Das schützt vor DNS-Rebinding: Sonst könnte "
             "jede Webseite, die du besuchst, über einen eigenen Namen Log, Status und Position aus deinem "
-            "Netz lesen. Abhilfe: den Namen erlauben – im Dashboard unter Einstellungen → Dashboard → "
-            "Erweitert → „Erlaubte Namen“ (über die IP-Adresse öffnen) oder per Umgebungsvariable "
+            "Netz lesen. Abhilfe: den Namen erlauben – im Dashboard unter System → Einstellungen → "
+            "Dashboard & Zugang → „Erlaubte Namen“ (über die IP-Adresse öffnen) oder per Umgebungsvariable "
             f"WEB_ALLOWED_HOSTS={host} (mehrere mit Komma, „*.example.org“ für alle Unternamen) – oder "
             "im Dashboard bzw. per WEB_USER/WEB_PASSWORD ein Passwort setzen, dann gilt jeder Name. "
             "Die Vollbild-Uhr /clock ist mit „Vollbild-Uhr ohne Anmeldung“ über jeden Namen erreichbar.")
@@ -1659,7 +1659,8 @@ class Handler(BaseHTTPRequestHandler):
                 _REJECTED_HOSTS.add(host)
         if first:
             print(f"[web] Anfrage für unbekannten Host-Namen „{host}“ abgelehnt (Schutz vor DNS-Rebinding) – "
-                  "erlauben unter Einstellungen → Dashboard → „Erlaubte Namen“, mit WEB_ALLOWED_HOSTS "
+                  "erlauben unter System → Einstellungen → Dashboard & Zugang → „Erlaubte Namen“, "
+                  "mit WEB_ALLOWED_HOSTS "
                   "oder ein Passwort setzen.", flush=True)
         text = host_rejection_text(host)
         self.close_connection = True  # ein evtl. POST-Body bleibt ungelesen

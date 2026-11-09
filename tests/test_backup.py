@@ -587,8 +587,12 @@ class MaliciousArchiveTest(BackupTestBase):
 
     def test_wrong_checksum(self):
         parts = self.good_parts()
+        same_size = dict(parts)
+        same_size[backup.SETTINGS_PART] = parts[backup.SETTINGS_PART].replace(b"Testuhr", b"Fremdeu")
+        self.assert_rejected(self.rebuild(same_size, fix_hashes=False), "Prüfsumme")
+        # Andere Länge: fällt schon am Tar-Kopf auf, bevor der Teil geschrieben wird.
         parts[backup.SETTINGS_PART] = parts[backup.SETTINGS_PART].replace(b"Testuhr", b"Fremduhr")
-        self.assert_rejected(self.rebuild(parts, fix_hashes=False), "Prüfsumme")
+        self.assert_rejected(self.rebuild(parts, fix_hashes=False), "Größe", "manifest.json")
 
     def test_newer_schema(self):
         parts = self.good_parts()
@@ -616,6 +620,155 @@ class MaliciousArchiveTest(BackupTestBase):
             self.assert_rejected(bomb, "zu groß")
         # Nur Nullen, kein Tar: kein gültiges Archiv.
         self.assert_rejected(gzip.compress(zeros), "fehlt")
+
+    def test_one_gigabyte_part_rejected_before_writing(self):
+        # T5: „1-GB-Datei wird abgelehnt, nichts wird geschrieben“ – ohne herabgesetzte Grenzen. Das Archiv
+        # ist ein echtes .tar.gz (wenige MB) mit gültigem Manifest und 10^9 Byte Nullen als daten.sqlite.
+        size = 10 ** 9
+        self.assertGreater(size, backup.PART_LIMITS[backup.DB_PART])
+        manifest = json.loads(self.good_parts()[backup.MANIFEST])
+        for item in manifest["parts"]:
+            if item["name"] == backup.DB_PART:
+                item["size"] = size
+        path = os.path.join(self.tmp, "gb.tar.gz")
+        zero_chunk = b"\0" * (1024 * 1024)
+
+        class Zeros(io.RawIOBase):
+            left = size
+
+            def readable(self):
+                return True
+
+            def readinto(self, buffer):
+                n = min(len(buffer), self.left, len(zero_chunk))
+                buffer[:n] = zero_chunk[:n]
+                self.left -= n
+                return n
+
+        with tarfile.open(path, "w:gz", format=tarfile.PAX_FORMAT, compresslevel=1) as tar:
+            data = json.dumps(manifest).encode()
+            info, _ = regular(backup.MANIFEST, data)
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+            info, _ = regular(backup.DB_PART, b"")
+            info.size = size
+            tar.addfile(info, io.BufferedReader(Zeros(), 1024 * 1024))
+        self.assertLess(os.path.getsize(path), 8 * 1024 * 1024)
+        with open(path, "rb") as handle:
+            data = handle.read()
+
+        # Größter Stand des Upload-Ordners: gemessen direkt vor dem Aufräumen (dann liegt dort alles, was
+        # geschrieben wurde – Upload und entpackte Teile).
+        peak = []
+        real_rmtree = shutil.rmtree
+
+        def measure(target, *args, **kwargs):
+            total = 0
+            for root, _dirs, files in os.walk(target):
+                total += sum(os.path.getsize(os.path.join(root, f)) for f in files)
+            peak.append(total)
+            return real_rmtree(target, *args, **kwargs)
+
+        with mock.patch.object(backup.shutil, "rmtree", side_effect=measure):
+            self.assert_rejected(data, backup.DB_PART, "zu groß")
+        self.assertTrue(peak)
+        self.assertLess(max(peak), len(data) + 64 * 1024)  # nur der Upload selbst, keine entpackten Daten
+
+    def test_db_limit_is_realistic(self):
+        # Grenze aus der Messung (30 Tage Verlauf plus Client-Daten an ihren Obergrenzen ≈ 352 MiB) mit
+        # Reserve, aber deutlich unter 1 GB; ein größerer HISTORY_DAYS hebt sie an.
+        self.assertGreaterEqual(backup.db_limit(30), 400 * backup.MIB)
+        self.assertLess(backup.db_limit(30), 10 ** 9)
+        self.assertEqual(backup.db_limit(1), backup.db_limit(30))
+        self.assertGreater(backup.db_limit(365), 2 * 1024 * backup.MIB)
+        self.assertEqual(backup.PART_LIMITS[backup.DB_PART], backup.upload_db_limit())
+        self.assertEqual(backup.upload_db_limit(30), backup.db_limit(30))
+
+    def test_upload_limit_stays_below_one_gigabyte(self):
+        # T5 auch bei großem HISTORY_DAYS (bis 3650 Tage erlaubt): Hochgeladenes bleibt unter 10^9 Byte.
+        for days in (30, 87, 90, 365, 3650):
+            self.assertLess(backup.upload_db_limit(days), 10 ** 9, days)
+        limits = {**backup.PART_LIMITS, backup.DB_PART: backup.upload_db_limit(3650)}
+        self.assertLess(sum(limits.values()) + backup.MIB, 10 ** 9)
+        self.assertLess(backup.MAX_UNPACKED, 10 ** 9)
+        # Was durch MAX_UPLOAD passt (echte Sicherungen packen 2,5 bis 4,5 : 1), liegt unter der Deckelung.
+        self.assertGreaterEqual(backup.UPLOAD_DB_CAP, backup.MAX_UPLOAD * 4)
+
+    def test_own_backup_may_exceed_upload_limit(self):
+        # Die eigene automatische Sicherung (Zurückspielen) nutzt db_limit() ohne Deckel.
+        parts = self.good_parts()
+        data = self.rebuild(parts)
+        archive = os.path.join(self.tmp, "eigen.tar.gz")
+        with open(archive, "wb") as handle:
+            handle.write(data)
+        small = len(parts[backup.DB_PART]) - 1
+        with mock.patch.dict(backup.PART_LIMITS, {backup.DB_PART: small}), \
+                mock.patch.object(backup, "db_limit", return_value=small + 4096):
+            for own, expect_ok in ((False, False), (True, True)):
+                workdir = tempfile.mkdtemp(dir=self.tmp)
+                if expect_ok:
+                    self.assertIn(backup.DB_PART, backup.unpack(archive, workdir, own=own))
+                else:
+                    with self.assertRaises(backup.RestoreError) as caught:
+                        backup.unpack(archive, workdir, own=own)
+                    self.assertIn("zu groß", str(caught.exception))
+
+    def test_too_little_free_space(self):
+        parts = self.good_parts()
+        usage = shutil.disk_usage(self.tmp)
+        tight = usage._replace(free=backup.DISK_RESERVE + 1024)
+        with mock.patch.object(backup.shutil, "disk_usage", return_value=tight):
+            text = self.assert_rejected(self.rebuild(parts), "Zu wenig freier Speicher", "MiB")
+        self.assertIn(backup.DB_PART, text)
+        # Kleine Teile werden in KiB genannt, nicht auf „1 MiB“ aufgerundet.
+        self.assertRegex(text, r"braucht \d+ KiB")
+
+    def test_own_backup_ignores_reserve_but_needs_room(self):
+        # Zurückspielen der eigenen Sicherung: keine DISK_RESERVE, aber der Teil selbst muss passen.
+        data = self.rebuild(self.good_parts())
+        archive = os.path.join(self.tmp, "eigen.tar.gz")
+        with open(archive, "wb") as handle:
+            handle.write(data)
+        usage = shutil.disk_usage(self.tmp)
+        tight = usage._replace(free=backup.DISK_RESERVE // 2)
+        with mock.patch.object(backup.shutil, "disk_usage", return_value=tight):
+            with self.assertRaises(backup.RestoreError):
+                backup.unpack(archive, tempfile.mkdtemp(dir=self.tmp))
+            self.assertEqual(len(backup.unpack(archive, tempfile.mkdtemp(dir=self.tmp), own=True)),
+                             len(backup.PARTS))
+        with mock.patch.object(backup.shutil, "disk_usage", return_value=usage._replace(free=100)):
+            with self.assertRaises(backup.RestoreError) as caught:
+                backup.unpack(archive, tempfile.mkdtemp(dir=self.tmp), own=True)
+        self.assertIn("frei sind nur 0 KiB", str(caught.exception))
+
+    def test_compression_ratio(self):
+        # 40 MiB Nullen packen sich auf wenige KiB – weit über dem Verhältnis echter Sicherungen (2,5–4,5).
+        parts = self.good_parts()
+        parts[backup.DB_PART] = b"\0" * (40 * 1024 * 1024)
+        data = self.rebuild(parts)
+        self.assertLess(len(data), 1024 * 1024)
+        self.assert_rejected(data, "Gzip-Bombe", backup.DB_PART)
+
+    def test_manifest_must_come_first(self):
+        parts = self.good_parts()
+        members = [regular(name, parts[name]) for name in (backup.SETTINGS_PART, backup.MANIFEST,
+                                                           backup.AUTOCAL_PART, backup.DB_PART)]
+        self.assert_rejected(tar_bytes(members), "manifest.json", "erste Datei")
+
+    def test_bad_manifest_rejected_before_parts_are_written(self):
+        parts = self.good_parts()
+        parts[backup.MANIFEST] = b"{}"
+        written = []
+        real_open = os.open
+
+        def track(path, *args, **kwargs):
+            written.append(os.path.basename(path))
+            return real_open(path, *args, **kwargs)
+
+        with mock.patch.object(backup.os, "open", side_effect=track):
+            self.assert_rejected(tar_bytes([regular(name, parts[name]) for name in backup.PARTS]),
+                                 "keine Sicherung von ntp-gui")
+        self.assertNotIn(backup.DB_PART, written)
 
     def test_huge_pax_header(self):
         info = tarfile.TarInfo(backup.MANIFEST)
@@ -1071,6 +1224,30 @@ class RestoreSafetyTest(BackupTestBase):
         self.assertTrue(all(c["enabled"] for c in channels.values()))
         self.assertEqual(settings.export_values()["values"].get("web_title"), "Testuhr Keller")
         self.assertGreaterEqual(notify.NOTIFIER.last_id, events.max_id())
+
+    def test_rollback_succeeds_with_little_free_space(self):
+        # Knapper Platz ist nach einem Fehler nach dem COMMIT wahrscheinlich: DISK_RESERVE darf das
+        # Zurückspielen der (kleinen) automatischen Sicherung nicht verhindern.
+        before = store.query("SELECT * FROM notify_channels ORDER BY id")
+        staged = self.staged(self._old_backup_without_channels())
+        real = backup._on_commit
+        calls = []
+
+        def flaky(max_event):
+            real(max_event)
+            if not calls:
+                calls.append(max_event)
+                raise RuntimeError("Fehler nach dem COMMIT")
+        tight = shutil.disk_usage(self.tmp)._replace(free=backup.DISK_RESERVE + 1024)
+        with mock.patch.object(backup, "_on_commit", side_effect=flaky), \
+                mock.patch.object(backup.shutil, "disk_usage", return_value=tight), \
+                mock.patch.object(notify.NOTIFIER, "_save_position"):
+            with self.assertRaises(backup.RestoreError) as caught:
+                backup.apply(staged["token"])
+        self.assertTrue(calls)
+        self.assertIn("es gilt alles wie vorher", str(caught.exception))
+        self.assertEqual(store.query("SELECT * FROM notify_channels ORDER BY id"), before)
+        self.assertEqual(settings.export_values()["values"].get("web_title"), "Testuhr Keller")
 
     def test_rollback_says_so_when_channels_differ(self):
         staged = self.staged(self._old_backup_without_channels())

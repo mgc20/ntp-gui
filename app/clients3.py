@@ -645,7 +645,7 @@ def nts_for(ip: str, entry: dict, key: str | None, cfg: dict, usage: dict | None
            "server_name": cfg.get("nts_server_name") or None}
     if not enabled:
         out["text"] = ("Der NTS-Server dieser Instanz ist aus – Clients können NTS hier nicht nutzen "
-                       "(Einstellungen → NTS → „NTS-Server für das LAN anbieten“).")
+                       "(System → Einstellungen → Quellen → „NTS (Network Time Security)“ → Erweitert → „NTS-Server für das LAN anbieten“).")
         return out
     use = (usage if usage is not None else nts_usage(cfg)).get(ip)
     if use:

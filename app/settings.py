@@ -1937,7 +1937,7 @@ def _migrate_3_4(data: dict) -> list[dict]:
             "„vorschlagen“). ntp-gui misst die Verspätung deines Empfängers gegen die Netzwerkquellen und "
             "stellt den Offset selbst nach – nie während einer GNSS-Störung, jede Änderung steht im "
             "Ereignisprotokoll und lässt sich auf der GPS-Seite zurücknehmen. Du musst nichts tun. Lieber "
-            "selbst entscheiden: Einstellungen → GPS → „Automatische Kalibrierung“ auf „vorschlagen“.")
+            "selbst entscheiden: System → Einstellungen → GPS → „Automatische Kalibrierung“ auf „vorschlagen“.")
     # Ein bewusst gesetzter Offset (z. B. gegen ein asymmetrisches Netz) – ausdrücklich nennen. GPS_OFFSET=0.0
     # aus den Compose-Vorlagen ist keine eigene Wahl.
     keys = ["gps_autocal"]

@@ -134,8 +134,8 @@ export const HELP_UHR = {
     text: "Woher die Temperatur kommt. „auto“ nimmt den Chip, der dem Quarz am nächsten ist: beim Raspberry Pi "
       + "`cpu-thermal` (der Quarz sitzt neben dem SoC), am PC `x86_pkg_temp`, `k10temp` oder `coretemp`. Besser "
       + "ist ein **DS18B20** am 1-Wire-Bus direkt am Quarz oder am GPS-Modul – der misst die Umgebung statt der "
-      + "Rechenlast. Welche Sensoren es gibt, zeigt der **Hardware-Check**; auswählen lässt sich einer in den "
-      + "Einstellungen (Dashboard → Temperatursensor). In virtuellen Maschinen und unter Docker Desktop gibt es "
+      + "Rechenlast. Welche Sensoren es gibt, zeigt der **Hardware-Check**; auswählen lässt sich einer unter "
+      + "System → Einstellungen → Dashboard & Zugang → Erweitert → „Temperatursensor“. In virtuellen Maschinen und unter Docker Desktop gibt es "
       + "meist keinen – dann steht hier „nicht verfügbar“.",
   },
   temp_now: {

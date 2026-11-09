@@ -104,7 +104,7 @@ def _log(message: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Einstellungen → Upstreams (reine Funktionen)
+# Upstreams aus den Einstellungen (reine Funktionen)
 # ---------------------------------------------------------------------------
 
 def _mode_list(cfg: dict, mode: str) -> list[str]:
@@ -806,7 +806,7 @@ def nameservers(text: str | None, port: int = DNS_PORT) -> list[tuple[str, int]]
 def render_local(original: str | None) -> str:
     keep = [line for line in (original or "").splitlines()
             if line.split()[:1] and line.split()[0] in ("search", "domain", "options")]
-    return "\n".join([MARKER + " – DNS für ntp-gui (Einstellungen → DNS für ntp-gui).",
+    return "\n".join([MARKER + " – DNS für ntp-gui (System → Einstellungen → Quellen → „DNS für ntp-gui“).",
                       "# Das Original liegt gesichert daneben und kommt beim Modus „system“ zurück.",
                       "nameserver 127.0.0.1", *keep]) + "\n"
 
