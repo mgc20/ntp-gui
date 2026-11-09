@@ -63,6 +63,7 @@ import threading
 import time
 from typing import Any, Callable
 
+import numfmt
 import store
 
 # --- Empfangsbewertung -------------------------------------------------------------------
@@ -160,26 +161,21 @@ def _ceil_ms(seconds: float) -> float:
 def fmt_ms(seconds: float | None) -> str:
     if seconds is None:
         return "–"
-    ms = seconds * 1000.0
-    text = f"{ms:.0f}" if ms >= 10 else f"{ms:.1f}"
-    return text.replace(".", ",") + " ms"
+    return f"{numfmt.adaptive(seconds * 1000.0)} ms"
 
 
 def _fmt_pct(share: float) -> str:
-    return f"{share * 100:.0f} %"
+    return f"{numfmt.number(share * 100)} %"
 
 
 def _fmt_rate(rate: float) -> str:
-    text = f"{rate:.0f}" if rate >= 10 else f"{rate:.1f}"
-    return text.replace(".", ",")
+    return numfmt.adaptive(rate)
 
 
 def _fmt_value(value: float) -> str:
     """Messwert für Begründungstexte: eine Nachkommastelle, ABgerundet (29,96 bleibt unter 30, wie die
     Ampel ihn wertet), ganze Zahlen ohne „,0“."""
-    value = math.floor(value * 10.0 + 1e-9) / 10.0
-    text = f"{value:.0f}" if value == int(value) else f"{value:.1f}"
-    return text.replace(".", ",")
+    return numfmt.number(math.floor(value * 10.0 + 1e-9) / 10.0, 1, group=False)
 
 
 def fmt_duration(seconds: float) -> str:
@@ -1029,7 +1025,7 @@ def role(cfg: dict, sources: Any = None, state: dict | None = None) -> dict[str,
     if honest is not None and values["delay"] < honest:
         if values["source"] == "manual":
             result["warnings"].append(
-                f"Deine Schranke (Delay {values['delay']} s = ± {bound}) ist kleiner als die gemessene Streuung "
+                f"Deine Schranke (Delay {numfmt.number(values['delay'], 6, group=False)} s = ± {bound}) ist kleiner als die gemessene Streuung "
                 f"(± {fmt_ms(honest / 2)}). chrony könnte das GPS dann guten Netzquellen vorziehen. Modus "
                 "„gemessen“ oder ein größerer Delay behebt das.")
         else:
@@ -1105,12 +1101,12 @@ def compare(a: dict, b: dict) -> dict[str, Any]:
     name_b = (b or {}).get("label") or "B"
     parts = []
     if deltas["cn0_top4"] is not None:
-        parts.append(f"{deltas['cn0_top4']:+.0f} dB-Hz bei den vier stärksten".replace("+0 ", "±0 ")
-                     .replace("-0 ", "±0 "))
+        delta = numfmt.number(deltas["cn0_top4"], signed=True)
+        parts.append(f"{'±0' if delta == '0' else delta} dB-Hz bei den vier stärksten")
     if deltas["fix_share"] is not None and abs(deltas["fix_share"]) >= 0.01:
         parts.append(f"Fix {_fmt_pct(b['fix_share'])} statt {_fmt_pct(a['fix_share'])}")
     if deltas["used"] is not None and abs(deltas["used"]) >= 1:
-        parts.append(f"{b['used']:.0f} statt {a['used']:.0f} genutzte Satelliten")
+        parts.append(f"{numfmt.number(b['used'])} statt {numfmt.number(a['used'])} genutzte Satelliten")
     detail = ", ".join(parts)
     if score >= 1.0:
         verdict, better = f"„{name_b}“ ist besser" + (f": {detail}" if detail else ""), "b"

@@ -61,6 +61,7 @@ import threading
 import time
 from typing import Any, Callable
 
+import numfmt
 import selectctl
 import store
 
@@ -124,13 +125,7 @@ def _median(values: list[float]) -> float | None:
 
 def fmt_ms(seconds: float) -> str:
     value = abs(seconds) * 1000.0
-    if value >= 100:
-        text = f"{value:.0f}"
-    elif value >= 1:
-        text = f"{value:.1f}"
-    else:
-        text = f"{value:.2f}"
-    return text.replace(".", ",") + " ms"
+    return f"{numfmt.number(value, 0 if value >= 100 else 1 if value >= 1 else 2, group=False)} ms"
 
 
 def fmt_span(seconds: float) -> str:

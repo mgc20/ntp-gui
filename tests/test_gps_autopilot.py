@@ -253,7 +253,7 @@ class FreshInstallWithoutPpsTest(_SimCase):
         status = sim.status()
         self.assertEqual(status["mode"], "auto")
         self.assertEqual(status["phase"]["key"], "measure")
-        self.assertRegex(status["phase"]["label"], r"misst \(\d,\d von 6,0 h\)")
+        self.assertRegex(status["phase"]["label"], r"misst \(\d,\d von 6 h\)")
         self.assertNotIn("übernimm", status["plan"])
         self.assertNotIn("Vorschlag übernehmen", status["plan"])
         self.assertEqual(sim.restarts, [])               # die Schranke wartet auf die Korrektur

@@ -436,14 +436,14 @@ class MetaTest(TempDataMixin, unittest.TestCase):
                     {"address": "192.168.1.6", "offset": 2.0, "threshold_ms": 1000})
         rows = [r for r in events.query(limit=50) if r.get("kind") == "clients"]
         self.assertEqual(len(rows), 2)
-        self.assertTrue(any(r["title"] == "Uhr von 192.168.1.5 weicht um +3,00 s ab" for r in rows))
+        self.assertTrue(any(r["title"] == "Uhr von 192.168.1.5 weicht um +3 s ab" for r in rows))
         shown = clientinfo.with_display_titles(rows)
-        self.assertIn("Uhr von Wohnzimmer-PC weicht um +3,00 s ab", [r.get("display_title") for r in shown])
+        self.assertIn("Uhr von Wohnzimmer-PC weicht um +3 s ab", [r.get("display_title") for r in shown])
         clientinfo.set_meta("192.168.1.5", "", "")
         exported = json.dumps(diagnostics._collect_events({}, {}), ensure_ascii=False)
         self.assertNotIn("Wohnzimmer", exported)
         self.assertNotIn("Kinderzimmer", exported)
-        self.assertIn("Uhr von 192.168.1.6 weicht um +2,00 s ab", exported)
+        self.assertIn("Uhr von 192.168.1.6 weicht um +2 s ab", exported)
         shown = clientinfo.with_display_titles(rows)
         self.assertNotIn("Wohnzimmer", json.dumps([r.get("display_title") for r in shown], ensure_ascii=False))
 
@@ -778,7 +778,7 @@ class FormatTest(unittest.TestCase):
     def test_fmt_offset(self):
         self.assertEqual(clientinfo.fmt_offset(0.0123), "+12 ms")
         self.assertEqual(clientinfo.fmt_offset(-0.0042), "−4,2 ms")
-        self.assertEqual(clientinfo.fmt_offset(1.5), "+1,50 s")
+        self.assertEqual(clientinfo.fmt_offset(1.5), "+1,5 s")
         self.assertEqual(clientinfo.fmt_offset(-3 * 86400), "−3 Tage")
 
 
@@ -804,7 +804,7 @@ class AlarmTest(unittest.TestCase):
         self.assertEqual(len(self.events), 1)
         kind, level, title, data = self.events[0]
         self.assertEqual((kind, level), ("clients", "warn"))
-        self.assertEqual(title, "Uhr von 192.168.1.5 weicht um +2,10 s ab")
+        self.assertEqual(title, "Uhr von 192.168.1.5 weicht um +2,1 s ab")
         self.assertEqual(data["address"], "192.168.1.5")
         self.feed(0.7, 3)      # unter Schwelle, aber über der Hälfte: noch kein „wieder im Rahmen“
         self.feed(0.7, 4)

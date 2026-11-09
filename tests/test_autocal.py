@@ -696,7 +696,7 @@ class CheckActiveTest(unittest.TestCase):
         self.write_reload("done", NOW + 5)
         result = self.check()
         self.assertIs(result["active"], False)
-        self.assertIn("0.05", result["reason"])
+        self.assertIn("0,05 s statt 0,055 s", result["reason"])
         # Gilt auch ohne automatische Änderung (z. B. Hand-Änderung, Neuladen gescheitert).
         self.assertIs(self.check(change=None)["active"], False)
 
@@ -1158,7 +1158,7 @@ class SecondReviewTest(ReviewTimelineCase):
         self.reset_offset(NOW)
         s = autocal.api_status(self.h.cfg, NOW + 3 * H, fresh=True, deps=self.h.deps(), file=self.file)
         self.assertEqual(s["phase"]["key"], "measure")
-        self.assertRegex(s["phase"]["label"], r"misst \(2,8 von 6,0 h\)")
+        self.assertRegex(s["phase"]["label"], r"misst \(2,8 von 6 h\)")
         s = autocal.api_status(self.h.cfg, NOW + autocal.SETTLE_SECONDS + 6 * H + 60, fresh=True,
                                deps=self.h.deps(), file=self.file)
         self.assertEqual(s["phase"]["key"], "correct")

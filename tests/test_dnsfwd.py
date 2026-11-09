@@ -659,6 +659,35 @@ class ForwarderTest(unittest.TestCase):
         self.assertGreater(up.down_until, time.monotonic())
         self.assertEqual(fwd.state, "failing")
 
+    def test_shortened_budget_timeout_is_no_outage(self):
+        """1.6.1: Fehlalarm „Eigene DNS-Server nicht erreichbar“. Fällt der erste eigene Server aus, bekommt
+        der zweite nur den Rest der Frist (QUERY_DEADLINE − UPSTREAM_TIMEOUT − FALLBACK_MIN). Antwortet er
+        langsamer als dieser Rest, aber schneller als UPSTREAM_TIMEOUT (kalter Cache, DoH-Handshake auf
+        einem Pi), zählten die gekürzten Versuche als Zeitüberschreitung – nach drei Anfragen galten BEIDE
+        als ausgefallen und der Hinweis stand da, obwohl der zweite Server antwortet."""
+        silent = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        silent.bind(("127.0.0.1", 0))
+        self.addCleanup(silent.close)
+        slow = FakeDns(delay={f"n{i}": 0.45 for i in range(6)})
+        system = FakeDns(ip="198.51.100.7")
+        self.addCleanup(slow.close)
+        self.addCleanup(system.close)
+        first = dnsfwd.PlainUpstream("127.0.0.1", silent.getsockname()[1])
+        second = dnsfwd.PlainUpstream("127.0.0.1", slow.port)
+        fwd = dnsfwd.Forwarder("servers", [first, second], lambda: [("127.0.0.1", system.port)],
+                               on_change=self.gate)
+        with mock.patch.multiple(dnsfwd, UPSTREAM_TIMEOUT=0.6, QUERY_DEADLINE=1.3, FALLBACK_MIN=0.4):
+            for i in range(dnsfwd.DOWN_AFTER):
+                fwd.resolve(dnsfwd.build_query(f"n{i}.example", 1))
+            self.assertGreater(first.down_until, time.monotonic())  # der stumme Server ist wirklich weg
+            self.assertEqual(second.down_until, 0.0)
+            self.assertNotEqual(fwd.state, "fallback")
+            # Ohne den stummen Server hat der zweite die volle Frist – und antwortet.
+            reply = fwd.resolve(dnsfwd.build_query("n5.example", 1))
+        self.assertEqual(dnsfwd.addresses(reply, 1)[0], [ANSWER_IP])
+        self.assertEqual(fwd.state, "ok")
+        self.assertFalse([e for e in self.events if e[0] == "warn"])
+
     def test_system_servfail_is_no_fallback_answer(self):
         """DNS-4: SERVFAIL/REFUSED vom System-DNS → nächster System-Server; sonst „failing“."""
         broken = FakeDns(rcode=dnsfwd.RCODE_SERVFAIL)
@@ -958,6 +987,23 @@ class InsightsTest(unittest.TestCase):
         self.assertEqual(insights.dns_insights(
             dict(base, state="ok", time=now, stats={"loops": 2, "loop_last": now - 3600}), {}), [])
         self.assertEqual(insights.dns_insights(dict(base, state="ok", stats={"loops": 2}), {}), [])
+
+    def test_refused_is_not_called_unreachable(self):
+        """1.6.1: Antworten die eigenen Server mit REFUSED, sind sie erreichbar – sie lehnen nur ab
+        (Zugriffsliste, nur für eigene Zonen zuständig). Der Hinweis sagt das statt „nicht erreichbar“."""
+        ups = [{"label": "192.0.2.53", "last_error": "Anfrage abgelehnt (REFUSED)"},
+               {"label": "198.51.100.53", "last_error": "Anfrage abgelehnt (REFUSED)"}]
+        out = insights.dns_insights({"mode": "servers", "effective_mode": "servers", "state": "fallback",
+                                     "upstreams": ups}, {})
+        self.assertEqual(self.keys(out), ["dns_fallback"])
+        self.assertEqual(out[0]["title"], "Eigene DNS-Server lehnen Anfragen ab")
+        self.assertNotIn("nicht erreichbar", out[0]["title"] + out[0]["text"])
+        self.assertIn("REFUSED", out[0]["text"])
+        # Gemischt (einer schweigt): weiter „nicht erreichbar“.
+        ups[1]["last_error"] = "Zeitüberschreitung"
+        out = insights.dns_insights({"mode": "servers", "effective_mode": "servers", "state": "fallback",
+                                     "upstreams": ups}, {})
+        self.assertEqual(out[0]["title"], "Eigene DNS-Server nicht erreichbar")
 
     def test_pin_needed(self):
         """DNS-1: DoT/DoH-Name ohne feste Adresse, den der System-DNS nicht liefert."""

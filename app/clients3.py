@@ -31,6 +31,7 @@ import threading
 import time
 from typing import Any, Callable
 
+import numfmt
 import clientinfo
 import clientmon
 
@@ -416,7 +417,7 @@ def clock_quality(entry: dict, points: list | None = None) -> dict:
         mean = sum(intervals) / len(intervals)
         cv = math.sqrt(sum((v - mean) ** 2 for v in intervals) / len(intervals)) / mean if mean > 0 else 1.0
         p = 20 if cv < 0.1 else 15 if cv < 0.3 else 8 if cv < 0.6 else 3
-        text = f"Abstände schwanken um {cv * 100:.0f} %"
+        text = f"Abstände schwanken um {numfmt.number(cv * 100)} %"
     else:
         cv, p, text = None, 0, "zu wenige Abstände bekannt"
     comps.append({"key": "regularity", "label": "Regelmäßigkeit", "points": p, "max": 20, "value": cv, "text": text})
@@ -433,9 +434,9 @@ def clock_quality(entry: dict, points: list | None = None) -> dict:
     if out["drift_ppm"] is not None:
         how = ("die Abweichung wächst gleichmäßig – die Uhr läuft frei" if free
                else "aus dem Sägezahn zwischen zwei Abfragen")
-        out["text"] = f"Gangabweichung ≈ {out['drift_ppm']:+.1f} ppm ({how})".replace(".", ",")
+        out["text"] = f"Gangabweichung ≈ {numfmt.number(out['drift_ppm'], 1, signed=True)} ppm ({how})"
     elif out["method"] == "versatz_oder_gang":
-        bound = f"{abs(out['drift_bound_ppm']):.1f}".replace(".", ",")
+        bound = numfmt.number(abs(out['drift_bound_ppm']), 1)
         out["text"] = (f"Gangabweichung höchstens ≈ {bound} ppm – fester Versatz und Gang lassen sich hier nicht "
                        f"trennen (dafür müssten die Abstände der Anfragen stärker schwanken). Abweichung "
                        f"{clientinfo.fmt_offset(med)} je {clientinfo._fmt_seconds(interval)}.")
@@ -769,7 +770,8 @@ def _bounded(value: Any, lo: float, hi: float, label: str, integer: bool = False
     except (TypeError, ValueError):
         raise Clients3Error(f"{label}: keine Zahl.") from None
     if not math.isfinite(number) or number < lo or number > hi:
-        raise Clients3Error(f"{label}: erlaubt sind {lo:g} bis {hi:g}.".replace(".", ","))
+        raise Clients3Error(f"{label}: erlaubt sind {numfmt.number(lo, 6, group=False)} bis "
+                            f"{numfmt.number(hi, 6, group=False)}.")
     return int(round(number)) if integer else number
 
 
@@ -1338,7 +1340,7 @@ def recommendations(key: str | None, entry: dict, quality: dict, nts: dict, sile
                             "(Zeitzone ist es nicht – NTP läuft immer in UTC) und ob sein Zeitdienst läuft."})
     if isinstance(drift, (int, float)) and isinstance(interval, (int, float)) and abs(drift) > 100 and interval > 900:
         out.append({"title": "Öfter fragen lassen",
-                    "code": f"Die Uhr läuft um {abs(drift):.0f} ppm weg und das Gerät fragt nur alle "
+                    "code": f"Die Uhr läuft um {numfmt.number(abs(drift))} ppm weg und das Gerät fragt nur alle "
                             f"{clientinfo._fmt_seconds(interval)} – ein kürzeres Intervall hält sie genauer."})
     if silent:
         out.append({"title": "Fragt nicht mehr", "code": f"{silent}. Ist das Gerät aus, oder fragt es inzwischen "
@@ -1425,10 +1427,10 @@ def pass_text(data: dict, now: float | None = None, share: bool = False) -> str:
     if share:
         name = NAME_PLACEHOLDER if name else ""
         group = NAME_PLACEHOLDER if group else ""
-    q_drift = (f"Gangabweichung: {q['drift_ppm']:+.1f} ppm".replace(".", ",")
+    q_drift = (f"Gangabweichung: {numfmt.number(q['drift_ppm'], 1, signed=True)} ppm"
                if _num(q.get("drift_ppm")) is not None
-               else f"Gangabweichung: höchstens {abs(q['drift_bound_ppm']):.1f} ppm (Versatz und Gang nicht "
-                    "trennbar)".replace(".", ",") if _num(q.get("drift_bound_ppm")) is not None
+               else f"Gangabweichung: höchstens {numfmt.number(abs(q['drift_bound_ppm']), 1)} ppm (Versatz und Gang "
+                    "nicht trennbar)" if _num(q.get("drift_bound_ppm")) is not None
                else "Gangabweichung: –")
     lines = [
         "Gerätepass (ntp-gui)",

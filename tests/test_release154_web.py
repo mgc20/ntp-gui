@@ -74,8 +74,9 @@ class TrustFixHintTest(unittest.TestCase):
         self.assertIn("Als vertrauenswürdigen Proxy eintragen", fix["label"])
         self.assertIn("X-Forwarded-For", fix["confirm"])
         self.assertEqual(self.watch.untrusted_peer(fix["id"]), "192.168.1.7")
-        # Dieselbe Adresse steht auch im Klartext-Hinweis (Ursache „untrusted“) mit Knopf.
-        self.assertEqual(items["web_plain_http"]["fixes"][0]["id"], fix["id"])
+        # 1.6.1: kein zweiter Klartext-Hinweis mit derselben Ursache – der Proxy-Hinweis ist die Warnung.
+        self.assertNotIn("web_plain_http", items)
+        self.assertEqual(hint["level"], "warn")
 
     def test_ipv6_and_mapped_addresses(self):
         self.untrusted("fd00::10")
@@ -116,7 +117,10 @@ class TrustFixHintTest(unittest.TestCase):
         self.watch.note(info, "key", can_admin=False)
         hint = self.by_key()["web_proxy_untrusted"]
         self.assertNotIn("fixes", hint)
-        self.assertNotIn("192.168.1.66", hint["text"])
+        # 1.6.1: Die Adresse steht im Text (über sie lief ein Schlüssel im Klartext – bis 1.6.0 nannte sie die
+        # HTTP-Warnung), aber nie als „Eingetragen wird genau diese Adresse“, sondern mit Rückfrage.
+        self.assertNotIn("Eingetragen wird genau diese Adresse", hint["text"])
+        self.assertIn("192.168.1.66 kam nur mit Lese-Schlüssel – darum kein Knopf", hint["text"])
         self.assertEqual(self.watch.untrusted, {})
 
     def test_older_proxy_stays_first(self):

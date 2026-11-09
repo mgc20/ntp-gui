@@ -128,8 +128,11 @@ export const CORE_DE = {
     },
     "hints": {
       "serious_label": "Warnungen und Störungen",
+      "rest_label": "Informationen und Erfolgsmeldungen",
       "info_count_one": "{count} Information",
       "info_count_other": "{count} Informationen",
+      "ok_count_one": "{count} in Ordnung",
+      "ok_count_other": "{count} in Ordnung",
       "show": "anzeigen",
       "hide": "ausblenden",
       "details": "Details",

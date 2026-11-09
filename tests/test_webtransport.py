@@ -200,16 +200,23 @@ class WatchTest(unittest.TestCase):
         self.assertIsNone(self.watch.last_https)
 
     def test_untrusted_lan_proxy_counts_as_plain_too(self):
+        # 1.6.1: Klartext über einen nicht eingetragenen Proxy ist EIN Hinweis (Ursache: Proxy nicht
+        # eingetragen) – als Warnung, weil die Strecke Proxy → ntp-gui sicher HTTP war.
         info = wt.resolve("192.168.1.50", hdrs({"X-Forwarded-For": "1.2.3.4"}), [])
         self.watch.note(info, "basic")
-        self.assertEqual(self.keys(), ["web_plain_http", "web_proxy_untrusted"])
+        items = self.watch.insights(now=1000.0)
+        self.assertEqual([i["key"] for i in items], ["web_proxy_untrusted"])
+        self.assertEqual(items[0]["level"], "warn")
+        self.assertIn("unverschlüsselt", items[0]["text"])
 
     def test_untrusted_header_claiming_http_or_https_still_plain(self):
         for proto in ("http", "https"):
             with self.subTest(proto=proto):
                 watch = wt.TransportWatch(clock=lambda: 1000.0)
                 watch.note(wt.resolve("192.168.1.50", hdrs({"X-Forwarded-Proto": proto}), []), "basic")
-                self.assertIn("web_plain_http", [i["key"] for i in watch.insights(now=1000.0)])
+                [item] = watch.insights(now=1000.0)
+                self.assertEqual((item["key"], item["level"]), ("web_proxy_untrusted", "warn"))
+                self.assertIn("Strecke Proxy → ntp-gui per HTTP", item["text"])
 
     def test_untrusted_proxy_on_loopback_only_info(self):
         self.watch.note(wt.resolve("127.0.0.1", hdrs({"X-Forwarded-For": "192.168.1.50"}), []), "basic")
@@ -377,9 +384,73 @@ class WatchTest(unittest.TestCase):
     def test_untrusted_proxy_named_as_cause(self):
         self.watch.note(wt.resolve("192.168.1.2", hdrs({"X-Forwarded-For": "192.168.1.50"}), []), "basic")
         items = self.watch.insights(now=1000.0)
-        self.assertEqual([i["key"] for i in items], ["web_plain_http", "web_proxy_untrusted"])
-        self.assertIn("über 192.168.1.2, das Proxy-Köpfe schickt", items[0]["text"])
+        self.assertEqual([i["key"] for i in items], ["web_proxy_untrusted"])
+        self.assertIn("kommen aber von 192.168.1.2", items[0]["text"])
         self.assertNotIn("192.168.1.50", items[0]["text"])  # Kopf unbeglaubigt – nicht nennen
+
+    # --- 1.6.1: keine doppelte Meldung „HTTP-Warnung“ + „Proxy nicht eingetragen“ --------------------
+
+    def test_unlisted_proxy_is_one_hint_with_cause_and_button(self):
+        # Fall aus einem Nutzer-Screenshot (Adressen hier nur Beispiele aus RFC 5737): Ein Reverse Proxy auf
+        # einem anderen Gerät, nicht eingetragen. Bisher: Warnung „unverschlüsseltes HTTP“ UND Info „Proxy
+        # erkannt“. Jetzt: ein Hinweis, der die Ursache nennt und den Knopf trägt.
+        info = wt.resolve("192.0.2.10", hdrs({"X-Forwarded-For": "198.51.100.20", "X-Forwarded-Proto": "https"}), [])
+        self.watch.note(info, "basic")
+        items = self.watch.insights(now=1000.0)
+        self.assertEqual([i["key"] for i in items], ["web_proxy_untrusted"])
+        [item] = items
+        self.assertEqual(item["level"], "warn")
+        # Eine Sicherheitswarnung: Titel und erster (eingeklappt sichtbarer) Satz sagen das, mit Adresse.
+        self.assertEqual(item["title"], "Anmeldung unverschlüsselt über nicht eingetragenen Proxy")
+        self.assertIn("Als vertrauenswürdigen Proxy eintragen (192.0.2.10/32)", item["fixes"][0]["label"])
+        self.assertTrue(item["text"].startswith("Anmeldedaten kamen unverschlüsselt über 192.0.2.10 an – ist das "
+                                                "dein Proxy, trag ihn mit dem Knopf ein."), item["text"])
+        self.assertIn("mitlesen", item["text"])
+
+    def test_unlisted_proxy_with_read_key_still_named(self):
+        # Kam die Anfrage nur mit Lese-Schlüssel (kein Verwaltungsrecht), gibt es keinen Knopf – die Adresse,
+        # über die der Schlüssel im Klartext lief, muss trotzdem im Text stehen, samt Mitlese-Satz.
+        info = wt.resolve("192.0.2.10", hdrs({"X-Forwarded-For": "198.51.100.20"}), [])
+        self.watch.note(info, "key", can_admin=False)
+        [item] = self.watch.insights(now=1000.0)
+        self.assertEqual((item["key"], item["level"]), ("web_proxy_untrusted", "warn"))
+        self.assertNotIn("fixes", item)
+        self.assertTrue(item["text"].startswith("Anmeldedaten kamen unverschlüsselt über 192.0.2.10 an"), item["text"])
+        self.assertIn("kommen aber von 192.0.2.10, die nicht", item["text"])
+        self.assertIn("ein API-Schlüssel", item["text"])
+        self.assertIn("jedes Gerät auf dem Weg kann sie mitlesen", item["text"])
+        self.assertIn("24 Stunden", item["text"])
+        self.assertNotIn("von einer Adresse", item["text"])
+        self.assertNotIn("Eingetragen wird genau diese Adresse", item["text"])
+        self.assertIn("192.0.2.10 kam nur mit Lese-Schlüssel", item["text"])
+
+    def test_unlisted_proxies_admin_and_read_key_both_named_button_only_for_admin(self):
+        self.watch.note(wt.resolve("192.0.2.10", hdrs({"X-Forwarded-For": "198.51.100.20"}), []), "basic")
+        self.watch.note(wt.resolve("192.0.2.11", hdrs({"X-Forwarded-For": "198.51.100.21"}), []), "key",
+                        can_admin=False)
+        [item] = self.watch.insights(now=1000.0)
+        self.assertIn("192.0.2.10", item["text"])
+        self.assertIn("192.0.2.11", item["text"])
+        self.assertIn("stehen", item["text"])
+        self.assertEqual([f["address"] for f in item["fixes"]], ["192.0.2.10"])
+        self.assertIn("192.0.2.11 kam nur mit Lese-Schlüssel", item["text"])
+        self.assertNotIn("192.0.2.10 kam nur", item["text"])
+
+    def test_real_plain_access_still_warns_next_to_unlisted_proxy(self):
+        # Wirklich unverschlüsselt (kein Proxy-Kopf): Die HTTP-Warnung bleibt – aber nur mit diesem Zugriff.
+        self.watch.note(wt.resolve("192.0.2.10", hdrs({"X-Forwarded-For": "198.51.100.20"}), []), "basic")
+        self.watch.note(wt.resolve("192.0.2.30", hdrs({}), []), "key")
+        items = {i["key"]: i for i in self.watch.insights(now=1000.0)}
+        self.assertEqual(sorted(items), ["web_plain_http", "web_proxy_untrusted"])
+        self.assertIn("192.0.2.30 direkt per HTTP", items["web_plain_http"]["text"])
+        self.assertNotIn("192.0.2.10", items["web_plain_http"]["text"])
+        self.assertNotIn("fixes", items["web_plain_http"])
+
+    def test_unlisted_proxy_on_this_host_stays_info(self):
+        self.watch.note(wt.resolve("127.0.0.1", hdrs({"X-Forwarded-For": "198.51.100.20"}), []), "basic")
+        [item] = self.watch.insights(now=1000.0)
+        self.assertEqual((item["key"], item["level"]), ("web_proxy_untrusted", "info"))
+        self.assertNotIn("unverschlüsselt an", item["text"])
 
     def test_lan_proxy_https_plus_direct_bookmark_both_named(self):
         # Proxy liefert HTTPS (Hop-Hinweis), aber ein anderes Gerät nutzt noch http://ip:8080.

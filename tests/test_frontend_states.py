@@ -180,6 +180,39 @@ console.log(JSON.stringify({{ a: ov.recentRate(s), b: ov.recentRate(later), rese
         self.assertNotIn("rate[rate.length - 1]", clients)
         self.assertIn("recentRate(history)", overview)
 
+    # --- 1.6.1: ausgeklappte Infos wie Warnungen ------------------------------------------------
+    def test_expanded_infos_use_compact_hint_rows(self):
+        # Infos (ausgeklappt) sind dieselben kompakten Zeilen wie die Warnungen – keine größeren Karten
+        # (.insight) mit Link und Knopf je in eigener Zeile. Der „Beheben“-Knopf steht bei den Aktionen rechts.
+        out = self.run_js(f"""
+const ov = await import({mod("pages/overview.js")});
+const items = [
+  {{ level: "warn", key: "storage", title: "Volume fehlt", text: "Kein Volume." }},
+  {{ level: "info", key: "no_auth", action: "settings", title: "Dashboard ohne Passwort", text: "Jeder im LAN kann ändern." }},
+  {{ level: "info", key: "web_proxy_untrusted", action: "settings", title: "Proxy nicht eingetragen", text: "Trag ihn ein.",
+    fixes: [{{ kind: "trust_proxy", id: "0123456789abcdef", label: "Als vertrauenswürdigen Proxy eintragen (192.0.2.10/32)" }}] }},
+  {{ level: "ok", key: "gps_used", title: "GPS wird genutzt", text: "Das GPS fließt ein." }},
+];
+const c = ctx({{ uiState: {{ overviewHintsOpen: true }} }});
+const block = ov.hintsBlock(c, items);
+const rows = withAttr(block, "class", "hint-row");
+const actions = withAttr(block, "class", "hint-actions");
+const proxyRow = rows.find((r) => text(r).includes("Proxy nicht eingetragen"));
+console.log(JSON.stringify({{
+  rows: rows.map((r) => r.attrs["data-level"]),
+  cards: withAttr(block, "class", "insight").filter((n) => /^insight( |$)/.test(n.attrs.class)).length,
+  lists: withAttr(block, "class", "hint-list").length,
+  fixInActions: withAttr(withAttr(proxyRow, "class", "hint-actions"), "class", "insight-fixes").length,
+  fixInMain: withAttr(withAttr(proxyRow, "class", "hint-main"), "class", "insight-fixes").length,
+  linkInActions: actions.map((a) => withAttr(a, "class", "insight-action").length),
+}}));
+""")
+        self.assertEqual(out["rows"], ["warn", "info", "info", "ok"])
+        self.assertEqual(out["cards"], 0)
+        self.assertEqual(out["lists"], 2)
+        self.assertEqual((out["fixInActions"], out["fixInMain"]), (1, 0))
+        self.assertEqual(out["linkInActions"], [0, 1, 1, 0])
+
     # --- F1 Nachbesserung: IANA-Zeitzone -------------------------------------------------------
     def test_event_times_follow_dst_of_their_day(self):
         # Ereignis am 24.10.2026 12:00 UTC (noch Sommerzeit in Berlin), angezeigt am 08.11.2026 (Winterzeit).

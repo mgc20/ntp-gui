@@ -31,6 +31,7 @@ import time
 import unicodedata
 from typing import Any, Callable, Iterable
 
+import numfmt
 import clientmon
 
 NTP_EPOCH_OFFSET = 2208988800
@@ -409,12 +410,12 @@ def _poll_text(poll: Any) -> str:
 
 def _fmt_seconds(value: float) -> str:
     if value < 1:
-        return f"{value * 1000:.0f} ms"
+        return f"{numfmt.number(value * 1000, group=False)} ms"
     if value < 120:
-        return f"{value:.0f} s"
+        return f"{numfmt.number(value, group=False)} s"
     if value < 7200:
-        return f"{value / 60:.0f} min"
-    return f"{value / 3600:.0f} h".replace(".", ",")
+        return f"{numfmt.number(value / 60, group=False)} min"
+    return f"{numfmt.number(value / 3600, group=False)} h"
 
 
 _IOT_VENDORS = ("espressif", "tuya", "shelly", "allterco", "sonoff", "itead", "raspberry", "texas instruments",
@@ -843,15 +844,10 @@ def _chrony_view(row: dict | None) -> dict | None:
 
 def fmt_offset(value: float) -> str:
     """Abweichung deutsch formatiert, mit Vorzeichen: „+12,3 ms“, „−1,25 s“, „+3 Tage“."""
-    sign = "+" if value >= 0 else "−"
     a = abs(value)
     if a >= 86400:
-        days = a / 86400
-        text = f"{days:.0f} Tage" if days >= 2 else f"{days:.1f} Tage"
-    elif a >= 1:
-        text = f"{a:.2f} s"
-    elif a >= 0.01:
-        text = f"{a * 1000:.0f} ms"
-    else:
-        text = f"{a * 1000:.1f} ms"
-    return sign + text.replace(".", ",")
+        days = value / 86400
+        return f"{numfmt.number(days, 0 if a >= 2 * 86400 else 1, signed=True, group=False)} Tage"
+    if a >= 1:
+        return f"{numfmt.number(value, 2, signed=True, group=False)} s"
+    return numfmt.ms(value, 0 if a >= 0.01 else 1, signed=True)

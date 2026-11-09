@@ -35,6 +35,11 @@ Der Rundgang öffnet jede Route bei 1440 und 390 px, hell und dunkel, und meldet
   1440 px: genau drei Marker an der richtigen Stelle, Holdover-Abschnitt im Band, Marker im Diagramm, Tagesbericht-Satz,
   Tippflächen ≥ 24 px; per Tastatur Band → Pos1 → Enter öffnet „So sah es um … aus“ (ohne Satellitenwinkel), Esc gibt den
   Fokus ans Band zurück, Tab erreicht den ersten Marker, Enter öffnet den Dialog; der Filter blendet eine Art aus,
+- das Statusband der Übersicht (1.6.1) mit erfundenen Hinweisen (2 Warnungen, 3 Infos, 1 Erfolg) bei 390, 1440,
+  2000 und 2560 px, hell und dunkel: Kennzahl-Kacheln < 220 px, Sparkline direkt unter der Notiz, keine leere Fläche > 150 px,
+  keine Überbreite, je Hinweis höchstens eine sichtbare Textzeile, „3 Informationen · 1 in Ordnung“;
+  ausgeklappte Infos als kompakte Zeilen wie die Warnungen (nicht höher), Aktionen höchstens 850 px hinter dem
+  Textende (so viel wie bei 1440 px); dazu die Uhrqualität bei 2000 px ohne gestreckte Karte (≤ 80 px leer unter Vollbild-Uhr/Schaltsekunden),
 - die sichtbare Wortzahl je Seite (`words` in der Ausgabe: innerText des Inhalts bei 1440 px, hell, ohne
   geschlossene ⓘ-Popover und zugeklappte `<details>`).
 
@@ -60,6 +65,7 @@ TOUR_WORDS_ONLY=1 tests/ui/rundgang.sh        # nur die Wortzahl je Seite messen
 TOUR_PAGES_ONLY=1 tests/ui/rundgang.sh        # nur Clients mit Messwert und Rohdaten der Ereignisse (erfundene Antworten)
 TOUR_CLOCK_ONLY=1 tests/ui/rundgang.sh        # nur die Uhr-Werkstatt /clock (Designs, Kiosk, E-Ink, Ruhe zwischen den Minuten, Leiste bei offenem Panel)
 TOUR_TIMELINE_ONLY=1 tests/ui/rundgang.sh     # nur „Heute“-Zeitleiste: Band, Marker, Tagesbericht, Tastatur (erfundener Tag)
+TOUR_HERO_ONLY=1 tests/ui/rundgang.sh         # nur das Statusband der Übersicht (TOUR_HERO_SHOTS=<Ordner> für Fotos)
 ```
 
 Läuft der Server schon (z. B. mit `NTPGUI_CHRONYC=tests/ui/fake_chronyc.py`), genügt:

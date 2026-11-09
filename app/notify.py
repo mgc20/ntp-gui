@@ -70,6 +70,7 @@ from typing import Any, Callable
 
 import egress
 import events
+import numfmt
 import settings
 import store
 
@@ -978,7 +979,7 @@ def _describe(exc: BaseException) -> str:
 
 
 def _timeout_text() -> str:
-    return f"Zeitüberschreitung ({TIMEOUT:g} s)"
+    return f"Zeitüberschreitung ({numfmt.number(TIMEOUT, 3, group=False)} s)"
 
 
 def deliver(channel: dict, clean: dict, version: str = "") -> None:

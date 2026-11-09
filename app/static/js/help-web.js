@@ -32,7 +32,8 @@ export const HELP_WEB = {
       + "eine falsche Adresse vorgeben. Einträge breiter als `/24` (IPv4) bzw. `/64` (IPv6) speichert ntp-gui, "
       + "warnt aber beim Speichern und mit einem Hinweis in der Übersicht. "
       + "**Per Klick eintragen:** Kommen Anfragen mit Proxy-Köpfen von einer Adresse, die hier fehlt, nennt der "
-      + "Hinweis „Reverse Proxy erkannt, aber nicht eingetragen“ diese Adresse und bietet „Als vertrauenswürdigen "
+      + "Hinweis „Reverse Proxy erkannt, aber nicht eingetragen“ (kam dabei eine Anmeldung per HTTP aus dem LAN: "
+      + "„Anmeldung unverschlüsselt über nicht eingetragenen Proxy“) diese Adresse und bietet „Als vertrauenswürdigen "
       + "Proxy eintragen“ an (nur mit Admin-Recht, mit Rückfrage). Eingetragen wird genau die Adresse, die ntp-gui "
       + "selbst als Gegenstelle gesehen hat – als `/32` bzw. `/128`, nie ein Netz. Läuft der Proxy in Docker mit "
       + "wechselnder Adresse, trag besser eine feste ein (eigenes Netz mit `ipv4_address`).",

@@ -294,7 +294,9 @@ export function render(ctx) {
     holdoverCard(ctx),
     ...temperatureSection(ctx, temp, loadingOr(ctx, "temperature", tempUrl, "Temperaturdaten")),
     adev.node || adev,
-    el("div", { class: "grid-2" }, leapSection(leapInfo, ctx.status, loadingOr(ctx, "leap", "/api/leap", "Schaltsekunden-Daten")),
+    // Schaltsekunden ist meist viel höher als die Vollbild-Uhr – jede Karte in ihrer natürlichen Höhe statt
+    // einer gestreckten Vollbild-Uhr mit leerer Fläche darunter (bei 2000 px über 200 px).
+    el("div", { class: "grid-2 grid-natural" }, leapSection(leapInfo, ctx.status, loadingOr(ctx, "leap", "/api/leap", "Schaltsekunden-Daten")),
       clockSection(ctx)),
   ];
 }

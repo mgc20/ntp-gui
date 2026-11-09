@@ -1,5 +1,5 @@
 import { el, apiPost, fmtSeconds, fmtNs, fmtNumber, fmtFixed, fmtRate, fmtDuration, fmtPpm, fmtDate, isNum, sourceLabel, serverZone, fmtZoned } from "../util.js";
-import { card, statCard, kv, badge, toast, insightList, insightLink, insightAction, insightFixes, rangeButtons, infoButton, emptyState, loadingOr, chartCard, ACTION_LABEL } from "../ui.js";
+import { card, statCard, kv, badge, toast, insightLink, insightAction, insightFixes, rangeButtons, infoButton, emptyState, loadingOr, chartCard, oneLine, ACTION_LABEL } from "../ui.js";
 import { lineChart, sparkline, stepDecimals } from "../charts.js";
 import { t as tr } from "../i18n.js";
 import { route, setupHref } from "../routes.js";
@@ -205,9 +205,11 @@ function hintRow(ctx, item) {
       el("div", { class: "hint-title" },
         el("strong", { text: item.title }),
         area ? el("span", { class: "hint-area", text: tr(PANEL_NAME_KEY[area]) }) : null),
-      open ? el("p", { class: "hint-text", id: textId, text: item.text }) : null,
-      open ? insightFixes(item, ctx) : null),
+      // Zu: Titel + eine Zeile (erster Satz); „Details“ zeigt den ganzen Text. Störungen (crit) bleiben offen.
+      open ? el("p", { class: "hint-text", id: textId, text: item.text }) : oneLine(item.text, item.title, { info: false })),
+    // Aktionen rechts in einer Reihe: „Beheben“-Knopf, Details, Link zur Seite (bei 390 px unter dem Text).
     el("div", { class: "hint-actions" },
+      insightFixes(item, ctx),
       crit ? null : el("button", {
         type: "button", class: "link hint-toggle", "aria-expanded": open ? "true" : "false",
         "aria-controls": open ? textId : null, "data-focus-key": `hint:${key}`,
@@ -218,12 +220,14 @@ function hintRow(ctx, item) {
       insightAction(item)));
 }
 
-function hintsBlock(ctx, insights) {
+export function hintsBlock(ctx, insights) {
   // „Synchron mit …“ sagt das Statusband schon – keine eigene Zeile.
   const shown = insights.filter((i) => i.key !== "synced");
   const sorted = [...shown].sort((a, b) => (LEVEL_RANK[a.level] ?? 2) - (LEVEL_RANK[b.level] ?? 2));
   const serious = sorted.filter((i) => i.level === "crit" || i.level === "warn");
   const rest = sorted.filter((i) => i.level !== "crit" && i.level !== "warn");
+  const infos = rest.filter((i) => i.level !== "ok");
+  const oks = rest.filter((i) => i.level === "ok");
   const open = Boolean(ctx.uiState.overviewHintsOpen);
   const parts = [];
   if (serious.length) parts.push(el("ul", { class: "hint-list", "aria-label": tr("overview.hints.serious_label") }, serious.map((i) => hintRow(ctx, i))));
@@ -236,11 +240,18 @@ function hintsBlock(ctx, insights) {
     el("span", { class: "hint-summary-icons", "aria-hidden": "true" }, rest.slice(0, 4).map((i) =>
       el("span", { class: "insight-icon", "data-level": i.level, text: LEVEL_ICON[i.level] || "i" }))),
     el("span", { class: "hint-summary-text" },
-      el("strong", { text: tr("overview.hints.info_count", { count: rest.length }) }),
+      // 1.6.1: Erfolgsmeldungen („GPS wird genutzt“) sind keine Informationen – eigene Zahl „in Ordnung“.
+      el("strong", { text: [
+        infos.length ? tr("overview.hints.info_count", { count: infos.length }) : null,
+        oks.length ? tr("overview.hints.ok_count", { count: oks.length }) : null,
+      ].filter(Boolean).join(" · ") }),
       el("span", { class: "muted", text: ` · ${rest.map((i) => i.title).join(" · ")}` })),
     el("span", { class: "hint-summary-action", text: tr(open ? "overview.hints.hide" : "overview.hints.show") }));
     parts.push(el("div", { class: "hint-more" }, toggle, infoButton("overview_hints", tr("overview.hints.label"))));
-    if (open) parts.push(el("div", { class: "insights-rest", id: "hints-rest" }, insightList(rest, ctx)));
+    // 1.6.1: Ausgeklappte Infos sehen aus wie die Warnungen darüber (kompakte Zeile, Aktionen rechts) –
+    // nicht als größere Karten, die mehr Platz brauchen als das Wichtigere.
+    if (open) parts.push(el("div", { class: "insights-rest", id: "hints-rest" },
+      el("ul", { class: "hint-list", "aria-label": tr("overview.hints.rest_label") }, rest.map((i) => hintRow(ctx, i)))));
   } else if (serious.length) {
     parts.push(el("div", { class: "hint-more hint-more-quiet" }, infoButton("overview_hints", tr("overview.hints.label"))));
   }

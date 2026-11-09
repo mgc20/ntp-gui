@@ -25,6 +25,8 @@ import time
 from collections import deque
 from typing import Any, Callable
 
+import numfmt
+
 CONFIRM = 2  # so oft hintereinander muss ein neuer Zustand gemessen werden
 # GPS-Fix: Bei schwachem Empfang (Antenne innen) kommt und geht der Fix im Minutentakt. Ein
 # Wechsel zählt erst, wenn er so lange anhält – sonst füllt sich das Protokoll mit
@@ -493,7 +495,7 @@ class StateWatcher:
             threshold = 0.0
         if not isinstance(clients, dict):
             return
-        fmt = fmt or (lambda v: f"{v * 1000:+.1f} ms")
+        fmt = fmt or (lambda v: numfmt.ms(v, 1, signed=True))
         handover = set(handover or ())
         with self._lock:
             if threshold <= 0:

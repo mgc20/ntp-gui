@@ -174,7 +174,7 @@ class AutocalDefaultTest(_Base):
     def test_own_offset_is_named(self):
         # Prüfbefund: Ein bewusst gesetzter Offset wird ausdrücklich genannt; GPS_OFFSET=0.0 aus den Vorlagen nicht.
         notes = settings._migrate_3_4({"values": {"gps_enable": True, "gps_offset": 0.05}})
-        self.assertIn("gespeicherter Offset (0.05 s)", notes[0]["text"])
+        self.assertIn("gespeicherter Offset (0,05 s)", notes[0]["text"])
         os.environ["GPS_OFFSET"] = "0.0"
         notes = settings._migrate_3_4({"values": {"gps_enable": True}})
         self.assertNotIn("GPS_OFFSET", notes[0]["text"])
