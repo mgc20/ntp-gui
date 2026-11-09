@@ -242,7 +242,68 @@
       "intro": "Log, events and diagnostic bundle for troubleshooting – nothing is uploaded automatically.",
       "privacy": "With privacy filter."
     },
-    "more": "More"
+    "more": "More",
+    "timeline": {
+      "title": "Today – last 24 hours",
+      "sub": "One colour per 5 minutes. Tap a spot or pick it with the arrow keys and Enter to see what it looked like then.",
+      "what": "the timeline",
+      "band_label": "State of the last 24 hours",
+      "band_hint": "Arrow keys: 5 minutes, Page up/down: one hour, Home/End: start/end, Enter: what it looked like then.",
+      "legend_label": "Colours in the band",
+      "now": "now",
+      "state": {
+        "good": "synchronised",
+        "warn": "warning",
+        "crit": "error",
+        "holdover": "holdover",
+        "none": "no data"
+      },
+      "group": {
+        "source": "Source change",
+        "gps": "GPS outage",
+        "restart": "Restart",
+        "pi": "Pi power",
+        "warn": "Warning"
+      },
+      "filter_label": "Events in band and charts",
+      "marker_more_one": "and {count} more",
+      "marker_more_other": "and {count} more",
+      "events_count_one": "{count} event",
+      "events_count_other": "{count} events",
+      "events_marked_one": "{count} event marked",
+      "events_marked_other": "{count} events marked",
+      "moment": {
+        "title": "What it looked like at {time}",
+        "what": "the data point",
+        "loading": "Loading the data point …",
+        "none": "No data point nearby – the history has a gap here.",
+        "state": "State",
+        "source": "Source",
+        "no_source": "none – the clock runs free",
+        "offset": "Offset",
+        "bound": "Error bound",
+        "satellites": "Satellites",
+        "satellites_value": "{used} used of {seen}",
+        "point": "Data point from",
+        "events": "Events around this time",
+        "close": "Close"
+      },
+      "report": {
+        "title": "Daily report",
+        "yesterday": "Yesterday",
+        "synced": "{pct} % synchronised",
+        "worst": "worst value ± {value}",
+        "devices_one": "{n} device",
+        "devices_other": "{n} devices",
+        "gps": "GPS usable {hours} h",
+        "pi_0": "Pi without undervoltage",
+        "pi_1": "Pi throttled at times",
+        "pi_2": "Pi with undervoltage",
+        "partial": "history covers only {hours} h",
+        "empty": "The first daily report appears after the first full day of history.",
+        "pending": "Yesterday's report is being calculated – check again in a moment."
+      }
+    }
   },
   "setup": {
     "title": "Setup",

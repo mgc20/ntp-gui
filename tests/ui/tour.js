@@ -30,6 +30,7 @@
 // Uhr-Werkstatt (clockChecks, TOUR_CLOCK_ONLY=1): jedes /clock-Design mit fester Serverzeit bei 390 und 1440 px, auch im
 // Rotlicht-Modus, dazu Kiosk, E-Ink, zweite Zeitzone und unzulässige Parameter ohne Überbreite; E-Ink ohne Änderungen
 // zwischen den Minuten, Leiste bleibt bei offenem Ton-Panel, #tone-status nicht im Sekundentakt (clockQuietChecks).
+// Dazu timelineChecks (1.6, T7): Zustandsband und Marker bei 390/1440 px mit erfundenem Tag, Tastaturbedienung.
 //
 // Aufruf: node tests/ui/tour.js [Basis-URL]   (Standard http://127.0.0.1:18300, oder TOUR_BASE)
 // Ausgabe: JSON mit „problems“ (leer = alles gut) und einer Zeile je Route. Rückgabecode 1 bei Problemen.
@@ -837,6 +838,146 @@ async function clockQuietChecks(browser) {
   return { found, lines };
 }
 
+// „Heute“-Zeitleiste (1.6, T7) mit erfundenen Antworten (page.route): ein Tag mit Holdover 03:00–04:30 und genau drei
+// bekannten Ereignissen. Bei 1440 und 390 px: genau drei Marker über dem Band an der richtigen Stelle (± 1 Fenster),
+// Holdover-Abschnitt im Band, Marker auch im Diagramm, keine Überbreite, Tippflächen ≥ 24 px; Tastatur: Band fokussieren,
+// Pos1 + Enter öffnet „So sah es um … aus“ (ohne Satellitenwinkel), Esc schließt und gibt den Fokus ans Band zurück,
+// Tab erreicht einen Marker, Enter öffnet den Dialog zu seiner Zeit; der Filter blendet eine Art aus.
+async function timelineChecks(browser) {
+  const found = [];
+  const lines = [];
+  const now = Math.floor(Date.now() / 1000);
+  const end = (Math.floor(now / 300) + 1) * 300;
+  const start = end - 288 * 300;
+  const at = (hours) => start + hours * 3600;
+  const states = Array.from({ length: 288 }, (_, i) => (i >= 36 && i < 54 ? "h" : i >= 200 && i < 204 ? "w" : "g")).join("");
+  const markers = [
+    { id: 1, t: at(3) + 20, group: "source", level: "warn", title: "Keine Zeitquelle mehr ausgewählt" },
+    { id: 2, t: at(10) + 70, group: "gps", level: "warn", title: "GPS-Fix verloren" },
+    { id: 3, t: at(23.5), group: "restart", level: "info", title: "ntp-gui gestartet" },
+  ].map((m) => ({ ...m, b: Math.floor((m.t - start) / 300) }));
+  // Diagramme bekommen zusätzlich ein Ereignis „gerade eben“ ganz am rechten Rand (Tooltip darf dort nicht schrumpfen).
+  const chartMarkers = [...markers, { id: 4, t: now - 5, group: "restart", level: "info",
+    title: "Dienst chronyd neu gestartet, Quelle 192.0.2.1 wieder ausgewählt" }];
+  const timeline = { now, start, end, bucket: 300, states, runs: [], markers,
+    report: { day: "2026-11-08", samples: 8640, covered_s: 86400, synced_pct: 99.84, worst_offset: 0.0012, devices: 12,
+      gps_hours: 21, pi_state: 0 } };
+  for (const width of [1440, 390]) {
+    const ctx = await browser.newContext({ viewport: { width, height: 900 } });
+    const page = await ctx.newPage();
+    const errors = [];
+    page.on("pageerror", (e) => errors.push(e.message));
+    await page.route("**/api/timeline", (route) => route.fulfill({ json: timeline }));
+    await page.route("**/api/timeline/markers*", (route) => route.fulfill({ json: { markers: chartMarkers } }));
+    await page.goto(`${BASE}/#/`, { waitUntil: "load" });
+    // Auf Band und Diagramm warten statt fester Zeit: Bei kaltem Browser braucht das erste Diagramm länger.
+    await page.waitForSelector(".timeline-wrap .chart-event", { timeout: 15000 }).catch(() => {});
+    await page.waitForSelector(".chart-wrap .chart-event", { timeout: 15000 }).catch(() => {});
+    await page.waitForTimeout(300);
+    const band = await page.evaluate(() => {
+      const track = document.querySelector(".timeline-track");
+      const box = track?.getBoundingClientRect();
+      const buttons = [...document.querySelectorAll(".timeline-wrap .chart-event")].map((b) => {
+        const r = b.getBoundingClientRect();
+        return { x: (r.left + r.width / 2 - box.left) / box.width, w: r.width, h: r.height };
+      });
+      const hold = [...document.querySelectorAll('.timeline-seg[data-state="holdover"]')].map((seg) => {
+        const r = seg.getBoundingClientRect();
+        return [(r.left - box.left) / box.width, (r.right - box.left) / box.width];
+      });
+      return { buttons, hold, role: track?.getAttribute("role"),
+        overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        chart: document.querySelectorAll(".chart-wrap .chart-event").length,
+        report: document.getElementById("tagesbericht")?.innerText || "" };
+    });
+    lines.push(`timeline ${width}: marker=${band.buttons.length} hold=${JSON.stringify(band.hold)} chart=${band.chart}`);
+    if (band.buttons.length !== 3) found.push(`${width} Zeitleiste: ${band.buttons.length} statt 3 Marker`);
+    band.buttons.forEach((b, i) => {
+      const want = (markers[i].b + 0.5) / 288;
+      if (Math.abs(b.x - want) > 1.5 / 288) found.push(`${width} Zeitleiste: Marker ${i + 1} bei ${b.x.toFixed(4)} statt ${want.toFixed(4)}`);
+      if (b.w < 24 || b.h < 24) found.push(`${width} Zeitleiste: Marker ${i + 1} Tippfläche ${b.w}x${b.h}`);
+    });
+    if (band.hold.length !== 1 || Math.abs(band.hold[0][0] - 36 / 288) > 1 / 288 || Math.abs(band.hold[0][1] - 54 / 288) > 1 / 288) {
+      found.push(`${width} Zeitleiste: Holdover-Phase falsch ${JSON.stringify(band.hold)}`);
+    }
+    if (band.role !== "slider") found.push(`${width} Zeitleiste: Band ohne role=slider`);
+    if (band.overflow > 0) found.push(`${width} Zeitleiste: Überbreite ${band.overflow}`);
+    if (!band.chart) found.push(`${width} Zeitleiste: keine Marker im Diagramm`);
+    if (!/Gestern: 99,8 % synchron, schlechtester Wert ± 1,2 ms, 12 Geräte, GPS 21 h nutzbar, Pi ohne Unterspannung/.test(band.report.replace(/\s+/g, " "))) {
+      found.push(`${width} Tagesbericht: „${band.report.replace(/\s+/g, " ")}“`);
+    }
+    // Tooltip eines Markers am rechten Rand (Band: 23:30 Uhr, Diagramm: „gerade eben“): lesbar breit, nicht
+    // Zeichen für Zeichen umgebrochen, innerhalb des Fensters.
+    for (const [where, selector] of [["Band", ".timeline-wrap .chart-event"], ["Diagramm", ".chart-wrap .chart-event"]]) {
+      const all = await page.$$(selector);
+      if (!all.length) continue;
+      const last = all[all.length - 1];
+      await last.scrollIntoViewIfNeeded();
+      await last.hover();
+      await page.waitForTimeout(150);
+      const tip = await last.evaluate((button) => {
+        const node = [...button.parentElement.querySelectorAll(":scope > .chart-event-tip")].find((t) => !t.hidden);
+        if (!node) return null;
+        const r = node.getBoundingClientRect();
+        return { left: Math.round(r.left), right: Math.round(r.right), w: Math.round(r.width), h: Math.round(r.height),
+          vw: document.documentElement.clientWidth };
+      });
+      lines.push(`timeline ${width}: Tooltip ${where} ${JSON.stringify(tip)}`);
+      if (!tip) found.push(`${width} Zeitleiste: kein Tooltip am Marker (${where})`);
+      else if (tip.w < 150 || tip.h > 120 || tip.left < 0 || tip.right > tip.vw) {
+        found.push(`${width} Zeitleiste: Tooltip am rechten Rand (${where}) ${tip.w}×${tip.h} px, ${tip.left}–${tip.right}`);
+      }
+      await page.mouse.move(0, 0);
+    }
+    await page.evaluate(() => window.scrollTo(0, 0));
+    // Tastatur: Band → Pos1 → Enter → Dialog → Esc → Fokus zurück.
+    await page.focus(".timeline-track");
+    await page.keyboard.press("Home");
+    await page.keyboard.press("ArrowRight");
+    const text = await page.evaluate(() => document.querySelector(".timeline-track").getAttribute("aria-valuetext"));
+    await page.keyboard.press("Enter");
+    await page.waitForTimeout(900);
+    const dialog = await page.evaluate(() => {
+      const node = document.querySelector("dialog.moment-dialog[open]");
+      return node ? { text: node.innerText, wide: node.scrollWidth > node.clientWidth + 1 } : null;
+    });
+    if (!dialog) found.push(`${width} Zeitleiste: Enter öffnet keinen Dialog`);
+    else {
+      if (!dialog.text.includes("So sah es um")) found.push(`${width} Dialog: Überschrift fehlt`);
+      if (/Azimut|Elevation|°/.test(dialog.text)) found.push(`${width} Dialog: Satellitenwinkel sichtbar`);
+      if (dialog.wide) found.push(`${width} Dialog: Überbreite`);
+    }
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(400);
+    const back = await page.evaluate(() => document.activeElement?.dataset?.focusKey || document.activeElement?.tagName);
+    if (back !== "timeline-band") found.push(`${width} Zeitleiste: Fokus nach Esc auf ${back}`);
+    // Tab vom Band erreicht den ersten Marker (Marker folgen dem Band); Enter öffnet den Dialog.
+    await page.keyboard.press("Tab");
+    const marker = await page.evaluate(() => document.activeElement?.classList.contains("chart-event")
+      ? document.activeElement.getAttribute("aria-label") : null);
+    if (!marker) found.push(`${width} Zeitleiste: Marker nicht per Tastatur erreichbar`);
+    else {
+      await page.keyboard.press("Enter");
+      await page.waitForTimeout(900);
+      if (!(await page.$("dialog.moment-dialog[open]"))) found.push(`${width} Zeitleiste: Enter auf Marker öffnet keinen Dialog`);
+      await page.keyboard.press("Escape");
+      await page.waitForTimeout(300);
+    }
+    lines.push(`timeline ${width}: „${text}“ · Marker „${marker}“`);
+    // Filter nach Art: GPS ausblenden → 2 Marker, wieder einblenden → 3.
+    await page.click('.marker-filter button[data-group="gps"]');
+    await page.waitForTimeout(400);
+    const hidden = await page.$$eval(".timeline-wrap .chart-event", (n) => n.length);
+    await page.click('.marker-filter button[data-group="gps"]');
+    await page.waitForTimeout(400);
+    const shown = await page.$$eval(".timeline-wrap .chart-event", (n) => n.length);
+    if (hidden !== 2 || shown !== 3) found.push(`${width} Filter nach Art: ${hidden}/${shown} statt 2/3`);
+    if (errors.length) found.push(`${width} Zeitleiste: ${errors.slice(0, 3).join(" | ")}`);
+    await ctx.close();
+  }
+  return { found, lines };
+}
+
 // Sichtbare Wortzahl je Seite (1.6, T2 „Seiten entschlacken“): innerText des Inhalts bei 1440 px, helles Thema.
 // Geschlossene ⓘ-Popover stehen nicht im DOM, zugeklappte <details> zählt innerText nicht mit (nur die Zusammenfassung).
 // Wort = Folge ohne Leerraum mit mindestens einem Buchstaben oder einer Ziffer.
@@ -1042,12 +1183,18 @@ async function setupChecks(browser) {
       process.exitCode = result.found.length ? 1 : 0;
       return;
     }
-    const setupResult = process.env.TOUR_WORDS_ONLY || process.env.TOUR_PAGES_ONLY
+    const setupResult = process.env.TOUR_WORDS_ONLY || process.env.TOUR_PAGES_ONLY || process.env.TOUR_TIMELINE_ONLY
       ? (await apiJson("/api/setup", { action: "done" }), { found: [], lines: [] }) : await setupChecks(browser);
     nav.found.push(...setupResult.found);
     nav.lines.push(...setupResult.lines);
     if (process.env.TOUR_WORDS_ONLY) {
       console.log(JSON.stringify({ words: await wordCounts(browser) }, null, 1));
+      return;
+    }
+    if (process.env.TOUR_TIMELINE_ONLY) {
+      const result = await timelineChecks(browser);
+      console.log(JSON.stringify(result, null, 1));
+      process.exitCode = result.found.length ? 1 : 0;
       return;
     }
     if (process.env.TOUR_PAGES_ONLY) {
@@ -1071,6 +1218,9 @@ async function setupChecks(browser) {
     const clockResult = await clockChecks(browser);
     nav.found.push(...clockResult.found);
     nav.lines.push(...clockResult.lines);
+    const timelineResult = await timelineChecks(browser);
+    nav.found.push(...timelineResult.found);
+    nav.lines.push(...timelineResult.lines);
     words = await wordCounts(browser);
     // TOUR_NAV_ONLY=1: nur die Navigationsprüfungen (schneller Durchlauf beim Arbeiten an der Navigation).
     for (const theme of process.env.TOUR_NAV_ONLY ? [] : ["light", "dark"]) {

@@ -52,6 +52,37 @@ export const HELP = {
       + "wieder da, PPS-Ausfälle, Neustarts von Diensten, gespeicherte Einstellungen. Die Diagnose-Seite zeigt "
       + "alle Ereignisse der letzten 90 Tage mit Filtern.",
   },
+  timeline: {
+    title: "Zeitleiste der letzten 24 Stunden",
+    text: "Das Band zeigt je **5 Minuten** eine Farbe: **grün** synchron, **gelb** Warnung (Abweichung ab 5 ms), "
+      + "**rot** Fehler (chronyd antwortet nicht oder Abweichung ab 50 ms), **blau** Holdover – chrony folgt "
+      + "keiner Quelle, die Uhr läuft mit der zuletzt gelernten Frequenz frei (z. B. während eines Holdover-Tests). "
+      + "Grau heißt: kein Verlauf. Ein Abschnitt bekommt die schlimmste Farbe, die mindestens ein Viertel seiner "
+      + "Messpunkte ausmacht – ein einzelner Ausreißer färbt nicht 5 Minuten rot. Darüber stehen **Marker** für "
+      + "Quellenwechsel (⇄), GPS-Ausfall (◎), Neustart (↻), Pi-Spannung (π) und übrige Warnungen (!); liegen "
+      + "mehrere dicht beieinander, steht ihre Anzahl im Kreis. **Tippen** (oder Tab, Pfeiltasten und Enter) "
+      + "öffnet „So sah es um … aus“: Quelle, Abweichung, Fehlerschranke und Anzahl der Satelliten aus dem "
+      + "nächstgelegenen Messpunkt – nie Satellitenwinkel oder Position. Die Knöpfe unter dem Band blenden "
+      + "Marker-Arten aus; das gilt auch für alle Diagramme und merkt sich dieser Browser. Alles bleibt lokal.",
+  },
+  daily_report: {
+    title: "Tagesbericht",
+    text: "Was der Server **gestern** (0 bis 24 Uhr, Zeitzone des Servers) geleistet hat, aus dem gespeicherten "
+      + "Verlauf: **synchron** ist der Anteil der Zeit, in der chrony einer Quelle folgte und die Abweichung unter "
+      + "50 ms lag. **Schlechtester Wert** ist die größte gemessene Abweichung der Systemuhr. **Geräte** ist die "
+      + "größte Zahl gleichzeitig bekannter Clients. **GPS nutzbar** zählt die Stunden mit Fix (2D oder 3D). "
+      + "Auf einem Raspberry Pi steht dazu, ob die Spannung gereicht hat. Jeder Messpunkt zählt bis zum nächsten "
+      + "(höchstens 10 Minuten) – Lücken im Verlauf zählen nicht mit, dann steht „Verlauf nur über … h“ dabei. "
+      + "Der Server rechnet ihn einmal nach Mitternacht im Hintergrund; bis dahin steht „wird gerade berechnet“. "
+      + "Der Bericht wird nirgendwohin geschickt.",
+  },
+  chart_markers: {
+    title: "Ereignisse in den Diagrammen",
+    text: "Senkrechte dünne Linien mit Symbol markieren Ereignisse aus dem Protokoll: Quellenwechsel (⇄), "
+      + "GPS-Ausfall (◎), Neustart (↻), Pi-Spannung (π) und übrige Warnungen (!). Maus darüber, Tippen oder "
+      + "Tab zeigt den Text; dicht beieinander liegende Ereignisse sind zu einem Marker mit ihrer Anzahl "
+      + "zusammengefasst. Welche Arten erscheinen, stellst du auf der Übersicht unter der Zeitleiste ein.",
+  },
   number_format: {
     title: "Zahlen und Einheiten",
     text: "Zeiten stehen immer in der passenden Einheit: **ns** (Milliardstel), **µs** (Millionstel), **ms** "
@@ -920,7 +951,7 @@ export const SELECT_STATE_SHORT = {
 
 export const HELP_GROUPS = [
   { title: "Übersicht und Diagramme", keys: ["overview_verdict", "overview_hints", "overview_best_source",
-    "overview_restarts", "overview_events", "chart_stats", "number_format"] },
+    "overview_restarts", "overview_events", "timeline", "daily_report", "chart_stats", "chart_markers", "number_format"] },
   { title: "Grundlagen", keys: ["ntp", "chronyd", "services", "stratum", "island", "minsources", "dhcp42", "setup", "clock_control", "local_orphan",
     "setup_accuracy"] },
   { title: "Werte der Systemuhr", keys: ["reference", "system_offset", "uncertainty", "rms_offset", "frequency",

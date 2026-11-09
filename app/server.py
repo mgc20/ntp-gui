@@ -84,6 +84,7 @@ import confgen
 import statewatch
 import pistate
 import thermal
+import timeline
 import updatecheck
 import webtransport
 
@@ -466,6 +467,7 @@ def collector() -> None:
             sample = collect_sample()
             HISTORY.add(sample)
             HISTORY.save()
+            timeline.warm_report(HISTORY)  # Tagesbericht für gestern im Hintergrund, einmal am Tag; wirft nie
             STATE_WATCH.sample(sample)
             client_alarms()
             clients3.tick(settings.values(), events.emit)  # Regeln je Gerät, Inventar, Stundenwerte; wirft nie
@@ -1913,6 +1915,18 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(gnssguard.GUARD.status(settings.values()))
         elif path == "/api/holdover":
             self._send_json(holdover.api_status())
+        elif path == "/api/timeline":
+            # 1.6 (T7): Zustandsband 24 h, Marker darin, Tagesbericht für gestern – vorverdichtet (timeline.py).
+            self._send_json(timeline.build(HISTORY, titles=clientinfo.with_display_titles))
+        elif path == "/api/timeline/markers":
+            self._send_json(timeline.chart_markers(env_like(query.get("range"), 86400.0),
+                                                   titles=clientinfo.with_display_titles))
+        elif path == "/api/timeline/at":
+            at = env_like(query.get("t"), float("nan"))
+            if not math.isfinite(at):
+                self._send_json({"error": "t fehlt (Unix-Zeit)"}, HTTPStatus.BAD_REQUEST)
+            else:
+                self._send_json(timeline.moment(HISTORY, at, titles=clientinfo.with_display_titles))
         elif path == "/api/events":
             limit = int(env_like(query.get("limit"), 500))
             since = env_like(query.get("since"), 0.0) or None
