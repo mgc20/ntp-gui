@@ -100,9 +100,14 @@ class PositionTest(unittest.TestCase):
         clean, report = egress.sanitize(GPS_STATUS, "diagnostics")
         for key in ("lat", "lon", "alt", "altHAE", "altMSL", "speed", "track", "climb", "eph", "epv"):
             self.assertNotIn(key, clean)
-        for key in ("mode", "has_fix", "hdop", "pdop", "vdop", "gdop", "tdop", "satellites_used",
+        for key in ("mode", "has_fix", "satellites_used",
                     "satellites_seen", "snr_avg", "time", "leapseconds", "systems", "pps"):
             self.assertEqual(clean[key], GPS_STATUS[key], key)
+        # Diagnose 1.6.0: richtungsfreie DOPs bleiben (auf eine Stelle), richtungsabhängige gehen.
+        for key in ("hdop", "pdop", "gdop"):
+            self.assertEqual(clean[key], round(GPS_STATUS[key], 1), key)
+        for key in ("xdop", "ydop", "vdop", "tdop"):
+            self.assertNotIn(key, clean)
         # Keine Einzelsatelliten (PRN) mehr – die sichtbare Menge zu einer Zeit grenzt die Region ein.
         self.assertNotIn("prn", json.dumps(clean["satellites"]))
         self.assertEqual(clean["satellites"]["je_system"]["GPS"]["benutzt"], 1)

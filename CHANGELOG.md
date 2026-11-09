@@ -6,6 +6,22 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 
 ## [Unveröffentlicht]
 
+### Behoben
+- **DoH-Server, die nur HTTP/2 sprechen:** ntp-gui fragt per HTTP/1.1 und kündigt das jetzt auch an (ALPN „http/1.1“). Antwortet der Server trotzdem nur mit HTTP/2, steht statt Binärzeichen oder „Broken pipe“ klar da: „spricht nur HTTP/2 … – nimm DNS-over-TLS oder einen DoH-Server, der HTTP/1.1 kann“. Dafür horcht ntp-gui vor der ersten Anfrage an einen DoH-Server kurz (0,1 s), ob der Server ungefragt sendet.
+- **Verständliche Fehler der eigenen DNS-Server:** z. B. „verweigert die Verbindung auf Port 853 – DNS-over-TLS dort nicht eingeschaltet oder Firewall?“ oder „Zertifikat abgelehnt – Name in der Adresse und Uhrzeit prüfen“. Der Hinweis „Eigene DNS-Server nicht erreichbar“ nennt den letzten Fehler je Server. Fehlertexte aus dem Netz (Ereignisse, Benachrichtigungen, Status) enthalten nur noch druckbare Zeichen und sind begrenzt.
+- **Kein wiederholter DNS-Ausfall nach Neustarts:** Ein schon gemeldeter, unveränderter Ausfall wird nach einem Neustart des DNS-Weiterleiters nicht erneut gemeldet.
+- **Automatische GPS-Fehlerschranke und Kalibrierung** laden nur noch chronyd neu – gpsd, ptp4l, phc2sys und der DNS-Weiterleiter laufen weiter, der GPS-Fix bleibt stehen.
+- **GPS-Schranke:** Das Einschwingen direkt nach einem Start von chronyd wird nicht mehr mitgemessen; nach kurzer Messung wächst die Schranke nur bei deutlichem Anstieg.
+- **GPS-Rolle ehrlich:** „mitgerechnet“ (chrony nutzt das GPS mit kleinem Gewicht, „+“) wird von „Hauptquelle“ („*“) unterschieden; der Hinweis heißt dann „GPS wird mitgerechnet“ und behauptet nicht mehr, die Netzquellen seien schlechter.
+- **NTS-Hinweis:** Das Beispiel für einen zweiten DNS-Server passt zum gewählten Modus (IP-Adressen, Namen oder URLs); lange Quellenlisten enden mit „(und N weitere)“.
+- **Diagnosepaket:** Der Datenschutzfilter hielt Spalten von `chronyc -c sourcestats` für Koordinaten und zerstörte jede zweite Zeile der Aufzeichnung – jetzt bleiben die Spalten erhalten. GPS-Fehlerschranken bleiben genau; `power_profile.version` und weitere Schlüssel werden nicht mehr verstümmelt; entfernte Zeilen nennen Fundart und Befehl.
+
+### Sicherheit
+- **Diagnosepaket wiedererkennungsärmer:** Kennungen von Benachrichtigungskanälen werden zu `<kanal-N>`, Laufzeiten und der letzte NTS-Schlüsseltausch sind grob gerundet, DOP-Einzelwerte (x/y/v/t) entfallen.
+
+### Intern
+- Neues Modul `app/textsafe.py` (druckbare, begrenzte Texte); `RUN_DIR/reload-chronyd.request` lädt nur chronyd neu. Tests in `tests/test_diagnose_paket160.py` mit synthetischen Daten, darunter HTTP/2-Server mit sofortigem Schließen, RST und ALPN „h2“.
+
 ## [1.6.1] – 2026-11-09
 
 Schwerpunkt: Die Übersicht wird auf breiten Bildschirmen wieder ruhig, Hinweise sind kompakt, alle Servertexte

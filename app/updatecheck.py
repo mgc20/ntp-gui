@@ -41,6 +41,7 @@ import urllib.request
 from typing import Any, Callable
 
 import egress
+import textsafe
 
 DAY = 86400
 TICK = 60.0
@@ -361,7 +362,7 @@ class Checker:
         try:
             latest = parse_release(self._fetch())
         except UpdateError as exc:
-            error = str(exc)
+            error = textsafe.clean(exc, 200)
         except Exception:  # noqa: BLE001 – nie den Thread verlieren
             error = "Prüfung fehlgeschlagen"
         # 3. Ergebnis speichern (kurz unter der Sperre), Ereignis danach.

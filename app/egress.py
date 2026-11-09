@@ -46,6 +46,7 @@ import json
 import re
 import sys
 import threading
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 # Zwecke: wofür etwas die Instanz verlässt. "notify" (Benachrichtigungen, 1.4) hat zusätzlich eine
@@ -87,6 +88,10 @@ CATEGORIES: dict[str, str] = {
                        "grenzt die Region ein; es bleiben nur Summen je System (gesehen, benutzt, Signalstärke).",
     "zeile_entfernt": "Ganze Log-Zeilen, die die Schlussprüfung beanstandet hat – lieber eine Zeile weniger als "
                       "ein abgebrochener Export.",
+    "kanal": "Kennungen der Benachrichtigungskanäle – ersetzt durch <kanal-1> usw., damit sich zwei Pakete "
+             "nicht über die dauerhaft gleiche Kennung verknüpfen lassen.",
+    "dop": "Richtungsabhängige DOP-Werte des GPS (x, y, vertikal, Zeit) – sie hängen von der Satellitengeometrie "
+           "über dem Empfänger ab; es bleiben HDOP/PDOP/GDOP, auf eine Stelle gerundet.",
 }
 
 # ---------------------------------------------------------------------------
@@ -151,6 +156,18 @@ HARMLESS_DOMAINS = {
     "linuxptp.sourceforge.net", "letsencrypt.org", "example.com", "example.org", "example.net",
     "localhost.localdomain",
 }
+# Große öffentliche DNS-Resolver (DoT/DoH): Sie nutzen sehr viele, sie verraten nichts über ein Gerät –
+# lesbar helfen sie bei DoT/DoH-Problemen. Zugleich bekommen die festen Beispiele in Hinweistexten
+# („z. B. dns.quad9.net“) so kein Pseudonym, über das sich echte Einstellungen zurückübersetzen ließen.
+PUBLIC_RESOLVERS = {
+    "dns.quad9.net", "dns9.quad9.net", "dns10.quad9.net", "dns11.quad9.net", "dns12.quad9.net",
+    "one.one.one.one", "1dot1dot1dot1.cloudflare-dns.com", "cloudflare-dns.com", "security.cloudflare-dns.com",
+    "family.cloudflare-dns.com", "dns.google", "dns.google.com", "dns.adguard-dns.com",
+    "unfiltered.adguard-dns.com", "family.adguard-dns.com", "dns.mullvad.net", "dns.nextdns.io",
+    "dns.digitale-gesellschaft.ch", "dns3.digitalcourage.de", "dot.ffmuc.net", "doh.ffmuc.net",
+}
+# Letzte Stelle von Bezeichnern mit Punkt, die keine Domainendung ist (linuxptp: power_profile.version).
+IDENTIFIER_SUFFIXES = {"version"}
 
 KNOWN_CAS = ("let's encrypt", "zerossl", "google trust services", "digicert", "sectigo",
              "buypass", "globalsign", "isrg", "actalis", "ssl.com", "certum", "entrust")
@@ -243,12 +260,16 @@ def _key_kind(key: Any) -> str | None:
 # gpsd: was je Meldungsklasse bleiben darf.
 GPSD_ALLOWED = {
     "TPV": {"class", "device", "mode", "status", "time", "ept", "leapseconds", "tag"},
-    "SKY": {"class", "device", "time", "tag", "nSat", "uSat", "gdop", "hdop", "pdop", "tdop", "vdop",
-            "xdop", "ydop", "satellites", "prRes", "qual"},
+    "SKY": {"class", "device", "time", "tag", "nSat", "uSat", "gdop", "hdop", "pdop", "satellites", "prRes",
+            "qual"},
     "GST": {"class", "device", "time", "tag", "rms"},
     "PPS": None, "TOFF": None, "VERSION": None, "DEVICES": None, "DEVICE": None, "WATCH": None,
     "ERROR": None, "POLL": None, "OSC": None,
 }
+# Richtungsabhängige DOP-Werte (Ost/West, Nord/Süd, vertikal, Zeit) hängen von der Satellitengeometrie über
+# dem Empfänger ab – als Zeitreihe grenzen sie die Region ein. Richtungsfreie Werte bleiben, auf eine Stelle.
+DIRECTIONAL_DOP_KEYS = {"xdop", "ydop", "vdop", "tdop"}
+ROUNDED_DOP_KEYS = {"hdop", "pdop", "gdop"}
 GPSD_SAT_ALLOWED = {"PRN", "gnssid", "svid", "sigid", "freqid", "ss", "used", "health"}
 GPSD_DROP = {"RAW", "RTCM2", "RTCM3", "AIS", "SUBFRAME", "IMU", "ATT", "NAV", "GGA", "RMC"}
 
@@ -342,7 +363,7 @@ _ECEF_RE = re.compile(r"(?i)(?<![^\W_])(?:[\"']?(?:ecef[_-]?)?x[\"']?\s*[:=]\s*)
 _E7_PAIR_RE = re.compile(r"(?<![\w.,:-])([-+]?\d{8,10})\s*[,;/ ]\s*([-+]?\d{8,10})(?![\w.,])")
 # Zahlen-Token für Koordinatenpaare: optional Halbkugel davor/danach, Dezimalpunkt oder -komma.
 _COORD_TOKEN_RE = re.compile(r"(?:(?<![^\W_])|(?<=%2[cCbB])|(?<=%20))(?<![.%])(?:([NSEWO])\s?)?([-+]?\d{1,3}(?:\.\d+(?!\d|\.\d)|,\d+(?!\d|,\d)"
-                             r"|(?![\d]|[.,]\d)))(\s*°)?(?:\s?([NSEWO])(?![^\W_]))?")
+                             r"|(?![\d]|[.,]\d))(?![eE][-+]?\d))(\s*°)?(?:\s?([NSEWO])(?![^\W_]))?")
 _HAS_DECIMALS_RE = re.compile(r"\d[.,]\d{3}")
 _COORD_GAP_RE = re.compile(r"\s*(?:[,;/|&]|%2[cC]|%3[bB]|%20|\+|(?<=\s)-(?=\s)|(?<=\s)(?:und|and)(?=\s))?\s*")
 # Maidenhead-Locator (nur mit Bezeichnung – „JN58“ allein ist zu kurz zum Erkennen) und Plus Codes
@@ -376,6 +397,9 @@ _EUI64_RE = re.compile(r"(?<![0-9A-Fa-f])[0-9A-Fa-f]{6}[fF][fF][fF][eE][0-9A-Fa-
 # nicht direkt nach einem Punkt (Nachkommastellen).
 HEX12_PATTERN = r"(?<![0-9A-Fa-f.])[0-9A-Fa-f]{12}(?![0-9A-Fa-f])"
 _HEX12_RE = re.compile(HEX12_PATTERN)
+# Kennung eines Benachrichtigungskanals (notify: secrets.token_hex(5)) in den Titeln seiner Ereignisse
+_CHANNEL_TITLE_RE = re.compile(r"(Benachrichtigungskanal\s+(?:angelegt|geändert|gelöscht):\s*)([0-9a-f]{10})(?![0-9A-Fa-f])")
+CHANNEL_ID_RE = re.compile(r"[0-9a-f]{10}")
 HEX12_HARMLESS = {"000000000000", "ffffffffffff"}
 # chrony-Laufzeiten im Klartext: "Root delay      : 0.012345678 seconds", "Peer delay : …"
 # Laufzeiten mit Bezeichnung: "Root delay : 0.012345678 seconds", "delay=0.023", "RTT: 23.4 ms" (auch 1.2e-02)
@@ -633,7 +657,8 @@ def is_public_host(name: str) -> bool:
 
 def _host_allowed(name: str) -> bool:
     n = name.lower().rstrip(".")
-    if n in PUBLIC_TIME_HOSTS or n in HARMLESS_DOMAINS or n in {"localhost", "localhost.localdomain"}:
+    if (n in PUBLIC_TIME_HOSTS or n in HARMLESS_DOMAINS or n in PUBLIC_RESOLVERS
+            or n in {"localhost", "localhost.localdomain"}):
         return True
     return n.endswith(PUBLIC_TIME_SUFFIXES)
 
@@ -653,6 +678,8 @@ def name_is_allowed(name: str, before: str = "") -> bool:
     last = labels[-1]
     if last in FILE_EXTENSIONS:
         return True
+    if before == "_" and last in IDENTIFIER_SUFFIXES:
+        return True   # Schlüssel einer Konfiguration (power_profile.version), kein Host
     if last in AMBIGUOUS_EXTENSIONS:
         # "/usr/lib/foo.so", "test_x.py", "server.py", "chrony.conf.new" – aber nicht "kowalski.pl"
         if before in ("/", "\\", "_") or (len(labels) >= 3 and labels[-2] in FILE_EXTENSIONS):
@@ -780,6 +807,7 @@ class Sanitizer:
         self._hosts: dict[str, str] = {}
         self._clock_ids: dict[str, str] = {}
         self._ifaces: dict[str, str] = {}
+        self._channels: dict[str, str] = {}
         self._lock = threading.RLock()
         # Gleiche Zeilen kommen in Aufzeichnungen tausendfach vor („Leap status : Normal“).
         # Das Ergebnis hängt nur von der Zeile und den (stabilen) Pseudonymen ab.
@@ -803,6 +831,8 @@ class Sanitizer:
                 if category == "schnittstelle" and (len(v) < 3 or interface_is_generic(v)):
                     continue
                 if category == "name" and len(v) < 4:
+                    continue
+                if category == "kanal" and not CHANNEL_ID_RE.fullmatch(v):
                     continue
                 if v and v.lower() not in tokens:
                     tokens[v.lower()] = category
@@ -837,6 +867,15 @@ class Sanitizer:
             if key not in self._hosts:
                 self._hosts[key] = f"<hostname-{len(self._hosts) + 1}>"
             return self._hosts[key]
+
+    def channel_pseudonym(self, ident: str) -> str:
+        """Kennung eines Benachrichtigungskanals → <kanal-N> (stabil nur innerhalb dieses Exports)."""
+        key = ident.lower()
+        self.count("kanal")
+        with self._lock:
+            if key not in self._channels:
+                self._channels[key] = f"<kanal-{len(self._channels) + 1}>"
+            return self._channels[key]
 
     def clock_pseudonym(self, ident: str) -> str:
         if ident.startswith("<"):
@@ -961,6 +1000,7 @@ class Sanitizer:
         s = self._sub(_EUI64_RE, "uhr_id", lambda m: self.clock_pseudonym(m.group(0)), s)
         s = self._sub(_MAC_RE, "mac", lambda m: "<mac>" if _mac_identifies(m.group(0)) else m.group(0), s)
         s = self._sub(_IFACE_MAC_RE, "mac", lambda m: m.group(1) + "x<mac>", s)
+        s = _CHANNEL_TITLE_RE.sub(lambda m: m.group(1) + self.channel_pseudonym(m.group(2)), s)
         s = self._sub(_HEX12_RE, "kennung",
                       lambda m: m.group(0) if m.group(0).lower() in HEX12_HARMLESS else "<kennung>", s)
         s = self._sub(_HEXLONG_RE, "kennung", "<kennung>", s)
@@ -995,6 +1035,8 @@ class Sanitizer:
 
     def _token(self, m: re.Match) -> str:
         category = self._tokens.get(" ".join(m.group(1).split()).lower(), "titel")
+        if category == "kanal":
+            return self.channel_pseudonym(m.group(1))
         self.count(category)
         if category == "titel":
             return "<titel>"
@@ -1121,12 +1163,14 @@ class Sanitizer:
             idx = [13, 19]                               # root delay, peer delay
         elif command in ("sourcestats", "authdata") and len(parts) >= 4:
             parts[0] = self._source_name(parts[0])
+            if command == "authdata" and len(parts) >= 6 and re.fullmatch(r"\d+", parts[5]):
+                parts[5] = str(coarse_seconds(int(parts[5])))   # letzter Schlüsseltausch ≈ Laufzeit
         elif command == "clients" and len(parts) >= 5:
             parts[0] = self.host_value(parts[0]) if parts[0] else parts[0]
         for i in idx:
             if re.fullmatch(r"[-+]?\d+(?:\.\d+)?(?:e[-+]?\d+)?", parts[i]):
                 parts[i] = self._round_seconds_text(parts[i])
-        return ",".join(parts)
+        return _unpair_columns(parts)
 
     def _kv_pos(self, m: re.Match) -> str:
         if m.group("label") is None:  # Bewegung (zweite Alternative)
@@ -1305,6 +1349,7 @@ class Sanitizer:
         if isinstance(d.get("ref_name"), str) and not re.fullmatch(r"[A-Z0-9]{1,4}", d["ref_name"]):
             name_keys.add("ref_name")
         has_host = any(_norm(k) in HOST_KEYS | ADDRESS_KEYS | {"server", "remote", "name"} for k in d)
+        refclock = _refclock_context(d)
         out: dict = {}
         for raw_key, value in d.items():
             if raw_key in ecef_keys:
@@ -1323,7 +1368,7 @@ class Sanitizer:
             if raw_key in name_keys and isinstance(value, str):
                 out[raw_key] = self.host_value(value)
                 continue
-            result = self._value(raw_key, nk, value, gps_like, has_host)
+            result = self._value(raw_key, nk, value, gps_like, has_host, refclock)
             if result is _DROP:
                 continue
             new_key = self.text(raw_key) if isinstance(raw_key, str) else raw_key
@@ -1336,7 +1381,9 @@ class Sanitizer:
         return self._scrub_pairs(out)
 
     def _count_dropped_key(self, nk: str, default: str) -> None:
-        if nk in ANGLE_KEYS:
+        if nk in DIRECTIONAL_DOP_KEYS:
+            self.count("dop")
+        elif nk in ANGLE_KEYS:
             self.count("satellitenwinkel")
         elif nk in MOTION_KEYS:
             self.count("bewegung")
@@ -1380,15 +1427,28 @@ class Sanitizer:
         self.count("zeitzone")
         return "<zeitzone>"
 
-    def _value(self, raw_key: Any, nk: str, value: Any, gps_like: bool, has_host: bool = False) -> Any:
+    def _value(self, raw_key: Any, nk: str, value: Any, gps_like: bool, has_host: bool = False,
+               refclock: bool = False) -> Any:
         scalar = not isinstance(value, (dict, list, tuple))
         tokens = key_tokens(raw_key)
+        if nk == "subject" and isinstance(value, str) and internal_subject(value):
+            return self.text(value)   # Thema eines Ereignisses (gnss, gps-sperre, <IP>#neu), kein Zertifikat
         is_cert = nk in CERT_KEYS or (bool(tokens & CERT_TOKENS) and nk not in ISSUER_KEYS
                                       and not tokens & {"issuer"})
         if is_cert and value not in (None, "", [], {}):
             return self._leaves(value, self._cert_leaf)
+        if nk == "channel" and isinstance(value, str) and CHANNEL_ID_RE.fullmatch(value):
+            return self.channel_pseudonym(value)
+        if nk in DIRECTIONAL_DOP_KEYS and scalar:
+            if value is not None:
+                self.count("dop")
+            return _DROP
+        if nk in ROUNDED_DOP_KEYS and isinstance(value, float):
+            return round(value, 1)
         kind = None if is_cert else _key_kind(raw_key)
         if kind is not None:
+            if isinstance(value, bool):
+                return value   # Schalter wie gps_show_position: ein Ja/Nein ist keine Koordinate
             if value not in (None, "", [], {}):
                 self.count(kind)
             return _DROP
@@ -1397,6 +1457,8 @@ class Sanitizer:
             return "<name>"
         if nk in POSITION_KEYS and (scalar or nk in {"position", "location", "coordinates", "coords",
                                                        "latlon", "latlng", "geo", "geolocation"}):
+            if isinstance(value, bool):
+                return value
             if value is not None:
                 self.count("position")
             return _DROP
@@ -1460,7 +1522,10 @@ class Sanitizer:
             return self.clock_pseudonym(value)
         if tokens & SKY_TOKENS and isinstance(value, (list, tuple, dict)):
             return self._sky(value)
-        factor = _delay_factor(raw_key, nk, tokens, has_host)
+        # Refclock (GPS/PPS/PHC): Delay und Fehlerschranke sind eine eingestellte Unsicherheit, keine
+        # Laufzeit zu einem Server – sie verraten keinen Ort und bleiben genau (wie im CSV-Pfad).
+        factor = None if refclock or nk in GPS_DELAY_KEYS or tokens & REFCLOCK_TOKENS else \
+            _delay_factor(raw_key, nk, tokens, has_host)
         if factor is not None:  # für jeden Zweck – auch Kennzahlen ({"min", "max", …}) darunter
             return self._round_delays(value, factor)
         return self.obj(value, raw_key)
@@ -1508,7 +1573,86 @@ class Sanitizer:
         return self.obj(value)
 
 
+_CSV_NUMBER_RE = re.compile(r"[-+]?\d+\.\d+")
+
+
+def _exp_text(text: str) -> str:
+    """'-0.001234567' → '-1.234567e-3': derselbe Wert (float() liest beides), aber ohne die Form, die die
+    Koordinatenerkennung als Grad liest."""
+    try:
+        return format(Decimal(text), "e")
+    except (InvalidOperation, ValueError):
+        return text
+
+
+def _unpair_columns(parts: list[str]) -> str:
+    """chronyc -c-Zeile wieder zusammensetzen, ohne dass zwei Zahlenspalten als Koordinatenpaar gelten.
+
+    Die Spalten von chronyc enthalten keine Positionen; zwei Nachbarn wie Frequenz-Schiefe und Offset
+    („12.345,-0.001234567“) oder zwei Offsets ≥ 1 s sehen aber für die Freitext-Erkennung wie Grad aus. Bisher
+    wurde das Paar durch ein einziges „<koordinaten>“ ersetzt – die Zeile verlor eine Spalte und ihre Werte.
+    Jetzt werden nur die betroffenen Zahlenspalten in Exponentenschreibweise gesetzt: Wert und Spaltenzahl
+    bleiben, und die Schlussprüfung sieht kein Paar (sie bleibt unverändert streng)."""
+    row = ",".join(parts)
+    for _ in range(6):
+        spans = coord_pair_spans(row)
+        # Die unabhängige Schlussprüfung liest „7,459“ auch als Dezimalzahl mit Komma – ihre Treffer zählen mit.
+        start = 0
+        for hit in _bs_float_pairs(row) + _bs_json_pairs(row):
+            at = row.find(hit, start)
+            if at >= 0:
+                spans.append((at, at + len(hit)))
+                start = at + 1
+        if not spans:
+            return row
+        changed = False
+        start = 0
+        for i, part in enumerate(parts):
+            end = start + len(part)
+            if any(a < end and start < b for a, b in spans) and _CSV_NUMBER_RE.fullmatch(part):
+                parts[i] = _exp_text(part)
+                changed = True
+            start = end + 1
+        if not changed:
+            return row
+        row = ",".join(parts)
+    return row
+
+
+def coarse_seconds(seconds: int | float | None) -> int | None:
+    """Laufzeiten grob (Wiedererkennung): unter 1 h auf 10 min, unter 1 Tag auf volle Stunden, sonst auf
+    volle Tage. Sekundengenau ergäben Laufzeit und Erstellzeit einen festen Startzeitpunkt, der mehrere
+    Pakete desselben Geräts verknüpft."""
+    if seconds is None or isinstance(seconds, bool) or not isinstance(seconds, (int, float)):
+        return None
+    value = max(0, int(seconds))
+    step = 600 if value < 3600 else 3600 if value < 86400 else 86400
+    return int(round(value / step) * step)
+
+
 GNSS_NAMES = {0: "GPS", 1: "SBAS", 2: "Galileo", 3: "BeiDou", 4: "IMES", 5: "QZSS", 6: "GLONASS", 7: "NavIC"}
+
+
+# Schlüssel der GPS-Fehlerschranke und Kalibrierung (gpsquality, autocal, Einstellungen): Refclock-Delays
+GPS_DELAY_KEYS = {"olddelay", "newdelay", "measureddelay", "spreaddelay", "suggesteddelay",
+                  "suggesteddelaybound", "newbounddelay", "gpsdelay", "ppsdelay", "defaultdelay"}
+REFCLOCK_TOKENS = {"gps", "pps", "refclock", "phc"}
+
+
+def _refclock_context(d: dict) -> bool:
+    """Beschreibt das Dict eine Refclock (chrony-Quelle „#“, selectdata einer Refclock) oder die Rolle/
+    Fehlerschranke des GPS (gpsquality.role: delay, bound, bound_source)?"""
+    if d.get("mode") == "#" or d.get("mode_label") == "refclock":
+        return True
+    if "select_state" in d and isinstance(d.get("name"), str) and re.fullmatch(r"[A-Z0-9]{1,4}", d["name"]):
+        return True
+    return "bound_source" in d
+
+
+def internal_subject(value: str) -> bool:
+    """data.subject als internes Thema eines Ereignisses (gnssguard, holdover, clients3) – kein Zertifikat."""
+    return bool(re.fullmatch(r"(?:gnss|gps|holdover)[a-z0-9-]{0,40}", value)
+                or re.fullmatch(r"[^\s#]{1,64}#[a-z]{2,12}", value))
 
 
 def _delay_factor(raw_key: Any, nk: str, tokens: set, has_host: bool) -> float | None:
@@ -1533,6 +1677,11 @@ def _is_satellite_list(value: Any) -> bool:
 
 
 _DROP = object()
+# Arten, die die Schlussprüfungen melden (check_no_leaks und backstop) – feste Namen, ohne Werte.
+FINDING_KINDS = {"bewegung", "filter", "koordinaten", "mac", "oeffentliche_ip", "position", "private_ip", "refid",
+                 "satellitenliste", "satellitenwinkel", "seriennummer", "uhr_id", "zeitzone", "e_mail", "hex12",
+                 "kennung", "laufzeit", "zertifikat", "ip", "ipv6_gekuerzt", "name_mit_punkt", "zugangsdaten",
+                 "bekannter_name", "bekannter_wert"}
 CHRONYC_CSV_COMMANDS = {"tracking", "sources", "sourcestats", "selectdata", "ntpdata", "authdata", "clients",
                         "serverstats", "activity"}
 
@@ -1745,10 +1894,10 @@ def _walk(value: Any, path: str, found: list[dict], parent_gps: bool = False) ->
             if isinstance(key, str):
                 found.extend(_text_findings(key, sub_path))
             kind = None if nk in CERT_KEYS else _key_kind(key)
-            if kind is not None and sub not in (None, "", [], {}):
+            if kind is not None and sub not in (None, "", [], {}) and not isinstance(sub, bool):
                 found.append(_finding(kind, sub_path, f"{key}=…"))
                 continue
-            if sub is not None and scalar:
+            if sub is not None and scalar and not isinstance(sub, bool):
                 if nk in _LEAK_KEYS_POSITION:
                     found.append(_finding("position", sub_path, f"{key}={sub!r}"))
                 elif nk in _LEAK_KEYS_ANGLE:
@@ -2084,7 +2233,8 @@ def _bs_json_pairs(line: str) -> list[str]:
 
 def _bs_dotted_allowed(name: str, before: str = "") -> bool:
     n = name.lower().rstrip(".")
-    if n in PUBLIC_TIME_HOSTS or n in HARMLESS_DOMAINS or n.endswith(PUBLIC_TIME_SUFFIXES):
+    if (n in PUBLIC_TIME_HOSTS or n in HARMLESS_DOMAINS or n in PUBLIC_RESOLVERS
+            or n.endswith(PUBLIC_TIME_SUFFIXES)):
         return True
     parts = n.split(".")
     last = parts[-1]
@@ -2092,6 +2242,8 @@ def _bs_dotted_allowed(name: str, before: str = "") -> bool:
         return True  # Versionsnummern, IPs, "z.B" – keine Hostnamen
     if last in FILE_EXTENSIONS:
         return True
+    if before == "_" and last in IDENTIFIER_SUFFIXES:
+        return True  # power_profile.version
     if last in AMBIGUOUS_EXTENSIONS:
         return (before in ("/", "\\", "_") or (len(parts) >= 3 and parts[-2] in FILE_EXTENSIONS)
                 or (len(parts) == 2 and ("_" in parts[0] or parts[0] in PROJECT_STEMS)))

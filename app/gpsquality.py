@@ -95,6 +95,9 @@ TICK_INTERVAL = 3600.0
 OFFSET_SETTLE = 900.0         # nach einer Offset-Änderung: Neustart von chronyd + Medianfilter abwarten
 OFFSET_SHRINK_MIN = BOUND_HOURS * 3600.0 - 1800.0  # … kleiner erst mit (fast) einem ganzen Messfenster danach (5,5 h)
 OFFSET_EPS = 5e-5             # Offsets gelten als gleich (Rundung auf 0,1 ms, wie autocal)
+RESTART_SETTLE = OFFSET_SETTLE  # nach einem (Neu-)Start von chronyd: Einschwingen nicht mitmessen
+GROW_FULL_SECONDS = BOUND_HOURS * 3600.0 / 2  # größer mit weniger Messzeit als dem halben Fenster …
+GROW_SHORT_FACTOR = 1.5       # … nur, wenn die Streuung deutlich über der Schranke liegt
 
 # --- Antennen-Test -----------------------------------------------------------------------
 ANTENNA_SECONDS = 300
@@ -581,15 +584,22 @@ def status_hint(cfg: dict) -> dict[str, Any]:
 # Stündliche Prüfung
 # =========================================================================================
 
-_DEPS: dict[str, Any] = {"history": None, "trigger_reload": None, "emit": None, "net_distance": None}
+_DEPS: dict[str, Any] = {"history": None, "trigger_reload": None, "emit": None, "net_distance": None,
+                         "chronyd_started": None}
 _LAST_TICK: dict[str, Any] = {"mono": None}
 
 
 def configure(history: Any = None, trigger_reload: Callable[[], bool] | None = None,
-              emit: Callable[..., Any] | None = None, net_distance: Callable[[], float | None] | None = None) -> None:
-    """net_distance: () → kleinste Root Distance der genutzten NTS-Quellen (s) oder None."""
+              emit: Callable[..., Any] | None = None, net_distance: Callable[[], float | None] | None = None,
+              chronyd_started: Callable[[], float | None] | None = None) -> None:
+    """net_distance: () → kleinste Root Distance der genutzten NTS-Quellen (s) oder None.
+    trigger_reload: Neuladen nach einer Änderung der Schranke – server.py gibt hier das Neuladen nur von
+    chronyd (trigger_reload_chronyd): Die Schranke steht nur in chrony.conf, gpsd und dnsfwd laufen weiter.
+    chronyd_started: () → Unix-Zeit des letzten Starts von chronyd (Standard: aus RUN_DIR/reload.json)."""
     if net_distance is not None:
         _DEPS["net_distance"] = net_distance
+    if chronyd_started is not None:
+        _DEPS["chronyd_started"] = chronyd_started
     if history is not None:
         _DEPS["history"] = history
     if trigger_reload is not None:
@@ -694,6 +704,11 @@ def decide(measured: dict, applied: dict | None, now: float, reset_at: float | N
         if since is not None and since < GROW_INTERVAL:
             return {"apply": False, "reason": "Die Streuung ist größer als die eingestellte Schranke – die nächste "
                                               "Anpassung ist frühestens eine Stunde nach der letzten möglich."}
+        covered = _num(measured.get("duration_seconds"))
+        if covered is not None and covered < GROW_FULL_SECONDS and new < GROW_SHORT_FACTOR * current - 1e-9:
+            return {"apply": False, "reason": "Die Streuung ist etwas größer als die Schranke, gemessen aber erst "
+                                              "über kurze Zeit (z. B. kurz nach einem Neustart) – größer wird sie "
+                                              "dann nur bei deutlichem Anstieg; sonst nach mehr Messzeit."}
         target = _target(new)
         return {"apply": True, "delay": target,
                 "reason": "Das GPS streut stärker als angenommen – die Schranke wird größer."}
@@ -753,8 +768,20 @@ def tick(cfg: dict, now: float | None = None, samples: list[dict] | None = None)
             offset_since = note_offset(cfg, now)
             if offset_since is not None and offset_since > now:
                 offset_since = None          # Uhr sprang zurück: Zeitpunkt unbrauchbar
+            # Nicht mitmessen: das Einschwingen nach einer Offset-Änderung und nach dem letzten Start von chronyd
+            # (Diagnose 1.6.0: eine Stunde direkt nach mehreren Neustarts ließ die Schranke wachsen, 20 h
+            # später schrumpfte sie wieder – zwei Neustarts von chronyd ohne echten Anlass).
+            starts = []
+            if offset_since is not None:
+                starts.append(offset_since + OFFSET_SETTLE)
+            try:
+                started = _num((_DEPS.get("chronyd_started") or chronyd_started)())
+            except Exception:
+                started = None
+            if started is not None and started <= now:
+                starts.append(started + RESTART_SETTLE)
             measured = measure(samples, str(cfg.get("gps_refid") or "GPS"), now,
-                               not_before=None if offset_since is None else offset_since + OFFSET_SETTLE)
+                               not_before=max(starts) if starts else None)
             state = load_state()             # note_offset kann gerade geschrieben haben
             applied = _valid_applied(state.get("applied"))
             # Zeitpunkte in der Zukunft (Uhr lief vor und wurde korrigiert): auf jetzt kürzen,
@@ -804,6 +831,20 @@ def tick(cfg: dict, now: float | None = None, samples: list[dict] | None = None)
             return decision
         except Exception as exc:  # nie die Messschleife stören
             return {"apply": False, "reason": f"Prüfung fehlgeschlagen: {exc}", "error": str(exc)}
+
+
+def chronyd_started() -> float | None:
+    """Wann chronyd zuletzt (neu) gestartet wurde: Der Supervisor schreibt nach jedem Start und Neuladen
+    RUN_DIR/reload.json mit Zustand „idle“ (Containerstart) bzw. „done“ und der Uhrzeit. None = unbekannt."""
+    path = os.path.join(os.environ.get("NTPGUI_RUN_DIR", "/run/ntp-gui"), "reload.json")
+    try:
+        with open(path, encoding="utf-8") as handle:
+            info = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(info, dict) or info.get("state") not in {"idle", "done"}:
+        return None
+    return _num(info.get("time"))
 
 
 def _holdover_defers(what: str) -> bool:
@@ -1041,8 +1082,14 @@ def role(cfg: dict, sources: Any = None, state: dict | None = None) -> dict[str,
         result["warnings"].append(
             f"„Mindestzahl Quellen“ steht auf {minsources}: Fällt das Internet ganz aus, ist das GPS allein "
             "und chrony stellt die Uhr nicht danach. Für eine echte Rückfallebene 1 einstellen.")
-    if active:
-        result["text"] += " Gerade nutzt chrony das GPS – die Netzquellen sind schlechter oder fehlen."
+    if active and src.get("state") == "*":
+        result["text"] += " Gerade nutzt chrony das GPS als Hauptquelle – die Netzquellen sind schlechter oder fehlen."
+    elif active:
+        # „+“ heißt nicht „Netz schlecht“: chrony mittelt jede Quelle ein, deren Distanz unter combinelimit (3) ×
+        # der Distanz der gewählten liegt – das GPS dann mit kleinem Gewicht neben guten Netzquellen.
+        result["combined"] = True
+        result["text"] += (" Gerade rechnet chrony das GPS mit kleinem Gewicht neben den Netzquellen mit ein "
+                           "(Zustand „+“) – die Netzquellen tragen die Zeit weiter.")
     return result
 
 

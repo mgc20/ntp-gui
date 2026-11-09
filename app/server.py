@@ -816,6 +816,7 @@ def service_insights(services: dict, now: float | None = None) -> list[dict]:
 
 
 RELOAD_REQUEST = "reload.request"
+RELOAD_CHRONYD_REQUEST = "reload-chronyd.request"
 
 
 def trigger_reload() -> bool:
@@ -826,10 +827,22 @@ def trigger_reload() -> bool:
     ein Dienst gerade startete), verlor ihr Parser den Faden („trap: unexpected EOF while looking
     for matching `)'“) – und der Supervisor samt Container beendete sich. Eine Datei kann das nicht.
     """
+    return _request_reload(RELOAD_REQUEST)
+
+
+def trigger_reload_chronyd() -> bool:
+    """Nur chronyd neu laden (Konfiguration neu erzeugen, nur chronyd neu starten): für Änderungen, die nur
+    chrony.conf betreffen – die automatische GPS-Fehlerschranke und der automatisch kalibrierte Offset.
+    gpsd, ptp4l, phc2sys und dnsfwd laufen weiter: Der GPS-Fix muss nicht neu einrasten, und der
+    DNS-Weiterleiter meldet einen bekannten Ausfall nicht bei jeder Anpassung erneut (Diagnose 1.6.0)."""
+    return _request_reload(RELOAD_CHRONYD_REQUEST)
+
+
+def _request_reload(name: str) -> bool:
     supervisor = os.path.join(RUN_DIR, "supervisor.pid")
     if not os.path.exists(supervisor):
         return False  # kein Supervisor (Entwicklung, Tests) – niemand würde die Datei lesen
-    path = os.path.join(RUN_DIR, RELOAD_REQUEST)
+    path = os.path.join(RUN_DIR, name)
     try:
         with open(path + ".tmp", "w", encoding="utf-8") as handle:
             handle.write(f"{time.time():.3f}\n")
@@ -2546,8 +2559,9 @@ def main() -> None:
     # 1.5.3: Folgen eines laufenden Holdover-Tests (keine Quelle ausgewählt …) nur als „info“, ohne Meldung.
     events.add_filter(holdover.event_filter)
     holdover.configure(trigger_reload=trigger_reload)
-    autocal.configure(history=HISTORY, trigger_reload=trigger_reload)
-    gpsquality.configure(history=HISTORY, trigger_reload=trigger_reload,
+    # Schranke und Offset stehen nur in chrony.conf: nur chronyd neu laden (gpsd und dnsfwd laufen weiter).
+    autocal.configure(history=HISTORY, trigger_reload=trigger_reload_chronyd)
+    gpsquality.configure(history=HISTORY, trigger_reload=trigger_reload_chronyd,
                          net_distance=lambda: gpsquality.nts_distance(chrony.detailed_sources()))
     threading.Thread(target=collector, daemon=True, name="collector").start()
     threading.Thread(target=loop_guard_runner, daemon=True, name="loopguard").start()

@@ -305,7 +305,8 @@ class ExportDenialTest(unittest.TestCase):
         self.assertNotIn("attacker", logs)
         self.assertNotIn("evil", logs)
         self.assertNotIn("48.137154", logs)
-        self.assertIn(diagnostics.DROPPED_LINE, logs)
+        # Seit der Auswertung des 1.6.0-Pakets mit Fundart: „[Zeile entfernt – Datenschutz: koordinaten]“
+        self.assertIn(diagnostics.DROPPED_LINE[:-1] + ": koordinaten]", logs)
         self.assertIn("[main] alles gut", logs)
         self.assertIn("zeile_entfernt", result["removed"]["removed"])
         data = diagnostics.bundle({}, {})

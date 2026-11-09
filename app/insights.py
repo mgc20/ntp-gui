@@ -238,12 +238,16 @@ def dns_insights(dns: dict[str, Any], cfg: dict[str, Any], sources: list[dict] |
             "oder ist nur für eigene Zonen zuständig. Erlaube dort das Netz des Containers oder trag einen "
             "Server ein, der beliebige Namen auflöst.", "dns_fallback")
     elif state == "fallback":
+        why = _upstream_errors(ups)
         add("warn", "Eigene DNS-Server nicht erreichbar",
-            "Keiner der eingetragenen DNS-Server hat zuletzt geantwortet. ntp-gui fragt deshalb den "
-            "ursprünglichen DNS des Containers"
+            "Keiner der eingetragenen DNS-Server hat zuletzt geantwortet"
+            + (f" ({why})" if why else "")
+            + ". ntp-gui fragt deshalb den ursprünglichen DNS des Containers"
             + (" – unverschlüsselt" if mode in ("dot", "doh") else "")
-            + ". Schreibt der Zeitserver-Namen um, droht wieder eine Schleife. Prüfe Adressen, "
-            "Firewall (853/tcp für DoT, 443/tcp für DoH) und die Uhrzeit (TLS-Zertifikate).", "dns_fallback")
+            + ". Schreibt der Zeitserver-Namen um, droht wieder eine Schleife. "
+            + ("" if why and "HTTP/2" in why else
+               "Prüfe Adressen, Firewall (853/tcp für DoT, 443/tcp für DoH) und die Uhrzeit (TLS-Zertifikate)."),
+            "dns_fallback")
     elif state == "failing":
         add("crit", "Keine Namensauflösung",
             "Weder die eigenen DNS-Server noch der System-DNS antworten. chronyd kann Namen wie "
@@ -255,6 +259,21 @@ def dns_insights(dns: dict[str, Any], cfg: dict[str, Any], sources: list[dict] |
             "Rückfall auf den System-DNS hilft hier nicht – sorge dafür, dass die eigenen Server "
             "erreichbar sind, und trag bei DoT/DoH feste Adressen ein.", "dns_loop_fallback")
     return out
+
+
+def _upstream_errors(ups: list[dict], limit: int = 3) -> str:
+    """Letzter Fehler je eigenem DNS-Server, knapp („dns.example: verweigert die Verbindung auf Port 853 –
+    …“) – damit der Hinweis sagt, was zu tun ist. Die Texte kommen schon gesäubert aus dnsfwd; hier nur
+    noch einmal begrenzt (dns.json ist eine Datei, die auch ein älterer Weiterleiter geschrieben haben kann)."""
+    import textsafe
+    parts = []
+    for up in ups:
+        error = textsafe.clean(up.get("last_error") or "", 120)
+        if error:
+            parts.append(f"{textsafe.clean(up.get('label') or up.get('host') or '?', 60)}: {error}")
+    if len(parts) > limit:
+        parts = parts[:limit] + [f"und {len(parts) - limit} weitere"]
+    return "; ".join(parts)
 
 
 def _recent(when: Any, now: Any = None, window: float = 600.0) -> bool:
@@ -420,8 +439,19 @@ def build(status: dict[str, Any], cfg: dict[str, Any]) -> list[dict[str, Any]]:
                        "übernehmen."),
                     action="gps", key="gps_distance")
             elif state in {"best", "combined"}:
-                add("ok", "GPS wird genutzt",
-                    f"Das GPS fließt in die Zeit ein (Abweichung {_ms(offset)}).", key="gps_used")
+                # Diagnose 1.6.0: „+“ (combined) heißt nicht „GPS trägt die Zeit“ – chrony mittelt es nur mit
+                # kleinem Gewicht neben guten Netzquellen ein. Und bei schwachem Empfang ist das kein „ok“.
+                weak = (status.get("gps_summary") or {}).get("level") == "red"
+                if state == "best":
+                    title, text = "GPS wird genutzt", f"Das GPS fließt in die Zeit ein (Abweichung {_ms(offset)})."
+                else:
+                    title = "GPS wird mitgerechnet"
+                    text = (f"chrony mittelt das GPS mit kleinem Gewicht neben den Netzquellen ein (Abweichung "
+                            f"{_ms(offset)}); die Netzquellen tragen die Zeit.")
+                if weak:
+                    text += (" Der Empfang ist allerdings schwach – die GPS-Seite zeigt die Empfangsbewertung "
+                             "und den Antennen-Test.")
+                add("info" if weak else "ok", title, text, action="gps" if weak else None, key="gps_used")
             if abs(offset or 0) > 0.02 and state in {"best", "combined", "not_combined"}:
                 add("info", "GPS-Offset noch nicht kalibriert",
                     f"Das GPS liegt {_ms(offset)} neben der Systemzeit. "

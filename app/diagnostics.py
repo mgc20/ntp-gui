@@ -260,7 +260,8 @@ def _collect_meta(cfg: dict, options: dict) -> dict:
         "erstellt": int(now),
         "erstellt_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
         "utc_offset": f"{offset[:3]}:{offset[3:]}" if len(offset) == 5 else "+00:00",
-        "dashboard_uptime_seconds": options.get("uptime_seconds"),
+        # Grob: sekundengenau ergäben Laufzeit und Erstellzeit einen festen Startzeitpunkt (Wiedererkennung)
+        "dashboard_uptime_seconds": egress.coarse_seconds(options.get("uptime_seconds")),
         "arch": platform.machine(),
         "kernel": platform.release(),
         "python": platform.python_version(),
@@ -269,7 +270,7 @@ def _collect_meta(cfg: dict, options: dict) -> dict:
     }
     try:
         with open("/proc/uptime", encoding="utf-8") as handle:
-            meta["host_uptime_seconds"] = int(float(handle.read().split()[0]))
+            meta["host_uptime_seconds"] = egress.coarse_seconds(float(handle.read().split()[0]))
     except (OSError, ValueError, IndexError):
         pass
     if os.path.exists("/.dockerenv"):
@@ -714,7 +715,17 @@ def _known_values(cfg: dict) -> dict:
         "seriennummer": _hardware_serials(),
         "schnittstelle": _interface_names(cfg),
         "name": _client_names(),
+        "kanal": _channel_ids(),
     }
+
+
+def _channel_ids() -> list[str]:
+    """Kennungen der Benachrichtigungskanäle – egress ersetzt sie durch <kanal-1> usw."""
+    try:
+        import notify
+        return [str(c.get("id")) for c in notify.list_channels() if c.get("id")]
+    except Exception:  # noqa: BLE001
+        return []
 
 
 def _client_names() -> list[str]:
@@ -838,24 +849,49 @@ def drop_leaky_lines(text: str, sanitizer: "egress.Sanitizer") -> str:
     ganzen Export abzubrechen – das ließe sich von außen erzwingen –, fliegt nur die Zeile raus.
     Danach laufen beide Prüfungen wie immer über das ganze Paket.
     """
-    bad: set[int] = set()
-    for finding in egress.check_no_leaks(text):
+    bad: dict[int, set[str]] = {}
+    findings = list(egress.check_no_leaks(text))
+    findings += egress.backstop({"abschnitt": text.encode("utf-8")}, sanitizer.backstop_known(),
+                                _backstop_memo(sanitizer))
+    for finding in findings:
         match = re.search(r"Zeile (\d+)", str(finding.get("path", "")))
         if match:
-            bad.add(int(match.group(1)))
-    for finding in egress.backstop({"abschnitt": text.encode("utf-8")}, sanitizer.backstop_known(),
-                                   _backstop_memo(sanitizer)):
-        match = re.search(r"Zeile (\d+)", str(finding.get("path", "")))
-        if match:
-            bad.add(int(match.group(1)))
+            bad.setdefault(int(match.group(1)), set()).add(str(finding.get("kind") or ""))
     if not bad:
         return text
     lines = text.split("\n")
-    for number in bad:
+    for number, kinds in bad.items():
         if 1 <= number <= len(lines):
-            lines[number - 1] = DROPPED_LINE
+            lines[number - 1] = dropped_line(kinds, lines[number - 1])
     sanitizer.count("zeile_entfernt", len(bad))
     return "\n".join(lines)
+
+
+_DROP_ARG_RE = re.compile(r"-?[a-z]{1,16}")
+RECORD_KINDS = {"chronyc", "pmc", "ethtool", "gpsd"}   # Datensätze der Aufzeichnung (providers.py)
+CHRONYC_TEXT_COMMANDS = {"serverstats", "activity", "clients", "tracking", "sources", "sourcestats",
+                         "selectdata", "ntpdata", "authdata"}
+
+
+def dropped_line(kinds: set[str], line: str = "") -> str:
+    """Ersatz für eine entfernte Zeile – mit Fundart (feste Namen wie „position“) und bei Datensätzen der
+    Aufzeichnung Art und Befehl („chronyc -c clients“). Beides verrät nichts, macht aber Fehlalarme der
+    Schlussprüfung sichtbar und ihre Ursache auffindbar. Aus der Zeile selbst nur Werte aus festen Listen."""
+    parts = sorted(k for k in kinds if k in egress.CATEGORIES or k in egress.FINDING_KINDS)
+    where = ""
+    stripped = line.strip()
+    if stripped.startswith("{") and stripped.endswith("}"):
+        try:
+            record = json.loads(stripped)
+        except ValueError:
+            record = None
+        if isinstance(record, dict) and record.get("kind") in RECORD_KINDS:
+            args = record.get("args") if isinstance(record.get("args"), list) else []
+            safe = [a for a in args if isinstance(a, str) and _DROP_ARG_RE.fullmatch(a)
+                    and (a == "-c" or a in egress.CHRONYC_CSV_COMMANDS or a in CHRONYC_TEXT_COMMANDS)]
+            where = " ".join([str(record["kind"]), *safe])
+    detail = ", ".join(parts + ([where] if where else []))
+    return DROPPED_LINE[:-1] + f": {detail}]" if detail else DROPPED_LINE
 
 
 def build(cfg: dict, sections: list[str] | None = None, options: dict | None = None) -> dict:
