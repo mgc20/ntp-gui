@@ -658,8 +658,8 @@ class ClockPublicNoPasswordTest(unittest.TestCase):
         self.assertIsNone(payload["source"], "über einen fremden Namen nie der Quellenname")
         self.assertEqual(payload["source_kind"], "GPS")
         self.assertEqual(set(payload), {"synchronised", "running", "level", "accuracy", "stratum", "leap",
-                                        "source_kind", "t1", "t2", "public", "source"},
-                         "nur Zeit, Ampel, Genauigkeit und Art der Quelle")
+                                        "leap_next", "source_kind", "t1", "t2", "public", "source"},
+                         "nur Zeit, Ampel, Genauigkeit, Art der Quelle und die öffentliche Schaltsekunden-Ankündigung")
         self.assertFalse([c for c in printed.call_args_list if "uhr.example" in str(c)], "keine Ablehnung im Log")
 
     def test_known_host_without_password_gets_source(self):

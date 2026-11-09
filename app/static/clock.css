@@ -14,9 +14,11 @@ body.clock-page {
   padding: max(10px, env(safe-area-inset-top)) clamp(10px, 3vw, 32px) 6px; font-size: clamp(12px, 1.1vw + 6px, 18px); }
 .clock-back { color: var(--ink-muted); }
 .clock-tools { display: flex; gap: 6px; flex-wrap: wrap; }
-.clock-tool { font: inherit; font-size: 0.9em; cursor: pointer; border-radius: 9px; padding: 0.35em 0.8em;
-  background: transparent; color: var(--ink-muted); border: 1px solid var(--border); }
-.clock-tool:hover { border-color: var(--accent); color: var(--ink); }
+.clock-tool, .clock-select { font: inherit; font-size: 0.9em; cursor: pointer; border-radius: 9px; padding: 0.35em 0.8em;
+  min-height: 32px; background: transparent; color: var(--ink-muted); border: 1px solid var(--border); }
+.clock-select { background: var(--bg); padding-right: 0.4em; }
+.clock-tool:disabled { opacity: .5; cursor: default; }
+.clock-tool:not(:disabled):hover, .clock-select:hover { border-color: var(--accent); color: var(--ink); }
 .clock-tool[aria-pressed="true"] { color: var(--ink); border-color: var(--accent); }
 /* Nach ein paar Sekunden ohne Bewegung verschwindet die Leiste (Wandmonitor). */
 body.is-idle .clock-bar { opacity: 0; transition: opacity .6s; }
@@ -60,4 +62,107 @@ body.is-stale .clock-time { color: var(--ink-muted); }
   .clock-sub { margin-top: 2px; font-size: clamp(13px, 6vh, 40px); }
   .clock-bar { padding-top: 6px; padding-bottom: 0; }
   .clock-band { padding-top: 0.4em; padding-bottom: 0.4em; font-size: 12px; }
+}
+
+/* --- 1.6 (T6) Uhr-Werkstatt: Designs, Panels, Kiosk, E-Ink ------------------------------------------
+   Bewegung nur per CSS (Sekundenzeiger, Klappen, Glühen); clock.js stellt höchstens einmal je Sekunde. */
+.clock-design { display: inline-flex; }
+.clock-face { display: flex; align-items: center; justify-content: center; max-width: 100%; margin: 0.1em 0 0.3em; }
+.clock-tz2 { white-space: nowrap; }
+/* Mehr Inhalt als Höhe (Banner, Panels): oben anfangen statt nach oben aus dem Bild zu ragen. */
+body.clock-page { height: auto; }
+.clock-main { justify-content: safe center; }
+body.is-kiosk .clock-egg { margin-top: max(10px, env(safe-area-inset-top)); }
+.clock-egg { margin: 0 auto; padding: 0.4em 1em; max-width: min(46em, calc(100% - 24px)); box-sizing: border-box; text-align: center;
+  font-size: clamp(13px, 1vw + 8px, 20px); color: var(--ink); border: 1px dashed var(--accent); border-radius: 12px; }
+
+/* Bahnhofsuhr: eigenes, schlichtes Zifferblatt (Striche, Balkenzeiger, Sekundenzeiger mit offenem Ring). */
+.face-bahnhof .bh { width: min(80vw, 44vh); height: auto; max-width: 100%; display: block; }
+.bh-face { fill: var(--surface); stroke: var(--border); stroke-width: 2; }
+.bh-tick { stroke: var(--ink); stroke-width: 1.6; }
+.bh-tick-hour { stroke-width: 4.5; }
+.bh-hour, .bh-minute, .bh-cap { fill: var(--ink); }
+.bh-second-line { stroke: var(--accent); stroke-width: 2; stroke-linecap: round; }
+.bh-second-ring { fill: none; stroke: var(--accent); stroke-width: 3; }
+.bh-second { transform-origin: 100px 100px; }
+.bh-second.is-sweep { animation: bh-sweep 60s linear infinite; }
+/* 58,5 s für eine Runde, dann Halt auf der 12 bis zur vollen Minute (97,5 % von 60 s). */
+@keyframes bh-sweep {
+  0% { transform: rotate(0deg); }
+  97.5% { transform: rotate(360deg); }
+  100% { transform: rotate(360deg); }
+}
+
+/* Nixie: alle Ziffern einer Röhre übereinander, die leuchtende glüht (Glow per text-shadow). */
+.face-nixie { gap: clamp(2px, 0.8vw, 12px); --nixie: #ff9a3c; }
+.nixie-tube { position: relative; display: inline-block; width: 0.72em; height: 1.25em; border-radius: 0.36em 0.36em 0.12em 0.12em;
+  font-size: min(14vw, 26vh); line-height: 1.25; text-align: center; font-variant-numeric: tabular-nums;
+  background: color-mix(in srgb, var(--surface-2) 85%, #301a08); border: 1px solid var(--border); overflow: hidden; }
+.nixie-n { position: absolute; inset: 0; color: color-mix(in srgb, var(--ink-muted) 22%, transparent); transition: color .25s, text-shadow .25s; }
+.nixie-n.on { color: #ffd9a8; text-shadow: 0 0 0.06em #fff3e0, 0 0 0.18em var(--nixie), 0 0 0.45em var(--nixie); z-index: 1; }
+.nixie-sep { font-size: min(8vw, 16vh); color: var(--nixie); text-shadow: 0 0 0.3em var(--nixie); }
+:root[data-theme="light"] .nixie-tube { background: #1d140c; border-color: #3a2a1a; }
+
+/* Klappzahlen: jede Ziffer eine Karte, die beim Wechsel einmal klappt. */
+.face-flip { gap: clamp(3px, 0.8vw, 12px); }
+.flip-card { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 0.78em; height: 1.2em;
+  font-size: min(13vw, 28vh); font-weight: 600; font-variant-numeric: tabular-nums; color: var(--ink);
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 0.1em; perspective: 4em; }
+.flip-card::after { content: ""; position: absolute; left: 0; right: 0; top: 50%; border-top: 2px solid var(--bg); }
+.flip-digit { display: block; line-height: 1; }
+.flip-card.flip-a .flip-digit { animation: flip-a .35s ease-out; }
+.flip-card.flip-b .flip-digit { animation: flip-b .35s ease-out; }
+@keyframes flip-a { from { transform: rotateX(-90deg); opacity: .3; } to { transform: rotateX(0); opacity: 1; } }
+@keyframes flip-b { from { transform: rotateX(-90deg); opacity: .3; } to { transform: rotateX(0); opacity: 1; } }
+.flip-sep { font-size: min(9vw, 20vh); color: var(--ink-muted); }
+
+/* Wortuhr: der Satz groß, darunter die Minuten zwischen den Fünferschritten als Punkte. */
+.face-wort { flex-direction: column; gap: 0.6em; }
+.wort-text { margin: 0; max-width: 14em; font-size: min(8vw, 10vh); line-height: 1.15; font-weight: 600; letter-spacing: .06em;
+  overflow-wrap: anywhere; color: var(--ink); }
+.wort-dots { display: flex; gap: 0.8em; }
+.wort-dot { width: 0.7em; height: 0.7em; border-radius: 50%; border: 2px solid var(--ink-muted); font-size: clamp(10px, 1.6vw, 20px); }
+.wort-dot.on { background: var(--ink); border-color: var(--ink); }
+
+/* Panels: Ton und „Wie falsch geht dein Gerät?“ */
+.clock-panel { margin: 0 auto clamp(6px, 1.5vh, 16px); padding: 12px 16px; width: min(40em, calc(100% - 24px)); box-sizing: border-box;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 14px; font-size: clamp(14px, 0.6vw + 11px, 18px); }
+.clock-panel-title { margin: 0 0 4px; font-size: 1.05em; display: flex; align-items: center; gap: 10px; }
+.clock-panel-line, .clock-panel-note { margin: 4px 0; color: var(--ink-2); }
+.clock-panel-note { color: var(--ink-muted); font-size: 0.9em; }
+.clock-panel-actions { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0 4px; }
+.clock-countdown { margin: 6px 0; font-size: clamp(28px, 7vw, 72px); font-weight: 600; font-variant-numeric: tabular-nums; color: var(--ink); }
+.clock-device { display: flex; align-items: center; gap: 0.5em; margin: 6px 0; font-size: clamp(22px, 4vw, 44px); font-weight: 600; }
+.clock-device[data-tone="good"] .clock-dot { background: var(--good); }
+.clock-device[data-tone="warn"] .clock-dot { background: var(--warn); }
+.clock-device[data-tone="crit"] .clock-dot { background: var(--crit); }
+.clock-popover { font-size: 14px; }
+
+/* Kiosk (?kiosk=1): ohne Leiste und Panels, Mauszeiger versteckt, unten nur der Status-Ticker. */
+body.is-kiosk .clock-bar, body.is-kiosk .clock-panel { display: none; }
+body.is-kiosk, body.is-kiosk * { cursor: none; }
+body.is-kiosk .clock-band { font-size: clamp(12px, 0.9vw + 6px, 20px); }
+
+/* E-Ink (?eink=1): schwarz auf weiß, keine Bewegung, keine Schatten; Anzeige nur zum Minutenwechsel. */
+:root[data-mode="eink"] {
+  --bg: #ffffff; --surface: #ffffff; --surface-2: #ffffff; --border: #000000; --border-soft: #000000;
+  --ink: #000000; --ink-2: #000000; --ink-muted: #000000; --accent: #000000;
+  --good: #000000; --warn: #000000; --crit: #000000; --on-status: #ffffff;
+}
+:root[data-mode="eink"] *, :root[data-mode="eink"] *::before, :root[data-mode="eink"] *::after {
+  animation: none !important; transition: none !important; text-shadow: none !important; box-shadow: none !important; }
+:root[data-mode="eink"] .clock-band { background: #ffffff; }
+:root[data-mode="eink"] .nixie-tube { background: #ffffff; border-color: #000000; }
+:root[data-mode="eink"] .nixie-n { color: transparent; }
+:root[data-mode="eink"] .nixie-n.on, :root[data-mode="eink"] .nixie-sep { color: #000000; }
+
+/* Rotlicht: auch die Designs nur in Rot. */
+:root[data-mode="red"] .face-nixie { --nixie: #ff2a1a; }
+:root[data-mode="red"] .nixie-tube { background: #0a0000; border-color: #3a0000; }
+:root[data-mode="red"] .nixie-n.on { color: #ff2a1a; text-shadow: 0 0 0.2em #ff2a1a; }
+
+/* Ruhig: kein Gleiten, Klappen oder Glühen-Überblenden (der Sekundenzeiger springt dann sekundenweise). */
+@media (prefers-reduced-motion: reduce) {
+  .bh-second.is-sweep, .flip-card .flip-digit { animation: none !important; }
+  .nixie-n { transition: none; }
 }

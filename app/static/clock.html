@@ -13,23 +13,56 @@
 </head>
 <body class="clock-page">
 <header class="clock-bar">
-  <a class="clock-back" id="clock-back" href="/">← Dashboard</a>
-  <div class="clock-tools" role="group" aria-label="Darstellung">
-    <button type="button" class="clock-tool" id="mode-theme" aria-pressed="false" title="Hell oder dunkel">Hell</button>
-    <button type="button" class="clock-tool" id="mode-red" aria-pressed="false" title="Rotlicht: schont die Dunkeladaption der Augen (Sternwarte, Schlafzimmer, Serverraum bei Nacht)">Rotlicht</button>
-    <button type="button" class="clock-tool" id="mode-full" title="Vollbild ein oder aus (Taste F)">Vollbild</button>
+  <a class="clock-back" id="clock-back" href="/" data-i18n="clock.back">← Dashboard</a>
+  <div class="clock-tools" role="group" aria-label="Darstellung" data-i18n-aria-label="clock.tools_label">
+    <label class="clock-design"><span class="sr-only" data-i18n="clock.design_label">Design</span>
+      <select id="design" class="clock-select" title="Design der Uhr" data-i18n-title="clock.design_title">
+        <option value="digital" data-i18n="clock.design.digital">Digital</option>
+        <option value="bahnhof" data-i18n="clock.design.bahnhof">Bahnhofsuhr</option>
+        <option value="nixie" data-i18n="clock.design.nixie">Nixie</option>
+        <option value="flip" data-i18n="clock.design.flip">Klappzahlen</option>
+        <option value="wort" data-i18n="clock.design.wort">Wortuhr</option>
+      </select>
+    </label>
+    <button type="button" class="clock-tool" id="mode-theme" aria-pressed="false" title="Hell oder dunkel" data-i18n-title="clock.theme_title">Hell</button>
+    <button type="button" class="clock-tool" id="mode-red" aria-pressed="false" title="Rotlicht: schont die Dunkeladaption der Augen (Sternwarte, Schlafzimmer, Serverraum bei Nacht)" data-i18n-title="clock.red_title" data-i18n="clock.red">Rotlicht</button>
+    <button type="button" class="clock-tool" id="mode-tone" aria-expanded="false" aria-controls="tone-panel" data-i18n="clock.tone">Ton</button>
+    <button type="button" class="clock-tool" id="mode-device" aria-expanded="false" aria-controls="device-panel" data-i18n="clock.device">Mein Gerät</button>
+    <button type="button" class="clock-tool" id="mode-full" title="Vollbild ein oder aus (Taste F)" data-i18n-title="clock.full_title" data-i18n="clock.full">Vollbild</button>
   </div>
 </header>
 
-<main class="clock-main">
-  <p class="clock-label" id="local-label">Ortszeit</p>
+<p class="clock-egg" id="leap-egg" role="status" hidden></p>
+
+<main class="clock-main" id="clock-main">
+  <p class="clock-label" id="local-label" data-i18n="clock.local">Ortszeit</p>
   <time class="clock-time" id="local-time" aria-live="off">--:--:--</time>
+  <div class="clock-face" id="face" hidden></div>
   <p class="clock-date" id="local-date">&nbsp;</p>
   <div class="clock-sub">
     <span class="clock-utc"><span class="clock-label">UTC</span> <time id="utc-time">--:--:--</time></span>
+    <span class="clock-tz2" id="tz2" hidden><span class="clock-label" id="tz2-label"></span> <time id="tz2-time">--:--</time></span>
     <span class="clock-week" id="iso-week">KW –</span>
   </div>
 </main>
+
+<section class="clock-panel" id="tone-panel" hidden aria-labelledby="tone-title">
+  <h2 class="clock-panel-title" id="tone-title"><span data-i18n="clock.tone_title">Ton auf der Sekunde</span> <span id="tone-info"></span></h2>
+  <p class="clock-panel-line" data-i18n="clock.tone_line">Zum Stellen von Uhren ohne Funk oder Netz: Piep auf jeder vollen Sekunde, langer Ton zur Minute.</p>
+  <div class="clock-panel-actions" role="group" aria-label="Ton" data-i18n-aria-label="clock.tone">
+    <button type="button" class="clock-tool" id="tone-seconds" aria-pressed="false" data-i18n="clock.tone_seconds">Sekundenpiep</button>
+    <button type="button" class="clock-tool" id="tone-countdown" aria-pressed="false" data-i18n="clock.tone_countdown">Uhr stellen</button>
+    <button type="button" class="clock-tool" id="tone-off" data-i18n="clock.tone_off">Aus</button>
+  </div>
+  <p class="clock-countdown" id="tone-count" aria-live="off" hidden></p>
+  <p class="clock-panel-note" id="tone-status" aria-live="polite"></p>
+</section>
+
+<section class="clock-panel" id="device-panel" hidden aria-labelledby="device-title">
+  <h2 class="clock-panel-title" id="device-title"><span data-i18n="clock.device_title">Wie falsch geht dein Gerät?</span> <span id="device-info"></span></h2>
+  <p class="clock-device" id="device-value" data-tone="unknown"><span class="clock-dot" aria-hidden="true"></span> <span id="device-text">misst …</span></p>
+  <p class="clock-panel-line" id="device-line"></p>
+</section>
 
 <footer class="clock-band" id="band" data-state="unknown" role="status" aria-live="polite">
   <span class="clock-dot" aria-hidden="true"></span>
