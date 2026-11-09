@@ -575,7 +575,7 @@ class TransportWatch:
                         "docs/integrationen/https.md) und WEB_BIND=127.0.0.1 setzen. Sonst die Strecke "
                         "auf ein abgetrenntes, vertrauenswürdiges Netz legen und Port 8080 per Firewall nur "
                         "für den Proxy öffnen. Läuft der Proxy auf diesem Rechner in einem eigenen "
-                        "Docker-Netz (z. B. 172.18.0.2), verlässt die Strecke den Host nicht – dann kannst "
+                        "Docker-Netz (Adresse aus 172.16.0.0/12), verlässt die Strecke den Host nicht – dann kannst "
                         "du diesen Hinweis übergehen.",
             })
         if untrusted:

@@ -31,6 +31,7 @@ from collections import deque
 from typing import Any
 
 import store
+import textsafe
 
 KINDS = ("service", "reload", "settings", "source", "gps", "pps", "calibration", "cert",
          "leap", "startup", "clients", "api", "notify", "dns", "update", "pi", "other")
@@ -122,9 +123,15 @@ def _clean(kind: Any, level: Any, title: Any, data: Any, source: Any, t: Any = N
     level = str(level or "info")
     if level not in LEVELS:
         level = "info"
-    title = " ".join(str(title or "").split())[:MAX_TITLE]
+    # Fremde Texte (Fehlermeldungen aus dem Netz) können Steuerzeichen oder rohe Bytes enthalten: nur
+    # Druckbares speichern – das Protokoll landet in der Oberfläche, in Benachrichtigungen und im Export.
+    title = textsafe.clean(title or "", MAX_TITLE)
     payload = None
     if data is not None:
+        try:
+            data = textsafe.clean_tree(data)
+        except Exception:
+            pass
         try:
             payload = json.dumps(data, ensure_ascii=False, default=str, separators=(",", ":"))
         except (TypeError, ValueError):

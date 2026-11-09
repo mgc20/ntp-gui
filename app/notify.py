@@ -73,6 +73,7 @@ import events
 import numfmt
 import settings
 import store
+import textsafe
 
 CHANNEL_TYPES = ("webhook", "ntfy", "gotify", "apprise")
 TYPE_LABELS = {"webhook": "Webhook (JSON)", "ntfy": "ntfy", "gotify": "Gotify", "apprise": "Apprise-API"}
@@ -444,7 +445,7 @@ def _record(channel_id: str, ok: bool, error: str | None = None, dropped: int = 
                           (now, now, channel_id))
         elif attempt:
             store.execute("UPDATE notify_channels SET last_attempt=?, last_error=?, last_error_t=?, "
-                          "failed=failed+1 WHERE id=?", (now, (error or "Fehler")[:200], now, channel_id))
+                          "failed=failed+1 WHERE id=?", (now, textsafe.clean(error or "Fehler", 200) or "Fehler", now, channel_id))
         if dropped:
             store.execute("UPDATE notify_channels SET dropped=dropped+? WHERE id=?", (int(dropped), channel_id))
     except Exception:
@@ -1290,7 +1291,7 @@ def send_test(channel_id: str) -> dict:
         NOTIFIER.deliver(channel, clean)
     except (DeliveryError, egress.NotifyLeak) as exc:
         _record(channel["id"], False, str(exc))
-        return {"ok": False, "error": str(exc), "status": status_of(get_channel(channel["id"]) or channel)}
+        return {"ok": False, "error": textsafe.clean(exc, 200), "status": status_of(get_channel(channel["id"]) or channel)}
     _record(channel["id"], True)
     return {"ok": True, "status": status_of(get_channel(channel["id"]) or channel)}
 

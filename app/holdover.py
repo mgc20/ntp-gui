@@ -184,7 +184,7 @@ def configure(trigger_reload: Callable[[], bool] | None = None) -> None:
 def reload_busy(now: float | None = None) -> str:
     """Steht ein Neustart der Zeitdienste an oder läuft er gerade? Dann Grund, sonst ""."""
     run_dir = os.path.dirname(_hold_path())
-    if os.path.exists(os.path.join(run_dir, "reload.request")):
+    if any(os.path.exists(os.path.join(run_dir, name)) for name in ("reload.request", "reload-chronyd.request")):
         return "Ein Neustart der Zeitdienste ist angefordert"
     try:
         with open(os.path.join(run_dir, "reload.json"), encoding="utf-8") as handle:

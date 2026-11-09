@@ -1163,8 +1163,9 @@ def build_matrix(cfg: dict, rep: dict, ctx: dict) -> tuple[list[dict], list[str]
             role = rep["gps"].get("role") or {}
             role_text = f" Rolle: {role['label']}." if role.get("label") and role.get("role") != "off" else ""
             if role.get("role") == "fallback":
-                role_text = (f" Rolle: Rückfallebene – chrony nimmt gute Netzquellen und das GPS, wenn das "
-                             f"Internet schlecht wird oder ausfällt (Fehlerschranke ± {numfmt.number(role['bound'] * 1000)} ms).")
+                role_text = (f" Rolle: Rückfallebene – chrony stützt sich auf gute Netzquellen; das GPS übernimmt, "
+                             "wenn das Internet schlecht wird oder ausfällt, und wird bis dahin höchstens mit kleinem "
+                             f"Gewicht mitgerechnet (Fehlerschranke ± {numfmt.number(role['bound'] * 1000)} ms).")
             rows.append(_row("gps_usb", title_usb, "ok",
                              f"Empfänger {label} ({main['interface']}) liefert Zeit über NMEA – "
                              "Genauigkeit 1–10 ms nach Kalibrierung ("

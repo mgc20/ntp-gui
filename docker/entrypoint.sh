@@ -31,6 +31,7 @@ export CHRONY_CONF PTP4L_CONF PTP_LOG_FILE NTPGUI_RUN_DIR="$RUN_DIR"
 
 WEB_PID=""        # Dashboard, "pid=comm"
 RELOAD_REQUESTED=0
+CHRONYD_RELOAD_REQUESTED=0   # reload-chronyd.request: nur chronyd neu laden
 
 SERVICES=(chronyd gpsd ptp4l phc2sys dnsfwd web)
 OPTIONAL_SERVICES=" gpsd ptp4l phc2sys dnsfwd "
@@ -515,15 +516,22 @@ reload_services() {
   "${EMIT_EVENT:-:}" reload info "Neue Einstellungen aktiv – Zeitdienste neu gestartet" result=done
 }
 
-# Nur chronyd neu laden (erneuertes NTS-Zertifikat): confgen legt die Kopien von
-# Zertifikat und Schlüssel neu an und schreibt chrony.conf; gpsd, ptp4l und
-# phc2sys laufen weiter, damit GPS/PPS nicht neu einrasten und PTP nicht ausfällt.
+# Nur chronyd neu laden: confgen schreibt alle Dateien neu (beim erneuerten NTS-Zertifikat auch die
+# Kopien von Zertifikat und Schlüssel), aber nur chronyd startet neu. gpsd, ptp4l, phc2sys und dnsfwd
+# laufen weiter, damit GPS/PPS nicht neu einrasten, PTP nicht ausfällt und der DNS-Weiterleiter nicht
+# neu beginnt. reload_chronyd [cert|settings] – „settings“: Anforderung reload-chronyd.request
+# (automatische GPS-Fehlerschranke und Kalibrierung, die nur chrony.conf ändern).
 reload_chronyd() {
-  local entry
+  local entry why="${1:-cert}"
   write_status running "chronyd wird neu gestartet"
   if ! apply_config; then
-    write_status error "Konfiguration fehlerhaft – chronyd läuft mit dem bisherigen Zertifikat weiter"
-    "${EMIT_EVENT:-:}" cert warn "Zertifikat erneuert, aber Konfiguration fehlerhaft – chronyd behält das alte" result=error
+    if [[ "$why" == settings ]]; then
+      write_status error "Konfiguration fehlerhaft – bisherige Einstellungen weiter aktiv"
+      "${EMIT_EVENT:-:}" reload warn "Konfiguration fehlerhaft – bisherige Einstellungen bleiben aktiv" result=error
+    else
+      write_status error "Konfiguration fehlerhaft – chronyd läuft mit dem bisherigen Zertifikat weiter"
+      "${EMIT_EVENT:-:}" cert warn "Zertifikat erneuert, aber Konfiguration fehlerhaft – chronyd behält das alte" result=error
+    fi
     return 0
   fi
   entry="${SVC_ENTRY[chronyd]:-}"
@@ -533,9 +541,42 @@ reload_chronyd() {
   fi
   SVC_ENTRY[chronyd]=""
   start_chronyd
-  write_status done "Zertifikat neu geladen"
   log main "chronyd neu gestartet."
-  "${EMIT_EVENT:-:}" cert info "NTS-Zertifikat erneuert – chronyd hat es neu geladen" result=done
+  if [[ "$why" == settings ]]; then
+    write_status done "Neue Einstellungen aktiv"
+    "${EMIT_EVENT:-:}" reload info "Neue Einstellungen aktiv – nur chronyd neu gestartet" result=done scope=chronyd
+  else
+    write_status done "Zertifikat neu geladen"
+    "${EMIT_EVENT:-:}" cert info "NTS-Zertifikat erneuert – chronyd hat es neu geladen" result=done
+  fi
+}
+
+# Anforderungen des Dashboards abarbeiten (Hauptschleife, alle 2 s): reload.request startet alle
+# Zeitdienste neu, reload-chronyd.request nur chronyd. Liegen beide an, genügt der volle Neustart.
+process_reload_requests() {
+  # Neuladen: Das Dashboard legt reload.request an (kein SIGHUP mehr – ein Signal mitten in einem
+  # „$( … )“ brachte den bash-Parser durcheinander und beendete den Container). Datei zuerst
+  # löschen: Kommt während des Neuladens eine neue Anforderung, folgt ein weiterer Durchgang.
+  if [[ -e "${RUN_DIR}/reload.request" ]]; then
+    # Zuerst „running“ vermerken, dann die Anforderung löschen: Ein Holdover-Test, der genau jetzt
+    # startet, sieht so immer eins von beiden und wartet (holdover.reload_busy).
+    write_status running "Neustart angefordert"
+    rm -f "${RUN_DIR}/reload.request"
+    RELOAD_REQUESTED=1
+  fi
+  if [[ -e "${RUN_DIR}/reload-chronyd.request" ]]; then
+    write_status running "Neustart von chronyd angefordert"
+    rm -f "${RUN_DIR}/reload-chronyd.request"
+    CHRONYD_RELOAD_REQUESTED=1
+  fi
+  if (( RELOAD_REQUESTED )); then
+    RELOAD_REQUESTED=0
+    CHRONYD_RELOAD_REQUESTED=0   # der volle Neustart lädt chronyd mit
+    reload_services
+  elif (( CHRONYD_RELOAD_REQUESTED )); then
+    CHRONYD_RELOAD_REQUESTED=0
+    reload_chronyd settings
+  fi
 }
 
 shutdown() {
@@ -677,7 +718,7 @@ check_hotplug() {
 start_logtee
 mkdir -p /var/run/chrony /var/lib/chrony /var/log/chrony /etc/linuxptp "$RUN_DIR"
 echo "$$" > "${RUN_DIR}/supervisor.pid"
-rm -f "${RUN_DIR}/reload.request"  # Anforderung von vor dem Start ist erledigt
+rm -f "${RUN_DIR}/reload.request" "${RUN_DIR}/reload-chronyd.request"  # Anforderungen von vor dem Start sind erledigt
 write_status idle "bereit"
 
 # chronyd legt seine Rechte ab; gehören die Verzeichnisse root, schaltet er
@@ -710,20 +751,7 @@ NTPGUI_VERSION="${NTPGUI_VERSION:-$(sed -n 's/^VERSION = os\.environ\.get("NTPGU
 # Statt 'wait -n': bash 5.2 übersieht damit Kinder, die vor dem Aufruf gestorben
 # sind. Der Watchdog erkennt jeden toten Dienst, auch beim Start.
 while true; do
-  # Neuladen: Das Dashboard legt reload.request an (kein SIGHUP mehr – ein Signal mitten in einem
-  # „$( … )“ brachte den bash-Parser durcheinander und beendete den Container). Datei zuerst
-  # löschen: Kommt während des Neuladens eine neue Anforderung, folgt ein weiterer Durchgang.
-  if [[ -e "${RUN_DIR}/reload.request" ]]; then
-    # Zuerst „running“ vermerken, dann die Anforderung löschen: Ein Holdover-Test, der genau jetzt
-    # startet, sieht so immer eins von beiden und wartet (holdover.reload_busy).
-    write_status running "Neustart angefordert"
-    rm -f "${RUN_DIR}/reload.request"
-    RELOAD_REQUESTED=1
-  fi
-  if (( RELOAD_REQUESTED )); then
-    RELOAD_REQUESTED=0
-    reload_services
-  fi
+  process_reload_requests
   for name in chronyd web; do
     entry="${SVC_ENTRY[$name]:-}"
     if ! service_alive "$entry"; then

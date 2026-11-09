@@ -43,6 +43,7 @@ import ipaddress
 import json
 import os
 import secrets
+import select
 import signal
 import socket
 import ssl
@@ -55,6 +56,8 @@ from typing import Any, Callable
 from urllib.parse import urlsplit
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import textsafe  # noqa: E402 – reine Funktionen, ohne Seiteneffekte
 
 RUN_DIR = os.environ.get("NTPGUI_RUN_DIR", "/run/ntp-gui")
 RESOLV_CONF = os.environ.get("NTPGUI_RESOLV_CONF", "/etc/resolv.conf")
@@ -329,12 +332,79 @@ class BootstrapError(UpstreamError):
     """Die Adresse eines DoT-/DoH-Servers ließ sich nicht ermitteln."""
 
 
+class Http2OnlyError(UpstreamError):
+    """Der DoH-Server spricht nur HTTP/2 – dieser Weiterleiter fragt per HTTP/1.1 (http.client)."""
+
+
+HTTP2_ONLY = ("spricht nur HTTP/2, ntp-gui fragt per HTTP/1.1 – nimm DNS-over-TLS oder einen "
+              "DoH-Server, der HTTP/1.1 kann")
+ERROR_LIMIT = 160   # so lang darf ein Fehlertext eines Upstreams in Status, Ereignis und Hinweis werden
+
+
 def hard_failure(exc: BaseException) -> bool:
-    """Fehler, der den ganzen Server betrifft (abgelehnt, unerreichbar, TLS, Adresse unbekannt) –
-    anders als eine Zeitüberschreitung, die auch nur an einem langsamen Namen liegen kann."""
-    if isinstance(exc, (BootstrapError, ConnectionError, ssl.SSLError)):
+    """Fehler, der den ganzen Server betrifft (abgelehnt, unerreichbar, TLS, Adresse unbekannt, falsches
+    Protokoll) – anders als eine Zeitüberschreitung, die auch nur an einem langsamen Namen liegen kann.
+    DoT/DoH reichen den ursprünglichen Fehler als __cause__ ihres UpstreamError weiter."""
+    for item in (exc, exc.__cause__):
+        if item is None:
+            continue
+        if isinstance(item, (BootstrapError, Http2OnlyError, ConnectionError, ssl.SSLError)):
+            return True
+        if getattr(item, "errno", None) in (errno.ECONNREFUSED, errno.ENETUNREACH, errno.EHOSTUNREACH):
+            return True
+    return False
+
+
+def looks_like_http2(line: Any) -> bool:
+    """Beginnt eine Antwort mit dem HTTP/2-Verbindungsvorspann oder einem SETTINGS-Rahmen? Dann hat der
+    Server auf eine HTTP/1.1-Anfrage mit HTTP/2 geantwortet (RFC 9113 3.4: Der Server beginnt jede
+    Verbindung mit SETTINGS, Rahmenkopf 9 Bytes: Länge 3, Typ 4, Flags, Stream 0)."""
+    if isinstance(line, (bytes, bytearray)):
+        line = bytes(line).decode("latin-1")
+    text = str(line or "")
+    if text.startswith("PRI * HTTP/2"):
         return True
-    return getattr(exc, "errno", None) in (errno.ECONNREFUSED, errno.ENETUNREACH, errno.EHOSTUNREACH)
+    return (len(text) >= 9 and text[3] == "\x04" and text[4] in "\x00\x01"
+            and text[5:9] == "\x00\x00\x00\x00" and all(ord(c) < 256 for c in text[:3]))
+
+
+def alpn_refused(exc: BaseException) -> bool:
+    """TLS-Handshake mit „no_application_protocol“ abgelehnt: Der Server kennt kein angebotenes
+    Protokoll (bei DoH: er will HTTP/2, ntp-gui bietet nur http/1.1 an)."""
+    reason = str(getattr(exc, "reason", "") or "").upper()
+    return "NO_APPLICATION_PROTOCOL" in reason or "no application protocol" in str(exc).lower()
+
+
+def describe_error(exc: BaseException, proto: str = "", port: int = 0) -> str:
+    """Fehler eines Upstreams als kurzer deutscher Text: verständlich für den Hinweis („verweigert die
+    Verbindung auf Port 853 – DoT dort nicht eingeschaltet?“) und immer druckbar und begrenzt – der Text
+    landet in dns.json, Ereignissen, Hinweisen und der Oberfläche."""
+    if isinstance(exc, UpstreamError):
+        return textsafe.clean(str(exc), ERROR_LIMIT) or "keine Verbindung"
+    code = getattr(exc, "errno", None)
+    if isinstance(exc, (TimeoutError, socket.timeout)):
+        return "Zeitüberschreitung"
+    if isinstance(exc, ConnectionRefusedError) or code == errno.ECONNREFUSED:
+        text = f"verweigert die Verbindung auf Port {port}" if port else "verweigert die Verbindung"
+        if proto == "dot":
+            text += " – DNS-over-TLS dort nicht eingeschaltet oder Firewall?"
+        elif proto == "doh":
+            text += " – DNS-over-HTTPS dort nicht eingeschaltet oder Firewall?"
+        return text
+    if code in (errno.ENETUNREACH, errno.EHOSTUNREACH):
+        return "nicht erreichbar (keine Route – Netz oder Firewall prüfen)"
+    if isinstance(exc, ssl.SSLCertVerificationError):
+        detail = textsafe.clean(getattr(exc, "verify_message", "") or str(exc), 80)
+        return f"Zertifikat abgelehnt ({detail}) – Name in der Adresse und Uhrzeit prüfen"
+    if alpn_refused(exc):
+        return HTTP2_ONLY if proto == "doh" else "lehnt das TLS-Anwendungsprotokoll ab (ALPN)"
+    if isinstance(exc, ConnectionResetError):
+        return "Verbindung vom Server zurückgesetzt"
+    if isinstance(exc, (BrokenPipeError, ConnectionAbortedError)) or code in (errno.EPIPE, errno.ECONNABORTED):
+        return "Verbindung vom Server geschlossen"
+    if isinstance(exc, http.client.BadStatusLine) and looks_like_http2(exc.args[0] if exc.args else ""):
+        return HTTP2_ONLY
+    return textsafe.clean(str(exc), ERROR_LIMIT) or exc.__class__.__name__
 
 
 def _is_timeout(exc: BaseException) -> bool:
@@ -412,19 +482,49 @@ def plain_exchange(ip: str, port: int, query: bytes, deadline: float) -> bytes:
     return data
 
 
-def tls_context() -> ssl.SSLContext:
+DOH_ALPN = ["http/1.1"]
+H2_PROBE = 0.1   # s: so lange vor der ersten DoH-Anfrage auf einen SETTINGS-Rahmen horchen (siehe _PinnedHTTPS)
+
+
+def tls_context(alpn: list[str] | None = None) -> ssl.SSLContext:
+    """TLS für DoT/DoH. ALPN nur für DoH: http/1.1 – http.client spricht nichts anderes. Ohne die Angabe
+    wählen manche DoH-Server (nur HTTP/2) von sich aus HTTP/2 und antworten mit Binärrahmen; mit ihr
+    lehnen sie sauber ab oder antworten per HTTP/1.1. DoT bekommt kein ALPN: RFC 7858 verlangt keins, und
+    ein TLS-Vorbau, der „dot“ nicht kennt, könnte den Handshake sonst ablehnen – ohne jeden Nutzen."""
     ctx = ssl.create_default_context()  # System-CAs, Namensprüfung, CERT_REQUIRED
     ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    if alpn:
+        ctx.set_alpn_protocols(list(alpn))
     return ctx
+
+
+class _Http1Response(http.client.HTTPResponse):
+    """Antwort, die vor dem Lesen der Statuszeile auf HTTP/2 prüft: Ein reiner HTTP/2-Server schickt nach
+    dem Handshake sofort einen SETTINGS-Rahmen und schließt die Verbindung, sobald er die HTTP/1.1-Anfrage
+    sieht – oft hart (RST), dann wären die Bytes verloren, bevor http.client eine Statuszeile findet."""
+
+    def begin(self) -> None:
+        if self.headers is None:
+            try:
+                head = self.fp.peek(9)[:9]
+            except (OSError, ValueError):
+                head = b""
+            if head and looks_like_http2(head):
+                raise Http2OnlyError(HTTP2_ONLY)
+        super().begin()
 
 
 class _PinnedHTTPS(http.client.HTTPSConnection):
     """HTTPS zu einer festen IP, Zertifikat und SNI für den Namen aus der URL."""
 
-    def __init__(self, host: str, port: int, ip: str, context: ssl.SSLContext, timeout: float) -> None:
+    response_class = _Http1Response
+
+    def __init__(self, host: str, port: int, ip: str, context: ssl.SSLContext, timeout: float,
+                 probe: float = 0.0) -> None:
         super().__init__(host, port, context=context, timeout=timeout)
         self._pin_ip = ip
         self._pin_ctx = context
+        self._probe = max(0.0, min(probe, timeout))
 
     def connect(self) -> None:
         sock = socket.create_connection((self._pin_ip, self.port), self.timeout)
@@ -433,6 +533,55 @@ class _PinnedHTTPS(http.client.HTTPSConnection):
         except Exception:
             sock.close()
             raise
+        # Hat der Server (gegen das Angebot) HTTP/2 gewählt, gar nicht erst HTTP/1.1 senden.
+        if self.sock.selected_alpn_protocol() == "h2":
+            raise Http2OnlyError(HTTP2_ONLY)
+        self._check_unsolicited()
+
+    def _check_unsolicited(self) -> None:
+        """Hat der Server schon vor der Anfrage etwas geschickt? Ein HTTP/1.1-Server spricht nie zuerst;
+        ein reiner HTTP/2-Server schickt nach dem Handshake sofort SETTINGS – und schließt oft sofort
+        (GOAWAY, dann RST), sobald er die HTTP/1.1-Anfrage sieht. Danach wären die Rahmen verloren und
+        es bliebe nur „Broken pipe“. Darum hier kurz (self._probe) horchen, bevor die Anfrage rausgeht."""
+        tls = self.sock
+        start = time.monotonic()
+        end = start + self._probe
+        head = b""
+        try:
+            while len(head) < 9:
+                if not tls.pending():
+                    ready, _, _ = select.select([tls], [], [], max(0.0, end - time.monotonic()))
+                    if not ready:
+                        break
+                tls.setblocking(False)
+                try:
+                    chunk = tls.recv(9 - len(head))
+                except (ssl.SSLWantReadError, ssl.SSLWantWriteError, BlockingIOError):
+                    chunk = None      # nur TLS-Verwaltung (z. B. Sitzungstickets), keine Nutzdaten
+                finally:
+                    tls.settimeout(self.timeout)
+                if chunk == b"":
+                    break             # Server hat geschlossen – die Anfrage meldet das selbst
+                if chunk:
+                    if not head:      # ungefragte Daten: kein HTTP/1.1 – den Rahmenkopf ganz abwarten
+                        end = start + (self.timeout or 1.0)
+                    head += chunk
+                elif time.monotonic() >= end:
+                    break
+        except (OSError, ValueError):
+            if not head:
+                return                # Fehler beim Horchen: die Anfrage meldet ihn verständlich
+        if not head:
+            return
+        if looks_like_http2(head) or b"PRI * HTTP/2".startswith(head[:12]) or _h2_frame_start(head):
+            raise Http2OnlyError(HTTP2_ONLY)
+        raise UpstreamError("schickt vor der Anfrage unaufgefordert Daten – kein HTTP/1.1-Server?")
+
+
+def _h2_frame_start(head: bytes) -> bool:
+    """Angefangener SETTINGS-Rahmenkopf (weniger als 9 Bytes angekommen): Typ 4 an Stelle 4."""
+    return len(head) >= 4 and head[3] == 4 and (len(head) < 5 or head[4] in (0, 1)) and \
+        all(b == 0 for b in head[5:9])
 
 
 # ---------------------------------------------------------------------------
@@ -532,7 +681,20 @@ class DotUpstream(_NamedUpstream):
                         return stream_exchange(tls, query, deadline)
             except (OSError, ssl.SSLError, DnsError) as exc:
                 error = exc
-        raise UpstreamError(str(error) or "keine Verbindung")
+        raise _upstream_error(error, self.proto, self.port)
+
+
+def _upstream_error(error: BaseException | None, proto: str, port: int) -> UpstreamError:
+    """Letzten Fehler eines DoT/DoH-Versuchs als UpstreamError mit verständlichem, sauberem Text; der
+    ursprüngliche Fehler bleibt als __cause__ erhalten (hard_failure wertet ihn aus)."""
+    if isinstance(error, UpstreamError):
+        return error
+    if error is None:
+        return UpstreamError("keine Verbindung")
+    out = (Http2OnlyError if describe_error(error, proto, port) == HTTP2_ONLY else UpstreamError)(
+        describe_error(error, proto, port))
+    out.__cause__ = error
+    return out
 
 
 class DohUpstream(_NamedUpstream):
@@ -542,13 +704,29 @@ class DohUpstream(_NamedUpstream):
                  context: ssl.SSLContext | None) -> None:
         parts = urlsplit(url)
         host = parts.hostname or ""
-        super().__init__(doh_label(url), host, parts.port or 443, pins, bootstrap, context)
+        super().__init__(doh_label(url), host, parts.port or 443, pins, bootstrap,
+                         context or tls_context(DOH_ALPN))
+        if context is not None:
+            context.set_alpn_protocols(DOH_ALPN)  # nur HTTP/1.1 anbieten (siehe tls_context)
         self.path = (parts.path or "/") + (f"?{parts.query}" if parts.query else "")
+        # Hat der Server schon per HTTP/1.1 geantwortet, entfällt das Horchen auf HTTP/2 vor der Anfrage
+        # (kostet sonst H2_PROBE je Verbindung); nach jedem Fehler wird wieder gehorcht.
+        self.http11_seen = False
 
     def exchange(self, query: bytes, deadline: float) -> bytes:
+        try:
+            data = self._exchange(query, deadline)
+        except BaseException:
+            self.http11_seen = False
+            raise
+        self.http11_seen = True
+        return data
+
+    def _exchange(self, query: bytes, deadline: float) -> bytes:
         error: Exception | None = None
         for ip in self.targets(deadline):
-            conn = _PinnedHTTPS(self.host, self.port, ip, self.context, _remaining(deadline))
+            conn = _PinnedHTTPS(self.host, self.port, ip, self.context, _remaining(deadline),
+                                probe=0.0 if self.http11_seen else H2_PROBE)
             # Harte Frist für die ganze Anfrage: Ein Server, der Kopf oder Antwort Byte für Byte
             # tröpfeln lässt, hielte sonst einen Worker beliebig lange (der Socket-Timeout gilt nur
             # je recv). Bei Fristende wird die Verbindung von außen beendet.
@@ -576,8 +754,12 @@ class DohUpstream(_NamedUpstream):
                 if not valid_response(query, data):
                     raise UpstreamError("Antwort passt nicht zur Anfrage")
                 return data
+            except Http2OnlyError:
+                raise   # an der zweiten Adresse spräche derselbe Server auch nur HTTP/2
             except (OSError, ssl.SSLError, http.client.HTTPException, DnsError) as exc:
                 error = exc
+                if describe_error(exc, self.proto, self.port) == HTTP2_ONLY:
+                    raise _upstream_error(exc, self.proto, self.port) from exc
             finally:
                 timer.cancel()
                 timer.join()
@@ -586,7 +768,7 @@ class DohUpstream(_NamedUpstream):
                 conn.close()
             if time.monotonic() >= deadline:
                 raise UpstreamError("Zeitüberschreitung")
-        raise UpstreamError(str(error) or "keine Verbindung")
+        raise _upstream_error(error, self.proto, self.port)
 
 
 def _abort_connection(guard: list[socket.socket]) -> None:
@@ -1062,7 +1244,9 @@ class Forwarder:
             if rcode_of(data) == RCODE_REFUSED:
                 raise UpstreamError("Anfrage abgelehnt (REFUSED)")
         except (OSError, ssl.SSLError, DnsError, http.client.HTTPException, ValueError) as exc:
-            text = " ".join(str(exc).split())[:160] or exc.__class__.__name__
+            # Sauber und verständlich: Rohe Bytes (z. B. ein HTTP/2-Rahmen) kämen sonst bis in Ereignisse,
+            # Hinweise und die Oberfläche.
+            text = describe_error(exc, up.proto, int(getattr(up, "port", 0) or 0))
             went_down = False
             cut_short = shortened and _is_timeout(exc)
             with self._lock:
@@ -1323,23 +1507,93 @@ TRANSITIONS = {
 }
 
 
+MEMORY_NAME = "dns-events.json"
+
+
+class EventMemory:
+    """Was dnsfwd zuletzt gemeldet hat – über einen Neustart des Weiterleiters hinweg (RUN_DIR/dns-events.json).
+
+    Warum: Der Supervisor startet dnsfwd bei jedem Neuladen der Zeitdienste neu. Ohne Gedächtnis begann
+    der Zustand dann wieder bei „starting“, und derselbe seit Tagen unveränderte Ausfall erschien bei jedem
+    Neustart erneut als zwei Warnungen („<Server> nicht erreichbar“, „Rückfall auf den System-DNS“). RUN_DIR
+    übersteht einen Neustart der Dienste, aber keinen Containerstart – nach dem Start wird also wieder
+    einmal gemeldet. path=None: kein Gedächtnis (Tests, Aufruf ohne serve)."""
+
+    def __init__(self, path: str | None = None) -> None:
+        self.path = path
+        self._lock = threading.Lock()
+        self.data: dict[str, Any] = {"state": None, "upstreams": {}}
+        if path:
+            try:
+                with open(path, encoding="utf-8") as handle:
+                    raw = json.load(handle)
+            except (OSError, ValueError):
+                raw = None
+            if isinstance(raw, dict):
+                state = raw.get("state")
+                ups = raw.get("upstreams") if isinstance(raw.get("upstreams"), dict) else {}
+                self.data = {"state": state if state in TRANSITIONS else None,
+                             "upstreams": {str(k): {"state": v.get("state"), "error": str(v.get("error") or "")}
+                                           for k, v in ups.items()
+                                           if isinstance(v, dict) and v.get("state") in ("up", "down")}}
+
+    def state(self) -> str | None:
+        return self.data.get("state")
+
+    def upstream(self, label: str) -> dict | None:
+        return self.data["upstreams"].get(label)
+
+    def set_state(self, state: str) -> None:
+        with self._lock:
+            if self.data.get("state") == state:
+                return
+            self.data["state"] = state
+            self._save()
+
+    def set_upstream(self, label: str, state: str, error: str) -> None:
+        with self._lock:
+            self.data["upstreams"][label] = {"state": state, "error": error}
+            self._save()
+
+    def _save(self) -> None:
+        if not self.path:
+            return
+        try:
+            _atomic_write(self.path, json.dumps(dict(self.data, t=int(time.time())), ensure_ascii=False), 0o644)
+        except OSError:
+            pass
+
+
 class EventGate:
     """Zustandswechsel → Ereignis, je Wechsel höchstens alle EVENT_REPEAT Sekunden.
-    „ok“ nach dem Start ist kein Ereignis (nur die Rückkehr aus einer Störung)."""
+    „ok“ nach dem Start ist kein Ereignis (nur die Rückkehr aus einer Störung).
 
-    def __init__(self, emit: Callable[..., None] = emit_event, clock: Callable[[], float] = time.monotonic) -> None:
+    Mit Gedächtnis (EventMemory): Nach einem Neustart des Weiterleiters ist „starting → fallback“ kein neues
+    Ereignis, wenn genau dieser Zustand schon gemeldet und seitdem keine Rückkehr gemeldet wurde; umgekehrt
+    meldet „starting → ok“ dann die Rückkehr („antworten wieder“), damit das Protokoll nicht mit einer
+    Warnung endet, die längst nicht mehr gilt."""
+
+    def __init__(self, emit: Callable[..., None] = emit_event, clock: Callable[[], float] = time.monotonic,
+                 memory: EventMemory | None = None) -> None:
         self.emit = emit
         self.clock = clock
+        self.memory = memory or EventMemory()
         self._last: dict[tuple[str, str], float] = {}
 
     def __call__(self, old: str, new: str, detail: dict) -> None:
-        if new not in TRANSITIONS or (new == "ok" and old == "starting"):
+        if new not in TRANSITIONS:
             return
+        reported = self.memory.state()
+        if old == "starting":
+            if new == reported or (new == "ok" and reported in (None, "ok")):
+                self.memory.set_state(new)   # schon gemeldet (vor dem Neustart) bzw. nichts zu melden
+                return
         now = self.clock()
         key = (old, new)
         if now - self._last.get(key, -1e18) < EVENT_REPEAT:
             return
         self._last[key] = now
+        self.memory.set_state(new)
         level, title = TRANSITIONS[new]
         data = {"from": old, "to": new}
         if detail.get("errors"):
@@ -1357,13 +1611,23 @@ class UpstreamGate:
     vorbei ist – außer der Server ist bis dahin wieder im zuletzt gemeldeten Zustand. So endet
     das Protokoll nie mit „antwortet wieder“, während der Server tatsächlich ausgefallen ist."""
 
-    def __init__(self, emit: Callable[..., None] = emit_event, clock: Callable[[], float] = time.monotonic) -> None:
+    def __init__(self, emit: Callable[..., None] = emit_event, clock: Callable[[], float] = time.monotonic,
+                 memory: EventMemory | None = None) -> None:
         self.emit = emit
         self.clock = clock
+        self.memory = memory or EventMemory()
         self._lock = threading.Lock()
         self._last: dict[str, float] = {}             # Server -> Zeitpunkt des letzten Ereignisses
-        self._emitted: dict[str, str] = {}            # Server -> zuletzt gemeldeter Zustand
+        # Server -> zuletzt gemeldeter Zustand; vor einem Neustart Gemeldetes gilt weiter (EventMemory)
+        self._emitted: dict[str, str] = {label: item["state"] for label, item in
+                                         self.memory.data["upstreams"].items()}
         self._pending: dict[str, tuple[str, str]] = {}  # Server -> (Zustand, Fehler), wartet aufs Fenster
+
+    def reported_down(self) -> list[str]:
+        """Server, deren Ausfall zuletzt gemeldet wurde (auch vor einem Neustart) – serve() setzt damit
+        Upstream.reported_down, damit die Rückkehr gemeldet wird und derselbe Ausfall nicht noch einmal."""
+        with self._lock:
+            return [label for label, state in self._emitted.items() if state == "down"]
 
     def __call__(self, label: str, state: str, error: str) -> None:
         with self._lock:
@@ -1390,6 +1654,7 @@ class UpstreamGate:
                 self._emitted[label] = state
                 out.append((label, state, error))
         for label, state, error in out:
+            self.memory.set_upstream(label, state, error)
             try:
                 if state == "down":
                     self.emit("warn", f"DNS für ntp-gui: {label} nicht erreichbar",
@@ -1423,13 +1688,24 @@ def health_name(cfg: dict) -> str | None:
 def nts_note(cfg: dict, upstream_count: int) -> str | None:
     """NTS-Quellen brauchen ihren Namen (Zertifikat) – eine „letzte gute IP“ hilft dort nicht."""
     nts = [str(e.get("host")) for e in cfg.get("ntp_sources") or [] if isinstance(e, dict) and e.get("nts")]
-    if not nts or effective_mode(cfg) == "system" or upstream_count >= 2:
+    mode = effective_mode(cfg)
+    if not nts or mode == "system" or upstream_count >= 2:
         return None
-    return (f"NTS-Quelle{'n' if len(nts) > 1 else ''} {', '.join(nts[:4])} "
+    more = len(nts) - NOTE_SHOW_SOURCES
+    listing = ", ".join(nts[:NOTE_SHOW_SOURCES]) + (f" (und {more} weitere)" if more > 0 else "")
+    return (f"NTS-Quelle{'n' if len(nts) > 1 else ''} {listing} "
             f"{'brauchen' if len(nts) > 1 else 'braucht'} ihren Namen: Das Zertifikat wird gegen den Namen "
             "geprüft, eine zuletzt bekannte IP-Adresse hilft hier nicht. Mit nur einem eigenen DNS-Server "
-            "hängt NTS an diesem einen – trag einen zweiten, unabhängigen ein (z. B. dns.quad9.net und "
-            "one.one.one.one).")
+            f"hängt NTS an diesem einen – trag einen zweiten, unabhängigen ein ({SECOND_SERVER_EXAMPLE[mode]}).")
+
+
+NOTE_SHOW_SOURCES = 4
+# Beispiel für einen zweiten Server – passend zum Eingabefeld des Modus (IP-Adressen, Namen, URLs).
+SECOND_SERVER_EXAMPLE = {
+    "servers": "z. B. 9.9.9.9 und 1.1.1.1",
+    "dot": "z. B. dns.quad9.net und one.one.one.one",
+    "doh": "z. B. https://dns.quad9.net/dns-query und https://cloudflare-dns.com/dns-query",
+}
 
 
 def read_status(run_dir: str | None = None) -> dict | None:
@@ -1527,8 +1803,13 @@ def serve(cfg: dict | None = None, *, port: int | None = None, run_dir: str | No
         except OSError:
             pass
 
-    gate = EventGate(lambda level, title, data: emit_event(level, title, data, run_dir))
-    upgate = UpstreamGate(lambda level, title, data: emit_event(level, title, data, run_dir))
+    memory = EventMemory(os.path.join(run_dir, MEMORY_NAME))
+    gate = EventGate(lambda level, title, data: emit_event(level, title, data, run_dir), memory=memory)
+    upgate = UpstreamGate(lambda level, title, data: emit_event(level, title, data, run_dir), memory=memory)
+    known_down = set(upgate.reported_down())
+    for up in upstreams:
+        # Vor dem Neustart als „nicht erreichbar“ gemeldet: kein zweites Mal – aber die Rückkehr melden.
+        up.reported_down = up.label in known_down
     forwarder = Forwarder(mode, upstreams, fallback, use_fallback=bool(cfg.get("dns_fallback", True)),
                           on_change=on_change, inflight=inflight, on_upstream=upgate)
     probe_name = health_name(cfg)
