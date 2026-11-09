@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import errno
 import glob
+import math
 import os
 import platform
 import re
@@ -690,6 +691,11 @@ def _read_pps_sources() -> list[dict[str, Any]]:
 
 
 def _evaluate_pulses(a: dict, b: dict) -> tuple[str, float | None]:
+    """Zustand und Impulsrate zwischen zwei Lesungen von assert.
+
+    Die Rate zählt über den Abstand der Impuls-Zeitstempel, nicht der Lesungen: Je nach Phase fallen
+    sonst bei 1 Hz in 1,2 s eine oder zwei Flanken ins Fenster (0,83 bzw. 1,67 Impulse/s). Passt der
+    Zeitstempel-Abstand nicht zur monotonen Zeit (Uhrsprung, Wiederanlauf nach Pause), zählt dt."""
     if b["seq"] == 0:
         return "never", None
     dt = b["t"] - a["t"]
@@ -698,7 +704,14 @@ def _evaluate_pulses(a: dict, b: dict) -> tuple[str, float | None]:
         return "unknown", None
     if dseq == 0:
         return "stale", 0.0
-    return "live", round(dseq / dt, 2)
+    span = (b["sec"] - a["sec"]) + (b["nsec"] - a["nsec"]) / 1e9
+    # Abstand der Lesungen statt der Zeitstempel, wenn vorher kein Impuls kam oder die Zeitstempel nicht
+    # zur monotonen Zeit passen: Rücksprung oder Vorwärtssprung der Systemuhr (chrony makestep) zwischen
+    # den Lesungen, oder eine PPS, die nach einer Pause wieder anläuft (letzte Flanke von a liegt weit
+    # zurück). Echte Flanken liegen höchstens Lesefenster plus eine Periode auseinander.
+    if a["seq"] == 0 or span <= 0 or span > dt + 1.0:
+        span = dt
+    return "live", round(dseq / span, 2)
 
 
 def _sample_pps(sources: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -904,7 +917,9 @@ def rtc_info() -> dict[str, Any]:
     hctosys = _read_int(os.path.join(base, "hctosys"))
     return {
         "present": True, "name": _read(os.path.join(base, "name")),
-        "drift_seconds": round(since - _now(), 1) if since is not None else None,
+        # since_epoch zählt ganze Sekunden (abgeschnitten): mit der ebenso abgeschnittenen Systemzeit
+        # vergleichen – Bruchteile wären Scheingenauigkeit (eine exakte RTC erschiene als −0,6 s).
+        "drift_seconds": since - math.floor(_now()) if since is not None else None,
         "hctosys": bool(hctosys) if hctosys is not None else None,
     }
 

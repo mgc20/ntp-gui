@@ -38,6 +38,7 @@ import hmac
 import html
 import ipaddress
 import json
+import math
 import os
 import re
 import signal
@@ -92,7 +93,7 @@ PTP4L_CONF = os.environ.get("PTP4L_CONF", "/etc/linuxptp/ptp4l.conf")
 RUN_DIR = os.environ.get("NTPGUI_RUN_DIR", "/run/ntp-gui")
 START_MONO = time.monotonic()  # Laufzeit nach monotoner Uhr – ein Uhrsprung verfälscht sie nicht
 MAX_BODY = 64 * 1024
-VERSION = os.environ.get("NTPGUI_VERSION", "1.5.4")
+VERSION = os.environ.get("NTPGUI_VERSION", "1.5.5")
 EVENTS_INTERVAL = 5.0          # so oft liest der Server die Supervisor-Ereignisse ein
 CALIBRATION_DEFAULT_WINDOW = 86400.0  # /api/gps/calibration ohne window: letzte 24 h
 CALIBRATION_MAX_WINDOW = 7 * 86400.0  # … und höchstens 7 Tage (0 = „so viel wie möglich“ = 7 Tage)
@@ -1487,6 +1488,7 @@ class Handler(BaseHTTPRequestHandler):
             REAPER.disarm(self.connection)
 
     def parse_request(self) -> bool:
+        self._body_unread = False
         ok = super().parse_request()
         if not ok:
             return ok
@@ -1494,9 +1496,27 @@ class Handler(BaseHTTPRequestHandler):
             reaped = REAPER.disarm(self.connection)  # kein Body: die Anfrage ist vollständig gelesen
         else:
             reaped = REAPER.was_reaped(self.connection)
+            # Bis _read_json ihn liest, gilt der Body als ungelesen: Jede Antwort davor (GET/HEAD,
+            # 405, 401 …) schließt die Verbindung – sonst liefe er als nächste Anfrage (CL.0-Desync).
+            self._body_unread = True
         if reaped:
             self.close_connection = True
             return False  # Frist abgelaufen: Köpfe abgeschnitten – nicht ausführen
+        lengths = [v.strip() for v in self.headers.get_all("Content-Length") or []]
+        if lengths and (not all(v.isascii() and v.isdigit() for v in lengths)
+                        or len({int(v) for v in lengths}) > 1):
+            # Widersprüchliche oder ungültige Längen: headers.get() sähe nur den ersten Kopf – bei
+            # „0“ vor „N“ liefen die N Bytes sonst als nächste Anfrage. Ablehnen (RFC 9112, 6.3).
+            self._body_unread = True
+            self._error(HTTPStatus.BAD_REQUEST, "Ungültige oder widersprüchliche Content-Length.")
+            return False
+        if self.headers.get_all("Transfer-Encoding"):
+            # Nicht unterstützt: Der Body hätte sonst als leer gegolten und die Chunk-Bytes als
+            # nächste Anfrage. Ablehnen und schließen (RFC 9112, 6.1).
+            self._body_unread = True
+            self._error(HTTPStatus.NOT_IMPLEMENTED,
+                        "Transfer-Encoding wird nicht unterstützt – sende den Inhalt mit Content-Length.")
+            return False
         return ok
 
     # --- Helfer --------------------------------------------------------------
@@ -1533,6 +1553,10 @@ class Handler(BaseHTTPRequestHandler):
         super().send_response(code, message)
         for key, value in SECURITY_HEADERS.items():
             self.send_header(key, value)
+        if getattr(self, "_body_unread", False):
+            # Antwort vor dem Lesen des Bodys: ankündigen und danach schließen (setzt close_connection).
+            self._body_unread = False
+            self.send_header("Connection", "close")
 
     def _send(self, status: HTTPStatus, body: bytes, content_type: str, extra_headers: dict | None = None) -> None:
         self.send_response(status)
@@ -2115,6 +2139,7 @@ class Handler(BaseHTTPRequestHandler):
         if len(raw) < length or reaped:
             self.close_connection = True
             raise ValueError("Anfrage unvollständig")
+        self._body_unread = False
         data = json.loads(raw.decode("utf-8") or "{}")
         if not isinstance(data, dict):
             raise ValueError("JSON-Objekt erwartet")
@@ -2404,10 +2429,12 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def env_like(raw, default: float) -> float:
+    """Zahl aus einem Abfrage- oder Umgebungswert; leer, ungültig oder nicht endlich (nan, inf) → default."""
     try:
-        return float(raw) if raw not in (None, "") else default
+        value = float(raw) if raw not in (None, "") else default
     except (TypeError, ValueError):
         return default
+    return value if math.isfinite(value) else default
 
 
 # Netzfehler einer einzelnen Verbindung: Gegenstelle weg, Route weg (WLAN-Gerät schläft), Zeitüberschreitung.

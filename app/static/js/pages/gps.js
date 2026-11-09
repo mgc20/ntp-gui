@@ -297,9 +297,15 @@ function calibrationCard(ctx, gpsSource) {
             el("td", { text: delayManaged ? `${configSeconds(cal.current_delay)} (${delaySourceLabel})` : `${configSeconds(cal.current_delay)}` }),
             el("td", { class: delayChanged ? "changed" : "", text: delayManaged ? "automatisch gemessen" : `${configSeconds(cal.suggested_delay)}` }))))));
 
+    // Die Wahl im Feld übersteht den Live-Refresh (die Seite wird alle paar Sekunden neu gebaut). Sie gilt,
+    // bis übernommen wird oder sich die gespeicherte Rolle anderswo ändert.
+    const savedRole = cfg.gps_select || "auto";
+    const pick = ctx.uiState.calRole;
+    const roleValue = pick && pick.base === savedRole ? pick.value : savedRole;
     const role = el("select", { id: "cal-role", "aria-label": "Rolle des GPS" },
       [["auto", "automatisch – chrony entscheidet"], ["prefer", "bevorzugen – GPS ist erste Wahl"]].map(([value, label]) =>
-        el("option", { value, selected: (cfg.gps_select || "auto") === value ? true : null, text: label })));
+        el("option", { value, selected: roleValue === value ? true : null, text: label })));
+    role.addEventListener("change", () => { ctx.uiState.calRole = { value: role.value, base: savedRole }; });
     const applyButton = (label) => {
       const button = el("button", { type: "button", class: "button primary", text: label,
         disabled: ctx.readonly || cal.status === "insufficient" ? true : null,
@@ -316,6 +322,7 @@ function calibrationCard(ctx, gpsSource) {
           const changes = { gps_offset: cal.suggested_offset, gps_select: role.value };
           if (!delayManaged) changes.gps_delay = cal.suggested_delay;
           const result = await apiPost("/api/settings", { changes });
+          ctx.uiState.calRole = null;
           toast(result.reload_triggered ? "Übernommen – Zeitdienste starten neu" : (result.reload_note || "Gespeichert"));
           ctx.watchReload();
           ctx.invalidate("calibration");

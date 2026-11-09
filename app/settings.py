@@ -66,7 +66,8 @@ _DEVICE_RE = re.compile(r"^/dev/[A-Za-z0-9._/:+-]{1,200}$")
 _IFACE_RE = re.compile(r"^[A-Za-z0-9._:-]{1,15}$")
 _SAFE_TEXT_RE = re.compile(r"^[^\x00-\x1f\x7f]{0,120}$")
 _REFID_RE = re.compile(r"^[A-Za-z0-9]{1,4}$")
-_NUMBER_RE = re.compile(r"^-?\d+(\.\d+)?([eE]-?\d+)?$")
+_NUMBER_RE = re.compile(r"^-?[0-9]+(\.[0-9]+)?([eE]-?[0-9]+)?$")
+_INTEGER_RE = re.compile(r"^-?[0-9]+$")
 
 # chrony-Optionen für server/pool/peer, die im Dashboard erlaubt sind.
 # Wert = Anzahl erwarteter Zahlenargumente.
@@ -78,6 +79,11 @@ SOURCE_OPTIONS = {
     "maxdelaydevratio": 1, "mindelay": 1, "asymmetry": 1, "offset": 1, "filter": 1,
     "maxsamples": 1, "minsamples": 1, "maxsources": 1, "certset": 1,
 }
+# Diese Argumente liest chrony als Ganzzahl – „1.5“ oder „1e3“ machen die ganze Zeile ungültig.
+SOURCE_INTEGER_OPTIONS = frozenset({
+    "minpoll", "maxpoll", "presend", "minstratum", "polltarget", "version", "port", "ntsport",
+    "filter", "maxsamples", "minsamples", "maxsources", "certset",
+})
 # chrony-Optionen für refclock-Zeilen.
 REFCLOCK_OPTIONS = {
     "noselect": 0, "prefer": 0, "trust": 0, "require": 0, "tai": 0, "pps": 0,
@@ -85,6 +91,9 @@ REFCLOCK_OPTIONS = {
     "maxsamples": 1, "offset": 1, "delay": 1, "precision": 1, "maxdispersion": 1,
     "stratum": 1, "width": 1, "filter": 1, "maxlockage": 1,
 }
+REFCLOCK_INTEGER_OPTIONS = frozenset({
+    "poll", "dpoll", "rate", "minsamples", "maxsamples", "stratum", "filter", "maxlockage",
+})
 # phc2sys-Kommandozeile: Schalter -> Anzahl Argumente.
 # "-rr" ist die Kurzform von "-r -r" (Systemuhr darf auch QUELLE sein, siehe
 # phc2sys(8)); als eigenes Wort erlaubt, weil man es so üblicherweise schreibt.
@@ -140,6 +149,21 @@ def _as_text(value: Any) -> str:
     if not _SAFE_TEXT_RE.match(text):
         raise ValidationError("Steuerzeichen oder zu lang (max. 120 Zeichen)")
     return text
+
+
+def _as_bind_address(value: Any) -> str:
+    """Leer (alle Adressen) oder genau eine IP-Adresse – mehr versteht chronys „bindaddress“ nicht."""
+    text = str(value if value is not None else "").strip()
+    if not text:
+        return ""
+    try:
+        address = ipaddress.ip_address(text)
+    except ValueError:
+        address = None
+    if address is None or getattr(address, "scope_id", None):
+        raise ValidationError(f"„{text[:60]}“ ist keine einzelne IP-Adresse. Trag genau eine Adresse "
+                              "ein, z. B. 192.168.1.5 – oder lass das Feld leer.")
+    return str(address)
 
 
 def _as_device(optional: bool = True) -> Callable[[Any], str]:
@@ -211,7 +235,7 @@ def _as_public_name(value: Any) -> str:
 
 
 _URL_PATH_RE = re.compile(r"^[A-Za-z0-9._~!$&'()*+,;=:@%/-]*$")
-_URL_PORT_RE = re.compile(r"^\d{1,5}$")
+_URL_PORT_RE = re.compile(r"^[0-9]{1,5}$")
 
 
 def http_url_ok(text: str, max_len: int = 300) -> bool:
@@ -371,7 +395,7 @@ def env_allowed_hosts(env: dict[str, str] | None = None) -> list[str]:
 
 
 MAX_DNS_SERVERS = 8
-_DNS_PORT_RE = re.compile(r"^\d{1,5}$")
+_DNS_PORT_RE = re.compile(r"^[0-9]{1,5}$")
 
 
 def _list_items(value: Any) -> list[str]:
@@ -525,7 +549,8 @@ def _as_proxy_list(value: Any) -> list[str]:
     return networks
 
 
-def _check_options(text: str, allowed: dict[str, int], what: str) -> str:
+def _check_options(text: str, allowed: dict[str, int], what: str,
+                   integers: frozenset[str] = frozenset()) -> str:
     tokens = str(text or "").split()
     index = 0
     while index < len(tokens):
@@ -539,6 +564,9 @@ def _check_options(text: str, allowed: dict[str, int], what: str) -> str:
             if word in {"refid", "lock"}:
                 if not _REFID_RE.match(argument):
                     raise ValidationError(f"Ungültiger Wert für {word}")
+            elif word in integers:
+                if not _INTEGER_RE.match(argument):
+                    raise ValidationError(f"„{word}“ erwartet eine ganze Zahl, z. B. „{word} 6“")
             elif not _NUMBER_RE.match(argument):
                 raise ValidationError(f"„{word}“ erwartet eine Zahl")
         index += allowed[word] + 1
@@ -546,11 +574,17 @@ def _check_options(text: str, allowed: dict[str, int], what: str) -> str:
 
 
 def _as_source_options(value: Any) -> str:
-    return _check_options(value, SOURCE_OPTIONS, "Quellen")
+    return _check_options(value, SOURCE_OPTIONS, "Quellen", SOURCE_INTEGER_OPTIONS)
 
 
 def _as_refclock_options(value: Any) -> str:
-    return _check_options(value, REFCLOCK_OPTIONS, "Refclock")
+    text = _check_options(value, REFCLOCK_OPTIONS, "Refclock", REFCLOCK_INTEGER_OPTIONS)
+    tokens = text.split()
+    for index, word in enumerate(tokens[:-1]):
+        # chrony nimmt beim Refclock nur Stratum 0 bis 15 an, sonst bricht chronyd ab.
+        if word == "stratum" and not 0 <= int(tokens[index + 1]) <= 15:
+            raise ValidationError("„stratum“ geht nur von 0 bis 15")
+    return text
 
 
 def _as_pps_options(value: Any) -> str:
@@ -582,7 +616,7 @@ def _as_phc2sys_options(value: Any) -> str:
 
 def _as_makestep(value: Any) -> str:
     text = " ".join(str(value or "").split())
-    if not re.match(r"^\d+(\.\d+)?\s-?\d+$", text):
+    if not re.match(r"^[0-9]+(\.[0-9]+)?\s-?[0-9]+$", text):
         raise ValidationError("Format: Schwelle in Sekunden und Anzahl, z. B. „1.0 3“")
     return text
 
@@ -608,8 +642,8 @@ def _as_leapseclist(value: Any) -> str:
     return text
 
 
-_TEMP_SENSOR_RE = re.compile(r"^(auto|off|thermal:[A-Za-z0-9_.+-]{1,40}(:\d{1,2})?"
-                             r"|hwmon:[A-Za-z0-9_.+-]{1,40}:temp\d{1,2}(:\d{1,2})?"
+_TEMP_SENSOR_RE = re.compile(r"^(auto|off|thermal:[A-Za-z0-9_.+-]{1,40}(:[0-9]{1,2})?"
+                             r"|hwmon:[A-Za-z0-9_.+-]{1,40}:temp[0-9]{1,2}(:[0-9]{1,2})?"
                              r"|w1:28-[0-9a-f]{12})$")
 
 
@@ -804,9 +838,10 @@ SCHEMA: list[dict] = [
     _field("ntp_port", "lan", "NTP-Port", "int", 123, _as_number(int, 1, 65535),
            env="NTP_PORT", advanced=True,
            help="Standard ist 123. Nur ändern, wenn Clients einen anderen Port erwarten."),
-    _field("bind_address", "lan", "Nur auf dieser Adresse lauschen", "text", "", _as_text,
+    _field("bind_address", "lan", "Nur auf dieser Adresse lauschen", "text", "", _as_bind_address,
            env="BIND_ADDRESS", advanced=True, placeholder="alle Adressen",
-           help="Leer lassen, um auf allen Adressen des Hosts zu antworten."),
+           help="Genau eine IP-Adresse dieses Hosts, z. B. 192.168.1.5. Leer lassen, um auf allen "
+                "Adressen zu antworten."),
     _field("ntp_hw_timestamp", "lan", "Hardware-Zeitstempel für NTP", "bool", False, _as_bool,
            env="NTP_HW_TIMESTAMP", advanced=True,
            help="Lässt die Netzwerkkarte die Zeitstempel der NTP-Pakete setzen statt des "
@@ -1286,7 +1321,7 @@ SCHEMA: list[dict] = [
 
 def _check_digits(value: Any) -> str:
     text = str(value or "").strip()
-    if text and not re.match(r"^\d{3,7}$", text):
+    if text and not re.match(r"^[0-9]{3,7}$", text):
         raise ValidationError("Baudrate als Zahl, z. B. 9600")
     return text
 

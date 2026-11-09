@@ -90,7 +90,11 @@ export const HELP_BACKUP = {
       + "Apprise-Schlüssel. Jeder Kanal wird wie bei einer Eingabe geprüft. Gibt es ihn hier schon (gleiche Kennung, "
       + "gleiche Art, gleicher Server), behält er seine jetzigen Tokens und seinen Zustand aus der Sicherung. **Alle "
       + "anderen kommen ausgeschaltet** – prüfe Ziel und Token unter Einstellungen → Benachrichtigungen und schalte "
-      + "sie dort ein. Die Vorschau nennt je Kanal Art, Server, „neu“ oder „vorhanden“ und was neu einzugeben ist.",
+      + "sie dort ein. Kanäle, die es nur hier gibt und die nicht in der Sicherung stehen, werden **gelöscht** – samt "
+      + "Token; auch die automatische Sicherung davor enthält keine Tokens. Steht ein Kanal mit gleicher Kennung, "
+      + "aber anderer Art oder anderem Server in der Sicherung, **ersetzt** ihn die Fassung aus der Sicherung – sein "
+      + "jetziger Server und Token gehen dabei verloren. Die Vorschau nennt je Kanal Art, Server, „neu“ oder "
+      + "„vorhanden“, was neu einzugeben ist und welche Kanäle wegfallen oder ersetzt werden.",
   },
   backup_settings: {
     title: "Einstellungen in der Sicherung",

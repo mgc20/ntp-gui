@@ -1250,6 +1250,13 @@ def _join_and(items: list[str]) -> str:
     return ", ".join(items[:-1]) + (" und " if len(items) > 1 else "") + items[-1] if items else ""
 
 
+def _same_channel(current: dict | None, kind, url) -> bool:
+    """Gilt der Kanal von hier als derselbe wie der aus der Sicherung (gleiche Art, gleiches Ziel)?"""
+    import notify
+    return bool(current and isinstance(url, str) and current.get("type") == kind
+                and notify._origin(str(current.get("url") or "")) == notify._origin(url))
+
+
 def _channels_plan(rows: list[tuple], existing: dict[str, dict]) -> tuple[list[tuple], list[dict]]:
     """Kanäle aus der Sicherung → (Zeilen für notify_channels, Beschreibung für die Vorschau).
 
@@ -1279,8 +1286,7 @@ def _channels_plan(rows: list[tuple], existing: dict[str, dict]) -> tuple[list[t
             item["dropped"] = "ungültige Angaben"
             continue
         current = existing.get(cid)
-        match = bool(current and current.get("type") == kind
-                     and notify._origin(str(current.get("url") or "")) == notify._origin(url))
+        match = _same_channel(current, kind, url)
         data = {"name": name, "type": kind, "min_level": min_level, "kinds": parsed,
                 "debounce_min": debounce_min, "rate_per_hour": rate_per_hour, "resolved": bool(resolved)}
         missing = []
@@ -1311,12 +1317,43 @@ def _channels_plan(rows: list[tuple], existing: dict[str, dict]) -> tuple[list[t
 
 
 def _live_channels(conn: sqlite3.Connection | None = None) -> dict[str, dict]:
-    sql = "SELECT id, type, url, topic, secret FROM notify_channels"
+    sql = "SELECT id, type, url, topic, secret, name FROM notify_channels ORDER BY rowid"
     try:
         rows = conn.execute(sql).fetchall() if conn is not None else store.query(sql)
     except sqlite3.Error:
         return {}
-    return {r[0]: {"type": r[1], "url": r[2], "topic": r[3], "secret": r[4]} for r in rows}
+    return {r[0]: {"type": r[1], "url": r[2], "topic": r[3], "secret": r[4], "name": r[5]} for r in rows}
+
+
+def _removed_channels(kept: list[tuple], existing: dict[str, dict]) -> list[dict]:
+    """Kanäle von hier, die beim Übernehmen wegfallen (ihre Kennung steht nicht unter den übernommenen) –
+    samt Token, Thema und vollständiger Adresse; auch die automatische Sicherung davor enthält diese nicht."""
+    import notify
+    ids = {row[0] for row in kept}
+    return [{"name": _show(ch.get("name")), "type": notify.TYPE_LABELS.get(ch.get("type"), _show(ch.get("type"))),
+             "host": _host_of(ch.get("url")) if isinstance(ch.get("url"), str) else "?",
+             "secret": bool(ch.get("secret") or ch.get("topic") or notify.url_hidden(str(ch.get("url") or "")))}
+            for cid, ch in existing.items() if cid not in ids]
+
+
+def _replaced_channels(kept: list[tuple], existing: dict[str, dict]) -> list[dict]:
+    """Kanäle von hier, deren Kennung zwar in der Sicherung steht, die dort aber eine andere Art oder einen
+    anderen Server haben: Die Fassung aus der Sicherung ersetzt sie, ihr jetziges Ziel und ihr Token gehen
+    verloren – auch die automatische Sicherung davor enthält den Token nicht."""
+    import notify
+    out = []
+    for row in kept:
+        current = existing.get(row[0])
+        if current is None or _same_channel(current, row[2], row[4]):
+            continue
+        out.append({"name": _show(current.get("name")),
+                    "type": notify.TYPE_LABELS.get(current.get("type"), _show(current.get("type"))),
+                    "host": _host_of(current.get("url")) if isinstance(current.get("url"), str) else "?",
+                    "new_type": notify.TYPE_LABELS.get(row[2], _show(row[2])),
+                    "new_host": _host_of(row[4]) if isinstance(row[4], str) else "?",
+                    "secret": bool(current.get("secret") or current.get("topic")
+                                   or notify.url_hidden(str(current.get("url") or "")))})
+    return out
 
 
 def _history_limits(created: float, now: float | None = None) -> dict[str, float]:
@@ -1343,7 +1380,8 @@ def _summary(workdir: str, info: dict, settings_plan: dict, autocal_plan: dict) 
         conn.close()
     numeric = all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in (first, last))
     days = round(max(0.0, (last - first) / 86400.0), 1) if numeric else 0.0
-    _rows, items = _channels_plan(channels, _live_channels())  # Vorschau: liest nur, legt nichts an
+    live = _live_channels()
+    kept, items = _channels_plan(channels, live)  # Vorschau: liest nur, legt nichts an
     reenter_channels = [{"name": i["name"], "type": i["type"], "what": i["reenter"]}
                         for i in items if i["reenter"] and not i["dropped"]]
     devices = rows["clientmon_clients"]
@@ -1365,7 +1403,8 @@ def _summary(workdir: str, info: dict, settings_plan: dict, autocal_plan: dict) 
                         "gps_offset": settings_plan["values"].get("gps_offset"),
                         "gps_delay": settings_plan["values"].get("gps_delay")},
         "channels": {"count": len([i for i in items if not i["dropped"]]), "items": items,
-                     "reenter": reenter_channels},
+                     "reenter": reenter_channels, "removed": _removed_channels(kept, live),
+                     "replaced": _replaced_channels(kept, live)},
         "settings": {"count": len(settings_plan["values"]), "skipped": settings_plan["skipped"],
                      "reenter": settings_plan["reenter"], "kept": settings_plan["kept"],
                      "restart": settings_plan["restart"], "notes": settings_plan["notes"],
@@ -1464,7 +1503,11 @@ def _valid_rule(row: tuple) -> tuple | None:
         parsed = json.loads(state) if isinstance(state, str) else None
     except ValueError:
         parsed = None
-    state = json.dumps(parsed) if isinstance(parsed, dict) else "{}"
+    # Derselbe Filter wie beim Erstellen (ntpg_scrub) und dieselbe Grenze wie bei events.data – das Manifest
+    # ist nicht signiert. Ein ungültiger oder übergroßer Alarmzustand fängt leer an; die Regel selbst bleibt.
+    state = json.dumps(scrub(parsed) if isinstance(parsed, dict) else {}, separators=(",", ":"), ensure_ascii=False)
+    if len(state) > 8000:
+        state = "{}"
     return (addr, silent_h, offset_ms, offset_min, mute, expect, state, updated)
 
 

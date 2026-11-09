@@ -630,7 +630,7 @@ class TestPps(HardwareTestCase):
         (pps,) = rep["pps"]
         self.assertEqual(pps["kind"], "gpio")
         self.assertEqual(pps["state"], "live")
-        self.assertAlmostEqual(pps["rate_hz"], 0.83, places=2)
+        self.assertAlmostEqual(pps["rate_hz"], 1.0, places=2)
         self.assertEqual(pps["assert"]["seq"], 4711)
         self.assertAlmostEqual(pps["phase_us"], 0.3, places=1)
         self.assertTrue(pps["configured"] and pps["usable"])
@@ -654,6 +654,40 @@ class TestPps(HardwareTestCase):
         self.assertEqual(len(self.sleeps), 1)
         self.assertEqual(rep["pps"][0]["state"], "live")
         self.assertAlmostEqual(rep["pps"][0]["rate_hz"], 1.0)
+
+    def test_pulse_rate_from_pulse_timestamps(self):
+        # Befund: Rate = Impulse / Abstand der Lesungen – eine korrekte 1-Hz-PPS erschien als 1,67 bzw. 1,33.
+        self.pi5_pps()
+        self.on_sleep = lambda: self.host.set_assert(0, "1793527201.000000280#4712")   # zwei Flanken in 1,2 s
+        cfg = base_cfg(gps_enable=True, gps_device="/dev/ttyAMA0", gps_pps_device="/dev/pps0")
+        rep = self.run_report(cfg)
+        self.assertAlmostEqual(rep["pps"][0]["rate_hz"], 1.0)
+        self.assertIn("1 Impuls/s", self.row(rep, "gps_pps")["text"])
+        self.clock[0] += 1.5                                                           # Cache-Pfad
+        self.host.set_assert(0, "1793527203.000000250#4714")
+        rep = self.run_report(cfg)
+        self.assertEqual(len(self.sleeps), 1)
+        self.assertAlmostEqual(rep["pps"][0]["rate_hz"], 1.0)
+        # Eine echte 2-Hz-PPS bleibt 2 Impulse/s.
+        self.clock[0] += 2
+        self.host.set_assert(0, "1793527205.000000250#4718")
+        self.assertAlmostEqual(self.run_report(cfg)["pps"][0]["rate_hz"], 2.0)
+
+    def test_pulse_rate_ignores_clock_step_and_restart(self):
+        # Befund: Stellt chrony die Systemuhr zwischen den Lesungen vorwärts (makestep), wurde span zu groß –
+        # eine korrekte 1-Hz-PPS erschien als 0,17 Impulse/s. Dann zählt der Abstand der Lesungen.
+        ev = hardware._evaluate_pulses
+        a = {"t": 10.0, "sec": 1700000000, "nsec": 300, "seq": 100}
+        b = {"t": 11.2, "sec": 1700000006, "nsec": 300, "seq": 101}
+        self.assertEqual(ev(a, b), ("live", 0.83))
+        # PPS läuft nach einer Pause wieder an: letzte Flanke von a liegt 60 s zurück.
+        a = {"t": 10.0, "sec": 1699999950, "nsec": 0, "seq": 100}
+        b = {"t": 11.2, "sec": 1700000010, "nsec": 0, "seq": 101}
+        self.assertEqual(ev(a, b), ("live", 0.83))
+        # Grenzfall: Flankenabstand knapp unter Lesefenster plus eine Periode zählt weiter.
+        a = {"t": 10.0, "sec": 1700000000, "nsec": 0, "seq": 100}
+        b = {"t": 11.2, "sec": 1700000002, "nsec": 0, "seq": 102}
+        self.assertEqual(ev(a, b), ("live", 1.0))
 
     def test_pi5_gpio_stale(self):
         self.pi5_pps(live=False)
@@ -862,6 +896,15 @@ class TestRtcAndNts(HardwareTestCase):
         self.assertEqual(rep["rtc"]["drift_seconds"], -3600.0)
         self.assertTrue(rep["rtc"]["hctosys"])
         self.assertEqual(self.row(rep, "nts")["status"], "limited")
+
+    def test_rtc_drift_in_whole_seconds(self):
+        # Befund: since_epoch ist ganzzahlig (abgeschnitten) – eine exakte RTC erschien als „−0,6 s“.
+        self.host.write("sys/class/rtc/rtc0/name", "rpi-rtc soc:rpi_rtc\n")
+        self.host.write("sys/class/rtc/rtc0/since_epoch", "1793527200\n")
+        hardware._now = lambda: 1793527200.6
+        rep = self.run_report(base_cfg())
+        self.assertEqual(rep["rtc"]["drift_seconds"], 0)
+        self.assertIsInstance(rep["rtc"]["drift_seconds"], int)
 
 
 class TestReviewFixes(HardwareTestCase):

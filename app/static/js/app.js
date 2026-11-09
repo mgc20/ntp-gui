@@ -1,5 +1,5 @@
 // Einstieg: Navigation, Aktualisierung, Datencache, Neustart-Anzeige.
-import { el, apiGet, storageGet, storageSet, fmtTime, fmtServerDateTime, serverZone, staleText, isNum } from "./util.js";
+import { el, apiGet, storageGet, storageSet, fmtTime, fmtServerDateTime, serverZone, staleText, isNum, serverClock, serverNow, reloadSettled } from "./util.js";
 import { toast, isPopoverOpen, infoButton, badge } from "./ui.js";
 import { resetChartState } from "./charts.js";
 import * as overview from "./pages/overview.js";
@@ -18,6 +18,7 @@ import * as muster from "./pages/muster.js";
 import { t, initI18n, setLanguage, language, LANGUAGES, onLanguageChange } from "./i18n.js";
 import { NAV, resolve, route, tabsOf, navOf } from "./routes.js";
 import { createShortcuts, shortcutList } from "./shortcuts.js";
+import { captureFocus, restoreFocus, renderGate } from "./focus.js";
 
 // Routentabelle, alte Routen und Reiter stehen in routes.js (ohne DOM, in Node getestet).
 const MODULES = { overview, sources, gps, clients, clockquality, hardware, ptp, diagnose, notify, settings, setup, help, muster };
@@ -42,6 +43,7 @@ const state = {
   failed: 0,
   reload: null,
   lastOk: null,   // Serverzeit (ms) der letzten erfolgreichen Abfrage – für „veraltet seit …“
+  clock: null,    // Serverzeit und Browserzeit beim letzten Status – die Browseruhr kann falsch gehen
 };
 
 const main = document.getElementById("main");
@@ -86,12 +88,12 @@ function data(key, url, ttlSeconds) {
     state.cache.set(key, record);
     apiGet(url).then((result) => {
       Object.assign(record, { data: result, time: Date.now(), pending: false, error: null });
-      render();
+      render({ background: true });
     }).catch((error) => {
       const known = record.error;
       Object.assign(record, { pending: false, time: Date.now(), error: { status: error.status || 0, message: error.message } });
       // Nur neu zeichnen, wenn der Fehler neu ist – sonst hinge die Seite in einer Schleife.
-      if (!known || known.status !== record.error.status) render();
+      if (!known || known.status !== record.error.status) render({ background: true });
     });
   }
   const current = state.cache.get(key);
@@ -110,37 +112,19 @@ function invalidate(key) { state.cache.delete(key); }
 // --- Rendern -----------------------------------------------------------------
 let pendingAfter = [];
 
-// Tastaturfokus über das Neuzeichnen retten: Die Seite wird alle paar Sekunden
-// komplett neu gebaut. Vorher merken, welches Element (Schlüssel + Position unter
-// gleichartigen) den Fokus hatte, danach das passende neue Element fokussieren.
-const FOCUSABLE = "a[href], button, input, select, textarea, summary, [tabindex]";
+// Tastaturfokus, Cursor und Markierung über das Neuzeichnen retten: focus.js.
+// Neuzeichnen im Hintergrund (Refresh, nachgeladene Daten, Fenstergröße) wartet, solange jemand in einem
+// Zahlenfeld oder einer Auswahlliste ist oder einen Zeiger in #main gedrückt hält (renderGate in focus.js).
+// Nachgeholt wird erst nach dem Fokuswechsel bzw. nach dem Klick (setTimeout 0 nach pointerup läuft nach
+// dem click-Ereignis): Dann kennt captureFocus() das neue Feld, und der Klick traf noch sein Element.
+const gate = renderGate(() => setTimeout(() => { if (gate.deferred) render({ background: true }); }, 0));
+main.addEventListener("pointerdown", () => gate.pointerDown(), true);
+for (const type of ["pointerup", "pointercancel"]) window.addEventListener(type, () => gate.pointerUp(), true);
+window.addEventListener("blur", () => gate.pointerUp());
+main.addEventListener("focusout", () => gate.focusOut());
 
-function focusKeyOf(node) {
-  if (!node || node === main || !main.contains(node)) return null;
-  if (node.dataset && node.dataset.focusKey) return node.dataset.focusKey;
-  const parts = [node.tagName, node.getAttribute("href") || "", node.getAttribute("aria-label") || "", node.id || ""];
-  if (!parts[1] && !parts[2] && !parts[3]) parts.push((node.textContent || "").trim().slice(0, 60));
-  return parts.join("|");
-}
-
-function captureFocus() {
-  const node = document.activeElement;
-  const key = focusKeyOf(node);
-  if (!key) return null;
-  const same = [...main.querySelectorAll(FOCUSABLE)].filter((n) => focusKeyOf(n) === key);
-  return { key, index: Math.max(0, same.indexOf(node)) };
-}
-
-function restoreFocus(saved) {
-  if (!saved) return;
-  const active = document.activeElement;
-  if (active && active !== document.body && active !== main && active.isConnected) return;
-  const same = [...main.querySelectorAll(FOCUSABLE)].filter((n) => focusKeyOf(n) === saved.key);
-  const target = same[Math.min(saved.index, same.length - 1)];
-  if (target) target.focus({ preventScroll: true });
-}
-
-function render() {
+function render({ background = false } = {}) {
+  if (gate.blocks(background, main, document.activeElement)) return;
   const route = currentRoute();
   const page = currentPage();
   state.shown = page;
@@ -174,10 +158,10 @@ function render() {
     console.error(error);
     nodes = [el("p", { class: "empty-note", text: t("app.render_error", { message: error.message }) })];
   }
-  const focus = captureFocus();
+  const focus = captureFocus(main, document.activeElement);
   main.replaceChildren(...nodes.filter(Boolean));
   for (const fn of pendingAfter) { try { fn(); } catch (error) { console.error(error); } }
-  restoreFocus(focus);
+  restoreFocus(main, focus, document.activeElement, document.body);
   window.scrollTo(0, scroll);
 }
 
@@ -274,14 +258,15 @@ async function refresh() {
     if (history) state.history = history.samples || [];
     state.failed = 0;
     state.lastOk = (isNum(status?.system?.time) ? status.system.time : Date.now() / 1000) * 1000;
+    state.clock = serverClock(status?.system?.time) || state.clock;
     document.body.classList.remove("is-stale");
     showStale(false);
     renderHeader();
     // Offene Erklärung nicht wegreißen: dann nur die Kopfzeile aktualisieren. Seiten mit live = false nur dann
     // neu aufbauen, wenn #main selbst bloß den Platzhalter zeigt – nicht wegen eines leeren Hinweises in einer
     // Karte (sonst klappte z. B. die Diagnose alle paar Sekunden alles zu und verlöre den Fokus).
-    if (page.module.live !== false && !isPopoverOpen()) render();
-    else if (!main.childElementCount || main.querySelector(":scope > .empty-note:only-child")) render();
+    if (page.module.live !== false && !isPopoverOpen()) render({ background: true });
+    else if (!main.childElementCount || main.querySelector(":scope > .empty-note:only-child")) render({ background: true });
   } catch (error) {
     state.failed += 1;
     document.body.classList.add("is-stale");
@@ -332,7 +317,8 @@ document.addEventListener("visibilitychange", () => {
 // --- Neustart der Zeitdienste verfolgen ------------------------------------------
 function watchReload() {
   const banner = document.getElementById("reload-banner");
-  const started = Date.now() / 1000 - 2;
+  // Serverzeit, nicht die Uhr des Browsers: reload.json trägt den Zeitstempel des Servers.
+  const started = serverNow(state.clock) - 2;
   let tries = 0;
   banner.hidden = false;
   banner.dataset.state = "running";
@@ -341,7 +327,7 @@ function watchReload() {
     tries += 1;
     try {
       const status = await apiGet("/api/reload");
-      if (status.time >= started && (status.state === "done" || status.state === "error")) {
+      if (reloadSettled(status, started)) {
         banner.dataset.state = status.state === "done" ? "done" : "error";
         banner.textContent = status.message || (status.state === "done" ? "Neue Einstellungen aktiv" : "Fehler beim Neustart");
         if (status.state === "error") toast(status.message, "crit");
@@ -542,7 +528,7 @@ function initTheme() {
 let resizeTimer = null;
 window.addEventListener("resize", () => {
   clearTimeout(resizeTimer);
-  resizeTimer = setTimeout(() => { if (currentPage().module.live !== false) render(); }, 200);
+  resizeTimer = setTimeout(() => { if (currentPage().module.live !== false) render({ background: true }); }, 200);
 });
 // Ungespeicherte Änderungen (Einstellungen): Seite mit leaveMessage(uiState) fragt vor dem Verlassen nach –
 // beim Wechsel auf eine andere Seite (Hash) und beim Schließen/Neuladen (beforeunload). „Abbrechen“ stellt

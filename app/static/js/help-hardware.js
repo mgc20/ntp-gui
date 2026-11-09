@@ -412,7 +412,8 @@ export const HELP_HARDWARE = {
   },
   hw_rtc_drift: {
     title: "Abweichung der RTC",
-    text: "Unterschied zwischen RTC und Systemuhr. Wenige Sekunden sind normal. Bei mehr als zwei Minuten "
+    text: "Unterschied zwischen RTC und Systemuhr in ganzen Sekunden – die RTC zählt nur ganze Sekunden, ± 1 s "
+      + "ist also Ableseauflösung. Wenige Sekunden sind normal. Bei mehr als zwei Minuten "
       + "stimmt die RTC nicht – leere Batterie oder Akku fehlt.",
   },
   hw_hctosys: {

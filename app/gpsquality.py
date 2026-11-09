@@ -174,6 +174,14 @@ def _fmt_rate(rate: float) -> str:
     return text.replace(".", ",")
 
 
+def _fmt_value(value: float) -> str:
+    """Messwert für Begründungstexte: eine Nachkommastelle, ABgerundet (29,96 bleibt unter 30, wie die
+    Ampel ihn wertet), ganze Zahlen ohne „,0“."""
+    value = math.floor(value * 10.0 + 1e-9) / 10.0
+    text = f"{value:.0f}" if value == int(value) else f"{value:.1f}"
+    return text.replace(".", ",")
+
+
 def fmt_duration(seconds: float) -> str:
     seconds = max(0, int(round(seconds)))
     if seconds < 3600:
@@ -316,16 +324,16 @@ def assess(samples: list[dict], now: float | None = None, hours: float = ASSESS_
     if cn is not None:
         what = "der vier stärksten Satelliten" if result["cn0_source"] == "top4" else "der genutzten Satelliten"
         if cn < CN0_RED:
-            add("red", "cn0", f"Signal {what} im Median nur {cn:.0f} dB-Hz – zu schwach für stabilen "
+            add("red", "cn0", f"Signal {what} im Median nur {_fmt_value(cn)} dB-Hz – zu schwach für stabilen "
                               "Empfang (gut: ab 30 dB-Hz).")
         elif cn < CN0_YELLOW:
-            add("yellow", "cn0", f"Signal {what} im Median {cn:.0f} dB-Hz – knapp (gut: ab 30 dB-Hz).")
+            add("yellow", "cn0", f"Signal {what} im Median {_fmt_value(cn)} dB-Hz – knapp (gut: ab 30 dB-Hz).")
     um = result["used_median"]
     if um is not None:
         if um < USED_RED:
-            add("red", "used", f"Im Median nur {um:.0f} genutzte Satelliten – unter 4 gibt es keinen 3D-Fix.")
+            add("red", "used", f"Im Median nur {_fmt_value(um)} genutzte Satelliten – unter 4 gibt es keinen 3D-Fix.")
         elif um < USED_YELLOW:
-            add("yellow", "used", f"Im Median {um:.0f} genutzte Satelliten – wenig Reserve (gut: ab 6).")
+            add("yellow", "used", f"Im Median {_fmt_value(um)} genutzte Satelliten – wenig Reserve (gut: ab 6).")
     level = "red" if any(r["level"] == "red" for r in reasons) else \
         "yellow" if reasons else "green"
     result["level"] = level
@@ -539,7 +547,12 @@ def refclock_values(cfg: dict, applied: dict | None | bool = False) -> dict[str,
     applied = _valid_applied(applied)
     if applied:
         return {"delay": applied["delay"], "precision": applied["precision"], "source": "measured"}
-    return {"delay": max(delay, DEFAULT_DELAY), "precision": precision, "source": "default"}
+    return {"delay": unmeasured_delay(cfg), "precision": precision, "source": "default"}
+
+
+def unmeasured_delay(cfg: dict) -> float:
+    """Delay, den chrony ohne gemessene Schranke nutzt: max(gps_delay, DEFAULT_DELAY) (source „default“)."""
+    return max(float(cfg.get("gps_delay") or DEFAULT_DELAY), DEFAULT_DELAY)
 
 
 def annotate_calibration(result: dict[str, Any], cfg: dict, applied: dict | None | bool = False) -> dict[str, Any]:
@@ -649,7 +662,7 @@ def nts_distance(sources: Any) -> float | None:
 
 def decide(measured: dict, applied: dict | None, now: float, reset_at: float | None = None,
            offset_changed_at: float | None = None, floor: Any = None, defer_shrink: bool = False,
-           long: Any = None) -> dict[str, Any]:
+           long: Any = None, default_delay: float = DEFAULT_DELAY) -> dict[str, Any]:
     """Reine Entscheidung: neue Schranke anwenden oder nicht (mit Grund).
 
     Größer (das GPS streut stärker als die eingestellte Schranke): sofort, sobald die Messung
@@ -668,10 +681,12 @@ def decide(measured: dict, applied: dict | None, now: float, reset_at: float | N
     abgefragt). Kleiner wird die Schranke nur, wenn die gemessene ≤ SHRINK_RATIO × die jetzige ist
     UND auch die 48-h-Messung mit Reserve in die neue Schranke passt – sonst pendelte sie (Paket 1.5.3:
     ± 22 → ± 12 ms nach einer ruhigen Nacht, 15 h später wieder ± 22 ms, je ein Neustart von chronyd).
+    default_delay: Delay, den chrony ohne gemessene Schranke nutzt (unmeasured_delay) – damit wird
+    verglichen, solange applied fehlt.
     Ergebnis bei apply: delay = die neue Schranke (Delay in Sekunden)."""
     if measured.get("status") != "measured":
         return {"apply": False, "reason": "Noch zu wenig gemeinsame Messungen von GPS und Netzquellen."}
-    current = applied["delay"] if applied else DEFAULT_DELAY
+    current = applied["delay"] if applied else default_delay
     new = float(measured["delay"])
     if applied:
         since = _since(applied.get("t"), now)
@@ -763,9 +778,10 @@ def tick(cfg: dict, now: float | None = None, samples: list[dict] | None = None)
                                not_before=not_before)
 
             decision = decide(measured, applied, now, reset_at, offset_since, _floor,
-                              defer_shrink=_autocal_corrects_first(cfg, measured), long=long)
+                              defer_shrink=_autocal_corrects_first(cfg, measured), long=long,
+                              default_delay=unmeasured_delay(cfg))
             if decision["apply"]:
-                old = applied["delay"] if applied else DEFAULT_DELAY
+                old = applied["delay"] if applied else unmeasured_delay(cfg)
                 new_delay = float(decision.get("delay", measured["delay"]))
                 # 1.5.3: Ein Neustart von chronyd bräche einen laufenden Holdover-Test ab – warten.
                 if _holdover_defers(f"GPS-Fehlerschranke ± {fmt_ms(old / 2)} → ± {fmt_ms(new_delay / 2)}"):
@@ -867,7 +883,7 @@ def adopt_calibration(cfg: dict, delay: Any, precision: Any, distance: float | N
     with _LOCK:
         state = load_state()
         applied = _valid_applied(state.get("applied"))
-        current = applied["delay"] if applied else DEFAULT_DELAY
+        current = applied["delay"] if applied else unmeasured_delay(cfg)
         target = _target(delay, net_floor(distance))
         if abs(target - current) < 1e-9:
             return None
@@ -887,9 +903,9 @@ def adopt_calibration(cfg: dict, delay: Any, precision: Any, distance: float | N
 
 def forget_bound(cfg: dict, now: float | None = None) -> bool:
     """„Rückgängig“ bei der automatischen Kalibrierung: Die mit der Korrektur gesetzte Schranke passt nicht
-    zum alten Offset – zurück auf den vorsichtigen Standard (± 100 ms). Ohne eigenen Neustart (er folgt mit
-    dem Offset) und ohne 12-h-Sperre fürs Verkleinern: Die nächste Messung nach dem Offset darf sie wieder
-    setzen. True, wenn sich die Schranke geändert hat."""
+    zum alten Offset – zurück auf den vorsichtigen Standard (unmeasured_delay, meist ± 100 ms). Ohne eigenen
+    Neustart (er folgt mit dem Offset) und ohne 12-h-Sperre fürs Verkleinern: Die nächste Messung nach dem
+    Offset darf sie wieder setzen. True, wenn sich die Schranke geändert hat."""
     now = time.time() if now is None else now
     if not managed(cfg):
         return False
@@ -899,13 +915,14 @@ def forget_bound(cfg: dict, now: float | None = None) -> bool:
         if not applied:
             return False
         state["applied"] = None
-        state["decision"] = {"apply": True, "t": now, "delay": DEFAULT_DELAY,
+        fallback = unmeasured_delay(cfg)
+        state["decision"] = {"apply": True, "t": now, "delay": fallback,
                              "reason": "Die automatische Kalibrierung wurde zurückgenommen – die Schranke gilt wieder "
                                        "vorsichtig (Standard), bis neu gemessen ist."}
         save_state(state)
     _emit("gps", "info", f"GPS-Fehlerschranke mit der Rücknahme zurückgesetzt: ± {fmt_ms(applied['delay'] / 2)} → "
-                         f"± {fmt_ms(DEFAULT_DELAY / 2)}",
-          {"old_delay": applied["delay"], "new_delay": DEFAULT_DELAY, "reason": "Rücknahme der Kalibrierung",
+                         f"± {fmt_ms(fallback / 2)}",
+          {"old_delay": applied["delay"], "new_delay": fallback, "reason": "Rücknahme der Kalibrierung",
            "reload_triggered": False})
     return True
 
@@ -925,7 +942,8 @@ def maybe_tick(cfg_fn: Callable[[], dict], clock: Callable[[], float] = time.mon
 
 
 def reset(cfg: dict, now: float | None = None) -> dict[str, Any]:
-    """Zurück auf den vorsichtigen Standard (± 100 ms) – Ereignis + Neustart der Zeitdienste."""
+    """Zurück auf den vorsichtigen Standard (unmeasured_delay, meist ± 100 ms) – Ereignis + Neustart der
+    Zeitdienste."""
     now = time.time() if now is None else now
     with _LOCK:
         state = load_state()
@@ -942,11 +960,12 @@ def reset(cfg: dict, now: float | None = None) -> dict[str, Any]:
         save_state(state)
         trigger = _DEPS.get("trigger_reload")
         reloaded = bool(trigger()) if trigger else False
+        fallback = unmeasured_delay(cfg)
         _emit("gps", "info",
-              f"GPS-Fehlerschranke zurückgesetzt: ± {fmt_ms(applied['delay'] / 2)} → ± {fmt_ms(DEFAULT_DELAY / 2)}",
-              {"old_delay": applied["delay"], "new_delay": DEFAULT_DELAY, "reload_triggered": reloaded,
+              f"GPS-Fehlerschranke zurückgesetzt: ± {fmt_ms(applied['delay'] / 2)} → ± {fmt_ms(fallback / 2)}",
+              {"old_delay": applied["delay"], "new_delay": fallback, "reload_triggered": reloaded,
                "reason": "von Hand"})
-        return {"ok": True, "reload_triggered": reloaded, "delay": DEFAULT_DELAY}
+        return {"ok": True, "reload_triggered": reloaded, "delay": fallback}
 
 
 # =========================================================================================

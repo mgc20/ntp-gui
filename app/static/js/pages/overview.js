@@ -574,11 +574,11 @@ export function render(ctx) {
   const rate = requestRate(history);
   const lastRate = recentRate(history);
   const ref = sources.find((s) => s.state === "*");
-  // Temperatur: letzter Messpunkt des Verlaufs (nur wenn ein Sensor aufzeichnet, höchstens 5 min alt).
-  const lastSample = history.length ? history[history.length - 1] : null;
-  const lastTemp = lastSample && isNum(lastSample.temp) && Date.now() / 1000 - lastSample.t < 300 ? lastSample.temp : null;
   // x-Achse aller Verläufe: gewählter Zeitraum bis jetzt (Serverzeit).
   const span = { range: ctx.range, end: isNum(status.system?.time) ? status.system.time : Date.now() / 1000 };
+  // Temperatur: letzter Messpunkt des Verlaufs (nur wenn ein Sensor aufzeichnet, höchstens 5 min alt – nach Serverzeit).
+  const lastSample = history.length ? history[history.length - 1] : null;
+  const lastTemp = lastSample && isNum(lastSample.temp) && span.end - lastSample.t < 300 ? lastSample.temp : null;
 
   const series = (key) => history.map((s) => [s.t, isNum(s[key]) ? s[key] : null]);
   const distance = history.map((s) => [s.t, isNum(s.root_delay) && isNum(s.root_dispersion) && s.stratum > 0 && s.stratum < 16

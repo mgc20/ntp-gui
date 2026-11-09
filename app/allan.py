@@ -27,8 +27,8 @@ Einschwingen (1.5.4, Prüfbefund): Nach einem Start von chronyd (neue Installati
 chrony-data, Neustart für Kalibrierung oder Fehlerschranke) läuft die Frequenz erst auf ihren Wert ein –
 das ist ein einmaliger Übergang, keine Unruhe des Quarzes, würde aber den Wert um 1 h bis zu 200-fach
 verfälschen. Darum beginnt an jedem Sprung (|Δfreq| zwischen Nachbarpunkten über STEP_PPM), nach jeder
-Lücke über GAP_SECONDS und am Anfang des Verlaufs ein neuer Abschnitt, dessen erste SETTLE_SECONDS
-weggelassen werden (wie eine Lücke).
+Lücke über GAP_SECONDS (bei grobem Messintervall: über GAP_FACTOR übliche Abstände der letzten
+Punkte) und am Anfang des Verlaufs ein neuer Abschnitt, dessen erste SETTLE_SECONDS weggelassen werden (wie eine Lücke).
 
 Aufwand begrenzt: höchstens MAX_SPAN (30 Tage) Verlauf, auch bei größerem HISTORY_DAYS (sonst bei 365 Tagen
 gut 1 GB Speicher auf einem Pi), höchstens MAX_BINS Rasterpunkte (τ0 wird bei langem Verlauf gröber), höchstens
@@ -41,6 +41,7 @@ from __future__ import annotations
 import math
 import threading
 import time
+from collections import deque
 from typing import Any, Callable
 
 CACHE_SECONDS = 600.0
@@ -55,6 +56,8 @@ PPB = 1e-9
 MAX_SPAN = 30 * 86400.0    # nur die letzten 30 Tage laden und rechnen (τ bis ~7 Tage)
 STEP_PPM = 0.5             # Frequenzsprung zwischen Nachbarpunkten: chronyd neu gestartet
 GAP_SECONDS = 600.0        # längere Lücke im Verlauf: Container/chronyd vermutlich neu gestartet
+GAP_FACTOR = 3.0           # bei grobem Messintervall: Lücke erst ab so vielen üblichen Abständen
+GAP_WINDOW = 7             # üblicher Abstand = Median der letzten so vielen Abstände (lokal)
 SETTLE_SECONDS = 2700.0    # so lange nach Start/Sprung/Lücke weglassen (Einschwingen)
 
 # Einordnung nach dem Wert um τ ≈ 1 h (Bruchteil, nicht ppm). Grenzen bewusst grob.
@@ -183,12 +186,30 @@ def _brief(p: dict | None) -> dict | None:
 
 def settle(clean: list[tuple[float, float]]) -> tuple[list[tuple[float, float]], int, int]:
     """Lässt das Einschwingen nach Start, Sprung oder Lücke weg. (t, ppm) sortiert →
-    (behaltene Punkte, Zahl der Abschnitte, weggelassene Punkte)."""
+    (behaltene Punkte, Zahl der Abschnitte, weggelassene Punkte).
+
+    Lücke heißt: länger als GAP_SECONDS und als GAP_FACTOR übliche Abstände. Sonst wäre bei einem
+    Messintervall um GAP_SECONDS (history_interval bis 600 s) jeder normale Abstand eine Lücke. Der übliche
+    Abstand ist der Median der letzten GAP_WINDOW Abstände (lokal, nicht über den ganzen Verlauf): Nach
+    einer Umstellung von 10 s auf 600 s machen die alten 10-s-Punkte noch wochenlang die Mehrheit aus, ein
+    globaler Median bliebe bei 10 s und jeder 601-s-Abstand gälte als Lücke. Lokal gilt nur der Übergang
+    selbst als Lücke (ein Einschwingen). Ohne Vorgeschichte (erster Abstand) zählt der Median aller Abstände."""
     kept: list[tuple[float, float]] = []
     segments = dropped = 0
+    deltas = [b[0] - a[0] for a, b in zip(clean, clean[1:]) if b[0] > a[0]]
+    overall = _median(deltas) if deltas else 0.0
+    recent: deque[float] = deque(maxlen=GAP_WINDOW)
     start = prev_t = prev_v = None
     for t, v in clean:
-        if prev_t is None or t - prev_t > GAP_SECONDS or abs(v - prev_v) > STEP_PPM:
+        if prev_t is None:
+            new = True
+        else:
+            step = t - prev_t
+            typical = _median(list(recent)) if recent else overall
+            new = step > max(GAP_SECONDS, GAP_FACTOR * typical) or abs(v - prev_v) > STEP_PPM
+            if step > 0:
+                recent.append(step)
+        if new:
             start = t
             segments += 1
         if t - start >= SETTLE_SECONDS:
