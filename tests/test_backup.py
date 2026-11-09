@@ -42,6 +42,7 @@ import notify  # noqa: E402
 import server  # noqa: E402
 import settings  # noqa: E402
 import store  # noqa: E402
+import timeline  # noqa: E402
 
 LAT, LON, ALT = 48.137154, 11.576124, 519.25
 TOKENS = ("tk_TESTTOKEN_ntfy_4711", "GOTIFY_TEST_TOKEN_0815", "WEBHOOKSECRET4242", "geheimespasswort",
@@ -422,6 +423,124 @@ class NoLeakTest(BackupTestBase):
         for text in samples:
             with self.subTest(text=text):
                 self.assertEqual(backup.sample_fast(text), backup.sample_json(text))
+
+
+class HistoryFieldsTest(BackupTestBase):
+    """Felder, die der Verlauf schreibt (Messpunkt aus server.collect_sample, „z“ in samples_5m), überstehen
+    Sicherung und Wiederherstellung vollständig – kein Feld geht still verloren."""
+
+    def collected(self) -> dict:
+        """Ein Messpunkt wie im Betrieb: mit Temperatur, Pi-Zustand, GPS und PTP."""
+        import chrony
+        import gps
+        import pistate
+        import ptp
+        import thermal
+        source = {"name": "GPS", "offset": 1e-4, "state": "*", "mode": "#", "std_dev": 2e-5}
+        patches = [mock.patch.object(chrony, "tracking", return_value={
+                       "system_time_offset": 1e-5, "rms_offset": 2e-6, "frequency_ppm": -3.25, "skew_ppm": 0.01,
+                       "root_delay": 1e-4, "root_dispersion": 2e-4, "stratum": 1}),
+                   mock.patch.object(chrony, "serverstats", return_value={"ntp_packets_received": 42}),
+                   mock.patch.object(chrony, "clients", return_value=[{}]),
+                   mock.patch.object(chrony, "merged_sources", return_value=[source]),
+                   mock.patch.object(thermal.MONITOR, "sample", return_value=41.5),
+                   mock.patch.object(pistate.MONITOR, "sample", return_value={}),
+                   mock.patch.object(pistate, "severity", return_value=1),
+                   mock.patch.object(gps, "enabled", return_value=True),
+                   mock.patch.object(gps, "status", return_value={
+                       "satellites_used": 8, "satellites_seen": 12, "hdop": 0.9, "snr_avg": 33.5, "mode": 3,
+                       "cn0_top4": 41.0, "lat": LAT, "lon": LON}),
+                   mock.patch.object(ptp, "enabled", return_value=True),
+                   mock.patch.object(ptp, "status", return_value={
+                       "offset_ns": 12, "meanPathDelay": 800, "log_metrics": {"freq_ppb": -5.0, "rms_ns": 9}}),
+                   mock.patch.object(events, "emit")]
+        for patch in patches:
+            patch.start()
+        try:
+            return server.collect_sample()
+        finally:
+            for patch in reversed(patches):
+                patch.stop()
+
+    def write_history(self, base: int) -> history.History:
+        """Ein 5-Minuten-Fenster über History.add/save: 7 gute Punkte, 3 Fehler (Offset 0,1 s), Pi gedrosselt."""
+        sample = self.collected()
+        self.assertEqual(sample["pi_state"], 1)
+        self.use_dir(os.path.join(self.tmp, "quelle"))  # nur dieses Fenster im Verlauf
+        hist = history.History(None, path=os.path.join(self.data_dir, "history.json.gz"))
+        self.assertEqual(hist.backend, "sqlite")
+        for i in range(10):
+            hist.add(dict(sample, t=base + i * 10, offset=0.1 if i < 3 else 1e-5))
+        self.assertTrue(hist.save(force=True))
+        return hist
+
+    def test_every_field_history_writes_is_in_the_allowlist(self):
+        self.assertLessEqual(set(history._NUMERIC_TOP) | set(history._GROUPS) | {"t", "served", "sources", "z"},
+                             backup._SAMPLE_TOP)
+        self.assertEqual(backup._SAMPLE_Z, frozenset(timeline.CODES))
+        base = (int(self.now) // 300 - 3) * 300
+        self.write_history(base)
+        rows = store.query("SELECT json FROM samples WHERE t >= ? UNION ALL "
+                           "SELECT json FROM samples_5m WHERE b = ?", (base, base // 300))
+        self.assertEqual(len(rows), 11)
+        self.assertIn("z", json.loads(rows[-1][0]))
+        for (text,) in rows:
+            with self.subTest(text=text):
+                self.assertTrue(backup._sample_ok(json.loads(text)), text)
+                self.assertEqual(backup.sample_json(text), text)
+                self.assertEqual(backup.sample_fast(text), text)
+        # Die Position aus dem GPS-Status kommt gar nicht erst in den Verlauf (und damit nie in die Sicherung).
+        self.assertNotIn("48.137", json.dumps(rows))
+
+    def test_state_counts_and_pi_state_survive_round_trip(self):
+        base = (int(self.now) // 300 - 3) * 300
+        hist = self.write_history(base)
+        before_5m = store.query("SELECT b, t, json FROM samples_5m WHERE b = ?", (base // 300,))
+        self.assertEqual(json.loads(before_5m[0][2])["z"], {"c": 3, "g": 7})
+        before_band = hist.band_counts(base, base + 299)
+        self.assertEqual(timeline.bucket_state(before_band[base // 300]), "c")
+        data = self.make_backup()
+        self.use_dir(os.path.join(self.tmp, "neu"))
+        backup.apply(backup.stage_upload(io.BytesIO(data), len(data))["token"])
+        self.assertEqual(store.query("SELECT b, t, json FROM samples_5m WHERE b = ?", (base // 300,)), before_5m)
+        restored = history.History(None, path=os.path.join(self.data_dir, "history.json.gz"))
+        self.assertEqual(restored.band_counts(base, base + 299), before_band)
+        pi = [json.loads(text).get("pi_state") for (text,) in
+              store.query("SELECT json FROM samples WHERE t >= ? ORDER BY t", (base,))]
+        self.assertEqual(pi, [1] * 10)
+
+    def test_forged_state_counts_are_filtered(self):
+        good = '{"t":1,"offset":1e-5,"z":{"g":20,"c":10},"pi_state":1}'
+        self.assertEqual(backup.sample_json(good), good)
+        self.assertEqual(backup.sample_fast(good), good)
+        for forged, expected in (('{"t":1,"z":{"g":2,"lat":48.137154}}', {"t": 1, "z": {"g": 2}}),
+                                 ('{"t":1,"z":{"g":"48.137154, 11.576124"}}', {"t": 1, "z": {"g": "[Position entfernt]"}}),
+                                 ('{"t":1,"z":[48.137154,11.576124]}', {"t": 1}),
+                                 ('{"t":1,"z":{"g":{"x":1}}}', {"t": 1, "z": {}})):
+            with self.subTest(forged=forged):
+                self.assertEqual(json.loads(backup.sample_json(forged)), expected)
+                self.assertEqual(backup.sample_fast(forged), backup.sample_json(forged))
+
+    def test_restore_drops_cached_daily_report(self):
+        # Frische Installation nach 00:15 Uhr: Der (leere) Bericht für gestern gilt als abgeschlossen. Nach dem
+        # Einspielen muss er aus dem wiederhergestellten Verlauf neu gerechnet werden, nicht erst nach Mitternacht.
+        start, end = timeline.day_bounds(self.now)
+        source = history.History(None, path=os.path.join(self.data_dir, "history.json.gz"))
+        for i in range(12):
+            source.add({"t": int(start) + 600 + i * 60, "offset": 1e-5,
+                        "sources": {"GPS": {"o": 1e-4, "s": "*", "k": "#"}}})
+        self.assertTrue(source.save(force=True))
+        data = self.make_backup()
+        self.use_dir(os.path.join(self.tmp, "leer"))
+        hist = history.History(None, path=os.path.join(self.data_dir, "history.json.gz"))
+        timeline.reset_cache()
+        self.addCleanup(timeline.reset_cache)
+        now = end + timeline.REPORT_SETTLE + 60
+        self.assertEqual(timeline.cached_report(hist, now=now, wait=5.0)["samples"], 0)
+        backup.apply(backup.stage_upload(io.BytesIO(data), len(data))["token"])
+        report = timeline.cached_report(hist, now=now, wait=5.0)
+        self.assertGreaterEqual(report["samples"], 12)
+        self.assertEqual(report["samples"], timeline.daily_report(hist, start, end)["samples"])
 
 
 class MaliciousArchiveTest(BackupTestBase):

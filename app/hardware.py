@@ -985,7 +985,7 @@ def _pi_power_row(pi: dict) -> dict[str, Any]:
     soft = pi.get("soft_temp_limit") or {}
     title = "Stromversorgung (Pi)"
     what = pi.get("summary") or pistate.summary(pi) or ""
-    if uv.get("now") or uv.get("since_boot"):
+    if pistate.low_voltage(pi):
         return _row("pi_power", title, "limited",
                     f"{what}. Unterspannung lässt den Pi den Takt senken, die Last und die Temperatur am "
                     "Quarz schwanken – im Verlauf als Sprünge in Frequenz und Offset sichtbar, im "
@@ -993,7 +993,7 @@ def _pi_power_row(pi: dict) -> dict[str, Any]:
     if any(e.get("now") or e.get("since_boot") for e in (throttled, capped, soft)):
         return _row("pi_power", title, "limited",
                     f"{what}. Die Spannung reicht, aber der Pi senkt den Takt – meist wegen Hitze. "
-                    "Kühlkörper oder Lüfter helfen; die Temperatur zeigt die Seite Uhrqualität.")
+                    f"{pistate.COOLING_HINT}")
     return _row("pi_power", title, "ok",
                 "Keine Unterspannung und keine Drosselung seit dem Start des Pi gemeldet."
                 if uv.get("since_boot") is not None else "Gerade keine Unterspannung gemeldet.")

@@ -12,7 +12,7 @@ import { card, badge, kv, emptyState, errorState, toast, copyButton } from "../u
 import { t } from "../i18n.js";
 import { route, SETUP_STEPS, setupHref } from "../routes.js";
 import { PRESETS, withPreset, previewFile } from "./settings.js";
-import { serverAddress, usableAddress, clientSnippets, snippet, IP_PLACEHOLDER } from "./clients.js";
+import { serverAddress, usableAddress, usableHostname, clientSnippets, snippet, IP_PLACEHOLDER } from "./clients.js";
 import { blankDraft, channelCard, editorCard } from "./notify.js";
 
 export const live = false; // Entwürfe und offene Vorschau bleiben stehen; neu gezeichnet wird gezielt
@@ -247,7 +247,7 @@ function copyRow(label, value) {
 function stepClients(ctx) {
   const status = ctx.status || {};
   const ip = serverAddress(status);
-  const host = String(status.system?.hostname || "");
+  const host = usableHostname(status.system?.hostname) ? String(status.system.hostname) : "";
   const browserHost = window.location.hostname;
   const rows = [
     ip ? copyRow(t("setup.clients.address"), ip) : [t("setup.clients.address"), t("setup.clients.unknown")],

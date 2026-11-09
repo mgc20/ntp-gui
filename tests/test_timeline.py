@@ -386,6 +386,29 @@ class ReportSingleFlightTest(TempData):
         if now - timeline.day_bounds(now)[1] >= timeline.REPORT_SETTLE:
             self.assertEqual(len(calls), 1)
 
+    def test_invalidate_drops_final_and_running_report(self):
+        # Nach einer Wiederherstellung: Der abgeschlossene Bericht wird neu gerechnet, und eine Rechnung, die
+        # noch auf dem alten Verlauf lief, trägt ihr Ergebnis nicht mehr ein.
+        hist, calls = self.slow_hist(0.0)
+        now = timeline.day_bounds(time.time())[1] + timeline.REPORT_SETTLE + 60
+        timeline.cached_report(hist, now, wait=2.0)
+        timeline.invalidate_report()
+        timeline.cached_report(hist, now, wait=2.0)
+        self.assertEqual(len(calls), 2)
+        release = __import__("threading").Event()
+        real = hist.report_rows
+
+        def blocked(start, end):
+            release.wait(3.0)
+            return real(start, end)
+        hist.report_rows = blocked
+        timeline.invalidate_report()
+        job = timeline._report_job(hist, now)
+        timeline.invalidate_report()
+        release.set()
+        self.assertTrue(job.wait(3.0))
+        self.assertIsNone(timeline._REPORT["key"])
+
     def test_warm_report_in_background(self):
         hist, calls = self.slow_hist(0.3)
         began = time.perf_counter()

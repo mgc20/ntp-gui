@@ -651,8 +651,13 @@ export function lineChart(container, opts) {
   const labelled = visible.length > 1 && visible.length <= 8;
   // Endbeschriftungen nur mit Kurznamen (Hostname ohne Domain, IP unverändert); Platz rechts nach dem
   // längsten Kurznamen, damit nichts abgeschnitten wird.
-  const ends = labelled ? shortNames(visible.map((s) => s.short || s.label)) : new Map();
-  const endText = (series) => ends.get(String(series.short || series.label)) || series.label;
+  // Teilen sich Linien eine Beschriftung (Mitglieder eines Pools heißen alle „pool.ntp.org“), steht am Ende
+  // ihre Kennung (die IP) – sonst wären die Enden trotz verschiedener Linien gleich.
+  const nameOf = (series) => String(series.short || series.label);
+  const shared = new Set(visible.map(nameOf).filter((name, i, all) => all.indexOf(name) !== i));
+  const endName = (series) => (shared.has(nameOf(series)) ? String(series.id) : nameOf(series));
+  const ends = labelled ? shortNames(visible.map(endName)) : new Map();
+  const endText = (series) => ends.get(endName(series)) || series.label;
   if (labelled) {
     const longest = Math.max(4, ...visible.map((s) => endText(s).length));
     pad.right = Math.round(Math.min(Math.max(60, longest * 6.8 + 22), Math.max(96, width * 0.3)));

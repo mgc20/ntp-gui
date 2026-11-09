@@ -190,6 +190,7 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 - Neuer Test `tests/test_einrichtung.py` (Erststart/Update-Erkennung, Rechte, „Überspringen ändert nichts“, Testaufbau ohne Volume und ohne `SYS_TIME`); der UI-Rundgang durchläuft den Assistenten bei 390 und 1440 px.
 - Die 5-Minuten-Vorverdichtung des Verlaufs speichert zusätzlich Zähler je Zustand; ältere Zeilen werden beim Lesen abgeleitet. Neue Tests `tests/test_uhr_werkstatt.py` und `tests/test_timeline.py` (Replay eines Tages, Tagesbericht gegen eine unabhängige SQL-Rechnung, Laufzeit mit 30 Tagen Verlauf).
 - `test_backup_requires_admin` wartet auf das Aufräumen der Download-Datei: Unter Last las der Test das Verzeichnis, bevor der Server-Thread die Datei gelöscht hatte (sporadischer Fehlschlag, kein Produktfehler).
+- Zweite Fehlersuche auf dem neuen Code von 1.6 (acht Bereiche, jeder Fund gegengeprüft): 14 Fehler vor dem Release behoben, u. a. Sicherungen behalten die neuen Verlaufsfelder (Zustandszähler, Pi-Zustand) – ein Wächtertest gleicht künftig alle Verlaufsfelder mit der Sicherung ab –, passende Abhilfe bei Hitze-Drosselung im Assistenten, `?tz=` nimmt alle gültigen IANA-Zonen, kein verlorener Klick in der Speicherleiste, Tastenkürzel ruhen bei offenen Dialogen.
 
 
 ## [1.5.5] – 2026-11-08

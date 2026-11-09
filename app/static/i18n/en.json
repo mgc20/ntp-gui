@@ -206,6 +206,7 @@
       "truncated": "Shortened – the difference is very long.",
       "notes": "Notes",
       "none": "chrony.conf and ptp4l.conf stay as they are – the change only affects the dashboard.",
+      "none_restart": "chrony.conf and ptp4l.conf stay as they are – the change takes effect when the time services restart (e.g. gpsd, phc2sys, DNS).",
       "error": "Preview not possible: {message}"
     },
     "leave": "The settings have unsaved changes. Leave anyway? The changes will be lost."
@@ -479,8 +480,10 @@
     "device_line_good": "Fine – less than 0.1 s off, measured to within {acc}.",
     "device_line_warn": "Noticeably off, fine for everyday use: phones usually take the time from the mobile network, PCs from the internet.",
     "device_line_crit": "Clearly off: turn on “Set time automatically” in your device settings.",
+    "device_uncertain": "Measurement too imprecise",
+    "device_line_uncertain": "Measured only to within {acc} – not enough to tell for sure whether your device is less than 0.1 s off. Try again on a faster network.",
     "device_info_title": "How wrong is your device?",
-    "device_info": "Like NTP, the page uses four timestamps to measure how far this device's clock is off the server clock (± half the round trip). The result stays in this browser: it is neither stored nor sent to the server or anywhere else. Traffic light: green below 0.1 s, yellow below 1 s, red from 1 s. Phones usually set their clock from the mobile network or NTP, computers from a time server on the internet – depending on the device and the last sync they are milliseconds to seconds off. Some browsers round their clock on purpose (fingerprinting protection, e.g. to 1 ms or 100 ms); small values are less precise then.",
+    "device_info": "Like NTP, the page uses four timestamps to measure how far this device's clock is off the server clock (± half the round trip). The result stays in this browser: it is neither stored nor sent to the server or anywhere else. Traffic light: green below 0.1 s (including the measurement accuracy), yellow below 1 s, red from 1 s; grey when the measurement is too imprecise to tell. Phones usually set their clock from the mobile network or NTP, computers from a time server on the internet – depending on the device and the last sync they are milliseconds to seconds off. Some browsers round their clock on purpose (fingerprinting protection, e.g. to 1 ms or 100 ms); small values are less precise then.",
     "info_label": "Explanation: {title}",
     "egg_possible": "23:59:60 would be possible today: on 30 June and 31 December the last minute (UTC) may get a leap second – none is announced this time.",
     "egg_insert": "There is a leap second tonight: 23:59:59 UTC is followed by 23:59:60.",
@@ -498,6 +501,7 @@
     "unsynced": "not synchronised",
     "unsynced_kind": "not synchronised · {kind}",
     "synced": "{state} · {source}",
+    "source_unknown": "Source",
     "server_acc": "Server {acc}",
     "leap_announced": "Leap second announced ({leap})",
     "display_acc": "Display {acc} (RTT {rtt})",

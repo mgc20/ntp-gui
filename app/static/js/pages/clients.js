@@ -20,6 +20,14 @@ export function usableAddress(addr) {
   return true;
 }
 
+// Rechnername des Servers, den Geräte im LAN auflösen können – nicht die Container-ID, die Docker im Bridge-Netz
+// ohne „hostname:“ vergibt (12 oder 64 Hex-Zeichen, nach jedem Neuerstellen anders), und nicht localhost.
+export function usableHostname(name) {
+  const host = String(name || "").trim().toLowerCase();
+  if (!host || host === "localhost" || host.startsWith("localhost.")) return false;
+  return !/^(?:[0-9a-f]{12}|[0-9a-f]{64})$/.test(host);
+}
+
 function isIp(text) {
   const a = String(text || "").replace(/^\[|\]$/g, "");
   return /^\d{1,3}(\.\d{1,3}){3}$/.test(a) || (/^[0-9a-f:]+$/i.test(a) && a.includes(":"));

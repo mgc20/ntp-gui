@@ -765,6 +765,23 @@ class ClockSyncJsTest(unittest.TestCase):
         self.assertAlmostEqual(result["resp"]["offset"], 95, places=6)
         self.assertEqual(result["resp"]["rtt"], 10)
 
+    def test_genauigkeit_und_quelle_folgen_der_sprache(self):
+        # /clock folgt seit 1.6 der gewählten Sprache: auf Englisch Dezimalpunkt und englischer Rückfall
+        # statt fest „1,5 ms“ und „Quelle“.
+        i18n = json.dumps((ROOT / "app/static/js/i18n.js").as_uri())
+        static = json.dumps(str(ROOT / "app/static"))
+        result = self.run_js(f"""
+          import {{ readFileSync }} from "node:fs";
+          globalThis.fetch = async (u) => ({{ ok: true, json: async () => JSON.parse(readFileSync({static} + u.replace("/static", ""), "utf8")) }});
+          const i18n = await import({i18n});
+          const de = [c.fmtAccuracy(1.5), c.fmtAccuracy(1234), c.sourceText("", "")];
+          await i18n.setLanguage("en");
+          console.log(JSON.stringify({{ de, en: [c.fmtAccuracy(1.5), c.fmtAccuracy(1234), c.fmtAccuracy(42), c.sourceText("", ""),
+                                               c.sourceText("NTP", "192.0.2.1")] }}));
+        """)
+        self.assertEqual(result["de"], ["± 1,5 ms", "± 1,2 s", "Quelle"])
+        self.assertEqual(result["en"], ["± 1.5 ms", "± 1.2 s", "± 42 ms", "Source", "NTP (192.0.2.1)"])
+
 
 class DiagnosticsW1SerialTest(unittest.TestCase):
     def test_ds18b20_serial_is_known_value(self):

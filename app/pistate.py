@@ -69,6 +69,7 @@ THROTTLED_GLOBS = (("devices", "platform", "*firmware", "get_throttled"),
 POWER_HINT = ("Am zuverlässigsten ist das offizielle Netzteil (Pi 5: 27 W USB-C, 5,1 V/5 A; Pi 4: "
               "15 W USB-C, 5,1 V/3 A) mit kurzem, dickem Kabel – USB-Ladegeräte und dünne Kabel "
               "liefern unter Last oft zu wenig.")
+COOLING_HINT = "Kühlkörper oder Lüfter helfen; die Temperatur zeigt die Seite Uhrqualität."
 
 EVENTS = {
     "undervoltage": ("Unterspannung erkannt", "Unterspannung vorbei"),
@@ -210,6 +211,17 @@ def summary(state: dict | None) -> str | None:
         if text and text != "nein":
             parts.append(f"{LABELS[key]} {text}")
     return "; ".join(parts) if parts else "Keine Unterspannung, keine Drosselung"
+
+
+def low_voltage(state: dict | None) -> bool:
+    """Unterspannung jetzt oder seit dem Start des Pi gemeldet?"""
+    uv = (state or {}).get("undervoltage") or {}
+    return bool(uv.get("now") or uv.get("since_boot"))
+
+
+def remedy(state: dict | None) -> str:
+    """Die eine passende Abhilfe: bei Unterspannung das Netzteil, sonst (Drosselung wegen Hitze) Kühlung."""
+    return POWER_HINT if low_voltage(state) else COOLING_HINT
 
 
 def severity(state: dict | None) -> int | None:

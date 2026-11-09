@@ -14,8 +14,9 @@ export const DEFAULT_DESIGN = "digital";
 // landen nie als HTML im DOM, trotzdem prüfen wir sie hier gegen feste Listen.
 const FLAG = { 1: true, 0: false, true: true, false: false };
 const MAX_LEN = 64;
+const ZONE_CHARS = /^[A-Za-z0-9_+\-/]+$/;
 
-/** Zeitzonen-Allowlist des Browsers (Intl.supportedValuesOf), leer, wenn der Browser sie nicht kennt. */
+/** Zeitzonenliste des Browsers (Intl.supportedValuesOf), leer, wenn der Browser sie nicht kennt. */
 export function supportedZones(intl = globalThis.Intl) {
   try {
     return typeof intl?.supportedValuesOf === "function" ? intl.supportedValuesOf("timeZone") : [];
@@ -25,21 +26,38 @@ export function supportedZones(intl = globalThis.Intl) {
 }
 
 /**
+ * Zeitzone prüfen: nur [A-Za-z0-9_+-/], höchstens MAX_LEN Zeichen, und dann entweder in `zones` oder von
+ * Intl.DateTimeFormat angenommen. Die Liste allein reicht nicht: V8 führt dort nur CLDR-Altnamen
+ * (Asia/Calcutta statt Asia/Kolkata) und gar kein UTC. Liefert den Namen (Schreibweise des Browsers,
+ * wenn er sich nur in Groß/klein unterscheidet) oder null.
+ */
+export function checkZone(value, zones = [], intl = globalThis.Intl) {
+  if (typeof value !== "string" || !value || value.length > MAX_LEN || !ZONE_CHARS.test(value)) return null;
+  if (zones.includes(value)) return value;
+  try {
+    const resolved = new intl.DateTimeFormat(undefined, { timeZone: value }).resolvedOptions().timeZone;
+    return typeof resolved === "string" && resolved.toLowerCase() === value.toLowerCase() ? resolved : value;
+  } catch (error) {
+    return null;
+  }
+}
+
+/**
  * ?design=…&kiosk=1&eink=1&tz=Europe/London → { design, kiosk, eink, tz, ignored }.
- * design: einer aus DESIGNS, sonst null; kiosk/eink: 1/0/true/false; tz: nur aus `zones`.
+ * design: einer aus DESIGNS, sonst null; kiosk/eink: 1/0/true/false; tz: siehe checkZone.
  * ignored: Namen bekannter Parameter mit unzulässigem Wert (für eine Konsolenzeile, nie für das DOM).
  */
-export function parseParams(search, zones = []) {
+export function parseParams(search, zones = [], intl = globalThis.Intl) {
   const params = new URLSearchParams(typeof search === "string" ? search : "");
   const out = { design: null, kiosk: false, eink: false, tz: null, ignored: [] };
-  const allowedZones = new Set(zones);
   for (const name of ["design", "kiosk", "eink", "tz"]) {
     if (!params.has(name)) continue;
     const raw = String(params.get(name) || "");
     const value = raw.length <= MAX_LEN ? raw : "";
+    const zone = name === "tz" ? checkZone(value, zones, intl) : null;
     if (name === "design" && DESIGNS.includes(value)) out.design = value;
     else if ((name === "kiosk" || name === "eink") && Object.prototype.hasOwnProperty.call(FLAG, value)) out[name] = FLAG[value];
-    else if (name === "tz" && allowedZones.has(value)) out.tz = value;
+    else if (zone) out.tz = zone;
     else out.ignored.push(name);
   }
   return out;
@@ -211,13 +229,21 @@ export function countdownValue(serverMs) {
 export const DEVICE_GOOD_MS = 100;
 export const DEVICE_WARN_MS = 1000;
 
-/** { tone: good|warn|crit, dir: behind|ahead|exact, abs (ms) } – exact, wenn innerhalb der Messgenauigkeit. */
+/**
+ * { tone: good|warn|crit|unknown, dir: behind|ahead|exact|uncertain, abs (ms) } – exact, wenn innerhalb der
+ * Messgenauigkeit. Grün nur, wenn auch der ungünstigste Wert (|Versatz| + Genauigkeit) unter DEVICE_GOOD_MS
+ * liegt. Kann der echte Versatz auf beiden Seiten von DEVICE_GOOD_MS liegen (|Versatz| < DEVICE_GOOD_MS, oder
+ * |Versatz| ≤ Genauigkeit), lässt sich kein Urteil belegen: uncertain/unknown (grau). Liegt |Versatz| sicher
+ * außerhalb der Genauigkeit und ab DEVICE_GOOD_MS, gilt die Ampel nach dem gemessenen Wert.
+ */
 export function deviceDrift(offsetMs, accuracyMs = 0) {
   if (!Number.isFinite(offsetMs)) return null;
   const abs = Math.abs(offsetMs);
   const acc = Number.isFinite(accuracyMs) ? Math.abs(accuracyMs) : 0;
   const dir = abs <= acc ? "exact" : (offsetMs > 0 ? "behind" : "ahead");
-  const tone = abs < DEVICE_GOOD_MS || dir === "exact" ? "good" : (abs < DEVICE_WARN_MS ? "warn" : "crit");
+  if (abs + acc < DEVICE_GOOD_MS) return { tone: "good", dir, abs };
+  if (abs < DEVICE_GOOD_MS || dir === "exact") return { tone: "unknown", dir: "uncertain", abs };
+  const tone = abs < DEVICE_WARN_MS ? "warn" : "crit";
   return { tone, dir, abs };
 }
 

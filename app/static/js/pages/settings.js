@@ -635,7 +635,14 @@ export function render(ctx) {
 
   const metaBoxes = {};
   const tabCounts = {};
-  const saveBar = el("div", { class: "save-bar", role: "region", "aria-label": t("settings.savebar.label"), hidden: true });
+  const saveSummary = el("span", { class: "save-summary" });
+  const saveBar = el("div", { class: "save-bar", role: "region", "aria-label": t("settings.savebar.label"), hidden: true },
+    saveSummary,
+    el("div", { class: "save-actions" },
+      el("button", { type: "button", class: "button", text: t("settings.savebar.preview"), onclick: openPreview }),
+      el("button", { type: "button", class: "button", text: t("settings.savebar.discard"), onclick: discard }),
+      el("button", { type: "button", class: "button primary", text: t("settings.savebar.save"), disabled: readonly ? true : null,
+        onclick: save })));
   let previewDialog = null;
 
   const updateTabCounts = (changed) => {
@@ -655,13 +662,9 @@ export function render(ctx) {
     const parts = [t("settings.savebar.changes", { count: changed.length })];
     if (restart) parts.push(t("settings.savebar.restart"));
     if (restart && holdoverActive()) parts.push(t("settings.savebar.holdover"));
-    saveBar.replaceChildren(
-      el("span", { class: "save-summary", text: parts.join(" · ") }),
-      el("div", { class: "save-actions" },
-        el("button", { type: "button", class: "button", text: t("settings.savebar.preview"), onclick: openPreview }),
-        el("button", { type: "button", class: "button", text: t("settings.savebar.discard"), onclick: discard }),
-        el("button", { type: "button", class: "button primary", text: t("settings.savebar.save"), disabled: readonly ? true : null,
-          onclick: save })));
+    // Nur den Text tauschen, die Knöpfe bleiben: Verliert ein Feld beim Drücken auf „Speichern“ den Fokus und
+    // ändert dabei den Entwurf, müssen Drücken und Loslassen denselben Knopf treffen – sonst kommt kein Klick an.
+    saveSummary.textContent = parts.join(" · ");
     updateTabCounts(changed);
   };
   const refreshMeta = (key) => { if (metaBoxes[key] && byKey[key]) metaBoxes[key].replaceChildren(...metaNodes(byKey[key])); };
@@ -716,7 +719,7 @@ export function render(ctx) {
   }
 
   async function openPreview() {
-    const { changes, defaults } = payload();
+    const { changes, defaults, restart } = payload();
     if (!Object.keys(changes).length && !defaults.length) return;
     const content = el("div", { class: "preview-body", "aria-live": "polite" }, emptyState(t("settings.preview.loading")));
     previewDialog?.remove();
@@ -741,7 +744,9 @@ export function render(ctx) {
       const touched = files.some((file) => file.status === "changed" || file.status === "new");
       // Natives replaceChildren macht aus null den Text „null“ – leere Teile vorher weglassen.
       content.replaceChildren(...[
-        touched ? null : el("p", { class: "preview-none", text: t("settings.preview.none") }),
+        // Beide Dateien gleich: Werte wie GPS-Gerät, Baudrate, DNS-Modus oder phc2sys-Optionen wirken trotzdem –
+        // über den Neustart der Zeitdienste. „Nur im Dashboard“ stimmt nur ohne solche Änderungen.
+        touched ? null : el("p", { class: "preview-none", text: t(restart ? "settings.preview.none_restart" : "settings.preview.none") }),
         ...files.map(previewFile),
         (result.notes || []).length ? el("div", { class: "preview-notes" },
           el("h3", { class: "mini-head", text: t("settings.preview.notes") }),
@@ -863,26 +868,32 @@ export function render(ctx) {
 
   function sourcesEditor(field, rows, disabled) {
     const list = el("div", { class: "src-editor" });
-    const commit = (next) => { setDraft(field.key, next); draw(next); };
-    function draw(items) {
+    let items = [];
+    // Neu gezeichnet wird nur, wenn Zeilen dazukommen oder wegfallen. Änderungen in einer Zelle (Name beim Tippen,
+    // Typ, Kästchen) lassen den Editor stehen: Das Element behält den Fokus, Tab geht zur nächsten Zelle.
+    const commit = (next, redraw = true) => { items = next; setDraft(field.key, next); if (redraw) draw(); };
+    function draw() {
       list.replaceChildren(
         el("div", { class: "src-editor-head" }, ["Typ", "Server oder Pool", "NTS", "bevorzugen", "nur beobachten", ""].map((h) => el("span", { text: h }))),
         ...items.map((row, index) => {
-          const update = (patch) => { const next = clone(items); next[index] = { ...next[index], ...patch }; commit(next); };
+          const update = (patch) => { const next = clone(items); next[index] = { ...next[index], ...patch }; commit(next, false); };
           const type = el("select", { disabled, "aria-label": "Typ" }, ["server", "pool", "peer"].map((t) =>
             el("option", { value: t, selected: row.type === t ? true : null, text: t })));
           type.addEventListener("change", () => update({ type: type.value }));
           const host = el("input", { type: "text", value: row.host, disabled, "aria-label": "Server oder Pool", placeholder: "z. B. ptbtime1.ptb.de" });
-          host.addEventListener("change", () => update({ host: host.value.trim() }));
+          const remove = el("button", { type: "button", class: "icon-button", disabled, "aria-label": `${row.host} entfernen`, text: "✕",
+            onclick: () => commit(items.filter((_, i) => i !== index)) });
+          host.addEventListener("input", () => {
+            update({ host: host.value.trim() });
+            remove.setAttribute("aria-label", `${host.value.trim()} entfernen`);
+          });
           const box = (key, label) => {
             const input = el("input", { type: "checkbox", checked: row[key], disabled, "aria-label": label });
             input.addEventListener("change", () => update({ [key]: input.checked }));
             return el("label", { class: "cell-check" }, input, el("span", { class: "cell-check-text", text: label }));
           };
           return el("div", { class: "src-editor-row" }, type, host, box("nts", "NTS"), box("prefer", "bevorzugen"),
-            box("noselect", "nur beobachten"),
-            el("button", { type: "button", class: "icon-button", disabled, "aria-label": `${row.host} entfernen`, text: "✕",
-              onclick: () => commit(items.filter((_, i) => i !== index)) }));
+            box("noselect", "nur beobachten"), remove);
         }),
         el("div", { class: "src-editor-tools" },
           el("button", { type: "button", class: "button", disabled, text: "+ Quelle",
@@ -892,7 +903,8 @@ export function render(ctx) {
             commit(withPreset(items, entries));
           } }))));
     }
-    draw(rows.map((r) => ({ options: "", ...r })));
+    items = rows.map((r) => ({ options: "", ...r }));
+    draw();
     return list;
   }
 

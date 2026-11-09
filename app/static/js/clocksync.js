@@ -14,6 +14,8 @@
 // in Puffern und damit die kleinste mögliche Unsymmetrie.
 //
 // Alle Werte in Millisekunden. Kein DOM – so lässt sich das Modul mit Node testen.
+import { t } from "./i18n.js";
+import { fmtNumber } from "./util.js";
 
 /** Eine Messung aus vier Zeitstempeln (ms). Liefert null bei Unsinn. */
 export function measure(t0, t1, t2, t3) {
@@ -58,13 +60,13 @@ export function hms(date, utc = false) {
     : `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }
 
-/** Genauigkeit lesbar: „± 4 ms“, „± 0,8 ms“, „± 1,2 s“. */
+/** Genauigkeit lesbar: „± 4 ms“, „± 4,3 ms“, „± 1,2 s“ (Dezimalzeichen der gewählten Sprache über fmtNumber). */
 export function fmtAccuracy(ms) {
   if (typeof ms !== "number" || !Number.isFinite(ms)) return "–";
   const v = Math.abs(ms);
-  if (v >= 1000) return `± ${(v / 1000).toLocaleString("de-DE", { maximumFractionDigits: 1 })} s`;
+  if (v >= 1000) return `± ${fmtNumber(v / 1000, 1)} s`;
   if (v >= 10) return `± ${Math.round(v)} ms`;
-  if (v >= 1) return `± ${v.toLocaleString("de-DE", { maximumFractionDigits: 1 })} ms`;
+  if (v >= 1) return `± ${fmtNumber(v, 1)} ms`;
   if (v >= 0.001) return `± ${Math.max(1, Math.round(v * 1000))} µs`;
   return "± < 1 µs";
 }
@@ -73,5 +75,5 @@ export function fmtAccuracy(ms) {
 export function sourceText(kind, source) {
   const name = String(source || "");
   const words = String(kind || "").toUpperCase().split(/[^A-Z0-9]+/);
-  return `${kind || "Quelle"}${name && !words.includes(name.toUpperCase()) ? ` (${name})` : ""}`;
+  return `${kind || t("clock.source_unknown")}${name && !words.includes(name.toUpperCase()) ? ` (${name})` : ""}`;
 }
