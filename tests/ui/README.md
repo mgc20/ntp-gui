@@ -27,6 +27,10 @@ Der Rundgang öffnet jede Route bei 1440 und 390 px, hell und dunkel, und meldet
   keine Loopback-Adresse zum Kopieren angeboten. In `TOUR_WORDS_ONLY`/`TOUR_PAGES_ONLY` wird der Assistent nur per API abgeschlossen.
 - auf der Clients-Seite: bei 390 px Karten statt Tabelle ohne Überbreite, bei 1440 px die Tabelle, Name direkt in
   der Liste (✎ öffnet das Feld, Esc bricht ab, Enter speichert; der Name wird danach wieder entfernt),
+- die Uhr-Werkstatt `/clock` (1.6, T6): jedes Design (digital, Bahnhofsuhr, Nixie, Klappzahlen, Wortuhr) mit fester
+  Serverzeit (Browseruhr per `page.clock` 5 min daneben, `/api/v1/time` erfunden) zeigt bei 390 und 1440 px, normal und
+  im Rotlicht-Modus, die richtige Uhrzeit (DOM: Ziffern, Wortuhr-Satz, Zeigerwinkel und Phase des Sekundenzeigers) samt
+  Schaltsekunden-Banner am 30.6.; dazu Kiosk, E-Ink mit zweiter Zeitzone und unzulässige Parameter ohne Überbreite,
 - die sichtbare Wortzahl je Seite (`words` in der Ausgabe: innerText des Inhalts bei 1440 px, hell, ohne
   geschlossene ⓘ-Popover und zugeklappte `<details>`).
 
@@ -50,6 +54,7 @@ TOUR_SHOTS=/tmp/fotos tests/ui/rundgang.sh   # zusätzlich Bildschirmfotos (hell
 TOUR_NAV_ONLY=1 tests/ui/rundgang.sh          # nur die Navigationsprüfungen (Reiter, untere Leiste, „Mehr“, Speicherleiste)
 TOUR_WORDS_ONLY=1 tests/ui/rundgang.sh        # nur die Wortzahl je Seite messen
 TOUR_PAGES_ONLY=1 tests/ui/rundgang.sh        # nur Clients mit Messwert und Rohdaten der Ereignisse (erfundene Antworten)
+TOUR_CLOCK_ONLY=1 tests/ui/rundgang.sh        # nur die Uhr-Werkstatt /clock (Designs, Kiosk, E-Ink, Ruhe zwischen den Minuten, Leiste bei offenem Panel)
 ```
 
 Läuft der Server schon (z. B. mit `NTPGUI_CHRONYC=tests/ui/fake_chronyc.py`), genügt:

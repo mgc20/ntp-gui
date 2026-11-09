@@ -243,7 +243,11 @@ export const HELP_UHR = {
       + "Datum, Kalenderwoche und unten ein Band mit dem Zustand des Servers. Taste **F** schaltet Vollbild um; "
       + "Hell/Dunkel und **Rotlicht** (schont die Dunkeladaption der Augen) merkt sich der Browser. Der Bildschirm "
       + "bleibt an, wenn der Browser das erlaubt (Wake Lock – meist nur über HTTPS oder localhost). Kommt 10 s "
-      + "keine Antwort vom Server, wird die Ampel grau; die Uhr läuft mit dem letzten Abgleich weiter.",
+      + "keine Antwort vom Server, wird die Ampel grau; die Uhr läuft mit dem letzten Abgleich weiter. Dazu gibt es "
+      + "vier weitere **Designs** (Bahnhofsuhr, Nixie, Klappzahlen, Wortuhr – auch per `?design=`), `?kiosk=1` ohne "
+      + "Leiste und Mauszeiger, `?eink=1` schwarz auf weiß mit Anzeige nur zur vollen Minute und `?tz=` für eine "
+      + "zweite Zeitzone. **Ton** piept nach einem Klick auf jeder vollen Sekunde oder zählt zum Uhrenstellen herunter; "
+      + "**Mein Gerät** zeigt, wie falsch die Uhr deines Geräts geht – das bleibt im Browser.",
   },
   clock_sync: {
     title: "Wie genau ist die Anzeige?",
@@ -260,7 +264,7 @@ export const HELP_UHR = {
     text: "Normalerweise ist /clock wie das Dashboard geschützt. Eingeschaltet ist die Uhr samt /api/v1/time "
       + "**ohne Passwort** erreichbar – praktisch für einen Wandmonitor, auf dem du kein Passwort hinterlegen "
       + "willst (und einen API-Schlüssel in der Adresse solltest du nie verwenden: der landet in Proxy- und "
-      + "Browser-Logs). Sichtbar ist dann nur Uhrzeit, Ampel, Genauigkeit und die Art der Quelle (GPS, NTP …) – "
+      + "Browser-Logs). Sichtbar ist dann nur Uhrzeit, Ampel, Genauigkeit, die Art der Quelle (GPS, NTP …) und eine angekündigte Schaltsekunde – "
       + "keine Namen, Adressen oder Einstellungen. Es ist trotzdem die erste offene Seite neben /healthz: Lass "
       + "es aus, wenn das Dashboard aus dem Internet erreichbar ist. Wer sich anmeldet, sieht auf /api/v1/time "
       + "zusätzlich den Namen der Quelle. Die Uhr antwortet über **jeden Namen**, z. B. auch über einen eigenen "

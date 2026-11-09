@@ -26,7 +26,10 @@
 //
 // Dazu die Clients (clientsChecks: Karten bei 390 px, Name direkt bearbeiten mit Enter/Esc) und die sichtbare
 // Wortzahl je Seite (wordCounts, Ausgabe „words“; TOUR_WORDS_ONLY=1 misst nur sie). Dazu pagesChecks mit erfundenen
-// Antworten: Clients mit Messwert (Zellen, ⓘ auf dem Handy) und Rohdaten der Ereignisse (TOUR_PAGES_ONLY=1).
+// Antworten: Clients mit Messwert (Zellen, ⓘ auf dem Handy) und Rohdaten der Ereignisse (TOUR_PAGES_ONLY=1). Dazu die
+// Uhr-Werkstatt (clockChecks, TOUR_CLOCK_ONLY=1): jedes /clock-Design mit fester Serverzeit bei 390 und 1440 px, auch im
+// Rotlicht-Modus, dazu Kiosk, E-Ink, zweite Zeitzone und unzulässige Parameter ohne Überbreite; E-Ink ohne Änderungen
+// zwischen den Minuten, Leiste bleibt bei offenem Ton-Panel, #tone-status nicht im Sekundentakt (clockQuietChecks).
 //
 // Aufruf: node tests/ui/tour.js [Basis-URL]   (Standard http://127.0.0.1:18300, oder TOUR_BASE)
 // Ausgabe: JSON mit „problems“ (leer = alles gut) und einer Zeile je Route. Rückgabecode 1 bei Problemen.
@@ -666,6 +669,174 @@ async function pagesChecks(browser) {
   return { found, lines };
 }
 
+// Uhr-Werkstatt (1.6, T6): jedes Design mit fester Serverzeit bei 390 und 1440 px, normal und im Rotlicht-Modus.
+// Die Browseruhr steht 5 min daneben (setFixedTime), /api/v1/time liefert die feste Serverzeit – angezeigt werden
+// muss die Serverzeit. Dazu Kiosk/E-Ink/zweite Zeitzone ohne Überbreite und ein unzulässiger ?design=.
+const CLOCK_SERVER = Date.parse("2026-06-30T08:15:42.500Z");   // Europe/Berlin: 10:15:42, am 30.6. (Osterei)
+const CLOCK_EXPECT = {
+  digital: { text: "10:15:42" }, nixie: { text: "101542" }, flip: { text: "101542" },
+  wort: { text: "ES IST VIERTEL NACH ZEHN" }, bahnhof: { hour: 307.5, minute: 90, second: 42.5 },
+};
+
+function clockState() {
+  const face = document.getElementById("face");
+  const svg = face.querySelector("svg.bh");
+  const second = face.querySelector(".bh-second");
+  const kiosk = document.querySelector(".clock-bar");
+  return {
+    mode: document.documentElement.dataset.mode || "", design: document.documentElement.dataset.design,
+    digital: document.getElementById("local-time").hidden ? null : document.getElementById("local-time").textContent,
+    nixie: [...face.querySelectorAll(".nixie-tube")].map((tube) => tube.querySelector(".nixie-n.on")?.textContent || "?").join(""),
+    flip: [...face.querySelectorAll(".flip-digit")].map((node) => node.textContent).join(""),
+    wort: face.querySelector(".wort-text")?.textContent || "",
+    hour: svg && svg.querySelector(".bh-hour").getAttribute("transform"),
+    minute: svg && svg.querySelector(".bh-minute").getAttribute("transform"),
+    sweep: second ? { cls: second.classList.contains("is-sweep"), delay: getComputedStyle(second).animationDelay,
+      name: getComputedStyle(second).animationName } : null,
+    egg: !document.getElementById("leap-egg").hidden,
+    tz: document.getElementById("tz2").hidden ? null : document.getElementById("tz2-time").textContent,
+    bar: kiosk ? getComputedStyle(kiosk).display : null,
+    overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    csp: window.__csp || [],
+  };
+}
+
+async function clockChecks(browser) {
+  const found = [];
+  const lines = [];
+  const open = async (width, query, red = false) => {
+    const ctx = await browser.newContext({ viewport: { width, height: 900 }, timezoneId: "Europe/Berlin" });
+    await ctx.addInitScript((isRed) => {
+      window.__csp = [];
+      document.addEventListener("securitypolicyviolation", (e) => window.__csp.push(`${e.violatedDirective} ${e.blockedURI}`));
+      try { localStorage.setItem("ntp-gui-clock-red", isRed ? "1" : "0"); localStorage.removeItem("ntp-gui-clock-design"); } catch (e) { /* egal */ }
+    }, red);
+    const page = await ctx.newPage();
+    const msgs = [];
+    page.on("console", (m) => { if (m.type() === "error") msgs.push(m.text()); });
+    page.on("pageerror", (e) => msgs.push(`pageerror: ${e.message}`));
+    await page.clock.setFixedTime(new Date(CLOCK_SERVER - 300000));
+    await page.route("**/api/v1/time", (route) => route.fulfill({ json: {
+      t1: CLOCK_SERVER / 1000, t2: CLOCK_SERVER / 1000, synchronised: true, running: true, level: "good", accuracy: 0.0004,
+      stratum: 1, leap: "Normal", leap_next: null, source_kind: "GPS", source: null, public: true } }));
+    await page.goto(`${BASE}/clock${query}`, { waitUntil: "load" });
+    await page.waitForTimeout(2200);   // fünf Messungen, dann steht die Serverzeit
+    const got = await page.evaluate(clockState);
+    await ctx.close();
+    return { got, msgs };
+  };
+  for (const width of [390, 1440]) {
+    for (const red of [false, true]) {
+      for (const [design, want] of Object.entries(CLOCK_EXPECT)) {
+        const { got, msgs } = await open(width, `?design=${design}`, red);
+        const label = `/clock ${design} ${width}${red ? " Rotlicht" : ""}`;
+        const problems = [];
+        if (got.design !== design) problems.push(`Design ${got.design}`);
+        if (red !== (got.mode === "red")) problems.push(`Modus „${got.mode}“`);
+        if (want.text && got[design] !== want.text) problems.push(`zeigt „${got[design]}“ statt „${want.text}“`);
+        if (design === "bahnhof") {
+          if (got.hour !== `rotate(${want.hour} 100 100)` || got.minute !== `rotate(${want.minute} 100 100)`) {
+            problems.push(`Zeiger ${got.hour} / ${got.minute}`);
+          }
+          const delay = -parseFloat(got.sweep?.delay || "0");
+          if (!got.sweep?.cls || got.sweep.name !== "bh-sweep" || Math.abs(delay - want.second) > 1) {
+            problems.push(`Sekundenzeiger ${JSON.stringify(got.sweep)}`);
+          }
+        }
+        if (!got.egg) problems.push("Schaltsekunden-Banner am 30.6. fehlt");
+        if (got.overflow > 0) problems.push(`Überbreite ${got.overflow} px`);
+        if (got.csp.length || msgs.length) problems.push(`Fehler ${JSON.stringify([...got.csp, ...msgs])}`);
+        lines.push(`${label}: ${problems.length ? problems.join("; ") : "ok"}`);
+        if (problems.length) found.push(`${label}: ${problems.join("; ")}`);
+      }
+    }
+    for (const [query, check] of [
+      ["?kiosk=1&design=bahnhof", (g) => (g.bar === "none" ? "" : `Leiste sichtbar (${g.bar})`)],
+      ["?eink=1&design=nixie&tz=America/New_York", (g) => (g.mode === "eink" && g.nixie === "1015" && g.tz === "04:15" ? ""
+        : `E-Ink ${g.mode} ${g.nixie} ${g.tz}`)],
+      ["?eink=1&kiosk=1&design=wort", (g) => (g.wort === "ES IST VIERTEL NACH ZEHN" && g.bar === "none" ? "" : `E-Ink-Kiosk ${g.wort}`)],
+      ["?design=%3Cb%3E&tz=Mars%2FOlymp&kiosk=ja", (g) => (g.design === "digital" && g.tz === null && g.bar !== "none"
+        && g.digital === "10:15:42" ? "" : `Allowlist ${g.design} ${g.tz} ${g.bar}`)],
+    ]) {
+      const { got, msgs } = await open(width, query);
+      const problem = [check(got), got.overflow > 0 ? `Überbreite ${got.overflow} px` : "",
+        got.csp.length || msgs.length ? `Fehler ${JSON.stringify([...got.csp, ...msgs])}` : ""].filter(Boolean).join("; ");
+      lines.push(`/clock${query} ${width}: ${problem || "ok"}`);
+      if (problem) found.push(`/clock${query} ${width}: ${problem}`);
+    }
+  }
+  const quiet = await clockQuietChecks(browser);
+  found.push(...quiet.found);
+  lines.push(...quiet.lines);
+  return { found, lines };
+}
+
+// Ruhe auf der Uhrseite (T6-Nachbesserung), drei Seiten gleichzeitig, je gut 6 s echte Zeit:
+// – E-Ink: zwischen zwei Minutenwechseln ändert sich nichts im DOM (auch nicht das Band beim Abfragen alle 5 s).
+// – Ton-Panel per Maus bzw. Tastatur geöffnet: die Leiste blendet sich nach 4 s nicht aus.
+// – #tone-status (aria-live) wird bei laufendem Ton nicht jede Sekunde neu geschrieben.
+async function clockQuietChecks(browser) {
+  const found = [];
+  const lines = [];
+  const prepare = async (query) => {
+    const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, timezoneId: "Europe/Berlin" });
+    const page = await ctx.newPage();
+    await page.clock.setFixedTime(new Date(CLOCK_SERVER));
+    await page.route("**/api/v1/time", (route) => route.fulfill({ json: {
+      t1: CLOCK_SERVER / 1000, t2: CLOCK_SERVER / 1000, synchronised: true, running: true, level: "good",
+      accuracy: 0.0004 + Math.random() * 0.0002, stratum: 1, leap: "Normal", leap_next: null, source_kind: "GPS",
+      source: null, public: true } }));
+    await page.goto(`${BASE}/clock${query}`, { waitUntil: "load" });
+    await page.waitForTimeout(2200);
+    return { ctx, page };
+  };
+  const observe = (page, selector) => page.evaluate((sel) => {
+    window.__muts = [];
+    const target = document.querySelector(sel);
+    new MutationObserver((records) => {
+      for (const r of records) {
+        if (r.target === document.body && r.attributeName === "class") continue;   // is-idle der Leiste
+        const el = r.target.nodeType === 1 ? r.target : r.target.parentElement;
+        window.__muts.push(el.closest("[id]")?.id || el.tagName);
+      }
+    }).observe(target, { subtree: true, childList: true, characterData: true, attributes: true });
+  }, selector);
+  const eink = async () => {
+    const { ctx, page } = await prepare("?eink=1&design=nixie");
+    await observe(page, "body");
+    await page.waitForTimeout(6200);
+    const muts = await page.evaluate(() => window.__muts);
+    await ctx.close();
+    lines.push(`/clock E-Ink Ruhe: ${muts.length} Änderungen ${JSON.stringify([...new Set(muts)])}`);
+    if (muts.length) found.push(`/clock E-Ink: DOM ändert sich ohne Minutenwechsel (${[...new Set(muts)].join(", ")})`);
+  };
+  const panel = async (how) => {
+    const { ctx, page } = await prepare("?design=digital");
+    if (how === "mouse") {
+      await page.click("#mode-tone");
+      // Ton per Skript starten: ein zweiter Klick weckte die Leiste erneut und verdeckte den Fehler.
+      await page.evaluate(() => document.getElementById("tone-seconds").click());
+    } else {
+      await page.focus("#mode-tone");
+      await page.keyboard.press("Enter");
+    }
+    await page.waitForTimeout(1500);
+    await observe(page, "#tone-status");
+    await page.waitForTimeout(4500);
+    const got = await page.evaluate(() => ({ open: !document.getElementById("tone-panel").hidden,
+      idle: document.body.classList.contains("is-idle"),
+      opacity: getComputedStyle(document.querySelector(".clock-bar")).opacity,
+      focus: document.activeElement?.id || "", status: window.__muts.length,
+      text: document.getElementById("tone-status").textContent }));
+    await ctx.close();
+    lines.push(`/clock Ton-Panel (${how}): ${JSON.stringify(got)}`);
+    if (!got.open || got.idle) found.push(`/clock Ton-Panel per ${how} offen, Leiste trotzdem ausgeblendet (${JSON.stringify(got)})`);
+    if (how === "mouse" && got.status) found.push(`/clock #tone-status (aria-live) ${got.status}× neu geschrieben: „${got.text}“`);
+  };
+  await Promise.all([eink(), panel("mouse"), panel("keyboard")]);
+  return { found, lines };
+}
+
 // Sichtbare Wortzahl je Seite (1.6, T2 „Seiten entschlacken“): innerText des Inhalts bei 1440 px, helles Thema.
 // Geschlossene ⓘ-Popover stehen nicht im DOM, zugeklappte <details> zählt innerText nicht mit (nur die Zusammenfassung).
 // Wort = Folge ohne Leerraum mit mindestens einem Buchstaben oder einer Ziffer.
@@ -864,6 +1035,13 @@ async function setupChecks(browser) {
   try {
     // Erststart (leeres Datenverzeichnis): erst den Assistenten durchgehen und mit „Fertig“ abschließen – sonst
     // öffnete die Startseite in jedem neuen Browser-Kontext wieder den Assistenten.
+    if (process.env.TOUR_CLOCK_ONLY) {
+      // Nur die Uhr-Werkstatt (/clock braucht keinen Assistenten).
+      const result = await clockChecks(browser);
+      console.log(JSON.stringify(result, null, 1));
+      process.exitCode = result.found.length ? 1 : 0;
+      return;
+    }
     const setupResult = process.env.TOUR_WORDS_ONLY || process.env.TOUR_PAGES_ONLY
       ? (await apiJson("/api/setup", { action: "done" }), { found: [], lines: [] }) : await setupChecks(browser);
     nav.found.push(...setupResult.found);
@@ -890,6 +1068,9 @@ async function setupChecks(browser) {
     const pagesResult = await pagesChecks(browser);
     nav.found.push(...pagesResult.found);
     nav.lines.push(...pagesResult.lines);
+    const clockResult = await clockChecks(browser);
+    nav.found.push(...clockResult.found);
+    nav.lines.push(...clockResult.lines);
     words = await wordCounts(browser);
     // TOUR_NAV_ONLY=1: nur die Navigationsprüfungen (schneller Durchlauf beim Arbeiten an der Navigation).
     for (const theme of process.env.TOUR_NAV_ONLY ? [] : ["light", "dark"]) {

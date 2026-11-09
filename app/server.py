@@ -348,11 +348,12 @@ apiv1.endpoint("GET", "/leap", "/api/leap", "read",
                 "expired", "hash_ok", "level", "reason", "chrony_leap"])
 apiv1.endpoint("GET", "/time", None, "read",
                "Zeit für die Vollbild-Uhr (/clock): Empfangs- (t1) und Sendezeit (t2) des Servers in Unix-Sekunden "
-               "für den Abgleich mit vier Zeitstempeln, dazu Synchronstatus, Genauigkeit und Art der Quelle. "
+               "für den Abgleich mit vier Zeitstempeln, dazu Synchronstatus, Genauigkeit, Art der Quelle und das "
+               "Datum der nächsten angekündigten Schaltsekunde (leap_next, öffentlich aus der leap-seconds.list). "
                "Mit „Vollbild-Uhr ohne Anmeldung“ (clock_public) ohne Login und über jeden Host-Namen erreichbar – "
                "dann ohne Quellennamen.",
-               ["t1", "t2", "synchronised", "level", "accuracy", "stratum", "leap", "source_kind", "source",
-                "public"])
+               ["t1", "t2", "synchronised", "level", "accuracy", "stratum", "leap", "leap_next", "source_kind",
+                "source", "public"])
 
 # 1.6 (T3): Willkommens-Assistent – Zustand, Prüfpunkte und Checkliste; Schreiben nur mit Verwaltungsrecht.
 apiv1.endpoint("GET", "/setup", "/api/setup", "read",
@@ -377,8 +378,11 @@ apiv1.endpoint("GET", "/update", "/api/update", "read",
 
 # Ohne Anmeldung erreichbar, wenn „Vollbild-Uhr ohne Anmeldung“ an ist: nur die Uhrseite, ihre
 # statischen Dateien (kein Inhalt aus der Konfiguration) und /api/v1/time.
+# 1.6 (T6): Designs, Ton und Sprache brauchen clockkit.js, util.js und i18n.js samt Sprachkatalogen –
+# alles feste Texte und Code, nichts aus Konfiguration oder Status.
 CLOCK_PUBLIC_PATHS = {"/clock", "/api/v1/time", "/static/app.css", "/static/clock.css",
-                      "/static/js/clock.js", "/static/js/clocksync.js"}
+                      "/static/js/clock.js", "/static/js/clocksync.js", "/static/js/clockkit.js",
+                      "/static/js/util.js", "/static/js/i18n.js", "/static/i18n/de.json", "/static/i18n/en.json"}
 
 CONTENT_TYPES = {
     ".html": "text/html; charset=utf-8",
@@ -1036,6 +1040,20 @@ def _clock_tracking() -> dict:
         return tracking
 
 
+def _clock_leap_next(cfg: dict) -> str | None:
+    """Datum der nächsten angekündigten Schaltsekunde (Beginn des neuen TAI−UTC, „2017-01-01“) für /clock.
+
+    Öffentliche Information aus der leap-seconds.list (IERS Bulletin C) – kein Pfad, keine Einstellung.
+    Die Uhr zeigt damit am 30.6./31.12. ein kleines Banner. Nie ein Fehler: im Zweifel None.
+    """
+    try:
+        info = leap.status(cfg)
+    except Exception:
+        return None
+    value = info.get("next_leap_date") if info.get("available") else None
+    return value if isinstance(value, str) and len(value) == 10 else None
+
+
 def time_payload(received: float, public: bool) -> dict:
     """Antwort von /api/v1/time. t2 wird so spät wie möglich genommen."""
     tracking = _clock_tracking()
@@ -1044,6 +1062,7 @@ def time_payload(received: float, public: bool) -> dict:
     except Exception:
         cfg = {}
     out = clock_status(tracking, cfg)
+    out["leap_next"] = _clock_leap_next(cfg)
     out.update(t1=received, public=public,
                source=None if public else (str(tracking.get("ref_name") or "") or None))
     out["t2"] = time.time()

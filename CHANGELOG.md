@@ -69,6 +69,12 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
   Geschrieben wird nur mit „Übernehmen“ – mit derselben Prüfung und Diff-Vorschau wie unter Einstellungen. „Weiter“, „Zurück“, „Später“ ändern nichts. Beim ersten Start öffnet sich der Assistent von selbst.
 - **Checkliste auf der Übersicht** („3 von 5 erledigt“, Benachrichtigung optional). Sie verschwindet, wenn du sie schließt oder einmal alles grün war, und kommt bei kurzen Synchronisationsverlusten nicht wieder.
 - API: `GET /api/v1/setup` (Leserecht) und `POST /api/v1/setup` mit `done`, `never`, `close_hint`, `close_checklist` oder `reset` (Verwaltungsrecht, gesperrt mit `WEB_READONLY`); diese Aufrufe ändern keine Einstellungen.
+- **Uhr-Werkstatt auf `/clock`:** Neben der digitalen Anzeige gibt es vier Designs – Bahnhofsuhr (Sekundenzeiger mit kurzem Halt auf der 12), Nixie-Röhren, Klappzahlen und Wortuhr („ES IST VIERTEL NACH ZEHN“, Englisch als Beta). Dein Browser merkt sich die Wahl; fest einstellen geht mit `?design=` (`digital`, `bahnhof`, `nixie`, `flip`, `wort`).
+- **Kiosk, E-Ink und zweite Zeitzone:** `?kiosk=1` ohne Leiste und Mauszeiger, `?eink=1` schwarz auf weiß und nur zum Minutenwechsel aktualisiert (auch das Statusband), `?tz=Europe/London` für eine zweite Zeitzone. Unbekannte Werte ignoriert die Uhr.
+- **Ton auf der Sekunde:** nach einem Klick ein kurzer Piep je Sekunde, ein langer zur vollen Minute und ein Countdown „Uhr stellen“ – zum Stellen von Backofen, Auto- oder Armbanduhr. Die erwartete Genauigkeit steht dabei; warum Bluetooth-Lautsprecher hinterherhängen, steht im ⓘ.
+- **„Wie falsch geht dein Gerät?“** (`/clock` → „Mein Gerät“): wie weit die Uhr deines Handys oder PCs danebenliegt, groß und mit Ampel. Die Messung bleibt in deinem Browser und wird weder gespeichert noch gesendet.
+- Kleines Osterei am 30. Juni und 31. Dezember: ein Hinweis, dass heute 23:59:60 möglich wäre.
+- `/api/v1/time` liefert zusätzlich `leap_next`, das Datum der nächsten angekündigten Schaltsekunde.
 
 ### Geändert
 - **Abzeichen nur bei geänderten Werten:** „geändert · zurücksetzen“. Zurücksetzen stellt den Standard ein –
@@ -113,6 +119,7 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 - GPS-Kalibrierung: Der Satz zur aktuellen Phase steht nur noch einmal da; bei einer Störungssperre gibt es nur noch eine rote Hinweisbox.
 - Nach einem Update von 1.5.x oder nach dem Einspielen einer Sicherung auf einer neuen Installation öffnet sich der Assistent nicht von selbst; die Übersicht zeigt einmal den Hinweis „Einrichtung prüfen“.
 - Der Knopf „Kopieren“ hat eine größere Tippfläche.
+- `/clock` beachtet „Bewegung reduzieren“ deines Systems (Sekundenzeiger springt, Klappen ruhen) und folgt der im Dashboard gewählten Sprache. Bei „Vollbild-Uhr ohne Anmeldung“ sind dafür auch die Skripte und Sprachkataloge der Uhr ohne Login abrufbar – nur Code und feste Texte, keine Einstellungen.
 
 ### Behoben
 - **Versionsnummer:** Das Image 1.5.5 meldete sich als 1.5.4. Bei eingeschalteter Update-Prüfung hast du deshalb dauerhaft ein angebliches Update gesehen, und Diagnosepaket, Startereignis und Sicherungen nannten die falsche Version. Ein Release bricht jetzt ab, wenn die Versionsnummer im Programm nicht zur Release-Version und zum Changelog passt.

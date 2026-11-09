@@ -1128,6 +1128,15 @@ Die Seite **Uhrqualität** zeigt, was die Uhr deines Servers langfristig beeinfl
   eine große, mit dem Server abgeglichene Uhr (Ortszeit, UTC, Datum, Kalenderwoche, Status) –
   ideal für Wandmonitor oder altes Tablet. Rotlicht-Modus und Vollbild (Taste F) inklusive. Der
   Abgleich läuft wie bei NTP mit vier Zeitstempeln; die Uhr des Tablets ist egal.
+- **Uhr-Werkstatt (ab 1.6):** vier weitere Designs – Bahnhofsuhr (Sekundenzeiger hält kurz auf
+  der 12), Nixie-Röhren, Klappzahlen und Wortuhr („ES IST VIERTEL NACH ZEHN“, Englisch als Beta).
+  Der Browser merkt sich deine Wahl; per Adresse geht es auch: `/clock?design=bahnhof`
+  (`digital`, `bahnhof`, `nixie`, `flip`, `wort`). `?kiosk=1` blendet Leiste und Mauszeiger aus,
+  `?eink=1` zeigt schwarz auf weiß und ändert die Anzeige nur zur vollen Minute, `?tz=Europe/London`
+  zeigt eine zweite Zeitzone. Unbekannte Werte werden ignoriert. **Ton** piept nach einem Klick auf
+  jeder vollen Sekunde (langer Ton zur Minute) oder zählt zum Uhrenstellen die letzten 10 s bis zur
+  vollen Minute herunter. **Mein Gerät** zeigt, wie falsch die Uhr deines Handys oder PCs geht –
+  das Ergebnis bleibt im Browser, nichts wird gespeichert oder gesendet.
 - **Holdover-Test:** misst, wie lange die Uhr ohne Zeitquelle hält – siehe
   [GNSS-Störungen, GPS-Sperre und Holdover-Test](#gnss-störungen-gps-sperre-und-holdover-test-ab-15).
 
@@ -1137,7 +1146,8 @@ Die Seite **Uhrqualität** zeigt, was die Uhr deines Servers langfristig beeinfl
 </picture>
 
 Mit `CLOCK_PUBLIC=true` sind `/clock` und `/api/v1/time` ohne Anmeldung erreichbar (nur Zeit,
-Ampel, Genauigkeit und Art der Quelle – keine Namen, Adressen oder Einstellungen). Ab 1.5.1
+Ampel, Genauigkeit, Art der Quelle und das Datum einer angekündigten Schaltsekunde – keine Namen,
+Adressen oder Einstellungen; dazu die Skripte und Sprachkataloge der Uhr). Ab 1.5.1
 antwortet die Uhr dann über **jeden** Namen, auch über einen eigenen DNS-Namen des
 Wandmonitors – die Namensprüfung gegen DNS-Rebinding entfällt nur hier, weil darin nichts
 Schützenswertes steht (siehe [Schutz vor DNS-Rebinding](#schutz-vor-dns-rebinding)). Alle

@@ -28,7 +28,7 @@ import _isolation  # noqa: E402,F401
 
 import settings  # noqa: E402
 
-NAMESPACES = ("app", "nav", "overview", "settings", "help", "pages", "setup")
+NAMESPACES = ("app", "nav", "overview", "settings", "help", "pages", "setup", "clock")
 KEY_LITERAL = re.compile(r"""["'`]((?:%s)\.[a-z0-9_]+(?:\.[a-z0-9_]+)*)["'`]""" % "|".join(NAMESPACES))
 HTML_ATTR = re.compile(r'data-i18n(?:-title|-aria-label)?="([^"]+)"')
 PLACEHOLDER = re.compile(r"\{(\w+)\}")
@@ -64,8 +64,9 @@ def used_keys() -> list[tuple[str, str]]:
     for path in sorted(JS.rglob("*.js")):
         text = path.read_text(encoding="utf-8")
         found += [(path.name, m.group(1)) for m in KEY_LITERAL.finditer(text)]
-    html = (STATIC / "index.html").read_text(encoding="utf-8")
-    found += [("index.html", m.group(1)) for m in HTML_ATTR.finditer(html)]
+    for page in ("index.html", "clock.html"):   # clock.html: Vollbild-Uhr (1.6, T6)
+        html = (STATIC / page).read_text(encoding="utf-8")
+        found += [(page, m.group(1)) for m in HTML_ATTR.finditer(html)]
     # Dynamische Schlüssel der Einstellungsseite: je Abschnitt Titel und Beschreibung.
     found += [("settings.js", f"settings.section.{key}.{part}") for key, _l, _d in settings.SECTIONS
               for part in ("title", "description")]
@@ -100,7 +101,8 @@ class CatalogTest(unittest.TestCase):
 
     def test_scanner_sees_usage(self):
         keys = {k for _f, k in used_keys()}
-        for key in ("nav.overview", "app.footer", "overview.verdict.good_title", "app.skip_link"):
+        for key in ("nav.overview", "app.footer", "overview.verdict.good_title", "app.skip_link", "clock.tone_info",
+                    "clock.design.wort"):
             self.assertIn(key, keys)
 
     def test_every_used_key_exists_in_de(self):
