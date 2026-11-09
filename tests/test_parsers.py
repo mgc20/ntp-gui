@@ -80,6 +80,19 @@ class TestTracking(unittest.TestCase):
         self.assertTrue(tracking["local_reference"])
         self.assertFalse(tracking["synchronised"])
 
+    def test_unsynchronised_is_not_local_reference(self):
+        # Befund: Unsynchron (Ref-ID 00000000, leerer Name, Stratum 0) galt als Inselbetrieb.
+        tracking = chrony.parse_tracking(
+            "00000000,,0,1787650421.5,0.0,0.0,0.0,0.0,0.0,0.0,1.0,1.0,0.0,Not synchronised\n")
+        self.assertFalse(tracking["local_reference"])
+        self.assertFalse(tracking["synchronised"])
+        import insights
+        import server
+        keys = {i["key"] for i in insights.build({"chrony_running": True, "tracking": tracking, "sources": []}, {})}
+        self.assertIn("syncing", keys)
+        self.assertNotIn("island", keys)
+        self.assertIsNone(server.clock_status(tracking)["source_kind"])
+
     def test_empty_output(self):
         self.assertEqual(chrony.parse_tracking(""), {})
 

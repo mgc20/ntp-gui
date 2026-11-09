@@ -229,6 +229,53 @@ class ComputeTest(unittest.TestCase):
         out = allan.compute(gapped)
         self.assertEqual(out["segments"], 2)
 
+    def test_coarse_interval_is_no_gap(self):
+        # Messintervall 600 s (erlaubtes Maximum): Abstände 600/601 s (Messrunde + int(time)) sind
+        # das normale Raster, keine Lücke – nichts darf als Einschwingen wegfallen.
+        rnd = random.Random(3)
+        t0 = 1_793_000_000
+        series, t = [], float(t0)
+        for _ in range(30 * 144):
+            series.append((int(t), round(1.67 + rnd.gauss(0, 0.002), 3)))
+            t += 600 + rnd.uniform(0, 0.6)
+        out = allan.compute(series)
+        self.assertTrue(out["available"])
+        self.assertEqual(out["segments"], 1)
+        self.assertEqual(out["settle_dropped"], math.ceil(allan.SETTLE_SECONDS / 600))
+        # Eine echte Lücke (mehrere Messintervalle) beginnt weiter einen neuen Abschnitt.
+        gapped = series[:2000] + series[2010:]
+        self.assertEqual(allan.compute(gapped)["segments"], 2)
+
+    def test_interval_switch_10_to_600_keeps_coarse_part(self):
+        # Prüfbefund: history_interval von 10 s auf 600 s umgestellt. Im 30-Tage-Fenster sind die
+        # 10-s-Punkte noch weit in der Mehrheit (globaler Median 10 s); der 600-s-Teil darf trotzdem nur
+        # am Übergang einschwingen und nicht Punkt für Punkt als Lücke wegfallen.
+        rnd = random.Random(5)
+        t = float(1_793_000_000)
+        series = []
+        for _ in range(20 * 8640):
+            series.append((int(t), round(1.67 + rnd.gauss(0, 0.002), 3)))
+            t += 10 + rnd.uniform(0, 0.3)
+        switch = int(t)
+        for _ in range(10 * 144):
+            series.append((int(t), round(1.67 + rnd.gauss(0, 0.002), 3)))
+            t += 600 + rnd.uniform(0, 0.6)
+        kept, segments, dropped = allan.settle(sorted((float(a), float(b)) for a, b in series))
+        coarse_kept = sum(1 for k, _ in kept if k >= switch)
+        coarse_total = 10 * 144
+        # Höchstens die Einschwingphase nach dem Übergang (plus die Abstände, bis der lokale Median
+        # auf 600 s steht) fällt weg.
+        allowed = math.ceil(allan.SETTLE_SECONDS / 600) + allan.GAP_WINDOW
+        self.assertGreaterEqual(coarse_kept, coarse_total - allowed)
+        self.assertLessEqual(segments, 1 + allan.GAP_WINDOW)
+        out = allan.compute(series)
+        self.assertTrue(out["available"])
+        self.assertLessEqual(out["settle_dropped"], int(allan.SETTLE_SECONDS / 10) + 1 + allowed)
+        # Eine echte Lücke im 600-s-Teil beginnt weiter einen neuen Abschnitt.
+        cut = 20 * 8640 + 500
+        gapped = series[:cut] + series[cut + 10:]
+        self.assertEqual(allan.settle(sorted((float(a), float(b)) for a, b in gapped))[1], segments + 1)
+
     def test_span_capped(self):
         # HISTORY_DAYS bis 3650: nie mehr als MAX_SPAN rechnen (Speicher auf dem Pi).
         series = self.series(24 * 40, interval=60.0)

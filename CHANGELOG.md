@@ -114,7 +114,28 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 - Nach einem Update von 1.5.x oder nach dem Einspielen einer Sicherung auf einer neuen Installation öffnet sich der Assistent nicht von selbst; die Übersicht zeigt einmal den Hinweis „Einrichtung prüfen“.
 - Der Knopf „Kopieren“ hat eine größere Tippfläche.
 
+### Behoben
+- **Versionsnummer:** Das Image 1.5.5 meldete sich als 1.5.4. Bei eingeschalteter Update-Prüfung hast du deshalb dauerhaft ein angebliches Update gesehen, und Diagnosepaket, Startereignis und Sicherungen nannten die falsche Version. Ein Release bricht jetzt ab, wenn die Versionsnummer im Programm nicht zur Release-Version und zum Changelog passt.
+- **Nicht synchron statt „Inselbetrieb“:** Hat chrony gar keine Referenz (Ref-ID 00000000), meldet ntp-gui das nicht mehr als Inselbetrieb.
+- **„Nur auf dieser Adresse lauschen“** nimmt nur noch genau eine IP-Adresse an. Ein Hostname, ein Interface, ein Netz oder zwei Adressen ließen chronyd mit „Fatal error“ abbrechen – bei jedem Neustart wieder. Ein ungültiger gespeicherter Wert fällt auf „alle Adressen“ zurück.
+- **Ganzzahl-Optionen** für Quellen, Refclock und PPS (minpoll, poll, rate, stratum …) lehnen Kommazahlen, Exponenten und Ziffern aus anderen Schriften ab; „stratum“ beim Refclock nimmt nur 0 bis 15. Bisher legte ein solcher Tippfehler chronyd lahm.
+- Umlaute in `EXTRA_CHRONY_CONF` und `EXTRA_PTP4L_CONF` bleiben erhalten (aus „ä“ wurde „Ã¤“); andere Backslash-Folgen bleiben unverändert stehen.
+- **GPS-Kalibrierung:** Die gewählte Rolle (z. B. „bevorzugen“) springt beim automatischen Aktualisieren nicht mehr zurück und wird nicht mehr still durch „auto“ ersetzt.
+- **Eingabefelder:** Cursor und Markierung bleiben beim automatischen Aktualisieren erhalten; halb getippte Werte gehen nicht verloren (aus „0,5“ wurde „5“), eine geöffnete Auswahlliste schließt sich nicht mehr, und Klicks gehen nicht mehr verloren, wenn eine Aktualisierung zwischen Drücken und Loslassen fällt.
+- **Neustart-Anzeige:** Bezugszeit ist die Serverzeit statt der Browseruhr – bei vorgehender Browseruhr kam sonst nie „aktiv“. Auch das Alter des letzten Temperaturwerts rechnet nach der Serverzeit.
+- **Fehlerschranke der GPS-Automatik:** Ohne gespeicherte Schranke vergleicht sie mit dem Delay, den chrony wirklich nutzt, statt mit 0,2 s; eine Verkleinerung unterliegt damit wieder den Schutzregeln (12-h-Sperre, 48-h-Prüfung).
+- **Empfangsbewertung:** Satelliten und dB-Hz stehen mit einer Nachkommastelle im Text, damit Zahl und Ampel nicht mehr widersprüchlich wirken.
+- **PPS-Impulsrate:** wird aus den Impuls-Zeitstempeln berechnet; eine 1-Hz-PPS erscheint nicht mehr als „1,67 Impulse/s“.
+- **Pi-Zustand:** Nach einem Neustart des Dashboards wird eine offene Unterspannungs- oder Drosselungs-Episode mit „… vorbei“ geschlossen.
+- **RTC-Abweichung** steht in ganzen Sekunden statt mit Scheingenauigkeit.
+- **7-/30-Tage-Diagramme:** Der letzte Punkt springt vor dem Speichern nicht mehr.
+- **Allan-Abweichung** funktioniert auch mit einem Messintervall von 600 s.
+- **Wiederherstellen:** Die Vorschau nennt jetzt die Benachrichtigungskanäle, die beim Übernehmen samt Token gelöscht oder ersetzt werden; der Bestätigungsdialog verspricht den Tokenerhalt nur noch, wo er zutrifft.
+- Abfragewerte wie `nan` oder `inf` (z. B. `/api/history?points=nan`) führen nicht mehr zu HTTP 500, sondern zum Standardwert.
+
 ### Sicherheit
+- **Eingeschleuste Anfragen (HTTP-Desync):** Schickt ein Client einen Inhalt mit, den ntp-gui nicht liest (z. B. bei `GET /healthz`), per `Transfer-Encoding: chunked` oder mit widersprüchlichen `Content-Length`-Köpfen, kann dieser Inhalt nicht mehr als zweite Anfrage laufen. Hinter einem Reverse Proxy wie Caddy ließ sich sonst ohne Anmeldung eine Anfrage vor die Anfragen anderer Nutzer schieben. ntp-gui schließt in diesen Fällen die Verbindung; chunked lehnt es mit 501 ab, widersprüchliche Längen mit 400.
+- **Wiederherstellen:** Der gespeicherte Zustand der Client-Regeln läuft beim Einspielen durch denselben Positionsfilter wie beim Erstellen einer Sicherung und ist begrenzt; ein verändertes Archiv kann so keine Positionsangaben mehr in die Datenbank schmuggeln.
 - **Vorschau der Konfiguration:** gleiche Rechte wie das Speichern (nur Verwaltungsrecht, CSRF-/Origin-Prüfung,
   Größengrenze); sie liest nur die Dateien, die ntp-gui selbst erzeugt, nie einen Pfad aus der Anfrage.
   Passwort, Tokens und DoH-Adressen stehen ohnehin nicht in den Konfigurationsdateien; frei eingetragene Zeilen

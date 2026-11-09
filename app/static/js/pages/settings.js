@@ -303,6 +303,8 @@ function backupPreview(ctx, preview) {
   ];
   const days = isNum(history.days) ? history.days : 0;
   const items = channels.items || [];
+  const removed = channels.removed || [];
+  const replaced = channels.replaced || [];
   const security = setts.security || [];
   const dropped = cal.dropped || [];
   const channelText = (item) => {
@@ -326,13 +328,23 @@ function backupPreview(ctx, preview) {
         + (dropped.length ? ` · ${plural(dropped.length, "ungültiger Teil", "ungültige Teile")} verworfen` : ""), "backup_calibration"],
       ["Benachrichtigungen", `${plural(channels.count || 0, "Kanal", "Kanäle")}`
         + (items.some((item) => !item.dropped && !item.enabled) ? `, ${fmtNumber(items.filter((item) => !item.dropped && !item.enabled).length)} ausgeschaltet` : "")
-        + ((channels.reenter || []).length ? `, ${fmtNumber(channels.reenter.length)} ohne Token bzw. Adresse – bitte neu eingeben` : ""), "backup_channels"],
+        + ((channels.reenter || []).length ? `, ${fmtNumber(channels.reenter.length)} ohne Token bzw. Adresse – bitte neu eingeben` : "")
+        + (removed.length ? `, ${plural(removed.length, "Kanal", "Kanäle")} von hier ${removed.length === 1 ? "fällt" : "fallen"} weg` : "")
+        + (replaced.length ? `, ${plural(replaced.length, "Kanal", "Kanäle")} von hier ${replaced.length === 1 ? "wird" : "werden"} durch die Fassung aus der Sicherung ersetzt` : ""), "backup_channels"],
       ["Einstellungen", `${plural(setts.count || 0, "gespeicherter Wert", "gespeicherte Werte")}`
         + (setts.restart ? " · Zeitdienste starten danach neu" : " · ohne Neustart der Zeitdienste"), "backup_settings"],
     ]),
     items.length ? el("div", { class: "backup-reenter" },
       el("p", { class: "field-help" }, el("strong", { text: "Benachrichtigungskanäle: " }), infoButton("backup_channels", "Benachrichtigungskanäle")),
       el("ul", {}, items.map((item) => el("li", {}, el("strong", { text: `${item.name}: ` }), el("span", { text: channelText(item) }))))) : null,
+    removed.length ? el("div", { class: "backup-reenter" },
+      el("p", { class: "field-help" }, el("strong", { text: "Diese Kanäle gibt es nur hier – sie werden gelöscht: " }), infoButton("backup_channels", "Benachrichtigungskanäle")),
+      el("ul", {}, removed.map((item) => el("li", {}, el("strong", { text: `${item.name}: ` }),
+        el("span", { text: `${item.type} → ${item.host}${item.secret ? " · Token bzw. Adresse geht verloren, auch die automatische Sicherung davor enthält sie nicht" : ""}` }))))) : null,
+    replaced.length ? el("div", { class: "backup-reenter" },
+      el("p", { class: "field-help" }, el("strong", { text: "Diese Kanäle stehen in der Sicherung mit anderer Art oder anderem Server – sie werden ersetzt: " }), infoButton("backup_channels", "Benachrichtigungskanäle")),
+      el("ul", {}, replaced.map((item) => el("li", {}, el("strong", { text: `${item.name}: ` }),
+        el("span", { text: `jetzt ${item.type} → ${item.host}, danach ${item.new_type} → ${item.new_host}${item.secret ? " · jetziger Token bzw. Adresse geht verloren, auch die automatische Sicherung davor enthält sie nicht" : ""}` }))))) : null,
     security.length ? el("div", { class: "backup-reenter" },
       el("p", { class: "field-help" }, el("strong", { text: "Diese sicherheitsrelevanten Einstellungen ändern sich: " }), infoButton("backup_security", "Sicherheitsrelevante Einstellungen")),
       el("ul", {}, security.map((item) => el("li", { text: `${item.label}: ${item.before} → ${item.after}` })))) : null,
@@ -379,9 +391,15 @@ function backupCard(ctx, readonly, rows = []) {
   const take = async () => {
     const restart = state.preview?.settings?.restart;
     const holdover = ctx.status?.holdover_active && restart ? " Gerade läuft ein Holdover-Test – der Neustart der Zeitdienste bricht ihn ab." : "";
+    const removed = state.preview?.channels?.removed || [];
+    const replaced = state.preview?.channels?.replaced || [];
     if (!window.confirm("Die Sicherung ersetzt Einstellungen, Verlauf, Ereignisse, Geräte, Namen, Gruppen, Regeln, "
       + "Kalibrierung und Benachrichtigungskanäle. Der jetzige Stand wird vorher im Datenverzeichnis gesichert (ohne "
-      + "Tokens – vorhandene Kanäle behalten ihre Tokens, neue kommen ausgeschaltet). Das Dashboard ist dabei einige "
+      + "Tokens). Kanäle mit gleicher Kennung, gleicher Art und gleichem Server behalten ihre Tokens; alle anderen "
+      + "kommen ausgeschaltet"
+      + (removed.length ? `; ${plural(removed.length, "Kanal", "Kanäle")}, die es nur hier gibt, ${removed.length === 1 ? "wird" : "werden"} samt Token gelöscht` : "")
+      + (replaced.length ? `; ${plural(replaced.length, "Kanal", "Kanäle")} mit anderer Art oder anderem Server in der Sicherung ${replaced.length === 1 ? "wird" : "werden"} ersetzt, ${replaced.length === 1 ? "sein" : "ihr"} jetziger Token geht verloren` : "")
+      + ". Das Dashboard ist dabei einige "
       + `Sekunden beschäftigt.${restart ? " Die Zeitdienste starten danach neu." : ""}${holdover} Übernehmen?`)) return;
     state.busy = "Übernehme die Sicherung … Das Dashboard ist dabei einige Sekunden beschäftigt.";
     ctx.rerender();

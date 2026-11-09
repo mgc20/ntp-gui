@@ -484,6 +484,26 @@ class T4ReviewTest(unittest.TestCase):
             self.assertEqual(restarted._update(dict(sample), 200.0), [])
             self.assertEqual(restarted._update(dict(sample), 260.0), [])
 
+    def test_restart_after_episode_ended_meanwhile_closes_it(self):
+        # Befund: Ist die Spannung während des Neustarts wieder gut, blieb „erkannt“ ohne „vorbei“ stehen.
+        sample = {"bits": 0x50005, **pistate.decode(0x50005)}
+        first = pistate.Monitor(clock=lambda: 100.0)
+        with mock.patch("events.query", return_value=[]):
+            out = first._update(dict(sample), 100.0)
+        logged = [{"kind": "pi", "title": t, "data": d} for _, _, t, d in reversed(out)]
+        good = {"bits": 0x50000, **pistate.decode(0x50000)}
+        restarted = pistate.Monitor(clock=lambda: 200.0)
+        with mock.patch("events.query", return_value=logged):
+            self.assertEqual(restarted._update(dict(good), 200.0), [])
+            self.assertEqual(restarted._update(dict(good), 200.0 + pistate.QUIET_SECONDS - 1), [])
+            out = restarted._update(dict(good), 200.0 + pistate.QUIET_SECONDS)
+        self.assertEqual([t for _, _, t, _ in out], ["Unterspannung vorbei", "Takt wieder frei"])
+        # Ohne offene Episode im Protokoll: nichts zu schließen.
+        fresh = pistate.Monitor(clock=lambda: 0.0)
+        with mock.patch("events.query", return_value=[]):
+            fresh._update(dict(good), 0.0)
+            self.assertEqual(fresh._update(dict(good), 2 * pistate.QUIET_SECONDS), [])
+
     def test_restart_after_closed_episode_reports_again(self):
         sample = {"bits": 0x50005, **pistate.decode(0x50005)}
         logged = [{"kind": "pi", "title": "Unterspannung vorbei", "data": {"subject": "undervoltage"}},

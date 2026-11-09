@@ -49,6 +49,17 @@ def _num(value) -> str:
     return str(value)
 
 
+_EXTRA_ESCAPES = {"n": "\n", "t": "\t", "\\": "\\"}
+
+
+def _unescape_extra(text: str) -> str:
+    """EXTRA_*_CONF: „\\n“ wird zum Zeilenumbruch („\\t“ Tab, „\\\\“ Backslash).
+
+    Nur diese Folgen – alles andere bleibt, wie es dasteht, auch Umlaute und andere Backslashes.
+    """
+    return re.sub(r"\\([nt\\])", lambda m: _EXTRA_ESCAPES[m.group(1)], text)
+
+
 def gps_refclock_values(cfg: dict) -> dict:
     """delay/precision der GPS-Zeile (gpsquality.refclock_values); bei jedem Fehler die Einstellungen."""
     try:
@@ -237,7 +248,7 @@ def render_chrony(cfg: dict, env: dict | None = None, warn=_log,
 
     extra = env.get("EXTRA_CHRONY_CONF", "")
     if extra:
-        lines += ["", "# EXTRA_CHRONY_CONF", extra.encode().decode("unicode_escape")]
+        lines += ["", "# EXTRA_CHRONY_CONF", _unescape_extra(extra)]
     return "\n".join(lines) + "\n"
 
 
@@ -285,7 +296,7 @@ uds_address             {settings.ptp_uds_address(env)}
     for key, value in profile_extra.items():
         body += f"{key:<23} {value}\n"
     if extra:
-        body += extra.encode().decode("unicode_escape") + "\n"
+        body += _unescape_extra(extra) + "\n"
     body += f"\n[{cfg['ptp_interface'] or 'eth0'}]\n"
     return body
 

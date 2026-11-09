@@ -638,6 +638,73 @@ class RestoreSafetyTest(BackupTestBase):
         self.assertNotIn("Gotify ohne Token", channels)
         self.assertFalse(any(c["enabled"] for c in channels.values()))
 
+    def test_preview_names_channels_that_restore_deletes(self):
+        # Kanal nach der Sicherung angelegt: Er steht nicht in der Sicherung und wird samt Token gelöscht –
+        # das muss die Vorschau sagen, und der Bestätigungsdialog darf nicht das Gegenteil versprechen.
+        data = self.make_backup()
+        notify.save_channel({"name": "Neu Gotify", "type": "gotify", "url": "https://gotify2.example.org",
+                             "secret": "NEU_GOTIFY_TOKEN_1234"})
+        staged = self.staged(data)
+        removed = staged["preview"]["channels"]["removed"]
+        self.assertEqual([(c["name"], c["type"], c["host"], c["secret"]) for c in removed],
+                         [("Neu Gotify", "Gotify", "gotify2.example.org", True)])
+        self.assertNotIn("NEU_GOTIFY_TOKEN_1234", json.dumps(staged["preview"]))
+        backup.apply(staged["token"])
+        self.assertNotIn("Neu Gotify", {c["name"] for c in notify._load_all()})
+        page = (Path(backup.__file__).parent / "static/js/pages/settings.js").read_text(encoding="utf-8")
+        self.assertTrue("channels.removed" in page, "Vorschau zeigt wegfallende Kanäle nicht")
+        self.assertFalse("vorhandene Kanäle behalten ihre Tokens" in page, "Bestätigung verspricht zu viel")
+
+    def test_preview_names_channel_replaced_by_invalid_backup_entry(self):
+        # Gleiche Kennung, aber der Eintrag in der Sicherung ist ungültig: Der Kanal hier wird trotzdem gelöscht.
+        data = self.make_backup()
+        staged = self.staged(data)
+        self.assertEqual(staged["preview"]["channels"]["removed"], [])
+        backup.discard(staged["token"])
+        cid = next(c["id"] for c in notify._load_all() if c["name"] == "Gotify")
+        parts = edit_dump(self.tmp, self.parts_from(data),
+                          ("UPDATE notify_channels SET kinds = 'kaputt' WHERE id = ?", (cid,)))
+        removed = self.staged(self.rebuild(parts))["preview"]["channels"]["removed"]
+        self.assertEqual([c["name"] for c in removed], ["Gotify"])
+
+    def test_preview_names_channel_replaced_by_other_server(self):
+        # Gleiche Kennung, aber seit der Sicherung auf einen anderen Server umgestellt: Die Fassung aus der
+        # Sicherung ersetzt den Kanal, der jetzige Token geht verloren – das muss die Vorschau sagen, und der
+        # Bestätigungsdialog darf keinen Tokenerhalt für alle Kanäle versprechen, die hier und dort stehen.
+        data = self.make_backup()
+        current = next(c for c in notify._load_all() if c["name"] == "Gotify")
+        notify.save_channel({"id": current["id"], "name": "Gotify", "type": "gotify",
+                             "url": "https://gotify-neu.example.org", "secret": "NEUTOKEN_999"})
+        staged = self.staged(data)
+        channels = staged["preview"]["channels"]
+        self.assertEqual(channels["removed"], [])
+        self.assertEqual([(c["name"], c["host"], c["new_host"], c["secret"]) for c in channels["replaced"]],
+                         [("Gotify", "gotify-neu.example.org", "gotify.example.org", True)])
+        self.assertNotIn("NEUTOKEN_999", json.dumps(staged["preview"]))
+        # Unverändert gebliebener Kanal: nicht als ersetzt geführt.
+        backup.discard(staged["token"])
+        self.assertEqual(self.staged(self.make_backup())["preview"]["channels"]["replaced"], [])
+        page = (Path(backup.__file__).parent / "static/js/pages/settings.js").read_text(encoding="utf-8")
+        self.assertIn("channels?.replaced", page)
+        self.assertIn("gleicher Kennung, gleicher Art und gleichem Server behalten ihre Tokens", page)
+        self.assertNotIn("die hier und in der Sicherung stehen, behalten ihre Tokens", page)
+
+    def test_forged_rule_state_is_filtered(self):
+        # client_rules.state läuft beim Erstellen durch scrub – beim Einspielen muss derselbe Filter gelten.
+        forged = {"lat": LAT, "lon": LON, "note": f"Pos {LAT}, {LON}", "pos": [LAT, LON], "silent": 1}
+        insert = ("INSERT INTO client_rules(ip, silent_h, offset_ms, offset_min, mute, expect, state, updated) "
+                  "VALUES(?, ?, ?, ?, ?, ?, ?, ?)")
+        parts = edit_dump(self.tmp, self.good_parts(),
+                          (insert, ("192.0.2.5", None, None, 0, 0, "", json.dumps(forged), 1.0)),
+                          (insert, ("192.0.2.6", None, None, 0, 1, "",
+                                    json.dumps({"x": "a" * 9000, "silent": 1}), 1.0)))
+        backup.apply(self.staged(self.rebuild(parts))["token"])
+        state = json.loads(store.query("SELECT state FROM client_rules WHERE ip = '192.0.2.5'")[0][0])
+        self.assertEqual(state, {"note": "Pos [Position entfernt]", "silent": 1})
+        # Übergroßer Zustand: Die Regel bleibt, ihr Alarmzustand fängt leer an.
+        mute, state = store.query("SELECT mute, state FROM client_rules WHERE ip = '192.0.2.6'")[0]
+        self.assertEqual((mute, json.loads(state)), (1, {}))
+
     def test_apprise_key_is_a_secret(self):
         notify.save_channel({"name": "Ap", "type": "apprise", "url": "http://apprise:8000", "topic": "APPRISEKEY77",
                              "secret": "tgram://BOTTOKEN55/123"})

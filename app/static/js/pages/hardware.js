@@ -323,7 +323,7 @@ function rtcCard(report, ctx) {
   return card("Echtzeituhr (RTC)", { help: "hw_rtc" },
     kv([
       ["Vorhanden", unknown ? "unbekannt" : rtc.present ? `ja${rtc.name ? ` (${rtc.name})` : ""}` : "nein", "hw_rtc"],
-      rtc.present ? ["Abweichung zur Systemuhr", isNum(rtc.drift_seconds) ? `${fmtNumber(rtc.drift_seconds, 1, { group: false })} s` : "–", "hw_rtc_drift"] : null,
+      rtc.present ? ["Abweichung zur Systemuhr", isNum(rtc.drift_seconds) ? `${fmtNumber(rtc.drift_seconds, 0, { group: false })} s` : "–", "hw_rtc_drift"] : null,
       rtc.present ? ["Beim Start übernommen", yesNo(rtc.hctosys), "hw_hctosys"] : null,
       nocert !== undefined ? ["Zertifikatszeit beim Start prüfen", nocert ? "nein (sicher ohne RTC)" : "ja", "nocerttimecheck"] : null,
     ]),

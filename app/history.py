@@ -158,6 +158,28 @@ class History:
     def _pending_json(self) -> str:
         return _dumps([s for s in self._pending if _valid(s)])
 
+    def _pending_rollup_json(self) -> str:
+        """Puffer als 5-Minuten-Mittel, wie _flush sie in samples_5m schreiben würde: je Bucket
+        die schon gespeicherten Punkte plus die aus dem Puffer (der Puffer ersetzt gleiche t).
+        Aufruf unter self._lock."""
+        buckets: dict[int, dict[int, dict]] = {}
+        for sample in self._pending:
+            if _valid(sample):
+                t = int(sample["t"])
+                buckets.setdefault(t // ROLLUP_SECONDS, {})[t] = sample
+        merged = []
+        for b, points in sorted(buckets.items()):
+            stored = self._db("SELECT t, json FROM samples WHERE t >= ? AND t < ?",
+                              (b * ROLLUP_SECONDS, (b + 1) * ROLLUP_SECONDS))
+            for t, text in stored:
+                if t not in points:
+                    try:
+                        points[t] = json.loads(text)
+                    except ValueError:
+                        continue
+            merged.append(downsample([points[t] for t in sorted(points)], 1)[0])
+        return _dumps(merged)
+
     # --- schreiben -----------------------------------------------------------
     def add(self, sample: dict) -> None:
         sample.setdefault("t", int(time.time()))
@@ -377,6 +399,7 @@ class History:
             # vollständig in genau ein Fenster fällt.
             width = max(ROLLUP_SECONDS, math.ceil(width / ROLLUP_SECONDS) * ROLLUP_SECONDS)
             params["lo"] = (int(lower) // ROLLUP_SECONDS) * ROLLUP_SECONDS
+            params["p"] = self._pending_rollup_json()
         params["w"] = width
         return None, _aggregate(self._db, table, params)
 
@@ -502,16 +525,19 @@ def _read_gzip(path: str | None) -> list:
 
 # d(t, j): Messpunkte im Fenster [lo, hi] aus Datenbank UND Puffer (:p, JSON-Liste);
 # ein Punkt im Puffer ersetzt einen gleichen Zeitstempel aus der Datenbank.
-# Bei samples_5m stehen Fenster-Mittelwerte statt Rohpunkten in d (der Puffer
-# bleibt roh – er umfasst höchstens die letzten FLUSH_SECONDS).
+# Bei samples_5m stehen 5-Minuten-Mittel statt Rohpunkten in d. Dann muss :p ebenfalls
+# 5-Minuten-Mittel enthalten (History._pending_rollup_json), je einer ersetzt die Zeile
+# seines Buckets – rohe Punkte zählten sonst so viel wie ein ganzes 5-Minuten-Mittel.
 def _cte(table: str) -> str:
     assert table in {"samples", "samples_5m"}
+    replaced = (f"b NOT IN (SELECT t / {ROLLUP_SECONDS} FROM pend)" if table == "samples_5m"
+                else "t NOT IN (SELECT t FROM pend)")
     return f"""
 WITH pend(t, j) AS (
     SELECT CAST(json_extract(value, '$.t') AS INTEGER), value FROM json_each(:p)
 ), d(t, j) AS (
     SELECT t, json FROM {table}
-     WHERE t >= :lo AND t <= :hi AND t NOT IN (SELECT t FROM pend)
+     WHERE t >= :lo AND t <= :hi AND {replaced}
     UNION ALL
     SELECT t, j FROM pend WHERE t >= :lo AND t <= :hi
 )

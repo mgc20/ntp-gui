@@ -143,7 +143,8 @@ def parse_tracking(text: str) -> dict[str, Any]:
     # 7F7F0101 (127.127.1.1) is chrony's reference id for "local" mode, i.e. the
     # server hands out its own unsynchronised clock. That is a valid island-mode
     # state, but it must not be reported as synchronised to an upstream source.
-    record["local_reference"] = record.get("ref_id") == "7F7F0101" or not record.get("ref_name")
+    # Not synchronised at all is 00000000 with an empty name and stratum 0 – no local mode.
+    record["local_reference"] = record.get("ref_id") == "7F7F0101"
     record["synchronised"] = bool(
         record.get("stratum")
         and record["stratum"] < 16

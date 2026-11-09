@@ -260,6 +260,22 @@ export function staleText(lastOkMs, zone = null) {
   return `Keine Verbindung zum Server – Werte veraltet seit ${fmtTime(lastOkMs / 1000, true, zone)}. Neuer Versuch läuft.`;
 }
 
+// Serveruhr im Browser fortschreiben: Die Uhr des Betrachter-PCs kann vor- oder nachgehen, Zeitstempel des
+// Servers (z. B. reload.json) dürfen nur mit der Serverzeit verglichen werden. serverClock() merkt sich
+// beim Abruf des Status Serverzeit (s) und Browserzeit (ms), serverNow() rechnet daraus die Serverzeit jetzt.
+export function serverClock(serverTime, browserMs = Date.now()) {
+  return isNum(serverTime) && isNum(browserMs) ? { server: serverTime, browser: browserMs } : null;
+}
+
+export function serverNow(clock, browserMs = Date.now()) {
+  return clock ? clock.server + (browserMs - clock.browser) / 1000 : browserMs / 1000;
+}
+
+// Neustart der Zeitdienste abgeschlossen? Nur ein Ergebnis, das nach dem Auslösen (Serverzeit) geschrieben wurde.
+export function reloadSettled(status, started) {
+  return Boolean(status) && isNum(status.time) && status.time >= started && (status.state === "done" || status.state === "error");
+}
+
 // ISO-Zeit (z. B. gpsd „2026-11-08T12:34:56.000Z“) als „08.11.26, 12:34:56 UTC“.
 export function fmtIsoUtc(iso) {
   const text = fmtDate(iso, { date: "short", time: "medium", utc: true, empty: "" });

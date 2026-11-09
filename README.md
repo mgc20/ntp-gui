@@ -1896,10 +1896,27 @@ CSV-Zeile, „nie gehört“ ist `4294967295` und `pmc` antwortet nur, wenn die 
 
 ## Release
 
-Veröffentlicht wird über GitHub Actions: im Repo unter **Actions → Release → Run workflow**
+**Erst vorbereiten** – in einem eigenen PR („Release x.y.z vorbereiten“) auf main:
+
+1. `VERSION` in `app/server.py` auf die neue Version setzen
+   (`VERSION = os.environ.get("NTPGUI_VERSION", "1.6.0")` – nur die Zahl ändern, die Zeile liest
+   auch `docker/entrypoint.sh`),
+2. in `CHANGELOG.md` den Abschnitt `## [Unveröffentlicht]` in `## [1.6.0] – <Datum>` umbenennen
+   und darüber einen neuen, leeren `## [Unveröffentlicht]` anlegen,
+3. das Release-Badge oben in der README anheben.
+
+Zwischen zwei Releases steht `VERSION` auf der zuletzt veröffentlichten Version.
+`tests/test_release_version.py` hält das ein: `VERSION` muss gleich dem obersten
+veröffentlichten Abschnitt im CHANGELOG sein; höher nur, solange unter `[Unveröffentlicht]`
+schon Einträge stehen. Normale PRs, die nur `[Unveröffentlicht]` ergänzen, bleiben grün.
+
+**Dann veröffentlichen** über GitHub Actions: im Repo unter **Actions → Release → Run workflow**
 die Version eintragen (z. B. `1.2.0`) und starten. Der Workflow
 
-1. lehnt Versionen ab, die kein SemVer sind oder deren Tag schon existiert,
+1. lehnt Versionen ab, die kein SemVer sind oder deren Tag schon existiert, und bricht ab, wenn
+   `VERSION` in `app/server.py` nicht genau diese Version ist oder `CHANGELOG.md` keinen
+   Abschnitt `## [<version>]` hat (`.github/scripts/release_pruefen.py`) – so kann kein Image
+   mit falscher Versionsnummer mehr erscheinen,
 2. führt Unittests und den Integrationstest gegen das frisch gebaute Image aus,
 3. baut das Image für `linux/amd64` und `linux/arm64` und pusht es nach
    `ghcr.io/<owner>/ntp-gui` mit den Tags `1.0.0`, `1.0` und `latest`,

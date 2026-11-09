@@ -200,6 +200,29 @@ class AssessTest(unittest.TestCase):
         self.assertEqual(result["cn0_source"], "used_avg")
         self.assertIn("der genutzten Satelliten", result["reasons"][0]["text"])
 
+    def test_numbers_in_text_match_the_traffic_light(self):
+        # Befund: 3,5 Satelliten (rot, unter 4) erschienen als „4“, 29,6 dB-Hz (gelb) als „30“.
+        def texts(used, cn4):
+            samples = outdoor_samples(hours=1)
+            for i, s in enumerate(samples):
+                s["gps"]["used"] = used[i % 2]
+                s["gps"]["cn4"] = cn4
+            result = gpsquality.assess(samples, now=samples[-1]["t"] + 1)
+            return {r["key"]: (r["level"], r["text"]) for r in result["reasons"]}
+
+        reasons = texts((3, 4), 29.6)
+        self.assertEqual(reasons["used"][0], "red")
+        self.assertIn("nur 3,5 genutzte Satelliten", reasons["used"][1])
+        self.assertEqual(reasons["cn0"][0], "yellow")
+        self.assertIn("im Median 29,6 dB-Hz", reasons["cn0"][1])
+        reasons = texts((5, 6), 21.6)
+        self.assertIn("Im Median 5,5 genutzte Satelliten", reasons["used"][1])
+        self.assertIn("nur 21,6 dB-Hz", reasons["cn0"][1])
+        # Ganze Zahlen bleiben ohne Nachkommastelle.
+        reasons = texts((3, 3), 21.0)
+        self.assertIn("nur 3 genutzte Satelliten", reasons["used"][1])
+        self.assertIn("nur 21 dB-Hz", reasons["cn0"][1])
+
     def test_garbage_is_ignored(self):
         result = gpsquality.assess([None, "x", {"t": "jetzt", "gps": {}}, {"t": T0, "gps": "kaputt"}], now=T0)
         self.assertFalse(result["available"])
@@ -427,6 +450,21 @@ class DecideTest(unittest.TestCase):
         self.assertFalse(gpsquality.decide(self.measured(0.04), applied, T0 + 6 * H)["apply"])
         self.assertTrue(gpsquality.decide(self.measured(0.04), applied, T0 + 13 * H)["apply"])
 
+    def test_without_bound_compares_with_delay_chrony_uses(self):
+        # Befund: gps_delay 0,5 (z. B. von „von Hand“), noch keine Schranke – chrony nutzt 0,5 s, nicht 0,2 s.
+        # 0,3 s gemessen ist dann kleiner, nicht größer: 12-h-Sperre nach dem Zurücksetzen gilt.
+        d = gpsquality.decide(self.measured(0.3), None, T0 + H, reset_at=T0, default_delay=0.5)
+        self.assertFalse(d["apply"], d)
+        self.assertNotIn("größer", d["reason"])
+        d = gpsquality.decide(self.measured(0.3), None, T0 + 13 * H, reset_at=T0, default_delay=0.5)
+        self.assertTrue(d["apply"], d)
+        self.assertIn("kleiner", d["reason"])
+        self.assertEqual(d["delay"], 0.375)
+        # Zwischen 0,6 × und 1 × der wirksamen Schranke: keine Änderung (Hysterese).
+        self.assertFalse(gpsquality.decide(self.measured(0.35), None, T0, default_delay=0.5)["apply"])
+        # Darüber: größer, wie bisher.
+        self.assertTrue(gpsquality.decide(self.measured(0.6), None, T0 + H, reset_at=T0, default_delay=0.5)["apply"])
+
     def test_insufficient(self):
         d = gpsquality.decide({"status": "insufficient"}, None, T0)
         self.assertFalse(d["apply"])
@@ -459,6 +497,23 @@ class TickTest(StoreCase):
         self.assertIn(f"delay {confgen._num(float(applied['delay']))} ", line)
         self.assertIn("Rückfallebene", text)
         self.assertIn("(gemessen)", text)
+
+    def test_old_value_without_bound_is_the_delay_chrony_uses(self):
+        # Befund: Ohne Schranke nannte das Ereignis ± 100 ms, chrony nutzte aber max(gps_delay, 0,2 s).
+        samples = vk162_samples(loops=5)
+        decision = gpsquality.tick(cfg(gps_delay=0.5), samples[-1]["t"] + 1, samples)
+        self.assertTrue(decision["apply"], decision)
+        self.assertIn("kleiner", decision["reason"])
+        _kind, _level, title, data = self.events[-1]
+        self.assertEqual(data["old_delay"], 0.5)
+        self.assertTrue(title.startswith("GPS-Fehlerschranke angepasst: ± 250 ms → "), title)
+
+    def test_reset_names_the_delay_chrony_uses_afterwards(self):
+        samples = vk162_samples(loops=5)
+        gpsquality.tick(cfg(gps_delay=0.5), samples[-1]["t"] + 1, samples)
+        result = gpsquality.reset(cfg(gps_delay=0.5))
+        self.assertEqual(result["delay"], 0.5)
+        self.assertTrue(self.events[-1][2].endswith("→ ± 250 ms"), self.events[-1][2])
 
     def test_reset(self):
         samples = vk162_samples(loops=5)
@@ -1151,6 +1206,19 @@ class AdoptCalibrationTest(StoreCase):
         self.assertIsNone(gpsquality.adopt_calibration(cfg(gps_pps_shm=True), 0.024, 0.004, None, T0))
         self.assertIsNone(gpsquality.adopt_calibration(cfg(gps_bound_mode="manual"), 0.024, 0.004, None, T0))
         self.assertIsNone(gpsquality.adopt_calibration(cfg(), None, 0.004, None, T0))
+
+    def test_old_value_without_bound_is_the_delay_chrony_uses(self):
+        # Ohne Schranke nutzt chrony max(gps_delay, 0,2 s) = 0,5 s – 0,2 s ist also eine Änderung.
+        bound = gpsquality.adopt_calibration(cfg(gps_delay=0.5), 0.16, 0.004, None, T0)
+        self.assertEqual(bound["delay"], 0.2)
+        self.assertIn("± 250 ms → ± 100 ms", self.events[-1][2])
+        self.assertEqual(self.events[-1][3]["old_delay"], 0.5)
+
+    def test_forget_bound_names_the_delay_chrony_uses_afterwards(self):
+        gpsquality.save_state({"applied": {"delay": 0.032, "precision": 0.003, "t": T0}})
+        self.assertTrue(gpsquality.forget_bound(cfg(gps_delay=0.5), T0 + H))
+        self.assertTrue(self.events[-1][2].endswith("→ ± 250 ms"), self.events[-1][2])
+        self.assertEqual(self.events[-1][3]["new_delay"], 0.5)
 
     def test_forget_bound_on_rollback(self):
         gpsquality.save_state({"applied": {"delay": 0.032, "precision": 0.003, "t": T0}})

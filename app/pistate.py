@@ -30,7 +30,9 @@ Ereignisse (Art „pi“): „Unterspannung erkannt“ und „Takt gedrosselt“
 eines je Übergang. Entprellt wird über QUIET_SECONDS: erst wenn das Bit so lange
 aus war, endet die Episode („… vorbei“, info) und ein neues Auftreten zählt
 wieder. Ist beim Start des Dashboards nur das „seit Start“-Bit gesetzt, gibt es
-kein Ereignis (das war vor uns – die Karte zeigt es trotzdem). Fällt die
+kein Ereignis (das war vor uns – die Karte zeigt es trotzdem). Steht im Protokoll
+aus der Zeit vor dem Neustart noch ein offenes „erkannt“, läuft diese Episode weiter
+und endet wie gewohnt mit „… vorbei“. Fällt die
 Spannung zwischen zwei Messpunkten kurz ab, merkt man das am neu gesetzten
 „seit Start“-Bit; das zählt als Auftreten.
 
@@ -322,6 +324,12 @@ class Monitor:
                     if key == "undervoltage":
                         data["hint"] = POWER_HINT
                     out.append(("pi", level, on_title, data))
+            elif prev is None and self._still_open(key):
+                # Erster Messpunkt nach einem Neustart, das Bit ist schon aus, im Protokoll steht aber
+                # noch ein offenes „erkannt“: die Episode weiterführen, damit nach QUIET_SECONDS ihr
+                # „… vorbei“ folgt (sonst bliebe sie offen und die Entwarnung fehlte).
+                self._active[key] = True
+                self._last_on[key] = now
             elif self._active[key] and now - self._last_on.get(key, now) >= QUIET_SECONDS:
                 self._active[key] = False
                 out.append(("pi", "info", off_title, {"subject": key, "quiet_s": int(QUIET_SECONDS)}))

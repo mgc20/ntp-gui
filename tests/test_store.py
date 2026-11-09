@@ -166,6 +166,31 @@ class HistorySqliteTest(TempDataDir):
         self.assertGreater(len(out), 300)
         self.assertEqual(out[0]["sources"]["pool"]["k"], "^")
 
+    def test_rollup_query_same_before_and_after_flush(self):
+        # 7/30 Tage lesen aus samples_5m; der Puffer (letzte ≤ 5 min) darf das letzte Fenster nicht
+        # mit Rohpunkten überstimmen, die wie ganze 5-Minuten-Mittel zählen. Der Flush liegt nicht
+        # auf der 5-Minuten-Grenze: Ein Teil des letzten Buckets steht schon in der Datenbank.
+        h = self.make()
+        t0, step = 300 * 1000, 30
+        count = 29 * 86400 // step
+        rows = [(t0 + i * step, json.dumps(sample(t0 + i * step, offset=0.0))) for i in range(count)]
+        with store.transaction() as conn:
+            conn.executemany("INSERT INTO samples(t, json) VALUES(?, ?)", rows)
+        history._backfill_rollup(store.path())
+        for i in range(count, count + 12):  # 6 min Puffer, beginnt mitten im letzten Bucket
+            h.add(sample(t0 + i * step, offset=1e-3))
+        before = h.query(29 * 86400, 600)
+        self.assertTrue(h.save(force=True))
+        after = h.query(29 * 86400, 600)
+        self.assertEqual(len(before), len(after))
+        for old, new in zip(before[-2:], after[-2:]):
+            self.assertEqual(old["t"], new["t"])
+            self.assertEqual(old["served"], new["served"])
+            for key in ("offset", "rms", "freq"):
+                self.assertAlmostEqual(old[key], new[key], places=12, msg=key)
+            self.assertAlmostEqual(old["sources"]["GPS"]["o"], new["sources"]["GPS"]["o"], places=12)
+            self.assertAlmostEqual(old["gps"]["hdop"], new["gps"]["hdop"], places=12)
+
     def test_nan_does_not_break_storage(self):
         h = self.make()
         h.add({"t": 5000, "offset": float("nan"), "sources": {"x": {"o": float("inf")}}})
