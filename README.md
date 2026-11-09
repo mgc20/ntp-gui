@@ -54,8 +54,9 @@ Raspberry Pi starten, die Adresse per **DHCP Option 42** verteilen – fertig.
 - **Fällt nicht um** – stirbt gpsd oder ptp4l (Kabel gezogen, Karte weg), startet der Supervisor nur diesen Dienst neu; NTP läuft weiter
 - **Dashboard ohne Ballast** – reines Python aus der Distribution, kein npm, kein pip; Diagramme in eigenem SVG
 - **Monitoring eingebaut** – versionierte JSON-API `/api/v1` mit API-Schlüsseln (nur lesen / verwalten), Prometheus-`/metrics` und `/healthz`; Verlauf über 30 Tage (SQLite), übersteht Neustarts; fertiges Grafana-Dashboard, Alarmregeln und Anleitungen für Home Assistant, Homepage, Glance und Uptime Kuma
+- **Sichern und wiederherstellen** – eine Datei mit Einstellungen, Verlauf, Ereignissen, Geräten und Kalibrierung, ohne Position und Geheimnisse; auf Wunsch jede Nacht, Wiederherstellen mit Vorschau ([mehr](#sichern-und-wiederherstellen))
 - **Nachprüfbare Lieferkette** – SBOM, Schwachstellen-Bericht und Herkunftsnachweis zu jedem Release
-- **Getestet** – 854 Unittests und ein 173-Punkte-Integrationstest gegen das gebaute Image in der CI
+- **Getestet** – knapp 2000 Unittests und ein 173-Punkte-Integrationstest gegen das gebaute Image in der CI
 
 ## Auf einen Blick
 
@@ -64,17 +65,20 @@ Raspberry Pi starten, die Adresse per **DHCP Option 42** verteilen – fertig.
   <img alt="Übersicht von ntp-gui: Hinweise zum aktuellen Zustand, Kennzahlen und Verlaufsdiagramme" src="docs/screenshots/dashboard-light.png">
 </picture>
 
-Elf Seiten: **Übersicht** (Hinweise, Kennzahlen, Verlauf, Zustand der Dienste), **Zeitquellen**
+Sieben Bereiche: **Übersicht** (Hinweise, Kennzahlen, Verlauf, Zustand der Dienste, „Heute“-Zeitleiste
+der letzten 24 h mit Tagesbericht für gestern), **Zeitquellen**
 (jede Quelle mit Zustand *und Grund* – ausgewählt, kombiniert, nicht kombiniert, Falseticker …),
 **GPS** (Himmelskarte, Signalstärken, Kalibrierassistent, Empfangsbewertung, Antennen-Test,
-Störungserkennung), **PTP** (Voraussetzungs-Check, Netzwerkkarten, Port-Zustand),
-**Uhrqualität** (Temperatur und Frequenz, Schaltsekunden, Holdover-Test),
-**Hardware** (was diese Hardware kann und was dafür fehlt), **Clients** (wer fragt, wie oft,
+Störungserkennung), **Clients** (wer fragt, wie oft,
 wie genau seine Uhr geht – mit Uhrgüte, Gruppen, Regeln und Gerätepass –, Snippets für DHCP-Server und
-Betriebssysteme, Zeitserver erzwingen), **Diagnose** (Log, Ereignisse, Diagnosepaket),
-**Benachrichtigungen** (Kanäle und Zustellstand), **Einstellungen** (mit API-Schlüsseln, DNS
-und Update-Hinweis) und **Hilfe** (Glossar und Entscheidungshilfe). Dazu die
-**Vollbild-Uhr** unter `/clock`.
+Betriebssysteme, Zeitserver erzwingen), **Uhr & Hardware** mit den Reitern Uhrqualität (Temperatur und
+Frequenz, Schaltsekunden, Holdover-Test), Hardware (was diese Hardware kann und was dafür fehlt) und PTP
+(Voraussetzungs-Check, Netzwerkkarten, Port-Zustand), **System** mit den Reitern Diagnose (Log,
+Ereignisse, Diagnosepaket), Benachrichtigungen (Kanäle und Zustellstand), Einstellungen (Quellen ·
+LAN-Server · GPS · PTP · Dashboard & Zugang · Sichern) und Einrichtung (Willkommens-Assistent) sowie
+**Hilfe** (Glossar und Entscheidungshilfe). Dazu die **Vollbild-Uhr** unter `/clock` mit
+Uhr-Werkstatt (`?design=`, `?kiosk=1`, `?eink=1`, `?tz=`, siehe
+[Uhrqualität](#uhrqualität-temperatur-schaltsekunden-vollbild-uhr)).
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/sources-dark.png">
@@ -297,20 +301,22 @@ Ergebnisse erscheinen auch im Hinweis-Kasten der Übersicht und unter `/metrics`
 
 ## Einstellungen im Dashboard
 
-Alles Wesentliche lässt sich unter **Einstellungen** ändern – Zeitquellen (mit Vorlagen für
-PTB, Cloudflare, Netnod und pool.ntp.org), Zugriff aus dem LAN, NTS, GPS, PTP und das
-Dashboard selbst. Jedes Feld zeigt, woher sein Wert kommt:
+Alles Wesentliche lässt sich unter **System → Einstellungen** ändern, aufgeteilt in die Reiter
+**Quellen** (Zeitquellen mit Vorlagen für PTB, Cloudflare, Netnod und pool.ntp.org, NTS, DNS für
+ntp-gui), **LAN-Server**, **GPS**, **PTP**, **Dashboard & Zugang** (Darstellung, Passwort,
+API-Schlüssel, erlaubte Namen, Update-Hinweis) und **Sichern**. Die Suche oben findet jede Einstellung
+über alle Reiter (`/` setzt den Cursor hinein), „nur Geänderte“ zeigt nur Werte, die vom Standard
+abweichen.
 
-| Herkunft | Bedeutung |
-|---|---|
-| **Dashboard** | im GUI gespeichert – hat Vorrang |
-| **Umgebung** | aus der Compose-Datei bzw. `-e …` |
-| **Standard** | eingebauter Standardwert |
-
-Umgebungsvariablen funktionieren also weiter, sind aber nur noch **Startwerte**. Ein Klick
-auf „zurücksetzen“ entfernt den Dashboard-Wert wieder. Nach dem Speichern startet der
-Container die Zeitdienste mit der neuen Konfiguration neu (wenige Sekunden, chrony behält
-dabei seine Messwerte); Felder mit „wirkt sofort“ brauchen gar keinen Neustart.
+Ein Feld trägt nur dann ein Abzeichen, wenn sein Wert vom Standard abweicht: „geändert · zurücksetzen“,
+bei einem Wert aus der Compose-Datei mit dem Namen der Variablen („aus `WEB_TITLE`“). Im Dashboard
+gespeicherte Werte haben Vorrang; Umgebungsvariablen funktionieren also weiter, sind aber nur noch
+**Startwerte**. „zurücksetzen“ stellt den Standard ein – auch gegen einen Wert aus der Compose-Datei – und
+wirkt erst mit „Speichern“. Die Speicherleiste unten zählt die Änderungen, sagt, ob ein Neustart der
+Zeitdienste nötig ist, und zeigt mit **Vorschau** als Diff, welche Zeilen sich in `chrony.conf` und
+`ptp4l.conf` ändern würden, ohne etwas zu schreiben. Nach dem Speichern startet der
+Container die Zeitdienste bei Bedarf mit der neuen Konfiguration neu (wenige Sekunden, chrony behält
+dabei seine Messwerte).
 
 - Gespeichert wird in `/var/lib/chrony/ntp-gui/settings.json` (Rechte `0600`). Damit das eine
   Neuerstellung des Containers übersteht, muss `/var/lib/chrony` auf einem **Volume** liegen –
@@ -318,7 +324,9 @@ dabei seine Messwerte); Felder mit „wirkt sofort“ brauchen gar keinen Neusta
 - Ein **Passwort** fürs Dashboard lässt sich direkt dort setzen (gespeichert als PBKDF2-Hash).
   `WEB_USER`/`WEB_PASSWORD` aus der Umgebung haben Vorrang.
 - `WEB_READONLY=true` sperrt alle Änderungen – das Dashboard zeigt dann nur an.
-- **Exportieren/Importieren** sichert die Dashboard-Werte als JSON (ohne Passwort).
+- **Exportieren/Importieren** (Reiter Sichern → „Nur Einstellungen übertragen“) überträgt nur die
+  Dashboard-Werte als JSON (ohne Passwort). Alles andere sichert
+  [Sichern und wiederherstellen](#sichern-und-wiederherstellen).
 - Eine gemountete `/config/chrony.conf` bzw. `/config/ptp4l.conf` ersetzt die erzeugte
   Konfiguration weiterhin komplett.
 
@@ -397,8 +405,8 @@ Es gibt zwei Wege, beide zusammen sind am gründlichsten:
 OPNsense/pfSense, MikroTik, OpenWrt, nftables (Linux) und UniFi. Die Namensliste deckt
 Windows/Xbox, Apple, Google/Android, Amazon, die Linux-Distributionen, OpenWrt/pfSense/OPNsense,
 Ubiquiti, Sonos, die FRITZ!Box als Client, VMware, NIST und `*.pool.ntp.org` ab. Eigene
-Namen (etwa den fest eingetragenen Server einer Kamera) trägst du unter **Einstellungen →
-Weitere Namen für „Zeitserver erzwingen“** ein (`ENFORCE_HOSTNAMES`).
+Namen (etwa den fest eingetragenen Server einer Kamera) trägst du unter **Einstellungen → LAN-Server →
+Erweitert → Weitere Namen für „Zeitserver erzwingen“** ein (`ENFORCE_HOSTNAMES`).
 
 Worauf die Anleitungen achten – und warum:
 
@@ -437,7 +445,7 @@ innen sehen; dafür zeigt die Seite einen Selbsttest für Windows, macOS und Lin
 
 Schreibt dein DNS-Server im LAN (AdGuard Home, Pi-hole, dnsmasq) Zeitserver-Namen auf ntp-gui um
 und nutzt ntp-gui denselben DNS, fragt chronyd für `pool.ntp.org` sich selbst. Abhilfe:
-ntp-gui eigene DNS-Server geben – im Dashboard unter **Einstellungen → DNS für ntp-gui** oder
+ntp-gui eigene DNS-Server geben – im Dashboard unter **Einstellungen → Quellen → DNS für ntp-gui** oder
 per Umgebungsvariable:
 
 ```yaml
@@ -457,7 +465,7 @@ nutzen ab da deine Server. DNS-over-TLS (853/tcp) und DNS-over-HTTPS (443/tcp) s
 verschlüsselt, prüfen das Zertifikat und sind auch von einer DNS-Umleitung per Firewall
 (Port 53) nicht betroffen. Antwortet keiner deiner Server, fragt ntp-gui den ursprünglichen
 DNS (abschaltbar mit `DNS_FALLBACK=false`) und meldet das als Ereignis „DNS“. Den Zustand
-zeigen **Einstellungen → DNS für ntp-gui**, die Kachel **Dienste** der Übersicht und
+zeigen **Einstellungen → Quellen → DNS für ntp-gui**, die Kachel **Dienste** der Übersicht und
 `/api/v1/dns`.
 
 Ist das Dateisystem schreibgeschützt (`read_only: true`), setz zusätzlich `dns: 127.0.0.1`
@@ -480,7 +488,7 @@ Leitest du Zeitserver-Anfragen im LAN auf ntp-gui um (AdGuard/Pi-hole per DNS, U
 
 - **Ereignis** „pool.ntp.org zeigt auf dich selbst – vermutlich DNS-Umschreibung ohne Ausnahme für ntp-gui“ bzw. „… NAT-Umleitung ohne Ausnahme für ntp-gui“, spätestens zwei Poll-Intervalle nach der ersten Antwort. Dazu ein kritischer Hinweis in der Übersicht, `GET /api/v1/loops` und die Metrik `ntpgui_source_loops`.
 - **Selbsttest** unter Clients → Zeitserver erzwingen → Prüfen: Für jede eigene Quelle siehst du die Kette *Name → Resolver → Adresse → Antwort*, für alle Adressen eines Namens.
-- **Abhilfe DNS:** Unter Einstellungen → „DNS für ntp-gui“ eigene Server eintragen, am besten zwei unabhängige DoT/DoH-Server. Oder in AdGuard eine Ausnahme für ntp-gui anlegen (`@@||pool.ntp.org^$dnsrewrite,client=<IP-von-ntp-gui>` oder ein eigener Client).
+- **Abhilfe DNS:** Unter Einstellungen → Quellen → „DNS für ntp-gui“ eigene Server eintragen, am besten zwei unabhängige DoT/DoH-Server. Oder in AdGuard eine Ausnahme für ntp-gui anlegen (`@@||pool.ntp.org^$dnsrewrite,client=<IP-von-ntp-gui>` oder ein eigener Client).
 - **Abhilfe NAT:** In der Umleitungsregel die Adresse von ntp-gui als Quelle ausnehmen (UniFi: Quelle ≠ ntp-gui) oder ntp-gui in ein eigenes VLAN legen.
 
 Für die Gegenprobe fragt ntp-gui den eigenen chronyd über 127.0.0.1 und die eigene LAN-Adresse; das klappt mit den Standard-Freigaben. Die Erkennung liest nur – an der Zeit ändert sie nichts. Ist die Schleife weg, folgt „Schleife behoben“.
@@ -552,7 +560,7 @@ bekannten Geräten mit privater Adresse (nicht fe80::), pro Gerät höchstens al
 Der **Netzüberblick** auf der Clients-Seite zeigt die Verteilung der Abweichungen, die Geräte
 mit der größten Abweichung, verstummte Geräte und Geräte, die öfter als alle 8 s fragen.
 
-**Alarm:** Mit `CLIENTS_ALARM_MS=1000` (oder in den Einstellungen unter LAN → Erweitert)
+**Alarm:** Mit `CLIENTS_ALARM_MS=1000` (oder in den Einstellungen unter LAN-Server → Erweitert)
 meldet ntp-gui das Ereignis „Uhr von … weicht um … ab“, sobald ein Gerät zweimal in Folge mehr
 als eine Sekunde danebenliegt. Mit einem [Benachrichtigungskanal](#benachrichtigungen) für die
 Art „Clients“ landet die Meldung z. B. auf dem Handy.
@@ -1310,6 +1318,39 @@ NTPGUI_REPLAY=/pfad/recording.jsonl NTPGUI_REPLAY_SPEED=10 …   # Dashboard zei
 python3 app/providers.py replay-info /pfad/recording.jsonl      # Inhalt einer Aufzeichnung
 ```
 
+## Sichern und wiederherstellen
+
+Unter **System → Einstellungen → Sichern** lädt „Sicherung herunterladen“ eine `.tar.gz` mit allem,
+was du sonst bei einer neuen SD-Karte oder einem neuen Container verlierst: Einstellungen, Verlauf der
+Messwerte, Ereignisprotokoll, Geräte mit eigenen Namen und Notizen, Gruppen, Regeln, GPS-Kalibrierung und
+Benachrichtigungskanäle. Die Datenbank darin wird neu angelegt und nur mit festgelegten Tabellen und
+Spalten gefüllt; gelöschte Werte aus der alten Datei kommen nicht mit.
+
+**Nie enthalten:** GPS-Position und Satellitenwinkel, Passwort, API-Schlüssel, Tokens der Kanäle,
+ntfy-Themen, Apprise-Schlüssel, Webhook-Pfade, DNS-over-HTTPS-/DNS-over-TLS-Server und feste
+DNS-Adressen, NTS-Schlüssel und -Zertifikate. Was davon auf dem Zielgerät fehlt, gibst du nach dem
+Wiederherstellen neu ein; die Vorschau nennt es.
+
+> **Datenschutz:** Die Sicherung enthält Daten über die Geräte in deinem Netz – Client-IP-Adressen,
+> Gerätenamen und Notizen, wann ein Gerät nach der Zeit gefragt hat – sowie Servernamen und Netze aus
+> den Einstellungen. **Nicht teilen**, auch nicht in einem Issue oder Forum. Für Fehlerberichte gibt es
+> das gefilterte [Diagnosepaket](#diagnose--fehlersuche). ntp-gui lädt die Sicherung nirgendwohin hoch.
+
+**Nächtliche Sicherung** (Schalter im selben Reiter, Standard aus): gegen 3 Uhr Ortszeit des Servers
+landet eine Sicherung im Datenverzeichnis unter `/var/lib/chrony/ntp-gui/sicherungen/`, die letzten
+7 Nächte bleiben. Unter „Gespeicherte Sicherungen“ kannst du sie herunterladen. Sie liegt auf demselben
+Datenträger wie die Daten – gegen einen Kartendefekt hilft nur eine heruntergeladene Kopie.
+
+**Wiederherstellen in zwei Schritten:** „Wiederherstellen …“ → Datei wählen; ntp-gui prüft sie und zeigt
+eine Vorschau (Zeitraum, Geräte, Regeln, Kanäle, sicherheitsrelevante Einstellungen mit altem und neuem
+Wert, was verworfen wird), ohne etwas zu ändern. Erst „Übernehmen“ schreibt – vorher sichert ntp-gui den
+jetzigen Stand automatisch in denselben Ordner. Kanäle, die es hier noch nicht gibt, kommen
+ausgeschaltet an, bis du Ziel und Token geprüft hast.
+
+**Versionsregel:** Sicherungen älterer Versionen werden beim Einspielen umgewandelt, Sicherungen aus
+einer neueren Version lehnt ntp-gui ab. API (nur mit Verwaltungsrecht): `GET /api/v1/backup`,
+`/api/v1/backup/list`, `POST /api/v1/restore/preview`, `/apply`, `/cancel`.
+
 ## Konfiguration
 
 Alle Werte lassen sich **im Dashboard** einstellen (siehe [Einstellungen im Dashboard](#einstellungen-im-dashboard));
@@ -1503,7 +1544,7 @@ PHC-Refclock dient ihm als Referenz für Stratum und Statistik.
 | `WEB_PORT` / `WEB_BIND` | `8080` / `0.0.0.0` | Adresse des Dashboards. IPv6 geht auch: `::` nimmt IPv4 und IPv6 an; mit `::1` oder einer anderen einzelnen Adresse erreicht der Docker-Healthcheck (fragt `127.0.0.1`) das Dashboard nicht. |
 | `WEB_TITLE` | `NTP / PTP Time Server` | Überschrift |
 | `WEB_USER` / `WEB_PASSWORD` | – | Beide gesetzt ⇒ HTTP Basic Auth (alternativ Passwort im Dashboard setzen) |
-| `WEB_ALLOWED_HOSTS` | – | Weitere Namen, unter denen das Dashboard **ohne Passwort** antworten darf, kommagetrennt; `*.example.org` für alle Unternamen, `*` schaltet die Prüfung ab. Gilt zusätzlich zu „Erlaubte Namen“ im Dashboard (Einstellungen → Dashboard → Erweitert). Siehe [Schutz vor DNS-Rebinding](#schutz-vor-dns-rebinding) |
+| `WEB_ALLOWED_HOSTS` | – | Weitere Namen, unter denen das Dashboard **ohne Passwort** antworten darf, kommagetrennt; `*.example.org` für alle Unternamen, `*` schaltet die Prüfung ab. Gilt zusätzlich zu „Erlaubte Namen“ im Dashboard (Einstellungen → Dashboard & Zugang). Siehe [Schutz vor DNS-Rebinding](#schutz-vor-dns-rebinding) |
 | `WEB_READONLY` | `false` | Einstellungen im Dashboard sperren |
 | `WEB_REFRESH_SECONDS` | `5` | Aktualisierungsintervall im Browser |
 | `HISTORY_INTERVAL` | `10` | Messintervall des Verlaufs in Sekunden |
@@ -1565,7 +1606,7 @@ Nginx Proxy Manager, Zoraxy und Traefik gehen genauso. Die Anleitung dazu steht 
 ### Navigation und Tastenkürzel
 
 Sieben Bereiche: Übersicht · Zeitquellen · GPS · Clients · Uhr & Hardware (Reiter Uhrqualität,
-Hardware, PTP) · System (Reiter Diagnose, Benachrichtigungen, Einstellungen) · Hilfe. Auf dem Handy
+Hardware, PTP) · System (Reiter Diagnose, Benachrichtigungen, Einstellungen, Einrichtung) · Hilfe. Auf dem Handy
 sitzen Übersicht, Quellen, GPS und Clients in einer Leiste unten, der Rest unter „Mehr“. Alte
 Lesezeichen aus 1.5 und früher leiten automatisch auf die neue Adresse weiter.
 
@@ -1574,7 +1615,7 @@ Mit der Tastatur: `g o` Übersicht, `g s` Zeitquellen, `g g` GPS, `g c` Clients,
 
 ### Sprache / Language
 
-Das Dashboard gibt es auf Deutsch und – als Beta – auf Englisch. Die Sprache wählst du mit dem Knopf „DE/EN“ oben rechts oder unter Einstellungen → Dashboard. Sie gilt nur in deinem Browser; ohne Wahl gilt Deutsch, Englisch nur, wenn du es ausdrücklich wählst („English (Beta)“). Übersetzt sind bisher Navigation, Kopfzeile, das Statusband der Übersicht und die Abschnitte der Einstellungen; die ⓘ-Erklärungen sind vorerst deutsch. Wie du beim Übersetzen hilfst, steht in [CONTRIBUTING.md](CONTRIBUTING.md#übersetzen).
+Das Dashboard gibt es auf Deutsch und – als Beta – auf Englisch. Die Sprache wählst du mit dem Knopf „DE/EN“ oben rechts oder unter Einstellungen → Dashboard & Zugang. Sie gilt nur in deinem Browser; ohne Wahl gilt Deutsch, Englisch nur, wenn du es ausdrücklich wählst („English (Beta)“). Übersetzt sind bisher Navigation, Kopfzeile, das Statusband der Übersicht und die Abschnitte der Einstellungen; die ⓘ-Erklärungen sind vorerst deutsch. Wie du beim Übersetzen hilfst, steht in [CONTRIBUTING.md](CONTRIBUTING.md#übersetzen).
 
 #### Schutz vor DNS-Rebinding
 
@@ -1588,7 +1629,7 @@ auf die LAN-Adresse von ntp-gui zeigen lassen und dann Log, Status und GPS-Posit
 - lokale Endungen: `*.local`, `*.lan`, `*.home.arpa`, `*.internal`, `*.home`, `*.corp`,
   `*.localdomain`, `*.intranet`, `*.private`, `*.speedport.ip`,
 - den NTS-Namen (`NTS_SERVER_NAME`),
-- die **erlaubten Namen**: Einstellungen → Dashboard → Erweitert → **Erlaubte Namen** und
+- die **erlaubten Namen**: Einstellungen → Dashboard & Zugang → **Erlaubte Namen** und
   `WEB_ALLOWED_HOSTS` (beide gelten zusammen).
 
 Jeder andere Name bekommt `403` mit einer Erklärung; im Log steht er einmal (bereinigt).
@@ -1674,7 +1715,10 @@ Einstellungen laufen) und `ntpgui_service_restarts_total`. Der mitgelieferte Ala
 | `/api/history?range=3600&points=600` | Verlauf (System, Quellen, GPS, PTP), ausgedünnt |
 | `/api/config` | Aktive `chrony.conf` / `ptp4l.conf` |
 | `/api/settings` | Einstellungen mit Schema, Wert und Herkunft; `POST` speichert |
-| `/api/settings/reset`, `/import`, `/export` | Dashboard-Werte zurücksetzen, importieren (auch Sicherungen älterer Versionen), sichern |
+| `/api/settings/reset`, `/import`, `/export` | Dashboard-Werte zurücksetzen, importieren (auch Exporte älterer Versionen), exportieren |
+| `/api/settings/preview` | `POST` mit Verwaltungsrecht: prüft Änderungen wie das Speichern und liefert den Diff von `chrony.conf`/`ptp4l.conf` – schreibt nichts, startet nichts neu |
+| `/api/backup`, `/api/backup/list` | Sicherung als `.tar.gz` (ohne Position und Geheimnisse) bzw. die gespeicherten Sicherungen im Datenverzeichnis; nur mit Verwaltungsrecht, siehe [Sichern und wiederherstellen](#sichern-und-wiederherstellen) |
+| `/api/restore/preview`, `/apply`, `/cancel` | `POST` mit Verwaltungsrecht: Sicherung hochladen und prüfen (Vorschau, schreibt nichts), übernehmen bzw. verwerfen |
 | `/api/settings/notes` | Hinweise der Einstellungs-Migration; `POST /api/settings/notes/ack` markiert sie als gelesen |
 | `/api/auth` | `POST`: Dashboard-Passwort setzen oder entfernen |
 | `/api/reload` | Stand des letzten Dienst-Neustarts; `POST` löst einen aus |
@@ -1684,6 +1728,7 @@ Einstellungen laufen) und `ntpgui_service_restarts_total`. Der mitgelieferte Ala
 | `/api/gps/autocal` | Automatische GPS-Kalibrierung: Modus, Entscheidung, letzte Änderungen; `POST /api/gps/autocal/rollback` nimmt die letzte zurück |
 | `/api/logs?lines=500&q=&level=warn` | Container-Log (lokal, ungefiltert) |
 | `/api/events?since=&kinds=&level=` | Ereignisprotokoll (Quellenwechsel, Fix verloren, PPS, Neustarts, Änderungen) |
+| `/api/timeline`, `/api/timeline/markers?range=`, `/api/timeline/at?t=` | „Heute“-Zeitleiste (24 h in 5-Minuten-Abschnitten, Tagesbericht für gestern), Ereignismarker für Diagramme bzw. „So sah es um … aus“ – ohne Satellitenwinkel und Position; Leserecht |
 | `/api/diagnostics/preview`, `/bundle` | Diagnosepaket: Vorschau bzw. `.tar.gz` – gefiltert, ohne Standort und Kennungen, wird nie hochgeladen |
 | `/api/recording` | Aufzeichnung der Datenquellen; `POST {"seconds": 300}` startet, `{"action": "stop"}` stoppt |
 | `/api/enforce/snippets`, `/api/enforce/check` | Zeitserver erzwingen: Anleitungen (DNS/Firewall) und Prüfung |
@@ -1698,13 +1743,14 @@ Einstellungen laufen) und `ntpgui_service_restarts_total`. Der mitgelieferte Ala
 | `/api/clients/groups?by=group\|vlan\|software`, `/api/clients/quality`, `/api/clients/rules`, `/api/clients/pass?ip=` | Clients 3: Gruppen, Uhrgüte, Regeln, Gerätepass (`&share=1` = gefilterte Kopie); `POST /api/clients/groups`, `/groups/delete`, `/rules` mit Verwaltungsrecht |
 | `/api/temperature`, `/api/leap` | Temperatur und Frequenz bzw. Schaltsekunden-Liste (Seite Uhrqualität) |
 | `/api/clockquality/allan` | Allan-Abweichung der Systemuhr (Seite Uhrqualität, ab 1.5.4) |
-| `/api/v1/time` | Serverzeit mit Zeitstempeln für die Vollbild-Uhr `/clock` |
+| `/api/v1/time` | Serverzeit mit Zeitstempeln für die Vollbild-Uhr `/clock`, dazu `leap_next` (nächste angekündigte Schaltsekunde) |
 | `/api/update` | Zustand des Update-Hinweises (ohne Netzzugriff, wenn ausgeschaltet) |
 | `/api/setup` | Willkommens-Assistent: Erststart oder Update, Prüfpunkte mit Abhilfe, Checkliste der Übersicht; `POST {"action": "done"\|"never"\|"close_hint"\|"close_checklist"\|"reset"}` mit Verwaltungsrecht (ändert keine Einstellungen) |
 | `/api/apikeys` (Alias `/api/keys`) | API-Schlüssel auflisten, `POST` legt an, `/api/apikeys/revoke` widerruft (nur mit Benutzer/Passwort) |
 | `/api/v1/instance` | Zufällige Instanz-Kennung; `POST /api/instance/rotate` erzeugt eine neue (nur mit Benutzer/Passwort) |
+| `/api/web/proxies/trust` | `POST` mit Verwaltungsrecht: beobachteten Reverse Proxy als vertrauenswürdig eintragen (siehe [HTTPS fürs Dashboard](#https-fürs-dashboard)) |
 | `/api/v1/…` | Versionierte, stabile API (Alias der Pfade oben); `GET /api/v1` beschreibt alle Endpunkte samt nötigem Recht, siehe [API & Automatisierung](#api--automatisierung) |
-| `/metrics` | Prometheus (u. a. Offset, max. Fehler, Quellen, GPS, PTP, `ntpgui_service_*`, `ntpgui_hardware_capability`, `ntpgui_pps_live`, `ntpgui_nts_server_cert_days_left`, Temperatur, Schaltsekunden-Liste, GPS-Fehlerschranke und Empfang, `ntpgui_gnss_stage`, `ntpgui_gps_locked`, `ntpgui_source_loops`, `ntpgui_holdover_test_running`, `ntpgui_info`) |
+| `/metrics` | Prometheus (u. a. Offset, max. Fehler, Quellen, GPS, PTP, `ntpgui_service_*`, `ntpgui_hardware_capability`, `ntpgui_pps_live`, `ntpgui_nts_server_cert_days_left`, Temperatur, Schaltsekunden-Liste, GPS-Fehlerschranke und Empfang, `ntpgui_gnss_stage`, `ntpgui_gps_locked`, `ntpgui_source_loops`, `ntpgui_holdover_test_running`, `ntpgui_pi_undervoltage`, `ntpgui_pi_throttled`, `ntpgui_info`) |
 | `/clock` | Vollbild-Uhr (mit `CLOCK_PUBLIC=true` ohne Login) |
 | `/healthz` | `200`, solange chronyd antwortet (ohne Login) |
 
@@ -1719,7 +1765,7 @@ nötigem Recht. Die bisherigen `/api/…`-Pfade funktionieren weiter.
 ### API-Schlüssel
 
 Statt das Dashboard-Passwort in Skripte zu schreiben, legst du unter **Einstellungen →
-API-Schlüssel** eigene Schlüssel an – je Anwendung einer, so kannst du jeden einzeln
+Dashboard & Zugang → API-Schlüssel und Instanz** eigene Schlüssel an – je Anwendung einer, so kannst du jeden einzeln
 widerrufen.
 
 | Recht | Darf |
@@ -1741,7 +1787,7 @@ Mit Schlüssel entfällt der CSRF-Header `X-NTP-GUI` (den Schlüssel schickt kei
 sich aus mit), `POST` braucht weiter `Content-Type: application/json`.
 
 ```bash
-TOKEN=ntpg_…   # aus Einstellungen → API-Schlüssel
+TOKEN=ntpg_…   # aus Einstellungen → Dashboard & Zugang → API-Schlüssel
 
 # Zustand lesen (Recht „nur lesen“)
 curl -s -H "Authorization: Bearer $TOKEN" http://<host>:8080/api/v1/status
@@ -1798,7 +1844,7 @@ ein vertrauenswürdiges Netz und gib jeder Integration einen eigenen Lese-Schlü
 
 `/api/v1/instance` liefert eine zufällige Kennung (UUID), die beim ersten Start entsteht. Sie
 enthält nichts über Hardware oder Standort und hilft künftigen, freiwilligen Diensten, Werte
-derselben Instanz zuzuordnen. **Einstellungen → Neu erzeugen** ersetzt sie jederzeit
+derselben Instanz zuzuordnen. **Einstellungen → Dashboard & Zugang → API-Schlüssel und Instanz → Neu erzeugen** ersetzt sie jederzeit
 (`POST /api/instance/rotate`, nur mit Passwort).
 
 ## Update-Hinweise
@@ -1826,7 +1872,7 @@ Beim Update musst du nichts von Hand umbauen:
 
 ### Update-Hinweis (opt-in)
 
-Ausgeschaltet (Standard) fragt ntp-gui nirgends nach. Unter **Einstellungen → Dashboard →
+Ausgeschaltet (Standard) fragt ntp-gui nirgends nach. Unter **Einstellungen → Dashboard & Zugang →
 Update-Hinweis** oder mit `UPDATE_CHECK=true` fragt es einmal am Tag zu einer zufälligen
 Uhrzeit `https://api.github.com/repos/mgc20/ntp-gui/releases/latest` und vergleicht die
 Version lokal. Ist eine neuere da, erscheint oben ein Banner (pro Version ausblendbar) und in
@@ -1844,7 +1890,7 @@ Metriken `ntpgui_update_available` und `ntpgui_update_check_last_success_timesta
 ## Entwicklung
 
 ```bash
-python3 -m unittest discover -s tests -v     # 854 Tests: Parser, Einstellungen, Config, Kalibrierung, Hardware, NTS, Datenschutzfilter, API, Benachrichtigungen, DNS, Clients, Uhrqualität
+python3 -m unittest discover -s tests -v     # Parser, Einstellungen, Config, Kalibrierung, Hardware, NTS, Datenschutzfilter, API, Benachrichtigungen, DNS, Clients, Uhrqualität
 docker build -t ntp-gui:test .
 tests/container-test.sh ntp-gui:test         # Integrationstest gegen das gebaute Image
 ```

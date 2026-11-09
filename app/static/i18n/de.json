@@ -17,7 +17,7 @@
     "more": "Mehr",
     "more_label": "Weitere Bereiche",
     "ptp_off": "Nicht genutzt – in {link} einschalten.",
-    "ptp_off_link": "Einstellungen → PTP",
+    "ptp_off_link": "System → Einstellungen → PTP",
     "shortcuts": {
       "hint": "Tastenkürzel (?)",
       "title": "Tastenkürzel",
@@ -215,7 +215,7 @@
     "german_only": "Die Erklärungen auf dieser Seite gibt es vorerst nur auf Deutsch. Übersetzungen sind willkommen – siehe CONTRIBUTING.md.",
     "api": {
       "title": "API & Automatisierung",
-      "intro": "Für Monitoring, Skripte und Home Assistant. Ist ein Passwort gesetzt, brauchst du einen API-Schlüssel (Einstellungen → Dashboard → API-Schlüssel); nur /healthz ist immer offen.",
+      "intro": "Für Monitoring, Skripte und Home Assistant. Ist ein Passwort gesetzt, brauchst du einen API-Schlüssel (System → Einstellungen → Dashboard & Zugang → API-Schlüssel); nur /healthz ist immer offen.",
       "metrics": "Messwerte im Prometheus-Format",
       "status": "Gesamtzustand als JSON (dieselben Daten wie das Dashboard)",
       "healthz": "Kurze Lebenszeichen-Prüfung für Container und Load-Balancer"

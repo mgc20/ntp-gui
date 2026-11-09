@@ -59,7 +59,7 @@ export function gnssCard(ctx) {
   if (!g) return card("Störungserkennung", head, emptyState("Wird geladen …"));
   if (!g.enabled) {
     return card("Störungserkennung", { ...head, badge: badge("aus", "muted") },
-      emptyState(g.gps_enable ? "Die Störungserkennung ist ausgeschaltet (Einstellungen → GPS → Störungserkennung)."
+      emptyState(g.gps_enable ? "Die Störungserkennung ist ausgeschaltet (System → Einstellungen → GPS → Störungserkennung)."
         : "GPS ist ausgeschaltet."),
       lockBlock(ctx, g));
   }

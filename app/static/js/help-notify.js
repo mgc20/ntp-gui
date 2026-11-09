@@ -112,7 +112,7 @@ export const HELP_NOTIFY = {
   },
   notify_link: {
     title: "Link zum Dashboard",
-    text: "Ist unter Einstellungen → Dashboard die **Adresse des Dashboards** eingetragen (`NOTIFY_DASHBOARD_URL`), hängt jede "
+    text: "Ist unter System → Einstellungen → Dashboard & Zugang → Erweitert die **Adresse des Dashboards** eingetragen (`NOTIFY_DASHBOARD_URL`), hängt jede "
       + "Nachricht einen Link auf die passende Seite an (GPS, Quellen, Diagnose …). Der Link wird nicht gefiltert, weil du ihn "
       + "selbst einträgst – nimm eine Adresse, die die Empfänger sehen dürfen (z. B. den Namen im LAN).",
   },

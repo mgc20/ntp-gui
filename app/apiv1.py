@@ -207,7 +207,7 @@ def describe() -> dict:
         "auth": {
             "basic": "Benutzer und Passwort des Dashboards (HTTP Basic) – darf alles.",
             "bearer": "Header „Authorization: Bearer ntpg_…“ mit einem API-Schlüssel aus "
-                      "Einstellungen → Dashboard. Recht „read“: nur GET. Recht „admin“: auch "
+                      "System → Einstellungen → Dashboard & Zugang. Recht „read“: nur GET. Recht „admin“: auch "
                       "POST, aber nicht „session“-Endpunkte.",
             "csrf": "Mit API-Schlüssel ist kein X-NTP-GUI-Header nötig; POST braucht "
                     "Content-Type: application/json.",

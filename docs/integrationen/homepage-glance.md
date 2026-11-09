@@ -2,7 +2,7 @@
 
 Beide Startseiten lesen JSON-Schnittstellen per „Custom API“-Widget. ntp-gui liefert alles
 Nötige unter `/api/v1/status`; ein API-Schlüssel mit Recht **nur lesen** genügt
-(**Einstellungen → API-Schlüssel**). Ohne Dashboard-Passwort geht es auch ohne Schlüssel.
+(**Einstellungen → Dashboard & Zugang → API-Schlüssel**). Ohne Dashboard-Passwort geht es auch ohne Schlüssel.
 
 Der Schlüssel steht in der Widget-Konfiguration – leg ihn als Umgebungsvariable bzw. Secret
 ab, nicht im Klartext in einem Repository.

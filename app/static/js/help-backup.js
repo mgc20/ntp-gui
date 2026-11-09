@@ -1,4 +1,4 @@
-// Erklärungen zu „Sichern und wiederherstellen“ (Einstellungen → Sichern, 1.6). Wird in help.js in HELP
+// Erklärungen zu „Sichern und wiederherstellen“ (System → Einstellungen → Sichern, 1.6). Wird in help.js in HELP
 // übernommen; die Schlüssel stehen gesammelt in HELP_GROUP_BACKUP, damit sie auf der Hilfe-Seite erscheinen.
 export const HELP_BACKUP = {
   backup: {
@@ -89,7 +89,7 @@ export const HELP_BACKUP = {
       + "Webhook-Adresse, ohne ntfy-Thema (wer das Thema eines öffentlichen ntfy-Servers kennt, liest mit) und ohne "
       + "Apprise-Schlüssel. Jeder Kanal wird wie bei einer Eingabe geprüft. Gibt es ihn hier schon (gleiche Kennung, "
       + "gleiche Art, gleicher Server), behält er seine jetzigen Tokens und seinen Zustand aus der Sicherung. **Alle "
-      + "anderen kommen ausgeschaltet** – prüfe Ziel und Token unter Einstellungen → Benachrichtigungen und schalte "
+      + "anderen kommen ausgeschaltet** – prüfe Ziel und Token unter System → Benachrichtigungen und schalte "
       + "sie dort ein. Kanäle, die es nur hier gibt und die nicht in der Sicherung stehen, werden **gelöscht** – samt "
       + "Token; auch die automatische Sicherung davor enthält keine Tokens. Steht ein Kanal mit gleicher Kennung, "
       + "aber anderer Art oder anderem Server in der Sicherung, **ersetzt** ihn die Fassung aus der Sicherung – sein "

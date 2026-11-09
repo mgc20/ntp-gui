@@ -17,7 +17,7 @@ Ein Test (`tests/test_integrations.py`) prüft, dass jede Metrik aus beiden Date
 ## 1. Prometheus
 
 Ist ein Dashboard-Passwort gesetzt, braucht `/metrics` einen API-Schlüssel mit Recht
-**nur lesen** (**Einstellungen → API-Schlüssel**):
+**nur lesen** (**Einstellungen → Dashboard & Zugang → API-Schlüssel**):
 
 ```yaml
 # prometheus.yml

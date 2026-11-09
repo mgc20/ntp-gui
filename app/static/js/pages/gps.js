@@ -341,7 +341,7 @@ function calibrationCard(ctx, gpsSource) {
     body.push(el("div", { class: "cal-apply" },
       el("label", { class: "inline-field" }, el("span", {}, "Rolle ", infoButton("gps_role", "Rolle")), role), apply));
     if (delayManaged) {
-      body.push(emptyState("Den Delay (die Fehlerschranke) misst ntp-gui im Modus „gemessen“ selbst – „Übernehmen“ setzt nur Offset und Rolle. Delay von Hand: Einstellungen → GPS → „Fehlerschranke ohne PPS: von Hand“."));
+      body.push(emptyState("Den Delay (die Fehlerschranke) misst ntp-gui im Modus „gemessen“ selbst – „Übernehmen“ setzt nur Offset und Rolle. Delay von Hand: System → Einstellungen → GPS → „Fehlerschranke ohne PPS: von Hand“."));
     }
     body.push(emptyState(autoNow?.mode === "auto"
       ? "Nach dem Übernehmen startet chrony neu (die Messhistorie bleibt erhalten). Die Abweichung im Diagramm sollte danach um 0 schwanken. Nach einem Wechsel von Empfänger, USB-Port oder Firmware misst die Automatik neu und korrigiert selbst."

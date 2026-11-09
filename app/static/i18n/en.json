@@ -17,7 +17,7 @@
     "more": "More",
     "more_label": "More sections",
     "ptp_off": "Not in use – turn it on in {link}.",
-    "ptp_off_link": "Settings → PTP",
+    "ptp_off_link": "System → Settings → PTP",
     "shortcuts": {
       "hint": "Keyboard shortcuts (?)",
       "title": "Keyboard shortcuts",
@@ -215,7 +215,7 @@
     "german_only": "The explanations on this page are only available in German for now. Translations are welcome – see CONTRIBUTING.md.",
     "api": {
       "title": "API & automation",
-      "intro": "For monitoring, scripts and Home Assistant. Once a password is set you need an API key (Settings → Dashboard → API keys); only /healthz is always open.",
+      "intro": "For monitoring, scripts and Home Assistant. Once a password is set you need an API key (System → Settings → Dashboard & access → API keys); only /healthz is always open.",
       "metrics": "Measurements in Prometheus format",
       "status": "Overall state as JSON (the same data as the dashboard)",
       "healthz": "Short liveness check for containers and load balancers"

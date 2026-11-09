@@ -92,7 +92,7 @@ export const HELP_GNSS = {
       + "Hat chrony das GPS gewählt, dienen die übrigen erreichbaren Netzquellen als Vergleich. **Vorsichtiger Standard**: "
       + "± 100 ms, bis genug gemessen ist. **Von Hand**: Delay und Auflösung aus den Einstellungen. **Mit "
       + "PPS** zählt der Impuls, die NMEA-Zeit nummeriert nur die Sekunden – aber nur, wenn das PPS-Gerät "
-      + "wirklich da ist; fehlt es, gilt das GPS als „ohne PPS“. Umstellen: Einstellungen → GPS → "
+      + "wirklich da ist; fehlt es, gilt das GPS als „ohne PPS“. Umstellen: System → Einstellungen → GPS → "
       + "„Fehlerschranke ohne PPS“.",
   },
   gpsq_spread: {
@@ -238,7 +238,7 @@ export const HELP_GNSS = {
       + "sperren** (opt-in): bei einem starken Befund wählt ntp-gui das GPS (und PPS) per `chronyc selectopts "
       + "+noselect` ab – aber nur, wenn mindestens zwei andere erreichbare Netzquellen auswählbar bleiben. Ohne "
       + "sie liefe die Uhr ohne jede Quelle frei; dann steht nur „Sperre ausgelassen“ im Protokoll. Erst "
-      + "Praxisdaten sammeln, dann einschalten. Einstellbar unter Einstellungen → GPS.",
+      + "Praxisdaten sammeln, dann einschalten. Einstellbar unter System → Einstellungen → GPS.",
   },
   gnss_lock: {
     title: "GPS-Sperre",

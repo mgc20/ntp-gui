@@ -375,7 +375,8 @@ def snip_unbound(ip: str | None, hosts: list[str], port: int = 123) -> dict:
 def _dns_common_notes(ip: str | None, port: int) -> list[str]:
     notes = [
         "Wichtig: ntp-gui selbst darf diese Umschreibung nicht sehen, sonst sucht chronyd seine Quellen "
-        "(z. B. pool.ntp.org) bei sich selbst. Am einfachsten: unter Einstellungen → „DNS für ntp-gui“ "
+        "(z. B. pool.ntp.org) bei sich selbst. Am einfachsten: unter System → Einstellungen → Quellen → "
+        "„DNS für ntp-gui“ "
         "eigene Server eintragen (DoT/DoH). Sonst nimm ntp-gui im DNS-Server aus (Client-Gruppe ohne "
         "diese Regeln) oder nutze als Quellen Namen, die nicht umgeschrieben werden – etwa die "
         "NTS-Server ptbtime1.ptb.de oder time.cloudflare.com.",
