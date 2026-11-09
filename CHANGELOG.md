@@ -6,6 +6,12 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 
 ## [Unveröffentlicht]
 
+## [1.6.1] – 2026-11-09
+
+Schwerpunkt: Die Übersicht wird auf breiten Bildschirmen wieder ruhig, Hinweise sind kompakt, alle Servertexte
+im deutschen Zahlformat, und zwei irreführende Warnungen (unverschlüsseltes HTTP hinter einem nicht
+eingetragenen Proxy, eigene DNS-Server) sind ehrlich.
+
 ### Behoben
 - **Übersicht auf breiten Bildschirmen:** Ab etwa 1800 px wurden die Kennzahl-Kacheln so hoch wie die Hinweisliste – mit großen leeren Flächen und den Mini-Diagrammen ganz unten. Die Kacheln haben jetzt ihre natürliche Höhe, das Mini-Diagramm steht direkt unter dem Wert, die Hinweise laufen über die Kartenbreite (auf sehr breiten Bildschirmen höchstens 1200 px). Ebenso auf „Uhrqualität“: keine gestreckte Karte mehr neben „Schaltsekunden“.
 - **Hinweise wieder in einer Zeile:** Jeder Hinweis der Übersicht zeigt Titel und eine Zeile, den ganzen Text unter „Details“ bzw. im ⓘ. Informationen sehen aus wie die Warnungen darüber; ein Knopf wie „Als vertrauenswürdigen Proxy eintragen“ ist auch zugeklappt sichtbar. Die Zeile „… Informationen“ zählt Erfolgsmeldungen getrennt („3 Informationen · 1 in Ordnung“).
@@ -1420,6 +1426,7 @@ Erste Veröffentlichung.
 - CI mit Unittests und Integrationstest gegen das gebaute Image; Release-Workflow,
   der das Image für amd64 und arm64 nach ghcr.io veröffentlicht.
 
+[1.6.1]: https://github.com/mgc20/ntp-gui/compare/v1.6.0...v1.6.1
 [1.6.0]: https://github.com/mgc20/ntp-gui/compare/v1.5.5...v1.6.0
 [1.5.5]: https://github.com/mgc20/ntp-gui/compare/v1.5.4...v1.5.5
 [1.5.4]: https://github.com/mgc20/ntp-gui/compare/v1.5.3...v1.5.4
