@@ -206,6 +206,7 @@
       "truncated": "Gekürzt – der Unterschied ist sehr lang.",
       "notes": "Hinweise",
       "none": "chrony.conf und ptp4l.conf bleiben, wie sie sind – die Änderung wirkt nur im Dashboard.",
+      "none_restart": "chrony.conf und ptp4l.conf bleiben, wie sie sind – die Änderung wirkt beim Neustart der Zeitdienste (z. B. gpsd, phc2sys, DNS).",
       "error": "Vorschau nicht möglich: {message}"
     },
     "leave": "Die Einstellungen haben ungespeicherte Änderungen. Trotzdem verlassen? Die Änderungen gehen verloren."
@@ -479,8 +480,10 @@
     "device_line_good": "Passt – weniger als 0,1 s daneben, gemessen auf {acc} genau.",
     "device_line_warn": "Merkbar daneben, im Alltag egal: Handys holen die Zeit meist vom Mobilfunknetz, PCs aus dem Internet.",
     "device_line_crit": "Deutlich daneben: Schalte in den Einstellungen deines Geräts „Uhrzeit automatisch einstellen“ ein.",
+    "device_uncertain": "Messung zu ungenau",
+    "device_line_uncertain": "Gemessen auf nur {acc} genau – das reicht nicht, um sicher zu sagen, ob dein Gerät weniger als 0,1 s daneben liegt. Probier es in einem schnelleren Netz.",
     "device_info_title": "Wie falsch geht dein Gerät?",
-    "device_info": "Die Seite misst wie NTP mit vier Zeitstempeln, wie weit die Uhr dieses Geräts von der Serveruhr abweicht (± halbe Laufzeit). Das Ergebnis bleibt in diesem Browser: Es wird weder gespeichert noch an den Server oder sonst wohin gesendet. Ampel: grün unter 0,1 s, gelb unter 1 s, rot ab 1 s. Handys stellen ihre Uhr meist über das Mobilfunknetz oder NTP, Computer über einen Zeitserver im Internet – je nach Gerät und letztem Abgleich liegen sie Millisekunden bis Sekunden daneben. Manche Browser runden ihre Uhr absichtlich (Schutz vor Fingerprinting, z. B. auf 1 ms oder 100 ms); kleine Werte sind dann ungenauer.",
+    "device_info": "Die Seite misst wie NTP mit vier Zeitstempeln, wie weit die Uhr dieses Geräts von der Serveruhr abweicht (± halbe Laufzeit). Das Ergebnis bleibt in diesem Browser: Es wird weder gespeichert noch an den Server oder sonst wohin gesendet. Ampel: grün unter 0,1 s (samt Messgenauigkeit), gelb unter 1 s, rot ab 1 s; grau, wenn die Messung zu ungenau für ein Urteil ist. Handys stellen ihre Uhr meist über das Mobilfunknetz oder NTP, Computer über einen Zeitserver im Internet – je nach Gerät und letztem Abgleich liegen sie Millisekunden bis Sekunden daneben. Manche Browser runden ihre Uhr absichtlich (Schutz vor Fingerprinting, z. B. auf 1 ms oder 100 ms); kleine Werte sind dann ungenauer.",
     "info_label": "Erklärung: {title}",
     "egg_possible": "23:59:60 wäre heute möglich: Am 30. Juni und 31. Dezember darf die letzte Minute (UTC) eine Schaltsekunde bekommen – diesmal ist keine angekündigt.",
     "egg_insert": "Heute Nacht gibt es eine Schaltsekunde: Auf 23:59:59 UTC folgt 23:59:60.",
@@ -498,6 +501,7 @@
     "unsynced": "nicht synchron",
     "unsynced_kind": "nicht synchron · {kind}",
     "synced": "{state} · {source}",
+    "source_unknown": "Quelle",
     "server_acc": "Server {acc}",
     "leap_announced": "Schaltsekunde angekündigt ({leap})",
     "display_acc": "Anzeige {acc} (RTT {rtt})",

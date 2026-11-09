@@ -235,13 +235,15 @@ export function dailyReportCard(ctx) {
   let body;
   if (!parts.length) body = emptyState(tr(report?.pending ? "pages.timeline.report.pending" : "pages.timeline.report.empty"));
   else {
-    const covered = isNum(report.covered_s) ? report.covered_s / 3600 : 24;
+    // Tageslänge aus dem Bericht: Bei der Umstellung auf Sommer- bzw. Winterzeit hat der Tag 23 bzw. 25 h.
+    const length = isNum(report.start) && isNum(report.end) && report.end > report.start ? (report.end - report.start) / 3600 : 24;
+    const covered = isNum(report.covered_s) ? report.covered_s / 3600 : length;
     body = el("p", { class: "daily-line" },
       el("strong", { text: `${tr("pages.timeline.report.yesterday")}: ` }),
       // Trennzeichen außerhalb der Teile: Nur zwischen den Teilen darf die Zeile umbrechen.
       parts.map((part, i) => [el("span", { class: "daily-part", text: i < parts.length - 1 ? `${part},` : part }),
         i < parts.length - 1 ? " " : null]),
-      covered < 23 ? el("span", { class: "muted", text: ` (${tr("pages.timeline.report.partial", { hours: fmtNumber(covered, 1) })})` }) : null);
+      covered < length - 1 ? el("span", { class: "muted", text: ` (${tr("pages.timeline.report.partial", { hours: fmtNumber(covered, 1) })})` }) : null);
   }
   return card(tr("pages.timeline.report.title"), { help: "daily_report", id: "tagesbericht", class: "daily-card" }, body);
 }

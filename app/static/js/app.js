@@ -16,7 +16,7 @@ import * as setup from "./pages/setup.js";
 import * as help from "./pages/help.js";
 import * as muster from "./pages/muster.js";
 import { t, initI18n, setLanguage, language, LANGUAGES, onLanguageChange } from "./i18n.js";
-import { NAV, resolve, route, tabsOf, navOf } from "./routes.js";
+import { NAV, resolve, route, tabsOf, navOf, stampEntry, hashChange } from "./routes.js";
 import { createShortcuts, shortcutList } from "./shortcuts.js";
 import { captureFocus, restoreFocus, renderGate } from "./focus.js";
 
@@ -537,9 +537,16 @@ window.addEventListener("resize", () => {
   resizeTimer = setTimeout(() => { if (currentPage().module.live !== false) render({ background: true }); }, 200);
 });
 // Ungespeicherte Änderungen (Einstellungen): Seite mit leaveMessage(uiState) fragt vor dem Verlassen nach –
-// beim Wechsel auf eine andere Seite (Hash) und beim Schließen/Neuladen (beforeunload). „Abbrechen“ stellt
-// die Adresse zurück, ohne neu zu zeichnen; „OK“ verwirft die Änderungen (leave).
-let lastHash = window.location.hash;
+// beim Wechsel auf eine andere Seite (Hash) und beim Schließen/Neuladen (beforeunload). „Abbrechen“ springt
+// im Verlauf auf den gezeigten Eintrag zurück, ohne neu zu zeichnen; „OK“ verwirft die Änderungen (leave).
+// Dafür trägt jeder gezeigte Eintrag eine laufende Nummer (navIndex). Die Entscheidung trifft
+// routes.js: hashChange (ohne DOM getestet), hier bleibt nur das Zeichnen.
+let navIndex = 0;
+// Seitenwechsel: Dialoge der alten Seite (Vorschau der Einstellungen, „So sah es um … aus“) gehören nicht
+// über die neue – sie hängen an <body> und überlebten sonst das Neuzeichnen.
+function closeDialogs() {
+  for (const dialog of document.querySelectorAll("dialog[open]")) dialog.close();
+}
 function leaveAllowed() {
   const shown = state.shown;
   const next = currentPage();
@@ -556,12 +563,10 @@ window.addEventListener("beforeunload", (event) => {
   event.returnValue = "";
 });
 window.addEventListener("hashchange", () => {
-  if (!leaveAllowed()) {
-    history.replaceState(null, "", lastHash || window.location.pathname + window.location.search);
-    return;
-  }
-  lastHash = window.location.hash;
-  if (redirectLegacy()) return;
+  const step = hashChange(history, navIndex, { leaveAllowed, redirect: redirectLegacy });
+  navIndex = step.shown;
+  if (!step.show) return;
+  if (state.shown && state.shown.id !== currentPage().id) closeDialogs();
   closeMore(false);
   state.uiState.scrolled = false;
   resetChartState();
@@ -629,8 +634,9 @@ const onShortcut = createShortcuts({
   },
   help: showShortcuts,
 });
+// Kürzel ruhen auch bei jedem anderen offenen modalen Dialog (Vorschau, „So sah es um … aus“): Die Seite darunter bleibt.
 document.addEventListener("keydown", (event) => {
-  if (shortcutDialog?.open || isPopoverOpen() || (moreMenu && !moreMenu.hidden)) return;
+  if (shortcutDialog?.open || document.querySelector("dialog[open]") || isPopoverOpen() || (moreMenu && !moreMenu.hidden)) return;
   onShortcut(event);
 });
 document.getElementById("shortcuts-button")?.addEventListener("click", showShortcuts);
@@ -643,6 +649,7 @@ document.querySelector(".skip-link")?.addEventListener("click", (event) => {
 
 await initI18n();
 redirectLegacy();
+navIndex = stampEntry(history, navIndex);
 buildNav();
 initTheme();
 initLanguage();

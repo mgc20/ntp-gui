@@ -152,3 +152,53 @@ export function actionHref(action) {
   const id = Object.prototype.hasOwnProperty.call(ACTION_PAGES, action) ? ACTION_PAGES[action] : null;
   return id ? route(id) : null;
 }
+
+// --- Verlauf: „Abbrechen“ beim Verlassen mit ungespeicherten Änderungen -------------------------------------
+// Jeder gezeigte Verlaufseintrag trägt eine laufende Nummer (history.state.nav). Bricht der Nutzer einen
+// Wechsel ab, springt app.js mit history.go() auf den gezeigten Eintrag zurück, statt einen Eintrag zu
+// überschreiben: Nach „Zurück“ fehlte sonst die vorige Seite im Verlauf, nach einem Link stünde die Seite
+// doppelt darin.
+
+/** Nummer eines Verlaufseintrags oder null bei einem neuen Eintrag (Link, Kürzel, Adresszeile). */
+export function entryIndex(state) {
+  return Number.isInteger(state?.nav) ? state.nav : null;
+}
+
+/** state für history.replaceState: die Nummer dazu, sonstige Angaben bleiben. */
+export function stampState(state, index) {
+  return { ...(state && typeof state === "object" ? state : {}), nav: index };
+}
+
+/** Schritte für history.go(), um vom aktuellen Eintrag (state) zum gezeigten (Nummer shown) zurückzukehren. */
+export function returnStep(shown, state) {
+  const entry = entryIndex(state);
+  return entry === null ? -1 : shown - entry;
+}
+
+/**
+ * Gezeigten Eintrag nummerieren: ein neuer Eintrag (Link, Kürzel, Adresszeile, Seitenstart) bekommt per
+ * hist.replaceState die Nummer nach shown, ein bekannter (Zurück/Vor) behält seine. Ergebnis: seine Nummer.
+ */
+export function stampEntry(hist, shown) {
+  const index = entryIndex(hist.state);
+  if (index !== null) return index;
+  hist.replaceState(stampState(hist.state, shown + 1), "");
+  return shown + 1;
+}
+
+/**
+ * Rumpf des hashchange-Handlers aus app.js, ohne DOM: hist ist window.history, shown die Nummer des
+ * gezeigten Eintrags, leaveAllowed() fragt bei ungespeicherten Änderungen nach, redirect() stellt alte
+ * Routen um (true = umgestellt, der nächste hashchange zeichnet). Ergebnis: { shown, show } – show heißt,
+ * die Seite des aktuellen Eintrags ist neu zu zeichnen.
+ */
+export function hashChange(hist, shown, { leaveAllowed, redirect }) {
+  // Zurück auf dem gezeigten Eintrag (nach „Abbrechen“): nichts zu tun.
+  if (entryIndex(hist.state) === shown) return { shown, show: false };
+  if (!leaveAllowed()) {
+    hist.go(returnStep(shown, hist.state));
+    return { shown, show: false };
+  }
+  if (redirect()) return { shown, show: false };
+  return { shown: stampEntry(hist, shown), show: true };
+}

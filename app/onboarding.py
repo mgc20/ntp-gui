@@ -278,8 +278,9 @@ def checks(cfg: dict, report: dict | None, storage: dict | None) -> list[dict]:
             out.append(_check("pi", "Pi-Zustand", "ok", str(power.get("text") or "")))
         else:
             import pistate
-            out.append(_check("pi", "Pi-Zustand", "problem", str(power.get("text") or "").split(". ")[0] + ".",
-                              pistate.POWER_HINT))
+            pi = report.get("pistate") or {}
+            what = pi.get("summary") or pistate.summary(pi) or str(power.get("text") or "").split(". ")[0]
+            out.append(_check("pi", "Pi-Zustand", "problem", f"{what}.", pistate.remedy(pi)))
     return out
 
 

@@ -571,6 +571,11 @@ function renderDevice() {
     return;
   }
   node.dataset.tone = drift.tone;
+  if (drift.dir === "uncertain") {
+    $("device-text").textContent = t("clock.device_uncertain");
+    $("device-line").textContent = t("clock.device_line_uncertain", { acc: fmtAccuracy(state.sync.accuracy) });
+    return;
+  }
   $("device-text").textContent = drift.dir === "exact" ? t("clock.device_exact")
     : t(drift.dir === "behind" ? "clock.device_behind" : "clock.device_ahead", { value: kit.fmtDrift(drift.abs) });
   $("device-line").textContent = t(`clock.device_line_${drift.tone}`, { acc: fmtAccuracy(state.sync.accuracy) });
@@ -609,8 +614,8 @@ function applyModes() {
   if (params.eink) root.dataset.mode = "eink";
   else if (red) root.dataset.mode = "red";
   else delete root.dataset.mode;
+  // Beschriftung = Aktion („Dunkel“ im hellen Modus), daher kein aria-pressed: „Dunkel, gedrückt“ wäre falsch.
   $("mode-theme").textContent = theme === "light" ? t("clock.theme_dark") : t("clock.theme_light");
-  $("mode-theme").setAttribute("aria-pressed", theme === "light" ? "true" : "false");
   $("mode-red").setAttribute("aria-pressed", red ? "true" : "false");
   $("mode-theme").disabled = red || params.eink;
   $("mode-red").disabled = params.eink;

@@ -231,6 +231,40 @@ class PruefenTest(HardwareTestCase):
         self.assertEqual({c["key"] for c in found} >= {"volume", "sys_time", "gps"}, True)
 
 
+class PiZustandTest(unittest.TestCase):
+    """Schritt (a), Punkt „Pi-Zustand“: die Abhilfe passt zur Ursache (Netzteil vs. Kühlung)."""
+
+    @staticmethod
+    def pi_check(bits, summary=True):
+        import hardware
+        import pistate
+        state = {"available": True, "sources": ["get_throttled"], "bits": bits, **pistate.decode(bits)}
+        state["summary"] = pistate.summary(state) if summary else None
+        rep = {"pistate": state, "matrix": [hardware._pi_power_row(state)]}
+        return next(c for c in onboarding.checks({}, rep, {"persistent": True}) if c["key"] == "pi")
+
+    def test_hitze_drosselung_rät_zur_kühlung_nicht_zum_netzteil(self):
+        import pistate
+        for bits in (0x60006, 0x80000, 0x40004, 0x20002):
+            with self.subTest(bits=hex(bits)):
+                check = self.pi_check(bits)
+                self.assertEqual(check["status"], "problem")
+                self.assertNotEqual(check["remedy"], pistate.POWER_HINT)
+                self.assertIn("Kühlkörper oder Lüfter", check["remedy"])
+
+    def test_unterspannung_rät_zum_netzteil(self):
+        import pistate
+        for bits in (0x50005, 0x10000, 0x50000):
+            with self.subTest(bits=hex(bits)):
+                check = self.pi_check(bits)
+                self.assertEqual(check["status"], "problem")
+                self.assertEqual(check["remedy"], pistate.POWER_HINT)
+
+    def test_text_ist_die_kurzfassung_auch_ohne_gespeicherte_summary(self):
+        check = self.pi_check(0x60006, summary=False)
+        self.assertEqual(check["text"], "Gedrosselt jetzt und seit Start; Takt gedeckelt jetzt und seit Start.")
+
+
 class ChecklisteTest(unittest.TestCase):
     REPORT = {"matrix": [{"key": "clock_control", "status": "ok", "text": "darf stellen"}], "gps": {"receivers": []}}
 

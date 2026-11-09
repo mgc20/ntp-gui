@@ -140,11 +140,16 @@ class BackupError(RuntimeError):
 # Filter für JSON-Inhalte (zweite Linie hinter der Spalten-Allowlist)
 # ---------------------------------------------------------------------------
 
+# Jedes Feld, das der Verlauf schreibt (history._NUMERIC_TOP, _GROUPS, „sources“, „z“), muss hier stehen –
+# sonst verliert die Sicherung es still (test_backup.HistoryFieldsTest prüft das). 1.6: „pi_state“ (Zahl)
+# und „z“ (Zähler je Zustand in samples_5m, Schlüssel wie timeline.CODES).
 _SAMPLE_TOP = frozenset({"t", "offset", "rms", "freq", "skew", "root_delay", "root_dispersion", "stratum",
-                         "served", "clients", "temp", "sources", "gps", "ptp"})
+                         "served", "clients", "temp", "pi_state", "sources", "gps", "ptp", "z"})
 _SAMPLE_GPS = frozenset({"used", "seen", "hdop", "snr", "mode", "cn4"})
 _SAMPLE_PTP = frozenset({"offset_ns", "delay_ns", "freq_ppb", "rms_ns"})
 _SAMPLE_SOURCE = frozenset({"o", "s", "k", "j"})
+_SAMPLE_Z = frozenset({"g", "w", "c", "h"})
+_SAMPLE_GROUPS = {"gps": _SAMPLE_GPS, "ptp": _SAMPLE_PTP, "z": _SAMPLE_Z}
 
 
 def _scalar(value: Any) -> bool:
@@ -177,9 +182,8 @@ def _sample_ok(data: Any) -> bool:
                     and all(_scalar(x) and _text_ok(x) for x in v.values())
                     for name, v in value.items()):
                 return False
-        elif key in ("gps", "ptp"):
-            allowed = _SAMPLE_GPS if key == "gps" else _SAMPLE_PTP
-            if not isinstance(value, dict) or not set(value) <= allowed or not all(
+        elif key in _SAMPLE_GROUPS:
+            if not isinstance(value, dict) or not set(value) <= _SAMPLE_GROUPS[key] or not all(
                     _scalar(x) and _text_ok(x) for x in value.values()):
                 return False
         elif not _scalar(value) or not _text_ok(value):
@@ -208,10 +212,10 @@ def sample_json(text: Any) -> str | None:
             out[key] = {_clean_text(str(name), _NAME_MAX): {k: _clean_text(v) for k, v in entry.items()
                                                             if k in _SAMPLE_SOURCE and _scalar(v)}
                         for name, entry in value.items() if isinstance(entry, dict)}
-        elif key in ("gps", "ptp") and isinstance(value, dict):
-            allowed = _SAMPLE_GPS if key == "gps" else _SAMPLE_PTP
+        elif key in _SAMPLE_GROUPS and isinstance(value, dict):
+            allowed = _SAMPLE_GROUPS[key]
             out[key] = {k: _clean_text(v) for k, v in value.items() if k in allowed and _scalar(v)}
-        elif key not in ("sources", "gps", "ptp") and _scalar(value):
+        elif key != "sources" and key not in _SAMPLE_GROUPS and _scalar(value):
             out[key] = _clean_text(value)
     return json.dumps(out, separators=(",", ":"))
 
@@ -1740,6 +1744,9 @@ def _after_restore() -> None:
     with contextlib.suppress(Exception):
         import notify
         notify.NOTIFIER.reload()
+    with contextlib.suppress(Exception):
+        import timeline
+        timeline.invalidate_report()  # sonst bliebe der Tagesbericht von vor dem Einspielen bis Mitternacht
 
 
 class _AfterCommit(Exception):

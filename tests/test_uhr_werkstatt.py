@@ -109,7 +109,7 @@ class ClockKitTest(unittest.TestCase):
             ok: p("?design=wort&kiosk=1&eink=0&tz=America/New_York"),
             bad: p("?design=<script>&kiosk=yes&eink=2&tz=Mars/Olympus&x=1"),
             long: p("?tz=" + "A".repeat(200)),
-            empty: p(""), none: k.parseParams("?tz=Europe/Berlin"),
+            empty: p(""), none: k.parseParams("?tz=Europe/Berlin", [], {}),
             safe: [k.safeDesign("nixie"), k.safeDesign("../x"), k.safeDesign(null)],
             label: k.zoneLabel("America/New_York"), designs: k.DESIGNS,
             zones: k.supportedZones().includes("Europe/Berlin"),
@@ -121,12 +121,34 @@ class ClockKitTest(unittest.TestCase):
                                       "ignored": ["design", "kiosk", "eink", "tz"]})
         self.assertIsNone(out["long"]["tz"])
         self.assertEqual(out["empty"]["ignored"], [])
-        self.assertIsNone(out["none"]["tz"], "ohne Allowlist keine Zeitzone")
+        self.assertIsNone(out["none"]["tz"], "ohne Liste und ohne Intl keine Zeitzone")
         self.assertEqual(out["safe"], ["nixie", "digital", "digital"])
         self.assertEqual(out["label"], "New York")
         self.assertEqual(out["designs"], ["digital", "bahnhof", "nixie", "flip", "wort"])
         self.assertTrue(out["zones"], "Node kennt Intl.supportedValuesOf")
         self.assertEqual(out["noIntl"], [])
+
+    def test_zeitzone_kanonische_namen_und_utc(self):
+        # V8 listet in supportedValuesOf nur CLDR-Altnamen (Asia/Calcutta) und kein UTC – gültige
+        # IANA-Namen nimmt die Uhr trotzdem an; geprüft wird mit Intl.DateTimeFormat, streng nach Zeichen.
+        out = run_kit("""
+          const p = (q) => k.parseParams(q, k.supportedZones()).tz;
+          console.log(JSON.stringify({
+            ok: ["UTC", "Asia/Kolkata", "Europe/Kyiv", "Asia/Ho_Chi_Minh", "Etc/GMT+5", "Europe/London", "Asia/Calcutta"]
+              .map((z) => p("?tz=" + encodeURIComponent(z))),
+            bad: ["Mars/Olympus", "Europe/Berlin<x>", "Europe/Berlin%20", "../etc", "", "Europe/" + "A".repeat(80)]
+              .map((z) => p("?tz=" + encodeURIComponent(z))),
+            ignored: k.parseParams("?tz=Mars/Olympus", k.supportedZones()).ignored,
+            noIntl: k.parseParams("?tz=Asia/Kolkata", [], {}).tz,
+            listOnly: k.parseParams("?tz=Europe/Berlin", ["Europe/Berlin"], {}).tz,
+          }));
+        """)
+        self.assertEqual(out["ok"], ["UTC", "Asia/Kolkata", "Europe/Kyiv", "Asia/Ho_Chi_Minh", "Etc/GMT+5",
+                                     "Europe/London", "Asia/Calcutta"])
+        self.assertEqual(out["bad"], [None] * 6)
+        self.assertEqual(out["ignored"], ["tz"])
+        self.assertIsNone(out["noIntl"], "ohne Intl keine zweite Zeitzone")
+        self.assertEqual(out["listOnly"], "Europe/Berlin")
 
     def test_ton_auf_der_vollen_sekunde(self):
         """Gemockte AudioContext: Jeder Ton startet innerhalb ±2 ms der vollen Serversekunde (nach Versatz)."""
@@ -203,6 +225,26 @@ class ClockKitTest(unittest.TestCase):
         self.assertEqual((out["crit"]["tone"], out["crit"]["dir"]), ("crit", "ahead"))
         self.assertIsNone(out["none"])
         self.assertEqual(out["fmt"], ["42 ms", "3,2 s", "12 s", "2 min 5 s", "1000 ms"])
+
+    def test_geraeteversatz_bei_ungenauer_messung(self):
+        # Grün „weniger als 0,1 s daneben“ nur, wenn auch |Versatz| + Genauigkeit unter 0,1 s bleibt.
+        out = run_kit("""
+          console.log(JSON.stringify([k.deviceDrift(150, 200), k.deviceDrift(900, 1200), k.deviceDrift(-40, 99),
+                                      k.deviceDrift(150, 120), k.deviceDrift(0, 100), k.deviceDrift(99, 99),
+                                      k.deviceDrift(60, 50), k.deviceDrift(-70, 29), k.deviceDrift(60, 39),
+                                      k.deviceDrift(-30, 40), k.deviceDrift(40, 60)]));
+        """)
+        self.assertEqual(out[0], {"tone": "unknown", "dir": "uncertain", "abs": 150})
+        self.assertEqual(out[1], {"tone": "unknown", "dir": "uncertain", "abs": 900})
+        self.assertEqual(out[2], {"tone": "unknown", "dir": "uncertain", "abs": 40}, "40 ± 99 ms: bis 139 ms möglich")
+        self.assertEqual((out[3]["tone"], out[3]["dir"]), ("warn", "behind"), "sicher außerhalb der Genauigkeit")
+        self.assertEqual(out[4]["dir"], "uncertain")
+        self.assertEqual(out[5], {"tone": "unknown", "dir": "uncertain", "abs": 99}, "99 ± 99 ms: bis 198 ms möglich")
+        self.assertEqual(out[6], {"tone": "unknown", "dir": "uncertain", "abs": 60}, "60 ± 50 ms: bis 110 ms möglich")
+        self.assertEqual((out[7]["tone"], out[7]["dir"]), ("good", "ahead"), "70 ± 29 ms: höchstens 99 ms")
+        self.assertEqual((out[8]["tone"], out[8]["dir"]), ("good", "behind"), "60 ± 39 ms: höchstens 99 ms")
+        self.assertEqual(out[9], {"tone": "good", "dir": "exact", "abs": 30})
+        self.assertEqual(out[10]["dir"], "uncertain", "Grenzfall 40 + 60 = 100 ms ist nicht mehr grün")
 
     def test_fmt_drift_rundet_vor_dem_aufteilen(self):
         # Erst auf ganze Sekunden runden, dann Minuten und Sekunden ableiten: nie „60 s“ oder „1 min 60 s“.
@@ -310,6 +352,14 @@ class SeitenregelnTest(unittest.TestCase):
             self.assertEqual(get(key), text.strip(), key)
         for match in re.finditer(r'title="([^"]+)" data-i18n-title="([^"]+)"', self.html):
             self.assertEqual(get(match.group(2)), match.group(1))
+
+    def test_hell_dunkel_knopf_ohne_widerspruechlichen_zustand(self):
+        # Der Knopf beschriftet die Aktion („Dunkel“ im hellen Modus) – ein aria-pressed dazu meldete
+        # Screenreadern „Dunkel, gedrückt“, obwohl die Uhr hell ist. Also kein aria-pressed am Knopf.
+        button = re.search(r'<button[^>]*id="mode-theme"[^>]*>', self.html).group(0)
+        self.assertNotIn("aria-pressed", button)
+        self.assertNotRegex(self.js, r'\$\("mode-theme"\)\.setAttribute\("aria-pressed"')
+        self.assertIn('$("mode-red").setAttribute("aria-pressed"', self.js, "Rotlicht bleibt ein echter Umschalter")
 
     def test_bahnhofsuhr_eigenes_design(self):
         # Generisches Zifferblatt: offener Ring statt gefüllter Kelle, keine Herstellernamen.

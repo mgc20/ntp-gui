@@ -252,7 +252,7 @@ def daily_report(hist, start: float, end: float) -> dict[str, Any]:
 
 
 _REPORT_LOCK = threading.Lock()
-_REPORT: dict[str, Any] = {"key": None, "at": 0.0, "value": None, "final": False}
+_REPORT: dict[str, Any] = {"key": None, "at": 0.0, "value": None, "final": False, "gen": 0}
 _REPORT_JOBS: dict[Any, threading.Event] = {}
 
 
@@ -268,6 +268,7 @@ def _report_job(hist, now: float) -> threading.Event | None:
         if job is not None:
             return job
         job = _REPORT_JOBS[key] = threading.Event()
+        gen = _REPORT["gen"]
     # Abgeschlossen: Der Tag ist so lange vorbei, dass auch der Puffer der letzten Minuten geschrieben ist.
     final = now >= end + REPORT_SETTLE
 
@@ -277,17 +278,28 @@ def _report_job(hist, now: float) -> threading.Event | None:
         except Exception:
             value = None
         with _REPORT_LOCK:
-            _REPORT.update(key=key, at=time.monotonic(), value=value, final=final and value is not None)
-            _REPORT_JOBS.pop(key, None)
+            if _REPORT["gen"] == gen:  # sonst gerechnet aus dem Verlauf vor invalidate_report()
+                _REPORT.update(key=key, at=time.monotonic(), value=value, final=final and value is not None)
+            if _REPORT_JOBS.get(key) is job:
+                del _REPORT_JOBS[key]
         job.set()
 
     try:
         threading.Thread(target=run, name="tagesbericht", daemon=True).start()
     except Exception:
         with _REPORT_LOCK:
-            _REPORT_JOBS.pop(key, None)
+            if _REPORT_JOBS.get(key) is job:
+                del _REPORT_JOBS[key]
         job.set()
     return job
+
+
+def invalidate_report() -> None:
+    """Der Verlauf wurde ausgetauscht (Wiederherstellung): Bericht verwerfen, auch einen abgeschlossenen, und
+    Rechnungen, die gerade laufen, nicht mehr eintragen. Wartet nicht, wirft nie."""
+    with _REPORT_LOCK:
+        _REPORT.update(key=None, at=0.0, value=None, final=False, gen=_REPORT["gen"] + 1)
+        _REPORT_JOBS.clear()
 
 
 def cached_report(hist, now: float | None = None, wait: float | None = None) -> dict[str, Any] | None:

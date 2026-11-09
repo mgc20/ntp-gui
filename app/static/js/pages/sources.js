@@ -182,11 +182,15 @@ export function render(ctx) {
 
   // Offset je Quelle
   const names = [...new Set(history.flatMap((s) => Object.keys(s.sources || {})))];
-  const labelOf = (name) => (sources.find((s) => s.name === name) || {}).hostname || name;
+  const hostOf = (name) => (sources.find((s) => s.name === name) || {}).hostname || name;
+  // Mitglieder eines Pools melden alle den Pool-Namen: dann die Adresse dazu (Legende) bzw. nur sie (Linienende),
+  // sonst wären beide mehrdeutig.
+  const shared = (name) => names.some((other) => other !== name && hostOf(other) === hostOf(name));
+  const labelOf = (name) => (shared(name) ? `${hostOf(name)} (${name})` : hostOf(name));
   const hidden = ctx.uiState.hiddenSeries || (ctx.uiState.hiddenSeries = new Set());
   // Farbe fest je Quelle (charts.colorFor), Referenzuhren (GPS/PPS) in der Signalfarbe.
   const isRefclock = (name) => (sources.find((s) => s.name === name) || {}).mode === "#";
-  const offsetSeries = names.map((name) => ({ id: name, label: labelOf(name), signal: isRefclock(name),
+  const offsetSeries = names.map((name) => ({ id: name, label: labelOf(name), short: shared(name) ? name : null, signal: isRefclock(name),
     points: history.map((s) => [s.t, (s.sources || {})[name]?.o ?? null]) }));
   // Noch kein Verlauf → eine Zeile „sammelt seit …“ statt einer leeren Fläche. Nie „flach“:
   // Offsets mehrerer Quellen sind auch bei kleiner Spannweite aussagekräftig.
