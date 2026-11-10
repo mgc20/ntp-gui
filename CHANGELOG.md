@@ -6,6 +6,12 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 
 ## [Unveröffentlicht]
 
+## [1.6.3] – 2026-11-10
+
+Schwerpunkt: Auswertung eines weiteren Diagnosepakets – die GPS-Fehlerschranke pendelt nicht mehr im
+Tagesrhythmus, eine wiederkehrende Abschattung der Antenne gilt nicht mehr als Störung, und das Diagnosepaket
+verrät über Satellitenzahlen keine Region mehr.
+
 ### Behoben
 - **GPS-Fehlerschranke pendelt nicht mehr im Tagesrhythmus:** Streut das GPS nur zu bestimmten Tageszeiten stärker, wurde die Schranke nachts verkleinert und nachmittags wieder vergrößert – mit je einem Neustart von chronyd, etwa zweimal am Tag. Beim Verkleinern zählt jetzt das schlechteste 6-h-Fenster der letzten 48 h.
 - **Wiederkehrende Abschattung ist keine Störung:** Brechen dieselben Satelliten genau einen Sterntag später erneut ein (fester Gegenstand vor der Antenne), meldet der GNSS-Wächter das nicht mehr als möglichen Störsender. Ein Störsender, der täglich zur selben Uhrzeit sendet, fällt weiter auf.
@@ -1464,6 +1470,7 @@ Erste Veröffentlichung.
 - CI mit Unittests und Integrationstest gegen das gebaute Image; Release-Workflow,
   der das Image für amd64 und arm64 nach ghcr.io veröffentlicht.
 
+[1.6.3]: https://github.com/mgc20/ntp-gui/compare/v1.6.2...v1.6.3
 [1.6.2]: https://github.com/mgc20/ntp-gui/compare/v1.6.1...v1.6.2
 [1.6.1]: https://github.com/mgc20/ntp-gui/compare/v1.6.0...v1.6.1
 [1.6.0]: https://github.com/mgc20/ntp-gui/compare/v1.5.5...v1.6.0
