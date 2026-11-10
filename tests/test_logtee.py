@@ -37,6 +37,23 @@ class LogteeTest(unittest.TestCase):
         self.assertEqual(out.getvalue(), data)
         self.assertEqual(self.path.read_bytes(), data)
 
+    def test_known_gpsd_shm_line_is_explained(self):
+        # Diagnosepaket 2306: Beim Beenden von gpsd stand ohne Präfix eine „failed“-Zeile im Log.
+        # Sie ist harmlos (das SHM-Segment gehört chronyd) und wird darum erklärt, nicht verschluckt.
+        data = (b"[chrony] Konfiguration geschrieben\n"
+                b"SHM: shmctl(7) for IPC_RMID failed, Operation not permitted(1)\n"
+                b"SHM: shmget(0x4e545030, 96, 01600) for unit 0 failed\n")
+        out = io.BytesIO()
+        logtee.run(io.BytesIO(data), out, str(self.path))
+        lines = out.getvalue().decode().splitlines()
+        self.assertEqual(lines[0], "[chrony] Konfiguration geschrieben")
+        self.assertTrue(lines[1].startswith("[gps] "), lines[1])
+        self.assertIn("harmlos", lines[1])
+        self.assertIn("IPC_RMID", lines[1])
+        self.assertNotIn("failed", lines[1])
+        self.assertEqual(lines[2], "SHM: shmget(0x4e545030, 96, 01600) for unit 0 failed")  # anderes: unverändert
+        self.assertEqual(self.path.read_text().splitlines(), lines)
+
     def test_rotation_keeps_one_old_file(self):
         out = io.BytesIO()
         lines = b"".join(f"Zeile {i:04d} ".encode() + b"x" * 80 + b"\n" for i in range(100))

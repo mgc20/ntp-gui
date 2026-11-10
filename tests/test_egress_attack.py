@@ -221,7 +221,7 @@ class StructAttackTest(unittest.TestCase):
     def test_satellite_list_becomes_sums(self):
         clean = egress.Sanitizer("diagnostics").obj(STRUCT_CASES[-1][0])
         gps = clean["satellites"]["je_system"]["GPS"]
-        self.assertEqual((gps["gesehen"], gps["benutzt"], gps["snr_max"]), (2, 1, 40))
+        self.assertEqual((gps["empfangen"], gps["benutzt"], gps["snr_max"]), (2, 1, 40))
 
     def test_harmless_structures_stay(self):
         for raw in ({"frequency_ppm": -12.345, "skew_ppm": 0.012, "offset": 0.000123},

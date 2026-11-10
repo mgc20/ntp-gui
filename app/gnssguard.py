@@ -12,7 +12,9 @@ Signale (Konzept 1.4, Thema 12; 1.5, Thema 1)
 schwach (allein nur „Hinweis“ – Schnee, Flugzeuge, ein Lkw vor dem Fenster):
   * cn0_drop     C/N0 der meisten Satelliten bricht gleichzeitig um ≥ 6 dB ein, innerhalb von
                  60 s (Jamming oder Abschattung). Ein langsamer Abfall über Minuten bis Stunden
-                 (Schnee auf der Antenne) zählt nicht.
+                 (Schnee auf der Antenne) zählt nicht. Ebenso wenig (2306) ein Einbruch derselben
+                 Satelliten genau einen Sterntag (± 90 s) nach einem früheren: wiederkehrende
+                 Abschattung durch einen festen Gegenstand, nur vermerkt (cn0.recurring_shadow).
   * uniform      unnatürlich gleichmäßiges C/N0: ≥ 6 Satelliten fast gleich stark (ein Spoofer
                  sendet alle Signale aus einer Antenne; echte Satelliten stehen verschieden hoch).
   * falseticker  chrony markiert das GPS dauerhaft als Falseticker. Hält das mit ≥ 2 NTS-Quellen
@@ -119,6 +121,20 @@ CN0_MIN_BEFORE = 20.0           # nur Satelliten, die vorher mindestens so stark
 CN0_MIN_SATS = 4
 CN0_SHARE = 0.6                 # so viele davon müssen gleichzeitig einbrechen
 CN0_RECOVER_DB = 3.0            # erholt, wenn der Median wieder bis auf 3 dB an „vorher“ heran ist
+# Hysterese: Ein betroffener Satellit, der nicht mehr gemeldet wird, zählt als 0 dB (ein Störsender nimmt
+# den Lock ganz weg) – außer er wurde nach Beginn des Einbruchs noch mindestens so lange weiter gemeldet:
+# Dann ist er später verschwunden, nicht mit dem Einbruch (untergegangen oder hinter dem Hindernis), 2306.
+CN0_VANISH_GRACE = CN0_WINDOW
+# Diagnosepaket 2306: Ein fester Gegenstand (Fensterrahmen, Hauswand) schattet jeden Sterntag zur selben
+# Konstellation dieselben Satelliten ab. Gab es genau einen Sterntag vorher (± CN0_RECUR_TOLERANCE) einen
+# Einbruch, an dem mindestens CN0_RECUR_OVERLAP der jetzt betroffenen Satelliten beteiligt waren, gilt er
+# als wiederkehrende Abschattung – kein GNSS-Hinweis. Die Toleranz bleibt deutlich unter den 236 s, um die
+# ein Sonnentag länger ist: Ein Störsender, der jeden Tag zur selben Uhrzeit läuft, fällt weiter auf.
+SIDEREAL_DAY = 86164.0905
+CN0_RECUR_TOLERANCE = 90.0
+CN0_RECUR_OVERLAP = 0.6
+CN0_RECUR_MIN_SATS = 3
+CN0_RECUR_KEEP = 2 * SIDEREAL_DAY  # so lange bleiben Einbrüche (nur Zeit + Satelliten-Schlüssel) im Speicher
 
 # --- Gleichmäßiges C/N0 ----------------------------------------------------------------------
 UNIFORM_MIN_SATS = 6
@@ -334,6 +350,10 @@ class Detector:
         self.signals = {key: _Signal(key) for key in SIGNALS}
         self._cn0: dict[str, deque] = {}
         self._cn0_ref: dict[str, float] = {}
+        self._cn0_ref_since = 0.0                  # Beginn des Einbruchs, zu dem _cn0_ref gehört
+        self._cn0_ref_seen: dict[str, float] = {}  # zuletzt gemeldet (nur Satelliten aus _cn0_ref)
+        self._cn0_drops: deque = deque()            # (Beginn, Satelliten) früherer Einbrüche, nur im Speicher
+        self._cn0_episode: dict[str, Any] | None = None   # laufender Einbruch {start, keys, recurring}
         self._diffs: deque = deque()
         self._recent_dev: deque = deque()          # (t, GPS − Netz) der letzten 2 min
         self._positions: deque = deque()
@@ -413,6 +433,9 @@ class Detector:
         self._jump_fixes = 0
         self._cn0.clear()
         self._cn0_ref.clear()
+        self._cn0_ref_seen.clear()
+        self._cn0_drops.clear()
+        self._cn0_episode = None
         for signal in self.signals.values():
             signal.update(False, math.inf)
             signal.streak = 0
@@ -445,26 +468,69 @@ class Detector:
             drop = _median(drops)
             cond = share >= CN0_SHARE and drop >= CN0_DROP_DB
             if cond and not sig.active:
+                if not self._cn0_ref:
+                    self._cn0_ref_since = now
                 self._cn0_ref = dict(eligible)
             detail = {"satellites": len(eligible), "drop_db": round(drop, 1)}
+            if cond and self._cn0_episode is None:
+                keys = frozenset(k for k, b in eligible.items() if b - sats.get(k, 0.0) >= CN0_DROP_DB)
+                self._cn0_episode = {"start": now, "keys": keys, "recurring": self._cn0_recurs(now, keys)}
+                self._cn0_drops.append((now, keys))
         else:
             detail = {}
         if not cond and sig.active and self._cn0_ref:
-            # Hysterese: aktiv bleiben, solange die betroffenen Satelliten nicht zurück sind.
-            now_values = [sats.get(k, 0.0) for k in self._cn0_ref]
-            ref = _median(list(self._cn0_ref.values()))
-            current = _median(now_values)
-            if ref is not None and current is not None and current < ref - CN0_RECOVER_DB:
-                cond = True
-                drop = ref - current
-                detail = {"satellites": len(self._cn0_ref), "drop_db": round(drop, 1)}
+            # Hysterese: aktiv bleiben, solange die betroffenen Satelliten nicht zurück sind. Ein nicht mehr
+            # gemeldeter Satellit zählt als 0 dB – ein Störsender nimmt den Lock oft ganz weg. Wurde er nach
+            # Beginn des Einbruchs aber noch CN0_VANISH_GRACE lang gemeldet, ist er erst später verschwunden
+            # (untergegangen, hinter dem Hindernis) und zählt nicht mehr (2306: sonst hielt er das Signal
+            # über eine halbe Stunde fest). Bleibt keiner übrig, hält die Hysterese nicht.
+            current_values: dict[str, float] = {}
+            for k in self._cn0_ref:
+                if k in sats:
+                    current_values[k] = sats[k]
+                elif self._cn0_ref_seen.get(k, -math.inf) - self._cn0_ref_since < CN0_VANISH_GRACE:
+                    current_values[k] = 0.0
+            if current_values:
+                ref = _median([self._cn0_ref[k] for k in current_values])
+                current = _median(list(current_values.values()))
+                if ref is not None and current is not None and current < ref - CN0_RECOVER_DB:
+                    cond = True
+                    drop = ref - current
+                    detail = {"satellites": len(current_values), "drop_db": round(drop, 1)}
         if not cond and not sig.active:
             self._cn0_ref = {}
+        for k in self._cn0_ref:
+            if k in sats:
+                self._cn0_ref_seen[k] = now
+        if not self._cn0_ref:
+            self._cn0_ref_seen.clear()
+        if not cond:
+            self._cn0_episode = None
+            self.last.pop("cn0_recurring", None)   # Einbruch vorbei: kein alter Vermerk in status()
+        episode = self._cn0_episode
+        if cond and episode and episode["recurring"]:
+            # Wiederkehrende Abschattung: kein GNSS-Hinweis, nur vermerkt (Rat zur Antennenposition).
+            self.last["cn0_recurring"] = {"satellites": len(episode["keys"]), "drop_db": round(drop, 1)}
+            self.last["cn0_drop_db"] = round(drop, 1) if drop is not None else None
+            self.last["cn0_satellites"] = len(eligible)
+            return False, {}, ""
         text = (f"Signale von {detail.get('satellites')} Satelliten gleichzeitig um "
                 f"{numfmt.number(detail.get('drop_db', 0))} dB eingebrochen") if cond else ""
         self.last["cn0_drop_db"] = round(drop, 1) if drop is not None else None
         self.last["cn0_satellites"] = len(eligible)
         return cond, detail, text
+
+    def _cn0_recurs(self, now: float, keys: frozenset) -> bool:
+        """Gab es einen Sterntag vorher einen Einbruch derselben Satelliten? Alte Einträge fallen weg."""
+        while self._cn0_drops and now - self._cn0_drops[0][0] > CN0_RECUR_KEEP:
+            self._cn0_drops.popleft()
+        if len(keys) < CN0_RECUR_MIN_SATS:
+            return False
+        for start, before in self._cn0_drops:
+            if abs(now - start - SIDEREAL_DAY) <= CN0_RECUR_TOLERANCE and \
+                    len(keys & before) >= CN0_RECUR_OVERLAP * len(keys):
+                return True
+        return False
 
     def _check_uniform(self, sats: dict[str, float] | None) -> tuple[bool | None, dict, str]:
         if not sats:
@@ -1347,7 +1413,7 @@ class Guard:
                 "position": {"learned": bool(last.get("position_learned")),
                              "deviation_m": last.get("position_deviation_m")},
                 "cn0": {"drop_db": last.get("cn0_drop_db"), "satellites": last.get("cn0_satellites"),
-                        "stdev_db": last.get("cn0_stdev_db")},
+                        "stdev_db": last.get("cn0_stdev_db"), "recurring_shadow": last.get("cn0_recurring")},
                 "lock": self.lock_status(),
                 "error": self.last_error,
             }

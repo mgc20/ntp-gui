@@ -6,6 +6,16 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 
 ## [Unveröffentlicht]
 
+### Behoben
+- **GPS-Fehlerschranke pendelt nicht mehr im Tagesrhythmus:** Streut das GPS nur zu bestimmten Tageszeiten stärker, wurde die Schranke nachts verkleinert und nachmittags wieder vergrößert – mit je einem Neustart von chronyd, etwa zweimal am Tag. Beim Verkleinern zählt jetzt das schlechteste 6-h-Fenster der letzten 48 h.
+- **Wiederkehrende Abschattung ist keine Störung:** Brechen dieselben Satelliten genau einen Sterntag später erneut ein (fester Gegenstand vor der Antenne), meldet der GNSS-Wächter das nicht mehr als möglichen Störsender. Ein Störsender, der täglich zur selben Uhrzeit sendet, fällt weiter auf.
+- **GNSS-Hinweis endet rechtzeitig:** Gehen die betroffenen Satelliten nach einem Einbruch unter, hält das den Hinweis nicht mehr über eine halbe Stunde fest.
+- **Allan-Abweichung** lässt die Zeiträume von Holdover-Tests weg – dort ist die Frequenz eingefroren und täuschte Stabilität vor.
+- Die harmlose gpsd-Zeile „SHM: shmctl(…) IPC_RMID failed“ beim Beenden steht im Log jetzt als erklärter `[gps]`-Hinweis statt als scheinbarer Fehler.
+
+### Sicherheit
+- **Diagnosepaket verrät die Region nicht mehr über Satellitenzahlen:** In der Aufzeichnung steht je GNSS-System nur noch die stärkste Signalstärke – jeder Sprung der Satellitenzahl markierte einen Auf- oder Untergang. PDOP und GDOP entfallen (VDOP/TDOP wären daraus rückrechenbar), das Alter des NTS-Schlüsseltauschs fehlt in der Aufzeichnung. Satelliten ohne Signal zählen nirgends mehr mit.
+
 ## [1.6.2] – 2026-11-09
 
 Schwerpunkt: Auswertung eines Diagnosepakets – DoH-Server, die nur HTTP/2 sprechen, werden klar erkannt, die

@@ -30,6 +30,11 @@ verfälschen. Darum beginnt an jedem Sprung (|Δfreq| zwischen Nachbarpunkten ü
 Lücke über GAP_SECONDS (bei grobem Messintervall: über GAP_FACTOR übliche Abstände der letzten
 Punkte) und am Anfang des Verlaufs ein neuer Abschnitt, dessen erste SETTLE_SECONDS weggelassen werden (wie eine Lücke).
 
+Holdover-Tests (Diagnosepaket 2306): Während eines Tests sind alle Quellen abgewählt, chronyd führt die
+Frequenz nicht nach – sie bleibt stundenlang konstant und täuschte für τ von Minuten bis Stunden Stabilität
+vor. Diese Zeiträume (exclude, aus den Ergebnissen des Holdover-Tests) fallen weg wie eine Lücke; danach
+beginnt ein neuer Abschnitt mit Einschwingen.
+
 Aufwand begrenzt: höchstens MAX_SPAN (30 Tage) Verlauf, auch bei größerem HISTORY_DAYS (sonst bei 365 Tagen
 gut 1 GB Speicher auf einem Pi), höchstens MAX_BINS Rasterpunkte (τ0 wird bei langem Verlauf gröber), höchstens
 MAX_PAIRS Paare je τ (sonst gleichmäßig ausgedünnt, weiter überlappend). Ergebnis 10 min im Speicher;
@@ -184,7 +189,8 @@ def _brief(p: dict | None) -> dict | None:
     return None if p is None else {"tau": p["tau"], "adev": p["adev"]}
 
 
-def settle(clean: list[tuple[float, float]]) -> tuple[list[tuple[float, float]], int, int]:
+def settle(clean: list[tuple[float, float]],
+           breaks: set[int] | None = None) -> tuple[list[tuple[float, float]], int, int]:
     """Lässt das Einschwingen nach Start, Sprung oder Lücke weg. (t, ppm) sortiert →
     (behaltene Punkte, Zahl der Abschnitte, weggelassene Punkte).
 
@@ -193,16 +199,19 @@ def settle(clean: list[tuple[float, float]]) -> tuple[list[tuple[float, float]],
     Abstand ist der Median der letzten GAP_WINDOW Abstände (lokal, nicht über den ganzen Verlauf): Nach
     einer Umstellung von 10 s auf 600 s machen die alten 10-s-Punkte noch wochenlang die Mehrheit aus, ein
     globaler Median bliebe bei 10 s und jeder 601-s-Abstand gälte als Lücke. Lokal gilt nur der Übergang
-    selbst als Lücke (ein Einschwingen). Ohne Vorgeschichte (erster Abstand) zählt der Median aller Abstände."""
+    selbst als Lücke (ein Einschwingen). Ohne Vorgeschichte (erster Abstand) zählt der Median aller Abstände.
+    breaks: Indizes, an denen in jedem Fall ein neuer Abschnitt beginnt (nach einem ausgeschlossenen Zeitraum)."""
     kept: list[tuple[float, float]] = []
     segments = dropped = 0
     deltas = [b[0] - a[0] for a, b in zip(clean, clean[1:]) if b[0] > a[0]]
     overall = _median(deltas) if deltas else 0.0
     recent: deque[float] = deque(maxlen=GAP_WINDOW)
     start = prev_t = prev_v = None
-    for t, v in clean:
-        if prev_t is None:
+    for index, (t, v) in enumerate(clean):
+        if prev_t is None or (breaks and index in breaks):
             new = True
+            if prev_t is not None and t - prev_t > 0:
+                recent.append(t - prev_t)
         else:
             step = t - prev_t
             typical = _median(list(recent)) if recent else overall
@@ -220,8 +229,39 @@ def settle(clean: list[tuple[float, float]]) -> tuple[list[tuple[float, float]],
     return kept, segments, dropped
 
 
-def compute(series: list[tuple[float, float]], now: float | None = None) -> dict:
-    """Ergebnis für /api/clockquality/allan aus (t, freq in ppm)."""
+def _exclude(clean: list[tuple[float, float]], exclude: Any) -> tuple[list[tuple[float, float]], set[int], int]:
+    """Punkte in den Zeiträumen [start, end) weglassen. → (Rest, Indizes mit neuem Abschnitt, weggelassen)."""
+    spans = []
+    for item in exclude or []:
+        try:
+            start, end = float(item[0]), float(item[1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        if math.isfinite(start) and math.isfinite(end) and end >= start:
+            spans.append((start, end))
+    if not spans:
+        return clean, set(), 0
+    spans.sort()
+    kept: list[tuple[float, float]] = []
+    breaks: set[int] = set()
+    removed = 0
+    pending = False
+    for t, v in clean:
+        if any(a <= t < b for a, b in spans):
+            removed += 1
+            pending = True
+            continue
+        if pending or (kept and any(kept[-1][0] < a and b <= t for a, b in spans)):
+            breaks.add(len(kept))
+        pending = False
+        kept.append((t, v))
+    return kept, breaks, removed
+
+
+def compute(series: list[tuple[float, float]], now: float | None = None, exclude: Any = None) -> dict:
+    """Ergebnis für /api/clockquality/allan aus (t, freq in ppm).
+
+    exclude: Zeiträume (start, end) ohne nachgeführte Frequenz (Holdover-Tests) – fallen weg wie Lücken."""
     out: dict[str, Any] = {"available": False, "source": "freq", "unit": "fraction",
                            "samples": len(series), "need_span": MIN_SPAN, "short_tau": SHORT_TAU,
                            "resolution": PPB, "points": [], "summary": None,
@@ -235,7 +275,9 @@ def compute(series: list[tuple[float, float]], now: float | None = None) -> dict
     if clean[-1][0] - clean[0][0] > MAX_SPAN:
         cutoff = clean[-1][0] - MAX_SPAN
         clean = [p for p in clean if p[0] >= cutoff]
-    clean, segments, dropped = settle(clean)
+    clean, breaks, excluded = _exclude(clean, exclude)
+    out["excluded_points"] = excluded
+    clean, segments, dropped = settle(clean, breaks)
     out.update(segments=segments, settle_dropped=dropped)
     if len(clean) < 2:
         out["reason"] = "few"
@@ -281,8 +323,10 @@ def compact(result: dict | None) -> dict | None:
 class Cache:
     """Ergebnis CACHE_SECONDS lang behalten; ein Abruf rechnet, die übrigen warten darauf."""
 
-    def __init__(self, loader: Callable[[], list[tuple[float, float]]], seconds: float = CACHE_SECONDS) -> None:
+    def __init__(self, loader: Callable[[], list[tuple[float, float]]], seconds: float = CACHE_SECONDS,
+                 exclude: Callable[[], Any] | None = None) -> None:
         self.loader = loader
+        self.exclude = exclude
         self.seconds = seconds
         self._lock = threading.Lock()
         self._result: dict | None = None
@@ -300,7 +344,7 @@ class Cache:
             if fresh or self._result is None or now - self._at >= self.seconds:
                 started = time.monotonic()
                 try:
-                    result = compute(self.loader())
+                    result = compute(self.loader(), exclude=self.exclude() if self.exclude else None)
                 except Exception as exc:  # Verlauf kaputt: Seite zeigt den Grund, Server läuft weiter
                     # Einzelheiten (evtl. Dateipfade) nur ins Container-Log, nicht an jeden Leser.
                     print(f"[web] Allan-Abweichung nicht berechnet: {exc!r}", flush=True)

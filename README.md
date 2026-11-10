@@ -1280,7 +1280,7 @@ Fehlerbericht.
 |---|---|
 | Koordinaten, Höhe – auch in NMEA-Sätzen, gpsd-Meldungen und freiem Text | verraten den Standort direkt |
 | Geschwindigkeit, Kurs, Steigrate, **Azimut und Elevation der Satelliten** | Aus den Satellitenwinkeln zu einer bekannten Uhrzeit lässt sich die Position zurückrechnen |
-| **Liste der einzelnen Satelliten** (Nummern) | Welche Satelliten zu einer Uhrzeit sichtbar sind, grenzt die Region ein. Übrig bleiben Summen je System: gesehen, genutzt, mittlere und höchste Signalstärke |
+| **Liste der einzelnen Satelliten** (Nummern) | Welche Satelliten zu einer Uhrzeit sichtbar sind, grenzt die Region ein. Übrig bleiben Summen je System: empfangene (mit Signal) und genutzte Satelliten, mittlere und höchste Signalstärke. In der Aufzeichnung (Zeitreihe) bleibt je System nur die höchste Signalstärke – die Zahlen sprängen mit jedem Auf- und Untergang |
 | **Laufzeiten** zu Servern (Root/Peer delay, Fehlerschranken, RTT – auch in Aufzeichnungen) → auf 10 ms gerundet | Viele genaue Laufzeiten zu bekannten Servern erlauben eine grobe Ortung |
 | Seriennummern (USB, DMI, `/dev/serial/by-id/…`, `iSerial`, `S/N`), lange Hex-Kennungen (machine-id, Container-ID) | machen ein Gerät eindeutig wiedererkennbar |
 | MAC-Adressen und PTP-Clock-IDs (aus der MAC gebildet) | ebenso; außerdem verrät der Herstellerteil die Hardware |
