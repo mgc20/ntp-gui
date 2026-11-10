@@ -732,6 +732,22 @@ class HoldoverTest:
                 out.append(item)
         return out
 
+    def freeze_intervals(self) -> list[tuple[float, float]]:
+        """Zeiträume (start, ende) mit eingefrorener Frequenz: Holdover-Tests mit Netzquellen abgewählt –
+        chronyd führte die Frequenz dabei nicht nach (Diagnosepaket 2306, Allan-Abweichung). Ein laufender
+        Test zählt bis jetzt. Tests nur mit GPS/PPS abgewählt zählen nicht: Dort regelte das Netz weiter."""
+        out: list[tuple[float, float]] = []
+        for item in self.results():
+            start, end = _num(item.get("started")), _num(item.get("ended"))
+            if item.get("include_network") is False or start is None or end is None or end < start:
+                continue
+            out.append((start, end))
+        state = self._peek()
+        start = _num(state.get("started"))
+        if state.get("active") and state.get("include_network") is not False and start is not None:
+            out.append((start, max(start, self.wall())))
+        return sorted(out)
+
     def status(self, select: dict[str, dict] | None = None, sources: list[dict] | None = None) -> dict[str, Any]:
         with self.lock:
             state = self.state()

@@ -546,11 +546,12 @@ class SmallFilterFixesTest(unittest.TestCase):
         sanitizer = egress.Sanitizer("diagnostics")
         sky = sanitizer.obj({"class": "SKY", "time": "2026-01-01T00:00:00Z", "xdop": 0.71, "ydop": 0.93,
                              "vdop": 1.21, "tdop": 0.66, "hdop": 0.8333, "pdop": 1.4642, "nSat": 12, "uSat": 8})
-        self.assertEqual(sky, {"class": "SKY", "time": "2026-01-01T00:00:00Z", "hdop": 0.8, "pdop": 1.5,
-                               "nSat": 12, "uSat": 8})
+        # 2306: auch PDOP (VDOP rückrechenbar) und nSat (Satelliten ohne Signal, folgt der Geometrie).
+        self.assertEqual(sky, {"class": "SKY", "time": "2026-01-01T00:00:00Z", "hdop": 0.8, "uSat": 8})
         status = sanitizer.obj({"status": {"xdop": 0.71, "ydop": 0.93, "hdop": 0.8333}})
         self.assertEqual(status, {"status": {"hdop": 0.8}})
-        self.assertEqual(sanitizer.report()["removed"].get("dop"), 6)
+        self.assertEqual(sanitizer.report()["removed"].get("dop"), 7)
+        self.assertEqual(sanitizer.report()["removed"].get("satellitenliste"), 1)
         self.assertNotIn("position", sanitizer.report()["removed"])
 
     def test_show_position_switch_kept(self):

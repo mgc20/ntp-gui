@@ -103,10 +103,10 @@ class PositionTest(unittest.TestCase):
         for key in ("mode", "has_fix", "satellites_used",
                     "satellites_seen", "snr_avg", "time", "leapseconds", "systems", "pps"):
             self.assertEqual(clean[key], GPS_STATUS[key], key)
-        # Diagnose 1.6.0: richtungsfreie DOPs bleiben (auf eine Stelle), richtungsabhängige gehen.
-        for key in ("hdop", "pdop", "gdop"):
-            self.assertEqual(clean[key], round(GPS_STATUS[key], 1), key)
-        for key in ("xdop", "ydop", "vdop", "tdop"):
+        # Diagnose 1.6.0: HDOP bleibt (auf eine Stelle), richtungsabhängige gehen; 2306 auch PDOP/GDOP
+        # (aus ihnen wären VDOP/TDOP rückrechenbar).
+        self.assertEqual(clean["hdop"], round(GPS_STATUS["hdop"], 1))
+        for key in ("xdop", "ydop", "vdop", "tdop", "pdop", "gdop"):
             self.assertNotIn(key, clean)
         # Keine Einzelsatelliten (PRN) mehr – die sichtbare Menge zu einer Zeit grenzt die Region ein.
         self.assertNotIn("prn", json.dumps(clean["satellites"]))
@@ -126,8 +126,11 @@ class PositionTest(unittest.TestCase):
         clean, report = egress.sanitize(SKY, "recording")
         self.assertNotIn("PRN", json.dumps(clean))
         self.assertNotIn("svid", json.dumps(clean))
-        gps = clean["satellites"]["je_system"]["GPS"]
-        self.assertEqual(gps["gesehen"], len(SKY["satellites"]))
+        # Aufzeichnung (Zeitreihe, 2306): keine Zählwerte, die mit Auf- und Untergängen springen.
+        self.assertEqual(clean["satellites"]["je_system"]["GPS"], {"snr_max": 45})
+        self.assertNotIn("uSat", clean)
+        gps = egress.sanitize(SKY, "diagnostics")[0]["satellites"]["je_system"]["GPS"]
+        self.assertEqual(gps["empfangen"], len(SKY["satellites"]))
         self.assertEqual(gps["snr_max"], 45)
         self.assertEqual(clean["hdop"], 0.9)
         self.assertEqual(report["removed"]["satellitenwinkel"], 4)

@@ -223,6 +223,28 @@ class ComputeTest(unittest.TestCase):
         self.assertEqual(out["summary"]["level"], "very_quiet")
         self.assertEqual(out["settle_dropped"], 2 * int(allan.SETTLE_SECONDS / 10))
 
+    def test_holdover_frozen_frequency_is_excluded(self):
+        # Diagnosepaket 2306: Während eines Holdover-Tests führt chronyd die Frequenz nicht nach – 12 h
+        # konstant drückten σ(τ) nach unten. Als Lücke behandelt, darf σ(1 h) nicht kleiner werden.
+        base = self.series(3 * 24, noise=0.004)
+        t0 = base[0][0]
+        start, end = t0 + 30 * 3600, t0 + 42 * 3600
+        frozen = 1.67                                               # chronys geglättete Schätzung
+        held = [(t, frozen if start <= t < end else v) for t, v in base]
+        reference = allan.compute(base)["summary"]["hour"]["adev"]
+        fooled = allan.compute(held)["summary"]["hour"]["adev"]
+        self.assertLess(fooled, 0.95 * reference)                    # so täuschte der Test Stabilität vor
+        out = allan.compute(held, exclude=[(start, end)])
+        self.assertGreaterEqual(out["summary"]["hour"]["adev"], 0.95 * reference)
+        self.assertEqual(out["segments"], 2)                          # danach neuer Abschnitt mit Einschwingen
+        self.assertEqual(out["excluded_points"], int(12 * 3600 / 10))
+        # Kurzer Test (unter GAP_SECONDS) trennt trotzdem den Abschnitt.
+        short = allan.compute(base, exclude=[(start, start + 300)])
+        self.assertEqual(short["segments"], 2)
+        # Der Cache fragt die Zeiträume beim Rechnen ab.
+        cache = allan.Cache(lambda: held, exclude=lambda: [(start, end)])
+        self.assertGreaterEqual(cache.get()["summary"]["hour"]["adev"], 0.95 * reference)
+
     def test_gap_starts_new_segment(self):
         base = self.series(10)
         gapped = base[:1000] + base[1200:]
@@ -404,6 +426,19 @@ class AllanHttpTest(unittest.TestCase):
         self.assertEqual(args, ("freq",))
         self.assertGreater(kwargs["since"], server.time.time() - allan.MAX_SPAN - 60, "höchstens 30 Tage laden")
         self.assertEqual(out["reason"], "no_history")
+
+    def test_holdover_runs_are_excluded(self):
+        # Diagnosepaket 2306: Der Cache des Servers lässt die Zeiträume der Holdover-Tests weg.
+        import holdover
+        results = [{"started": 1000.0, "ended": 5000.0, "include_network": True},
+                   {"started": 6000.0, "ended": 7000.0, "include_network": False},   # Netz regelte weiter
+                   {"started": 8000.0, "ended": None}]
+        test = holdover.HoldoverTest(wall=lambda: 9500.0)
+        with mock.patch.object(test, "results", return_value=results), \
+                mock.patch.object(test, "_peek", return_value={"active": True, "started": 9000.0}):
+            self.assertEqual(test.freeze_intervals(), [(1000.0, 5000.0), (9000.0, 9500.0)])
+        with mock.patch.object(holdover.TEST, "freeze_intervals", return_value=[(1.0, 2.0)]):
+            self.assertEqual(server.ALLAN.exclude(), [(1.0, 2.0)])
 
 
 class DiagnosticsTest(unittest.TestCase):

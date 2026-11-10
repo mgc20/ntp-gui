@@ -87,6 +87,7 @@ PRECISION_MIN, PRECISION_MAX = 0.001, 0.1
 SHRINK_RATIO = 0.6            # 1.5.4: kleiner nur, wenn die neue Schranke ≤ 0,6 × die jetzige ist …
 SHRINK_CHECK_HOURS = 48.0     # … und das 95-%-Maß der letzten 48 h (nicht nur 6 h) mit Reserve hineinpasst
 SHRINK_CHECK_HEADROOM = 1.1   # Reserve dafür (die neue Schranke selbst hat schon GROW_HEADROOM auf den 6 h)
+SHRINK_CHECK_STEP = 3600.0    # 2306: geprüft wird das schlechteste 6-h-Fenster der 48 h, je 1 h versetzt
 GROW_HEADROOM = 1.25          # jede neue Schranke: Messwert × diese Reserve – Kriechen startet chronyd nicht stündlich neu
 NET_DISTANCE_FACTOR = 1.5     # ohne PPS: Schranke nie enger als 1,5 × Root Distance der besten genutzten NTS-Quelle
 GROW_INTERVAL = 3600.0        # größer (GPS schlechter als angenommen): frühestens nach 1 h
@@ -402,6 +403,55 @@ def measure(samples: list[dict], gps_name: str, now: float | None = None,
     return result
 
 
+def measure_worst_window(samples: list[dict], gps_name: str, now: float | None = None,
+                         hours: float = SHRINK_CHECK_HOURS, window_hours: float = BOUND_HOURS,
+                         step: float = SHRINK_CHECK_STEP, not_before: float | None = None) -> dict[str, Any]:
+    """Schlechtestes Messfenster (window_hours, wie measure) der letzten hours, gleitend je step versetzt.
+
+    Diagnosepaket 2306: Streut das GPS nur einige Stunden am Tag stärker (Tagesgang), liegt das über
+    48 h gepoolte 95-%-Maß unter dem 6-h-Maß dieser Stunden – die Schranke wurde nachts kleiner und
+    nachmittags wieder größer, jedes Mal ein Neustart von chronyd. Beim Verkleinern zählt darum
+    dasselbe Maß wie beim Vergrößern: das größte 6-h-Fenster. Fenster mit zu wenig Messzeit zählen nicht."""
+    import history  # spät: history importiert dieses Modul für calibrate()
+    now = time.time() if now is None else now
+    since = now - hours * 3600.0
+    if not_before is not None and not_before > since:
+        since = not_before
+    rows = [s for s in samples or [] if isinstance(s, dict) and (_num(s.get("t")) or 0) >= since]
+    diffs, times = history.gps_differences(rows, gps_name, for_bound=True)
+    result: dict[str, Any] = {"t": now, "hours": hours, "window_hours": window_hours, "samples": len(diffs),
+                              "duration_seconds": (times[-1] - times[0]) if times else 0.0, "windows": 0}
+    if not_before is not None:
+        result["not_before"] = not_before
+    width = window_hours * 3600.0
+    worst = None
+    end = now
+    while end - since >= BOUND_MIN_SECONDS - 1e-9:
+        start = max(since, end - width)
+        part = [d for d, t in zip(diffs, times) if start <= t <= end]
+        part_times = [t for t in times if start <= t <= end]
+        covered = (part_times[-1] - part_times[0]) if part_times else 0.0
+        # Das jüngste Fenster wie measure(); ältere nur mit (fast) voller Messzeit – sonst wären
+        # Ausschnitte eines einzigen Fensters (wenige Stunden Daten) strenger als die Messung selbst.
+        needed = BOUND_MIN_SECONDS if end >= now else max(BOUND_MIN_SECONDS, width - 1800.0)
+        if len(part) >= BOUND_MIN_SAMPLES and covered >= needed:
+            stats = spread(part)
+            if stats:
+                result["windows"] += 1
+                if worst is None or stats["delay"] > worst[0]["delay"]:
+                    worst = (stats, end)
+        if start <= since:
+            break
+        end -= step
+    if worst is None:
+        result["status"] = "insufficient"
+        return result
+    stats, worst_end = worst
+    result.update(status="measured", worst_end=worst_end,
+                  **{k: (round(v, 6) if isinstance(v, float) else v) for k, v in stats.items() if k != "n"})
+    return result
+
+
 # =========================================================================================
 # Gespeicherter Zustand (SQLite) – auch für confgen lesbar
 # =========================================================================================
@@ -684,7 +734,8 @@ def decide(measured: dict, applied: dict | None, now: float, reset_at: float | N
     schreibt die Schranke dabei mit (adopt_calibration) – kleiner wird sie dann nicht vorher noch
     einmal; das spart einen Neustart von chronyd. Größer (die sichere Richtung) bleibt erlaubt.
     long (1.5.4): Messung über SHRINK_CHECK_HOURS (dict oder Funktion, erst beim Verkleinern
-    abgefragt). Kleiner wird die Schranke nur, wenn die gemessene ≤ SHRINK_RATIO × die jetzige ist
+    abgefragt; seit 2306 das schlechteste 6-h-Fenster darin, measure_worst_window). Kleiner wird die
+    Schranke nur, wenn die gemessene ≤ SHRINK_RATIO × die jetzige ist
     UND auch die 48-h-Messung mit Reserve in die neue Schranke passt – sonst pendelte sie (Paket 1.5.3:
     ± 22 → ± 12 ms nach einer ruhigen Nacht, 15 h später wieder ± 22 ms, je ein Neustart von chronyd).
     default_delay: Delay, den chrony ohne gemessene Schranke nutzt (unmeasured_delay) – damit wird
@@ -797,8 +848,8 @@ def tick(cfg: dict, now: float | None = None, samples: list[dict] | None = None)
             def long() -> dict:   # nur beim Verkleinern: 48 h Verlauf lesen
                 rows = given if given is not None else (
                     hist.snapshot(now - SHRINK_CHECK_HOURS * 3600.0) if hist is not None else [])
-                return measure(rows, str(cfg.get("gps_refid") or "GPS"), now, hours=SHRINK_CHECK_HOURS,
-                               not_before=not_before)
+                return measure_worst_window(rows, str(cfg.get("gps_refid") or "GPS"), now,
+                                            not_before=not_before)
 
             decision = decide(measured, applied, now, reset_at, offset_since, _floor,
                               defer_shrink=_autocal_corrects_first(cfg, measured), long=long,

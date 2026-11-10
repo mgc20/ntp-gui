@@ -293,6 +293,81 @@ class WeakGeometryTest(unittest.TestCase):
         self.assertTrue(det.signals["position"].active)
 
 
+class RecurringShadowTest(unittest.TestCase):
+    """Diagnosepaket 2306: Ein Fensterrahmen schattet jeden Sterntag (86164 s) dieselben Satelliten ab.
+    Das wiederholt sich auf Sekunden genau zur selben Konstellation – kein Jamming, kein GNSS-Hinweis."""
+
+    SHADOWED = {"GPS:1", "GPS:2", "GPS:3", "GPS:4", "GPS:5", "GPS:6"}
+
+    def feed(self, det, rng, start, event, seconds=3600.0, length=300.0, step=10.0, missing_after=None,
+             recurring=None):
+        """Eine Stunde Beobachtungen ab start; von event bis event+length sind SHADOWED 10 dB schwächer.
+        missing_after: ab dann fehlen die abgeschatteten Satelliten ganz in der Liste (untergegangen).
+        recurring: Liste, in die je Schritt (t, Vermerk cn0_recurring) kommt."""
+        stages = []
+        t = start
+        while t < start + seconds:
+            obs = outdoor(t, rng)
+            if event <= t < event + length:
+                obs["sats"] = {k: (v - 10.0 if k in self.SHADOWED else v) for k, v in obs["sats"].items()}
+            if missing_after is not None and t >= missing_after:
+                obs["sats"] = {k: v for k, v in obs["sats"].items() if k not in self.SHADOWED}
+            stages.append((t, det.update(obs)["stage"], det.signals["cn0_drop"].active))
+            if recurring is not None:
+                recurring.append((t, det.last.get("cn0_recurring")))
+            t += step
+        return stages
+
+    def test_same_shadow_one_sidereal_day_later_is_no_hint(self):
+        rng = random.Random(11)
+        det = gnssguard.Detector()
+        first_day = self.feed(det, rng, 0.0, 2400.0)
+        self.assertTrue(any(active for _t, _s, active in first_day))          # beim ersten Mal: Hinweis
+        later = gnssguard.SIDEREAL_DAY
+        noted = []
+        event = later + 2400.0 + 20.0
+        second_day = self.feed(det, rng, later, event, recurring=noted)
+        self.assertFalse(any(active for _t, _s, active in second_day), "wiederkehrende Abschattung")
+        self.assertEqual({s for _t, s, _a in second_day}, {"ok"})
+        during = [t for t, note in noted if note]
+        self.assertTrue(during)                                       # während des Einbruchs vermerkt …
+        self.assertTrue(all(event <= t < event + 300.0 + gnssguard.CN0_WINDOW for t in during), during[-3:])
+        # … danach nicht mehr: status() zeigte sonst bis zum nächsten Reset einen längst vorbeigegangenen Einbruch.
+        self.assertIsNone(det.last.get("cn0_recurring"))
+
+    def test_same_time_next_solar_day_still_hints(self):
+        # Ein Störsender, der jeden Tag zur selben Uhrzeit läuft, liegt 236 s neben dem Sterntag.
+        rng = random.Random(12)
+        det = gnssguard.Detector()
+        self.feed(det, rng, 0.0, 2400.0)
+        second_day = self.feed(det, rng, 86400.0, 86400.0 + 2400.0)
+        self.assertTrue(any(active for _t, _s, active in second_day))
+
+    def test_vanished_satellites_do_not_hold_the_signal(self):
+        # Nach dem Einbruch fehlen die betroffenen Satelliten ganz: In der Hysterese zählen sie nicht als
+        # 0 dB und halten das Signal nicht fest (Paket: 1955 s aktiv).
+        rng = random.Random(13)
+        det = gnssguard.Detector()
+        stages = self.feed(det, rng, 0.0, 2400.0, length=3600.0, missing_after=2500.0)
+        active = [t for t, _s, a in stages if a]
+        self.assertTrue(active)
+        # Das Verschwinden selbst zählt in der Erkennung (60-s-Fenster) noch als Einbruch – ein Jammer, der
+        # die Signale ganz wegnimmt, soll auffallen –, danach höchstens noch die Haltezeit.
+        self.assertLess(max(active), 2500.0 + gnssguard.CN0_WINDOW + gnssguard.HOLD["weak"] + 30.0, max(active))
+
+    def test_satellites_lost_with_the_drop_still_hold(self):
+        # Prüfbefund: Ein Teil-Störsender nimmt 6 von 9 Satelliten den Lock ganz weg – sie fehlen ab dem
+        # Einbruch in der Liste. Sie verschwinden mit dem Einbruch, nicht danach: Sie zählen in der Hysterese
+        # als 0 dB, der Hinweis bleibt, solange die Störung läuft (nicht nach 2,5 min vorbei).
+        rng = random.Random(5)
+        det = gnssguard.Detector()
+        stages = self.feed(det, rng, 0.0, 99999.0, seconds=4000.0, missing_after=2400.0)
+        active = [t for t, _s, a in stages if a]
+        self.assertTrue(active)
+        self.assertLess(min(active), 2400.0 + gnssguard.CN0_WINDOW)
+        self.assertGreaterEqual(max(active), 3980.0, max(active))
+
+
 class SignalTest(unittest.TestCase):
     def test_uniform_cn0_is_hint(self):
         det = gnssguard.Detector()

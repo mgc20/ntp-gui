@@ -9,7 +9,8 @@ Entfernt bzw. ersetzt werden:
 * Koordinaten, Höhe, Bewegung (lat/lon/alt…, speed/track/climb) – auch als
   Zahlenpaar im Freitext, in NMEA-Sätzen und in rohen gpsd-JSON-Zeilen;
 * Satellitenwinkel (Azimut/Elevation) und die Liste der einzelnen Satelliten
-  (PRN) – es bleiben nur Summen je System (gesehen, benutzt, Signalstärke);
+  (PRN) – es bleiben nur Summen je System (empfangen, benutzt, Signalstärke), in der
+  Aufzeichnung (Zeitreihe) nur die stärkste Signalstärke je System;
 * Seriennummern (USB, DMI, Teile von /dev/serial/by-id), MAC-Adressen und die
   daraus abgeleiteten PTP-Uhr-IDs;
 * öffentliche IP-Adressen (→ ``<öffentliche-IP>``), auch als chrony-RefID;
@@ -85,13 +86,22 @@ CATEGORIES: dict[str, str] = {
     "schnittstelle": "Selbst vergebene Namen von Netzwerk-Interfaces – sie können Namen oder Orte enthalten.",
     "name": "Frei gewählte Namen (z. B. von API-Schlüsseln).",
     "satellitenliste": "Die Liste der einzelnen Satelliten (PRN) – welche Satelliten zu einer Zeit sichtbar sind, "
-                       "grenzt die Region ein; es bleiben nur Summen je System (gesehen, benutzt, Signalstärke).",
+                       "grenzt die Region ein; es bleiben nur Summen je System (empfangen, benutzt, Signalstärke). "
+                       "Satelliten ohne Signal zählen nicht mit: Sie stehen nur aus dem Almanach in der Liste, ihre "
+                       "Zahl folgt allein der Geometrie (Auf- und Untergänge). In der Aufzeichnung (Zeitreihe) "
+                       "fallen auch die Zahlen empfangener und benutzter Satelliten und die mittlere Signalstärke "
+                       "weg – jeder Sprung markierte einen Auf- oder Untergang; je System bleibt die stärkste "
+                       "Signalstärke.",
     "zeile_entfernt": "Ganze Log-Zeilen, die die Schlussprüfung beanstandet hat – lieber eine Zeile weniger als "
                       "ein abgebrochener Export.",
     "kanal": "Kennungen der Benachrichtigungskanäle – ersetzt durch <kanal-1> usw., damit sich zwei Pakete "
              "nicht über die dauerhaft gleiche Kennung verknüpfen lassen.",
-    "dop": "Richtungsabhängige DOP-Werte des GPS (x, y, vertikal, Zeit) – sie hängen von der Satellitengeometrie "
-           "über dem Empfänger ab; es bleiben HDOP/PDOP/GDOP, auf eine Stelle gerundet.",
+    "laufzeit_verlauf": "Das Alter des letzten NTS-Schlüsseltauschs in der Aufzeichnung – es wächst gleichmäßig; "
+                        "jeder Rundungssprung verriete den genauen Zeitpunkt (etwa kurz nach dem Start des Geräts). "
+                        "Im Schnappschuss (chrony.txt) bleibt es grob gerundet.",
+    "dop": "DOP-Werte des GPS außer HDOP (x, y, vertikal, Zeit, PDOP, GDOP) – sie hängen von der "
+           "Satellitengeometrie über dem Empfänger ab, und aus PDOP und GDOP ließen sich VDOP und TDOP "
+           "zurückrechnen; es bleibt HDOP, auf eine Stelle gerundet.",
 }
 
 # ---------------------------------------------------------------------------
@@ -260,16 +270,16 @@ def _key_kind(key: Any) -> str | None:
 # gpsd: was je Meldungsklasse bleiben darf.
 GPSD_ALLOWED = {
     "TPV": {"class", "device", "mode", "status", "time", "ept", "leapseconds", "tag"},
-    "SKY": {"class", "device", "time", "tag", "nSat", "uSat", "gdop", "hdop", "pdop", "satellites", "prRes",
-            "qual"},
+    "SKY": {"class", "device", "time", "tag", "uSat", "hdop", "satellites", "prRes", "qual"},
     "GST": {"class", "device", "time", "tag", "rms"},
     "PPS": None, "TOFF": None, "VERSION": None, "DEVICES": None, "DEVICE": None, "WATCH": None,
     "ERROR": None, "POLL": None, "OSC": None,
 }
 # Richtungsabhängige DOP-Werte (Ost/West, Nord/Süd, vertikal, Zeit) hängen von der Satellitengeometrie über
-# dem Empfänger ab – als Zeitreihe grenzen sie die Region ein. Richtungsfreie Werte bleiben, auf eine Stelle.
-DIRECTIONAL_DOP_KEYS = {"xdop", "ydop", "vdop", "tdop"}
-ROUNDED_DOP_KEYS = {"hdop", "pdop", "gdop"}
+# dem Empfänger ab – als Zeitreihe grenzen sie die Region ein. 2306: auch PDOP und GDOP, denn
+# PDOP² = HDOP² + VDOP² und GDOP² = PDOP² + TDOP² – mit ihnen wären VDOP/TDOP rückrechenbar. Es bleibt HDOP.
+DIRECTIONAL_DOP_KEYS = {"xdop", "ydop", "vdop", "tdop", "pdop", "gdop"}
+ROUNDED_DOP_KEYS = {"hdop"}
 GPSD_SAT_ALLOWED = {"PRN", "gnssid", "svid", "sigid", "freqid", "ss", "used", "health"}
 GPSD_DROP = {"RAW", "RTCM2", "RTCM3", "AIS", "SUBFRAME", "IMU", "ATT", "NAV", "GGA", "RMC"}
 
@@ -808,6 +818,7 @@ class Sanitizer:
         self._clock_ids: dict[str, str] = {}
         self._ifaces: dict[str, str] = {}
         self._channels: dict[str, str] = {}
+        self._series = threading.local()   # depth > 0: gerade in einem gpsd-Eintrag einer Aufzeichnung
         self._lock = threading.RLock()
         # Gleiche Zeilen kommen in Aufzeichnungen tausendfach vor („Leap status : Normal“).
         # Das Ergebnis hängt nur von der Zeile und den (stabilen) Pseudonymen ab.
@@ -1126,14 +1137,17 @@ class Sanitizer:
             self.count("latenz_gerundet")
         return m.group(1) + out.rjust(len(m.group(2) + m.group(3)))
 
-    def chronyc(self, args, text: Any) -> Any:
-        """Ausgabe eines chronyc-Aufrufs filtern – im CSV-Modus mit RefID-, Namens- und Laufzeit-Spalten."""
+    def chronyc(self, args, text: Any, series: bool = False) -> Any:
+        """Ausgabe eines chronyc-Aufrufs filtern – im CSV-Modus mit RefID-, Namens- und Laufzeit-Spalten.
+
+        series=True: Eintrag einer Aufzeichnung (viele Zeilen mit Zeitstempel). Dort fallen Zähler weg, die
+        gleichmäßig wachsen: Jeder Rundungssprung verriete den genauen Startzeitpunkt (2306, authdata)."""
         if not isinstance(text, str):
             return self.obj(text)
         argv = [str(a) for a in (args or [])]
         if "-c" in argv:
             command = next((a for a in argv if a in CHRONYC_CSV_COMMANDS), "")
-            text = "\n".join(self._csv_row(command, row) for row in text.split("\n"))
+            text = "\n".join(self._csv_row(command, row, series) for row in text.split("\n"))
         return self.text(text)
 
     def _source_name(self, name: str) -> str:
@@ -1142,7 +1156,7 @@ class Sanitizer:
             return name
         return self.host_value(name)
 
-    def _csv_row(self, command: str, row: str) -> str:
+    def _csv_row(self, command: str, row: str, series: bool = False) -> str:
         if not row or row.lstrip().startswith("#"):
             return row
         parts = row.split(",")
@@ -1164,7 +1178,11 @@ class Sanitizer:
         elif command in ("sourcestats", "authdata") and len(parts) >= 4:
             parts[0] = self._source_name(parts[0])
             if command == "authdata" and len(parts) >= 6 and re.fullmatch(r"\d+", parts[5]):
-                parts[5] = str(coarse_seconds(int(parts[5])))   # letzter Schlüsseltausch ≈ Laufzeit
+                if series:      # Zeitreihe: auch gerundet verriete der Sprung den Zeitpunkt des Schlüsseltauschs
+                    self.count("laufzeit_verlauf")
+                    parts[5] = REMOVED
+                else:
+                    parts[5] = str(coarse_seconds(int(parts[5])))   # letzter Schlüsseltausch ≈ Laufzeit
         elif command == "clients" and len(parts) >= 5:
             parts[0] = self.host_value(parts[0]) if parts[0] else parts[0]
         for i in idx:
@@ -1300,9 +1318,27 @@ class Sanitizer:
                 container = ["<koordinaten>" if i in hit else v for i, v in enumerate(container)]
         return container
 
+    def _in_series(self) -> bool:
+        """Zeitreihe: Zweck „recording“ oder ein gpsd-Eintrag einer Aufzeichnung (viele Zeilen je Sekunde)."""
+        return self.purpose == "recording" or getattr(self._series, "depth", 0) > 0
+
     def _satellite_summary(self, sats: list) -> dict:
-        """Satellitenliste → nur Summen je System (gesehen, benutzt, Signalstärke Mittel/Max)."""
+        """Satellitenliste → nur Summen je System (empfangen, benutzt, Signalstärke Mittel/Max).
+
+        2306: Satelliten ohne Signal (ss fehlt oder 0) zählen nicht – der Empfänger führt sie nur, weil er
+        sie laut Almanach über dem Horizont erwartet. Ihre Zahl folgt der Geometrie; als Zeitreihe markierte
+        jeder Wechsel einen Auf- oder Untergang und grenzte so die Region ein.
+
+        In einer Zeitreihe (_in_series) gilt das auch für die übrigen Zählwerte: Ein aufgehender Satellit
+        bekommt irgendwann erstmals Signal und wird benutzt, ein untergehender verliert es – „empfangen“ und
+        „benutzt“ springen genau dann, nur gegen Abschattung verschoben; auch der Mittelwert springt, wenn ein
+        schwacher Satellit tief am Horizont dazukommt. Dort bleibt je System nur die stärkste Signalstärke
+        (snr_max): Sie gehört zu einem hoch stehenden Satelliten, ändert sich mit Auf- und Untergängen nicht
+        sprunghaft und zeigt Störungen und Abschattung trotzdem. Die Systeme selbst stehen unabhängig vom
+        Signal in der Liste (der Empfänger verfolgt sie), ein System erscheint also nicht mit dem ersten
+        aufgehenden Satelliten."""
         self.count("satellitenliste", len(sats))
+        series = self._in_series()
         systems: dict[str, dict] = {}
         for sat in sats:
             if not isinstance(sat, dict):
@@ -1311,18 +1347,28 @@ class Sanitizer:
             if not isinstance(system, str) or not system:
                 system = GNSS_NAMES.get(sat.get("gnssid"), "unbekannt") if isinstance(sat.get("gnssid"), int) \
                     else "unbekannt"
-            entry = systems.setdefault(system, {"gesehen": 0, "benutzt": 0, "_ss": []})
-            entry["gesehen"] += 1
             for k in sat:
                 if _norm(k) in ANGLE_KEYS and sat[k] is not None:
                     self.count("satellitenwinkel")
-            entry["benutzt"] += 1 if sat.get("used") else 0
             ss = sat.get("ss", sat.get("snr"))
-            if isinstance(ss, (int, float)) and not isinstance(ss, bool):
+            received = isinstance(ss, (int, float)) and not isinstance(ss, bool) and ss > 0
+            if series:
+                entry = systems.setdefault(system, {"_ss": []})
+                if received:
+                    entry["_ss"].append(ss)
+                continue
+            if not received and not sat.get("used"):
+                continue
+            entry = systems.setdefault(system, {"empfangen": 0, "benutzt": 0, "_ss": []})
+            entry["benutzt"] += 1 if sat.get("used") else 0
+            if received:
+                entry["empfangen"] += 1
                 entry["_ss"].append(ss)
         for entry in systems.values():
             ss = entry.pop("_ss")
-            if ss:
+            if series:
+                entry["snr_max"] = round(max(ss)) if ss else None
+            elif ss:
                 entry["snr_mittel"] = round(sum(ss) / len(ss))
                 entry["snr_max"] = round(max(ss))
         return {"je_system": systems}
@@ -1356,11 +1402,22 @@ class Sanitizer:
                 self.count("position")
                 continue
             if chronyc_args is not None and raw_key == "out" and isinstance(value, str):
-                out[raw_key] = self.chronyc(chronyc_args, value)
+                out[raw_key] = self.chronyc(chronyc_args, value, series=True)
+                continue
+            if d.get("kind") == "gpsd" and raw_key == "out" and isinstance(value, str):
+                # gpsd-Zeile einer Aufzeichnung: Zeitreihe – Zählwerte der Satelliten fallen weg (2306).
+                self._series.depth = getattr(self._series, "depth", 0) + 1
+                try:
+                    out[raw_key] = self.text(value)
+                finally:
+                    self._series.depth -= 1
                 continue
             nk = _norm(raw_key)
             if allowed is not None and raw_key not in allowed:
                 self._count_dropped_key(nk, default="position")
+                continue
+            if cls == "SKY" and raw_key == "uSat" and self._in_series():
+                self.count("satellitenliste")   # 2306: Zahl benutzter Satelliten – springt mit Auf-/Untergängen
                 continue
             if cls == "SKY" and raw_key == "satellites" and isinstance(value, list):
                 out[raw_key] = self._satellite_summary(value) if value else value
@@ -1383,6 +1440,8 @@ class Sanitizer:
     def _count_dropped_key(self, nk: str, default: str) -> None:
         if nk in DIRECTIONAL_DOP_KEYS:
             self.count("dop")
+        elif nk == "nsat":            # 2306: Zahl samt Satelliten ohne Signal – folgt der Geometrie
+            self.count("satellitenliste")
         elif nk in ANGLE_KEYS:
             self.count("satellitenwinkel")
         elif nk in MOTION_KEYS:

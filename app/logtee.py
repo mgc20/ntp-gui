@@ -11,6 +11,10 @@ dort liest die Log-Seite des Dashboards und das Diagnosepaket.
   dann geht es nur auf stdout weiter; später wird es erneut versucht.
 * Ein Fehler auf stdout (Leser weg) beendet ihn ebenfalls nicht – die Datei
   bekommt die Zeilen weiter.
+* Ausnahme (Diagnosepaket 2306): Eine bekannte, harmlose Zeile von gpsd ohne Präfix wird
+  erklärt statt unverändert weitergegeben (KNOWN_LINES) – „SHM: shmctl(…) for IPC_RMID failed,
+  Operation not permitted“ beim Beenden: Das SHM-Segment der Refclock legt chronyd als root an,
+  gpsd hat seine Rechte schon abgegeben und darf es nicht löschen. Folgenlos.
 * SIGTERM/SIGINT/SIGHUP werden ignoriert: Der Supervisor wird beim Stoppen
   benachrichtigt und schreibt danach noch Zeilen. Der tee endet erst, wenn
   stdin geschlossen ist (alle Schreiber beendet).
@@ -19,12 +23,31 @@ dort liest die Log-Seite des Dashboards und das Diagnosepaket.
 from __future__ import annotations
 
 import os
+import re
 import signal
 import sys
 import time
 
 MAX_BYTES = 2 * 1024 * 1024
 RETRY_AFTER = 30.0  # Sekunden bis zum nächsten Öffnungsversuch nach einem Fehler
+
+# Bekannte harmlose Zeilen (ganze Zeile, ohne Zeilenende) → erklärender Ersatz mit Präfix.
+KNOWN_LINES = [
+    (re.compile(rb"^SHM: shmctl\((\d+)\) for IPC_RMID failed, Operation not permitted\(1\)$"),
+     "[gps] Hinweis: gpsd darf das SHM-Segment {0} beim Beenden nicht entfernen (IPC_RMID, keine Rechte) – "
+     "es gehört chronyd; harmlos."),
+]
+
+
+def explain(line: bytes) -> bytes:
+    """Bekannte harmlose Zeile umschreiben, alles andere unverändert zurückgeben."""
+    body = line.rstrip(b"\r\n")
+    for pattern, text in KNOWN_LINES:
+        match = pattern.match(body)
+        if match:
+            groups = [g.decode("ascii", "replace") for g in match.groups()]
+            return text.format(*groups).encode("utf-8") + line[len(body):]
+    return line
 
 
 class RotatingFile:
@@ -111,6 +134,7 @@ def run(stdin=None, stdout=None, path: str | None = None, max_bytes: int = MAX_B
             break  # Lesefehler: aufhören; im Supervisor übernimmt dann cat die Pipe
         if not line:
             break
+        line = explain(line)
         if stdout_ok:
             try:
                 stdout.write(line)

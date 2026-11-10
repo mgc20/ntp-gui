@@ -1123,6 +1123,29 @@ class BoundHysteresisTest(StoreCase):
         self.assertGreaterEqual(changes[0][1], 0.034)
         self.assertEqual(len(self.reloads), 1)
 
+    def test_daily_cycle_no_flip_flop(self):
+        # Diagnosepaket 2306: Tagesgang – 6 h am Nachmittag ~17 ms, sonst ~9 ms. Das gepoolte
+        # 48-h-Quantil lag unter dem schlechtesten 6-h-Fenster, also nachts kleiner, nachmittags
+        # wieder größer (je ein Neustart von chronyd). Nach dem ersten Vergrößern: kein Pendeln mehr.
+        def spread(h):
+            return 17.0 if 12 <= h % 24 < 18 else 9.0
+        changes = self.run_hours(spread, 5 * 24)
+        delays = [d for _, d in changes]
+        self.assertEqual(delays, sorted(delays), changes)                # nie wieder kleiner
+        self.assertTrue(all(h <= 24 for h, _ in changes), changes)       # ab dem 2. Tag Ruhe
+        self.assertEqual(len(self.reloads), len(changes))
+
+    def test_shrink_check_uses_worst_window(self):
+        # Ein ruhiger Tag mit 6 schlechten Stunden: das schlechteste 6-h-Fenster zählt, nicht das Mittel.
+        def spread(h):
+            return 17.0 if 12 <= h % 24 < 18 else 9.0
+        rows = self.samples(spread, 48)
+        long = gpsquality.measure_worst_window(rows, "GPS", T0 + 48 * H)
+        self.assertEqual(long["status"], "measured")
+        self.assertGreaterEqual(long["delay"], 0.03)
+        pooled = gpsquality.measure(rows, "GPS", T0 + 48 * H, hours=48)
+        self.assertGreater(long["delay"], pooled["delay"])
+
     def test_still_grows_when_needed(self):
         def spread(h):
             return 40.0 if h >= 30 else 17.0
