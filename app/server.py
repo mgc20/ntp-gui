@@ -149,7 +149,7 @@ HISTORY_SIZE = env_number("HISTORY_SIZE", 8640, int, minimum=2)
 HISTORY = historymod.History(HISTORY_SIZE, os.path.join(settings.DATA_DIR, "history.json.gz"))
 # 1.5.4: Allan-Abweichung der Systemuhr aus der Frequenz im ganzen Verlauf, 10 min zwischengespeichert.
 # Nur die letzten 30 Tage laden – bei großem HISTORY_DAYS sonst Speicher im GB-Bereich.
-# Diagnosepaket 2306: ohne die Holdover-Tests (Frequenz eingefroren, täuscht Stabilität vor).
+# Ohne die Holdover-Tests (Frequenz eingefroren, täuscht Stabilität vor).
 ALLAN = allan.Cache(lambda: HISTORY.series("freq", since=time.time() - allan.MAX_SPAN),
                     exclude=lambda: holdover.TEST.freeze_intervals())
 
@@ -836,7 +836,7 @@ def trigger_reload_chronyd() -> bool:
     """Nur chronyd neu laden (Konfiguration neu erzeugen, nur chronyd neu starten): für Änderungen, die nur
     chrony.conf betreffen – die automatische GPS-Fehlerschranke und der automatisch kalibrierte Offset.
     gpsd, ptp4l, phc2sys und dnsfwd laufen weiter: Der GPS-Fix muss nicht neu einrasten, und der
-    DNS-Weiterleiter meldet einen bekannten Ausfall nicht bei jeder Anpassung erneut (Diagnose 1.6.0)."""
+    DNS-Weiterleiter meldet einen bekannten Ausfall nicht bei jeder Anpassung erneut."""
     return _request_reload(RELOAD_CHRONYD_REQUEST)
 
 

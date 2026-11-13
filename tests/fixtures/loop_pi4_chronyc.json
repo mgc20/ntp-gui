@@ -1,5 +1,5 @@
 {
- "_note": "Echte chronyc-Ausgaben eines Raspberry Pi 4 (USB-GPS ohne PPS, korrekte Ausnahmen) aus einem Diagnosepaket; Adressen und Refids außer denen der PTB sind durch die bekannter öffentlicher Zeitserver ersetzt.",
+ "_note": "Realistische chronyc-Ausgaben (USB-GPS ohne PPS, korrekte Ausnahmen), anonymisiert; Adressen und Refids außer denen der PTB sind durch die bekannter öffentlicher Zeitserver ersetzt.",
  "t": 1793608019.15,
  "tracking": "C0356768,192.53.103.104,2,1793607834.509599696,0.000163374,-0.000062042,0.000163502,1.457,-0.001,0.029,0.02,0.000627907,521.5,Normal\n",
  "sources": "#,-,GPS,0,3,377,7,-0.001656767,-0.001656767,0.116999999\n^,+,192.53.103.108,1,9,377,135,-0.001876289,-0.001876289,0.01\n^,*,192.53.103.104,1,10,377,184,-0.003123875,-0.003185917,0.01\n^,+,192.53.103.103,1,10,377,200,-0.005071111,-0.005133094,0.01\n^,-,162.159.200.123,3,8,377,134,-0.001388979,-0.001388979,0.01\n^,+,194.58.200.20,1,10,377,578,0.001761771,0.001701210,0.02\n",

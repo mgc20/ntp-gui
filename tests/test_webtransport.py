@@ -271,7 +271,7 @@ class WatchTest(unittest.TestCase):
         self.assertIn("24 Stunden", item["text"])
 
     def test_trusted_lan_proxy_without_proto_is_own_hint_not_plain(self):
-        # Fall aus einem Diagnosepaket: Proxy auf anderem Gerät, eingetragen, schickt nur X-Forwarded-For.
+        # Fall: Proxy auf anderem Gerät, eingetragen, schickt nur X-Forwarded-For.
         trusted = wt.parse_networks(["192.168.1.2/32"])
         info = wt.resolve("192.168.1.2", hdrs({"X-Forwarded-For": "192.168.1.50"}), trusted)
         self.assertEqual((info["proxied"], info["proto_missing"]), (True, True))
@@ -391,7 +391,7 @@ class WatchTest(unittest.TestCase):
     # --- 1.6.1: keine doppelte Meldung „HTTP-Warnung“ + „Proxy nicht eingetragen“ --------------------
 
     def test_unlisted_proxy_is_one_hint_with_cause_and_button(self):
-        # Fall aus einem Nutzer-Screenshot (Adressen hier nur Beispiele aus RFC 5737): Ein Reverse Proxy auf
+        # Fall (Adressen nur Beispiele aus RFC 5737): Ein Reverse Proxy auf
         # einem anderen Gerät, nicht eingetragen. Bisher: Warnung „unverschlüsseltes HTTP“ UND Info „Proxy
         # erkannt“. Jetzt: ein Hinweis, der die Ursache nennt und den Knopf trägt.
         info = wt.resolve("192.0.2.10", hdrs({"X-Forwarded-For": "198.51.100.20", "X-Forwarded-Proto": "https"}), [])

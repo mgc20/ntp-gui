@@ -6,9 +6,12 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 
 ## [Unveröffentlicht]
 
+### Intern
+- Kommentare und Testnamen sachlich formuliert; der Datenschutz-Wächter lehnt Herkunftsangaben zu Nutzerdaten ab.
+
 ## [1.6.3] – 2026-11-10
 
-Schwerpunkt: Auswertung eines weiteren Diagnosepakets – die GPS-Fehlerschranke pendelt nicht mehr im
+Schwerpunkt: Die GPS-Fehlerschranke pendelt nicht mehr im
 Tagesrhythmus, eine wiederkehrende Abschattung der Antenne gilt nicht mehr als Störung, und das Diagnosepaket
 verrät über Satellitenzahlen keine Region mehr.
 
@@ -24,7 +27,7 @@ verrät über Satellitenzahlen keine Region mehr.
 
 ## [1.6.2] – 2026-11-09
 
-Schwerpunkt: Auswertung eines Diagnosepakets – DoH-Server, die nur HTTP/2 sprechen, werden klar erkannt, die
+Schwerpunkt: DoH-Server, die nur HTTP/2 sprechen, werden klar erkannt, die
 eigenen DNS-Server melden verständliche Gründe, automatische GPS-Anpassungen starten nicht mehr alle Dienste neu,
 das Diagnosepaket bleibt vollständig lesbar, und das Dashboard hängt nicht mehr nach abgebrochenen Verbindungen.
 
@@ -48,7 +51,7 @@ das Diagnosepaket bleibt vollständig lesbar, und das Dashboard hängt nicht meh
 - **Diagnosepaket wiedererkennungsärmer:** Kennungen von Benachrichtigungskanälen werden zu `<kanal-N>`, Laufzeiten und der letzte NTS-Schlüsseltausch sind grob gerundet, DOP-Einzelwerte (x/y/v/t) entfallen.
 
 ### Intern
-- Neues Modul `app/textsafe.py` (druckbare, begrenzte Texte); `RUN_DIR/reload-chronyd.request` lädt nur chronyd neu. Tests in `tests/test_diagnose_paket160.py` mit synthetischen Daten, darunter HTTP/2-Server mit sofortigem Schließen, RST und ALPN „h2“.
+- Neues Modul `app/textsafe.py` (druckbare, begrenzte Texte); `RUN_DIR/reload-chronyd.request` lädt nur chronyd neu. Tests in `tests/test_dns_gps_filter.py` mit synthetischen Daten, darunter HTTP/2-Server mit sofortigem Schließen, RST und ALPN „h2“.
 
 ## [1.6.1] – 2026-11-09
 
@@ -369,11 +372,11 @@ Dashboard, Zeiten in der Zeitzone des Servers, bessere Kontraste und Handy-Ansic
 ## [1.5.4] – 2026-11-08
 
 Schwerpunkt: GPS bei schwachem Empfang ruhig – keine Positions-Fehlalarme, weniger Ereignisse, stabile
-Fehlerschranke (Rückmeldung aus einem Diagnosepaket: USB-GPS drinnen ohne PPS). Dazu die Allan-Abweichung auf
+Fehlerschranke (USB-GPS drinnen ohne PPS). Dazu die Allan-Abweichung auf
 der Seite „Uhrqualität“, Reverse Proxy per Klick eintragen und die Restpunkte aus der Abschlussprüfung.
 
 ### Behoben
-- **Kein Fehlalarm „GNSS-Störung: Position um 160 m gesprungen“ mehr bei schwachem Empfang.** Für den
+- **Kein Fehlalarm „GNSS-Störung: Position um … m gesprungen“ mehr bei schwachem Empfang.** Für den
   Positionssprung zählen nur noch verlässliche Fixe – 3D, mindestens 5 genutzte Satelliten, HDOP höchstens 4
   (ohne HDOP: eph höchstens 50 m) –, für die Referenz wie für den Vergleich; 2D-Fixe und schlechte
   Geometrie werden ignoriert. Ein Sprung zählt erst, wenn er über mindestens 5 gute Fixe und 50 s anhält.
@@ -381,7 +384,7 @@ der Seite „Uhrqualität“, Reverse Proxy per Klick eintragen und die Restpunk
   Minute erkannt. Ist die Störung schon gemeldet, halten auch schwache Fixe außerhalb der Schwelle sie
   aufrecht – „GNSS wieder unauffällig“ kommt nicht mehr, nur weil ein Spoofer auf schlechte Geometrie
   umschaltet. Meldet gpsd keine Satellitenliste (kein SKY im Abfragefenster, NMEA ohne GSA), gilt die
-  Satellitenzahl als unbekannt statt als 0 – sonst wäre die Positionsprüfung still dauerhaft aus. Replay der Fix-Folge aus dem Paket (4 Tage, Positionsstreuung nach HDOP): vorher rund 40
+  Satellitenzahl als unbekannt statt als 0 – sonst wäre die Positionsprüfung still dauerhaft aus. Replay einer realistischen Fix-Folge (4 Tage, Positionsstreuung nach HDOP): vorher rund 40
   Störungen, jetzt keine.
 - **Weniger GPS-Ereignisse bei schwachem Empfang.** Gilt der Empfang als schwach (Episode „unstet“ oder
   die 24-h-Bewertung meldet häufige Fix-Wechsel – auch gleich nach einem Neustart), merkt sich ntp-gui das
@@ -441,10 +444,10 @@ der Seite „Uhrqualität“, Reverse Proxy per Klick eintragen und die Restpunk
   eingeordnet (Wert um 1 h rund 200-fach zu hoch). Gerechnet werden höchstens die letzten 30 Tage, auch bei
   größerem `HISTORY_DAYS` (bei 365 Tagen sonst gut 1 GB Speicher). Ist der Verlauf nicht lesbar, sagt die
   Seite das (statt „noch kein Verlauf“), die Einzelheiten stehen nur im Container-Log; das Diagnosepaket
-  wartet nicht auf eine laufende Rechnung. Aus den Stundenmitteln im Paket der Rückmeldung: rund 2 ppb über
-  1 h, 5 ppb über 6 h.
-- **Reverse Proxy per Klick eintragen** (Rückmeldung: Der Hinweis zeigte die Adresse des Proxys, das
-  richtige Eintragen gelang trotzdem tagelang nicht). Die Hinweise „Reverse Proxy erkannt, aber nicht
+  wartet nicht auf eine laufende Rechnung. Typische Werte aus Stundenmitteln eines USB-GPS-Systems: rund 2 ppb
+  über 1 h, 5 ppb über 6 h.
+- **Reverse Proxy per Klick eintragen** (bisher zeigte der Hinweis zwar die Adresse des Proxys, das
+  richtige Eintragen blieb trotzdem mühsam). Die Hinweise „Reverse Proxy erkannt, aber nicht
   eingetragen“ und „Dashboard über unverschlüsseltes HTTP mit Anmeldung“ (Ursache: Proxy nicht
   eingetragen) nennen die Adresse und bieten „Als vertrauenswürdigen Proxy eintragen (…/32 bzw. /128)“
   an – mit Rückfrage, was das heißt. Eingetragen wird genau die Adresse, die ntp-gui selbst als
@@ -480,8 +483,8 @@ der Seite „Uhrqualität“, Reverse Proxy per Klick eintragen und die Restpunk
 Schwerpunkt: Ein Holdover-Test läuft bis zum Ende – keine Automatik startet chronyd mehr dazwischen.
 
 ### Behoben
-- **Holdover-Test wird von Automatiken nicht mehr abgebrochen** (Rückmeldung: 6-h-Test ohne GPS und
-  Netzquellen, nach 4 h 35 min abgebrochen, weil die automatische Anpassung der GPS-Fehlerschranke
+- **Holdover-Test wird von Automatiken nicht mehr abgebrochen** (bisher brach z. B. ein 6-h-Test ohne GPS und
+  Netzquellen nach einigen Stunden ab, weil die automatische Anpassung der GPS-Fehlerschranke
   chronyd neu startete). Solange ein Test läuft, stellen die Fehlerschranke (gpsquality) und die
   automatische Kalibrierung (Offset) ihre Änderung zurück; der Supervisor wartet ebenso mit dem Neustart
   nach einem Gerätewechsel (Hotplug) und nach einem erneuerten NTS-Zertifikat. Im Protokoll steht je
@@ -1152,8 +1155,8 @@ Reverse Proxy und ein Gerüst für Englisch.
   Firewall-Umleitung (per IP-Adresse, `216.239.35.0`) getrennt – per Name greift schon der DNS.
   Dazu ein Hinweis, wie man das Hairpin-Problem erkennt.
 - **Diagnosepaket mit Aufzeichnung deutlich schneller:** Filter und Schlussprüfungen merken
-  sich gleiche Zeilen, Vorschau und Paket entstehen in einem Durchgang. Mit einer echten
-  10-Minuten-Aufzeichnung (2347 Einträge, 1,5 MB) brauchten Vorschau und Download bisher
+  sich gleiche Zeilen, Vorschau und Paket entstehen in einem Durchgang. Mit einer
+  10-Minuten-Aufzeichnung (rund 2300 Einträge, 1,5 MB) brauchten Vorschau und Download bisher
   zusammen 78 s (33 s + 45 s), jetzt 9 s (gemessen auf x86; auf einem Raspberry Pi entsprechend
   länger). Das Ergebnis ist byteweise dasselbe wie vorher.
 - **Das Dashboard bleibt währenddessen bedienbar**, auch in anderen Tabs: Gefiltert wird in

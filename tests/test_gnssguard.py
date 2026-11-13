@@ -3,8 +3,8 @@ Holdover-Test (Thema 8): gnssguard.py, selectctl.py, holdover.py.
 
 Replays (Abnahme): (a) C/N0-Einbruch, (b) Zeitsprung 50 ms, (c) Positionssprung, (d) langsamer
 Abfall wie Schneefall → (a)–(c) in ≤ 60 s erkannt, (d) kein Alarm. Dazu „VK-162 schwacher
-Empfang“ aus tests/fixtures/gps_vk162_indoor.jsonl (echte Aufzeichnung eines Nutzers,
-datenschutzgefiltert: Fix-Art, Satellitenzahl, GPS- und Netz-Offsets echt) → höchstens
+Empfang“ aus tests/fixtures/gps_vk162_indoor.jsonl (realistische Messreihe,
+anonymisiert: Fix-Art, Satellitenzahl, GPS- und Netz-Offsets realistisch) → höchstens
 „Hinweis“, nie „Störung“. Die C/N0 je Satellit und die Position hat der Datenschutzfilter
 entfernt; sie werden hier deterministisch synthetisiert (Startwert fest, Ort erfunden).
 
@@ -180,8 +180,8 @@ class ReplayTest(unittest.TestCase):
 
 
 class WeakGeometryTest(unittest.TestCase):
-    """1.5.4: „GNSS-Störung: Position um 160 m gesprungen“ bei einem VK-162 drinnen (Diagnosepaket
-    1.5.3: 2D/3D im Wechsel, 3–6 Satelliten, HDOP oft 5–20) war ein Fehlalarm. Nur verlässliche
+    """1.5.4: „GNSS-Störung: Position um … m gesprungen“ bei einem USB-GPS drinnen
+    (2D/3D im Wechsel, 3–6 Satelliten, HDOP oft 5–20) war ein Fehlalarm. Nur verlässliche
     Fixe zählen, und ein Sprung muss anhalten (Replay: tests/_gpsreplay.py)."""
 
     def stoerungen(self, observations):
@@ -294,7 +294,7 @@ class WeakGeometryTest(unittest.TestCase):
 
 
 class RecurringShadowTest(unittest.TestCase):
-    """Diagnosepaket 2306: Ein Fensterrahmen schattet jeden Sterntag (86164 s) dieselben Satelliten ab.
+    """Ein Fensterrahmen schattet jeden Sterntag (86164 s) dieselben Satelliten ab.
     Das wiederholt sich auf Sekunden genau zur selben Konstellation – kein Jamming, kein GNSS-Hinweis."""
 
     SHADOWED = {"GPS:1", "GPS:2", "GPS:3", "GPS:4", "GPS:5", "GPS:6"}
@@ -1325,7 +1325,7 @@ if __name__ == "__main__":
 
 
 # =========================================================================================
-# 1.5.1: Kein Fehlalarm nach „Offset zurücksetzen“ (Diagnosepaket eines Nutzers, Pi 4 + VK-162)
+# 1.5.1: Kein Fehlalarm nach „Offset zurücksetzen“ (USB-GPS ohne PPS)
 # =========================================================================================
 class OffsetResetReplayTest(LockCase):
     """Nachgestellter Verlauf: GPS kalibriert (Offset 0,0526), dann setzt der Nutzer den Offset
@@ -1581,7 +1581,7 @@ class RestartKeepsVerdictTest(unittest.TestCase):
         self.assertEqual(fresh.stage(), "stoerung")
 
     def test_stored_excuse_survives_restart(self):
-        # Nutzerfall: Offset zurückgesetzt, GPS gleichbleibend +51 ms und „x“ – nach einem Neustart
+        # Fall: Offset zurückgesetzt, GPS gleichbleibend +51 ms und „x“ – nach einem Neustart
         # bleibt es beim Hinweis „vermutlich ein Kalibrierfehler“.
         det = gnssguard.Detector()
         worst = drive(det, 0, 2 * 3600, lambda t: 0.051, lambda d: "x")

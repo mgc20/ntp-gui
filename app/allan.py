@@ -30,7 +30,7 @@ verfälschen. Darum beginnt an jedem Sprung (|Δfreq| zwischen Nachbarpunkten ü
 Lücke über GAP_SECONDS (bei grobem Messintervall: über GAP_FACTOR übliche Abstände der letzten
 Punkte) und am Anfang des Verlaufs ein neuer Abschnitt, dessen erste SETTLE_SECONDS weggelassen werden (wie eine Lücke).
 
-Holdover-Tests (Diagnosepaket 2306): Während eines Tests sind alle Quellen abgewählt, chronyd führt die
+Holdover-Tests (seit 1.6.3): Während eines Tests sind alle Quellen abgewählt, chronyd führt die
 Frequenz nicht nach – sie bleibt stundenlang konstant und täuschte für τ von Minuten bis Stunden Stabilität
 vor. Diese Zeiträume (exclude, aus den Ergebnissen des Holdover-Tests) fallen weg wie eine Lücke; danach
 beginnt ein neuer Abschnitt mit Einschwingen.

@@ -12,7 +12,7 @@ Signale (Konzept 1.4, Thema 12; 1.5, Thema 1)
 schwach (allein nur „Hinweis“ – Schnee, Flugzeuge, ein Lkw vor dem Fenster):
   * cn0_drop     C/N0 der meisten Satelliten bricht gleichzeitig um ≥ 6 dB ein, innerhalb von
                  60 s (Jamming oder Abschattung). Ein langsamer Abfall über Minuten bis Stunden
-                 (Schnee auf der Antenne) zählt nicht. Ebenso wenig (2306) ein Einbruch derselben
+                 (Schnee auf der Antenne) zählt nicht. Ebenso wenig (seit 1.6.3) ein Einbruch derselben
                  Satelliten genau einen Sterntag (± 90 s) nach einem früheren: wiederkehrende
                  Abschattung durch einen festen Gegenstand, nur vermerkt (cn0.recurring_shadow).
   * uniform      unnatürlich gleichmäßiges C/N0: ≥ 6 Satelliten fast gleich stark (ein Spoofer
@@ -60,7 +60,7 @@ stark (→ „Störung“):
                  1.5.4: Nur verlässliche Fixe zählen – 3D, ≥ 5 genutzte Satelliten, HDOP ≤ 4
                  (ohne HDOP: eph ≤ 50 m) –, für die Referenz wie für den Sprung. Und der Sprung
                  muss über ≥ 5 gute Fixe in Folge und ≥ 50 s anhalten. Drinnen (2D/3D im Wechsel,
-                 HDOP 5–20) gab es sonst Fehlalarme „Position um 160 m gesprungen“.
+                 HDOP 5–20) gab es sonst Fehlalarme „Position um … m gesprungen“.
 
 Solange ein Signal anschlägt, sind seine Grundlinien eingefroren: Eine Störung, die einfach
 bleibt, wird nie zur neuen Normalität – sie endet erst, wenn die Werte zurückkommen, oder mit
@@ -123,9 +123,9 @@ CN0_SHARE = 0.6                 # so viele davon müssen gleichzeitig einbrechen
 CN0_RECOVER_DB = 3.0            # erholt, wenn der Median wieder bis auf 3 dB an „vorher“ heran ist
 # Hysterese: Ein betroffener Satellit, der nicht mehr gemeldet wird, zählt als 0 dB (ein Störsender nimmt
 # den Lock ganz weg) – außer er wurde nach Beginn des Einbruchs noch mindestens so lange weiter gemeldet:
-# Dann ist er später verschwunden, nicht mit dem Einbruch (untergegangen oder hinter dem Hindernis), 2306.
+# Dann ist er später verschwunden, nicht mit dem Einbruch (untergegangen oder hinter dem Hindernis).
 CN0_VANISH_GRACE = CN0_WINDOW
-# Diagnosepaket 2306: Ein fester Gegenstand (Fensterrahmen, Hauswand) schattet jeden Sterntag zur selben
+# Ein fester Gegenstand (Fensterrahmen, Hauswand) schattet jeden Sterntag zur selben
 # Konstellation dieselben Satelliten ab. Gab es genau einen Sterntag vorher (± CN0_RECUR_TOLERANCE) einen
 # Einbruch, an dem mindestens CN0_RECUR_OVERLAP der jetzt betroffenen Satelliten beteiligt waren, gilt er
 # als wiederkehrende Abschattung – kein GNSS-Hinweis. Die Toleranz bleibt deutlich unter den 236 s, um die
@@ -482,7 +482,7 @@ class Detector:
             # Hysterese: aktiv bleiben, solange die betroffenen Satelliten nicht zurück sind. Ein nicht mehr
             # gemeldeter Satellit zählt als 0 dB – ein Störsender nimmt den Lock oft ganz weg. Wurde er nach
             # Beginn des Einbruchs aber noch CN0_VANISH_GRACE lang gemeldet, ist er erst später verschwunden
-            # (untergegangen, hinter dem Hindernis) und zählt nicht mehr (2306: sonst hielt er das Signal
+            # (untergegangen, hinter dem Hindernis) und zählt nicht mehr (sonst hielt er das Signal
             # über eine halbe Stunde fest). Bleibt keiner übrig, hält die Hysterese nicht.
             current_values: dict[str, float] = {}
             for k in self._cn0_ref:

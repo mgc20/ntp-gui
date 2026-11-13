@@ -87,7 +87,7 @@ PRECISION_MIN, PRECISION_MAX = 0.001, 0.1
 SHRINK_RATIO = 0.6            # 1.5.4: kleiner nur, wenn die neue Schranke ≤ 0,6 × die jetzige ist …
 SHRINK_CHECK_HOURS = 48.0     # … und das 95-%-Maß der letzten 48 h (nicht nur 6 h) mit Reserve hineinpasst
 SHRINK_CHECK_HEADROOM = 1.1   # Reserve dafür (die neue Schranke selbst hat schon GROW_HEADROOM auf den 6 h)
-SHRINK_CHECK_STEP = 3600.0    # 2306: geprüft wird das schlechteste 6-h-Fenster der 48 h, je 1 h versetzt
+SHRINK_CHECK_STEP = 3600.0    # geprüft wird das schlechteste 6-h-Fenster der 48 h, je 1 h versetzt
 GROW_HEADROOM = 1.25          # jede neue Schranke: Messwert × diese Reserve – Kriechen startet chronyd nicht stündlich neu
 NET_DISTANCE_FACTOR = 1.5     # ohne PPS: Schranke nie enger als 1,5 × Root Distance der besten genutzten NTS-Quelle
 GROW_INTERVAL = 3600.0        # größer (GPS schlechter als angenommen): frühestens nach 1 h
@@ -408,7 +408,7 @@ def measure_worst_window(samples: list[dict], gps_name: str, now: float | None =
                          step: float = SHRINK_CHECK_STEP, not_before: float | None = None) -> dict[str, Any]:
     """Schlechtestes Messfenster (window_hours, wie measure) der letzten hours, gleitend je step versetzt.
 
-    Diagnosepaket 2306: Streut das GPS nur einige Stunden am Tag stärker (Tagesgang), liegt das über
+    Streut das GPS nur einige Stunden am Tag stärker (Tagesgang), liegt das über
     48 h gepoolte 95-%-Maß unter dem 6-h-Maß dieser Stunden – die Schranke wurde nachts kleiner und
     nachmittags wieder größer, jedes Mal ein Neustart von chronyd. Beim Verkleinern zählt darum
     dasselbe Maß wie beim Vergrößern: das größte 6-h-Fenster. Fenster mit zu wenig Messzeit zählen nicht."""
@@ -734,9 +734,9 @@ def decide(measured: dict, applied: dict | None, now: float, reset_at: float | N
     schreibt die Schranke dabei mit (adopt_calibration) – kleiner wird sie dann nicht vorher noch
     einmal; das spart einen Neustart von chronyd. Größer (die sichere Richtung) bleibt erlaubt.
     long (1.5.4): Messung über SHRINK_CHECK_HOURS (dict oder Funktion, erst beim Verkleinern
-    abgefragt; seit 2306 das schlechteste 6-h-Fenster darin, measure_worst_window). Kleiner wird die
+    abgefragt; seit 1.6.3 das schlechteste 6-h-Fenster darin, measure_worst_window). Kleiner wird die
     Schranke nur, wenn die gemessene ≤ SHRINK_RATIO × die jetzige ist
-    UND auch die 48-h-Messung mit Reserve in die neue Schranke passt – sonst pendelte sie (Paket 1.5.3:
+    UND auch die 48-h-Messung mit Reserve in die neue Schranke passt – sonst pendelte sie (Beispiel:
     ± 22 → ± 12 ms nach einer ruhigen Nacht, 15 h später wieder ± 22 ms, je ein Neustart von chronyd).
     default_delay: Delay, den chrony ohne gemessene Schranke nutzt (unmeasured_delay) – damit wird
     verglichen, solange applied fehlt.
@@ -820,7 +820,7 @@ def tick(cfg: dict, now: float | None = None, samples: list[dict] | None = None)
             if offset_since is not None and offset_since > now:
                 offset_since = None          # Uhr sprang zurück: Zeitpunkt unbrauchbar
             # Nicht mitmessen: das Einschwingen nach einer Offset-Änderung und nach dem letzten Start von chronyd
-            # (Diagnose 1.6.0: eine Stunde direkt nach mehreren Neustarts ließ die Schranke wachsen, 20 h
+            # (eine Stunde direkt nach mehreren Neustarts ließ die Schranke wachsen, 20 h
             # später schrumpfte sie wieder – zwei Neustarts von chronyd ohne echten Anlass).
             starts = []
             if offset_since is not None:

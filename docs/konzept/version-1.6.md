@@ -131,7 +131,7 @@ unabhängiger Prüfung auf Korrektheit sowie Sicherheit und Datenschutz.
      `docs/integrationen/https.md`.
   8. **Beobachtete Ungereimtheiten** aus der GUI-Durchsicht (Anhang B, U1–U17), soweit nicht schon
      oben enthalten. Bei U6 (Anfragen/min 6,0 ↔ 0,0) und U7 (Hardware-Check „Kein GPS-Empfänger“
-     trotz Fix) zuerst mit Daten aus Diagnosepaketen prüfen; U7 entspricht F7 – Regel: liefert gpsd ein aktives
+     trotz Fix) zuerst mit einer Aufzeichnung nachstellen; U7 entspricht F7 – Regel: liefert gpsd ein aktives
      Gerät mit Fix, schlägt das die sysfs-Suche (betrifft vor allem entferntes gpsd über `GPSD_HOST`).
 - **Akzeptanzkriterien:**
   - Für jeden Fehler aus Anhang A ein Test (Unit, Container oder Playwright), der vor dem Fix rot

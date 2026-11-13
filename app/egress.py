@@ -276,7 +276,7 @@ GPSD_ALLOWED = {
     "ERROR": None, "POLL": None, "OSC": None,
 }
 # Richtungsabhängige DOP-Werte (Ost/West, Nord/Süd, vertikal, Zeit) hängen von der Satellitengeometrie über
-# dem Empfänger ab – als Zeitreihe grenzen sie die Region ein. 2306: auch PDOP und GDOP, denn
+# dem Empfänger ab – als Zeitreihe grenzen sie die Region ein. Ebenso PDOP und GDOP, denn
 # PDOP² = HDOP² + VDOP² und GDOP² = PDOP² + TDOP² – mit ihnen wären VDOP/TDOP rückrechenbar. Es bleibt HDOP.
 DIRECTIONAL_DOP_KEYS = {"xdop", "ydop", "vdop", "tdop", "pdop", "gdop"}
 ROUNDED_DOP_KEYS = {"hdop"}
@@ -1141,7 +1141,7 @@ class Sanitizer:
         """Ausgabe eines chronyc-Aufrufs filtern – im CSV-Modus mit RefID-, Namens- und Laufzeit-Spalten.
 
         series=True: Eintrag einer Aufzeichnung (viele Zeilen mit Zeitstempel). Dort fallen Zähler weg, die
-        gleichmäßig wachsen: Jeder Rundungssprung verriete den genauen Startzeitpunkt (2306, authdata)."""
+        gleichmäßig wachsen: Jeder Rundungssprung verriete den genauen Startzeitpunkt (z. B. authdata)."""
         if not isinstance(text, str):
             return self.obj(text)
         argv = [str(a) for a in (args or [])]
@@ -1325,7 +1325,7 @@ class Sanitizer:
     def _satellite_summary(self, sats: list) -> dict:
         """Satellitenliste → nur Summen je System (empfangen, benutzt, Signalstärke Mittel/Max).
 
-        2306: Satelliten ohne Signal (ss fehlt oder 0) zählen nicht – der Empfänger führt sie nur, weil er
+        Satelliten ohne Signal (ss fehlt oder 0) zählen nicht – der Empfänger führt sie nur, weil er
         sie laut Almanach über dem Horizont erwartet. Ihre Zahl folgt der Geometrie; als Zeitreihe markierte
         jeder Wechsel einen Auf- oder Untergang und grenzte so die Region ein.
 
@@ -1405,7 +1405,7 @@ class Sanitizer:
                 out[raw_key] = self.chronyc(chronyc_args, value, series=True)
                 continue
             if d.get("kind") == "gpsd" and raw_key == "out" and isinstance(value, str):
-                # gpsd-Zeile einer Aufzeichnung: Zeitreihe – Zählwerte der Satelliten fallen weg (2306).
+                # gpsd-Zeile einer Aufzeichnung: Zeitreihe – Zählwerte der Satelliten fallen weg.
                 self._series.depth = getattr(self._series, "depth", 0) + 1
                 try:
                     out[raw_key] = self.text(value)
@@ -1417,7 +1417,7 @@ class Sanitizer:
                 self._count_dropped_key(nk, default="position")
                 continue
             if cls == "SKY" and raw_key == "uSat" and self._in_series():
-                self.count("satellitenliste")   # 2306: Zahl benutzter Satelliten – springt mit Auf-/Untergängen
+                self.count("satellitenliste")   # Zahl benutzter Satelliten – springt mit Auf-/Untergängen
                 continue
             if cls == "SKY" and raw_key == "satellites" and isinstance(value, list):
                 out[raw_key] = self._satellite_summary(value) if value else value
@@ -1440,7 +1440,7 @@ class Sanitizer:
     def _count_dropped_key(self, nk: str, default: str) -> None:
         if nk in DIRECTIONAL_DOP_KEYS:
             self.count("dop")
-        elif nk == "nsat":            # 2306: Zahl samt Satelliten ohne Signal – folgt der Geometrie
+        elif nk == "nsat":            # Zahl samt Satelliten ohne Signal – folgt der Geometrie
             self.count("satellitenliste")
         elif nk in ANGLE_KEYS:
             self.count("satellitenwinkel")

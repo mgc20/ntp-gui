@@ -8,7 +8,11 @@ Beschreibung des PR auf:
    wenn Testdaten aus einem echten Diagnosepaket oder einer echten Konfiguration entstehen.
 2. **Echte Koordinaten**: Werte bei lat/lon, Zahlenpaare im Koordinatenformat, NMEA-Positionen
    und mlat/mlon in Karten-Links – außer bekannten Beispielorten.
-3. **Commit-Metadaten**: Autor und Committer nur mit noreply-Adresse; Namen und Nachricht laufen
+3. **Herkunftsangaben zu Nutzerdaten**: Kommentare, Tests, Doku und Commit-Nachrichten begründen
+   fachlich, nicht mit der Herkunft der Daten (kein „Diagnosepaket eines Nutzers“, keine Paketnummer,
+   kein „Screenshot des Nutzers“, keine „Rückmeldung: …“). Das Wort „Diagnosepaket“ als Name der
+   Produktfunktion bleibt erlaubt. Die Muster sind allgemein; private Kennungen stehen hier nie.
+4. **Commit-Metadaten**: Autor und Committer nur mit noreply-Adresse; Namen und Nachricht laufen
    durch dieselben Prüfungen wie Dateien.
 
 Bewusst schlank: Es fängt Versehen ab, keine Absicht, und kennt nicht jede Schreibweise.
@@ -68,6 +72,11 @@ AUSNAHMEN = frozenset({
     "tests/test_datenschutz_waechter.py",        # enthält absichtlich Fundbeispiele
 })
 
+# Nur für die Herkunftsprüfung ausgenommen: Diese Datei beschreibt die Muster selbst.
+HERKUNFT_AUSNAHMEN = frozenset({
+    ".github/scripts/datenschutz_waechter.py",
+})
+
 NOREPLY_RE = re.compile(r"^(?:\d+\+)?[^@\s]+@users\.noreply\.github\.com$|^noreply@(?:github|anthropic)\.com$")
 
 IPV4_RE = re.compile(r"(?<![\d.])(\d{1,3}(?:\.\d{1,3}){3})(?:/(\d{1,2}))?(?![\d]|\.\d)")
@@ -76,6 +85,23 @@ KOORD_SCHLUESSEL_RE = re.compile(
     r"\b(m?lat|latitude|m?lon|lng|longitude)\b[\"']?\s*[:=]\s*[\"']?(-?\d{1,3}\.\d{2,})", re.IGNORECASE)
 KOORD_PAAR_RE = re.compile(r"(?<![\d.])(-?\d{1,2}\.\d{4,})\s*[,; ]\s*(-?\d{1,3}\.\d{4,})(?![\d.])")
 NMEA_RE = re.compile(r"(\d{2})(\d{2}\.\d+),([NS]),(\d{3})(\d{2}\.\d+),([EW])")
+# Herkunftsangaben zu Nutzerdaten: wessen Paket, welche Paketnummer, welcher Screenshot.
+HERKUNFT_RE = re.compile(r"""
+    Diagnosepakets?\s+(?:eines|des|der)\s+(?:Nutzers|Nutzerin|Anwenders|Maintainers|Rückmeldung)
+  | Diagnosepakets?\s+(?:vom|aus)\b
+  | Diagnosepakets?\s+\d
+  | \d+\.\d+(?:\.\d+)?-(?:Diagnose)?pakets?\b
+  | (?:Screenshot|Aufzeichnung(?:en)?|Paket|Diagnosepaket)\s+(?:eines|des)\s+(?:Nutzers|Nutzerin|Maintainers)
+  | Nutzer-?Screenshot | Nutzerfall
+  | Rückmeldung\s*(?:aus\b|mit\b|:|\()
+  | wie\s+im\s+(?:Diagnose)?paket\b
+  | \bPaket\s+\d+\.\d
+  | \bPakets?\s+der\s+Rückmeldung
+  | Auswertung\s+(?:eines|des)\s+(?:Diagnose)?pakets\b
+  | \bvom\s+\S+(?:\s+\S+)?\s+des\s+(?:Nutzers|Nutzerin|Maintainers)\b
+  | Diagnose\s+\d+\.\d+\.\d+:
+  | Rückmeldung\s+R\d
+""", re.IGNORECASE | re.VERBOSE)
 
 
 @dataclass(frozen=True)
@@ -159,10 +185,17 @@ def koordinaten(text: str) -> list[tuple[str, str]]:
     return arten
 
 
-def pruefe_text(text: str, ort: str) -> list[Fund]:
+def herkunftsangaben(text: str) -> list[tuple[str, str]]:
+    return [("Herkunftsangabe zu Nutzerdaten", m.group(0)) for m in HERKUNFT_RE.finditer(text)]
+
+
+def pruefe_text(text: str, ort: str, herkunft: bool = True) -> list[Fund]:
     funde = []
     for nummer, zeile in enumerate(text.splitlines(), 1):
-        for art, wert in lan_adressen(zeile) + koordinaten(zeile):
+        arten = lan_adressen(zeile) + koordinaten(zeile)
+        if herkunft:
+            arten += herkunftsangaben(zeile)
+        for art, wert in arten:
             funde.append(Fund(ort, nummer, art, wert))
     return funde
 
@@ -183,7 +216,8 @@ def pruefe_dateien() -> list[Fund]:
         if b"\0" in roh[:8192]:
             continue  # Binärdatei
         funde.extend(pruefe_text(name, f"{name} (Dateiname)"))
-        funde.extend(pruefe_text(roh.decode("utf-8", errors="replace"), name))
+        funde.extend(pruefe_text(roh.decode("utf-8", errors="replace"), name,
+                                 herkunft=name not in HERKUNFT_AUSNAHMEN))
     return funde
 
 

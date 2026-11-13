@@ -744,7 +744,7 @@ docker rm -f "${PREFIX}-m" >/dev/null 2>&1
 
 echo
 echo "12e) Schleifen-Erkennung: DNS-Umschreibung ohne Ausnahme für ntp-gui (1.5)"
-# Wie R1: Der DNS im LAN (hier ein Fake-Resolver statt AdGuard) schreibt den Quellnamen auf
+# Fehlerbild: Der DNS im LAN (hier ein Fake-Resolver statt AdGuard) schreibt den Quellnamen auf
 # ntp-gui selbst um, und ntp-gui fragt genau diesen DNS. Erwartet: Ereignis „source/crit“ mit
 # dem richtigen Satz in ≤ 2 Poll-Intervallen (minpoll 4 = 16 s), danach mit eigenem DNS-Server
 # für ntp-gui (Modus servers, ehrliche Antwort → 172.31.77.20, dort läuft ein echter

@@ -334,7 +334,7 @@ class LogsTest(unittest.TestCase):
 
 
 
-# Echte chronyc-Ausgaben (chrony 4.3/4.5), wie sie providers._record in die Aufzeichnung schreibt.
+# Typische chronyc-Ausgaben (chrony 4.3/4.5), wie sie providers._record in die Aufzeichnung schreibt.
 NTPDATA = ("\nRemote address  : 203.0.113.9 (CB007109)\nRemote port     : 123\nLeap status     : Normal\n"
            "Stratum         : 1\nPoll interval   : 7 (128 seconds)\nPrecision       : -25 (0.000000030 seconds)\n"
            "Root delay      : 0.000015259 seconds\nRoot dispersion : 0.000015259 seconds\n"

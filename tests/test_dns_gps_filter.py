@@ -1,4 +1,4 @@
-"""Funde aus der Auswertung eines Diagnosepakets von 1.6.0 (Raspberry Pi, Docker).
+"""Korrekturen aus 1.6.2: DNS-Upstreams, Fehlertexte, GPS-Neuladen und Datenschutzfilter.
 
 Alle Daten hier sind synthetisch: Adressen aus RFC 5737 (192.0.2.0/24, 198.51.100.0/24), Namen aus
 example.org bzw. Test-CA „dns.test“, Kennungen frei erfunden.
@@ -546,7 +546,7 @@ class SmallFilterFixesTest(unittest.TestCase):
         sanitizer = egress.Sanitizer("diagnostics")
         sky = sanitizer.obj({"class": "SKY", "time": "2026-01-01T00:00:00Z", "xdop": 0.71, "ydop": 0.93,
                              "vdop": 1.21, "tdop": 0.66, "hdop": 0.8333, "pdop": 1.4642, "nSat": 12, "uSat": 8})
-        # 2306: auch PDOP (VDOP rückrechenbar) und nSat (Satelliten ohne Signal, folgt der Geometrie).
+        # Ebenso PDOP (VDOP rückrechenbar) und nSat (Satelliten ohne Signal, folgt der Geometrie).
         self.assertEqual(sky, {"class": "SKY", "time": "2026-01-01T00:00:00Z", "hdop": 0.8, "uSat": 8})
         status = sanitizer.obj({"status": {"xdop": 0.71, "ydop": 0.93, "hdop": 0.8333}})
         self.assertEqual(status, {"status": {"hdop": 0.8}})

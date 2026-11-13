@@ -680,7 +680,7 @@ _KNOWN: dict[str, Any] = {"t": 0.0, "names": [], "values": {}, "ok": False}
 
 
 def _known() -> tuple[list, dict]:
-    """Eigene Namen/Titel für den Filter (wie im Diagnosepaket), 10 min zwischengespeichert.
+    """Eigene Namen/Titel für den Filter (wie beim Diagnosepaket), 10 min zwischengespeichert.
 
     Schlägt das Ermitteln fehl, gilt die letzte gelungene Liste weiter (und es wird beim nächsten
     Mal neu versucht). Gab es noch nie eine, wirft es egress.NotifyLeak: lieber nicht senden als

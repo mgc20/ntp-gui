@@ -70,6 +70,43 @@ class KoordinatenTest(unittest.TestCase):
                 self.assertFalse(waechter.koordinaten(text))
 
 
+class HerkunftTest(unittest.TestCase):
+    """Herkunftsangaben zu Nutzerdaten (wessen Daten, welches Paket, welcher Screenshot) gehören nicht
+    ins Repository – die fachliche Begründung reicht."""
+
+    def test_herkunftsangaben_werden_gefunden(self):
+        for text in ("# Diagnosepaket eines Nutzers: Fix kommt und geht",
+                     "aus dem Diagnosepaket des Maintainers", "Diagnosepaket der Rückmeldung",
+                     "Diagnosepaket vom Dienstag", "Diagnosepaket 1234: Tagesgang", "das 2.0.1-Diagnosepaket",
+                     "Fall aus einem Nutzer-Screenshot", "Screenshot des Nutzers: zweite Karte",
+                     "Aufzeichnungen eines Nutzers", "Paket des Maintainers", "Rückmeldung aus einem Paket",
+                     "Rückmeldung mit 1.3.2", "Rückmeldung: Test brach ab", "17 Clients (wie im Paket)",
+                     "wie im Diagnosepaket des Nutzers", "Nutzerfall: Offset zurückgesetzt",
+                     "pendelte sie (Paket 1.5.3: ± 22 ms)", "im Paket der Rückmeldung",
+                     "nach Auswertung eines Diagnosepakets", "chronyc-Ausgaben vom Pi 4 des Maintainers",
+                     "Diagnose 1.6.0: Fix fehlt", "siehe Rückmeldung R1"):
+            with self.subTest(text=text):
+                self.assertTrue(waechter.herkunftsangaben(text))
+                self.assertTrue(waechter.pruefe_text(text, "x"))
+
+    def test_produktfunktion_und_rollen_sind_erlaubt(self):
+        for text in ("Diagnosepaket (ein Klick, mit Vorschau)", "Das Diagnosepaket entfernt Seriennummern.",
+                     "genau das, was im Paket stünde", "Liste aus dem Paket tzdata", "Repositories eines Nutzers",
+                     "Ping an einen Dienst des Nutzers", "Entscheidung des Maintainers", "Rückmeldungen im Formular",
+                     "wie beim Diagnosepaket", "Ins Diagnosepaket kommt sie nur, wenn du es ankreuzt",
+                     "Diagnosepaket mit Aufzeichnung deutlich schneller", "seit Version 1.6.3"):
+            with self.subTest(text=text):
+                self.assertFalse(waechter.herkunftsangaben(text))
+
+    def test_commit_nachricht_wird_geprueft(self):
+        repo = CommitTest._repo(self, "12345+jemand@users.noreply.github.com", "Diagnosepaket 1234: Schranke")
+        funde = waechter.pruefe_commits("HEAD~1..HEAD", cwd=repo)
+        self.assertEqual([f.art for f in funde], ["Herkunftsangabe zu Nutzerdaten"])
+
+    def test_waechter_selbst_ist_ausgenommen(self):
+        self.assertIn(".github/scripts/datenschutz_waechter.py", waechter.HERKUNFT_AUSNAHMEN)
+
+
 class CommitTest(unittest.TestCase):
     def _repo(self, mail: str, nachricht: str) -> Path:
         tmp = Path(tempfile.mkdtemp())

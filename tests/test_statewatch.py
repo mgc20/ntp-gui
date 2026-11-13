@@ -98,7 +98,7 @@ class GpsFixHoldTest(unittest.TestCase):
         return [e[2] for e in self.events if e[0] == "gps"]
 
     def test_short_dropouts_are_quiet(self):
-        # 3D-Fix, dann immer wieder 20–40 s ohne Fix (wie im Diagnosepaket des Nutzers):
+        # 3D-Fix, dann immer wieder 20–40 s ohne Fix:
         # keine Einzelmeldungen „verloren/wieder da“ – ab 1.5 EIN Ereignis „unstet“ mit Zählung.
         self.feed([3] * 3 + ([1] * 3 + [3] * 2) * 6)
         self.assertEqual(self.titles(), ["GPS-Empfang unstet: Fix kam und ging 6-mal in 30 min"])
@@ -112,7 +112,7 @@ class GpsFixHoldTest(unittest.TestCase):
         self.assertEqual(self.titles(), ["GPS-Fix verloren", "GPS-Fix wieder da"])
 
 class WeakReceptionTest(unittest.TestCase):
-    """1.5.4: Diagnosepaket 1.5.3 (VK-162 drinnen, GPS nur Rückfallebene) – in gut 4 Tagen 55 × „GPS-Fix
+    """1.5.4: USB-GPS drinnen, GPS nur Rückfallebene – bis 1.5.3 in gut 4 Tagen 55 × „GPS-Fix
     wieder da“, 48 × „GPS-Fix verloren“ (warn), 19 × „GPS-Empfang unstet“ (warn). Replay der Fix-Folge
     (tests/_gpsreplay.py) durch statewatch: wenige Info-Zeilen am Tag, keine Warnung."""
 
@@ -136,7 +136,7 @@ class WeakReceptionTest(unittest.TestCase):
     def test_bundle_before_after(self):
         bundle = _gpsreplay.events()
         before = [e for e in bundle if e["ev"] in ("lost", "back", "unstet", "gone", "calm")]
-        self.assertGreaterEqual(len(before), 130)                    # so stand es im Paket
+        self.assertGreaterEqual(len(before), 130)                    # so viele Meldungen bis 1.5.3
         for seed in (11, 1, 2):
             events, _watch = self.replay(seed)
             # Vor der ersten Bewertung (frischer Start ohne Verlauf) darf es ein Paar geben, danach nie „warn“.

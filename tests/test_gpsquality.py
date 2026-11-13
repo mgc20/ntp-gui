@@ -2,9 +2,9 @@
 das Zusammenfassen von Fix-Flattern zu „unstet“ (statewatch.py), die ehrliche
 Fehlerschranke in chrony.conf (confgen.py) und der Delay-Vorschlag der Kalibrierung.
 
-Replay „VK-162 drinnen“: tests/fixtures/gps_vk162_indoor.jsonl stammt aus vier
-Aufzeichnungen eines Nutzers (Raspberry Pi 4, VK-162 ohne PPS, schwacher Empfang drinnen),
-datenschutzgefiltert; die C/N0 der vier stärksten ist synthetisiert (siehe Kopfzeile).
+Replay „VK-162 drinnen“: tests/fixtures/gps_vk162_indoor.jsonl ist eine
+realistische Messreihe (USB-GPS ohne PPS, schwacher Empfang drinnen),
+anonymisiert; die C/N0 der vier stärksten ist synthetisiert (siehe Kopfzeile).
 """
 
 import json
@@ -999,7 +999,7 @@ class OffsetChangeTest(StoreCase):
         self.assertEqual(gpsquality.note_offset(cfg(gps_offset=0.0), T0 + 300), T0 + 120)
 
     def test_bound_measures_only_after_offset_change(self):
-        # Nutzerfall: 6 h kalibriert (Versatz 0), dann Offset zurückgesetzt → GPS +51 ms neben dem Netz.
+        # Fall: 6 h kalibriert (Versatz 0), dann Offset zurückgesetzt → GPS +51 ms neben dem Netz.
         gpsquality.note_offset(cfg(gps_offset=0.0526), T0)
         before = biased_samples(T0, 6.0, 0.0)
         change = T0 + 6 * H
@@ -1067,7 +1067,7 @@ class BoundCreepTest(unittest.TestCase):
         return {"status": "measured", "delay": delay, "precision": 0.01, "bound": delay / 2}
 
     def test_one_ms_creep_does_not_restart_hourly(self):
-        # Nutzerfall: gemessen 0,128 → eine Stunde später 0,130 ergab früher ± 64 → ± 80 ms (zweiter Neustart).
+        # Fall: gemessen 0,128 → eine Stunde später 0,130 ergab früher ± 64 → ± 80 ms (zweiter Neustart).
         first = gpsquality.decide(self.measured(0.128), {"delay": 0.1, "precision": 0.01, "t": T0 - 2 * H}, T0)
         self.assertEqual(first["delay"], 0.16)
         applied = {"delay": first["delay"], "precision": 0.01, "t": T0}
@@ -1084,8 +1084,8 @@ class BoundCreepTest(unittest.TestCase):
 
 
 class BoundHysteresisTest(StoreCase):
-    """1.5.4, Diagnosepaket 1.5.3: Die Schranke pendelte – 04.11. ± 22 → ± 12 ms nach einer ruhigen
-    Nacht (Streuung 8,9 ms in 6 h), 05.11. wieder ± 12 → ± 22 ms (16,8 ms), jedes Mal ein Neustart
+    """1.5.4: Die Schranke pendelte – ± 22 → ± 12 ms nach einer ruhigen
+    Nacht (Streuung 8,9 ms in 6 h), am Tag darauf wieder ± 12 → ± 22 ms (16,8 ms), jedes Mal ein Neustart
     von chronyd. Kleiner nur noch, wenn die neue ≤ 0,6 × die jetzige ist und die 48 h hineinpassen."""
 
     @staticmethod
@@ -1115,7 +1115,7 @@ class BoundHysteresisTest(StoreCase):
         return changes
 
     def test_bundle_spread_history_no_flip_flop(self):
-        # 30 h um 17 ms, 12 ruhige Stunden um 9 ms, danach wieder 17 ms (wie im Paket).
+        # 30 h um 17 ms, 12 ruhige Stunden um 9 ms, danach wieder 17 ms.
         def spread(h):
             return 9.0 if 30 <= h < 42 else 17.0
         changes = self.run_hours(spread, 72)
@@ -1124,7 +1124,7 @@ class BoundHysteresisTest(StoreCase):
         self.assertEqual(len(self.reloads), 1)
 
     def test_daily_cycle_no_flip_flop(self):
-        # Diagnosepaket 2306: Tagesgang – 6 h am Nachmittag ~17 ms, sonst ~9 ms. Das gepoolte
+        # Tagesgang – 6 h am Nachmittag ~17 ms, sonst ~9 ms. Das gepoolte
         # 48-h-Quantil lag unter dem schlechtesten 6-h-Fenster, also nachts kleiner, nachmittags
         # wieder größer (je ein Neustart von chronyd). Nach dem ersten Vergrößern: kein Pendeln mehr.
         def spread(h):

@@ -1,6 +1,6 @@
 """Schleifen-Erkennung (1.5, Thema 10): Fragt chronyd über eine eigene Quelle sich selbst?
 
-Zwei Wege führen in die Schleife (Rückmeldung R1: AdGuard-Umschreibung + UniFi-NAT):
+Zwei Wege führen in die Schleife (z. B. AdGuard-Umschreibung + UniFi-NAT):
 
 * **DNS-Umschreibung ohne Ausnahme:** AdGuard/Pi-hole schreibt pool.ntp.org auf ntp-gui um,
   und ntp-gui fragt denselben DNS. chronyd bekommt die eigene Adresse – oder, bei Docker im

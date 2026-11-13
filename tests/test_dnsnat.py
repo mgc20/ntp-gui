@@ -62,7 +62,7 @@ class ChainTest(unittest.TestCase):
         self.assertNotEqual(result["level"], "crit")
 
     def test_dns_rewrite_and_nat_redirect(self):
-        # R1: AdGuard schreibt pool.ntp.org um, UniFi leitet UDP 123 um – beides ohne Ausnahme.
+        # Fehlerbild: AdGuard schreibt pool.ntp.org um, UniFi leitet UDP 123 um – beides ohne Ausnahme.
         sources = [{"host": "de.pool.ntp.org"}, {"host": "ptbtime3.ptb.de"}, {"host": "192.53.103.104"}]
         replies = {"127.0.0.1": OURS, "192.53.103.103": dict(OURS), "192.53.103.104": dict(OURS),
                    "216.239.35.0": dict(OURS), "162.159.200.1": dict(OURS)}

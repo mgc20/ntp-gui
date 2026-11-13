@@ -1,8 +1,8 @@
-"""Replay „VK-162 drinnen, 1.5.3-Diagnosepaket“ (1.5.4): GPS-Fix-Folge über 4 Tage.
+"""Replay „USB-GPS drinnen ohne PPS“ (1.5.4): GPS-Fix-Folge über 4 Tage.
 
-Grundlage ist tests/fixtures/gps_vk162_fixflaps_153.jsonl – die Fix-Ereignisse aus dem
-Diagnosepaket eines Nutzers (nur Zeit ab Beginn, Fix-Art, genutzte Satelliten; keine Position).
-Was das Paket nicht enthält, wird deterministisch synthetisiert (fester Startwert):
+Grundlage ist tests/fixtures/gps_vk162_fixflaps.jsonl – eine realistische, anonymisierte
+Fix-Folge (nur Zeit ab Beginn, Fix-Art, genutzte Satelliten; keine Position).
+Was die Datei nicht enthält, wird deterministisch synthetisiert (fester Startwert):
 
   * innerhalb einer Episode „unstet“ das Kommen und Gehen des Fix (Fix ~3 min, Lücke ~1,5 min),
   * kurze Aussetzer (20–40 s) auch außerhalb – sie blieben schon in 1.5.3 unter der Haltezeit,
@@ -11,7 +11,7 @@ Was das Paket nicht enthält, wird deterministisch synthetisiert (fester Startwe
   * HDOP passend zur Satellitenzahl (3: 5–20, 4: 3,5–12, 5: 2,2–6, 6: 1,6–4,5, 7: 1,2–3),
   * die Position: ein erfundener Ort, Fehler = HDOP × Entfernungsfehler; der Entfernungsfehler
     (Mehrwege drinnen) ist ein korrelierter Zufallsweg (τ = 2 min, σ = 7 m). eph rechnet der Empfänger
-    mit 3 m (2 × 3 m × HDOP) – drinnen zu optimistisch, wie im Paket (160 m Sprung trotz Schwelle 3 × eph).
+    mit 3 m (2 × 3 m × HDOP) – drinnen zu optimistisch (Sprünge über 100 m trotz Schwelle 3 × eph).
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ import math
 import random
 from pathlib import Path
 
-FIXTURE = Path(__file__).resolve().parent / "fixtures" / "gps_vk162_fixflaps_153.jsonl"
+FIXTURE = Path(__file__).resolve().parent / "fixtures" / "gps_vk162_fixflaps.jsonl"
 HOME = (45.0, 10.0)                       # erfundener Ort, nur für die Rechnung
 STEP = 10.0
 UERE = 7.0                                # Entfernungsfehler drinnen (m, 1 σ)
