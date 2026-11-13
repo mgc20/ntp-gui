@@ -616,7 +616,8 @@ export function render(ctx) {
   st.showAdvanced = st.showAdvanced || {};
   st.fieldErrors = st.fieldErrors || {};
   const readonly = schema.readonly;
-  const fields = Array.isArray(schema.fields) ? schema.fields : [];
+  // Uhr-Profile (Typ clockprofiles) haben ihre eigene Seite: Uhr & Hardware → Anzeigen.
+  const fields = (Array.isArray(schema.fields) ? schema.fields : []).filter((f) => f.type !== "clockprofiles");
   const byKey = Object.fromEntries(fields.map((f) => [f.key, f]));
   const query = hashQuery();
   const tab = tabFromQuery(query);

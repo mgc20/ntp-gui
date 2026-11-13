@@ -8,6 +8,7 @@ import * as gps from "./pages/gps.js";
 import * as ptp from "./pages/ptp.js";
 import * as clockquality from "./pages/clockquality.js";
 import * as hardware from "./pages/hardware.js";
+import * as displays from "./pages/displays.js";
 import * as clients from "./pages/clients.js";
 import * as diagnose from "./pages/diagnose.js";
 import * as notify from "./pages/notify.js";
@@ -21,7 +22,7 @@ import { createShortcuts, shortcutList } from "./shortcuts.js";
 import { captureFocus, restoreFocus, renderGate } from "./focus.js";
 
 // Routentabelle, alte Routen und Reiter stehen in routes.js (ohne DOM, in Node getestet).
-const MODULES = { overview, sources, gps, clients, clockquality, hardware, ptp, diagnose, notify, settings, setup, help, muster };
+const MODULES = { overview, sources, gps, clients, clockquality, hardware, ptp, displays, diagnose, notify, settings, setup, help, muster };
 
 // ?dev=1 in der Adresse (vor oder nach dem #) schaltet die Entwicklerseiten frei.
 function devMode() {

@@ -247,7 +247,25 @@ export const HELP_UHR = {
       + "vier weitere **Designs** (Bahnhofsuhr, Nixie, Klappzahlen, Wortuhr – auch per `?design=`), `?kiosk=1` ohne "
       + "Leiste und Mauszeiger, `?eink=1` schwarz auf weiß mit Anzeige nur zur vollen Minute und `?tz=` für eine "
       + "zweite Zeitzone. **Ton** piept nach einem Klick auf jeder vollen Sekunde oder zählt zum Uhrenstellen herunter; "
-      + "**Mein Gerät** zeigt, wie falsch die Uhr deines Geräts geht – das bleibt im Browser.",
+      + "**Mein Gerät** zeigt, wie falsch die Uhr deines Geräts geht – das bleibt im Browser. Unter der Uhr steht "
+      + "immer, wie weit du ihr trauen kannst: **abgeglichen**, **frei laufend** (Server antwortet nicht), "
+      + "**unsicher** (Fehlerschranke über `?maxerr=`, Standard 100 ms; die Sekunden werden ab 0,5 s grau) oder "
+      + "**Gerätezeit, nicht abgeglichen**. Verstellt dein Gerät seine eigene Uhr, springt die Anzeige nicht mit. "
+      + "`?lead=0…200` lässt die Anzeige so viele Millisekunden vorlaufen – für Fernseher, deren Bildverarbeitung "
+      + "das Bild verzögert; einstellen kannst du das mit dem Ton auf der Sekunde. Die Uhr passt sich ihrer Fläche an "
+      + "(Streifen, Banner, Spalte, Kachel; festlegen mit `?layout=`), dazu `?safe=` (Sicherheitsrand in %), `?scale=`, "
+      + "`?show=`, `?bg=transparent` für OBS, `?shift=1` gegen Einbrennen, das Design **Studio** mit Sekundenkranz und "
+      + "7-Segment-Ziffern, `?look=` für Themen und `?accent=` für eine Akzentfarbe (immer mit genug Kontrast). "
+      + "**Countdown:** `?until=20:15` zählt bis zu dieser Uhrzeit in der Zeitzone des Servers (vorbei: bis morgen), "
+      + "`?until=2026-12-31T23:59:59` bis zu einem Zeitpunkt – gerechnet auf der Serverzeit, daher zeigen alle Bildschirme "
+      + "dasselbe. Danach zählt die Uhr hoch (`?after=up`, bei Uhrzeiten eine Stunde lang) oder bleibt auf 00:00 stehen "
+      + "(`?after=stop`). `?warn=300,60,10` setzt die Farbstufen (gelb, rot, fett rot – immer mit Symbol und Text), "
+      + "`?beep=10` piept in den letzten Sekunden (nach einer ersten Berührung oder Taste), `?label=` beschriftet ihn "
+      + "(bis 24 Zeichen), `?cd=main` macht ihn zur Hauptanzeige. `?timer=25m` ist eine Eieruhr nur für dieses Gerät "
+      + "(Leertaste startet und hält an, R setzt zurück); ohne Ziel startet die Leertaste eine Stoppuhr. Weitere Tasten: "
+      + "F Vollbild, D Design, L Layout, U UTC groß, T Zehntel, + und − Größe, A Uhrzeit ansagen, ? Übersicht; "
+      + "`?lock=1` schaltet die Tasten ab und blendet Design, Ton und Anpassen aus. Vollbild, Hell/Dunkel, Rotlicht und "
+      + "„Mein Gerät“ bleiben: Rotlicht und Hell/Dunkel gelten je Gerät und haben keinen Parameter.",
   },
   clock_sync: {
     title: "Wie genau ist die Anzeige?",
@@ -264,7 +282,7 @@ export const HELP_UHR = {
     text: "Normalerweise ist /clock wie das Dashboard geschützt. Eingeschaltet ist die Uhr samt /api/v1/time "
       + "**ohne Passwort** erreichbar – praktisch für einen Wandmonitor, auf dem du kein Passwort hinterlegen "
       + "willst (und einen API-Schlüssel in der Adresse solltest du nie verwenden: der landet in Proxy- und "
-      + "Browser-Logs). Sichtbar ist dann nur Uhrzeit, Ampel, Genauigkeit, die Art der Quelle (GPS, NTP …) und eine angekündigte Schaltsekunde – "
+      + "Browser-Logs). Sichtbar ist dann nur Uhrzeit, Ampel, Genauigkeit, die Art der Quelle (GPS, NTP …), die Zeitzone des Servers, die Uhr-Profile und eine angekündigte Schaltsekunde – "
       + "keine Namen, Adressen oder Einstellungen. Es ist trotzdem die erste offene Seite neben /healthz: Lass "
       + "es aus, wenn das Dashboard aus dem Internet erreichbar ist. Wer sich anmeldet, sieht auf /api/v1/time "
       + "zusätzlich den Namen der Quelle. Die Uhr antwortet über **jeden Namen**, z. B. auch über einen eigenen "

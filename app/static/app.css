@@ -1278,3 +1278,31 @@ details.explain-more[open] > summary { margin-bottom: 8px; }
 @media (forced-colors: active) {
   .timeline-seg, .timeline-swatch, .chart-event-glyph { forced-color-adjust: none; }
 }
+/* Link-Baukasten der Vollbild-Uhr (clocklink.js): Reiter „Anzeigen“ und Panel „Anpassen“ auf /clock */
+.link-form { display: grid; gap: 12px; margin: 8px 0; }
+.link-group { margin: 0; padding: 10px 12px 12px; border: 1px solid var(--border-soft); border-radius: 10px; min-width: 0;
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr)); gap: 10px 14px; }
+.link-group legend { padding: 0 6px; font-weight: 600; font-size: 14px; }
+.link-field { display: grid; gap: 4px; min-width: 0; align-content: start; }
+.link-label { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; font-size: 13.5px; color: var(--ink-2); }
+.link-param { font-size: 12px; color: var(--ink-muted); }
+.link-field input, .link-field select { max-width: none; min-height: 34px; }
+.link-field input[aria-invalid="true"] { border-color: var(--crit); }
+.link-checks { display: flex; flex-wrap: wrap; gap: 4px 12px; }
+.link-check { display: inline-flex; align-items: center; gap: 6px; min-height: 28px; font-size: 13.5px; cursor: pointer; }
+.link-check input { width: 18px; height: 18px; margin: 0; }
+.link-result { display: grid; gap: 8px; margin: 12px 0 6px; }
+input.link-output { max-width: none; }
+.link-previews { margin: 6px 0 4px; }
+.link-load select { max-width: 320px; }
+.link-save { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border-soft); display: grid; gap: 8px; }
+.link-save-title { margin: 0; font-size: 15px; }
+.link-save-row { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px 10px; align-items: center; max-width: 560px; }
+.link-save-row .button { grid-column: 2; justify-self: start; }
+.link-profiles { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.link-profile { display: grid; gap: 4px; padding: 8px 0; border-top: 1px solid var(--border-soft); min-width: 0; }
+.link-profile:first-child { border-top: 0; padding-top: 0; }
+.link-profile-head { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; }
+.link-profile a { overflow-wrap: anywhere; }
+.link-public-state { margin: 0 0 6px; font-weight: 600; }
+.link-public-state[data-state="on"] { color: var(--warn-ink); }

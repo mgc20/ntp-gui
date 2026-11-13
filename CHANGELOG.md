@@ -6,6 +6,56 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 
 ## [Unveröffentlicht]
 
+Schwerpunkt: Die Vollbild-Uhr wird zur Studiouhr für TV, Ü-Wagen und Veranstaltungen. Sie passt sich
+jeder Fläche an, zählt auf Sendebeginn herunter und lässt sich per Link oder Profil auf vielen
+Bildschirmen gleich einrichten. Den Plan beschreibt [docs/konzept/studiouhr.md](docs/konzept/studiouhr.md),
+die Einbindung in OBS, vMix, CasparCG und den Pi-Kiosk [docs/integrationen/studiouhr.md](docs/integrationen/studiouhr.md).
+
+### Hinzugefügt
+- **Zustand der Anzeige immer sichtbar:** Unter der Uhr steht, wie weit du ihr trauen kannst: „abgeglichen · Anzeige ± 18 ms“, „frei laufend seit 3 min“, „unsicher“ (etwa nach einem Standby) oder „Gerätezeit, nicht abgeglichen“. Den Zustand siehst du immer als Text mit Symbol, nicht nur als Farbe. Sind die Sekunden nicht mehr sicher (Fehlerschranke über 0,5 s), werden sie grau.
+- **Vorlauf für Fernseher:** Mit `?lead=0…200` läuft die Anzeige so viele Millisekunden vor und gleicht die Bildverzögerung des Fernsehers aus. Der Ton auf der Sekunde bleibt exakt. Mit `?maxerr=` legst du fest, ab welcher Fehlerschranke die Anzeige als unsicher gilt.
+- **Passt sich jeder Fläche an:** Je nach Fläche wählt die Uhr eines von fünf Layouts:
+  - Streifen, nur die Zeit
+  - Banner für 32:9 oder 1920×200
+  - Spalte im Hochformat
+  - Kachel für Multiviewer (`?layout=tile` ohne Leiste und Mauszeiger)
+  - normal
+
+  Dazu `?safe=` (Sicherheitsrand), `?scale=`, `?show=`, `?bg=black|transparent` zum Keyen, `?weight=` sowie `?shift=` gegen Einbrennen.
+- **Design „Studio“:** Kranz aus 60 Sekundenpunkten mit 7-Segment-Ziffern, dazu `?color=`, `?sub=`, `?seconds=` und `?h12=1`. Das Design „Digital“ kann 7-Segment oder Festbreitenschrift (`?face=`), blinkenden Doppelpunkt, Zeit ohne führende Null und verschiedene Datumsformen.
+- **Themen und Akzentfarbe:** `?look=studio|contrast|warm|terminal|paper|pastel` und `?accent=` (Name oder Hexwert). Eine zu schwache Akzentfarbe hebt die Uhr automatisch auf eine lesbare Stufe an.
+- **Countdown und Count-up:** `?until=20:15` oder `?until=2026-12-31T23:59:59` zählt in der Zeitzone des Servers herunter. So zeigen alle Bildschirme dasselbe, auch an den Tagen der Zeitumstellung. Danach zählt die Uhr die Überzeit hoch (oder bleibt stehen mit `?after=stop`).
+  - Farbstufen mit `?warn=`, immer mit Symbol und Text, ohne Blinken.
+  - Ansagen für Screenreader, `?beep=` für Pieptöne in den letzten Sekunden.
+  - `?label=` für eine Beschriftung, `?cd=main` macht den Countdown zur Hauptanzeige.
+- **Eieruhr und Stoppuhr:** `?timer=25m` nur für dieses Gerät. Die Leertaste startet und hält an, R setzt zurück, T zeigt Zehntel.
+- **Tastenkürzel:**
+
+  | Taste | Wirkung |
+  | --- | --- |
+  | F | Vollbild |
+  | D | Design |
+  | L | Layout |
+  | U | UTC groß |
+  | + / − | Größe |
+  | A | Uhrzeit ansagen |
+  | ? | Übersicht |
+
+  `?lock=1` sperrt Tasten und Bedienknöpfe. Rotlicht, Hell/Dunkel und Vollbild bleiben.
+- **Reiter „Anzeigen“ unter Uhr & Hardware:** Du stellst die Uhr in einem Formular zusammen, kopierst den Link und öffnest eine Vorschau in fester Größe (Handy, Monitor, Banner, Kachel, Stele). Dort steht auch der Schalter „Uhr ohne Anmeldung“ mit Erklärung, was dann öffentlich ist. Er bleibt standardmäßig aus.
+- **Uhr-Profile:** Speichere bis zu 20 Uhren unter einem Namen und ruf sie mit `/clock?p=name` auf. Änderst du ein Profil, übernehmen alle Bildschirme damit die Änderung innerhalb weniger Sekunden.
+  - Fest eingebaut sind `studio`, `tile`, `banner`, `kitchen`, `workshop`, `night` und `nerd`.
+  - Parameter in der Adresse gehen vor, und die Profile kommen mit in die Sicherung.
+  - Neuer lesender Endpunkt `GET /api/v1/clock/profile`. `/api/v1/time` meldet zusätzlich `profiles_rev` und die Zeitzone des Servers.
+- **Panel „Anpassen“ (⚙) auf der Uhr:** Der gewählte Stand gilt auf diesem Gerät, wenn du `/clock` ohne Parameter aufrufst.
+
+### Behoben
+- **Die Vollbild-Uhr springt nicht mehr mit der Geräteuhr.** Stellte dein Tablet oder PC seine eigene Uhr um (von Hand, nach dem Standby oder durch einen eigenen Zeitabgleich), sprang die Anzeige bis zur nächsten Messung mit. Jetzt läuft sie mit der gleichmäßigen Uhr des Browsers ab dem letzten Abgleich weiter. Erkennt sie einen Sprung oder ein Aufwachen, gleicht sie sofort neu ab.
+- Auf sehr flachen oder sehr großen Flächen (1920×200, 480×270, 4K, 32:9, 9:16) bleibt die Uhrzeit ganz im Bild, ohne Umbruch und ohne Scrollbalken.
+
+### Sicherheit
+- Die Uhr prüft jeden Adressparameter streng nach Typ, Bereich, Länge und Zeichensatz. Unzulässige Werte bleiben wirkungslos. Der Server prüft die Werte der Profile nach demselben Schema.
+
 ### Intern
 - Kommentare und Testnamen sachlich formuliert; der Datenschutz-Wächter lehnt Herkunftsangaben zu Nutzerdaten ab.
 

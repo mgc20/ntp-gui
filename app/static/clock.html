@@ -14,10 +14,12 @@
 <body class="clock-page">
 <header class="clock-bar">
   <a class="clock-back" id="clock-back" href="/" data-i18n="clock.back">← Dashboard</a>
+  <span class="clock-title" id="clock-title" hidden></span>
   <div class="clock-tools" role="group" aria-label="Darstellung" data-i18n-aria-label="clock.tools_label">
     <label class="clock-design"><span class="sr-only" data-i18n="clock.design_label">Design</span>
       <select id="design" class="clock-select" title="Design der Uhr" data-i18n-title="clock.design_title">
         <option value="digital" data-i18n="clock.design.digital">Digital</option>
+        <option value="studio" data-i18n="clock.design.studio">Studio</option>
         <option value="bahnhof" data-i18n="clock.design.bahnhof">Bahnhofsuhr</option>
         <option value="nixie" data-i18n="clock.design.nixie">Nixie</option>
         <option value="flip" data-i18n="clock.design.flip">Klappzahlen</option>
@@ -28,23 +30,58 @@
     <button type="button" class="clock-tool" id="mode-red" aria-pressed="false" title="Rotlicht: schont die Dunkeladaption der Augen (Sternwarte, Schlafzimmer, Serverraum bei Nacht)" data-i18n-title="clock.red_title" data-i18n="clock.red">Rotlicht</button>
     <button type="button" class="clock-tool" id="mode-tone" aria-expanded="false" aria-controls="tone-panel" data-i18n="clock.tone">Ton</button>
     <button type="button" class="clock-tool" id="mode-device" aria-expanded="false" aria-controls="device-panel" data-i18n="clock.device">Mein Gerät</button>
+    <button type="button" class="clock-tool clock-tool-icon" id="mode-custom" aria-expanded="false" aria-controls="custom-panel" title="Anpassen" aria-label="Anpassen" data-i18n-title="clock.custom" data-i18n-aria-label="clock.custom"><span aria-hidden="true">⚙</span></button>
     <button type="button" class="clock-tool" id="mode-full" title="Vollbild ein oder aus (Taste F)" data-i18n-title="clock.full_title" data-i18n="clock.full">Vollbild</button>
   </div>
 </header>
 
 <p class="clock-egg" id="leap-egg" role="status" hidden></p>
 
-<main class="clock-main" id="clock-main">
-  <p class="clock-label" id="local-label" data-i18n="clock.local">Ortszeit</p>
-  <time class="clock-time" id="local-time" aria-live="off">--:--:--</time>
-  <div class="clock-face" id="face" hidden></div>
-  <p class="clock-date" id="local-date">&nbsp;</p>
-  <div class="clock-sub">
-    <span class="clock-utc"><span class="clock-label">UTC</span> <time id="utc-time">--:--:--</time></span>
-    <span class="clock-tz2" id="tz2" hidden><span class="clock-label" id="tz2-label"></span> <time id="tz2-time">--:--</time></span>
-    <span class="clock-week" id="iso-week">KW –</span>
-  </div>
-</main>
+<div class="clock-stage" id="clock-stage">
+  <main class="clock-main" id="clock-main" tabindex="-1">
+    <p class="clock-label" id="local-label" data-i18n="clock.local">Ortszeit</p>
+    <time class="clock-time" id="local-time" aria-live="off"><span class="clock-hm" id="local-hm"><span id="local-h">--</span><span class="clock-colon">:</span><span id="local-m">--</span></span><span class="clock-sec" id="local-sec"><span class="clock-colon">:</span><span id="local-s">--</span></span><span class="clock-ampm" id="local-ampm" hidden></span></time>
+    <div class="clock-face" id="face" hidden></div>
+    <div class="clock-cd" id="cd" data-level="none" hidden>
+      <span class="clock-cd-head"><span class="clock-cd-icon" id="cd-icon" aria-hidden="true"></span> <span class="clock-cd-label" id="cd-label"></span></span>
+      <span class="clock-cd-time" id="cd-time">--:--</span>
+      <span class="clock-cd-state" id="cd-state"></span>
+      <span class="clock-cd-now" id="cd-now"></span>
+      <span class="clock-cd-actions" id="cd-actions" hidden>
+        <button type="button" class="clock-tool" id="cd-toggle" data-i18n="clock.cd_start">Start</button>
+        <button type="button" class="clock-tool" id="cd-reset" data-i18n="clock.cd_reset">Zurücksetzen</button>
+      </span>
+    </div>
+    <p class="clock-date" id="local-date">&nbsp;</p>
+    <div class="clock-sub">
+      <span class="clock-utc"><span class="clock-label" id="utc-label">UTC</span> <time id="utc-time">--:--:--</time></span>
+      <span class="clock-tz2" id="tz2" hidden><span class="clock-label" id="tz2-label"></span> <time id="tz2-time">--:--</time></span>
+      <span class="clock-week" id="iso-week">KW –</span>
+      <span class="clock-sync" id="clock-sync" data-sync="none"><span class="clock-sync-icon" id="clock-sync-icon" aria-hidden="true">–</span> <span id="clock-sync-text">Gerätezeit, nicht abgeglichen</span></span>
+    </div>
+  </main>
+</div>
+
+<p class="clock-hint" id="clock-hint" role="status" hidden></p>
+<p class="sr-only" id="clock-live" aria-live="polite"></p>
+
+<section class="clock-keys" id="keys" role="dialog" aria-modal="true" aria-labelledby="keys-title" hidden>
+  <h2 class="clock-panel-title" id="keys-title" data-i18n="clock.keys_title">Tastenkürzel</h2>
+  <dl class="clock-keys-list">
+    <dt><kbd>F</kbd></dt><dd data-i18n="clock.keys.f">Vollbild</dd>
+    <dt><kbd>D</kbd></dt><dd data-i18n="clock.keys.d">nächstes Design</dd>
+    <dt><kbd>L</kbd></dt><dd data-i18n="clock.keys.l">nächstes Layout</dd>
+    <dt><kbd>U</kbd></dt><dd data-i18n="clock.keys.u">UTC groß oder Ortszeit groß</dd>
+    <dt><kbd>T</kbd></dt><dd data-i18n="clock.keys.t">Zehntel bei Stoppuhr und Timer</dd>
+    <dt><kbd>Leertaste</kbd></dt><dd data-i18n="clock.keys.space">Timer oder Stoppuhr starten und anhalten</dd>
+    <dt><kbd>R</kbd></dt><dd data-i18n="clock.keys.r">Timer oder Stoppuhr zurücksetzen</dd>
+    <dt><kbd>+</kbd> <kbd>−</kbd></dt><dd data-i18n="clock.keys.size">größer oder kleiner</dd>
+    <dt><kbd>A</kbd></dt><dd data-i18n="clock.keys.a">Uhrzeit für den Screenreader ansagen</dd>
+    <dt><kbd>?</kbd></dt><dd data-i18n="clock.keys.help">diese Übersicht</dd>
+  </dl>
+  <p class="clock-panel-note" data-i18n="clock.keys_note">Mit lock=1 in der Adresse sind die Kürzel aus. Esc schließt.</p>
+  <button type="button" class="clock-tool" id="keys-close" data-i18n="clock.keys_close">Schließen</button>
+</section>
 
 <section class="clock-panel" id="tone-panel" hidden aria-labelledby="tone-title">
   <h2 class="clock-panel-title" id="tone-title"><span data-i18n="clock.tone_title">Ton auf der Sekunde</span> <span id="tone-info"></span></h2>
@@ -64,11 +101,37 @@
   <p class="clock-panel-line" id="device-line"></p>
 </section>
 
+<section class="clock-panel clock-custom" id="custom-panel" hidden aria-labelledby="custom-title">
+  <h2 class="clock-panel-title" id="custom-title" data-i18n="clock.custom_title">Uhr anpassen</h2>
+  <p class="clock-panel-line" data-i18n="clock.custom_line">Gilt auf diesem Gerät, wenn du /clock ohne Parameter aufrufst. Leere Felder stehen auf Standard. Kiosk, Bedienungssperre und das Layout Kachel gehören in den Link (Dashboard, Reiter „Anzeigen“), damit du hier immer zurückkommst.</p>
+  <p class="clock-panel-note" id="custom-url-note" data-i18n="clock.custom_url_note" hidden>Diese Adresse bringt eigene Werte mit. Übernehmen öffnet /clock ohne sie.</p>
+  <div id="custom-form"></div>
+  <div class="clock-panel-actions" role="group" aria-label="Anpassen" data-i18n-aria-label="clock.custom">
+    <button type="button" class="clock-tool" id="custom-apply" data-i18n="clock.custom_apply">Übernehmen</button>
+    <button type="button" class="clock-tool" id="custom-copy" data-i18n="clock.custom_copy">Link kopieren</button>
+    <button type="button" class="clock-tool" id="custom-reset" data-i18n="clock.custom_reset">Zurücksetzen</button>
+  </div>
+  <p class="clock-panel-note" id="custom-status" aria-live="polite"></p>
+</section>
+
 <footer class="clock-band" id="band" data-state="unknown" role="status" aria-live="polite">
   <span class="clock-dot" aria-hidden="true"></span>
   <span class="clock-band-main" id="band-main">verbinde …</span>
   <span class="clock-band-detail" id="band-detail"></span>
   <span class="clock-band-wake" id="band-wake"></span>
 </footer>
+<!-- 7-Segment-Ziffer (50 × 90), selbst gezeichnet: Die Klasse am <use> (d-0 … d-9) schaltet die Segmente über
+     CSS-Variablen; inaktive Segmente bleiben schwach sichtbar (clock.css). -->
+<svg class="clock-defs" aria-hidden="true" focusable="false" width="0" height="0">
+  <symbol id="seg7" viewBox="0 0 50 90">
+    <polygon class="seg seg-a" points="6.1,4.5 10.6,0 39.4,0 43.9,4.5 39.4,9 10.6,9"/>
+    <polygon class="seg seg-b" points="45.5,6.1 50,10.6 50,38.9 45.5,43.4 41,38.9 41,10.6"/>
+    <polygon class="seg seg-c" points="45.5,46.6 50,51.1 50,79.4 45.5,83.9 41,79.4 41,51.1"/>
+    <polygon class="seg seg-d" points="6.1,85.5 10.6,81 39.4,81 43.9,85.5 39.4,90 10.6,90"/>
+    <polygon class="seg seg-e" points="4.5,46.6 9,51.1 9,79.4 4.5,83.9 0,79.4 0,51.1"/>
+    <polygon class="seg seg-f" points="4.5,6.1 9,10.6 9,38.9 4.5,43.4 0,38.9 0,10.6"/>
+    <polygon class="seg seg-g" points="6.1,45 10.6,40.5 39.4,40.5 43.9,45 39.4,49.5 10.6,49.5"/>
+  </symbol>
+</svg>
 </body>
 </html>

@@ -1,8 +1,15 @@
 /* Vollbild-Uhr (/clock). Nutzt die Farben aus app.css; Rotlicht überschreibt sie. */
+:root { --ink-unsure: var(--ink-muted); }   /* ausgegraute Stellen (Sekunden, frei laufende Uhr) */
 :root[data-mode="red"] {
   --bg: #000000; --surface: #0a0000; --surface-2: #120000; --border: #3a0000; --border-soft: #220000;
   --ink: #ff2a1a; --ink-2: #d01a10; --ink-muted: #8c120a; --accent: #ff2a1a;
   --good: #ff2a1a; --warn: #d01a10; --crit: #ff2a1a; --on-status: #000000;
+  /* Auch die Werte aus app.css, die Formular und Hinweise nutzen (code, Fehlertitel): sonst hell bzw. bernsteinfarben. */
+  --surface-3: #1a0000; --good-ink: #ff2a1a; --warn-ink: #ff2a1a; --crit-ink: #ff2a1a; --info-ink: #ff2a1a;
+  --good-soft: #1a0000; --warn-soft: #1a0000; --crit-soft: #1a0000; --info-soft: #1a0000;
+  color-scheme: dark;   /* native Bedienelemente (Kästchen, Auswahl, Rollbalken) dunkel */
+  /* --ink-muted hat auf Schwarz nur 2,2:1 – grau, aber noch ≥ 3:1 und deutlich dunkler als --ink. */
+  --ink-unsure: #bc1a0e;
 }
 html, body.clock-page { height: 100%; }
 body.clock-page {
@@ -49,7 +56,7 @@ body.is-idle { cursor: none; }
 .clock-band[data-state="crit"] .clock-dot { background: var(--crit); }
 .clock-band[data-state="stale"] .clock-dot, .clock-band[data-state="unknown"] .clock-dot { background: var(--ink-muted); }
 .clock-band[data-state="stale"] .clock-band-main { color: var(--ink-muted); }
-body.is-stale .clock-time { color: var(--ink-muted); }
+body.is-stale .clock-time { color: var(--ink-unsure); }
 
 @media (orientation: portrait) {
   .clock-time { font-size: min(21vw, 30vh); }
@@ -148,6 +155,8 @@ body.is-kiosk .clock-band { font-size: clamp(12px, 0.9vw + 6px, 20px); }
   --bg: #ffffff; --surface: #ffffff; --surface-2: #ffffff; --border: #000000; --border-soft: #000000;
   --ink: #000000; --ink-2: #000000; --ink-muted: #000000; --accent: #000000;
   --good: #000000; --warn: #000000; --crit: #000000; --on-status: #ffffff;
+  --surface-3: #ffffff; --good-ink: #000000; --warn-ink: #000000; --crit-ink: #000000; --info-ink: #000000;
+  color-scheme: light;
 }
 :root[data-mode="eink"] *, :root[data-mode="eink"] *::before, :root[data-mode="eink"] *::after {
   animation: none !important; transition: none !important; text-shadow: none !important; box-shadow: none !important; }
@@ -166,3 +175,342 @@ body.is-kiosk .clock-band { font-size: clamp(12px, 0.9vw + 6px, 20px); }
   .bh-second.is-sweep, .flip-card .flip-digit { animation: none !important; }
   .nixie-n { transition: none; }
 }
+
+/* --- Studiouhr A1: Zustand der Zeitbasis (data-sync am Root) und ausgegraute Stellen -----------------------
+   Der Zustand steht immer als Text mit Symbol unter der Uhr, die Farbe ist nur Zusatz. Er sitzt in der Zeile mit
+   UTC/KW: dort als eigene Reihe, bei wenig Höhe in derselben Reihe, damit er nie unter den Bildrand rutscht. Die
+   Schrift wächst mit der Fläche (≈ 2 vh, im Kiosk genauso), damit man ihn auch aus Studioentfernung liest. */
+.clock-sub { row-gap: clamp(4px, 1vh, 16px); }
+.clock-sync { display: inline-flex; align-items: baseline; justify-content: center; gap: 0.45em; flex: 0 0 100%; max-width: 100%;
+  font-size: max(12px, min(2vh + 4px, 1.6vw + 6px)); color: var(--ink-muted); font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere; }
+.clock-sync-icon { display: inline-flex; align-items: center; justify-content: center; width: 1.3em; height: 1.3em; flex: none;
+  border: 1px solid currentColor; border-radius: 50%; font-size: 0.85em; line-height: 1; font-weight: 700; }
+.clock-sync[data-sync="ok"] .clock-sync-icon { color: var(--good); }
+.clock-sync[data-sync="free"] { color: var(--ink-2); }
+.clock-sync[data-sync="free"] .clock-sync-icon { color: var(--warn); border-style: dashed; }
+.clock-sync[data-sync="degraded"] { color: var(--ink); }
+.clock-sync[data-sync="degraded"] .clock-sync-icon { color: var(--warn); border-radius: 0.2em; }
+.clock-sync[data-sync="none"] { color: var(--ink); }
+.clock-sync[data-sync="none"] .clock-sync-icon { color: var(--crit); border-radius: 0.2em; }
+/* Rotlicht: --ink-muted/--ink-2 sind auf Schwarz zu dunkel für kleinen Text (2,2:1 bzw. 3,4:1). Die Zustände
+   unterscheidet dort die Form des Symbols (Kreis, gestrichelt, Quadrat). */
+:root[data-mode="red"] .clock-sync, :root[data-mode="red"] .clock-sync[data-sync] { color: var(--ink); }
+/* Wenig Höhe (Handy quer, Streifen-Displays): Zustand in dieselbe Reihe wie UTC/KW. */
+@media (max-height: 480px) {
+  .clock-sub { column-gap: clamp(10px, 2.5vw, 40px); }
+  .clock-sync { flex: 0 1 auto; }
+}
+/* Sehr wenig Höhe (1920×200, 480×270): die Uhr etwas kleiner – sonst ragt der Zustand aus dem Bild. */
+@media (max-height: 320px) {
+  .clock-time { font-size: min(19vw, 27vh); margin: 0 0 0.05em; }
+  .clock-face { margin: 0; }
+  .clock-egg { display: none; }   /* Osterei (zwei Tage im Jahr) hat hier keinen Platz */
+  .face-bahnhof .bh { width: min(80vw, 34vh); }
+  .nixie-tube { font-size: min(14vw, 22vh); }
+  .flip-card { font-size: min(13vw, 22vh); }
+  .face-wort { gap: 0.25em; }
+  /* Band einzeilig; was nicht passt, endet mit „…“ (der volle Text steht im title und in der Live-Region). */
+  .clock-band { flex-wrap: nowrap; white-space: nowrap; }
+  .clock-band-detail, .clock-band-wake { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+}
+@media (max-height: 240px) {
+  .clock-time { font-size: min(19vw, 23vh); }
+  .face-bahnhof .bh { width: min(80vw, 25vh); }
+  .nixie-tube, .flip-card { font-size: min(13vw, 19vh); }
+  .wort-text { font-size: min(8vw, 9vh); }
+  .wort-dot { font-size: 8px; }
+  .flip-sep, .nixie-sep { font-size: min(9vw, 12vh); }
+}
+/* Sekunden grau, wenn die Fehlerschranke sie nicht trägt (oder noch kein Abgleich da ist). */
+:root[data-seconds="unsure"] .clock-sec,
+:root[data-seconds="unsure"] .flip-card.is-sec .flip-digit { color: var(--ink-unsure); }
+:root[data-seconds="unsure"] .nixie-tube.is-sec .nixie-n.on { color: var(--ink-unsure); text-shadow: none; }
+:root[data-seconds="unsure"] .bh-second { opacity: 0.35; }
+:root[data-mode="eink"] .clock-sync, :root[data-mode="eink"] .clock-sync-icon { color: #000000; }
+
+/* --- Studiouhr A3: Bühne, Layouts, Sicherheitsrand, Größe, Pixel-Shift --------------------------------------
+   .clock-stage umhüllt main und ist ein Größen-Container. clock.js setzt data-layout (strip|banner|column|tile|normal)
+   aus der Größe der Bühne (kit.resolveLayout, ResizeObserver) oder aus ?layout=. Alle Größen laufen über cq-Einheiten
+   relativ zum sicheren Bereich (main, eigener Container). Engines ohne Container-Abfragen (Chromium < 105,
+   Safari < 16, alte CEF) behalten die vw/vh-Regeln oben: Für sie steht alles Neue in @supports. */
+:root { --safe: 0; --clock-scale: 1; --fit: 1; --info-w: 0px; --studio-ink: #ffb000; --seg-off: 0.1; }
+.clock-stage { flex: 1 1 0; min-height: 0; display: flex; flex-direction: column; position: relative; }
+.clock-stage > .clock-main { flex: 1;
+  padding: calc(var(--safe) * 1vh) max(clamp(8px, 3vw, 48px), calc(var(--safe) * 1vw)); }
+/* Offenes Panel (Ton, Mein Gerät): Die Bühne behält eine Mindesthöhe, die Seite darf dann scrollen. */
+body.has-panel .clock-stage { flex: 1 0 auto; min-height: min(60vh, 640px); }
+
+@supports (container-type: size) {
+  .clock-stage { container: clock-stage / size; overflow: hidden;
+    --time-size: min(19cqw, 34cqh); --face-w: 84cqw; --face-h: 50cqh;
+    --label: max(12px, min(1.6cqw, 3cqh)); --info: max(13px, min(2.8cqw, 6cqh)); --status: max(12px, min(1.8cqw, 3.2cqh)); }
+  /* max-width/margin aus app.css (main { max-width: var(--page-max) }) gelten hier nicht: Auf 4K und 32:9 bestimmt
+     allein der Sicherheitsrand die Fläche, sonst bezögen sich die cq-Größen auf 2080 px statt auf den Bildschirm. */
+  .clock-stage > .clock-main { position: absolute; inset: calc(var(--safe) * 1cqh) calc(var(--safe) * 1cqw); flex: none;
+    max-width: none; margin: 0; padding: 0; box-sizing: border-box; container: clock-safe / size; --cq-layout: normal; }
+  .clock-stage .clock-main > .clock-label { font-size: var(--label); }
+  .clock-stage .clock-time { width: max-content; max-width: none; margin: 0.03em auto 0.08em;
+    font-size: calc(var(--time-size) * var(--clock-scale) * var(--fit)); }
+  .clock-stage .clock-face { margin: 0; }
+  .clock-stage .clock-date { font-size: var(--info); }
+  .clock-stage .clock-sub { font-size: var(--info); margin-top: 1.4cqh; column-gap: 3cqw; row-gap: 1cqh; }
+  .clock-stage .clock-sync { font-size: var(--status); }
+
+  /* Zifferblätter: größte Breite --face-w, größte Höhe --face-h (je Layout), dazu ?scale= und die Auto-Anpassung. Ohne
+     max-width und ohne Schrumpfen im Flex-Container: Die Auto-Anpassung misst die wahre Größe (eine gekappte Messung
+     ließe das Zifferblatt zu groß). */
+  .clock-stage .face-bahnhof .bh, .clock-stage .face-studio .st {
+    width: calc(min(var(--face-w), var(--face-h)) * var(--clock-scale) * var(--fit)); height: auto; max-width: none; flex: none; }
+  .clock-stage .face-seg .seg-row { width: calc(min(var(--face-w), var(--time-size) * 3.6) * var(--clock-scale) * var(--fit));
+    height: auto; max-width: none; flex: none; }
+  .clock-stage .face-nixie { gap: 0.6cqw; }
+  .clock-stage .nixie-tube { font-size: calc(min(var(--face-w) / 5.4, var(--face-h) / 1.3) * var(--clock-scale) * var(--fit)); }
+  .clock-stage .nixie-sep { font-size: calc(min(var(--face-w) / 9, var(--face-h) / 2.2) * var(--clock-scale) * var(--fit)); }
+  .clock-stage .face-flip { gap: 0.6cqw; }
+  .clock-stage .flip-card { font-size: calc(min(var(--face-w) / 5.9, var(--face-h) / 1.3) * var(--clock-scale) * var(--fit)); }
+  .clock-stage .flip-sep { font-size: calc(min(var(--face-w) / 9, var(--face-h) / 2) * var(--clock-scale) * var(--fit)); }
+  .clock-stage .face-wort { gap: 0.4em; }
+  .clock-stage .wort-text { max-width: var(--face-w);
+    font-size: calc(min(var(--face-w) / 13, var(--face-h) / 4.8) * var(--clock-scale) * var(--fit)); }
+  .clock-stage .wort-dot { font-size: max(8px, min(1.6cqw, 2.4cqh)); }
+
+  /* Spalte (Hochformat ≤ 1:1,6): gestapelt, Zeit nach der Breite. Sehr schmal (≤ 1:3): Stunden über Minuten. */
+  .clock-stage[data-layout="column"] { --time-size: min(19cqw, 16cqh); --face-w: 92cqw; --face-h: 42cqh;
+    --info: max(13px, min(4.4cqw, 3.6cqh)); --status: max(12px, min(3.4cqw, 2.4cqh)); }
+  .clock-stage[data-stack] { --time-size: min(36cqw, 14cqh); }
+  .clock-stage[data-stack] .clock-hm { display: inline-flex; flex-direction: column; align-items: center; line-height: 1; }
+  .clock-stage[data-stack] .clock-hm > .clock-colon { display: none; }
+  .clock-stage[data-stack] .clock-time { text-align: center; }
+  .clock-stage[data-stack] .clock-sec { display: block; font-size: 0.4em; }
+
+  /* Banner (≥ 3:1, z. B. 32:9 oder 1920×200): Zeit links, Datum und Zeile mit UTC und Zustand rechts daneben. Die
+     rechte Spalte behält ihre natürliche Breite (--info-w, von clock.js gemessen), höchstens 45 % – die Zeit wird
+     dann kleiner gerechnet statt die Spalte auf wenige Pixel zu drücken. */
+  .clock-stage[data-layout="banner"] { --time-size: min(11cqw, 72cqh); --face-w: 46cqw; --face-h: 92cqh;
+    --info: max(12px, min(1.8cqw, 15cqh)); --status: max(12px, min(1.6cqw, 14cqh)); }
+  .clock-stage[data-layout="banner"] .clock-main { display: grid; grid-template-columns: auto minmax(min(var(--info-w), 45cqw), max-content);
+    grid-template-areas: "time date" "time sub"; align-content: center; justify-content: center; align-items: center;
+    column-gap: 3cqw; row-gap: 0.6cqh; text-align: left; }
+  .clock-stage[data-layout="banner"] .clock-main > .clock-label { display: none; }
+  .clock-stage[data-layout="banner"] :is(.clock-time, .clock-face) { grid-area: time; margin: 0; }
+  .clock-stage[data-layout="banner"] .clock-date { grid-area: date; align-self: end; }
+  .clock-stage[data-layout="banner"] .clock-sub { grid-area: sub; align-self: start; justify-content: flex-start; margin: 0;
+    column-gap: 2cqw; }
+  .clock-stage[data-layout="banner"] .clock-sync { flex: 0 1 auto; justify-content: flex-start; }
+
+  /* Streifen (Höhe < 120 px): nur HH:MM:SS und das Zustandssymbol. */
+  .clock-stage[data-layout="strip"] { --time-size: min(15cqw, 78cqh); --face-w: 60cqw; --face-h: 92cqh;
+    --status: max(12px, min(2.4cqw, 34cqh)); }
+  .clock-stage[data-layout="strip"] .clock-main { flex-direction: row; align-items: center; justify-content: center; gap: 2cqw; }
+  .clock-stage[data-layout="strip"] .clock-sub { margin: 0; flex: none; }
+  .clock-stage[data-layout="strip"] .clock-sync { flex: none; }
+
+  /* Kachel (kleiner als 480×270, Multiviewer): nur die Zeit, so groß wie möglich; Zustand als Ecksymbol. */
+  .clock-stage[data-layout="tile"] { --time-size: min(19.5cqw, 62cqh); --face-w: 94cqw; --face-h: 88cqh;
+    --status: max(12px, min(3cqw, 8cqh)); }
+  .clock-stage[data-layout="tile"] .clock-sub { position: absolute; top: 0; right: 0; margin: 0; }
+  .clock-stage[data-layout="tile"] .clock-sync { flex: none; }
+  .clock-stage:is([data-layout="strip"], [data-layout="tile"])
+    :is(.clock-main > .clock-label, .clock-date, .clock-utc, .clock-tz2, .clock-week, #clock-sync-text) { display: none; }
+
+  /* Design studio: ohne Datumszeile (die Zeile steht im Zifferblatt), daher darf der Kranz höher werden. */
+  :root[data-design="studio"] .clock-stage[data-layout="normal"] { --face-h: 76cqh; }
+  :root[data-design="studio"] .clock-stage[data-layout="column"] { --face-h: 66cqh; }
+  :root[data-design="studio"] .clock-stage[data-layout="banner"] .clock-sub { grid-row: 1 / 3; align-self: center; }
+
+  /* Spiegel von kit.resolveLayout (gleiche Grenzen, gleiche Rangfolge: spätere Regel gewinnt). Die Darstellung hängt an
+     data-layout; --cq-layout belegt im UI-Rundgang, dass CSS und JS dieselbe Fläche gleich einordnen. */
+  @container clock-stage (width < 480px) and (height < 270px) { .clock-stage > .clock-main { --cq-layout: tile; } }
+  @container clock-stage (aspect-ratio <= 5/8) { .clock-stage > .clock-main { --cq-layout: column; } }
+  @container clock-stage (aspect-ratio >= 3/1) { .clock-stage > .clock-main { --cq-layout: banner; } }
+  @container clock-stage (height < 120px) { .clock-stage > .clock-main { --cq-layout: strip; } }
+  /* Automatischer Streifen ohne Kopfzeile und Band (is-compact): Die Bühne ist dann höher als 120 px, gewählt wurde
+     aber mit der Höhe samt Kopfzeile und Band (kit.chromeLayout) – der Spiegel folgt dieser Wahl. */
+  body.is-compact .clock-stage > .clock-main { --cq-layout: strip; }
+}
+
+/* Automatischer Streifen (sehr niedrige Fenster, z. B. 1920×120): Kopfzeile, Band und Panels fallen weg, damit die
+   Zeit die ganze Höhe bekommt. Der Zustand bleibt als Symbol in der Bühne. */
+body.is-compact .clock-bar, body.is-compact .clock-band, body.is-compact .clock-panel, body.is-compact .clock-egg { display: none; }
+
+/* Multiviewer-Kachel ausdrücklich gewählt (?layout=tile): ohne Kopfzeile, Band, Panels und Mauszeiger. */
+body.is-tile .clock-bar, body.is-tile .clock-band, body.is-tile .clock-panel, body.is-tile .clock-egg { display: none; }
+body.is-tile, body.is-tile * { cursor: none; }
+
+/* Hintergrund (?bg=): reines Schwarz oder durchsichtig zum Keyen in OBS. E-Ink bleibt weiß. */
+:root[data-bg="black"]:not([data-mode="eink"]) { --bg: #000000; }
+:root[data-bg="transparent"], :root[data-bg="transparent"] body.clock-page,
+:root[data-bg="transparent"] .clock-band { background: transparent; }
+
+/* Elemente an/aus (?show=, Allowlist): was nicht in der Liste steht, wird ausgeblendet – ohne DOM-Umbau. */
+:root[data-show]:not([data-show~="time"]) :is(#local-time, #face) { display: none; }
+:root[data-show]:not([data-show~="seconds"]) :is(.clock-sec, .st-secs, .st-ring, .bh-second) { display: none; }
+:root[data-show]:not([data-show~="date"]):not([data-show~="weekday"]) .clock-date,
+:root[data-date="off"] .clock-date { display: none; }
+:root[data-show]:not([data-show~="week"]) .clock-week { display: none; }
+:root[data-show]:not([data-show~="utc"]) .clock-utc { display: none; }
+:root[data-show]:not([data-show~="tz"]) .clock-tz2 { display: none; }
+:root[data-show]:not([data-show~="status"]) .clock-sync { display: none; }
+
+/* Schriftstärke (?weight=) und Ziffernsatz (?face=mono) für die Schrift-Designs. */
+:root[data-weight="thin"] :is(.clock-time, .flip-card, .wort-text) { font-weight: 300; }
+:root[data-weight="regular"] :is(.clock-time, .flip-card, .wort-text) { font-weight: 500; }
+:root[data-weight="bold"] :is(.clock-time, .flip-card, .wort-text) { font-weight: 750; }
+:root[data-face="mono"] .clock-time { font-family: ui-monospace, "DejaVu Sans Mono", Menlo, Consolas, monospace; letter-spacing: 0; }
+.clock-ampm { font-size: 0.3em; margin-left: 0; vertical-align: 0.15em; letter-spacing: 0.04em; }
+/* Doppelpunkt blinkt (?colon=blink): ein Attributwechsel je Sekunde, keine Animation. */
+:root[data-colon="off"] :is(.clock-time .clock-colon, .face-seg .seg-colon) { visibility: hidden; }
+
+/* Pixel-Shift gegen Einbrennen (?shift=1: 2 px, ?shift=2: 1 % der Bühne): acht Positionen im 2-min-Takt. */
+:root[data-shift="1"] { --shift-a: 2px; }
+:root[data-shift="2"] { --shift-a: 1vmin; }
+@supports (container-type: size) { :root[data-shift="2"] .clock-main { --shift-a: 1cqmin; } }
+.clock-main.shift-1 { transform: translate(var(--shift-a), 0px); }
+.clock-main.shift-2 { transform: translate(var(--shift-a), var(--shift-a)); }
+.clock-main.shift-3 { transform: translate(0px, var(--shift-a)); }
+.clock-main.shift-4 { transform: translate(calc(-1 * var(--shift-a)), var(--shift-a)); }
+.clock-main.shift-5 { transform: translate(calc(-1 * var(--shift-a)), 0px); }
+.clock-main.shift-6 { transform: translate(calc(-1 * var(--shift-a)), calc(-1 * var(--shift-a))); }
+.clock-main.shift-7 { transform: translate(0px, calc(-1 * var(--shift-a))); }
+
+/* --- Studiouhr A4: 7-Segment-Ziffern, Design studio, Themen ----------------------------------------------------
+   #seg7 (clock.html) zeichnet sieben Segmente; die Klasse am <use> setzt je leuchtendem Segment eine Variable auf 1,
+   alle anderen bleiben schwach sichtbar (--seg-off). Keine Schriftdatei, keine Animation. */
+.clock-defs { position: absolute; width: 0; height: 0; overflow: hidden; }
+.seg { fill: currentColor; }
+.seg-a { fill-opacity: var(--seg-a, var(--seg-off)); }
+.seg-b { fill-opacity: var(--seg-b, var(--seg-off)); }
+.seg-c { fill-opacity: var(--seg-c, var(--seg-off)); }
+.seg-d { fill-opacity: var(--seg-d, var(--seg-off)); }
+.seg-e { fill-opacity: var(--seg-e, var(--seg-off)); }
+.seg-f { fill-opacity: var(--seg-f, var(--seg-off)); }
+.seg-g { fill-opacity: var(--seg-g, var(--seg-off)); }
+.d-0 { --seg-a: 1; --seg-b: 1; --seg-c: 1; --seg-d: 1; --seg-e: 1; --seg-f: 1; }
+.d-1 { --seg-b: 1; --seg-c: 1; }
+.d-2 { --seg-a: 1; --seg-b: 1; --seg-d: 1; --seg-e: 1; --seg-g: 1; }
+.d-3 { --seg-a: 1; --seg-b: 1; --seg-c: 1; --seg-d: 1; --seg-g: 1; }
+.d-4 { --seg-b: 1; --seg-c: 1; --seg-f: 1; --seg-g: 1; }
+.d-5 { --seg-a: 1; --seg-c: 1; --seg-d: 1; --seg-f: 1; --seg-g: 1; }
+.d-6 { --seg-a: 1; --seg-c: 1; --seg-d: 1; --seg-e: 1; --seg-f: 1; --seg-g: 1; }
+.d-7 { --seg-a: 1; --seg-b: 1; --seg-c: 1; }
+.d-8 { --seg-a: 1; --seg-b: 1; --seg-c: 1; --seg-d: 1; --seg-e: 1; --seg-f: 1; --seg-g: 1; }
+.d-9 { --seg-a: 1; --seg-b: 1; --seg-c: 1; --seg-d: 1; --seg-f: 1; --seg-g: 1; }
+.seg-colon { fill: currentColor; }
+.seg-ampm { fill: currentColor; font-size: 22px; font-weight: 600; }
+
+/* Digital mit ?face=seg: dieselben Ziffern in einer Zeile. */
+.face-seg { color: var(--ink); }
+.face-seg .seg-row { display: block; width: min(92vw, 120vh); height: auto; max-width: 100%; }
+:root[data-seconds="unsure"] .face-seg .is-sec { color: var(--ink-unsure); }
+
+/* Design studio: 60 Sekundenpunkte (leuchten bis zur aktuellen Sekunde), 12 Stundenmarken, HH:MM, Sekunden. */
+.face-studio { color: var(--studio-ink); }
+.face-studio .st { display: block; width: min(80vw, 60vh); height: auto; max-width: 100%; }
+.st-mark { fill: currentColor; }
+.st-dot { fill: currentColor; fill-opacity: var(--seg-off); }
+.st-dot.on { fill-opacity: 1; }
+.st-ring.is-off, .st-secs.is-off, .st-sub.is-off { display: none; }
+.st-sub { fill: currentColor; font-size: 11px; letter-spacing: 0.06em; font-variant-numeric: tabular-nums; }
+.st-ampm { fill: currentColor; font-size: 8px; letter-spacing: 0.1em; }
+:root[data-seconds="unsure"] :is(.st-secs, .st-ring) { opacity: 0.45; }
+:root[data-design="studio"] :is(.clock-main > .clock-label, .clock-date, .clock-utc, .clock-tz2, .clock-week) { display: none; }
+:root[data-mode="red"] { --studio-ink: #ff2a1a; }
+:root[data-mode="eink"] { --studio-ink: #000000; --seg-off: 0.08; }
+
+/* Themen (?look=, höchstens sechs). Rotlicht und E-Ink übersteuern sie (:not([data-mode])). Text ≥ 4,5:1,
+   ausgegraute Stellen ≥ 3:1 auf --bg (tests/test_uhr_werkstatt.py). */
+:root[data-look="studio"]:not([data-mode]) {
+  --bg: #000000; --surface: #0b0b0b; --surface-2: #141414; --border: #3a3326; --border-soft: #1f1c16;
+  --ink: #ffb000; --ink-2: #e0a640; --ink-muted: #b08a3c; --ink-unsure: #8a6a2a; --accent: #ffb000; }
+:root[data-look="contrast"]:not([data-mode]) {
+  --bg: #000000; --surface: #000000; --surface-2: #111111; --border: #ffff00; --border-soft: #808000;
+  --ink: #ffff00; --ink-2: #ffffff; --ink-muted: #e6e6e6; --ink-unsure: #a3a300; --accent: #ffff00; }
+:root[data-look="warm"]:not([data-mode]) {
+  --bg: #1b130c; --surface: #241a11; --surface-2: #2e2116; --border: #4a3624; --border-soft: #33251a;
+  --ink: #ffe8cc; --ink-2: #f0c89a; --ink-muted: #c9a27a; --ink-unsure: #937458; --accent: #ff9f43; }
+:root[data-look="terminal"]:not([data-mode]) {
+  --bg: #020a04; --surface: #04140a; --surface-2: #071c0e; --border: #0f4a22; --border-soft: #0a2a14;
+  --ink: #39ff6a; --ink-2: #2fd65a; --ink-muted: #27b04b; --ink-unsure: #1a7a35; --accent: #39ff6a; }
+:root[data-look="paper"]:not([data-mode]) {
+  --bg: #f6f1e7; --surface: #fffdf8; --surface-2: #efe8da; --border: #cfc4b0; --border-soft: #e3dccd;
+  --ink: #1f1a14; --ink-2: #4a4035; --ink-muted: #5e5346; --ink-unsure: #8e8274; --accent: #8a4b00; }
+:root[data-look="pastel"]:not([data-mode]) {
+  --bg: #24213a; --surface: #2d2a46; --surface-2: #363252; --border: #4c4670; --border-soft: #38345a;
+  --ink: #f3ecff; --ink-2: #d9cdf5; --ink-muted: #b8aedc; --ink-unsure: #857ca8; --accent: #ffb3d1; }
+:root[data-look]:not([data-mode]) .clock-band { background: var(--surface); }
+
+/* --- Studiouhr A5: Countdown, Count-up, Timer, Tastenkürzel ----------------------------------------------------
+   #cd steht unter der Uhrzeit (?cd=below) oder ersetzt sie als Hauptanzeige (?cd=main, data-cd am Root). Farbstufen
+   über data-level (neutral, gelb, rot, fett rot, Überzeit), immer zusammen mit Symbol und Text – nie nur Farbe, kein
+   Blinken. Rotlicht und E-Ink haben nur eine Farbe: Dort unterscheiden Symbol, Text und Schriftstärke. */
+.clock-cd { display: flex; align-items: baseline; justify-content: center; flex-wrap: wrap; gap: 0.2em 0.6em; margin: 0.2em 0;
+  font-size: clamp(16px, 3vw, 8vh); color: var(--ink); font-variant-numeric: tabular-nums; max-width: 100%; }
+/* Beschriftung, Stufentext und Uhrzeit tragen die Bedeutung neben der Farbe: nie kleiner als 12 bzw. 13 px. */
+.clock-cd-head { display: inline-flex; align-items: baseline; gap: 0.35em; color: var(--ink-2); font-size: max(0.7em, 12px); }
+.clock-cd-icon { font-weight: 700; }
+.clock-cd-time { font-size: 1.6em; font-weight: 650; line-height: 1.05; white-space: nowrap; letter-spacing: -0.01em; }
+.clock-cd-state { font-size: max(0.7em, 12px); color: var(--ink-2); }
+.clock-cd-state:empty, .clock-cd-now { display: none; }
+.clock-cd-actions { display: inline-flex; gap: 6px; font-size: 14px; }
+.clock-cd[data-level="warn"] { color: var(--warn-ink); }
+.clock-cd:is([data-level="alert"], [data-level="final"], [data-level="over"]) { color: var(--crit-ink); }
+.clock-cd[data-level="final"] .clock-cd-time { font-weight: 850; }
+.clock-cd[data-level="final"] .clock-cd-time, .clock-cd[data-level="over"] .clock-cd-time { text-decoration: underline;
+  text-decoration-thickness: 0.06em; text-underline-offset: 0.12em; }
+.clock-cd:is([data-level="warn"], [data-level="alert"], [data-level="final"], [data-level="over"]) .clock-cd-state { color: inherit; }
+:root[data-mode] .clock-cd, :root[data-mode] .clock-cd[data-level] { color: var(--ink); }
+:root[data-mode] .clock-cd-head, :root[data-mode] .clock-cd-state { color: var(--ink); }
+:root[data-show]:not([data-show~="countdown"]) .clock-cd { display: none; }
+
+/* Countdown als Hauptanzeige: Uhrzeit und Zifferblatt treten zurück, die Uhrzeit steht klein darunter. */
+:root[data-cd="main"] :is(#local-time, #face, .clock-main > .clock-label) { display: none; }
+:root[data-cd="main"] .clock-cd { flex-direction: column; align-items: center; gap: 0.15em; }
+:root[data-cd="main"] .clock-cd-time { font-size: min(17vw, 30vh); }
+:root[data-cd="main"] .clock-cd-now { display: block; font-size: max(0.8em, 13px); color: var(--ink-2); }
+@supports (container-type: size) {
+  .clock-stage .clock-cd { font-size: var(--info); }
+  :root[data-cd="main"] .clock-stage .clock-cd-time { font-size: calc(var(--time-size) * var(--clock-scale) * var(--fit)); }
+  :root[data-cd="below"] .clock-stage[data-layout="banner"] .clock-main { grid-template-areas: "time cd" "time date" "time sub"; }
+  :root[data-cd="below"] .clock-stage[data-layout="banner"] .clock-cd { grid-area: cd; justify-content: flex-start; margin: 0; }
+  /* Im Banner steht der Countdown als Hauptanzeige in einer Zeile (Beschriftung, Zeit, Stufe, Uhrzeit) – übereinander
+     passte er nicht in die geringe Höhe. Die Uhrzeit bleibt am Ende der Zeile: Rechts steht je nach Design nur UTC
+     (digital) oder gar keine Zeit (studio). Die Auto-Anpassung misst die ganze Zeile. */
+  :root[data-cd="main"] .clock-stage[data-layout="banner"] .clock-cd { grid-area: time; margin: 0; flex-direction: row;
+    flex-wrap: nowrap; align-items: baseline; gap: 0.6em; }
+  :root[data-cd="main"] .clock-stage[data-layout="banner"] .clock-cd-now { display: inline; white-space: nowrap; }
+  .clock-stage:is([data-layout="strip"], [data-layout="tile"]) :is(.clock-cd-label, .clock-cd-state, .clock-cd-actions, .clock-cd-now) { display: none; }
+  .clock-stage[data-layout="strip"] .clock-cd { margin: 0; flex-wrap: nowrap; }
+}
+body:is(.is-kiosk, .is-tile, .is-compact, .is-eink) .clock-cd-actions { display: none; }
+/* Ziel des Fokus nach dem Schließen der Kürzel-Übersicht (tabindex=-1): ohne Fokusrahmen um die ganze Bühne. */
+.clock-main:focus { outline: none; }
+
+/* Kurzer Hinweis nach einem Tastenkürzel (2 s) und die Übersicht der Kürzel (Taste ?). Beide liegen über der Bühne
+   (position: fixed) und verschieben nichts. */
+.clock-hint { position: fixed; left: 50%; top: max(12px, env(safe-area-inset-top)); transform: translateX(-50%); margin: 0;
+  padding: 0.4em 1em; max-width: calc(100% - 24px); box-sizing: border-box; font-size: clamp(13px, 1vw + 8px, 20px);
+  background: var(--surface); color: var(--ink); border: 1px solid var(--accent); border-radius: 10px; z-index: 20; }
+.clock-keys { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(30em, calc(100% - 24px));
+  max-height: calc(100% - 24px); overflow: auto; box-sizing: border-box; padding: 14px 18px; z-index: 21;
+  background: var(--surface); color: var(--ink); border: 1px solid var(--border); border-radius: 14px;
+  font-size: clamp(14px, 0.6vw + 11px, 18px); }
+.clock-keys-list { display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; margin: 8px 0; }
+.clock-keys-list dt { margin: 0; white-space: nowrap; }
+.clock-keys-list dd { margin: 0; color: var(--ink-2); }
+.clock-keys kbd { font: inherit; font-size: 0.9em; padding: 0 0.4em; border: 1px solid var(--border); border-radius: 5px;
+  background: var(--surface-2); }
+
+/* Studiouhr A6: Panel „Anpassen“ (Formular aus clocklink.js, Stil in app.css) und Titel eines Profils. */
+.clock-custom { width: min(60em, calc(100% - 24px)); }
+.clock-custom .link-form { font-size: 14px; }
+/* Kästchen „Sichtbare Elemente“ in der Farbe der Uhr (im Rotlicht rot statt nativ hell). */
+.clock-custom .link-check input { accent-color: var(--accent); }
+.clock-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600;
+  color: var(--ink-2); }
+.clock-title.is-error { color: var(--warn-ink, var(--ink-2)); }
+/* lock=1 sperrt die Bedienung: Design, Ton und Anpassen weg. Es bleiben Vollbild (der Browser verlangt dafür einen
+   Klick), Hell/Dunkel und Rotlicht (dafür gibt es keinen Adressparameter, sie gelten je Gerät – etwa Rotlicht am
+   Nachttisch) und „Mein Gerät“ (reine Anzeige). */
+body.is-locked :is(.clock-design, #mode-tone, #mode-custom) { display: none; }
+.clock-tool-icon { padding-left: 0.6em; padding-right: 0.6em; min-width: 2.2em; }

@@ -30,7 +30,18 @@ Der Rundgang öffnet jede Route bei 1440 und 390 px, hell und dunkel, und meldet
 - die Uhr-Werkstatt `/clock` (1.6, T6): jedes Design (digital, Bahnhofsuhr, Nixie, Klappzahlen, Wortuhr) mit fester
   Serverzeit (Browseruhr per `page.clock` 5 min daneben, `/api/v1/time` erfunden) zeigt bei 390 und 1440 px, normal und
   im Rotlicht-Modus, die richtige Uhrzeit (DOM: Ziffern, Wortuhr-Satz, Zeigerwinkel und Phase des Sekundenzeigers) samt
-  Schaltsekunden-Banner am 30.6.; dazu Kiosk, E-Ink mit zweiter Zeitzone und unzulässige Parameter ohne Überbreite,
+  Schaltsekunden-Banner am 30.6.; dazu Kiosk, E-Ink mit zweiter Zeitzone und unzulässige Parameter ohne Überbreite.
+  Die Playwright-Uhr ist dabei angehalten (`install` + `pauseAt`, vorgerückt nur per `runFor`), weil die Anzeige seit
+  der monotonen Zeitbasis mit `performance.now()` weiterläuft; der Mock antwortet mit der passenden Serverzeit,
+- die Studiouhr A1 (`clockStudioChecks`) auf neun Flächen (360×640, 390×844, 768×1024, 1920×1080, 3840×2160,
+  3840×1080, 1920×200, 480×270, 1080×1920) je in den Zuständen `ok`, `free`, `degraded` und `none`: `data-sync`,
+  Zustand als Text mit Symbol, Uhrzeit, graue Sekunden, kein Ziffernumbruch, keine Überbreite; dazu ein Sprung der
+  Geräteuhr um ±1 h (Anzeige unverändert), eine Taktlücke wie nach dem Standby (Neumessung) und `?lead=`,
+- der Countdown der Studiouhr A5 (`clockCountdownChecks`, einzeln mit `TOUR_COUNTDOWN_ONLY=1`) auf denselben neun
+  Flächen: Countdown unter der Uhr (gelb mit Symbol und Text), als Hauptanzeige in den letzten 10 s (fett rot) und
+  Überzeit – gerechnet nach der gemockten Serverzeit samt Zeitzone des Servers, im Bild und ohne Umbruch; dazu
+  `after=stop`, abweichende Zone des Servers, E-Ink, Timer (Leertaste, R), Stoppuhr mit Zehnteln (T), die Tasten D, L,
+  U, +, ?, A, `lock=1` und die Ansage beim Unterschreiten von 1 min,
 - die „Heute“-Zeitleiste der Übersicht mit einem erfundenen Tag (Holdover 03:00–04:30, drei Ereignisse) bei 390 und
   1440 px: genau drei Marker an der richtigen Stelle, Holdover-Abschnitt im Band, Marker im Diagramm, Tagesbericht-Satz,
   Tippflächen ≥ 24 px; per Tastatur Band → Pos1 → Enter öffnet „So sah es um … aus“ (ohne Satellitenwinkel), Esc gibt den
