@@ -439,7 +439,7 @@ def build(status: dict[str, Any], cfg: dict[str, Any]) -> list[dict[str, Any]]:
                        "übernehmen."),
                     action="gps", key="gps_distance")
             elif state in {"best", "combined"}:
-                # Diagnose 1.6.0: „+“ (combined) heißt nicht „GPS trägt die Zeit“ – chrony mittelt es nur mit
+                # „+“ (combined) heißt nicht „GPS trägt die Zeit“ – chrony mittelt es nur mit
                 # kleinem Gewicht neben guten Netzquellen ein. Und bei schwachem Empfang ist das kein „ok“.
                 weak = (status.get("gps_summary") or {}).get("level") == "red"
                 if state == "best":

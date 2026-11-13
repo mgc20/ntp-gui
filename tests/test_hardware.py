@@ -1055,7 +1055,7 @@ class TestGpsdLdiscOnTtyAcm(HardwareTestCase):
         self.assertIn("nicht unter „devices:“", row["text"])
 
     def test_empty_pi_uart_hidden_next_to_usb_receiver(self):
-        # Screenshot des Nutzers: zweite Karte „Gerät an ttyS0 … PPS über GPIO möglich“ ohne Gerät dran.
+        # Fall: zweite Karte „Gerät an ttyS0 … PPS über GPIO möglich“ ohne Gerät dran.
         self.host.uart_tty("ttyS0", "port")
         rep = self.run_report(base_cfg(gps_enable=True, gps_device="/dev/ttyACM0"))
         self.assertEqual([r["tty"] for r in rep["gps"]["receivers"]], ["ttyACM0"])

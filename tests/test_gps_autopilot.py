@@ -4,7 +4,7 @@ Drei Tage ab einer frischen Installation mit Standard-Einstellungen (nur GPS_ENA
 settings.json) – mit den echten Modulen settings, autocal, gpsquality, gnssguard und history.calibrate.
 Nur chrony, gpsd und die Uhr sind nachgebildet (injizierte Uhr, ein Messpunkt je Minute):
 
-* Empfänger wie der VK-162 eines Nutzers: NMEA-Verspätung ~ +51 ms, Tagesgang ± 4 ms, Rauschen
+* Empfänger wie ein typisches USB-GPS ohne PPS: NMEA-Verspätung ~ +51 ms, Tagesgang ± 4 ms, Rauschen
   1,5 ms, 1 % Ausreißer bis ± 25 ms, Fix-Flattern (der Fix reißt im Mittel alle ~50 min für ein bis
   drei Minuten ab).
 * Fünf genutzte NTS-Quellen (Root Distance ~ 10 ms), die Systemuhr folgt ihnen.

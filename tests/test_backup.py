@@ -1381,7 +1381,7 @@ class RestoreSafetyTest(BackupTestBase):
         # Listen, die in Ereignissen und Client-Daten legitim vorkommen, bleiben unverändert.
         fixtures = Path(__file__).resolve().parent / "fixtures"
         docs = [json.loads((fixtures / name).read_text()) for name in ("clients3_lan.json", "loop_pi4_chronyc.json")]
-        for name in ("gps_vk162_indoor.jsonl", "gps_vk162_fixflaps_153.jsonl"):
+        for name in ("gps_vk162_indoor.jsonl", "gps_vk162_fixflaps.jsonl"):
             docs += [json.loads(line) for line in (fixtures / name).read_text().splitlines() if line.strip()]
         with mock.patch.object(backup, "_coord_list", return_value=False):
             reference = [backup.scrub(doc) for doc in docs]

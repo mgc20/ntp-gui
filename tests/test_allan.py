@@ -224,7 +224,7 @@ class ComputeTest(unittest.TestCase):
         self.assertEqual(out["settle_dropped"], 2 * int(allan.SETTLE_SECONDS / 10))
 
     def test_holdover_frozen_frequency_is_excluded(self):
-        # Diagnosepaket 2306: Während eines Holdover-Tests führt chronyd die Frequenz nicht nach – 12 h
+        # Während eines Holdover-Tests führt chronyd die Frequenz nicht nach – 12 h
         # konstant drückten σ(τ) nach unten. Als Lücke behandelt, darf σ(1 h) nicht kleiner werden.
         base = self.series(3 * 24, noise=0.004)
         t0 = base[0][0]
@@ -428,7 +428,7 @@ class AllanHttpTest(unittest.TestCase):
         self.assertEqual(out["reason"], "no_history")
 
     def test_holdover_runs_are_excluded(self):
-        # Diagnosepaket 2306: Der Cache des Servers lässt die Zeiträume der Holdover-Tests weg.
+        # Der Cache des Servers lässt die Zeiträume der Holdover-Tests weg.
         import holdover
         results = [{"started": 1000.0, "ended": 5000.0, "include_network": True},
                    {"started": 6000.0, "ended": 7000.0, "include_network": False},   # Netz regelte weiter

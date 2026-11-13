@@ -28,8 +28,8 @@ Sicherheit (alles umkehrbar, mit Zeitlimit, Ereignis und Zustand in SQLite):
     abgewählt (Ereignis); geht das nicht, endet der Test als „ungültig“
 Clients bekommen während des Tests eine ungenauere Zeit – darauf weist die Oberfläche hin.
 
-Automatiken warten (1.5.3): Jeder Neustart von chronyd bräche den Test ab (Rückmeldung: die
-automatische Anpassung der GPS-Fehlerschranke beendete einen 6-h-Test nach 4 h 35 min). Darum
+Automatiken warten (1.5.3): Jeder Neustart von chronyd bräche den Test ab (z. B. hätte die
+automatische Anpassung der GPS-Fehlerschranke einen 6-h-Test nach wenigen Stunden beendet). Darum
 stellen gpsquality (Schranke) und autocal (Offset) ihre Änderung zurück, solange ein Test läuft
 (`defer`), und holen sie nach dessen Ende im nächsten Durchgang nach (`resume`). Der Supervisor
 stellt Neustarts nach Gerätewechsel (Hotplug) und erneuertem NTS-Zertifikat zurück, solange
@@ -734,7 +734,7 @@ class HoldoverTest:
 
     def freeze_intervals(self) -> list[tuple[float, float]]:
         """Zeiträume (start, ende) mit eingefrorener Frequenz: Holdover-Tests mit Netzquellen abgewählt –
-        chronyd führte die Frequenz dabei nicht nach (Diagnosepaket 2306, Allan-Abweichung). Ein laufender
+        chronyd führte die Frequenz dabei nicht nach (wichtig für die Allan-Abweichung). Ein laufender
         Test zählt bis jetzt. Tests nur mit GPS/PPS abgewählt zählen nicht: Dort regelte das Netz weiter."""
         out: list[tuple[float, float]] = []
         for item in self.results():

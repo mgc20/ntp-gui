@@ -103,7 +103,7 @@ class PositionTest(unittest.TestCase):
         for key in ("mode", "has_fix", "satellites_used",
                     "satellites_seen", "snr_avg", "time", "leapseconds", "systems", "pps"):
             self.assertEqual(clean[key], GPS_STATUS[key], key)
-        # Diagnose 1.6.0: HDOP bleibt (auf eine Stelle), richtungsabhängige gehen; 2306 auch PDOP/GDOP
+        # HDOP bleibt (auf eine Stelle), richtungsabhängige gehen; seit 1.6.3 auch PDOP/GDOP
         # (aus ihnen wären VDOP/TDOP rückrechenbar).
         self.assertEqual(clean["hdop"], round(GPS_STATUS["hdop"], 1))
         for key in ("xdop", "ydop", "vdop", "tdop", "pdop", "gdop"):
@@ -126,7 +126,7 @@ class PositionTest(unittest.TestCase):
         clean, report = egress.sanitize(SKY, "recording")
         self.assertNotIn("PRN", json.dumps(clean))
         self.assertNotIn("svid", json.dumps(clean))
-        # Aufzeichnung (Zeitreihe, 2306): keine Zählwerte, die mit Auf- und Untergängen springen.
+        # Aufzeichnung (Zeitreihe): keine Zählwerte, die mit Auf- und Untergängen springen.
         self.assertEqual(clean["satellites"]["je_system"]["GPS"], {"snr_max": 45})
         self.assertNotIn("uSat", clean)
         gps = egress.sanitize(SKY, "diagnostics")[0]["satellites"]["je_system"]["GPS"]

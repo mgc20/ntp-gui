@@ -1,8 +1,8 @@
 """1.5.3: Ein Holdover-Test wird von Automatiken nicht mehr unterbrochen.
 
-Rückmeldung (Diagnosepaket 1.5.1, Pi 4, VK-162 ohne PPS, 5 NTS-Quellen): 6-h-Test mit Netzquellen um
-01:06 gestartet; um 05:41 vergrößerte gpsquality die GPS-Fehlerschranke (± 16 → ± 22 ms), startete
-dafür chronyd neu – „Holdover-Test abgebrochen (chronyd neu gestartet) … nach 4 h 35 min“. Dazu
+Fall (USB-GPS ohne PPS, mehrere NTS-Quellen): Während eines 6-h-Tests mit Netzquellen vergrößerte
+gpsquality nach gut 4 h die GPS-Fehlerschranke (± 16 → ± 22 ms), startete dafür chronyd neu –
+„Holdover-Test abgebrochen (chronyd neu gestartet)“. Dazu
 stand beim Start „Keine Zeitquelle mehr ausgewählt“ als Warnung im Protokoll, obwohl der Test die
 Quellen absichtlich abgewählt hatte.
 

@@ -5,13 +5,13 @@ Stand: 02.11.2026 · Grundlage: [ROADMAP](../../ROADMAP.md), Stand 1.3.2 (`app/c
 [Entscheidungsrahmen](entscheidungsrahmen.md), [Entscheidungen E1–E14](entscheidungen.md),
 [Bausteine](bausteine.md), [Community-Dienste](community-dienste.md), [version-1.4.md](version-1.4.md)
 
-## 0. Was seit 1.4-Planung neu ist (Rückmeldungen)
+## 0. Was seit 1.4-Planung neu ist (Anlässe)
 
-| # | Rückmeldung | Folge für die Planung |
+| # | Anlass | Folge für die Planung |
 |---|---|---|
 | R1 | AdGuard-DNS-Umschreibung **und** UniFi-NAT-Umleitung gleichzeitig: Schleife, sobald ntp-gui seine eigenen Upstream-Namen über den umschreibenden DNS auflöst | 1.4 bringt eigene DNS-Server/DoT/DoH für ntp-gui. 1.5: **Schleifen erkennen und erklären** (Thema 10) |
-| R2 | „Die Messungen für Zeitverzug von Clients über den Server usw. ist geil, mehr davon bitte“ | Clients sind das Alleinstellungsmerkmal. 1.4 baut Clients 2.0; 1.5 setzt mit **Clients 3** fort (Thema 9) |
-| R3 | VK-162 (USB, u-blox 7, **ohne PPS**), schwacher Empfang drinnen, Fix kommt und geht | sehr verbreitete Billig-Hardware → **„GPS ohne PPS“ ehrlich bewerten und begleiten** (Thema 3), noch vor der u-blox-Werkbank |
+| R2 | Messungen der Zeitabweichung von Clients sind besonders gefragt | Clients sind das Alleinstellungsmerkmal. 1.4 baut Clients 2.0; 1.5 setzt mit **Clients 3** fort (Thema 9) |
+| R3 | Verbreitetes USB-GPS (z. B. VK-162, u-blox 7, **ohne PPS**), schwacher Empfang drinnen, Fix kommt und geht | sehr verbreitete Billig-Hardware → **„GPS ohne PPS“ ehrlich bewerten und begleiten** (Thema 3), noch vor der u-blox-Werkbank |
 | R4 | Diagnosepaket auf dem Pi zu langsam (behoben in 1.3.2) | Leistungsbudget als Regressionstest (Querschnitt, Abschnitt 3) |
 | R5 | Maintainer hat VPS, will Community-Nutzen (Website wie ntp-tester.eu, Schwarm, Relay); öffentliche Dienste nicht ausgeschlossen (E10) | konkreter erster Schritt in Abschnitt 4.6: **Zeit-Check-Website + Server-Test** |
 | R6 | Grundsätze: größter Community-Nutzen, machbar für einen Maintainer mit KI, Sicherheit durch Einfachheit, OSS wiederverwenden, möglichst viel Funktion | Bewertung unten; „schlankes 1.5.0 + 1.5.x“ wie bei 1.4 (E3) |
@@ -43,8 +43,8 @@ Aufwand: ◆ ≈ 1–3 Abende, ◆◆ ≈ 1–2 Wochenenden, ◆◆◆ mehrere W
 
 ### Leitlinie der Staffelung
 
-- **1.5 „GNSS-Werkbank, Clients 3, Uhrqualität“.** Zuerst, was die gemeldeten Probleme löst (R1, R3)
-  und was die Nutzer am meisten mögen (R2). Dann das, was aus den Daten von 1.4
+- **1.5 „GNSS-Werkbank, Clients 3, Uhrqualität“.** Zuerst, was die bekannten Probleme löst (R1, R3)
+  und was am meisten gefragt ist (R2). Dann das, was aus den Daten von 1.4
   (Temperatur, Ereignisse, Alarme) Erkenntnis macht.
 - **Lesend vor schreibend bleibt.** In 1.5 greift ntp-gui nur über chronys eigene, umkehrbare
   Schalter in die Zeit ein (`selectopts`, `tempcomp`) – immer mit Ereignis, Zeitlimit und Rücknahme.

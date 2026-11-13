@@ -23,7 +23,7 @@ Einstellungen im Verbund teilen) folgt in **1.5**, wenn die Praxisdaten aus 1.3/
 Die **Community-Dienste** starten ohne eigenen Server-Code (Hardware-Liste über GitHub-Issues,
 Pool-Server mit ntp-gui selbst); der erste eigene Dienst ist der Server-Test als Selbsttest.
 
-**Planung 1.5 (02.11.2026):** [version-1.5.md](version-1.5.md) nimmt die Rückmeldungen nach 1.3.2
+**Planung 1.5 (02.11.2026):** [version-1.5.md](version-1.5.md) nimmt die offenen Themen nach 1.3.2
 auf (DNS/NAT-Schleifen, „mehr Client-Messungen“, GPS ohne PPS, VPS für Community-Dienste) und
 staffelt 1.5.0 schlank, Rest in 1.5.x; erster eigener Dienst ist Zeit-Check-Website +
 Server-Test (u-blox schreiben ist inzwischen nach 1.7 gewandert, siehe unten).

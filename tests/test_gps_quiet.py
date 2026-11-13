@@ -1,6 +1,6 @@
 """1.5.4 – GPS bei schwachem Empfang ruhig: Hinweis „gps_nofix“ und die Kurzfassung für die Übersicht.
 
-Diagnosepaket 1.5.3 (VK-162 drinnen, GPS nur Rückfallebene, 5 NTS-Quellen): Der Hinweis lautete
+Fall: USB-GPS drinnen, GPS nur Rückfallebene, mehrere NTS-Quellen. Bis 1.5.3 lautete der Hinweis
 „GPS hat noch keinen Fix“ (warn), obwohl der Fix nur kam und ging und die Netzquellen die Zeit trugen.
 Die Replays zu Positionssprung, Ereignissen und Fehlerschranke stehen in test_gnssguard
 (WeakGeometryTest), test_statewatch (WeakReceptionTest) und test_gpsquality (BoundHysteresisTest).

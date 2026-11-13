@@ -805,7 +805,7 @@ if __name__ == "__main__":
 # 1.5.1: Ohne PPS einen deutlichen Versatz in einem Schritt korrigieren
 # ---------------------------------------------------------------------------
 def nopps(**over):
-    """GPS ohne PPS als Rückfallebene mit gemessener Fehlerschranke (Nutzerfall Pi 4 + VK-162)."""
+    """GPS ohne PPS als Rückfallebene mit gemessener Fehlerschranke (typisch: USB-GPS ohne PPS)."""
     return cfg(gps_bound_mode="measured", gps_pps_device="", gps_pps_shm=False, gps_select="auto",
                gps_offset=0.0, **over)
 
@@ -861,7 +861,7 @@ class FastConvergenceTest(unittest.TestCase):
 
 
 class OffsetResetTimelineTest(unittest.TestCase):
-    """Nutzerfall: Offset 0,0526 → von Hand 0. Früher 0 → 0,005 nach 7 h, Rest über ~10 Tage.
+    """Fall: Offset 0,0526 → von Hand 0. Früher 0 → 0,005 nach 7 h, Rest über ~10 Tage.
     Jetzt: nach 6 h Messung die ganze Korrektur, und die GPS-Seite sagt vorher, was kommt."""
 
     def setUp(self):

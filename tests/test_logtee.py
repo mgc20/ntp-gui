@@ -38,7 +38,7 @@ class LogteeTest(unittest.TestCase):
         self.assertEqual(self.path.read_bytes(), data)
 
     def test_known_gpsd_shm_line_is_explained(self):
-        # Diagnosepaket 2306: Beim Beenden von gpsd stand ohne Präfix eine „failed“-Zeile im Log.
+        # Beim Beenden von gpsd stand ohne Präfix eine „failed“-Zeile im Log.
         # Sie ist harmlos (das SHM-Segment gehört chronyd) und wird darum erklärt, nicht verschluckt.
         data = (b"[chrony] Konfiguration geschrieben\n"
                 b"SHM: shmctl(7) for IPC_RMID failed, Operation not permitted(1)\n"

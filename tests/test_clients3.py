@@ -281,7 +281,7 @@ class GroupLogicTest(unittest.TestCase):
 
 
 def fixture_clients(now):
-    """17 LAN-Clients aus dem Diagnosepaket des Maintainers (Intervalle echt, Adressen synthetisch)."""
+    """17 LAN-Clients mit realistischen Intervallen (Adressen synthetisch)."""
     data = json.loads((FIXTURES / "clients3_lan.json").read_text(encoding="utf-8"))["clients"]
     table = clientmon.ClientTable()
     rng = random.Random(11)

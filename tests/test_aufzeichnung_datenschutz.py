@@ -1,4 +1,4 @@
-"""Diagnosepaket 2306 (Datenschutz der Aufzeichnung): Zählwerte, DOP und das Alter des NTS-Schlüsseltauschs.
+"""Datenschutz der Aufzeichnung: Zählwerte, DOP und das Alter des NTS-Schlüsseltauschs.
 
 Alle Daten synthetisch (RFC-5737-Adressen, erfundene Satelliten).
 """

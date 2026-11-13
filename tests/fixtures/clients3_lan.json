@@ -1,5 +1,5 @@
 {
- "_comment": "Aus dem Diagnosepaket des Maintainers (Pi 4, 17 LAN-Clients, chronyc clients; Adressen dort pseudonymisiert). Adressen und Software-Art hier synthetisch; Intervalle (log2), Paketzahlen und letzte Anfrage echt.",
+ "_comment": "Realistische Messreihe (17 LAN-Clients, chronyc clients), anonymisiert. Adressen und Software-Art synthetisch; Intervalle (log2), Paketzahlen und letzte Anfrage realistisch.",
  "clients": [
   {
    "address": "192.168.1.20",

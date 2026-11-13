@@ -11,7 +11,7 @@ dort liest die Log-Seite des Dashboards und das Diagnosepaket.
   dann geht es nur auf stdout weiter; später wird es erneut versucht.
 * Ein Fehler auf stdout (Leser weg) beendet ihn ebenfalls nicht – die Datei
   bekommt die Zeilen weiter.
-* Ausnahme (Diagnosepaket 2306): Eine bekannte, harmlose Zeile von gpsd ohne Präfix wird
+* Ausnahme: Eine bekannte, harmlose Zeile von gpsd ohne Präfix wird
   erklärt statt unverändert weitergegeben (KNOWN_LINES) – „SHM: shmctl(…) for IPC_RMID failed,
   Operation not permitted“ beim Beenden: Das SHM-Segment der Refclock legt chronyd als root an,
   gpsd hat seine Rechte schon abgegeben und darf es nicht löschen. Folgenlos.

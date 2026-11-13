@@ -1,8 +1,8 @@
 """Tests für die Schleifen-Erkennung (loopguard.py, 1.5 Thema 10).
 
-Grundlage sind echte chronyc-Ausgaben vom Pi 4 des Maintainers (tests/fixtures/loop_pi4_chronyc.json,
+Grundlage sind realistische chronyc-Ausgaben (tests/fixtures/loop_pi4_chronyc.json,
 mit korrekten Ausnahmen, Adressen synthetisch). Daraus werden die beiden
-Fehlerbilder aus R1 nachgebaut: DNS-Umschreibung ohne Ausnahme und NAT-Umleitung ohne Ausnahme.
+Fehlerbilder nachgebaut: DNS-Umschreibung ohne Ausnahme und NAT-Umleitung ohne Ausnahme.
 """
 
 import copy
