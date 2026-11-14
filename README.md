@@ -1145,6 +1145,41 @@ Die Seite **Uhrqualität** zeigt, was die Uhr deines Servers langfristig beeinfl
   jeder vollen Sekunde (langer Ton zur Minute) oder zählt zum Uhrenstellen die letzten 10 s bis zur
   vollen Minute herunter. **Mein Gerät** zeigt, wie falsch die Uhr deines Handys oder PCs geht –
   das Ergebnis bleibt im Browser, nichts wird gespeichert oder gesendet.
+- **Ehrliche Anzeige (ab 1.7, Studiouhr):** Die Uhr rechnet mit der monotonen Uhr des Browsers ab dem
+  letzten Abgleich – verstellt das Gerät seine eigene Uhr, springt die Anzeige nicht mit. Unter der Uhr
+  steht immer der Zustand mit Fehlerschranke: abgeglichen, frei laufend (Server antwortet nicht),
+  unsicher (Schranke über `?maxerr=`, Standard 100 ms) oder „Gerätezeit, nicht abgeglichen“.
+  `?lead=0…200` lässt die Anzeige für Fernseher mit Bildverzögerung so viele Millisekunden vorlaufen.
+- **Jede Fläche, eigenes Aussehen (ab 1.7, Studiouhr):** Die Uhr richtet sich nach ihrer eigenen Fläche statt nach
+  dem Fenster: Streifen (unter 120 px Höhe: nur die Zeit), Banner (ab 3:1, z. B. 32:9 oder 1920×200: Zeit links,
+  Datum und Zustand rechts), Spalte (Hochformat), Kachel (kleiner als 480×270) oder normal. `?layout=` legt das
+  Layout fest (`tile` blendet zusätzlich Leiste und Band aus), `?safe=0…10` lässt einen Sicherheitsrand in Prozent,
+  `?scale=50…200` ändert die Größe, `?show=time,seconds,date,weekday,week,utc,tz,status` zeigt nur diese Elemente,
+  `?bg=black|transparent` (durchsichtig zum Keyen in OBS), `?weight=thin|regular|bold` und `?shift=1|2` verschiebt
+  die Anzeige alle 2 min um wenige Pixel gegen Einbrennen. Neues Design `studio`: Kranz aus 60 Sekundenpunkten mit
+  7-Segment-Ziffern (`?color=amber|red|green|cyan|white|ice`, `?sub=utc|tz2|date|off`, `?seconds=ring|digits|both`,
+  `?h12=1`). `digital` kann mit `?face=seg` dieselben Ziffern zeigen (`mono`, `sans`), dazu `?colon=blink`, `?lz=0`
+  und `?date=long|short|iso|off`. Themen per `?look=studio|contrast|warm|terminal|paper|pastel`, eine Akzentfarbe per
+  `?accent=` (Name oder `ff8800`); reicht ihr Kontrast nicht, nimmt die Uhr die nächste lesbare Stufe.
+- **Countdown, Timer und Tasten (ab 1.7, Studiouhr):** `?until=20:15[:00]` zählt bis zu dieser Uhrzeit in der
+  Zeitzone des Servers (ist sie vorbei, bis morgen), `?until=2026-12-31T23:59:59` bis zu einem Zeitpunkt. Gerechnet wird
+  auf der abgeglichenen Serverzeit – alle Bildschirme zeigen dasselbe, auch an Umstellungstagen. Danach zählt die Uhr
+  hoch (`?after=up`, bei Uhrzeiten eine Stunde lang) oder steht auf 00:00 (`?after=stop`). `?warn=300,60,10` setzt die
+  Farbstufen gelb, rot und fett rot, jeweils mit Symbol und Text, ohne Blinken. `?beep=10` piept in den letzten
+  Sekunden über den Ton der Uhr (Browser brauchen dafür eine erste Berührung oder Taste), `?label=` beschriftet den
+  Countdown (bis 24 Zeichen), `?cd=main` macht ihn zur Hauptanzeige statt der Zeile unter der Uhr. `?timer=90s|25m|1h30m`
+  ist eine Eieruhr nur für dieses Gerät (Leertaste startet und hält an, R setzt zurück); ohne Ziel startet die Leertaste
+  eine Stoppuhr. Tasten: F Vollbild, D Design, L Layout, U UTC groß, T Zehntel, + und − Größe, A Uhrzeit ansagen
+  (Screenreader), ? Übersicht. `?lock=1` schaltet die Tasten ab und blendet Design, Ton und Anpassen aus; Vollbild,
+  Hell/Dunkel, Rotlicht und „Mein Gerät“ bleiben (Rotlicht und Hell/Dunkel gelten je Gerät und haben keinen Parameter).
+- **Anzeigen und Profile (ab 1.7, Studiouhr):** Unter **Uhr & Hardware → Anzeigen** baust du den Link aus einem
+  Formular zusammen, kopierst ihn und öffnest eine Vorschau in fester Größe (Handy, Monitor, Banner, Kachel, Stele) in
+  einem neuen Fenster. Auf der Uhr selbst geht dasselbe über **Anpassen**; der Stand gilt auf diesem Gerät, wenn
+  `/clock` ohne Parameter aufgerufen wird. Benannte Profile (`/clock?p=regie`, bis zu 20) stellen viele Bildschirme
+  zentral um: Speicherst du ein Profil neu, laden die Bildschirme es beim nächsten Abgleich. Fest eingebaut sind
+  `studio`, `tile`, `banner`, `kitchen`, `workshop`, `night` und `nerd`. Parameter in der Adresse gehen vor dem Profil.
+  Profile kommen mit in die Sicherung. Browserquellen in OBS, vMix und CasparCG sowie der Pi-Kiosk:
+  [docs/integrationen/studiouhr.md](docs/integrationen/studiouhr.md).
 - **Holdover-Test:** misst, wie lange die Uhr ohne Zeitquelle hält – siehe
   [GNSS-Störungen, GPS-Sperre und Holdover-Test](#gnss-störungen-gps-sperre-und-holdover-test-ab-15).
 
@@ -1154,15 +1189,17 @@ Die Seite **Uhrqualität** zeigt, was die Uhr deines Servers langfristig beeinfl
 </picture>
 
 Mit `CLOCK_PUBLIC=true` sind `/clock` und `/api/v1/time` ohne Anmeldung erreichbar (nur Zeit,
-Ampel, Genauigkeit, Art der Quelle und das Datum einer angekündigten Schaltsekunde – keine Namen,
-Adressen oder Einstellungen; dazu die Skripte und Sprachkataloge der Uhr). Ab 1.5.1
+Ampel, Genauigkeit, Art der Quelle, die Zeitzone des Servers, das Datum einer angekündigten Schaltsekunde
+sowie Anzeigewerte und Titel der Uhr-Profile – keine Namen, Adressen oder Einstellungen; dazu die
+Skripte und Sprachkataloge der Uhr). Ab 1.5.1
 antwortet die Uhr dann über **jeden** Namen, auch über einen eigenen DNS-Namen des
 Wandmonitors – die Namensprüfung gegen DNS-Rebinding entfällt nur hier, weil darin nichts
 Schützenswertes steht (siehe [Schutz vor DNS-Rebinding](#schutz-vor-dns-rebinding)). Alle
 anderen Seiten bleiben geprüft. Nicht einschalten, wenn das Dashboard aus dem Internet
 erreichbar ist.
 
-Neue API-Endpunkte (lesend): `/api/v1/temperature`, `/api/v1/leap`, `/api/v1/time`. Metriken:
+Neue API-Endpunkte (lesend): `/api/v1/temperature`, `/api/v1/leap`, `/api/v1/time`, `/api/v1/clock/profile?p=name`
+(mit `CLOCK_PUBLIC=true` ebenfalls ohne Anmeldung, nur Anzeigewerte und Titel). Metriken:
 `ntpgui_temperature_celsius`, `ntpgui_leapseconds_list_days_left`, `ntpgui_tai_utc_offset_seconds`.
 
 ## Benachrichtigungen
@@ -1836,6 +1873,7 @@ Fertig zum Importieren bzw. Abschreiben:
   – REST- und Template-Sensoren, Binärsensoren, Automations-Beispiel.
 - **Homepage und Glance:** [`docs/integrationen/homepage-glance.md`](docs/integrationen/homepage-glance.md).
 - **Uptime Kuma:** [`docs/integrationen/uptime-kuma.md`](docs/integrationen/uptime-kuma.md).
+- **Studiouhr als Browserquelle (OBS, vMix, CasparCG) und Pi-Kiosk:** [`docs/integrationen/studiouhr.md`](docs/integrationen/studiouhr.md).
 
 Der API-Schlüssel reist über HTTP im Klartext. Nutze `https://` über einen Reverse Proxy oder
 ein vertrauenswürdiges Netz und gib jeder Integration einen eigenen Lese-Schlüssel.

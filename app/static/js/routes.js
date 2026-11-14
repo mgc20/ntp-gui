@@ -29,6 +29,8 @@ export const PAGES = [
   { id: "clockquality", path: "uhr/qualitaet", nav: "uhr", tab: true, titleKey: "nav.clockquality", history: false },
   { id: "hardware", path: "uhr/hardware", nav: "uhr", tab: true, titleKey: "nav.hardware", history: false },
   { id: "ptp", path: "uhr/ptp", nav: "uhr", tab: true, titleKey: "nav.ptp", history: true },
+  // Studiouhr A6: Link-Baukasten und Profile der Vollbild-Uhr.
+  { id: "displays", path: "uhr/anzeigen", nav: "uhr", tab: true, titleKey: "nav.displays", history: false },
   { id: "diagnose", path: "system/diagnose", nav: "system", tab: true, titleKey: "nav.diagnose", history: false },
   { id: "notify", path: "system/benachrichtigungen", nav: "system", tab: true, titleKey: "nav.notify", history: false },
   { id: "settings", path: "system/einstellungen", nav: "system", tab: true, titleKey: "nav.settings" },

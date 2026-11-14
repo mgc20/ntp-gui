@@ -32,6 +32,9 @@ Server-Test (u-blox schreiben ist inzwischen nach 1.7 gewandert, siehe unten).
 Oberfläche, Spielereien, Sicherung); die ersten Community-Funktionen stehen im
 [Entwurf 1.7](version-1.7-entwurf.md).
 
+**Studiouhr (13.11.2026):** [studiouhr.md](studiouhr.md) macht /clock zur ehrlichen Zeitanzeige für
+Regie, Ü-Wagen, Bühne und Wohnzimmer; Etappen A → B → C mit je einem Release, zuerst die monotone Zeitbasis.
+
 **Gegenprüfung (01.11.2026):** Das volle 1.4 ist für einen Maintainer eher 3–4 Monate Arbeit;
 [version-1.4.md](version-1.4.md#realistischer-gesamtaufwand-gegenprüfung) schlägt ein schlankes
 1.4 vor. Jedes Plan-Dokument hat einen Abschnitt **„Offene Fragen“** bzw. **„Entschiedene Fragen“** –
@@ -48,6 +51,7 @@ dort stehen die Entscheidungen, die nur der Maintainer treffen kann.
 | [version-1.5.md](version-1.5.md) | Planung 1.5 (GNSS-Werkbank, Clients 3, DNS/NAT-Schleifen, Uhrqualität, Englisch), 1.6 und später, erster eigener Community-Dienst (Zeit-Check + Server-Test), offene Fragen an den Maintainer | beim Planen von 1.5 und der Community-Dienste |
 | [version-1.6.md](version-1.6.md) | Plan 1.6 „Zuhause besser“ (rein lokal): Themen T1–T7, Reihenfolge, Abnahmekriterien, entschiedene Fragen, bestätigte Fehler | beim Umsetzen von 1.6 |
 | [version-1.7-entwurf.md](version-1.7-entwurf.md) | Entwurf 1.7 „Nach außen öffnen“: Englisch komplett, Hardware-Bericht, Zeitwächter-Ping, VPS-Spur, offene Fragen | beim Planen von 1.7 |
+| [studiouhr.md](studiouhr.md) | Studiouhr: /clock für TV, Ü-Wagen, Veranstaltungen und Alltag – monotone Zeitbasis mit Fehlerschranke, Parameter-Schema, Layouts für jede Fläche, Studio-Designs, Countdown, Timecode, Profile; Etappen A–C mit Abnahmekriterien | beim Umsetzen der Studiouhr (Etappe A ab 1.7.x) |
 | [community-dienste.md](community-dienste.md) | Architektur der Dienste im eigenen Repository, Missbrauchs- und Datenschutz, Datenverträge mit ntp-gui, Startempfehlung | bevor am Community-Repository gearbeitet wird |
 
 ## So sind die Dokumente gedacht

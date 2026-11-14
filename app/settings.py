@@ -649,6 +649,15 @@ _TEMP_SENSOR_RE = re.compile(r"^(auto|off|thermal:[A-Za-z0-9_.+-]{1,40}(:[0-9]{1
                              r"|w1:28-[0-9a-f]{12})$")
 
 
+def _as_clock_profiles(value: Any) -> dict:
+    """Benannte Profile der Vollbild-Uhr (clockprofiles.py): nur Schema-Parameter und Titel."""
+    import clockprofiles
+    try:
+        return clockprofiles.clean_profiles(value)
+    except clockprofiles.ProfileError as exc:
+        raise ValidationError(str(exc)) from None
+
+
 def _as_temp_sensor(value: Any) -> str:
     """„auto“, „off“ oder eine Kennung aus thermal.discover() – nie ein Pfad."""
     text = str(value if value is not None else "").strip() or "auto"
@@ -1274,6 +1283,12 @@ SCHEMA: list[dict] = [
                 "Anmeldung nur, wenn kein Passwort gesetzt ist und der Aufruf über einen erlaubten Namen "
                 "kommt. Alle anderen Seiten bleiben geprüft. Aus = die Uhr ist wie das Dashboard "
                 "geschützt. Wirkt ohne Neustart."),
+    _field("clock_profiles", "web", "Uhr-Profile", "clockprofiles", {}, _as_clock_profiles,
+           restart=RESTART_NONE, advanced=True,
+           help="Benannte Einstellungen der Vollbild-Uhr für viele Bildschirme (/clock?p=name), bearbeitet unter "
+                "Uhr & Hardware → Anzeigen. Gespeichert werden nur Anzeigewerte der Uhr und ein Titel, höchstens "
+                "20 Profile. Ändert sich ein Profil, laden die Bildschirme es beim nächsten Abgleich neu. Mit "
+                "„Vollbild-Uhr ohne Anmeldung“ sind die Profile im LAN für alle lesbar. Wirkt ohne Neustart."),
     _field("trusted_proxies", "web", "Vertrauenswürdige Proxys", "networks", [], _as_proxy_list,
            env="TRUSTED_PROXIES", restart=RESTART_NONE, advanced=True, placeholder="leer = niemandem trauen",
            hint="Adressen deiner Reverse Proxys, z. B. 127.0.0.1/32 für einen Proxy auf demselben Host. Leer = niemandem trauen.",

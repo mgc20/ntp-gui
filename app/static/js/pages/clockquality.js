@@ -4,6 +4,8 @@ import { el, isNum, fmtFixed, fmtNumber, fmtSeconds, fmtPpm, fmtDate, rich } fro
 import { card, statCard, kv, badge, emptyState, infoButton, loadingOr, rangePicker, explainLine } from "../ui.js";
 import { lineChart, logLogChart, scatterChart, stepDecimals } from "../charts.js";
 import { holdoverCard } from "./gnss.js";
+import { route } from "../routes.js";
+import { t as tr } from "../i18n.js";
 
 const RANGES = [[86400, "1 Tag"], [3 * 86400, "3 Tage"], [7 * 86400, "7 Tage"], [30 * 86400, "30 Tage"]];
 // Ab so vielen Tagen im gewählten Zeitraum lässt sich der Zusammenhang Temperatur ↔ Frequenz bewerten
@@ -270,7 +272,8 @@ function clockSection(ctx) {
   const field = (schema?.fields || []).find((f) => f.key === "clock_public");
   const publicText = !field ? "–" : field.value ? "ja – Uhr und /api/v1/time ohne Passwort" : "nein – wie das Dashboard geschützt";
   return card("Vollbild-Uhr", { help: "clock_page",
-    actions: el("a", { class: "button primary", href: "/clock", text: "Uhr öffnen" }) },
+    actions: [el("a", { class: "button", href: route("displays"), text: tr("pages.displays.setup_link") }),
+      el("a", { class: "button primary", href: "/clock", text: "Uhr öffnen" })] },
   explainLine("Große Uhrzeit (Ortszeit und UTC), Datum und Kalenderwoche für Wandmonitor oder Tablet – "
     + "abgeglichen mit der Serveruhr statt mit der Uhr des Geräts. Taste **F** für Vollbild.", { class: "card-sub" }),
   kv([

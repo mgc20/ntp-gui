@@ -62,6 +62,7 @@ import holdover
 import loopguard
 import chrony
 import clientinfo
+import clockprofiles
 import clientmon
 import clients3
 import devices
@@ -354,9 +355,15 @@ apiv1.endpoint("GET", "/time", None, "read",
                "für den Abgleich mit vier Zeitstempeln, dazu Synchronstatus, Genauigkeit, Art der Quelle und das "
                "Datum der nächsten angekündigten Schaltsekunde (leap_next, öffentlich aus der leap-seconds.list). "
                "Mit „Vollbild-Uhr ohne Anmeldung“ (clock_public) ohne Login und über jeden Host-Namen erreichbar – "
-               "dann ohne Quellennamen.",
+               "dann ohne Quellennamen. profiles_rev ändert sich, sobald ein Uhr-Profil gespeichert wird.",
                ["t1", "t2", "synchronised", "level", "accuracy", "stratum", "leap", "leap_next", "source_kind",
-                "source", "public"])
+                "source", "public", "zone", "profiles_rev"])
+apiv1.endpoint("GET", "/clock/profile", None, "read",
+               "Ein Profil der Vollbild-Uhr (/clock?p=name): feste Voreinstellung oder im Dashboard gespeichert. "
+               "Nur Anzeigewerte der Uhr (params, Zeichenketten wie in der Adresse) und Titel. Mit „Vollbild-Uhr "
+               "ohne Anmeldung“ (clock_public) ohne Login lesbar, sonst mit Leserecht.",
+               ["name", "title", "params", "builtin", "profiles_rev"],
+               {"p": "Profilname, 1–32 Zeichen aus a–z, 0–9 und Bindestrich (ohne p: Namen der Voreinstellungen)"})
 
 # 1.6 (T3): Willkommens-Assistent – Zustand, Prüfpunkte und Checkliste; Schreiben nur mit Verwaltungsrecht.
 apiv1.endpoint("GET", "/setup", "/api/setup", "read",
@@ -383,8 +390,10 @@ apiv1.endpoint("GET", "/update", "/api/update", "read",
 # statischen Dateien (kein Inhalt aus der Konfiguration) und /api/v1/time.
 # 1.6 (T6): Designs, Ton und Sprache brauchen clockkit.js, util.js und i18n.js samt Sprachkatalogen –
 # alles feste Texte und Code, nichts aus Konfiguration oder Status.
-CLOCK_PUBLIC_PATHS = {"/clock", "/api/v1/time", "/static/app.css", "/static/clock.css",
+# Studiouhr A6: Profile lesen (/api/v1/clock/profile, nur Allowlist-Felder) und der Link-Baukasten (clocklink.js).
+CLOCK_PUBLIC_PATHS = {"/clock", "/api/v1/time", "/api/v1/clock/profile", "/static/app.css", "/static/clock.css",
                       "/static/js/clock.js", "/static/js/clocksync.js", "/static/js/clockkit.js",
+                      "/static/js/clockfaces.js", "/static/js/clockcount.js", "/static/js/clocklink.js",
                       "/static/js/util.js", "/static/js/i18n.js", "/static/i18n/de.json", "/static/i18n/en.json"}
 
 CONTENT_TYPES = {
@@ -1071,6 +1080,22 @@ def _clock_leap_next(cfg: dict) -> str | None:
     return value if isinstance(value, str) and len(value) == 10 else None
 
 
+_CLOCK_ZONE: dict = {"t": None, "zone": None}
+
+
+def _clock_zone() -> str | None:
+    """IANA-Name der Zeitzone des Servers für /clock (höchstens einmal je Minute gelesen).
+
+    Countdown-Ziele wie ?until=20:15 gelten in dieser Zone – so zeigen alle Bildschirme dasselbe Ziel, egal welche
+    Zeitzone das Anzeigegerät hat. Nur ein Name wie „Europe/Berlin“ oder None, nie ein Pfad.
+    """
+    with _CLOCK_CACHE_LOCK:
+        now = time.monotonic()
+        if _CLOCK_ZONE["t"] is None or now - _CLOCK_ZONE["t"] >= 60.0:
+            _CLOCK_ZONE.update(t=now, zone=iana_timezone())
+        return _CLOCK_ZONE["zone"]
+
+
 def time_payload(received: float, public: bool) -> dict:
     """Antwort von /api/v1/time. t2 wird so spät wie möglich genommen."""
     tracking = _clock_tracking()
@@ -1080,10 +1105,30 @@ def time_payload(received: float, public: bool) -> dict:
         cfg = {}
     out = clock_status(tracking, cfg)
     out["leap_next"] = _clock_leap_next(cfg)
+    out["zone"] = _clock_zone()
+    out["profiles_rev"] = clockprofiles.revision(cfg.get("clock_profiles"))
     out.update(t1=received, public=public,
                source=None if public else (str(tracking.get("ref_name") or "") or None))
     out["t2"] = time.time()
     return out
+
+
+def profile_payload(name) -> tuple[dict, HTTPStatus]:
+    """GET /api/v1/clock/profile?p=…: (Antwort, Status). Nur Allowlist-Felder, unbekannt → 404, Name ungültig → 400.
+    Ohne p nur die Namen der festen Voreinstellungen (nie die Namen gespeicherter Profile)."""
+    if name is None or name == "":
+        return {"presets": list(clockprofiles.PRESETS)}, HTTPStatus.OK
+    if not isinstance(name, str) or not clockprofiles.NAME_RE.fullmatch(name):
+        return {"error": "Profilname: 1–32 Zeichen aus a–z, 0–9 und Bindestrich"}, HTTPStatus.BAD_REQUEST
+    try:
+        stored = settings.values().get("clock_profiles") or {}
+    except Exception:
+        stored = {}
+    profile = clockprofiles.public_profile(name, stored)
+    if profile is None:
+        return {"error": "Profil nicht gefunden"}, HTTPStatus.NOT_FOUND
+    profile["profiles_rev"] = clockprofiles.revision(stored)
+    return profile, HTTPStatus.OK
 
 
 TEMPERATURE_DEFAULT_RANGE = 7 * 86400.0
@@ -1837,6 +1882,8 @@ class Handler(BaseHTTPRequestHandler):
         """/clock, ihre statischen Dateien und /api/v1/time."""
         if path == "/api/v1/time":
             self._send_json(time_payload(received, public))
+        elif path == "/api/v1/clock/profile":
+            self._send_json(*profile_payload(self._query().get("p")))
         elif path == "/clock":
             self._serve_static("clock.html")
         else:
@@ -1844,7 +1891,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _route_get(self, path: str, received: float | None = None) -> None:
         query = self._query()
-        if path in ("/clock", "/api/v1/time"):
+        if path in ("/clock", "/api/v1/time", "/api/v1/clock/profile"):
             self._route_clock(path, received or time.time(), public=False)
         elif path == "/":
             self._serve_static("index.html")
