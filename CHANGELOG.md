@@ -6,6 +6,8 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 
 ## [Unveröffentlicht]
 
+## [1.7.0] – 2026-11-14
+
 Schwerpunkt: Die Vollbild-Uhr wird zur Studiouhr für TV, Ü-Wagen und Veranstaltungen. Sie passt sich
 jeder Fläche an, zählt auf Sendebeginn herunter und lässt sich per Link oder Profil auf vielen
 Bildschirmen gleich einrichten. Den Plan beschreibt [docs/konzept/studiouhr.md](docs/konzept/studiouhr.md),
@@ -1523,6 +1525,7 @@ Erste Veröffentlichung.
 - CI mit Unittests und Integrationstest gegen das gebaute Image; Release-Workflow,
   der das Image für amd64 und arm64 nach ghcr.io veröffentlicht.
 
+[1.7.0]: https://github.com/mgc20/ntp-gui/compare/v1.6.3...v1.7.0
 [1.6.3]: https://github.com/mgc20/ntp-gui/compare/v1.6.2...v1.6.3
 [1.6.2]: https://github.com/mgc20/ntp-gui/compare/v1.6.1...v1.6.2
 [1.6.1]: https://github.com/mgc20/ntp-gui/compare/v1.6.0...v1.6.1
