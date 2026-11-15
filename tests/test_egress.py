@@ -132,7 +132,7 @@ class PositionTest(unittest.TestCase):
         gps = egress.sanitize(SKY, "diagnostics")[0]["satellites"]["je_system"]["GPS"]
         self.assertEqual(gps["empfangen"], len(SKY["satellites"]))
         self.assertEqual(gps["snr_max"], 45)
-        self.assertEqual(clean["hdop"], 0.9)
+        self.assertEqual(clean["hdop"], 1)          # Zeitreihe: nur die Stufe
         self.assertEqual(report["removed"]["satellitenwinkel"], 4)
 
     def test_gpsd_raw_lines_in_recording(self):

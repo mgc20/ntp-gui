@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import math
 import re
 import sys
 import threading
@@ -101,7 +102,8 @@ CATEGORIES: dict[str, str] = {
                         "Im Schnappschuss (chrony.txt) bleibt es grob gerundet.",
     "dop": "DOP-Werte des GPS außer HDOP (x, y, vertikal, Zeit, PDOP, GDOP) – sie hängen von der "
            "Satellitengeometrie über dem Empfänger ab, und aus PDOP und GDOP ließen sich VDOP und TDOP "
-           "zurückrechnen; es bleibt HDOP, auf eine Stelle gerundet.",
+           "zurückrechnen; es bleibt HDOP, auf eine Stelle gerundet, in der Aufzeichnung nur als Stufe "
+           "(1, 2, 5, 10, 20).",
 }
 
 # ---------------------------------------------------------------------------
@@ -280,6 +282,21 @@ GPSD_ALLOWED = {
 # PDOP² = HDOP² + VDOP² und GDOP² = PDOP² + TDOP² – mit ihnen wären VDOP/TDOP rückrechenbar. Es bleibt HDOP.
 DIRECTIONAL_DOP_KEYS = {"xdop", "ydop", "vdop", "tdop", "pdop", "gdop"}
 ROUNDED_DOP_KEYS = {"hdop"}
+# In einer Zeitreihe springt auch HDOP, sobald ein Satellit in die Lösung kommt oder herausfällt – dieselbe
+# Spur, wegen der die Satellitenzahlen dort fehlen. Dort bleibt deshalb nur die Stufe (obere Grenze):
+# bis 1 sehr gut, bis 2 gut, bis 5 mäßig, bis 10 schlecht, darüber 20. Im Schnappschuss bleibt eine Stelle.
+HDOP_STEPS = (1, 2, 5, 10)
+HDOP_STEP_MAX = 20
+
+
+def hdop_step(value: Any) -> Any:
+    """HDOP → Stufe (obere Grenze) für Zeitreihen; Unbrauchbares bleibt None."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+        return None
+    for step in HDOP_STEPS:
+        if value <= step:
+            return step
+    return HDOP_STEP_MAX
 GPSD_SAT_ALLOWED = {"PRN", "gnssid", "svid", "sigid", "freqid", "ss", "used", "health"}
 GPSD_DROP = {"RAW", "RTCM2", "RTCM3", "AIS", "SUBFRAME", "IMU", "ATT", "NAV", "GGA", "RMC"}
 
@@ -1502,8 +1519,10 @@ class Sanitizer:
             if value is not None:
                 self.count("dop")
             return _DROP
-        if nk in ROUNDED_DOP_KEYS and isinstance(value, float):
-            return round(value, 1)
+        if nk in ROUNDED_DOP_KEYS and isinstance(value, (int, float)) and not isinstance(value, bool):
+            if self._in_series():
+                return hdop_step(value)
+            return round(value, 1) if isinstance(value, float) else value
         kind = None if is_cert else _key_kind(raw_key)
         if kind is not None:
             if isinstance(value, bool):

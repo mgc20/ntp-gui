@@ -74,6 +74,10 @@ def fake_collectors():
 class DiagnosticsTest(unittest.TestCase):
     def setUp(self):
         fake_hostnames(self)  # kein Rückwärts-DNS des Runners
+        # Hat ein früherer Test den Server geladen, liefert die Hinweisquelle dessen echten Zustand – ein
+        # Hinweis mit einer Adresse verschöbe die Nummern client-NN. Jeder Test beginnt ohne Quelle.
+        self.addCleanup(diagnostics.set_hints_source, diagnostics._hints_source)
+        diagnostics.set_hints_source(None)
         self.tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.tmp)
         (self.tmp / "ntp-gui.log").write_text(LOG, encoding="utf-8")
