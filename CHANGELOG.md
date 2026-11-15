@@ -15,6 +15,10 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 - Sichern und wiederherstellen: Der Datenschutzhinweis nennt jetzt ausdrücklich, dass der Verlauf in der
   Sicherung Satellitenzahlen und HDOP je Messpunkt ungekürzt enthält – ein Grund mehr, sie nicht zu teilen.
 
+### Intern
+- Tests zum Diagnosepaket beginnen ohne Hinweisquelle: Lief vorher ein Test, der den Server lädt, hing die
+  Nummerierung client-NN vom dort hinterlassenen Zustand ab.
+
 ## [1.7.0] – 2026-11-14
 
 Schwerpunkt: Die Vollbild-Uhr wird zur Studiouhr für TV, Ü-Wagen und Veranstaltungen. Sie passt sich
