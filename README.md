@@ -1372,6 +1372,12 @@ Wiederherstellen neu ein; die Vorschau nennt es.
 > Gerätenamen und Notizen, wann ein Gerät nach der Zeit gefragt hat – sowie Servernamen und Netze aus
 > den Einstellungen. **Nicht teilen**, auch nicht in einem Issue oder Forum. Für Fehlerberichte gibt es
 > das gefilterte [Diagnosepaket](#diagnose--fehlersuche). ntp-gui lädt die Sicherung nirgendwohin hoch.
+>
+> Der Verlauf in der Sicherung enthält außerdem je Messpunkt die Zahl der genutzten und empfangenen
+> Satelliten und den HDOP-Wert – ungekürzt, damit die Diagramme nach dem Wiederherstellen vollständig
+> sind. Diese Werte ändern sich mit dem Stand der Satelliten über dem Empfänger; die Sicherung enthält
+> zwar keine Position, ist aber auch deshalb nichts zum Weitergeben. Im Diagnosepaket fehlen die
+> Satellitenzahlen im Verlauf, und HDOP steht dort nur als grobe Stufe.
 
 **Nächtliche Sicherung** (Schalter im selben Reiter, Standard aus): gegen 3 Uhr Ortszeit des Servers
 landet eine Sicherung im Datenverzeichnis unter `/var/lib/chrony/ntp-gui/sicherungen/`, die letzten

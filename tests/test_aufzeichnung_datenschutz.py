@@ -84,13 +84,27 @@ class DopTest(unittest.TestCase):
         # PDOP² = HDOP² + VDOP², GDOP² = PDOP² + TDOP²: Mit HDOP, PDOP und GDOP wären VDOP/TDOP rückrechenbar.
         sanitizer = egress.Sanitizer("recording")
         clean = sanitizer.obj(sky("2026-01-01T00:00:00Z", 0, 6))
-        self.assertEqual(clean.get("hdop"), 1.2)
+        self.assertEqual(clean.get("hdop"), 2)      # Zeitreihe: nur die Stufe
         self.assertNotIn("pdop", clean)
         self.assertNotIn("gdop", clean)
         status = egress.Sanitizer("diagnostics").obj({"hdop": 0.8333, "pdop": 1.4642, "gdop": 1.61, "vdop": 1.2})
         self.assertEqual(status, {"hdop": 0.8})
         self.assertIn("HDOP", egress.CATEGORIES["dop"])
         self.assertNotIn("PDOP", egress.CATEGORIES["dop"].split("es bleibt")[-1])
+
+    def test_hdop_in_series_only_as_step(self):
+        # HDOP springt, sobald ein Satellit in die Lösung kommt oder herausfällt – in der Zeitreihe bleibt
+        # deshalb nur die Stufe; kleine Sprünge innerhalb einer Stufe sind nicht mehr zu sehen.
+        values = [0.83, 0.91, 0.97, 1.0]
+        rows = [egress.Sanitizer("recording").obj({"class": "SKY", "time": "2026-01-01T00:00:00Z", "hdop": v})
+                for v in values]
+        self.assertEqual({row["hdop"] for row in rows}, {1})
+        for value, step in ((0, 1), (1.01, 2), (2, 2), (4.9, 5), (7, 10), (10.5, 20), (99.9, 20), (3, 5)):
+            self.assertEqual(egress.hdop_step(value), step, value)
+        for bad in (None, True, "1.2", float("nan"), float("inf"), -1):
+            self.assertIsNone(egress.hdop_step(bad), bad)
+        # Schnappschuss (kein Verlauf): eine Stelle bleibt.
+        self.assertEqual(egress.Sanitizer("diagnostics").obj({"hdop": 0.8333}), {"hdop": 0.8})
 
 
 class AuthdataAgeTest(unittest.TestCase):
