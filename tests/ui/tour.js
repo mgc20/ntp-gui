@@ -81,6 +81,17 @@ const FORBIDDEN = /\d,000(\s|$)|\d\.\d+ (s|ms)\b|\d{1,3}\.\d{3}(,\d+)? (ppm|ppb|
 // Läuft im Browser: Bedienelemente, deren Rand ein ⓘ (oder dessen Tippfläche) verdeckt.
 function overlapCheck() {
   const found = [];
+  // Liegt der Punkt außerhalb eines Scrollbereichs, in dem das Element steckt (lange Ereignisliste), ist
+  // es dort abgeschnitten und nicht zu treffen – was an der Stelle liegt, überlappt es nicht.
+  const clipped = (node, x, y) => {
+    for (let box = node.parentElement; box && box !== document.documentElement; box = box.parentElement) {
+      const style = getComputedStyle(box);
+      if (!/(auto|scroll|hidden|clip)/.test(style.overflowX + style.overflowY)) continue;
+      const b = box.getBoundingClientRect();
+      if (x < b.left || x > b.right || y < b.top || y > b.bottom) return true;
+    }
+    return false;
+  };
   const controls = document.querySelectorAll("button:not(.info), a[href], input, select, textarea, summary");
   for (const node of controls) {
     const r = node.getBoundingClientRect();
@@ -91,6 +102,7 @@ function overlapCheck() {
       for (const y of ys) {
         if (x !== xs[1] && y !== ys[1]) continue; // nur Kantenmitten und Ränder, keine Ecken (border-radius)
         if (x < 0 || y < 0 || x >= innerWidth || y >= innerHeight) continue;
+        if (clipped(node, x, y)) continue;
         const hit = document.elementFromPoint(x, y);
         const info = hit && hit.closest(".info");
         if (info && !node.contains(info)) {

@@ -66,6 +66,8 @@ Prüfbild zum Einmessen und ein On-Air/REC-Signal.
   Sicherung Satellitenzahlen und HDOP je Messpunkt ungekürzt enthält – ein Grund mehr, sie nicht zu teilen.
 
 ### Intern
+- UI-Rundgang: Die Überlappungsprüfung überspringt Punkte, die in einem Scrollbereich abgeschnitten sind
+  (lange Ereignisliste) – dort ist das Element nicht zu treffen.
 - Tests zum Diagnosepaket beginnen ohne Hinweisquelle: Lief vorher ein Test, der den Server lädt, hing die
   Nummerierung client-NN vom dort hinterlassenen Zustand ab.
 
