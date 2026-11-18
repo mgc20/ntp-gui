@@ -63,6 +63,7 @@ import loopguard
 import chrony
 import clientinfo
 import clockprofiles
+import clocksignal
 import clientmon
 import clients3
 import devices
@@ -355,9 +356,15 @@ apiv1.endpoint("GET", "/time", None, "read",
                "für den Abgleich mit vier Zeitstempeln, dazu Synchronstatus, Genauigkeit, Art der Quelle und das "
                "Datum der nächsten angekündigten Schaltsekunde (leap_next, öffentlich aus der leap-seconds.list). "
                "Mit „Vollbild-Uhr ohne Anmeldung“ (clock_public) ohne Login und über jeden Host-Namen erreichbar – "
-               "dann ohne Quellennamen. profiles_rev ändert sich, sobald ein Uhr-Profil gespeichert wird.",
+               "dann ohne Quellennamen. profiles_rev ändert sich, sobald ein Uhr-Profil gespeichert wird. "
+               "ptp_state nennt nur den Zustand von PTP (off, down, master, locked, acquiring, passive, fault, "
+               "unknown) – nie Grandmaster-Kennung oder Schnittstelle. holdover: Die Serveruhr läuft ohne "
+               "Referenz weiter (true/false, null = unbekannt), holdover_seconds: seit wie vielen Sekunden. "
+               "signal ist das On-Air/REC-Signal (off, on_air, rec – gesetzt über POST /api/v1/clock/signal), "
+               "signal_rev ändert sich mit jedem Wechsel.",
                ["t1", "t2", "synchronised", "level", "accuracy", "stratum", "leap", "leap_next", "source_kind",
-                "source", "public", "zone", "profiles_rev"])
+                "source", "public", "zone", "profiles_rev", "ptp_state", "holdover", "holdover_seconds",
+                "signal", "signal_rev"])
 apiv1.endpoint("GET", "/clock/profile", None, "read",
                "Ein Profil der Vollbild-Uhr (/clock?p=name): feste Voreinstellung oder im Dashboard gespeichert. "
                "Nur Anzeigewerte der Uhr (params, Zeichenketten wie in der Adresse) und Titel. Mit „Vollbild-Uhr "
@@ -391,10 +398,11 @@ apiv1.endpoint("GET", "/update", "/api/update", "read",
 # 1.6 (T6): Designs, Ton und Sprache brauchen clockkit.js, util.js und i18n.js samt Sprachkatalogen –
 # alles feste Texte und Code, nichts aus Konfiguration oder Status.
 # Studiouhr A6: Profile lesen (/api/v1/clock/profile, nur Allowlist-Felder) und der Link-Baukasten (clocklink.js).
+# Studiouhr B1: Rechnungen der Timecode-Anzeige (clocktc.js) – nur Code.
 CLOCK_PUBLIC_PATHS = {"/clock", "/api/v1/time", "/api/v1/clock/profile", "/static/app.css", "/static/clock.css",
                       "/static/js/clock.js", "/static/js/clocksync.js", "/static/js/clockkit.js",
                       "/static/js/clockfaces.js", "/static/js/clockcount.js", "/static/js/clocklink.js",
-                      "/static/js/util.js", "/static/js/i18n.js", "/static/i18n/de.json", "/static/i18n/en.json"}
+                      "/static/js/clocktc.js", "/static/js/clockworld.js", "/static/js/util.js", "/static/js/i18n.js", "/static/i18n/de.json", "/static/i18n/en.json"}
 
 CONTENT_TYPES = {
     ".html": "text/html; charset=utf-8",
@@ -487,11 +495,14 @@ def collector() -> None:
             gpsquality.maybe_tick(settings.values)  # Fehlerschranke GPS ohne PPS, stündlich, wirft nie
         except Exception as exc:  # ein Messfehler darf den Thread nie beenden
             print(f"[web] Messung fehlgeschlagen: {exc}", flush=True)
+        tracking, sources = None, None
         try:
             # Als PTP-Grandmaster die angekündigte Uhrqualität an den Zustand von chrony anpassen.
-            ptp.update_grandmaster(settings.values(), chrony.tracking(), chrony.detailed_sources())
+            tracking, sources = chrony.tracking(), chrony.detailed_sources()
+            ptp.update_grandmaster(settings.values(), tracking, sources)
         except Exception as exc:
             print(f"[web] Grandmaster-Daten nicht gesetzt: {exc}", flush=True)
+        note_clock_extra(tracking, sources)   # PTP-Zustand und Holdover für die Statuszeile von /clock; wirft nie
         try:
             interval = float(settings.values()["history_interval"])
         except Exception:
@@ -1022,8 +1033,106 @@ def source_kind(ref: str, cfg: dict | None = None) -> str:
     return "Referenzuhr"
 
 
-def clock_status(tracking: dict, cfg: dict | None = None) -> dict:
-    """Ampel und Quelle für /clock – ohne Namen, Adressen oder Einstellungen."""
+# Studiouhr B3: Zustand von PTP als fester Wert. Aus dem Status von ptp4l wird nur der Zustand des Ports gelesen –
+# Kennungen (Grandmaster, Uhr, Port), Schnittstelle und Domäne kommen hier nie vor.
+PTP_STATES = ("off", "down", "master", "locked", "acquiring", "passive", "fault", "unknown")
+_PTP_PORT_STATES = {"SLAVE": "locked", "MASTER": "master", "GRAND_MASTER": "master", "LISTENING": "acquiring",
+                    "UNCALIBRATED": "acquiring", "PRE_MASTER": "acquiring", "INITIALIZING": "acquiring",
+                    "PASSIVE": "passive", "FAULTY": "fault", "DISABLED": "fault"}
+HOLDOVER_REF_MAX = 366 * 86400.0   # ältere „letzte Korrektur“ ist keine Angabe (Uhr stand beim Start auf 1970)
+CLOCK_EXTRA_MAX_AGE = 300.0        # so alt darf die letzte Beobachtung des Messthreads sein, sonst „unbekannt“
+# t: letzte Beobachtung (PTP), lost_t: letzte Beobachtung mit einer Aussage zum Holdover (lost, since).
+_CLOCK_EXTRA: dict = {"t": None, "ptp_state": "unknown", "lost": None, "since": None, "lost_t": None}
+_CLOCK_EXTRA_LOCK = threading.Lock()
+
+
+def ptp_state(status) -> str:
+    """Zustand von PTP für /clock: einer der Werte aus PTP_STATES, sonst nichts aus ptp.status()."""
+    if not isinstance(status, dict):
+        return "unknown"
+    if not status.get("enabled"):
+        return "off"
+    if not status.get("running"):
+        return "down"
+    port = status.get("portState")
+    return _PTP_PORT_STATES.get(port, "unknown") if isinstance(port, str) else "unknown"
+
+
+def reference_lost(tracking, sources, test_active: bool = False, was_lost: bool = False) -> bool | None:
+    """Läuft die Serveruhr ohne Referenz weiter (Holdover)? chronyd läuft, aber: der Holdover-Test hat die Quellen
+    abgewählt, chrony gibt nur noch die eigene Uhr weiter (Inselbetrieb), oder es nennt zwar noch eine Referenz,
+    hat aber keine Quelle mehr ausgewählt. None: keine Aussage – chronyc antwortete nicht (kein tracking, keine
+    Quellenliste). was_lost: Zuletzt lief ein Holdover. Er endet erst, wenn wieder eine Quelle ausgewählt ist –
+    auch wenn chrony die Referenz inzwischen ganz aufgegeben hat („nicht synchronisiert“). Ohne vorherigen
+    Holdover ist „nicht synchronisiert“ keiner: Die Uhr war seit dem Start nie abgeglichen."""
+    if not isinstance(tracking, dict) or not tracking:
+        return None
+    if test_active or tracking.get("local_reference"):
+        return True
+    if not isinstance(sources, (list, tuple)) or not sources:
+        return None
+    if any(isinstance(src, dict) and src.get("state") == "*" for src in sources):
+        return False
+    return bool(tracking.get("synchronised")) or bool(was_lost)
+
+
+def note_clock_extra(tracking, sources, mono: float | None = None, wall: float | None = None) -> None:
+    """Beobachtung des Messthreads merken: Zustand von PTP und Beginn des Holdovers. /api/v1/time liest nur diesen
+    Stand (clock_extra) und startet dafür selbst keinen Prozess. Der Beginn ist die letzte Korrektur der Uhr
+    (ref_time), solange chrony sie noch nennt, sonst der Moment der ersten Beobachtung. Wirft nie."""
+    try:
+        mono = time.monotonic() if mono is None else mono
+        wall = time.time() if wall is None else wall
+        try:
+            state = ptp_state(ptp.status())
+        except Exception:
+            state = "unknown"
+        try:
+            test_active = holdover.TEST.running()
+        except Exception:
+            test_active = False
+        with _CLOCK_EXTRA_LOCK:
+            lost = reference_lost(tracking, sources, test_active, was_lost=_CLOCK_EXTRA["lost"] is True)
+            _CLOCK_EXTRA.update(t=mono, ptp_state=state)
+            if lost is None:
+                return   # keine Aussage: Der letzte Stand bleibt (samt Beginn) und altert über lost_t
+            since = _CLOCK_EXTRA["since"] if lost else None
+            if lost and since is None:
+                ref = tracking.get("ref_time")
+                age = wall - ref if _num(ref) is not None and tracking.get("synchronised") else 0.0
+                since = mono - (age if 0.0 < age < HOLDOVER_REF_MAX else 0.0)
+            _CLOCK_EXTRA.update(lost=lost, since=since, lost_t=mono)
+    except Exception as exc:
+        print(f"[web] Zustand für die Uhr nicht bestimmt: {exc}", flush=True)
+
+
+def clock_extra(mono: float | None = None, interval=None) -> dict:
+    """Letzter Stand aus note_clock_extra: {"ptp_state", "holdover", "holdover_seconds"}; zu alt oder nie
+    beobachtet: unbekannt. Antwortet chronyc einzelne Male nicht, gilt beim Holdover der letzte Stand weiter, bis
+    auch er zu alt ist. Ist PTP ausgeschaltet, steht das sofort da (nur eine Einstellung, kein Prozess).
+    interval: Messintervall (history_interval) – bei langen Intervallen gilt der Stand drei Messungen lang."""
+    mono = time.monotonic() if mono is None else mono
+    with _CLOCK_EXTRA_LOCK:
+        seen = dict(_CLOCK_EXTRA)
+    max_age = max(CLOCK_EXTRA_MAX_AGE, 3.0 * interval) if _num(interval) is not None and 0 < interval <= 3600 else CLOCK_EXTRA_MAX_AGE
+    fresh = seen["t"] is not None and 0.0 <= mono - seen["t"] <= max_age
+    out = {"ptp_state": seen["ptp_state"] if fresh else "unknown", "holdover": None, "holdover_seconds": None}
+    try:
+        if not ptp.enabled():
+            out["ptp_state"] = "off"
+    except Exception:
+        pass
+    known = seen["lost_t"] is not None and 0.0 <= mono - seen["lost_t"] <= max_age
+    if known and isinstance(seen["lost"], bool):
+        out["holdover"] = seen["lost"]
+        if seen["lost"] and seen["since"] is not None:
+            out["holdover_seconds"] = max(0, int(mono - seen["since"]))
+    return out
+
+
+def clock_status(tracking: dict, cfg: dict | None = None, extra: dict | None = None) -> dict:
+    """Ampel und Quelle für /clock – ohne Namen, Adressen oder Einstellungen. extra (clock_extra): Zustand von PTP
+    und Holdover; übernommen werden nur feste Werte, Wahrheitswert und Sekunden."""
     running = bool(tracking)
     synced = bool(tracking.get("synchronised"))
     delay, disp = tracking.get("root_delay"), tracking.get("root_dispersion")
@@ -1041,8 +1150,15 @@ def clock_status(tracking: dict, cfg: dict | None = None) -> dict:
     else:
         kind = source_kind(tracking.get("ref_name"), cfg) if stratum == 1 else "NTP"
         level = "good" if accuracy is None or accuracy < 0.1 else "warn"
+    extra = extra if isinstance(extra, dict) else {}
+    state = extra.get("ptp_state")
+    hold = extra.get("holdover") if running and isinstance(extra.get("holdover"), bool) else None
+    seconds = extra.get("holdover_seconds")
+    seconds = int(seconds) if hold and _num(seconds) is not None and 0 <= seconds < 1e9 else None
     return {"synchronised": synced, "running": running, "level": level, "accuracy": accuracy,
-            "stratum": stratum, "leap": tracking.get("leap_status") or None, "source_kind": kind}
+            "stratum": stratum, "leap": tracking.get("leap_status") or None, "source_kind": kind,
+            "ptp_state": state if isinstance(state, str) and state in PTP_STATES else "unknown",
+            "holdover": hold, "holdover_seconds": seconds}
 
 
 CLOCK_CACHE_SECONDS = 1.0
@@ -1096,6 +1212,124 @@ def _clock_zone() -> str | None:
         return _CLOCK_ZONE["zone"]
 
 
+# Studiouhr B4: On-Air/REC-Signal. Nur im Speicher (clocksignal.py) – nach einem Neustart „off“, nie in der Sicherung.
+CLOCK_SIGNAL = clocksignal.Signal()
+CLOCK_SIGNAL_RATE = clocksignal.RateLimit()
+SIGNAL_TITLES = {"off": "aus", "on_air": "ON AIR", "rec": "REC"}
+SIGNAL_AUDIT_TITLE = "On-Air-Signal der Uhr:"
+# Einträge ins Ereignisprotokoll: Die ersten SIGNAL_AUDIT_BURST stehen sofort da (ein Abend mit vielen Wechseln), danach
+# kommt je SIGNAL_AUDIT_SECONDS ein Platz nach. Wer im Sekundentakt schaltet, erzeugt also höchstens einen Eintrag je
+# Minute (wie last_used der API-Schlüssel) – das Protokoll und die SD-Karte bleiben in Ruhe. Zusätzlich hält events.py
+# nur die neuesten SIGNAL_AUDIT_ROWS dieser Einträge: Sie verdrängen nie andere Ereignisse aus dem Protokoll.
+SIGNAL_AUDIT_BURST = 10
+SIGNAL_AUDIT_SECONDS = 60.0
+SIGNAL_AUDIT_ROWS = 2_000
+SIGNAL_AUDIT_KEYS_MAX = 8    # so viele Schlüsselkennungen übersprungener Wechsel nennt ein Nachtrag höchstens
+_SIGNAL_AUDIT: dict = {"t": None, "tokens": SIGNAL_AUDIT_BURST, "pending": None, "skipped": 0, "keys": []}
+_SIGNAL_AUDIT_LOCK = threading.Lock()
+events.set_quota("settings", SIGNAL_AUDIT_TITLE, SIGNAL_AUDIT_ROWS)
+_SIGNAL_TIMERS: dict = {"audit": None, "expiry": None}
+_SIGNAL_TIMERS_LOCK = threading.Lock()
+
+
+def _signal_timer(name: str, delay: float | None, action=None) -> None:
+    """Einen der beiden Zeitgeber des Signals neu stellen (delay None: nur abstellen). Daemon-Threads – sie halten
+    das Beenden nie auf."""
+    def run() -> None:
+        with _SIGNAL_TIMERS_LOCK:
+            if _SIGNAL_TIMERS.get(name) is timer:
+                _SIGNAL_TIMERS[name] = None
+        try:
+            action()
+        except Exception:
+            pass
+
+    with _SIGNAL_TIMERS_LOCK:
+        old = _SIGNAL_TIMERS.get(name)
+        if old is not None:
+            old.cancel()
+        _SIGNAL_TIMERS[name] = None
+        if delay is None:
+            return
+        timer = threading.Timer(max(0.0, delay), run)
+        timer.daemon = True
+        _SIGNAL_TIMERS[name] = timer
+        timer.start()
+
+
+def signal_audit(entry: dict | None = None, mono: float | None = None) -> None:
+    """Wechsel des On-Air-Signals ins Ereignisprotokoll: Zustand, Ablaufzeit und – bei einem API-Schlüssel – dessen
+    Kennung. Keine Adresse des Aufrufers. Gedrosselt mit einem Vorrat: SIGNAL_AUDIT_BURST Einträge sofort, danach
+    einer je SIGNAL_AUDIT_SECONDS. Ist der Vorrat leer, wird nur der letzte Stand nachgetragen, sobald wieder ein
+    Platz frei ist – mit der Zahl der übersprungenen Wechsel (skipped) und den Kennungen der Schlüssel, die dabei
+    geschaltet haben (api_keys). Dafür läuft ein Zeitgeber, der diese Funktion ohne entry aufruft – auch wenn gerade
+    kein Bildschirm abfragt."""
+    mono = time.monotonic() if mono is None else mono
+    with _SIGNAL_AUDIT_LOCK:
+        audit = _SIGNAL_AUDIT
+        if audit["t"] is None or mono < audit["t"]:
+            audit.update(t=mono, tokens=SIGNAL_AUDIT_BURST)
+        else:
+            gained = int((mono - audit["t"]) // SIGNAL_AUDIT_SECONDS)
+            if gained > 0:
+                audit["tokens"] = min(SIGNAL_AUDIT_BURST, audit["tokens"] + gained)
+                audit["t"] = mono if audit["tokens"] >= SIGNAL_AUDIT_BURST else audit["t"] + gained * SIGNAL_AUDIT_SECONDS
+            elif audit["tokens"] >= SIGNAL_AUDIT_BURST:
+                audit["t"] = mono   # voller Vorrat: Die Wartezeit auf den nächsten Platz beginnt mit dem ersten Eintrag
+        if entry is not None:
+            old = audit["pending"]
+            if old is not None:
+                audit["skipped"] += 1
+                key = old.get("api_key")
+                if key is not None and key not in audit["keys"] and len(audit["keys"]) < SIGNAL_AUDIT_KEYS_MAX:
+                    audit["keys"].append(key)
+            audit["pending"] = entry
+        if audit["pending"] is None:
+            return
+        if audit["tokens"] <= 0:
+            _signal_timer("audit", SIGNAL_AUDIT_SECONDS - (mono - audit["t"]) + 0.02, signal_audit)
+            return
+        entry, skipped, keys = audit["pending"], audit["skipped"], audit["keys"]
+        audit.update(tokens=audit["tokens"] - 1, pending=None, skipped=0, keys=[])
+    state = entry.get("state")
+    data = {"state": state}
+    for key in ("ttl", "api_key", "reason", "set_by"):
+        if entry.get(key) is not None:
+            data[key] = entry[key]
+    if skipped:
+        data["skipped"] = skipped
+        others = [key for key in keys if key != entry.get("api_key")]
+        if others:
+            data["api_keys"] = others
+    title = f"{SIGNAL_AUDIT_TITLE} {SIGNAL_TITLES.get(state, 'aus')}"
+    if entry.get("reason") == "ttl_changed":
+        title += " – Ablaufzeit geändert" if entry.get("ttl") else " – Ablaufzeit aufgehoben"
+    try:
+        events.emit("settings", "info", title, data, source=entry.get("source") or "web")
+    except Exception:
+        pass  # das Protokoll darf das Signal nie aufhalten
+
+
+def signal_expired_entry(by: Any = None) -> dict:
+    """Protokolleintrag „aus, weil die Ablaufzeit um ist“ – mit dem Vermerk, wer diese Ablaufzeit gesetzt hat
+    (set_by: „api“ oder „web“, bei einem API-Schlüssel dessen Kennung)."""
+    entry = {"state": "off", "reason": "ttl", "source": "system"}
+    if isinstance(by, dict):
+        entry["set_by"] = by.get("source")
+        entry["api_key"] = by.get("api_key")
+    return entry
+
+
+def clock_signal() -> dict:
+    """{"signal", "signal_rev"} für /api/v1/time – nur der feste Wert und die Kennung des Stands."""
+    try:
+        now = CLOCK_SIGNAL.read()
+        signal_audit(signal_expired_entry(now.get("expired_by")) if now["expired"] else None)
+        return {"signal": now["signal"], "signal_rev": now["signal_rev"]}
+    except Exception:
+        return {"signal": "off", "signal_rev": ""}
+
+
 def time_payload(received: float, public: bool) -> dict:
     """Antwort von /api/v1/time. t2 wird so spät wie möglich genommen."""
     tracking = _clock_tracking()
@@ -1103,10 +1337,11 @@ def time_payload(received: float, public: bool) -> dict:
         cfg = settings.values()
     except Exception:
         cfg = {}
-    out = clock_status(tracking, cfg)
+    out = clock_status(tracking, cfg, clock_extra(interval=cfg.get("history_interval")))
     out["leap_next"] = _clock_leap_next(cfg)
     out["zone"] = _clock_zone()
     out["profiles_rev"] = clockprofiles.revision(cfg.get("clock_profiles"))
+    out.update(clock_signal())
     out.update(t1=received, public=public,
                source=None if public else (str(tracking.get("ref_name") or "") or None))
     out["t2"] = time.time()
@@ -1747,6 +1982,10 @@ class Handler(BaseHTTPRequestHandler):
         needed = apiv1.required_scope(method, path)
         if needed == "session":
             return False  # Zugang und Schlüssel nur mit Benutzer/Passwort verwalten
+        if needed == "clock" or ident["scope"] == "clock":
+            # Das On-Air-Signal setzt ein Schlüssel mit Recht „clock“ (oder „admin“). Umgekehrt darf ein
+            # „clock“-Schlüssel nichts anderes – weder lesen noch schreiben.
+            return needed == "clock" and ident["scope"] in ("clock", "admin")
         if needed == "admin" and ident["scope"] != "admin":
             return False
         return apikeys.allows(ident["scope"], method)
@@ -1756,6 +1995,9 @@ class Handler(BaseHTTPRequestHandler):
         if needed == "session":
             text = ("Das geht nur mit Benutzer und Passwort, nicht mit einem API-Schlüssel – "
                     "so kann ein entwendeter Schlüssel weder das Passwort ändern noch neue Schlüssel ausstellen.")
+        elif ident.get("scope") == "clock":
+            text = ("Dieser API-Schlüssel hat das Recht „clock“ und darf nur das On-Air-Signal der Uhr setzen "
+                    "(POST /api/v1/clock/signal).")
         else:
             text = (f"Dieser API-Schlüssel hat das Recht „{ident.get('scope')}“; hier ist "
                     f"„{needed}“ nötig.")
@@ -2321,6 +2563,35 @@ class Handler(BaseHTTPRequestHandler):
         events.emit("settings", "info", f"{title}: {', '.join(keys[:8])}{' …' if len(keys) > 8 else ''}",
                     data, source="api" if ident.get("kind") == "key" else "web")
 
+    def _clock_signal(self, data: dict, ident: dict) -> None:
+        """POST /api/v1/clock/signal: On-Air/REC-Signal setzen. Rate-Limit je Schlüssel (alle Anmeldungen teilen sich
+        einen Zähler), nur feste Werte; ins Protokoll kommt der Wechsel ohne Adresse des Aufrufers."""
+        by_key = ident.get("kind") == "key"
+        if not CLOCK_SIGNAL_RATE.allow(f"key:{ident.get('id')}" if by_key else "session"):
+            self._send_json({"error": f"Zu viele Anfragen – höchstens {CLOCK_SIGNAL_RATE.rate} je Sekunde."},
+                            HTTPStatus.TOO_MANY_REQUESTS, {"Retry-After": "1"})
+            return
+        try:
+            state, ttl = clocksignal.parse(data)
+        except clocksignal.SignalError as exc:
+            self._error(HTTPStatus.BAD_REQUEST, str(exc), states=list(clocksignal.STATES))
+            return
+        by = {"source": "api" if by_key else "web", "api_key": ident.get("id") if by_key else None}
+        result = CLOCK_SIGNAL.set(state, ttl, by)
+        # Mit Ablaufzeit: Ein Zeitgeber liest den Zustand, sobald sie um ist – so steht „aus“ auch dann rechtzeitig
+        # im Protokoll, wenn kein Bildschirm abfragt. Ohne Ablaufzeit wird er abgestellt.
+        _signal_timer("expiry", result["expires_in"] + 0.05 if result["expires_in"] else None, clock_signal)
+        expired_by = result.pop("expired_by")
+        if result.pop("expired"):   # war schon abgelaufen, aber noch nicht eingetragen
+            signal_audit(signal_expired_entry(expired_by))
+        changed, ttl_changed = result.pop("changed"), result.pop("ttl_changed")
+        if changed or ttl_changed:
+            # Auch derselbe Zustand mit anderer Ablaufzeit steht im Protokoll: Wer eine Ablaufzeit setzt, verkürzt
+            # oder aufhebt, bestimmt, wann das Signal ausgeht.
+            signal_audit({"state": state, "ttl": result["expires_in"], **by,
+                          "reason": None if changed else "ttl_changed"})
+        self._send_json(result)
+
     def _trust_proxy(self, data: dict, ident: dict) -> None:
         """1.5.4: „Als vertrauenswürdigen Proxy eintragen“ aus dem HTTPS-Hinweis.
 
@@ -2486,6 +2757,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(notify.send_test(str(data.get("id", ""))))
             except notify.NotifyError as exc:
                 self._error(HTTPStatus.NOT_FOUND, str(exc))
+        elif path == "/api/v1/clock/signal":
+            self._clock_signal(data, ident)
         elif path == "/api/apikeys":
             key_id, token = apikeys.create(data.get("name"), data.get("scope"))
             entry = next((k for k in apikeys.list() if k["id"] == key_id), {})

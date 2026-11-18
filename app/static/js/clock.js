@@ -3,7 +3,7 @@
 // Die Browseruhr eines Tablets kann Sekunden danebenliegen. Darum misst die Seite den Versatz
 // zum Server mit vier Zeitstempeln (clocksync.js) – fünf Messungen, die mit der kleinsten
 // Laufzeit gewinnt – und zeigt Serverzeit an. Alle 60 s wird neu gemessen, alle 5 s der
-// Zustand abgefragt. Antwortet der Server 10 s lang nicht, wird die Ampel grau.
+// Zustand abgefragt (mit ?signal=1 jede Sekunde). Antwortet der Server 10 s lang nicht, wird die Ampel grau.
 //
 // 1.6 (T6) „Uhr-Werkstatt“: vier Designs (Bahnhofsuhr, Nixie, Klappzahlen, Wortuhr) neben der
 // digitalen Anzeige, Kiosk (?kiosk=1), E-Ink (?eink=1), zweite Zeitzone (?tz=), Ton auf der Sekunde
@@ -32,7 +32,7 @@
 // Zeitzone des Servers (zone aus /api/v1/time) – alle Bildschirme zeigen dasselbe, ohne Steuerkanal. ?timer= und die
 // Stoppuhr (Leertaste ohne Ziel) laufen lokal als Zustandsautomat auf performance.now(). Farbstufen (?warn=) immer mit
 // Symbol und Text, ?beep= über denselben Tonweg wie „Ton auf der Sekunde“ (kit.audioClock, kit.scheduleTone).
-// Tastenkürzel F, D, L, U, T, Leertaste/R, +/−, A und ? (Übersicht); ?lock=1 schaltet sie ab.
+// Tastenkürzel F, D, L, U, T, O, Leertaste/R, +/−, A und ? (Übersicht); ?lock=1 schaltet sie ab.
 //
 // Studiouhr A6: Panel „Anpassen“ (Formular aus dem Schema, clocklink.js). Übernommen wird in den localStorage; der
 // Stand gilt, wenn /clock ohne Parameter aufgerufen wird. ?p=name lädt ein Profil vom Server (GET
@@ -41,9 +41,48 @@
 // der Abruf (Netz, 5xx, 401), versucht sie es mit wachsendem Abstand (5 s bis 60 s) erneut und lädt sich nach dem
 // ersten Erfolg neu; bis dahin läuft die Standarduhr, nicht der im Panel gemerkte Stand.
 //
+// Studiouhr B1: Design tc (clocktc.js) zeigt die Tageszeit als Timecode HH:MM:SS mit Feinstelle – Zehntel als Standard,
+// Frames nur mit ?sub=frames oder Taste T, bei 29,97/59,94 fps in Drop-Frame-Zählweise. Gerechnet wird in der Zeitzone
+// des Servers. Nur hier läuft eine Bildschleife (rAF in tcLoop), und nur solange eine Feinstelle sichtbar ist; alles andere bleibt
+// im Sekundentakt. Die Kopfzeile „Anzeige-Timecode – nicht genlocked“ steht immer da. Trägt die Fehlerschranke die
+// Feinstelle nicht oder rundet der Browser seine Zeitgeber grob, wird sie grau (mit Text), über ?maxerr= verschwindet
+// sie. E-Ink zeigt keine Feinstelle, bei „weniger Bewegung“ gibt es höchstens Zehntel.
+//
+// Studiouhr B2: Weltzeit (clockworld.js). ?tz= nennt bis zu sechs Zonen (kommagetrennt oder mehrfach), ?tzl= Kurznamen
+// dazu. Eine Zone steht wie bisher als zweite Zeitzone in der Zeile unter der Uhr; ab zwei Zonen gibt es eine Leiste
+// (#world) mit Uhrzeit, Abweichung zur großen Zeit, Tageswechsel und Tag/Nacht-Symbol (mit Text-Alternative), mit
+// ?layout=world ein Raster als Hauptinhalt. Gezeichnet wird einmal je Minute. Die Leiste belegt je Layout höchstens
+// world.worldLines Zeilen; Zonen, die nicht passen, blendet trimWorld aus („+2“), im Streifen und in der Kachel fehlt sie
+// ganz. Das Raster wird wie die Zeit eingepasst (--world-fit); würde die Schrift dabei kleiner als 12 px, stehen die
+// Zellen einzeilig, auf Flächen, die höher als breit sind, als eine Spalte; danach fallen Zonen vom Ende her weg
+// (fitGrid). Passt keine einzige, steht die Uhr im automatischen Layout (fitTime); ebenso, wenn ?show= die Weltzeit
+// nicht nennt. Wo unter der Uhr Höhe frei ist, wächst die Leiste (growBar, --world-grow). Mit ?h12=1 stehen auch die
+// Zonen zwölfstündig mit AM/PM.
+//
+// Studiouhr B3: Statuszeile. /api/v1/time meldet ptp_state (fester Wert) und holdover (mit Dauer); das Band zeigt beides
+// als Marke mit Symbol und Text (kit.statusChips – nur feste Werte, nie Text aus der Antwort), ?show= ohne „status“
+// blendet sie aus. In der Kachel (?layout=tile, ohne Kopfzeile und Band) steht der Titel des Profils oben links, ein
+// Holdover als Symbol neben dem Zustandssymbol, der Countdown mit dem Symbol seiner Stufe.
+//
+// Studiouhr B5: Prüfbild ?test=sync zum Einmessen von ?lead=. Eine Fläche wechselt genau zur vollen Sekunde der
+// angezeigten Zeit zwischen hell und dunkel (ein Wechsel je Sekunde, eigener Zeitgeber auf die Sekundengrenze), dazu
+// auf Wunsch ein Klick auf der wahren Sekunde über denselben Tonweg wie „Ton auf der Sekunde“. Es startet nur mit dem
+// Parameter in der Adresse (kit.testMode liest window.location, nie Profil oder gemerkten Stand), nicht bei „weniger
+// Bewegung“ und nicht auf E-Ink (dann nur ein Hinweistext). Der Warnhinweis steht immer da, Esc beendet – auch mit lock=1.
+// /clock?test=sync misst die Anzeige ein, die der Bildschirm sonst zeigt: Der gemerkte Stand bleibt die Grundlage, ein
+// dort eingemessener Vorlauf wird beim Beenden gemerkt (sonst steht er als lead= in der Adresse). Solange das Prüfbild
+// die Bühne verdeckt, ist die Uhr dahinter inert und ihre Tastenkürzel ruhen (nur Hilfe, Vollbild und Esc).
+//
+// Studiouhr B4: On-Air/REC-Signal. /api/v1/time meldet signal (off, on_air, rec) und signal_rev. Nur mit ?signal=1 (Adresse
+// oder Profil) zeigt dieser Bildschirm das zentrale Signal und fragt dafür jede Sekunde ab, sonst bleibt es bei 5 s.
+// Gezeigt wird ein Rahmen um die ganze Seite und ein Balken mit Symbol und Text über der Bühne (kit.signalView) – ohne
+// Blinken, nie nur als Farbe. Die Taste O schaltet ein lokales „On Air“ nur auf diesem Gerät (nichts wird gesendet);
+// das zentrale Signal geht vor. Antwortet der Server nicht mehr, bleibt der letzte Zustand stehen und ist als ungewiss
+// markiert. Es ist eine gespiegelte Anzeige mit bis zu etwa 1 s Verzögerung, kein Tally.
+//
 // Bewusst ohne app.js/ui.js: Die Seite muss auch ohne Anmeldung (clock_public) laufen und
 // lädt deshalb nur Dateien, die keine Inhalte aus Konfiguration oder Status enthalten
-// (clocksync.js, clockkit.js, util.js, i18n.js und die Sprachkataloge).
+// (clocksync.js, clockkit.js, clocktc.js, clockworld.js, util.js, i18n.js und die Sprachkataloge).
 import { fromResponse, best, isoWeek, hms, fmtAccuracy, sourceText } from "./clocksync.js";
 import { initI18n, t, language } from "./i18n.js";
 import { svgEl } from "./util.js";
@@ -51,18 +90,24 @@ import * as kit from "./clockkit.js";
 import * as faces from "./clockfaces.js";
 import * as cd from "./clockcount.js";
 import * as link from "./clocklink.js";
+import * as tc from "./clocktc.js";
+import * as world from "./clockworld.js";
 import { copyText } from "./util.js";
 
 const BURST = 5;
 const BURST_GAP_MS = 250;
 const RESYNC_MS = 60_000;
-const POLL_MS = 5_000;
 const STALE_MS = kit.STALE_MS;
 const FRAME_SAMPLES = 6;
 const TIMEOUT_MS = 4_000;
 const IDLE_MS = 4_000;
 const DESIGN_KEY = "ntp-gui-clock-design";
 const HINT_MS = 2_000;
+const TC_GONE_MS = 3000;   // so lange bleibt der Platz einer ausgeblendeten Timecode-Feinstelle frei, dann rückt die Zeit zur Mitte
+const WORLD_FIT_OK = 0.6;   // Leiste der Weltzeit: so weit darf sie die Zeit ohne Vergleich verkleinern
+const WORLD_FIT_SHARE = 0.7;   // sonst mindestens dieser Anteil der Größe, die die Zeit ohne Leiste hätte
+const WORLD_MIN_PX = 12;   // Raster der Weltzeit: kleinste Schrift; darunter erst einzeilige Zellen, dann weniger Zonen
+const GRAIN_STEP_MS = 1;   // Abstand der Messwerte, mit denen das Raster von performance.now() bestimmt wird
 // Art des Countdowns: absolutes Ziel (?until=, synchron auf allen Bildschirmen), lokaler Timer (?timer=) oder
 // Stoppuhr (ohne beides, Start mit der Leertaste).
 
@@ -116,6 +161,23 @@ const state = {
   profileRetryAt: 0,   // performance.now(), ab dem der nächste Versuch kommt
   customRaw: null,     // Rohwerte im Panel „Anpassen“
   ready: false,        // Start abgeschlossen (Profil geladen): erst dann wirken Tastenkürzel
+  tcSub: null,         // Taste T im Design tc: "tenths" | "frames" (null: es gilt ?sub=)
+  tcRaf: 0,            // laufende rAF-Anfrage der Feinstelle (0: keine)
+  tcLevel: "off",      // Zustand der Feinstelle beim letzten Sekundentakt (sure | unsure | off)
+  tcOffset: null,      // { minute, zone, offset } – Abstand der Server-Zeitzone zu UTC, je Minute neu bestimmt
+  tcShape: "",         // Aufbau der Timecode-Zeile (bei Änderung neu einpassen)
+  tcOffAt: null,       // performance.now(), seit dem die Feinstelle wegen der Schranke ausgeblendet ist (null: sichtbar)
+  grain: undefined,    // Raster von performance.now() in ms (undefined: noch nicht gemessen, null: unbekannt)
+  grainBusy: false,
+  picked: "normal",    // gewähltes Layout (Automatik oder ?layout=); layout: das gerade gezeichnete
+  test: null,          // Prüfbild ?test=sync: { mode: run|reduced|eink, timer, tone: { ctx, last } | null, leadChanged }
+  chipKey: "",         // Marken der Statuszeile beim letzten Zeichnen (PTP, Holdover)
+  world: null,         // Weltzeit: { mode, key, cells, more, maxLines, shown, dense } (null: keine Zonen)
+  worldKey: "",        // Minute, Sprache und Bezugszeit der letzten Zeichnung
+  signalLocal: false,  // Taste O: lokales „On Air“ (nur dieses Gerät, nicht gemerkt, nicht gesendet)
+  signalKey: "",       // Zustand des Signals beim letzten Zeichnen
+  polling: false,      // eine Zustandsabfrage läuft noch (Sekundentakt: keine zweite daneben)
+  headHeight: 0,       // Höhe der Kopfzeile, zuletzt ohne Signal gemessen (signalSpace)
 };
 let COUNT_MODE = "watch";
 function initCountMode() {
@@ -203,14 +265,63 @@ async function burst() {
     clearTimeout(state.tickTimer);
     tick();
     restartSweep();
+    flashTick();   // Prüfbild: Wechsel auf die Sekundengrenze des neuen Ankers legen
   }
   renderBandLive();
   renderDevice();
+  renderSignal();
 }
 
 async function poll() {
-  await sample();
+  if (state.polling) return;
+  state.polling = true;
+  try {
+    await sample();
+  } finally {
+    state.polling = false;
+  }
   renderBandLive();
+  renderSignal();
+}
+
+// --- On-Air/REC-Signal ----------------------------------------------------------------------------
+/**
+ * Rahmen und Balken des Signals. Nur feste Zustände (kit.signalView), Text aus dem Sprachkatalog – nie Text aus der
+ * Antwort. Der Balken steht über der Bühne; sie wird dadurch kleiner und passt sich selbst neu ein (ResizeObserver).
+ */
+function renderSignal() {
+  const view = kit.signalView({ enabled: params.signal, central: state.status ? state.status.signal : "off",
+    local: state.signalLocal, sinceOkMs: state.lastOk ? performance.now() - state.lastOk : Infinity });
+  // Das zentrale Signal übernimmt: Ein lokales „On Air“ ist damit erledigt und kommt nach dem zentralen „Aus“ nicht wieder.
+  if (view.state !== "off" && !view.local) state.signalLocal = false;
+  const key = `${view.state}|${view.local ? 1 : 0}|${view.stale ? 1 : 0}|${language()}`;
+  if (key === state.signalKey) return;
+  const before = state.signalKey.split("|")[0];
+  state.signalKey = key;
+  const on = view.state !== "off";
+  const node = $("signal");
+  const body = document.body;
+  setAttr(node, "data-signal", view.state);
+  setAttr(body, "data-signal", view.state);
+  if (view.stale) setAttr(body, "data-signal-stale", "1");
+  else body.removeAttribute("data-signal-stale");
+  setText($("signal-text"), on ? t(`clock.signal.${view.state}`) : "");
+  setText($("signal-note"), view.local ? t("clock.signal_local") : (view.stale ? t("clock.signal_stale") : ""));
+  // Kurzfassung für schmale Flächen (clock.css zeigt je nach Breite nur eine der beiden).
+  setText($("signal-note-short"), view.local ? t("clock.signal_local") : (view.stale ? t("clock.signal_stale_short") : ""));
+  setHidden(node, !on);
+  body.classList.toggle("has-signal", on);
+  // Wechsel einmal für den Screenreader ansagen (nicht den Anfangszustand „aus“ und nicht die Sprachumschaltung).
+  if (before !== view.state && (before || on)) say(t(`clock.signal_say.${view.state}`));
+}
+
+/** Taste O: lokales „On Air“ an oder aus – nur auf diesem Gerät. Zeigt der Bildschirm das zentrale Signal, wirkt sie nicht. */
+function toggleSignal() {
+  const next = kit.signalToggle({ enabled: params.signal, central: state.status ? state.status.signal : "off",
+    local: state.signalLocal });
+  state.signalLocal = next.local;
+  renderSignal();
+  hint(t(next.blocked ? "clock.hint_signal_central" : (next.local ? "clock.hint_signal_on" : "clock.hint_signal_off")));
 }
 
 // --- Profil (?p=name) ---------------------------------------------------------------------------
@@ -289,6 +400,14 @@ function renderProfileTitle() {
   setText(node, error || title);
   node.classList.toggle("is-error", Boolean(error));
   node.hidden = !(error || title);
+  // Kachel (?layout=tile): Dort fehlt die Kopfzeile, der Titel steht als Zeile in der Bühne (CSS zeigt ihn nur dort).
+  const tile = $("tile-title");
+  const changed = tile.textContent !== (error || title) || tile.hidden !== node.hidden;
+  setText(tile, error || title);
+  tile.classList.toggle("is-error", Boolean(error));
+  setHidden(tile, node.hidden);
+  document.body.classList.toggle("has-tile-title", !tile.hidden);   // hält in der Kachel oben eine Zeile frei (CSS)
+  if (changed && params.layout === "tile") fitTime();
   document.title = title ? `${title} · ${t("clock.page_title")}` : t("clock.page_title");
 }
 
@@ -386,10 +505,13 @@ function dateStyle() {
   if (weekday) return "weekday";
   return date ? "plain" : "off";
 }
-let tzFormat = null;
+/** Uhrzeit einer Zone als Text: „HH:MM“, mit ?h12=1 wie die große Zeit „HH:MM PM“. */
+function zoneClock(row) {
+  return row.ampm ? `${row.time} ${row.ampm}` : row.time;
+}
+/** Uhrzeit der ersten Zone aus ?tz= (zweite Zeitzone, Design studio mit ?sub=tz2). */
 function zoneTime(now) {
-  if (!tzFormat) tzFormat = new Intl.DateTimeFormat("en-GB", { timeZone: params.tz, hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
-  return tzFormat.format(now);
+  return zoneClock(world.worldRow(now.getTime(), { zone: params.tz[0], label: "" }, 0, undefined, { h12: params.h12 }));
 }
 
 function tick() {
@@ -413,7 +535,9 @@ function tick() {
   const stale = !state.lastOk || performance.now() - state.lastOk > STALE_MS;
   document.body.classList.toggle("is-stale", stale && Boolean(state.status));
   if (state.status && (stale || $("band").dataset.state === "stale" || params.eink)) renderBand();
+  renderSignal();   // auch ohne neue Antwort: Nach 10 s ohne Server gilt das zentrale Signal als ungewiss
   if (state.tone) toneTick(trueMs());
+  testTone();
   // Nächster Schritt genau zur vollen Sekunde der angezeigten Zeit (E-Ink: zur vollen Minute, bei laufendem Countdown
   // oder Timer auch zu dessen Minutensprüngen und genau auf dem Ziel).
   const later = serverMs();
@@ -442,17 +566,23 @@ function render(now) {
   const stamp = params.eink ? new Date(Math.floor(now.getTime() / 60_000) * 60_000) : now;
   setAttr($("local-time"), "datetime", stamp.toISOString());
   setText($("local-label"), utc ? "UTC" : t("clock.local"));
-  setText($("utc-label"), utc ? t("clock.local") : "UTC");
-  setText($("utc-time"), params.eink ? hms(now, !utc).slice(0, 5) : hms(now, !utc));
-  setText($("local-date"), dateText(now));
-  const { week } = isoWeek(now);
+  // Design tc mit anderer Zeitzone des Servers: Datum, Woche und (nach Taste U) die Nebenzeile gehören zur Zone des
+  // Timecodes, nicht zu der des Browsers – sonst stünde unter der Zeit ein Datum, das nicht zu ihr gehört.
+  const foreign = tcForeignOffset(now.getTime());
+  const zoned = foreign === null ? null : tc.zoneDay(now.getTime(), foreign);
+  const day = zoned ? new Date(zoned.y, zoned.mo - 1, zoned.d, 12) : now;
+  const other = zoned && utc ? hms(new Date(now.getTime() + foreign), true) : hms(now, !utc);
+  setText($("utc-label"), utc ? (zoned ? kit.zoneLabel(tcZone()) : t("clock.local")) : "UTC");
+  setText($("utc-time"), params.eink ? other.slice(0, 5) : other);
+  setText($("local-date"), dateText(day));
+  const { week } = isoWeek(day);
   setText($("iso-week"), t("clock.week", { week }));
-  if (params.tz) setText($("tz2-time"), zoneTime(now));
+  const redrawn = renderWorld(now.getTime());
   renderFace(now, h, m, s);
   renderShift(now.getTime());
   renderEgg(now.getTime());
-  const minuteKey = `${h}:${m}|${language()}`;
-  if (minuteKey !== state.minuteKey) {
+  const minuteKey = `${h}:${m}|${language()}|${foreign}`;
+  if (minuteKey !== state.minuteKey || redrawn) {
     state.minuteKey = minuteKey;
     fitTime();
   }
@@ -465,6 +595,7 @@ function textTime() {
 
 function buildFace() {
   const face = $("face");
+  if (openInfo && face.contains(openInfo.button)) closeInfo();
   face.replaceChildren();
   const seg = state.design === "digital" && params.face === "seg";
   face.className = `clock-face face-${seg ? "seg" : state.design}`;
@@ -473,16 +604,18 @@ function buildFace() {
   $("local-time").hidden = !text;
   state.face = { design: state.design, key: "" };
   if (text) return;
-  face.setAttribute("role", "img");
+  // Das Timecode-Design enthält einen Knopf (ⓘ): dann Gruppe statt Bild, die Ziffern selbst sind aria-hidden.
+  face.setAttribute("role", state.design === "tc" ? "group" : "img");
   if (seg) Object.assign(state.face, faces.buildSegRow(face, { count: digitCount(), h12: params.h12 }), { seg: true });
   else if (state.design === "studio") {
-    Object.assign(state.face, faces.buildStudio(face, { seconds: params.seconds, sub: params.sub, h12: params.h12 }));
+    Object.assign(state.face, faces.buildStudio(face, { seconds: params.seconds, sub: tc.studioSub(params.sub), h12: params.h12 }));
     // E-Ink rechnet nur einmal je Minute: weder Kranz noch Sekundenziffern.
     if (params.eink) for (const part of [state.face.ring, state.face.secGroup]) part.classList.add("is-off");
   } else if (state.design === "bahnhof") buildBahnhof(face);
   else if (state.design === "nixie") buildNixie(face);
   else if (state.design === "flip") buildFlip(face);
   else if (state.design === "wort") buildWort(face);
+  else if (state.design === "tc") buildTc(face);
 }
 
 // Ohne Sekunden (E-Ink, ?show= ohne „seconds“) nur HH:MM.
@@ -644,6 +777,7 @@ function renderWort(h, m) {
 function renderFace(now, h, m, s) {
   if (!state.face || state.face.design !== state.design) buildFace();
   const face = state.face;
+  if (state.design === "tc") { renderTc(now.getTime()); return; }
   const minuteKey = `${pad(h)}:${pad(m)}|${language()}`;
   if (face.key !== minuteKey) {
     face.key = minuteKey;
@@ -689,12 +823,208 @@ function renderStudio(now, h, m, s) {
     faces.setRing(face.dots, s);
   }
   if (face.ampm) setText(face.ampm, hour.ampm);
+  const line = tc.studioSub(params.sub);   // tenths/frames gehören zum Design tc: hier die Standardzeile
   let sub = "";
-  if (state.utcBig && (params.sub === "utc" || (params.sub === "tz2" && !params.tz))) sub = `${t("clock.local")} ${hms(now).slice(0, 5)}`;
-  else if (params.sub === "utc" || (params.sub === "tz2" && !params.tz)) sub = `UTC ${hms(now, true).slice(0, 5)}`;
-  else if (params.sub === "tz2") sub = `${kit.zoneLabel(params.tz)} ${zoneTime(now)}`;
-  else if (params.sub === "date") sub = dateText(now, "short");
+  if (state.utcBig && (line === "utc" || (line === "tz2" && !params.tz))) sub = `${t("clock.local")} ${hms(now).slice(0, 5)}`;
+  else if (line === "utc" || (line === "tz2" && !params.tz)) sub = `UTC ${hms(now, true).slice(0, 5)}`;
+  else if (line === "tz2") sub = `${world.worldEntries(params.tz, params.tzl)[0].label} ${zoneTime(now)}`;
+  else if (line === "date") sub = dateText(now, "short");
   setText(face.sub, sub);
+}
+
+// --- Design tc: Timecode-Anzeige (Studiouhr B1) ------------------------------------------------
+/** Zeile HH:MM:SS mit Feinstelle, darüber die feste Kopfzeile mit ⓘ, darunter Bildrate und Zustand der Feinstelle. */
+function buildTc(face) {
+  const span = (cls, text = "") => Object.assign(document.createElement("span"), { className: cls, textContent: text });
+  const head = document.createElement("p");
+  head.className = "tc-head";
+  const label = span("tc-label", t("clock.tc_label"));
+  // Kurzer Grund für eine graue oder fehlende Feinstelle: sichtbar, wo die Zeile unter der Zeit keinen Platz hat (CSS).
+  const why = span("tc-why");
+  head.append(label, why, " ", infoButton("clock.tc_info_title", "clock.tc_info"));
+  const row = document.createElement("div");
+  row.className = "tc-row";
+  row.setAttribute("aria-hidden", "true");
+  const hh = span("tc-d", "--");
+  const mm = span("tc-d", "--");
+  const ss = span("tc-d", "--");
+  const secs = span("tc-secs");
+  const fine = span("tc-fine");
+  const sep = span("tc-sep");
+  const ff = span("tc-d");
+  fine.append(sep, ff);
+  secs.append(span("tc-sep", ":"), ss, fine);
+  row.append(hh, span("tc-sep", ":"), mm, secs);
+  const note = document.createElement("p");
+  note.className = "tc-note";
+  face.append(head, row, note);
+  Object.assign(state.face, { tc: true, head, row, label, why, hh, mm, ss, secs, fine, sep, ff, note });
+  state.tcShape = "";
+  state.tcOffAt = null;
+  measureGrain();
+}
+
+/** Feinstelle jetzt: frames nur auf Wunsch (?sub=frames, Taste T), nie bei E-Ink oder „weniger Bewegung“. */
+function tcMode() {
+  const seconds = !(params.show && !params.show.includes("seconds"));
+  return tc.fineMode(state.tcSub || params.sub, { eink: params.eink, reduced: reducedMotion.matches, seconds });
+}
+
+/** Zeitzone des Timecodes: die des Servers (zone aus /api/v1/time), sonst die des Browsers (null). */
+function tcZone() {
+  return state.status ? cd.usableZone(state.status.zone) : null;
+}
+
+/** Design tc, Zone des Servers weicht von der des Browsers ab: ihr Abstand zu UTC (ms) für Datum und Woche; sonst null. */
+function tcForeignOffset(ms) {
+  if (state.design !== "tc") return null;
+  const zone = tcZone();
+  return zone && zone !== browserZone() ? cd.zoneOffset(ms, zone) : null;
+}
+
+/** Tageszeit (ms seit Mitternacht) in der Zone des Servers; Taste U: UTC. Der Abstand zu UTC wird je Minute neu bestimmt. */
+function tcDayMs(ms) {
+  if (state.utcBig) return tc.dayMs(ms, 0);
+  const zone = tcZone();
+  const minute = Math.floor(ms / 60_000);
+  if (!state.tcOffset || state.tcOffset.minute !== minute || state.tcOffset.zone !== zone) {
+    state.tcOffset = { minute, zone, offset: cd.zoneOffset(ms, zone) };
+  }
+  return tc.dayMs(ms, state.tcOffset.offset);
+}
+
+/** Ziffern schreiben – nur, was sich geändert hat. Aus dem Sekundentakt und, solange die Feinstelle läuft, je Bild. */
+function paintTc(ms, mode) {
+  const face = state.face;
+  const view = tc.tcView(tcDayMs(ms), params.fps, mode);
+  setText(face.hh, view.hh);
+  setText(face.mm, view.mm);
+  if (!params.eink) setText(face.ss, view.ss);
+  if (mode !== "off") {
+    setText(face.sep, view.sep === "." && language() !== "en" ? "," : view.sep);
+    setText(face.ff, view.fine);
+  }
+  return view;
+}
+
+/** Bildrate als Text: „25 fps“, „29,97 fps Drop-Frame“. */
+function tcRateText() {
+  const rate = tc.tcRate(params.fps);
+  const fps = language() === "en" ? rate.fps : rate.fps.replace(".", ",");
+  return t(rate.drop ? "clock.tc_rate_df" : "clock.tc_rate", { fps });
+}
+
+/** Sekundentakt des Designs tc: Ziffern, Zustand der Feinstelle (grau/aus, immer auch als Text), Zeile darunter. */
+function renderTc(ms) {
+  const face = state.face;
+  const mode = tcMode();
+  const info = syncInfo();
+  const level = tc.fineLevel({ mode, boundMs: info.state === "none" ? null : info.bound, grainMs: state.grain,
+    fps: params.fps, maxerrMs: params.maxerr });
+  state.tcLevel = level.level;
+  // Ausgeblendete Feinstelle: Sekunden aus der Wanduhr (tc.paintMode), nicht aus der Drop-Frame-Framenummer.
+  const view = paintTc(ms, tc.paintMode(mode, level.level));
+  setHidden(face.secs, params.eink);
+  setHidden(face.fine, mode === "off");
+  // Der Platz der Feinstelle bleibt zunächst frei (kein Springen bei kurzem Ausfall); bleibt sie länger aus, rückt die
+  // Zeit in die Mitte.
+  const offNow = mode !== "off" && level.level === "off";
+  if (!offNow) state.tcOffAt = null;
+  else if (state.tcOffAt === null) state.tcOffAt = performance.now();
+  const gone = offNow && performance.now() - state.tcOffAt >= TC_GONE_MS;
+  face.fine.classList.toggle("is-gone", gone);
+  setAttr(face.fine, "data-level", level.level);
+  setAttr(face.fine, "data-mode", mode);
+  setText(face.label, t("clock.tc_label"));
+  const wanted = state.tcSub || params.sub;
+  const parts = [tcRateText()];
+  if (mode !== "off") parts.push(t(mode === "frames" ? "clock.tc_fine_frames" : "clock.tc_fine_tenths"));
+  const zone = tcZone();
+  if (state.utcBig) parts.push("UTC");
+  else if (zone && zone !== browserZone()) parts.push(kit.zoneLabel(zone));
+  const limit = fmtAccuracy(level.limit).replace("± ", "");
+  let why = "";
+  if (level.reason === "grain") {
+    parts.push(Number.isFinite(state.grain) ? t("clock.tc_grain", { grain: fmtAccuracy(state.grain).replace("± ", "") })
+      : t("clock.tc_grain_unknown"));
+    why = t("clock.tc_why_grain");
+  } else if (level.level === "off" && level.reason === "bound") {
+    parts.push(t("clock.tc_fine_off"));
+    why = t("clock.tc_why_off");
+  } else if (level.reason === "bound") {
+    parts.push(t(mode === "frames" ? "clock.tc_unsure_frames" : "clock.tc_unsure_tenths", { acc: fmtAccuracy(info.bound), limit }));
+    why = t(mode === "frames" ? "clock.tc_why_frames" : "clock.tc_why_tenths");
+  }
+  setText(face.why, why ? ` · ${why}` : "");
+  if (wanted === "frames" && mode === "tenths") parts.push(t("clock.tc_reduced"));
+  setText(face.note, parts.join(" · "));
+  const text = params.eink ? view.text.slice(0, 5) : (level.level === "off" ? view.text.slice(0, 8) : view.text);
+  setAttr($("face"), "data-time", text);
+  const minuteKey = `${view.hh}:${view.mm}|${language()}`;
+  if (face.key !== minuteKey) {
+    face.key = minuteKey;
+    $("face").setAttribute("aria-label", `${t("clock.tc_label")}: ${t("clock.face_label", { time: `${view.hh}:${view.mm}` })}`);
+  }
+  // Andere Breite (Feinstelle an/aus, Zehntel/Frames, längere Zeile darunter): neu einpassen.
+  const shape = `${mode}|${gone}|${params.eink}|${face.note.textContent.length}|${face.why.textContent.length}|${state.layout}`;
+  if (shape !== state.tcShape) {
+    state.tcShape = shape;
+    fitTime();
+  }
+  tcLoop();
+}
+
+/** Läuft die Feinstelle gerade? Nur im Design tc, sichtbar und von der Schranke getragen (grau zählt mit). */
+function tcRunning() {
+  return state.design === "tc" && Boolean(state.face && state.face.tc) && state.tcLevel !== "off" && tcMode() !== "off"
+    && !countdownMain() && document.visibilityState === "visible";
+}
+
+/** Bildschleife (rAF) nur für die Feinstelle: startet aus dem Sekundentakt und hört von selbst auf. */
+function tcLoop() {
+  if (state.tcRaf || !tcRunning() || typeof window.requestAnimationFrame !== "function") return;
+  const step = () => {
+    state.tcRaf = 0;
+    if (!tcRunning()) return;
+    paintTc(serverMs(), tcMode());
+    state.tcRaf = window.requestAnimationFrame(step);
+  };
+  state.tcRaf = window.requestAnimationFrame(step);
+}
+
+/**
+ * Raster von performance.now() einmal bestimmen (tc.timerGrain): Messwerte im Abstand von GRAIN_STEP_MS, nur solange
+ * die Seite sichtbar ist (im Hintergrund drosselt der Browser die Zeitgeber, das sähe wie ein grobes Raster aus).
+ */
+function measureGrain() {
+  if (state.grain !== undefined || state.grainBusy || params.eink || document.visibilityState !== "visible") return;
+  state.grainBusy = true;
+  const samples = [];
+  const step = () => {
+    if (document.visibilityState !== "visible") { state.grainBusy = false; return; }
+    samples.push(performance.now());
+    if (!tc.grainDone(samples)) { setTimeout(step, GRAIN_STEP_MS); return; }
+    state.grainBusy = false;
+    state.grain = tc.timerGrain(samples);
+    if (state.design === "tc" && state.face && state.face.tc) renderTc(serverMs());
+  };
+  step();
+}
+
+/**
+ * Taste T im Design tc: Zehntel ↔ Frames; mit ?sub=off im Dreierwechsel auch wieder zurück zu „aus“ (tc.nextFine).
+ * Frames gibt es nicht bei E-Ink und „weniger Bewegung“, ohne Sekunden (?show=) gibt es keine Feinstelle – dann sagt
+ * der Hinweis das, statt einen Wechsel zu melden, der nicht stattfindet.
+ */
+function toggleTcFine() {
+  if (params.eink) { hint(t("clock.hint_tc_eink")); return; }
+  if (params.show && !params.show.includes("seconds")) { hint(t("clock.hint_tc_noseconds")); return; }
+  const want = tc.nextFine(state.tcSub || params.sub, params.sub);
+  state.tcSub = want;
+  renderTc(serverMs());
+  if (want === "off") hint(t("clock.hint_tc_off"));
+  else if (want === "frames" && tcMode() === "tenths") hint(t("clock.hint_tc_reduced"));
+  else hint(t(want === "frames" ? "clock.hint_tc_frames" : "clock.hint_tc_tenths"));
 }
 
 function setDesign(design, remember) {
@@ -722,6 +1052,244 @@ function setDesign(design, remember) {
   render(new Date(serverMs()));
   restartSweep();
   fitTime();
+}
+
+// --- Weltzeit (Studiouhr B2) -------------------------------------------------------------------
+/** Abstand der groß gezeigten Zeit zu UTC (ms): Ortszeit des Geräts, im Design tc die Zone des Servers, nach Taste U 0. */
+function worldRef(ms) {
+  if (state.utcBig) return 0;
+  const foreign = tcForeignOffset(ms);
+  return foreign === null ? -new Date(ms).getTimezoneOffset() * 60_000 : foreign;
+}
+
+/** Zellen der Leiste bzw. des Rasters anlegen: je Zone Kurzname, Uhrzeit, Abweichung, Tageswechsel, Tag/Nacht. */
+function buildWorld(mode, entries) {
+  const span = (cls) => Object.assign(document.createElement("span"), { className: cls });
+  const cells = entries.map((entry) => {
+    const cell = span("wz");
+    cell.setAttribute("role", "listitem");
+    cell.dataset.zone = entry.zone;
+    const label = span("wz-label");
+    label.textContent = entry.label;   // Kurzname aus der Adresse: nur als Text
+    const time = document.createElement("time");
+    time.className = "wz-time";
+    const hm = span("wz-hm");
+    const ampm = span("wz-ampm");   // nur mit ?h12=1 gefüllt
+    time.append(hm, ampm);
+    const meta = span("wz-meta");
+    const delta = span("wz-delta");
+    const day = span("wz-day");
+    const sun = span("wz-sun");
+    sun.setAttribute("role", "img");
+    meta.append(delta, day, sun);
+    cell.append(label, time, meta);
+    return { cell, time: hm, ampm, delta, day, sun };
+  });
+  const more = span("wz-more");
+  more.setAttribute("role", "listitem");
+  more.hidden = true;
+  $("world").replaceChildren(...cells.map((item) => item.cell), more);
+  state.world = { mode, key: `${mode}|${JSON.stringify(entries)}`, cells, more, maxLines: 0, shown: cells.length, dense: false };
+}
+
+/**
+ * Weltzeit zeichnen: eine Zone als zweite Zeitzone (#tz2), mehrere als Leiste, mit ?layout=world als Raster. Nur neu,
+ * wenn sich Minute, Sprache, Bezugszeit, Layout oder Bühne geändert haben; liefert dann true (die Größen können sich
+ * geändert haben).
+ */
+function renderWorld(ms) {
+  const node = $("world");
+  const stage = $("clock-stage");
+  // state.picked: das gewählte Layout. state.layout kann davon abweichen, wenn das Raster nicht passt (fitTime).
+  const mode = world.worldMode(params.tz ? params.tz.length : 0, state.picked, world.worldAllowed(params.show));
+  const entries = world.worldEntries(params.tz, params.tzl, { fallback: mode === "grid" });
+  const single = mode === "single";
+  const clock12 = { h12: params.h12 };
+  setHidden($("tz2"), !single);
+  if (single) {
+    setText($("tz2-label"), entries[0].label);
+    setText($("tz2-time"), zoneClock(world.worldRow(ms, entries[0], 0, undefined, clock12)));
+  }
+  if (mode !== "bar" && mode !== "grid") {
+    if (state.world) { node.replaceChildren(); state.world = null; }
+    setHidden(node, true);
+    stage.removeAttribute("data-world");
+    stage.removeAttribute("data-world-flow");
+    stage.removeAttribute("data-world-dense");
+    state.worldKey = "";
+    return false;
+  }
+  if (!state.world || state.world.key !== `${mode}|${JSON.stringify(entries)}`) {
+    buildWorld(mode, entries);
+    state.worldKey = "";
+  }
+  const w = state.world;
+  const ref = worldRef(ms);
+  const grid = world.worldGrid(entries.length, state.stage.width, state.stage.height);
+  const key = `${Math.floor(ms / 60_000)}|${language()}|${ref}|${state.picked}|${mode === "grid" ? grid.flow : Math.round(state.stage.width)}x${Math.round(state.stage.height)}`;
+  if (key === state.worldKey) return false;
+  state.worldKey = key;
+  w.maxLines = mode === "bar" ? world.worldLines(state.picked, state.stage.height, entries.length, state.stage.width) : entries.length;
+  if (mode === "grid") {
+    setAttr(stage, "data-world-flow", grid.flow);   // Spalten, Zeilen, Dichte und die Stufe „eine Spalte“ setzt fitGrid
+  } else {
+    stage.removeAttribute("data-world-flow");
+    stage.removeAttribute("data-world-dense");
+  }
+  const words = { day: t("clock.world_day"), days: t("clock.world_days") };
+  const refName = state.utcBig ? "UTC" : (tcForeignOffset(ms) === null ? t("clock.local") : kit.zoneLabel(tcZone()));
+  world.worldView(ms, entries, ref, undefined, clock12).forEach((row, index) => {
+    const item = w.cells[index];
+    setText(item.time, row.time);
+    setText(item.ampm, row.ampm ? ` ${row.ampm}` : "");   // mit Leerzeichen wie bei der großen Zeit (Screenreader)
+    setText(item.delta, row.delta);
+    setAttr(item.delta, "title", t("clock.world_delta_title", { ref: refName }));
+    setText(item.day, world.dayShiftText(row.day, words));
+    setText(item.sun, row.night ? world.MOON : world.SUN);
+    const phase = t(row.night ? "clock.world_night" : "clock.world_daytime");
+    setAttr(item.sun, "aria-label", phase);
+    setAttr(item.sun, "title", phase);
+    setAttr(item.cell, "data-day", String(row.day));
+    setAttr(item.cell, "data-night", row.night ? "1" : "0");
+  });
+  setAttr(node, "aria-label", t("clock.world_label"));
+  return true;
+}
+
+/** Sichtbare Teile der Leiste (Zellen und „+2“) mit ihren Rechtecken. */
+function worldBoxes() {
+  return [...$("world").children].filter((child) => !child.hidden).map((child) => child.getBoundingClientRect());
+}
+
+/** Zeilen, die die sichtbaren Teile der Leiste gerade belegen (world.lineCount: „+2“ zählt nicht als eigene Zeile). */
+function worldLineCount() {
+  return world.lineCount(worldBoxes());
+}
+
+/** Nur die ersten `shown` Zonen zeigen; „+2“ nennt, wie viele fehlen. 0: Leiste bzw. Raster verschwinden ganz. */
+function showWorld(shown) {
+  const w = state.world;
+  w.cells.forEach((item, index) => setHidden(item.cell, index >= shown));
+  const rest = w.cells.length - shown;
+  setHidden(w.more, !(rest && shown));
+  if (rest && shown) {
+    setText(w.more, `+${rest}`);
+    const label = t("clock.world_more", { count: rest });   // Einzahl und Mehrzahl aus dem Katalog
+    setAttr(w.more, "aria-label", label);
+    setAttr(w.more, "title", label);
+  }
+  setHidden($("world"), shown === 0);
+  setAttr($("clock-stage"), "data-world", shown ? w.mode : "off");
+  w.shown = shown;
+}
+
+/**
+ * Leiste auf höchstens maxLines Zeilen kürzen: Zonen vom Ende her ausblenden, bis es passt. 0 Zeilen (oder nichts
+ * passt): Die Leiste verschwindet ganz. Nur im Modus „bar“.
+ */
+function trimWorld(maxLines) {
+  const w = state.world;
+  if (!w || w.mode !== "bar") return;
+  let shown = maxLines > 0 ? w.cells.length : 0;
+  showWorld(shown);
+  while (shown > 0 && worldLineCount() > maxLines) {
+    shown -= 1;
+    showWorld(shown);
+  }
+}
+
+/**
+ * Liegt die Leiste ganz in der Bühne? Geprüft wird jede sichtbare Zelle, nicht nur die Box der Leiste: Eine Zelle
+ * bricht nicht um und kann breiter sein als die Leiste (Banner: höchstens 45 % der Breite).
+ */
+function worldInside() {
+  const stage = $("clock-stage").getBoundingClientRect();
+  return [$("world").getBoundingClientRect(), ...worldBoxes()].every((box) => box.left >= stage.left - 0.5
+    && box.right <= stage.right + 0.5 && box.top >= stage.top - 0.5 && box.bottom <= stage.bottom + 0.5);
+}
+
+/** Steht main als Zeile (Streifen, Layout world im Banner-Format)? */
+function rowMain(main) {
+  const style = window.getComputedStyle(main);
+  return style.display === "flex" && style.flexDirection === "row";
+}
+
+/** Fläche für das Raster (Layout world): main ohne die übrigen Zeilen bzw. Spalten, mit 4 % Luft. */
+function worldAvail(main) {
+  const node = $("world");
+  const style = window.getComputedStyle(main);
+  const row = rowMain(main);
+  let rest = 0;
+  let items = 0;
+  for (const child of main.children) {
+    if (child.hidden) continue;
+    const cs = window.getComputedStyle(child);
+    const box = child.getBoundingClientRect();
+    if (cs.display === "none" || cs.position === "absolute" || (!box.width && !box.height)) continue;
+    items += 1;
+    if (child === node) continue;
+    rest += row ? box.width : box.height + (parseFloat(cs.marginTop) || 0) + (parseFloat(cs.marginBottom) || 0);
+  }
+  const own = window.getComputedStyle(node);
+  const gaps = Math.max(0, items - 1) * (parseFloat(row ? style.columnGap : style.rowGap) || 0);
+  if (row) return { width: Math.max(1, main.clientWidth * 0.96 - rest - gaps), height: Math.max(1, main.clientHeight * 0.96) };
+  return { width: Math.max(1, main.clientWidth * 0.96),
+    height: Math.max(1, main.clientHeight * 0.96 - rest - gaps - (parseFloat(own.marginTop) || 0) - (parseFloat(own.marginBottom) || 0)) };
+}
+
+/**
+ * Raster einpassen (--world-fit), gemessen mit der Zeit in ihrer Grundgröße. Liefert, ob es danach passt (die Fläche
+ * hat schon 4 % Luft, darum zählt 1 % Überstand aus der Rundung der Anpassung noch als passend).
+ */
+function fitWorld(main) {
+  const node = $("world");
+  root.style.setProperty("--fit", "1");
+  const measure = () => {
+    const box = node.getBoundingClientRect();
+    return box.width && box.height ? { needed: { width: box.width, height: box.height }, available: worldAvail(main) } : null;
+  };
+  const factor = kit.fitConverge((fit) => {
+    root.style.setProperty("--world-fit", String(fit));
+    return measure();
+  }, { rounds: 6 });
+  root.style.setProperty("--world-fit", String(factor));
+  const got = measure();
+  return !got || (got.needed.width <= got.available.width * 1.01 && got.needed.height <= got.available.height * 1.01);
+}
+
+/** Kleinste Schrift im Raster (px): Kurzname und Zeile mit Abweichung. */
+function worldSmallest() {
+  const w = state.world;
+  let size = Infinity;
+  for (const item of w.cells.slice(0, Math.max(1, w.shown))) {
+    for (const part of [item.cell.firstElementChild, item.delta, ...(item.ampm.textContent ? [item.ampm] : [])]) size = Math.min(size, parseFloat(window.getComputedStyle(part).fontSize) || 0);
+  }
+  return size;
+}
+
+/**
+ * Raster des Layouts world einpassen, danach bekommt die Zeit den Rest (fitOnce). Stufen (world.worldSteps): alle Zonen
+ * mit Kurzname, Uhrzeit und Abweichung übereinander; wird die Schrift dabei kleiner als WORLD_MIN_PX, einzeilige Zellen
+ * (data-world-dense); auf Flächen, die höher als breit sind, jeweils auch als eine Spalte; reicht das nicht, fallen
+ * Zonen vom Ende her weg („+2“), zuletzt das ganze Raster (fitTime zeigt die Uhr dann im automatischen Layout).
+ */
+function fitGrid(main) {
+  const w = state.world;
+  const node = $("world");
+  const stage = $("clock-stage");
+  const total = w.cells.length;
+  for (const step of world.worldSteps(total, state.stage.width, state.stage.height)) {
+    const grid = world.worldGrid(step.shown + (step.shown < total ? 1 : 0), state.stage.width, state.stage.height, { list: step.list });
+    node.style.setProperty("--world-cols", String(grid.cols));
+    node.style.setProperty("--world-rows", String(grid.rows));
+    setAttr(stage, "data-world-flow", grid.flow);
+    if (step.dense) setAttr(stage, "data-world-dense", "1");
+    else stage.removeAttribute("data-world-dense");
+    w.dense = step.dense;
+    showWorld(step.shown);
+    if (fitWorld(main) && worldSmallest() >= WORLD_MIN_PX - 0.05) return;
+  }
+  showWorld(0);
 }
 
 // --- Osterei: Schaltsekunde ------------------------------------------------------------
@@ -765,11 +1333,46 @@ function renderBand() {
     if (s.leap && s.leap !== "Normal" && s.leap !== "Not synchronised") detail.push(t("clock.leap_announced", { leap: s.leap }));
   }
   if (state.sync) detail.push(t("clock.match_acc", { acc: fmtAccuracy(state.sync.accuracy), rtt: fmtAccuracy(state.sync.rtt).replace("± ", "") }));
+  renderChips(Boolean(s) && !stale);
   setAttr(band, "data-state", tone);
   setText($("band-main"), main);
   setText($("band-detail"), detail.join(" · "));
   setText($("band-wake"), state.wakeText);
   setAttr(band, "title", t("clock.band_title"));
+}
+
+/**
+ * Marken für PTP und Holdover im Band (Symbol und Text) und das Holdover-Symbol für Kachel und Streifen. live: Es gibt
+ * eine aktuelle Antwort des Servers – sonst ist der Zustand unbekannt und es steht nichts da.
+ */
+function renderChips(live) {
+  const chips = live ? kit.statusChips(state.status) : { ptp: null, holdover: null };
+  const ptpChip = $("chip-ptp");
+  setHidden(ptpChip, !chips.ptp);
+  if (chips.ptp) {
+    setAttr(ptpChip, "data-state", chips.ptp.state);
+    setAttr(ptpChip, "data-level", chips.ptp.level);
+    setText($("chip-ptp-icon"), chips.ptp.icon);
+    setText($("chip-ptp-text"), t(`clock.ptp_state.${chips.ptp.state}`));
+    setAttr(ptpChip, "title", t("clock.ptp_title"));
+  }
+  const hold = chips.holdover;
+  const holdText = hold ? (hold.span ? t("clock.holdover_since", { since: hold.span }) : t("clock.holdover")) : "";
+  setHidden($("chip-hold"), !hold);
+  // Im Band (Live-Region) steht die Dauer in einem eigenen Element mit aria-live="off": Sie ändert sich jede Minute
+  // und würde sonst während eines langen Holdovers jede Minute angesagt. Angesagt wird nur, dass er beginnt und endet.
+  setText($("chip-hold-text"), hold ? t("clock.holdover") : "");
+  setText($("chip-hold-since"), hold && hold.span ? t("clock.holdover_span", { since: hold.span }) : "");
+  if (hold) setAttr($("chip-hold"), "title", t("clock.holdover_title"));
+  setHidden($("band-status"), !(chips.ptp || hold));
+  setHidden($("clock-hold"), !hold);
+  setText($("clock-hold-text"), holdText);
+  // Im Streifen steht das Symbol in der Zeile der Uhr: kommt oder geht es, die Zeit neu einpassen.
+  const key = hold ? "hold" : "";
+  if (key !== state.chipKey) {
+    state.chipKey = key;
+    if (state.face) fitTime();
+  }
 }
 
 // --- ⓘ (klein, ohne ui.js – siehe Kopf) --------------------------------------------------
@@ -826,7 +1429,11 @@ document.addEventListener("click", (event) => {
   if (openInfo && !openInfo.node.contains(event.target)) closeInfo();
 });
 document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape" && openInfo) closeInfo(true);
+  if (event.key !== "Escape") return;
+  if (openInfo) { closeInfo(true); return; }
+  // Prüfbild: Esc beendet es – auch mit lock=1 (dort sind alle anderen Tasten aus). Eine offene Kürzel-Übersicht
+  // schließt zuerst (onKey).
+  if (state.test && $("keys").hidden) { event.preventDefault(); stopTest(); }
 });
 window.addEventListener("resize", () => closeInfo());
 
@@ -842,11 +1449,16 @@ function togglePanel(buttonId, panelId, open) {
 }
 
 // --- Panel „Anpassen“ (Link-Baukasten auf der Uhr) --------------------------------------------
-/** Rohwerte, mit denen die Seite läuft (Adresse, Profil oder gemerkter Stand) – Ausgangspunkt des Formulars. */
+/**
+ * Rohwerte, mit denen die Seite läuft (Adresse, Profil oder gemerkter Stand) – Ausgangspunkt des Formulars. Ohne die
+ * Parameter, die nur aus der Adresse wirken (Prüfbild test=sync): Das Formular hat kein Feld dafür, „Link kopieren“
+ * nähme sie sonst unsichtbar mit.
+ */
 function currentRaw() {
   const search = window.location.search;
-  if (state.profile) return link.rawParams(link.effectiveQuery({ search, profile: state.profile.params, zones: ZONES }), ZONES);
-  return link.rawParams(link.effectiveQuery({ search, stored: store(link.STORE_KEY) || "", zones: ZONES }), ZONES);
+  const query = state.profile ? link.effectiveQuery({ search, profile: state.profile.params, zones: ZONES })
+    : link.effectiveQuery({ search, stored: store(link.STORE_KEY) || "", zones: ZONES });
+  return link.profileParams(link.rawParams(query, ZONES));
 }
 
 function customStatus(text) {
@@ -859,7 +1471,7 @@ function openCustom() {
   const form = link.buildForm({ values: state.customRaw, prefix: "custom", zones: ZONES, exclude: link.STORE_SKIP,
     excludeValues: link.STORE_SKIP_VALUES, onChange: () => customStatus("") });
   $("custom-form").replaceChildren(form);
-  setHidden($("custom-url-note"), !(PROFILE || link.hasSchemaParams(window.location.search)));
+  setHidden($("custom-url-note"), link.storedApplies(window.location.search));
   customStatus("");
 }
 
@@ -994,6 +1606,7 @@ document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") {
     keepAwake();
     restartSweep();
+    if (state.design === "tc" && state.face && state.face.tc) { measureGrain(); tcLoop(); }
     burst();   // nach dem Aufwachen (Tablet im Standby) sofort neu abgleichen
   }
 });
@@ -1207,6 +1820,165 @@ function einkRetick() {
   tick();
 }
 
+// --- Prüfbild ?test=sync (Studiouhr B5) --------------------------------------------------------
+/** Prüfbild starten, wenn die Adresse es ausdrücklich nennt. Bei „weniger Bewegung“ und auf E-Ink nur der Hinweistext. */
+function startTest() {
+  const mode = kit.testMode(window.location.search, { reduced: reducedMotion.matches, eink: params.eink });
+  if (mode === "off" || state.test) return;
+  state.test = { mode, timer: null, tone: null, leadChanged: false };
+  const run = mode === "run";
+  setAttr($("sync-test"), "data-mode", mode);
+  setHidden($("sync-test-warn"), !run);
+  setHidden($("sync-test-flash"), !run);
+  setHidden($("sync-test-tone"), !run);
+  setHidden($("sync-test-less"), !run || params.lock);
+  setHidden($("sync-test-more"), !run || params.lock);
+  $("sync-test").hidden = false;
+  coverStage(true);
+  renderTest();
+  flashTick();
+}
+
+/** Die Uhr hinter dem Prüfbild aus Tab-Folge und Vorlesebaum nehmen (inert) bzw. wieder freigeben. */
+function coverStage(covered) {
+  const main = $("clock-main");
+  main.inert = covered;
+  if (covered) main.setAttribute("aria-hidden", "true");
+  else main.removeAttribute("aria-hidden");
+}
+
+/** Texte des Prüfbilds: Erklärung bzw. Grund, warum es nicht läuft, Vorlauf, Zustand des Klicks. */
+function renderTest(status = "") {
+  const test = state.test;
+  if (!test) return;
+  // lock=1 sperrt Pfeiltasten und Knöpfe für den Vorlauf: Dann fordert der Text auch nicht dazu auf.
+  const noteKey = test.mode === "run" ? (params.lock ? "clock.test_note_locked" : "clock.test_note") : `clock.test_${test.mode}`;
+  setText($("sync-test-note"), t(noteKey));
+  setText($("sync-test-lead"), test.mode === "run" ? t("clock.test_lead", { ms: params.lead }) : "");
+  $("sync-test-tone").setAttribute("aria-pressed", test.tone ? "true" : "false");
+  $("sync-test-less").disabled = params.lead <= 0;
+  $("sync-test-more").disabled = params.lead >= kit.LEAD_MAX_MS;
+  let text = status;
+  if (!text && test.tone) text = t(test.tone.ctx.state === "running" ? "clock.test_tone_on" : "clock.test_tone_blocked");
+  setText($("sync-test-status"), text);
+}
+
+/** Fläche des Prüfbilds stellen und den nächsten Wechsel genau auf die volle Sekunde der angezeigten Zeit legen. */
+function flashTick() {
+  const test = state.test;
+  if (!test || test.mode !== "run") return;
+  clearTimeout(test.timer);
+  const step = kit.flashStep(serverMs());
+  if (!step) return;
+  setAttr($("sync-test-flash"), "data-on", step.on ? "1" : "0");
+  setText($("sync-test-sec"), pad(((step.second % 60) + 60) % 60));
+  test.timer = setTimeout(flashTick, step.delay);
+}
+
+/** Klick des Prüfbilds: auf jeder vollen Sekunde der wahren Serverzeit (ohne Vorlauf), geplant wie „Ton auf der Sekunde“. */
+function testTone() {
+  const tone = state.test && state.test.tone;
+  if (!tone || tone.ctx.state !== "running") return;
+  const perf = performance.now();
+  const clock = kit.audioClock(tone.ctx, perf, trueMs(perf), 0);
+  for (const planned of kit.planTones(clock, { mode: "click", afterSecond: tone.last, horizonMs: 1500 })) {
+    tone.last = planned.second;
+    if (planned.at > tone.ctx.currentTime + 0.005) kit.scheduleTone(tone.ctx, planned);
+  }
+}
+
+async function toggleTestTone() {
+  const test = state.test;
+  if (!test || test.mode !== "run") return;
+  if (test.tone) {
+    test.tone.ctx.close().catch(() => {});
+    test.tone = null;
+    renderTest();
+    return;
+  }
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  let ctx = null;
+  try { ctx = Ctx ? new Ctx({ latencyHint: "interactive" }) : null; } catch (error) { ctx = null; }
+  if (!ctx) { renderTest(t("clock.tone_unsupported")); return; }
+  test.tone = { ctx, last: -Infinity };
+  try { await ctx.resume(); } catch (error) { /* bleibt stumm, die Fläche läuft trotzdem */ }
+  if (state.test !== test || test.tone === null) { ctx.close().catch(() => {}); return; }   // inzwischen beendet
+  testTone();
+  renderTest();
+}
+
+/** Vorlauf im Prüfbild ändern (±10 ms): wirkt sofort auf Anzeige und Fläche; der Klick bleibt auf der wahren Sekunde. */
+function changeLead(dir) {
+  const test = state.test;
+  if (!test || test.mode !== "run" || params.lock) return;
+  const next = kit.leadStep(params.lead, dir);
+  if (next === params.lead) return;
+  params.lead = next;
+  test.leadChanged = true;
+  state.syncKey = "";
+  clearTimeout(state.tickTimer);
+  tick();
+  flashTick();
+  renderTest();
+}
+
+/**
+ * Prüfbild beenden (Esc, Knopf): Zeitgeber und Klick aus, test= aus der Adresse nehmen (ein Neuladen startet es nicht
+ * wieder) und einen hier eingemessenen Vorlauf festhalten: Gilt für diese Adresse der gemerkte Stand (Panel
+ * „Anpassen“), kommt er dort hinein – als lead= in der Adresse verdrängte er den Stand; sonst steht er als lead= in der
+ * Adresse. keep: nur anhalten, Adresse bleibt.
+ */
+function stopTest(keep = false) {
+  const test = state.test;
+  if (!test) return;
+  clearTimeout(test.timer);
+  if (test.tone) test.tone.ctx.close().catch(() => {});
+  state.test = null;
+  $("sync-test").hidden = true;
+  coverStage(false);
+  if (keep) return;
+  let remembered = false;
+  if (test.leadChanged && link.storedApplies(window.location.search)) {
+    const stored = link.storedQuery(store(link.STORE_KEY) || "", ZONES);
+    if (stored) {
+      const next = link.storedSet(stored, "lead", params.lead, ZONES);
+      if (next) store(link.STORE_KEY, next);
+      else removeStored(link.STORE_KEY);
+      remembered = true;
+    }
+  }
+  try {
+    const search = link.testDoneSearch(window.location.search, test.leadChanged && !remembered ? params.lead : null);
+    window.history.replaceState(null, "", `${window.location.pathname}${search}`);
+  } catch (error) { /* Adresse bleibt – das Prüfbild ist trotzdem aus */ }
+  hint(remembered ? t("clock.test_ended_stored", { ms: params.lead }) : t("clock.test_ended"));
+}
+
+$("sync-test-tone").addEventListener("click", toggleTestTone);
+$("sync-test-less").addEventListener("click", () => changeLead(-1));
+$("sync-test-more").addEventListener("click", () => changeLead(1));
+$("sync-test-stop").addEventListener("click", () => stopTest());
+// Pfeiltasten im Prüfbild: Vorlauf ändern (nicht mit lock=1, nicht in Eingabefeldern).
+document.addEventListener("keydown", (event) => {
+  if (!state.test || state.test.mode !== "run" || params.lock || event.ctrlKey || event.altKey || event.metaKey) return;
+  const target = event.target instanceof Element ? event.target : null;
+  if (target && target.closest("select, input, textarea")) return;
+  const dir = { ArrowRight: 1, ArrowUp: 1, ArrowLeft: -1, ArrowDown: -1 }[event.key];
+  if (!dir) return;
+  event.preventDefault();
+  changeLead(dir);
+});
+// Wechselt die Systemeinstellung „weniger Bewegung“, gilt sie sofort: Die Fläche hält an bzw. der Hinweis verschwindet.
+if (typeof reducedMotion.addEventListener === "function") {
+  reducedMotion.addEventListener("change", () => {
+    if (!state.test) return;
+    const leadChanged = state.test.leadChanged;   // der Neustart darf einen schon eingemessenen Vorlauf nicht vergessen
+    stopTest(true);
+    startTest();
+    if (state.test) state.test.leadChanged = leadChanged;
+  });
+}
+
 // --- Tastenkürzel, Hinweis, Ansage ------------------------------------------------------------
 /** Kurzer sichtbarer Hinweis nach einem Kürzel (2 s, role=status). */
 function hint(text) {
@@ -1285,6 +2057,8 @@ function changeScale(delta) {
 function toggleUtc() {
   state.utcBig = !state.utcBig;
   state.minuteKey = "";
+  state.worldKey = "";
+  state.tcOffset = null;
   if (state.face) state.face.key = "";
   if (state.face && state.face.text) state.face.text.dataset.key = "";
   render(new Date(serverMs()));
@@ -1292,6 +2066,9 @@ function toggleUtc() {
 }
 
 function toggleTenths() {
+  // Im Design tc schaltet T die Feinstelle des Timecodes – außer der Countdown ist die Hauptanzeige (?cd=main): Dann
+  // ist der Timecode nicht zu sehen, und T gilt wie überall den Zehnteln von Timer und Stoppuhr.
+  if (state.design === "tc" && !countdownMain()) { toggleTcFine(); return; }
   state.tenths = !state.tenths;
   renderCountdown();
   scheduleTimer();
@@ -1300,8 +2077,10 @@ function toggleTenths() {
 
 function announceTime() {
   const now = new Date(serverMs());
-  const h = state.utcBig ? now.getUTCHours() : now.getHours();
-  const m = state.utcBig ? now.getUTCMinutes() : now.getMinutes();
+  // Design tc: die Zeit, die groß zu sehen ist (Zone des Servers).
+  const zoned = state.design === "tc" && !state.utcBig ? tc.tcView(tcDayMs(now.getTime()), params.fps, "off") : null;
+  const h = zoned ? Number(zoned.hh) : (state.utcBig ? now.getUTCHours() : now.getHours());
+  const m = zoned ? Number(zoned.mm) : (state.utcBig ? now.getUTCMinutes() : now.getMinutes());
   say(state.utcBig ? `UTC ${pad(h)}:${pad(m)}` : t("clock.say_time", { time: `${pad(h)}:${pad(m)}` }));
 }
 
@@ -1315,6 +2094,9 @@ function onKey(event) {
     if (!$("keys").hidden) showKeys(false);
     return;
   }
+  // Prüfbild: Die Uhr dahinter ist verdeckt. Stoppuhr, Design, Layout und Größe änderten sich sonst unbemerkt – es
+  // bleiben nur Hilfe und Vollbild (Esc beendet das Prüfbild, die Pfeiltasten stellen den Vorlauf: eigene Listener).
+  if (state.test && key !== "?" && key.toLowerCase() !== "f") return;
   if (key === " " || key === "Spacebar") {
     if (target && target.closest("button, a")) return;   // dort löst die Leertaste den Knopf aus
     event.preventDefault();
@@ -1323,6 +2105,7 @@ function onKey(event) {
   }
   const actions = {
     f: toggleFullscreen, d: nextDesign, l: nextLayout, u: toggleUtc, t: toggleTenths, r: resetTimer, a: announceTime,
+    o: toggleSignal,
     "+": () => changeScale(10), "-": () => changeScale(-10), "−": () => changeScale(-10), "?": () => showKeys(),
   };
   const action = actions[key.length === 1 ? key.toLowerCase() : key];
@@ -1399,18 +2182,47 @@ function applyLayout(width, height) {
   const stage = $("clock-stage");
   const body = document.body;
   const compact = body.classList.contains("is-compact");
-  const pick = kit.chromeLayout(params.layout, width, height, compact ? state.chrome : 0);
+  // ?show= ohne „tz“ lässt keine Weltzeit zu: Das Layout world hätte keinen Inhalt, es gilt die Automatik.
+  const want = params.layout === "world" && !world.worldAllowed(params.show) ? "auto" : params.layout;
+  // On-Air-Signal: Rahmen und Balken nehmen der Bühne Platz. Gewählt wird mit der Fläche, die sie ohne Signal hätte –
+  // sonst spränge das Layout beim Schalten.
+  const taken = signalSpace();
+  const pick = kit.chromeLayout(want, width + taken.width, height + taken.height, compact ? state.chrome : 0);
   const wantCompact = pick.compact && !body.classList.contains("has-panel");
   if (wantCompact !== compact) {
-    if (wantCompact) state.chrome = Math.max(0, document.documentElement.clientHeight - height);
+    // Höhe von Kopfzeile und Band allein – ohne Rahmen und Balken des Signals, die schon in taken stecken.
+    if (wantCompact) state.chrome = Math.max(0, document.documentElement.clientHeight - height - taken.height);
     body.classList.toggle("is-compact", wantCompact);   // der ResizeObserver meldet danach die neue Bühnengröße
   }
-  const layout = pick.layout;
+  state.picked = pick.layout;
+  stageLayout(pick.layout);
+  if (state.face) renderWorld(serverMs());   // Leiste oder Raster gehören zum Layout und zur Größe der Bühne
+  fitTime();
+}
+
+/**
+ * Platz in px, den das On-Air-Signal der Bühne nimmt: Rahmen links und rechts, Rahmen oben und unten plus Balken. Bei
+ * sehr wenig Höhe weicht die Kopfzeile dem Balken (clock.css) – ihre zuletzt gemessene Höhe zählt dann dagegen.
+ */
+function signalSpace() {
+  const body = document.body;
+  const head = $("clock-back").parentElement;
+  if (!body.classList.contains("has-signal")) {
+    state.headHeight = head.offsetHeight;
+    return { width: 0, height: 0 };
+  }
+  const border = parseFloat(window.getComputedStyle(body).borderTopWidth) || 0;
+  const gone = head.offsetHeight === 0 && !body.matches(".is-compact, .is-tile, .is-kiosk") ? state.headHeight : 0;
+  return { width: 2 * border, height: 2 * border + $("signal").offsetHeight - gone };
+}
+
+/** data-layout (und data-stack) der Bühne setzen; state.layout ist das Layout, das gerade gezeichnet wird. */
+function stageLayout(layout) {
+  const stage = $("clock-stage");
   state.layout = layout;
   setAttr(stage, "data-layout", layout);
-  if (kit.stackedTime(layout, width, height)) setAttr(stage, "data-stack", "1");
+  if (kit.stackedTime(layout, state.stage.width, state.stage.height)) setAttr(stage, "data-stack", "1");
   else stage.removeAttribute("data-stack");
-  fitTime();
 }
 
 function observeStage() {
@@ -1437,7 +2249,9 @@ function fitNode() {
 function timeBox() {
   const node = fitNode();
   if (!node || node.hidden) return null;
-  const parts = node.id === "local-time" ? [node] : [...node.children];
+  // Design tc: nur die Ziffernzeile – Kopfzeile und Zeile darunter schrumpfen nicht mit (Mindestgröße 12 px) und
+  // brechen um; ihr Platz wird in fitTime von der Fläche abgezogen (tcFixed).
+  const parts = node.id === "local-time" ? [node] : (state.face && state.face.tc && node.id === "face" ? [state.face.row] : [...node.children]);
   let left = Infinity; let right = -Infinity; let top = Infinity; let bottom = -Infinity;
   for (const part of parts) {
     const box = part.getBoundingClientRect();
@@ -1458,21 +2272,100 @@ function timeBox() {
 function fitTime() {
   const main = $("clock-main");
   if (!main || !state.face) return;
+  const w = state.world;
+  if (w && w.mode === "grid") {
+    stageLayout("world");
+    fitGrid(main);
+    if (w.shown) { fitOnce(main); return; }
+    // Kein Platz für eine einzige Zone: ohne Raster bliebe im Layout world nur eine kleine Uhr auf leerer Fläche –
+    // dann die Uhr im Layout, das die Automatik für diese Fläche wählt.
+    stageLayout(kit.resolveLayout(state.stage.width, state.stage.height));
+  }
+  const bar = Boolean(w) && w.mode === "bar";
+  root.style.setProperty("--world-grow", "1");
+  if (bar) trimWorld(Infinity);   // erst alle Zonen: Die Infospalte im Banner misst ihre natürliche Breite
   if (state.layout === "banner") root.style.setProperty("--info-w", `${infoWidth()}px`);
+  if (!bar) { fitOnce(main); return; }
+  // Leiste der Weltzeit: höchstens maxLines Zeilen. Sie darf nicht aus der Bühne ragen und die Zeit nicht erdrücken –
+  // sonst eine Zeile weniger, zuletzt ganz ohne Leiste.
+  trimWorld(w.maxLines);
+  let factor = fitOnce(main);
+  if (!w.shown) return;
+  if (factor >= WORLD_FIT_OK && worldInside()) { growBar(main, factor, w.maxLines); return; }
+  const lines = worldLineCount();
+  trimWorld(0);
+  const base = fitOnce(main);
+  for (let keep = lines; keep > 0; keep -= 1) {
+    trimWorld(keep);
+    factor = fitOnce(main);
+    if (w.shown && factor >= WORLD_FIT_SHARE * base && worldInside()) { growBar(main, factor, keep); return; }
+  }
+  trimWorld(0);
+  fitOnce(main);
+}
+
+/**
+ * Leiste vergrößern, wo Höhe frei ist (--world-grow, Stufen aus world.barGrowSteps): nur, wenn dieselben Zonen in
+ * höchstens `lines` Zeilen (im Layout normal eine mehr) in der Bühne bleiben und die Zeit dafür nicht kleiner wird.
+ * Sonst bleibt alles, wie es ist.
+ */
+function growBar(main, factor, lines) {
+  const w = state.world;
+  const time = timeBox();
+  const font = parseFloat(window.getComputedStyle($("world")).fontSize) || 0;
+  // Unter der Uhr ist die Höhe frei: Größer darf eine Zeile mehr kosten – aber nur, wenn keine Zone fehlt (sonst
+  // gehörte die Zeile den fehlenden Zonen, und die Zeilenzahl ist dort bewusst begrenzt).
+  const extra = state.layout === "normal" && w.shown === w.cells.length ? 1 : 0;
+  for (const grow of world.barGrowSteps(time ? time.height : 0, font)) {
+    root.style.setProperty("--world-grow", String(grow));
+    if (worldLineCount() <= lines + extra && fitOnce(main) >= factor - 0.004 && worldInside()) return;
+  }
+  root.style.setProperty("--world-grow", "1");
+  fitOnce(main);
+}
+
+/** Ein Durchgang der Auto-Anpassung für die Zeit; setzt --fit und liefert den Faktor. */
+function fitOnce(main) {
   const factor = kit.fitConverge((fit) => {
     root.style.setProperty("--fit", String(fit));
     const box = timeBox();
-    return box ? { needed: box, available: { width: timeWidth(main) * 0.96, height: main.clientHeight * 0.96 - restHeight(main) } }
-      : null;
+    const fixed = tcFixed();
+    return box ? { needed: box, available: { width: Math.max(1, timeWidth(main) * 0.96 - fixed.width),
+      height: Math.max(1, main.clientHeight * 0.96 - restHeight(main) - fixed.height) } } : null;
   });
   root.style.setProperty("--fit", String(factor));
+  return factor;
+}
+
+/**
+ * Design tc: Platz, den Kopfzeile und Zeile unter der Zeit neben der Ziffernzeile brauchen – Höhe, wenn sie über und
+ * unter ihr stehen, Breite, wenn die Kopfzeile im Streifen links daneben steht. Sonst 0.
+ */
+function tcFixed() {
+  const fixed = { width: 0, height: 0 };
+  const face = state.face;
+  if (!face || !face.tc || fitNode() !== $("face")) return fixed;
+  const style = window.getComputedStyle($("face"));
+  const column = style.flexDirection === "column";
+  let items = 1;
+  for (const node of [face.head, face.note]) {
+    const box = node.getBoundingClientRect();
+    if (!box.width && !box.height) continue;
+    items += 1;
+    if (column) fixed.height += box.height;
+    else fixed.width += box.width;
+  }
+  const gap = (items - 1) * (parseFloat(column ? style.rowGap : style.columnGap) || 0);
+  if (column) fixed.height += gap;
+  else fixed.width += gap;
+  return fixed;
 }
 
 /** Natürliche Breite der Infospalte im Banner: mit kleinster Zeit messen, dann hat die Spalte Platz für ihren Inhalt. */
 function infoWidth() {
   root.style.setProperty("--fit", "0.1");
   let width = 0;
-  for (const node of document.querySelectorAll("#clock-main > .clock-date, #clock-main > .clock-sub, :root[data-cd=below] #clock-main > .clock-cd")) {
+  for (const node of document.querySelectorAll("#clock-main > .clock-date, #clock-main > .clock-sub, #clock-main > .clock-world, :root[data-cd=below] #clock-main > .clock-cd")) {
     width = Math.max(width, node.getBoundingClientRect().width);
   }
   return Math.ceil(width);
@@ -1496,6 +2389,8 @@ function restHeight(main) {
     if (node === time) continue;
     rest += node.getBoundingClientRect().height + (parseFloat(style.marginTop) || 0) + (parseFloat(style.marginBottom) || 0);
   }
+  // Kachel mit Titel: Die oben frei gehaltene Zeile (padding-top) steht der Zeit nicht zur Verfügung.
+  if (document.body.classList.contains("has-tile-title")) rest += parseFloat(box.paddingTop) || 0;
   return rest + Math.max(0, items - 1) * (parseFloat(box.rowGap) || 0);   // Abstand zwischen den Zeilen (gap aus app.css)
 }
 
@@ -1504,7 +2399,7 @@ function restHeight(main) {
  * ohne die übrigen Teile der Zeile (Countdown, Zustandssymbol) samt Abständen.
  */
 function timeWidth(main) {
-  if (state.layout === "strip") {
+  if (state.layout === "strip" || (state.layout === "world" && rowMain(main))) {
     const time = fitNode();
     const style = window.getComputedStyle(main);
     let rest = 0;
@@ -1570,7 +2465,10 @@ $("cd-toggle").addEventListener("click", () => toggleTimer());
 $("cd-reset").addEventListener("click", () => resetTimer());
 $("keys-close").addEventListener("click", () => showKeys(false));
 $("keys").addEventListener("keydown", trapKeys);
-reducedMotion.addEventListener?.("change", () => restartSweep());
+reducedMotion.addEventListener?.("change", () => {
+  restartSweep();
+  if (state.design === "tc" && state.face && state.face.tc) renderTc(serverMs());
+});
 
 // Leiste ausblenden, wenn sich nichts bewegt (Wandmonitor); Tippen/Bewegen holt sie zurück.
 let idleTimer = null;
@@ -1594,10 +2492,11 @@ for (const type of ["pointerdown", "keydown"]) document.addEventListener(type, (
 function relabel() {
   applyModes();
   if (params.lock) $("mode-full").title = t("clock.full_title_locked");
-  for (const button of document.querySelectorAll(".clock-panel button.info")) button.relabel?.();
+  for (const button of document.querySelectorAll(".clock-panel button.info, .tc-head button.info")) button.relabel?.();
   if (state.face) state.face.key = "";
   if (state.face && state.face.text) state.face.text.dataset.key = "";
   state.minuteKey = "";
+  state.worldKey = "";
   render(new Date(serverMs()));
   state.syncKey = "";
   renderSync();
@@ -1606,6 +2505,9 @@ function relabel() {
   state.cdShape = "";
   renderCountdown();
   renderProfileTitle();
+  renderTest();
+  state.signalKey = `${state.signalKey.split("|")[0]}|`;   // Texte neu, ohne den Zustand noch einmal anzusagen
+  renderSignal();
 }
 
 // --- Start ------------------------------------------------------------------------------
@@ -1632,10 +2534,6 @@ async function start() {
   $("mode-custom").hidden = Boolean(params.lock);   // lock=1: keine lokale Bedienung, auch kein Anpassen
   // lock=1 schaltet die Tasten ab: Der Vollbild-Knopf verspricht dann keine Taste F (Titel auch in relabel()).
   if (params.lock) $("mode-full").dataset.i18nTitle = "clock.full_title_locked";
-  if (params.tz) {
-    $("tz2").hidden = false;
-    $("tz2-label").textContent = kit.zoneLabel(params.tz);
-  }
   $("tone-info").append(infoButton("clock.tone_info_title", "clock.tone_info"));
   $("device-info").append(infoButton("clock.device_info_title", "clock.device_info"));
   applyDisplayParams();
@@ -1645,11 +2543,12 @@ async function start() {
   wake();
   countdownAudio(false);
   tick();
+  startTest();
   measureFrame();
   keepAwake();
   burst();
   setInterval(burst, RESYNC_MS);
-  setInterval(poll, POLL_MS);
+  setInterval(poll, kit.pollInterval(params));   // mit ?signal=1 jede Sekunde, sonst alle 5 s
   state.ready = true;
   i18nReady.then(relabel, () => {});
 }

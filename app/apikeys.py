@@ -4,6 +4,8 @@ Ein Schlüssel hat einen Namen und ein Recht:
 
   read   – GET auf /api/* und /metrics (Werte lesen, nichts ändern)
   admin  – zusätzlich POST (Einstellungen ändern, Dienste neu laden)
+  clock  – nur POST /api/v1/clock/signal (On-Air/REC-Signal der Vollbild-Uhr setzen); liest nichts und
+           ändert sonst nichts. Gedacht für Stream Deck/Bitfocus Companion.
 
 Format: "ntpg_" + 32 URL-sichere Zeichen. Die ersten 8 Zeichen nach dem
 Präfix sind die öffentliche Kennung (id, steht in der Liste), die übrigen 24
@@ -37,8 +39,9 @@ import settings
 import store
 
 PREFIX = "ntpg_"
-SCOPES = ("read", "admin")
-SCOPE_LABELS = {"read": "nur lesen", "admin": "lesen und verwalten"}
+SCOPES = ("read", "admin", "clock")
+SCOPE_LABELS = {"read": "nur lesen", "admin": "lesen und verwalten", "clock": "nur On-Air-Signal der Uhr"}
+READ_SCOPES = ("read", "admin")
 MAX_KEYS = 50
 CACHE_SECONDS = 60.0
 LAST_USED_EVERY = 60.0  # last_used höchstens einmal pro Minute schreiben (SD-Karte)
@@ -104,7 +107,8 @@ def _validate(name: Any, scope: Any) -> tuple[str, str]:
         raise settings.ValidationError("Name: 1–64 Zeichen, ohne Steuerzeichen")
     scope = str(scope or "").strip()
     if scope not in SCOPES:
-        raise settings.ValidationError("Recht: „read“ (nur lesen) oder „admin“ (lesen und verwalten)")
+        raise settings.ValidationError("Recht: „read“ (nur lesen), „admin“ (lesen und verwalten) oder "
+                                       "„clock“ (nur On-Air-Signal der Uhr)")
     return name, scope
 
 
@@ -214,10 +218,11 @@ def _touch(key_id: str) -> None:
 
 
 def allows(scope: str, method: str) -> bool:
-    """Darf ein Schlüssel mit diesem Recht die HTTP-Methode nutzen?"""
+    """Darf ein Schlüssel mit diesem Recht die HTTP-Methode nutzen? „clock“ nie – dieses Recht gilt nur für den
+    einen Endpunkt, den apiv1 mit dem Recht „clock“ führt (server.py prüft das vorab)."""
     method = str(method or "").upper()
     if method in {"GET", "HEAD"}:
-        return scope in SCOPES
+        return scope in READ_SCOPES
     return scope == "admin"
 
 

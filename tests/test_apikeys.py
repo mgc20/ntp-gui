@@ -199,7 +199,7 @@ class ApiV1Test(unittest.TestCase):
         self.assertIn(("GET", "/api/v1/status"), paths)
         self.assertIn(("POST", "/api/v1/settings"), paths)
         for entry in doc["endpoints"]:
-            self.assertIn(entry["scope"], {"public", "read", "admin", "session"})
+            self.assertIn(entry["scope"], {"public", "read", "admin", "clock", "session"})
             self.assertTrue(entry["description"])
             self.assertTrue(re.match(r"^/api/v1/[a-z/]+$", entry["path"]), entry["path"])
 

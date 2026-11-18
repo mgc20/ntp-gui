@@ -1306,3 +1306,4 @@ input.link-output { max-width: none; }
 .link-profile a { overflow-wrap: anywhere; }
 .link-public-state { margin: 0 0 6px; font-weight: 600; }
 .link-public-state[data-state="on"] { color: var(--warn-ink); }
+.link-signal { margin: 0 0 8px; }

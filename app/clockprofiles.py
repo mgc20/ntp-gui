@@ -28,19 +28,25 @@ MAX_PROFILES = 20
 TITLE_MAX = 40
 MAX_LEN = 64          # wie MAX_LEN in clockkit.js: längere Werte verwirft die Uhr
 
-DESIGNS = ("digital", "studio", "bahnhof", "nixie", "flip", "wort")
-LAYOUTS = ("auto", "normal", "banner", "column", "strip", "tile")
+DESIGNS = ("digital", "studio", "bahnhof", "nixie", "flip", "wort", "tc")
+LAYOUTS = ("auto", "normal", "banner", "column", "strip", "tile", "world")
 SHOW_ITEMS = ("time", "seconds", "date", "weekday", "week", "utc", "tz", "status", "countdown")
 LOOKS = ("studio", "contrast", "warm", "terminal", "paper", "pastel")
 PALETTE = ("amber", "red", "green", "cyan", "white", "ice", "yellow", "orange", "blue", "violet", "pink", "lime")
 STUDIO_COLORS = ("amber", "red", "green", "cyan", "white", "ice")
+TC_FPS = ("24", "25", "30", "50", "60", "29.97", "59.94")
 
-# name → (Typ, Angaben). Typen wie in clockkit.js: enum, flag, int, zone, label, time, duration, intlist, list, color.
+MAX_ZONES = 6         # Weltzeit: höchstens so viele Zonen (tz) und Kurznamen (tzl)
+ZONE_LABEL_LEN = 16
+
+# name → (Typ, Angaben). Typen wie in clockkit.js: enum, flag, int, zonelist, labellist, label, time, duration, intlist,
+# list, color.
 PARAMS: dict[str, tuple[str, dict]] = {
     "design": ("enum", {"values": DESIGNS}),
     "kiosk": ("flag", {}),
     "eink": ("flag", {}),
-    "tz": ("zone", {}),
+    "tz": ("zonelist", {"max_items": MAX_ZONES}),
+    "tzl": ("labellist", {"len": ZONE_LABEL_LEN, "max_items": MAX_ZONES}),
     "lead": ("int", {"min": 0, "max": 200}),
     "maxerr": ("int", {"min": 10, "max": 1000}),
     "layout": ("enum", {"values": LAYOUTS}),
@@ -51,13 +57,14 @@ PARAMS: dict[str, tuple[str, dict]] = {
     "weight": ("enum", {"values": ("thin", "regular", "bold")}),
     "shift": ("int", {"min": 0, "max": 2}),
     "color": ("enum", {"values": STUDIO_COLORS}),
-    "sub": ("enum", {"values": ("utc", "tz2", "date", "off")}),
+    "sub": ("enum", {"values": ("utc", "tz2", "date", "off", "tenths", "frames")}),
     "seconds": ("enum", {"values": ("ring", "digits", "both")}),
     "h12": ("flag", {}),
     "face": ("enum", {"values": ("sans", "mono", "seg")}),
     "colon": ("enum", {"values": ("steady", "blink")}),
     "lz": ("flag", {}),
     "date": ("enum", {"values": ("long", "short", "iso", "off")}),
+    "fps": ("enum", {"values": TC_FPS}),
     "look": ("enum", {"values": LOOKS}),
     "accent": ("color", {}),
     "until": ("time", {}),
@@ -68,7 +75,14 @@ PARAMS: dict[str, tuple[str, dict]] = {
     "label": ("label", {"len": 24}),
     "cd": ("enum", {"values": ("below", "main")}),
     "lock": ("flag", {}),
+    "signal": ("flag", {}),
+    "test": ("enum", {"values": ("sync",)}),
 }
+
+# Nur in der Adresse wirksam (wie ADDRESS_ONLY in clockkit.js): Das Prüfbild (test=sync) lässt eine Fläche im
+# Sekundentakt blitzen. Es startet nie aus einem Profil – clean_profile speichert den Wert nicht, public_profile
+# liefert ihn nicht aus.
+ADDRESS_ONLY = ("test",)
 
 # Fest eingebaute Voreinstellungen (nicht editierbar, Namen reserviert). Im Studio-, Kachel- und Kiosk-Betrieb
 # ohne Spielereien; Pixel-Shift gegen Einbrennen bei Dauerbetrieb.
@@ -98,17 +112,29 @@ _ISO_RE = re.compile(r"^([0-9]{4})-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01
                      r"(?::([0-5][0-9]))?\Z")
 _DURATION_RE = re.compile(r"^(?:([0-9]{1,2})h)?(?:([0-9]{1,4})m)?(?:([0-9]{1,5})s)?\Z")
 _LABEL_EXTRA = set(" .,:!?+-/()#&'")
+_ZONE_LABEL_EXTRA = set(" .-")   # Kurznamen der Weltzeit: strenger, das Komma trennt die Einträge
 MAX_TIMER_S = 24 * 3600
+LIST_SLACK = 4        # wie LIST_SLACK in clockkit.js: Rohwert einer Liste vor dem Bereinigen
+_LIST_GAP_RE = re.compile(r" *, *")
 
 
 class ProfileError(ValueError):
     """Ungültiges Profil – settings.py macht daraus eine ValidationError."""
 
 
-def _label_ok(text: str, limit: int) -> bool:
+def _label_ok(text: str, limit: int, extra: set = _LABEL_EXTRA) -> bool:
     if not text or len(text) > limit or text.strip() != text:
         return False
-    return all(ch in _LABEL_EXTRA or unicodedata.category(ch)[0] in "LN" for ch in text)
+    return all(ch in extra or unicodedata.category(ch)[0] in "LN" for ch in text)
+
+
+def _raw_limit(kind: str, info: dict) -> int:
+    """Größte Länge eines Rohwerts (wie rawLimit in clockkit.js): Listen aus Zonen bzw. Kurznamen je Eintrag."""
+    if kind == "zonelist":
+        return info["max_items"] * MAX_LEN + info["max_items"] - 1
+    if kind == "labellist":
+        return info["max_items"] * min(info["len"], MAX_LEN) + info["max_items"] - 1
+    return MAX_LEN
 
 
 @functools.lru_cache(maxsize=1)
@@ -121,7 +147,7 @@ def _zones() -> frozenset:
 
 
 def _zone_ok(text: str) -> bool:
-    if not _ZONE_RE.match(text):
+    if not text or len(text) > MAX_LEN or not _ZONE_RE.match(text):
         return False
     zones = _zones()
     if not zones:
@@ -163,17 +189,30 @@ def check_value(name: str, raw: Any) -> str:
         raw = str(raw)
     if not isinstance(raw, str):
         raise ProfileError(f"{name}: Text erwartet")
-    text = unicodedata.normalize("NFC", raw) if kind == "label" else raw
+    text = unicodedata.normalize("NFC", raw) if kind in ("label", "labellist") else raw
+    fits = True
+    if kind in ("zonelist", "labellist"):
+        # Listen wie listRaw in clockkit.js: ohne Leerzeichen um die Kommas und am Rand; die Länge zählt danach in
+        # Zeichen. Davor höchstens LIST_SLACK-mal so lang (in UTF-16-Einheiten, wie die Uhr misst).
+        fits = len(raw.encode("utf-16-le", "surrogatepass")) // 2 <= _raw_limit(kind, info) * LIST_SLACK
+        if fits:
+            text = _LIST_GAP_RE.sub(",", text).strip(" ")
     ok = False
-    if len(text) <= MAX_LEN:
+    if fits and len(text) <= _raw_limit(kind, info):
         if kind == "enum":
             ok = text in info["values"]
         elif kind == "flag":
             ok = text in _FLAGS
         elif kind == "int":
             ok = bool(_INT_RE.match(text)) and info["min"] <= int(text) <= info["max"]
-        elif kind == "zone":
-            ok = _zone_ok(text)
+        elif kind == "zonelist":
+            items = text.split(",")
+            ok = 0 < len(items) <= info["max_items"] and all(_zone_ok(i) for i in items)
+            ok = ok and len({i.lower() for i in items}) == len(items)
+        elif kind == "labellist":
+            items = text.split(",")
+            ok = len(items) <= info["max_items"] and any(items)
+            ok = ok and all(not i or _label_ok(i, info["len"], _ZONE_LABEL_EXTRA) for i in items)
         elif kind == "label":
             ok = _label_ok(text, info["len"])
         elif kind == "time":
@@ -219,7 +258,9 @@ def clean_profile(raw: Any) -> dict:
     clean = {}
     for name in PARAMS:   # feste Reihenfolge wie in der Adresse
         if name in params and params[name] not in (None, ""):
-            clean[name] = check_value(name, params[name])
+            value = check_value(name, params[name])
+            if name not in ADDRESS_ONLY:
+                clean[name] = value
     unknown = [name for name in params if name not in PARAMS]
     if unknown:
         raise ProfileError(f"unbekannter Parameter „{str(unknown[0])[:32]}“")
@@ -277,6 +318,8 @@ def public_profile(name: Any, stored: Any) -> dict | None:
         return None
     params = {}
     for key, value in (entry.get("params") or {}).items():
+        if key in ADDRESS_ONLY:
+            continue   # das Prüfbild startet nie aus einem Profil
         try:
             params[key] = check_value(key, value)
         except ProfileError:

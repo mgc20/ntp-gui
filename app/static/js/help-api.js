@@ -16,7 +16,9 @@ export const HELP_API = {
     title: "Recht eines Schlüssels",
     text: "**nur lesen**: alle Werte abfragen (GET auf `/api/v1/…` und `/metrics`), aber nichts ändern – "
       + "das reicht für Monitoring und Diagramme. **lesen und verwalten**: zusätzlich Einstellungen ändern "
-      + "und die Zeitdienste neu starten. Gib einem Programm nur so viel Recht, wie es braucht: Gerät ein "
+      + "und die Zeitdienste neu starten. **nur On-Air-Signal der Uhr**: darf allein das On-Air/REC-Signal der "
+      + "Vollbild-Uhr setzen (`POST /api/v1/clock/signal`) – für Stream Deck oder Bitfocus Companion. Dieser Schlüssel "
+      + "liest nichts und ändert sonst nichts. Gib einem Programm nur so viel Recht, wie es braucht: Gerät ein "
       + "Lese-Schlüssel in falsche Hände, kann damit niemand deine Zeitversorgung verstellen. Passwort und "
       + "Schlüssel selbst lassen sich mit **keinem** Schlüssel verwalten, nur mit Benutzer und Passwort – so "
       + "reicht Widerrufen, um einen entwendeten Schlüssel loszuwerden.",

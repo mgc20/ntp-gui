@@ -1,11 +1,11 @@
-// Reiter „Anzeigen“ (Uhr & Hardware): Link-Baukasten für die Vollbild-Uhr, benannte Profile und der Schalter
-// „Vollbild-Uhr ohne Anmeldung“.
+// Reiter „Anzeigen“ (Uhr & Hardware): Link-Baukasten für die Vollbild-Uhr, benannte Profile, der Schalter
+// „Vollbild-Uhr ohne Anmeldung“ und das On-Air/REC-Signal (POST /api/v1/clock/signal, Zustand aus /api/v1/time).
 //
 // Das Formular kommt aus dem Parameter-Schema der Uhr (clocklink.js, dieselbe Datei wie das Panel „Anpassen“ auf
 // /clock). Die Vorschau öffnet sich mit fester Fenstergröße in einem neuen Tab – kein iframe, die Uhr bleibt
 // mit frame-ancestors 'none' nicht einbettbar. Profile und clock_public werden über POST /api/settings gespeichert
 // (Anmeldung, Pflicht-Kopf X-NTP-GUI); was gespeichert wird, prüft der Server (clockprofiles.py).
-import { el, apiGet, apiPost, copyText } from "../util.js";
+import { el, rich, apiGet, apiPost, copyText, fmtDate } from "../util.js";
 import { card, infoButton, toast, emptyState, errorState } from "../ui.js";
 import { t } from "../i18n.js";
 import * as link from "../clocklink.js";
@@ -109,7 +109,8 @@ function saveRow(ctx, st, profiles) {
       toast(t("pages.displays.limit", { max: link.MAX_PROFILES }), "warn");
       return;
     }
-    const params = link.rawParams(link.buildQuery(st.raw, ZONES), ZONES);
+    // Ohne das Prüfbild (test=sync): Es wirkt nur aus der Adresse, nie aus einem Profil.
+    const params = link.profileParams(link.rawParams(link.buildQuery(st.raw, ZONES), ZONES));
     const next = { ...profiles, [key]: { title: (st.title || "").trim(), params } };
     saveSetting(ctx, { clock_profiles: next }, t("pages.displays.saved", { name: key }));
   });
@@ -173,6 +174,113 @@ function publicCard(ctx, schema, readonly) {
     el("div", { class: "button-row" }, button));
 }
 
+/** Ablaufzeiten des Signals zur Auswahl in Sekunden (0: bleibt, bis du es ausschaltest). */
+const SIGNAL_TTLS = [0, 300, 900, 1800, 3600, 7200, 14400];
+const SIGNAL_REFRESH_MS = 5000;
+let signalTimer = null;
+/** Die gerade gezeichnete Karte: { st, node, paint }. Die Seite wird alle paar Sekunden neu gezeichnet – der Zeitgeber
+ *  läuft dabei durch und schreibt in die jeweils aktuelle Karte. */
+let signalLive = null;
+
+function ttlText(seconds) {
+  if (!seconds) return t("pages.displays.signal_ttl_none");
+  return seconds < 3600 ? t("pages.displays.signal_ttl_min", { count: seconds / 60 })
+    : t("pages.displays.signal_ttl_h", { count: seconds / 3600 });
+}
+
+/**
+ * Zustand lesen und in st merken (signal: null heißt unbekannt); danach die aktuelle Karte neu beschriften. Wurde
+ * inzwischen geschaltet (st.signalSeq zählt jeden Schaltbefehl beim Absenden und bei der Antwort), ist diese Antwort
+ * womöglich älter als der Befehl und wird verworfen – sonst überschriebe sie den gerade gesetzten Zustand.
+ */
+async function signalLoad(st) {
+  st.signalAt = Date.now();
+  const seq = st.signalSeq || 0;
+  const fresh = () => (st.signalSeq || 0) === seq;
+  try {
+    const data = await apiGet("/api/v1/time");
+    if (!fresh()) return;
+    st.signal = kit.signalState(data.signal);
+    st.signalRev = typeof data.signal_rev === "string" ? data.signal_rev : "";
+  } catch (error) {
+    if (!fresh()) return;
+    st.signal = null;
+  }
+  if (signalLive && signalLive.st === st) signalLive.paint();
+}
+
+/**
+ * On-Air/REC-Signal: drei Knöpfe und eine Ablaufzeit. Der Zustand steht als Text im Absatz darüber (Knöpfe ohne
+ * Umschalter-Zustand, wie bei „ohne Anmeldung“). Er kommt aus /api/v1/time, wird in st gemerkt und alle 5 s
+ * nachgelesen. Beim Neuzeichnen der Seite steht sofort der gemerkte Zustand da; der Text wird nur gesetzt, wenn er
+ * sich ändert (role=status: sonst läse ein Screenreader alle 5 s dieselbe Meldung). Wann das Signal von selbst
+ * ausgeht, weiß die Seite nur aus der Antwort auf das eigene Setzen.
+ */
+function signalCard(ctx, st, readonly) {
+  const now = el("p", { class: "link-public-state", id: "displays-signal-state", role: "status" });
+  const name = (state) => t(`pages.displays.signal_name.${state}`);
+  const paint = () => {
+    const state = st.signal == null ? null : kit.signalState(st.signal);
+    const until = state ? kit.signalExpiry({ state, rev: st.signalRev, until: st.signalUntil, now: Date.now() }) : null;
+    const text = !state ? t("pages.displays.signal_unknown")
+      : until ? t("pages.displays.signal_now_until", { state: name(state),
+        time: fmtDate(until / 1000, { date: false, time: "short" }) })
+        : t("pages.displays.signal_now", { state: name(state) });
+    const shown = state && state !== "off" ? "on" : "off";
+    if (now.dataset.state !== shown) now.dataset.state = shown;
+    if (now.dataset.signal !== (state || "")) now.dataset.signal = state || "";
+    if (now.textContent !== text) now.textContent = text;
+  };
+  paint();
+  const ttl = el("select", { id: "displays-signal-ttl", disabled: readonly || null },
+    SIGNAL_TTLS.map((seconds) => el("option", { value: String(seconds), text: ttlText(seconds) })));
+  ttl.value = String(st.signalTtl || 0);
+  ttl.addEventListener("change", () => { st.signalTtl = Number(ttl.value) || 0; });
+  const send = async (state) => {
+    const body = { state };
+    if (state !== "off" && st.signalTtl) body.ttl = st.signalTtl;
+    st.signalSeq = (st.signalSeq || 0) + 1;   // eine schon laufende Abfrage gilt ab jetzt als veraltet (signalLoad)
+    try {
+      const result = await apiPost("/api/v1/clock/signal", body);
+      st.signalSeq += 1;
+      st.signal = kit.signalState(result.signal);
+      st.signalRev = typeof result.signal_rev === "string" ? result.signal_rev : "";
+      st.signalUntil = result.expires_in ? { rev: st.signalRev, at: Date.now() + result.expires_in * 1000 } : null;
+      st.signalAt = Date.now();
+      paint();
+      toast(result.expires_in ? t("pages.displays.signal_done_ttl", { state: name(st.signal), span: ttlText(result.expires_in) })
+        : t("pages.displays.signal_done", { state: name(st.signal) }));
+    } catch (error) {
+      toast(t("pages.displays.signal_failed", { message: error.message }), "warn");
+      signalLoad(st);   // ob der Befehl ankam, ist offen: den Zustand gleich neu lesen
+    }
+  };
+  const buttons = kit.SIGNAL_STATES.filter((state) => state !== "off").concat("off").map((state) => {
+    const button = el("button", { type: "button", class: state === "off" ? "button" : "button primary",
+      disabled: readonly || null, dataset: { signal: state }, "aria-describedby": "displays-signal-state",
+      text: state === "off" ? t("pages.displays.signal_off") : t(`pages.displays.signal_name.${state}`) });
+    button.addEventListener("click", () => send(state));
+    return button;
+  });
+  signalLive = { st, node: now, paint };
+  // Nicht bei jedem Neuzeichnen neu lesen: nur beim ersten Mal und wenn der letzte Abruf 5 s oder länger her ist.
+  if (!signalTimer || !st.signalAt || Date.now() - st.signalAt >= SIGNAL_REFRESH_MS) signalLoad(st);
+  if (!signalTimer) {
+    signalTimer = setInterval(() => {
+      if (!signalLive || !signalLive.node.isConnected) { clearInterval(signalTimer); signalTimer = null; return; }
+      if (!document.hidden) signalLoad(signalLive.st);
+    }, SIGNAL_REFRESH_MS);
+  }
+  return card(t("pages.displays.signal_title"), { help: "clock_signal", sub: t("pages.displays.signal_sub"),
+    id: "displays-signal-card" },
+  now,
+  el("div", { class: "toolbar link-signal" },
+    el("label", { for: "displays-signal-ttl", class: "toolbar-label", text: t("pages.displays.signal_ttl") }), ttl),
+  el("div", { class: "button-row", role: "group", "aria-label": t("pages.displays.signal_state") }, buttons),
+  el("p", { class: "field-help", text: t("pages.displays.signal_note") }),
+  el("p", { class: "field-help" }, rich(t("pages.displays.signal_api"))));
+}
+
 export function render(ctx) {
   const schema = ctx.data("settings", "/api/settings", 0);
   const head = el("div", { class: "toolbar section-head" },
@@ -183,12 +291,14 @@ export function render(ctx) {
     return [head, failed ? errorState(failed, t("nav.displays")) : card(t("nav.displays"), {}, emptyState(t("pages.displays.loading")))];
   }
   const ui = ctx.uiState;
-  const st = ui.displays = ui.displays || { raw: {}, name: "", title: "", loaded: "" };
+  const st = ui.displays = ui.displays || { raw: {}, name: "", title: "", loaded: "", signalTtl: 0, signal: null, signalRev: "",
+    signalUntil: null, signalAt: 0, signalSeq: 0 };
   const readonly = Boolean(schema.readonly || ctx.readonly);
   const profiles = storedProfiles(schema);
   return [
     head,
     builderCard(ctx, st, profiles, readonly),
     el("div", { class: "grid-2 grid-natural" }, profilesCard(ctx, st, profiles, readonly), publicCard(ctx, schema, readonly)),
+    signalCard(ctx, st, readonly),
   ];
 }

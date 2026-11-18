@@ -33,10 +33,14 @@ LEAP_REAL = Path(__file__).resolve().parent / "fixtures" / "leap-seconds.list"
 # Standardwerte der Darstellungsparameter (Studiouhr A3/A4), damit die Erwartungen kurz bleiben.
 DISPLAY_DEFAULTS = {"layout": "auto", "safe": None, "bg": None, "scale": 100, "show": None, "weight": None, "shift": None,
                     "color": "amber", "sub": "utc", "seconds": "both", "h12": False, "face": "sans", "colon": "steady",
-                    "lz": True, "date": "long", "look": None, "accent": None,
+                    "lz": True, "date": "long", "fps": "25", "look": None, "accent": None,
                     # Countdown und Timer (A5)
                     "until": None, "timer": None, "after": "up", "warn": [300, 60, 10], "beep": 0, "label": None,
-                    "cd": "below", "lock": False}
+                    "cd": "below", "lock": False,
+                    # On-Air/REC-Signal (B4): zentrales Signal zeigen, Abfrage im Sekundentakt
+                    "signal": False,
+                    # Prüfbild (B5): nur aus der Adresse
+                    "test": None}
 
 
 def run_kit(code: str):
@@ -125,9 +129,9 @@ class ClockKitTest(unittest.TestCase):
             noIntl: k.supportedZones({}),
           }));
         """)
-        self.assertEqual(out["ok"], {"design": "wort", "kiosk": True, "eink": False, "tz": "America/New_York",
-                                     "lead": 0, "maxerr": 100, **DISPLAY_DEFAULTS, "ignored": []})
-        self.assertEqual(out["bad"], {"design": None, "kiosk": False, "eink": False, "tz": None,
+        self.assertEqual(out["ok"], {"design": "wort", "kiosk": True, "eink": False, "tz": ["America/New_York"],
+                                     "tzl": None, "lead": 0, "maxerr": 100, **DISPLAY_DEFAULTS, "ignored": []})
+        self.assertEqual(out["bad"], {"design": None, "kiosk": False, "eink": False, "tz": None, "tzl": None,
                                       "lead": 0, "maxerr": 100, **DISPLAY_DEFAULTS,
                                       "ignored": ["design", "kiosk", "eink", "tz"]})
         self.assertIsNone(out["long"]["tz"])
@@ -135,7 +139,7 @@ class ClockKitTest(unittest.TestCase):
         self.assertIsNone(out["none"]["tz"], "ohne Liste und ohne Intl keine Zeitzone")
         self.assertEqual(out["safe"], ["nixie", "digital", "digital"])
         self.assertEqual(out["label"], "New York")
-        self.assertEqual(out["designs"], ["digital", "studio", "bahnhof", "nixie", "flip", "wort"])
+        self.assertEqual(out["designs"], ["digital", "studio", "bahnhof", "nixie", "flip", "wort", "tc"])
         self.assertTrue(out["zones"], "Node kennt Intl.supportedValuesOf")
         self.assertEqual(out["noIntl"], [])
 
@@ -143,7 +147,8 @@ class ClockKitTest(unittest.TestCase):
         # V8 listet in supportedValuesOf nur CLDR-Altnamen (Asia/Calcutta) und kein UTC – gültige
         # IANA-Namen nimmt die Uhr trotzdem an; geprüft wird mit Intl.DateTimeFormat, streng nach Zeichen.
         out = run_kit("""
-          const p = (q) => k.parseParams(q, k.supportedZones()).tz;
+          const one = (list) => (list && list.length === 1 ? list[0] : list);   // eine Zone: Liste mit einem Eintrag
+          const p = (q) => one(k.parseParams(q, k.supportedZones()).tz);
           console.log(JSON.stringify({
             ok: ["UTC", "Asia/Kolkata", "Europe/Kyiv", "Asia/Ho_Chi_Minh", "Etc/GMT+5", "Europe/London", "Asia/Calcutta"]
               .map((z) => p("?tz=" + encodeURIComponent(z))),
@@ -151,7 +156,7 @@ class ClockKitTest(unittest.TestCase):
               .map((z) => p("?tz=" + encodeURIComponent(z))),
             ignored: k.parseParams("?tz=Mars/Olympus", k.supportedZones()).ignored,
             noIntl: k.parseParams("?tz=Asia/Kolkata", [], {}).tz,
-            listOnly: k.parseParams("?tz=Europe/Berlin", ["Europe/Berlin"], {}).tz,
+            listOnly: one(k.parseParams("?tz=Europe/Berlin", ["Europe/Berlin"], {}).tz),
           }));
         """)
         self.assertEqual(out["ok"], ["UTC", "Asia/Kolkata", "Europe/Kyiv", "Asia/Ho_Chi_Minh", "Etc/GMT+5",
@@ -443,19 +448,19 @@ class ParameterSchemaTest(unittest.TestCase):
             && k.PARAM_SCHEMA.every((e) => Object.isFrozen(e)) }));
         """)
         names = [entry["name"] for entry in out["schema"]]
-        self.assertEqual(names, ["design", "kiosk", "eink", "tz", "lead", "maxerr", *DISPLAY_DEFAULTS])
+        self.assertEqual(names, ["design", "kiosk", "eink", "tz", "tzl", "lead", "maxerr", *DISPLAY_DEFAULTS])
         types = {entry["name"]: entry["type"] for entry in out["schema"]}
-        self.assertEqual(types, {"design": "enum", "kiosk": "flag", "eink": "flag", "tz": "zone", "lead": "int",
+        self.assertEqual(types, {"design": "enum", "kiosk": "flag", "eink": "flag", "tz": "zonelist", "tzl": "labellist", "lead": "int",
                                  "maxerr": "int", "layout": "enum", "safe": "int", "bg": "enum", "scale": "int",
                                  "show": "list", "weight": "enum", "shift": "int", "color": "enum", "sub": "enum",
                                  "seconds": "enum", "h12": "flag", "face": "enum", "colon": "enum", "lz": "flag",
-                                 "date": "enum", "look": "enum", "accent": "color", "until": "time",
+                                 "date": "enum", "fps": "enum", "look": "enum", "accent": "color", "until": "time",
                                  "timer": "duration", "after": "enum", "warn": "intlist", "beep": "int", "label": "label",
-                                 "cd": "enum", "lock": "flag"})
+                                 "cd": "enum", "lock": "flag", "signal": "flag", "test": "enum"})
         lead = next(e for e in out["schema"] if e["name"] == "lead")
         self.assertEqual((lead["min"], lead["max"], lead["default"]), (0, 200, 0))
-        self.assertEqual(out["defaults"], {"design": None, "kiosk": False, "eink": False, "tz": None, "lead": 0,
-                                           "maxerr": 100, **DISPLAY_DEFAULTS})
+        self.assertEqual(out["defaults"], {"design": None, "kiosk": False, "eink": False, "tz": None, "tzl": None,
+                                           "lead": 0, "maxerr": 100, **DISPLAY_DEFAULTS})
         self.assertTrue(out["frozen"])
         for forbidden in ("lat", "lon", "latitude", "longitude", "location", "geo"):
             self.assertNotIn(forbidden, names, "keine Standortangaben im Schema")
@@ -476,9 +481,9 @@ class ParameterSchemaTest(unittest.TestCase):
         self.assertEqual(out["maxerr"], [10, 250, 1000])
         self.assertEqual(out["flags"], [True, False, True, False])
         self.assertEqual(out["first"], 40, "doppelte Namen: der erste gilt")
-        self.assertEqual(out["unknown"], {"design": None, "kiosk": False, "eink": False, "tz": None, "lead": 0,
+        self.assertEqual(out["unknown"], {"design": None, "kiosk": False, "eink": False, "tz": None, "tzl": None, "lead": 0,
                                           "maxerr": 100, **DISPLAY_DEFAULTS, "ignored": []}, "Unbekanntes still ignoriert")
-        self.assertEqual(out["all"], {"design": "nixie", "kiosk": True, "eink": True, "tz": "UTC", "lead": 120,
+        self.assertEqual(out["all"], {"design": "nixie", "kiosk": True, "eink": True, "tz": ["UTC"], "tzl": None, "lead": 120,
                                       "maxerr": 50, **DISPLAY_DEFAULTS, "ignored": []})
 
     def test_fuzzing_aller_parameter(self):
@@ -500,16 +505,23 @@ class ParameterSchemaTest(unittest.TestCase):
           }}
           console.log(JSON.stringify(results));
         """)
-        # Jeder feindliche Wert bleibt wirkungslos: Standardwerte, der Name steht in ignored – kodiert und roh. Zwei
+        # Jeder feindliche Wert bleibt wirkungslos: Standardwerte, der Name steht in ignored – kodiert und roh. Drei
         # Ausnahmen sind gewollt: Die Kurzzeile (label) nimmt harmlose Wörter wie „javascript:alert(1)“ als Text an (sie
-        # landet nur per textContent im DOM), und „1001“ ist für warn eine gültige Schwelle in Sekunden.
+        # landet nur per textContent im DOM), die Kurznamen der Weltzeit (tzl) nehmen Wörter aus Buchstaben, Ziffern,
+        # Punkt und Bindestrich an („null“, „1.5“; ein „+“ ist in der Adresse ein Leerzeichen, am Rand zählt es nicht),
+        # und „1001“ ist für warn eine gültige Schwelle in Sekunden.
         rest = [r for r in out if not (r[0] == "warn" and r[1] == "1001")]
         accepted = [r for r in rest if r[0] == "label"]
         for name, value, changed, ignored in accepted:
             self.assertEqual(changed, ["label"])
             self.assertRegex(value, r"^[\w .,:!?+\-/()#&']{1,24}$")
             self.assertNotRegex(value, r"[<>\"`;{}\\]|[\x00-\x1f]")
-        self.assertEqual([r for r in rest if r[0] != "label"], [], rest[:5])
+        names = [r for r in rest if r[0] == "tzl"]
+        self.assertTrue(names)
+        for name, value, changed, ignored in names:
+            self.assertEqual(changed, ["tzl"])
+            self.assertRegex(value.replace("+", " ").strip(" "), r"^(?:[^\W_]|[ .\-]){1,16}\Z")   # Buchstaben und Ziffern aller Schriften
+        self.assertEqual([r for r in rest if r[0] not in ("label", "tzl")], [], rest[:5])
 
     def test_typen_label_und_zeit(self):
         out = run_kit("""
@@ -596,10 +608,16 @@ class SeitenregelnTest(unittest.TestCase):
         cls.html = (STATIC / "clock.html").read_text(encoding="utf-8")
 
     def test_bewegung_per_css_nicht_per_js_schleife(self):
-        # requestAnimationFrame nur zum einmaligen Messen der Bildauffrischung (sechs Bilder), nie als Dauerschleife.
+        # requestAnimationFrame nur zum einmaligen Messen der Bildauffrischung (sechs Bilder) und für die Feinstelle
+        # des Timecode-Designs (tcLoop, endet von selbst, sobald tcRunning() nicht mehr gilt) – sonst nirgends.
         start = self.js.index("function measureFrame()")
         body = self.js[start:self.js.index("\n}\n", start)]
-        self.assertEqual(self.js.count("requestAnimationFrame"), body.count("requestAnimationFrame"))
+        start = self.js.index("function tcLoop()")
+        loop = self.js[start:self.js.index("\n}\n", start)]
+        self.assertEqual(self.js.count("requestAnimationFrame"),
+                         body.count("requestAnimationFrame") + loop.count("requestAnimationFrame"))
+        self.assertIn("if (state.tcRaf || !tcRunning()", loop)
+        self.assertIn("if (!tcRunning()) return;", loop)
         self.assertIn("stamps.length < FRAME_SAMPLES", body)
         for match in re.finditer(r"setInterval\([^,]+,\s*([A-Z_0-9]+)\)", self.js):
             self.assertIn(match.group(1), {"RESYNC_MS", "POLL_MS"})
@@ -758,7 +776,7 @@ class LayoutEngineTest(unittest.TestCase):
         self.assertEqual(out["got"], [want for _, want in cases])
         self.assertEqual(out["forced"], ["banner", "tile", "normal", "normal"])
         self.assertEqual(out["stacked"], [True, False, False])
-        self.assertEqual(out["layouts"], ["auto", "normal", "banner", "column", "strip", "tile"])
+        self.assertEqual(out["layouts"], ["auto", "normal", "banner", "column", "strip", "tile", "world"])
 
     def test_css_spiegelt_resolve_layout(self):
         # Gleiche Grenzen in clock.css (@container) wie in LAYOUT_LIMITS, Rangfolge: spätere Regel gewinnt.
@@ -868,7 +886,7 @@ class LayoutEngineTest(unittest.TestCase):
               P("?" + new URLSearchParams([["accent", v]])).accent),
             values: P("?layout=banner&safe=7&bg=transparent&scale=150&weight=bold&shift=2&color=ice&sub=date&seconds=ring"
               + "&h12=1&face=seg&colon=blink&lz=0&date=iso&look=paper"),
-            bad: P("?layout=world&scale=49&scale=201&bg=white&weight=900&color=pink&sub=x&face=dseg7&look=neon").ignored,
+            bad: P("?layout=grid&scale=49&scale=201&bg=white&weight=900&color=pink&sub=x&face=dseg7&look=neon").ignored,
             scaleHigh: P("?scale=201").scale,
           }));
         """)
@@ -987,7 +1005,8 @@ class DarstellungsregelnTest(unittest.TestCase):
     def test_farben_und_groessen_nur_per_cssom(self):
         # Nur feste Variablen per setProperty, Werte aus dem Schema bzw. aus kit.ensureContrast; kein style-Attribut.
         props = set(re.findall(r'setProperty\("([^"]+)"', self.js))
-        self.assertEqual(props, {"--accent", "--studio-ink", "--safe", "--clock-scale", "--fit", "--info-w"})
+        self.assertEqual(props, {"--accent", "--studio-ink", "--safe", "--clock-scale", "--fit", "--info-w",
+                                 "--world-cols", "--world-rows", "--world-fit", "--world-grow"})
         for text in (self.js, self.faces):
             self.assertNotRegex(text, r"setAttribute\(\s*[\"']style|\.style\.cssText|innerHTML")
         self.assertIn("kit.ensureContrast(kit.colorValue(params.accent), bg)", self.js)
@@ -1006,7 +1025,7 @@ class DarstellungsregelnTest(unittest.TestCase):
         self.assertEqual(server.CLOCK_PUBLIC_PATHS, {
             "/clock", "/api/v1/time", "/api/v1/clock/profile", "/static/app.css", "/static/clock.css", "/static/js/clock.js",
             "/static/js/clocksync.js", "/static/js/clockkit.js", "/static/js/clockfaces.js", "/static/js/clockcount.js",
-            "/static/js/clocklink.js",
+            "/static/js/clocklink.js", "/static/js/clocktc.js", "/static/js/clockworld.js",
             "/static/js/util.js", "/static/js/i18n.js", "/static/i18n/de.json", "/static/i18n/en.json"})
         self.assertIn('import * as faces from "./clockfaces.js";', self.js)
         self.assertIn('import * as cd from "./clockcount.js";', self.js)

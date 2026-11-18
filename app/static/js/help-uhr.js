@@ -263,9 +263,48 @@ export const HELP_UHR = {
       + "`?beep=10` piept in den letzten Sekunden (nach einer ersten Berührung oder Taste), `?label=` beschriftet ihn "
       + "(bis 24 Zeichen), `?cd=main` macht ihn zur Hauptanzeige. `?timer=25m` ist eine Eieruhr nur für dieses Gerät "
       + "(Leertaste startet und hält an, R setzt zurück); ohne Ziel startet die Leertaste eine Stoppuhr. Weitere Tasten: "
-      + "F Vollbild, D Design, L Layout, U UTC groß, T Zehntel, + und − Größe, A Uhrzeit ansagen, ? Übersicht; "
+      + "F Vollbild, D Design, L Layout, U UTC groß, T Zehntel (im Design Timecode: Zehntel oder Frames), O On Air auf diesem Gerät, + und − Größe, "
+      + "A Uhrzeit ansagen, ? Übersicht; "
       + "`?lock=1` schaltet die Tasten ab und blendet Design, Ton und Anpassen aus. Vollbild, Hell/Dunkel, Rotlicht und "
-      + "„Mein Gerät“ bleiben: Rotlicht und Hell/Dunkel gelten je Gerät und haben keinen Parameter.",
+      + "„Mein Gerät“ bleiben: Rotlicht und Hell/Dunkel gelten je Gerät und haben keinen Parameter. "
+      + "**Timecode:** `?design=tc` zeigt die Tageszeit des Servers als `HH:MM:SS` mit Feinstelle, in der Zeitzone des "
+      + "Servers. `?fps=24|25|30|50|60|29.97|59.94` wählt die Bildrate (Standard 25; 29,97 und 59,94 zählen Drop-Frame "
+      + "mit `;`). Die Feinstelle zeigt Zehntel, Frames nur mit `?sub=frames` oder Taste T, `?sub=off` blendet sie aus. "
+      + "Darüber steht immer „Anzeige-Timecode – nicht genlocked“: kein Hausreferenzsignal, der Monitor zeichnet in "
+      + "seinem eigenen Takt, rechne mit ± 1 bis 2 Frames. Die Feinstelle wird grau, wenn die Fehlerschranke größer ist "
+      + "als ein halbes Frame (bei Zehnteln 50 ms) oder der Browser seine Zeitgeber grob rundet, und verschwindet über "
+      + "`?maxerr=`. E-Ink zeigt keine Feinstelle; wünscht dein System weniger Bewegung, bleiben es Zehntel. "
+      + "**Weltzeit:** `?tz=` nimmt bis zu sechs Zeitzonen (mit Komma getrennt oder mehrfach), `?tzl=` Kurznamen in "
+      + "derselben Reihenfolge (je bis 16 Zeichen: Buchstaben, Ziffern, Leerzeichen, Punkt, Bindestrich). Eine Zone "
+      + "steht als zweite Zeitzone unter der Uhr, ab zwei gibt es eine Leiste mit Uhrzeit, Abweichung zur großen Zeit "
+      + "(„+6 h“), Tageswechsel („+1 Tag“) und Tag oder Nacht als Symbol (6 bis 18 Uhr der Zone – einen Standort kennt "
+      + "die Uhr nicht). `?layout=world` zeigt die Zonen als Raster. Die Abweichung stimmt auch an Umstellungstagen. "
+      + "Was nicht passt, blendet die Uhr aus; im Streifen und in der Kachel fehlt die Leiste. Mit `?h12=1` stehen auch "
+      + "die Zonen mit AM/PM. Für Bildwände nimm `?layout=world`: Die Leiste bleibt eine kleine Nebenzeile. "
+      + "**Statuszeile:** Das Band nennt auch den Zustand von PTP und einen Holdover mit Dauer (die Serveruhr läuft "
+      + "ohne Referenz weiter), immer als Symbol mit Text; `?show=` ohne `status` blendet das aus. In der Kachel "
+      + "(`?layout=tile`) steht der Titel des Profils oben links, der Zustand als Symbol in der Ecke. "
+      + "**Prüfbild:** `?test=sync` lässt eine Fläche genau zur vollen Sekunde zwischen hell und dunkel wechseln und "
+      + "klickt auf Wunsch dazu – damit misst du `?lead=` ein (Pfeiltasten ändern den Vorlauf, Esc beendet). Es "
+      + "startet nur mit dem Parameter in der Adresse, nie aus einem Profil, und nicht, wenn dein System weniger "
+      + "Bewegung wünscht. Nicht ins Sendebild und nicht vor Publikum zeigen. "
+      + "**On Air:** Taste O schaltet einen roten Rahmen mit „ON AIR“ nur auf diesem Gerät. Mit `?signal=1` zeigt "
+      + "der Bildschirm das zentrale On-Air/REC-Signal aus dem Dashboard (Reiter „Anzeigen“) und fragt dafür jede "
+      + "Sekunde ab.",
+  },
+  clock_signal: {
+    title: "On-Air-Signal",
+    text: "Ein roter Rahmen mit **ON AIR** oder **REC** auf der Vollbild-Uhr – immer mit Text und Symbol, ohne "
+      + "Blinken. Gesetzt wird das Signal hier im Dashboard oder per `POST /api/v1/clock/signal` mit einem "
+      + "API-Schlüssel, der nur das darf (Recht „nur On-Air-Signal der Uhr“) – so bindest du Stream Deck oder "
+      + "Bildmischer über Bitfocus Companion an. Es zeigen nur Bildschirme, deren Link oder Profil `signal=1` "
+      + "enthält; sie fragen dafür jede Sekunde ab statt alle 5 s. Auf Wunsch schaltet sich das Signal nach einer "
+      + "Ablaufzeit selbst aus. **Ehrlich gesagt:** Das ist eine gespiegelte Anzeige mit bis zu etwa 1 s "
+      + "Verzögerung, **kein Tally** am Bildmischer. Antwortet der Server nicht mehr, bleibt der letzte Zustand "
+      + "stehen und wird als ungewiss markiert. Der Zustand steht nur im Arbeitsspeicher: Nach einem Neustart ist "
+      + "er aus, in der Sicherung steht er nicht. Ohne Anmeldung („Vollbild-Uhr ohne Anmeldung“) ist nur der "
+      + "Zustand lesbar, setzen kann ihn dort niemand. Die Taste **O** auf der Uhr schaltet ein „On Air“ nur auf "
+      + "diesem einen Gerät; solange der Bildschirm das zentrale Signal zeigt, wirkt sie nicht.",
   },
   clock_sync: {
     title: "Wie genau ist die Anzeige?",
@@ -282,7 +321,7 @@ export const HELP_UHR = {
     text: "Normalerweise ist /clock wie das Dashboard geschützt. Eingeschaltet ist die Uhr samt /api/v1/time "
       + "**ohne Passwort** erreichbar – praktisch für einen Wandmonitor, auf dem du kein Passwort hinterlegen "
       + "willst (und einen API-Schlüssel in der Adresse solltest du nie verwenden: der landet in Proxy- und "
-      + "Browser-Logs). Sichtbar ist dann nur Uhrzeit, Ampel, Genauigkeit, die Art der Quelle (GPS, NTP …), die Zeitzone des Servers, die Uhr-Profile und eine angekündigte Schaltsekunde – "
+      + "Browser-Logs). Sichtbar ist dann nur Uhrzeit, Ampel, Genauigkeit, die Art der Quelle (GPS, NTP …), die Zeitzone des Servers, die Uhr-Profile, der Zustand des On-Air-Signals und eine angekündigte Schaltsekunde – "
       + "keine Namen, Adressen oder Einstellungen. Es ist trotzdem die erste offene Seite neben /healthz: Lass "
       + "es aus, wenn das Dashboard aus dem Internet erreichbar ist. Wer sich anmeldet, sieht auf /api/v1/time "
       + "zusätzlich den Namen der Quelle. Die Uhr antwortet über **jeden Namen**, z. B. auch über einen eigenen "
@@ -297,7 +336,7 @@ export const HELP_GROUP_UHR = {
   title: "Uhrqualität",
   keys: ["uq_page", "temp_freq", "temp_sensor", "temp_now", "temp_span", "temp_duration", "temp_correlation",
     "temp_scatter", "temp_history", "temp_candidates", "leap_overview", "leap_tai_utc", "leap_last", "leap_next",
-    "leap_expiry", "leap_hash", "leap_future", "clock_page", "clock_sync", "clock_public", "holdover", "holdover_hours",
+    "leap_expiry", "leap_hash", "leap_future", "clock_page", "clock_sync", "clock_public", "clock_signal", "holdover", "holdover_hours",
     "holdover_limit", "holdover_network", "holdover_refs", "holdover_progress", "holdover_deviation", "holdover_drift",
     "holdover_result", "adev", "adev_best", "adev_hour", "adev_day", "adev_basis"],
 };

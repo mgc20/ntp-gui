@@ -24,6 +24,7 @@
         <option value="nixie" data-i18n="clock.design.nixie">Nixie</option>
         <option value="flip" data-i18n="clock.design.flip">Klappzahlen</option>
         <option value="wort" data-i18n="clock.design.wort">Wortuhr</option>
+        <option value="tc" data-i18n="clock.design.tc">Timecode</option>
       </select>
     </label>
     <button type="button" class="clock-tool" id="mode-theme" title="Hell oder dunkel" data-i18n-title="clock.theme_title">Hell</button>
@@ -36,9 +37,12 @@
 </header>
 
 <p class="clock-egg" id="leap-egg" role="status" hidden></p>
+<!-- On-Air/REC-Signal: Balken mit Symbol und Text, dazu ein Rahmen um die Seite (body.has-signal in clock.css). -->
+<p class="clock-signal" id="signal" data-signal="off" hidden><span class="clock-signal-icon" aria-hidden="true"></span><span class="clock-signal-text" id="signal-text"></span><span class="clock-signal-note" id="signal-note"></span><span class="clock-signal-note clock-signal-note-short" id="signal-note-short"></span></p>
 
 <div class="clock-stage" id="clock-stage">
   <main class="clock-main" id="clock-main" tabindex="-1">
+    <p class="clock-tile-title" id="tile-title" hidden></p>
     <p class="clock-label" id="local-label" data-i18n="clock.local">Ortszeit</p>
     <time class="clock-time" id="local-time" aria-live="off"><span class="clock-hm" id="local-hm"><span id="local-h">--</span><span class="clock-colon">:</span><span id="local-m">--</span></span><span class="clock-sec" id="local-sec"><span class="clock-colon">:</span><span id="local-s">--</span></span><span class="clock-ampm" id="local-ampm" hidden></span></time>
     <div class="clock-face" id="face" hidden></div>
@@ -57,9 +61,25 @@
       <span class="clock-utc"><span class="clock-label" id="utc-label">UTC</span> <time id="utc-time">--:--:--</time></span>
       <span class="clock-tz2" id="tz2" hidden><span class="clock-label" id="tz2-label"></span> <time id="tz2-time">--:--</time></span>
       <span class="clock-week" id="iso-week">KW –</span>
+      <span class="clock-hold" id="clock-hold" hidden><span class="clock-hold-icon" aria-hidden="true">H</span><span class="sr-only" id="clock-hold-text"></span></span>
       <span class="clock-sync" id="clock-sync" data-sync="none"><span class="clock-sync-icon" id="clock-sync-icon" aria-hidden="true">–</span> <span id="clock-sync-text">Gerätezeit, nicht abgeglichen</span></span>
     </div>
+    <div class="clock-world" id="world" role="list" aria-label="Weltzeit" data-i18n-aria-label="clock.world_label" hidden></div>
   </main>
+  <section class="clock-test" id="sync-test" aria-labelledby="sync-test-title" hidden>
+    <h2 class="clock-test-title" id="sync-test-title" data-i18n="clock.test_title">Prüfbild: Sekundenblitz</h2>
+    <p class="clock-test-warn" id="sync-test-warn"><span class="clock-test-warn-icon" aria-hidden="true">⚠</span> <span id="sync-test-warn-text" data-i18n="clock.test_warn">Achtung: Die Fläche wechselt jede Sekunde zwischen hell und dunkel. Nicht ins Sendebild und nicht vor Publikum zeigen. Esc beendet.</span></p>
+    <div class="clock-test-flash" id="sync-test-flash" data-on="0" aria-hidden="true"><span class="clock-test-sec" id="sync-test-sec">--</span></div>
+    <p class="clock-test-note" id="sync-test-note"></p>
+    <p class="clock-test-lead" id="sync-test-lead"></p>
+    <div class="clock-test-actions" role="group" aria-label="Prüfbild" data-i18n-aria-label="clock.test_group">
+      <button type="button" class="clock-tool" id="sync-test-tone" aria-pressed="false" data-i18n="clock.test_tone">Ton-Klick</button>
+      <button type="button" class="clock-tool" id="sync-test-less" data-i18n="clock.test_less">Vorlauf − 10 ms</button>
+      <button type="button" class="clock-tool" id="sync-test-more" data-i18n="clock.test_more">Vorlauf + 10 ms</button>
+      <button type="button" class="clock-tool" id="sync-test-stop" data-i18n="clock.test_stop">Beenden (Esc)</button>
+    </div>
+    <p class="clock-test-status" id="sync-test-status" aria-live="polite"></p>
+  </section>
 </div>
 
 <p class="clock-hint" id="clock-hint" role="status" hidden></p>
@@ -72,7 +92,8 @@
     <dt><kbd>D</kbd></dt><dd data-i18n="clock.keys.d">nächstes Design</dd>
     <dt><kbd>L</kbd></dt><dd data-i18n="clock.keys.l">nächstes Layout</dd>
     <dt><kbd>U</kbd></dt><dd data-i18n="clock.keys.u">UTC groß oder Ortszeit groß</dd>
-    <dt><kbd>T</kbd></dt><dd data-i18n="clock.keys.t">Zehntel bei Stoppuhr und Timer</dd>
+    <dt><kbd>T</kbd></dt><dd data-i18n="clock.keys.t">Zehntel bei Stoppuhr und Timer; im Design Timecode Zehntel oder Frames</dd>
+    <dt><kbd>O</kbd></dt><dd data-i18n="clock.keys.o">On Air an oder aus – nur auf diesem Gerät</dd>
     <dt><kbd>Leertaste</kbd></dt><dd data-i18n="clock.keys.space">Timer oder Stoppuhr starten und anhalten</dd>
     <dt><kbd>R</kbd></dt><dd data-i18n="clock.keys.r">Timer oder Stoppuhr zurücksetzen</dd>
     <dt><kbd>+</kbd> <kbd>−</kbd></dt><dd data-i18n="clock.keys.size">größer oder kleiner</dd>
@@ -117,6 +138,10 @@
 <footer class="clock-band" id="band" data-state="unknown" role="status" aria-live="polite">
   <span class="clock-dot" aria-hidden="true"></span>
   <span class="clock-band-main" id="band-main">verbinde …</span>
+  <span class="clock-band-status" id="band-status" hidden>
+    <span class="clock-chip" id="chip-ptp" hidden><span class="clock-chip-icon" id="chip-ptp-icon" aria-hidden="true"></span> <span id="chip-ptp-text"></span></span>
+    <span class="clock-chip" id="chip-hold" data-level="warn" hidden><span class="clock-chip-icon clock-chip-letter" aria-hidden="true">H</span> <span id="chip-hold-text"></span> <span id="chip-hold-since" aria-live="off"></span></span>
+  </span>
   <span class="clock-band-detail" id="band-detail"></span>
   <span class="clock-band-wake" id="band-wake"></span>
 </footer>

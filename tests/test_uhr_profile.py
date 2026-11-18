@@ -65,9 +65,9 @@ class SchemaGleichTest(unittest.TestCase):
                     self.assertEqual(entry["values"], list(info["values"]))
                 if kind in ("int", "intlist"):
                     self.assertEqual((entry["min"], entry["max"]), (info["min"], info["max"]))
-                if kind == "intlist":
+                if kind in ("intlist", "zonelist", "labellist"):
                     self.assertEqual(entry["maxItems"], info["max_items"])
-                if kind == "label":
+                if kind in ("label", "labellist"):
                     self.assertEqual(entry["len"], info["len"])
         self.assertNotIn("lat", clockprofiles.PARAMS)
         self.assertNotIn("lon", clockprofiles.PARAMS)
@@ -476,7 +476,7 @@ class LinkFunktionenTest(unittest.TestCase):
               l.presetTitleKey({ name: "regie", builtin: true }), l.presetTitleKey(null)],
           }));
         """)
-        self.assertEqual(out["skip"], ["kiosk", "lock"])
+        self.assertEqual(out["skip"], ["kiosk", "lock", "test"])
         self.assertEqual(out["storedClean"], "design=flip")
         self.assertEqual(out["plain"], "design=flip", "kiosk/lock aus dem Speicher wirken nicht")
         self.assertEqual(out["onlyModes"], "")
