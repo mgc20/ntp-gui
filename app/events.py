@@ -72,7 +72,15 @@ _STATE: dict[str, Any] = {"ready_for": None, "since_prune": 0}
 _CLOCK: dict[str, Any] = {"plausible": None, "at": None, "noted": False, "held": False}
 _PENDING: deque = deque(maxlen=500)
 _LISTENERS: list = []  # werden nach jedem erfolgreichen Schreiben aufgerufen (z. B. notify.wake)
+_QUOTAS: dict = {}     # (kind, Titelanfang) -> Zeilen; siehe set_quota()
 _FILTERS: list = []    # (kind, level, title, data) -> (level, title, data), z. B. holdover.event_filter
+
+
+def set_quota(kind: str, title_prefix: str, rows: int) -> None:
+    """Eigenes Kontingent für eine Sorte häufiger Einträge (kind und Titelanfang): Beim Aufräumen bleiben davon nur
+    die neuesten rows. So verdrängt eine Sorte, die sich von außen in Mengen auslösen lässt, nie die übrigen
+    Ereignisse über die gemeinsame Zeilengrenze (MAX_ROWS)."""
+    _QUOTAS[(str(kind)[:32], str(title_prefix)[:MAX_TITLE])] = max(1, int(rows))
 
 
 def add_filter(callback) -> None:
@@ -247,7 +255,7 @@ def clock_plausible(due: int = 0, older: int = 0) -> bool:
 
 
 def prune(now: float | None = None) -> int:
-    """Alte Einträge löschen (90 Tage / 50 000 Zeilen). Gibt die Zahl gelöschter zurück.
+    """Alte Einträge löschen (90 Tage / 50 000 Zeilen, Sorten mit eigenem Kontingent zuerst). Gibt die Zahl gelöschter zurück.
     Nach Alter nur bei plausibler Systemzeit (clock_plausible), die Zeilengrenze immer."""
     try:
         _ensure()
@@ -262,8 +270,15 @@ def prune(now: float | None = None) -> int:
         with store.transaction() as conn:
             if age_ok:
                 removed += conn.execute("DELETE FROM events WHERE t < ?", (cutoff,)).rowcount
+            for (kind, prefix), rows in list(_QUOTAS.items()):
+                match = "kind = ? AND substr(title, 1, ?) = ?"
+                removed += conn.execute(
+                    f"DELETE FROM events WHERE {match} AND id <= (SELECT id FROM events WHERE {match} "
+                    "ORDER BY id DESC LIMIT 1 OFFSET ?)",
+                    (kind, len(prefix), prefix, kind, len(prefix), prefix, rows)).rowcount
+            # Zeilen zählen, nicht Nummern: Nach dem Kürzen eines Kontingents hat die Nummernfolge Lücken.
             removed += conn.execute(
-                "DELETE FROM events WHERE id <= (SELECT max(id) FROM events) - ?",
+                "DELETE FROM events WHERE id <= (SELECT id FROM events ORDER BY id DESC LIMIT 1 OFFSET ?)",
                 (MAX_ROWS,)).rowcount
         _STATE["since_prune"] = 0
         return removed

@@ -37,6 +37,20 @@
 // neun Flächen, Farbstufen mit Symbol und Text, Zone des Servers, Timer, Stoppuhr, Tastenkürzel, lock=1, Ansagen.
 // Studiouhr A6 (clockLinkChecks, TOUR_LINK_ONLY=1): Profil (?p=) auf neun Flächen mit gemocktem Profil und /api/v1/time,
 // Neuladen bei geändertem profiles_rev, Panel „Anpassen“ (Übernehmen ohne Parameter), Reiter „Anzeigen“ im Dashboard.
+// Studiouhr B1 (clockTimecodeChecks, TOUR_TC_ONLY=1): Design tc auf neun Flächen – Kopfzeile „nicht genlocked“, Zehntel als
+// Standard, Frames und Drop-Frame, Feinstelle grau über ½ Frame bzw. 50 ms und bei groben Zeitgebern, E-Ink, Taste T.
+// Kleine Flächen (Kachel 240×135, Streifen), Grund der grauen Feinstelle in der Kopfzeile, Datum in der Zone des Servers.
+// Studiouhr B2 (clockWorldChecks, TOUR_WORLD_ONLY=1): Weltzeit mit sechs Zonen als Leiste und als Layout world auf neun
+// Flächen – alles in der Bühne, kein Scrollbalken, Schrift ab 12 px; Abweichung und Tageswechsel über die Umstellungen
+// am 29.3., 25.10. und 8.3. (USA), halbe Stunden, Datumsgrenze, Kurznamen nur als Text, eine Zone wie bisher.
+// Studiouhr B3/B5 (clockStatusChecks, TOUR_STATUS_ONLY=1): Statuszeile mit PTP und Holdover (Symbol und Text, fremde
+// Werte zeigen nichts, ?show= ohne status), Kachel mit Titel, Zustandssymbol und Countdown, Prüfbild ?test=sync –
+// Wechsel genau zur vollen Sekunde und höchstens einer je Sekunde, Vorlauf, Esc (auch mit lock=1), nie aus Profil oder
+// gemerktem Stand, bei „weniger Bewegung“ nur der Hinweis.
+// Studiouhr B4 (clockSignalChecks, TOUR_SIGNAL_ONLY=1): On-Air/REC-Signal auf neun Flächen, auch mit Timecode und Weltzeit –
+// Rahmen und Balken mit Symbol und Text, ohne Bewegung, Zeit in der Bühne unter dem Balken, kein Scrollbalken; nur mit
+// signal=1 (dann Abfrage im Sekundentakt), Taste O lokal, fremde Werte zeigen nichts, ohne Antwort „Stand ungewiss“,
+// Schalter im Reiter „Anzeigen“.
 // Dazu timelineChecks (1.6, T7): Zustandsband und Marker bei 390/1440 px mit erfundenem Tag, Tastaturbedienung.
 //
 // Aufruf: node tests/ui/tour.js [Basis-URL]   (Standard http://127.0.0.1:18300, oder TOUR_BASE)
@@ -694,10 +708,12 @@ const CLOCK_STEP_MS = 250;
  * und liefert die Antwort (null = Server antwortet nicht).
  */
 // hold: Promise, auf die jede Antwort von /api/v1/time wartet (verzögerte erste Antwort); settle=false: ohne Einschwingen
-// zurück, um den Zustand vor der ersten Antwort zu prüfen. zone: Zeitzone des Browsers.
+// zurück, um den Zustand vor der ersten Antwort zu prüfen. zone: Zeitzone des Browsers. at: Serverzeit nach dem
+// Einschwingen (ms), Standard CLOCK_SERVER. reduced: Das System wünscht weniger Bewegung (prefers-reduced-motion).
 async function openPausedClock(browser, { width, height = 900, query = "", red = false, reply, hold = null, settle = true,
-  zone = "Europe/Berlin", profile = null, storage = null } = {}) {
-  const ctx = await browser.newContext({ viewport: { width, height }, timezoneId: zone });
+  zone = "Europe/Berlin", profile = null, storage = null, at = CLOCK_SERVER, reduced = false } = {}) {
+  const ctx = await browser.newContext({ viewport: { width, height }, timezoneId: zone,
+    ...(reduced ? { reducedMotion: "reduce" } : {}) });
   await ctx.addInitScript(([isRed, extra]) => {
     window.__csp = [];
     document.addEventListener("securitypolicyviolation", (e) => window.__csp.push(`${e.violatedDirective} ${e.blockedURI}`));
@@ -714,7 +730,7 @@ async function openPausedClock(browser, { width, height = 900, query = "", red =
   const msgs = [];
   page.on("console", (m) => { if (m.type() === "error") msgs.push(m.text()); });
   page.on("pageerror", (e) => msgs.push(`pageerror: ${e.message}`));
-  const clock = { advanced: 0, hits: 0, base: CLOCK_SERVER - CLOCK_SETTLE_MS };
+  const clock = { advanced: 0, hits: 0, base: at - CLOCK_SETTLE_MS };
   const start = clock.base - CLOCK_DEVICE_OFF;
   await page.clock.install({ time: start });
   await page.clock.pauseAt(start);
@@ -841,6 +857,18 @@ async function clockChecks(browser) {
   const linkResult = await clockLinkChecks(browser);
   found.push(...linkResult.found);
   lines.push(...linkResult.lines);
+  const tcResult = await clockTimecodeChecks(browser);
+  found.push(...tcResult.found);
+  lines.push(...tcResult.lines);
+  const worldResult = await clockWorldChecks(browser);
+  found.push(...worldResult.found);
+  lines.push(...worldResult.lines);
+  const statusResult = await clockStatusChecks(browser);
+  found.push(...statusResult.found);
+  lines.push(...statusResult.lines);
+  const signalResult = await clockSignalChecks(browser);
+  found.push(...signalResult.found);
+  lines.push(...signalResult.lines);
   return { found, lines };
 }
 
@@ -1018,13 +1046,14 @@ async function clockStudioChecks(browser) {
 // Uhr die Ziffern von studio und face=seg (10:15:42, Kranz bis Sekunde 42), die Akzentfarbe per CSSOM (wirksam,
 // ≥ 4,5:1) und die Pixel-Shift-Klasse.
 const LAYOUT_DESIGNS = ["?design=digital", "?design=digital&face=seg", "?design=studio", "?design=bahnhof", "?design=nixie",
-  "?design=flip", "?design=wort"];
+  "?design=flip", "?design=wort", "?design=tc"];
 const LAYOUT_PARAMS = ["?layout=tile&safe=10&design=studio", "?layout=tile&design=digital", "?scale=200",
   "?scale=50&design=digital&face=seg", "?shift=2&safe=3&design=digital", "?layout=strip&design=nixie",
   "?layout=banner&design=flip", "?layout=column&design=wort", "?show=time,status&design=digital",
   "?bg=transparent&kiosk=1&design=studio", "?look=paper&accent=ffffff&design=digital&face=mono",
   "?h12=1&lz=0&colon=blink&design=digital&face=seg", "?eink=1&design=studio&date=iso", "?look=terminal&design=studio&seconds=ring&sub=date",
-  "?design=studio&scale=200", "?layout=banner&scale=200&design=digital"];
+  "?design=studio&scale=200", "?layout=banner&scale=200&design=digital", "?design=tc&sub=frames&fps=59.94&scale=200",
+  "?design=tc&layout=tile&sub=frames", "?design=tc&layout=strip", "?design=tc&eink=1&layout=column"];
 
 function layoutState() {
   const root = document.documentElement;
@@ -1446,6 +1475,1596 @@ async function clockCountdownChecks(browser) {
 // Nachbesserungen der Layout-Engine: ?bg=black mit gespeichertem hellem Thema (Schrift ≥ 4,5:1 auf Schwarz, Schema
 // dunkel, Hell/Dunkel-Knopf gesperrt), Screenreader-Text bei ?h12=1 (Zifferblatt „10:15 AM“, Textzeit mit Leerzeichen
 // vor AM), automatischer Streifen in sehr niedrigen Fenstern ohne Kopfzeile und Band (die Zeit bekommt die ganze Höhe).
+// Studiouhr B1 (clockTimecodeChecks, TOUR_TC_ONLY=1): Design tc aus docs/konzept/studiouhr.md (Akzeptanz B). Mit
+// angehaltener Playwright-Uhr (page.clock) und gemocktem /api/v1/time steht die Serverzeit auf 10:15:42,5. Auf allen neun
+// Flächen: Kopfzeile „Anzeige-Timecode – nicht genlocked“ sichtbar und lesbar, Zehntel als Standard, Zeile in der Bühne,
+// kein Umbruch, kein Scrollbalken, keine CSP-Verstöße. Dazu bei 1920×1080: Frames nur mit sub=frames (laufen mit der
+// Bildschleife weiter), Drop-Frame mit „;“, die FF-Stelle grau bei Schranke über ½ Frame (mit Text), Zehntel grau über
+// 50 ms, Feinstelle weg über maxerr, Taste T, weniger Bewegung (höchstens Zehntel), E-Ink ohne Feinstelle und Sekunden,
+// grob gerundete Zeitgeber (performance.now() in 100-ms-Stufen) grau mit Hinweis, Zeitzone des Servers, ⓘ, Rotlicht.
+// Die Feinstelle wird je Bild gezeichnet, das letzte Bild liegt bis zu 16 ms vor dem Prüfzeitpunkt: Wo der Prüfzeitpunkt
+// genau auf einem Wechsel liegt (Zehntel bei ,5), gilt auch der Wert davor.
+// Dazu kleine Flächen (Kachel 240×135, Streifen 1920×100 und 1920×60, schmales Fenster): Kopfzeile bleibt im Bild
+// (bricht um bzw. steht im Streifen neben der Zeit), die Ziffern sind größer als die Kopfzeile; wo die Zeile unter der
+// Zeit keinen Platz hat, steht der Grund für eine graue Feinstelle kurz in der Kopfzeile; ausgeblendete Feinstelle:
+// Sekunden aus der Wanduhr (Drop-Frame früh am Tag) und die Zeit rückt nach 3 s zur Mitte; Taste T mit ?cd=main, ohne
+// Sekunden und mit ?sub=off; Datum und Nebenzeile (Taste U) in der Zone des Servers.
+function tcState() {
+  const root = document.documentElement;
+  const face = document.getElementById("face");
+  const q = (sel) => face.querySelector(sel);
+  const row = q(".tc-row");
+  if (!row) return { missing: true, design: root.dataset.design, csp: window.__csp || [] };
+  const vis = (n) => {
+    if (!n) return false;
+    const r = n.getBoundingClientRect();
+    const cs = getComputedStyle(n);
+    return r.width > 0 && r.height > 0 && cs.visibility !== "hidden" && cs.display !== "none";
+  };
+  const lum = (color) => {
+    const [r, g, b] = color.match(/[\d.]+/g).slice(0, 3).map((v) => {
+      const c = Number(v) / 255;
+      return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+    });
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  };
+  const contrast = (a, b) => { const x = lum(a); const y = lum(b); return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05); };
+  const bg = getComputedStyle(document.body).backgroundColor;
+  const fine = q(".tc-fine");
+  const label = q(".tc-label");
+  const note = q(".tc-note");
+  const stage = document.getElementById("clock-stage").getBoundingClientRect();
+  const inStage = (n) => { const r = n.getBoundingClientRect();
+    return r.left >= stage.left - 1 && r.right <= stage.right + 1 && r.top >= stage.top - 1 && r.bottom <= stage.bottom + 1; };
+  const hint = document.getElementById("clock-hint");
+  const popover = document.querySelector(".clock-popover");
+  const head = q(".tc-head");
+  const why = q(".tc-why");
+  const headBox = head.getBoundingClientRect();
+  const shown = [...row.querySelectorAll(".tc-d, .tc-sep")].filter(vis).map((n) => n.getBoundingClientRect());
+  const shownCx = shown.length ? (Math.min(...shown.map((r) => r.left)) + Math.max(...shown.map((r) => r.right))) / 2 : NaN;
+  return {
+    headIn: inStage(head) && headBox.left >= 0 && headBox.right <= root.clientWidth + 0.5, headHeight: headBox.height,
+    rowSize: parseFloat(getComputedStyle(row).fontSize), rowHeight: row.getBoundingClientRect().height,
+    why: why.textContent, whyShown: vis(why),
+    offCentre: Math.abs(shownCx - (headBox.left + headBox.right) / 2),
+    date: document.getElementById("local-date").textContent, utcLabel: document.getElementById("utc-label").textContent,
+    utcTime: document.getElementById("utc-time").textContent, dataTime: face.dataset.time || "",
+    cdTime: document.getElementById("cd-time").textContent,
+    design: root.dataset.design, role: face.getAttribute("role"), aria: face.getAttribute("aria-label") || "",
+    text: [...row.querySelectorAll(".tc-d, .tc-sep")].filter(vis).map((n) => n.textContent).join(""),
+    label: label.textContent, labelShown: vis(label) && inStage(label), labelSize: parseFloat(getComputedStyle(label).fontSize),
+    level: fine.dataset.level || "", mode: fine.dataset.mode || "", fineShown: vis(fine),
+    grey: getComputedStyle(fine).color !== getComputedStyle(q(".tc-d")).color,
+    fineContrast: contrast(getComputedStyle(fine).color, bg),
+    note: note.textContent, noteShown: vis(note), noteSize: parseFloat(getComputedStyle(note).fontSize),
+    rowIn: inStage(row), wrapped: row.getBoundingClientRect().height > parseFloat(getComputedStyle(row).fontSize) * 1.6,
+    info: vis(q(".tc-head .info")), hint: hint.hidden ? "" : hint.textContent,
+    popover: popover ? popover.textContent : "", mainLabel: getComputedStyle(document.getElementById("local-label")).display,
+    sync: root.dataset.sync || "", layout: document.getElementById("clock-stage").dataset.layout || "",
+    overflow: root.scrollWidth - root.clientWidth, vscroll: root.scrollHeight - root.clientHeight, csp: window.__csp || [],
+  };
+}
+
+async function clockTimecodeChecks(browser) {
+  const found = [];
+  const lines = [];
+  const note = (label, problems) => {
+    const list = problems.filter(Boolean);
+    lines.push(`${label}: ${list.length ? list.join("; ") : "ok"}`);
+    if (list.length) found.push(`${label}: ${list.join("; ")}`);
+  };
+  const reply = (extra = {}) => (ms) => ({ t1: ms / 1000, t2: ms / 1000, synchronised: true, running: true, level: "good",
+    accuracy: 0.0004, stratum: 1, leap: "Normal", leap_next: null, source_kind: "GPS", source: null, public: true,
+    zone: "Europe/Berlin", ...extra });
+  const errors = (got, msgs) => (got.csp.length || msgs.length ? `Fehler ${JSON.stringify([...got.csp, ...msgs])}` : "");
+  const LABEL = "Anzeige-Timecode – nicht genlocked";
+
+  // Alle Flächen: Standard (Zehntel) und Frames bei 25 fps.
+  for (const [width, height] of STUDIO_VIEWPORTS) {
+    for (const [query, text, mode] of [["?design=tc", /^10:15:42,[45]$/, "tenths"], ["?design=tc&sub=frames", /^10:15:42:12$/, "frames"]]) {
+      const { ctx, page, msgs } = await openPausedClock(browser, { width, height, query, reply: reply() });
+      const got = await page.evaluate(tcState);
+      await ctx.close();
+      // Streifen, Kachel und sehr niedrige Flächen zeigen nur Kopfzeile und Zeit.
+      const small = ["strip", "tile"].includes(got.layout) || height <= 320;
+      note(`/clock Timecode ${width}×${height} ${query} [${got.layout || "?"}]`, got.missing ? [`Design ${got.design} ohne Timecode-Zeile`] : [
+        got.design === "tc" && got.role === "group" ? "" : `Design ${got.design}, role ${got.role}`,
+        text.test(got.text) ? "" : `zeigt „${got.text}“ statt ${text}`,
+        got.mode === mode && got.level === "sure" && got.fineShown && !got.grey ? "" : `Feinstelle ${got.mode}/${got.level}, sichtbar ${got.fineShown}, grau ${got.grey}`,
+        got.label === LABEL && got.labelShown && got.headIn ? "" : `Kopfzeile „${got.label}“ sichtbar ${got.labelShown}, im Bild ${got.headIn}`,
+        got.labelSize >= 11.5 ? "" : `Kopfzeile nur ${got.labelSize.toFixed(1)} px`,
+        got.rowSize >= 2 * got.labelSize ? "" : `Ziffern nur ${got.rowSize.toFixed(1)} px bei Kopfzeile ${got.labelSize.toFixed(1)} px`,
+        got.why === "" ? "" : `Grund „${got.why}“ ohne graue Feinstelle`,
+        small || (got.noteShown && got.noteSize >= 11.5 && /^25 fps · (Zehntel|Frames)$/.test(got.note)) ? "" : `Zeile darunter „${got.note}“ (${got.noteSize} px, sichtbar ${got.noteShown})`,
+        got.aria === `${LABEL}: 10:15 Uhr` ? "" : `aria-label „${got.aria}“`,
+        got.mainLabel === "none" ? "" : "„Ortszeit“ über dem Timecode",
+        got.rowIn ? "" : "Zeile außerhalb der Bühne", got.wrapped ? "Umbruch" : "",
+        got.overflow > 0 || got.vscroll > 0 ? `Scrollbalken (${got.overflow}/${got.vscroll} px)` : "",
+        got.sync === "ok" ? "" : `data-sync ${got.sync}`, errors(got, msgs)]);
+    }
+  }
+
+  const single = async (query, opts, act) => {
+    const { ctx, page, msgs, clock } = await openPausedClock(browser, { width: 1920, height: 1080, query, reply: reply(), ...opts });
+    const out = act ? await act(page, clock) : null;
+    const got = await page.evaluate(tcState);
+    await ctx.close();
+    return { got, msgs, out };
+  };
+  // Die Bildschleife zählt weiter: nach 250 ms Frame 18 (10:15:42,75), die Zehntel stehen auf 7.
+  for (const [query, want] of [["?design=tc&sub=frames", /^10:15:42:18$/], ["?design=tc", /^10:15:42,7$/], ["?design=tc&fps=50&sub=frames", /^10:15:42:3[67]$/]]) {
+    const { got, msgs } = await single(query, {}, async (page, clock) => { await clock.run(250); });
+    note(`/clock Timecode läuft ${query}`, [want.test(got.text) ? "" : `zeigt „${got.text}“ statt ${want}`, errors(got, msgs)]);
+  }
+  // Drop-Frame: Trennzeichen „;“, der Wert stimmt mit der reinen Funktion überein (Tageszeit 10:15:42,5).
+  for (const fps of ["29.97", "59.94"]) {
+    const { got, msgs, out } = await single(`?design=tc&sub=frames&fps=${fps}`, {}, async (page) => page.evaluate(async (rate) => {
+      const tc = await import("/static/js/clocktc.js");
+      const tod = ((10 * 60 + 15) * 60 + 42) * 1000 + 500;
+      return [tod, tod - 16].map((ms) => tc.tcView(ms, rate, "frames").text);
+    }, fps));
+    note(`/clock Timecode Drop-Frame ${fps}`, [out.includes(got.text) && /^10:15:4[12];\d\d$/.test(got.text) ? "" : `zeigt „${got.text}“ statt „${out[0]}“`,
+      got.note.startsWith(`${fps.replace(".", ",")} fps Drop-Frame · Frames`) ? "" : `Zeile „${got.note}“`, errors(got, msgs)]);
+  }
+  // Fehlerschranke: FF grau über ½ Frame, Zehntel grau über 50 ms, Feinstelle weg über maxerr – immer mit Text.
+  for (const [name, query, accuracy, want] of [
+    ["Frames, Schranke ≈ 46 ms", "?design=tc&sub=frames", 0.03, { level: "unsure", grey: true, shown: true, note: /Frames unsicher: Anzeige ± 4\d ms, ein halbes Frame sind 20 ms$/, text: /^10:15:42:\d\d$/ }],
+    ["Frames 50 fps, Schranke ≈ 16 ms", "?design=tc&sub=frames&fps=50", 0.0004, { level: "unsure", grey: true, shown: true, note: /Frames unsicher: Anzeige ± 1\d ms, ein halbes Frame sind 10 ms$/, text: /^10:15:42:\d\d$/ }],
+    ["Zehntel, Schranke ≈ 46 ms", "?design=tc", 0.03, { level: "sure", grey: false, shown: true, note: /^25 fps · Zehntel$/, text: /^10:15:42,[45]$/ }],
+    ["Zehntel, Schranke ≈ 76 ms", "?design=tc", 0.06, { level: "unsure", grey: true, shown: true, note: /Zehntel unsicher: Anzeige ± 7\d ms, tragfähig bis 50 ms$/, text: /^10:15:42,[45]$/ }],
+    ["Schranke über maxerr", "?design=tc&sub=frames", 0.6, { level: "off", shown: false, note: /Feinstelle aus: Anzeige unsicher$/, text: /^10:15:42$/ }],
+    ["maxerr=20", "?design=tc&maxerr=20", 0.01, { level: "off", shown: false, note: /Feinstelle aus: Anzeige unsicher$/, text: /^10:15:42$/ }],
+  ]) {
+    const { got, msgs } = await single(query, { reply: reply({ accuracy }) });
+    note(`/clock Timecode ${name}`, [got.level === want.level ? "" : `Feinstelle ${got.level} statt ${want.level}`,
+      got.fineShown === want.shown ? "" : `Feinstelle sichtbar ${got.fineShown}`,
+      want.grey === undefined || got.grey === want.grey ? "" : `grau ${got.grey}`,
+      want.grey && got.fineContrast < 3 ? `graue Feinstelle nur ${got.fineContrast.toFixed(2)}:1` : "",
+      want.note.test(got.note) ? "" : `Zeile „${got.note}“`, want.text.test(got.text) ? "" : `zeigt „${got.text}“`,
+      got.label === LABEL && got.labelShown ? "" : "Kopfzeile fehlt", errors(got, msgs)]);
+  }
+  // Rotlicht: graue Feinstelle bleibt lesbar (≥ 3:1).
+  {
+    const { got, msgs } = await single("?design=tc&sub=frames", { reply: reply({ accuracy: 0.03 }), red: true });
+    note("/clock Timecode Rotlicht grau", [got.level === "unsure" && got.grey ? "" : `Feinstelle ${got.level}, grau ${got.grey}`,
+      got.fineContrast >= 3 ? "" : `nur ${got.fineContrast.toFixed(2)}:1`, errors(got, msgs)]);
+  }
+  // Taste T: Zehntel → Frames → Zehntel, jeweils mit Hinweis.
+  {
+    const { got, msgs, out } = await single("?design=tc", {}, async (page, clock) => {
+      await page.keyboard.press("t");
+      await clock.run(250);
+      const frames = await page.evaluate(tcState);
+      await page.keyboard.press("t");
+      await clock.run(250);
+      return frames;
+    });
+    note("/clock Timecode Taste T", [out.mode === "frames" && /^10:15:42:\d\d$/.test(out.text) ? "" : `nach T ${out.mode} „${out.text}“`,
+      out.hint === "Timecode: Frames (nicht genlocked)" ? "" : `Hinweis „${out.hint}“`,
+      got.mode === "tenths" && /^10:15:4\d,\d$/.test(got.text) ? "" : `nach zweitem T ${got.mode} „${got.text}“`,
+      got.hint === "Timecode: Zehntel" ? "" : `Hinweis „${got.hint}“`, errors(got, msgs)]);
+  }
+  // Weniger Bewegung: aus Frames werden Zehntel, mit Begründung.
+  {
+    const { got, msgs, out } = await single("?design=tc&sub=frames", {}, async (page, clock) => {
+      const before = await page.evaluate(tcState);
+      await page.emulateMedia({ reducedMotion: "reduce" });
+      await clock.run(250);
+      return before;
+    });
+    note("/clock Timecode weniger Bewegung", [out.mode === "frames" ? "" : `vorher ${out.mode}`,
+      got.mode === "tenths" && /^10:15:42,\d$/.test(got.text) ? "" : `zeigt ${got.mode} „${got.text}“`,
+      /Frames aus, weil dein System weniger Bewegung wünscht$/.test(got.note) ? "" : `Zeile „${got.note}“`, errors(got, msgs)]);
+  }
+  // E-Ink: weder Feinstelle noch Sekunden, auch mit sub=frames; Taste T ändert daran nichts.
+  {
+    const { got, msgs } = await single("?design=tc&eink=1&sub=frames", {}, async (page, clock) => {
+      await page.keyboard.press("t");
+      await clock.run(250);
+    });
+    note("/clock Timecode E-Ink", [got.text === "10:15" && !got.fineShown && got.mode === "off" ? "" : `zeigt „${got.text}“ (${got.mode}, Feinstelle ${got.fineShown})`,
+      got.hint === "E-Ink zeigt keine Feinstelle." ? "" : `Hinweis „${got.hint}“`,
+      got.label === LABEL && got.labelShown ? "" : "Kopfzeile fehlt", errors(got, msgs)]);
+  }
+  // sub=off und show ohne seconds.
+  for (const [query, text] of [["?design=tc&sub=off", "10:15:42"], ["?design=tc&show=time,status", "10:15"]]) {
+    const { got, msgs } = await single(query, {});
+    note(`/clock Timecode ${query}`, [got.text === text && !got.fineShown ? "" : `zeigt „${got.text}“ (Feinstelle ${got.fineShown})`, errors(got, msgs)]);
+  }
+  // Grob gerundete Zeitgeber: performance.now() in 100-ms-Stufen, dann das Design wählen (die Messung läuft danach).
+  {
+    const { got, msgs } = await single("?design=digital", {}, async (page, clock) => {
+      await page.evaluate(() => {
+        const real = performance.now.bind(performance);
+        performance.now = () => Math.floor(real() / 100) * 100;
+      });
+      await page.selectOption("#design", "tc");
+      await clock.run(1500);
+    });
+    note("/clock Timecode grobe Zeitgeber", [got.level === "unsure" && got.grey && got.fineShown ? "" : `Feinstelle ${got.level}, grau ${got.grey}`,
+      /Feinstelle unsicher: Dein Browser rundet seine Zeitgeber auf 100 ms$/.test(got.note) ? "" : `Zeile „${got.note}“`, errors(got, msgs)]);
+  }
+  // Zeitzone des Servers (Browser: Europe/Berlin): Timecode in New York, die Zone steht darunter.
+  {
+    const { got, msgs } = await single("?design=tc", { reply: reply({ zone: "America/New_York" }) });
+    note("/clock Timecode Zone des Servers", [/^04:15:42,[45]$/.test(got.text) ? "" : `zeigt „${got.text}“`,
+      got.note === "25 fps · Zehntel · New York" ? "" : `Zeile „${got.note}“`, errors(got, msgs)]);
+  }
+  // ⓘ erklärt die Grenze; Esc schließt.
+  {
+    const { got, msgs, out } = await single("?design=tc", {}, async (page) => {
+      await page.click(".tc-head .info");
+      const open = await page.evaluate(tcState);
+      await page.keyboard.press("Escape");
+      return open;
+    });
+    note("/clock Timecode ⓘ", [got.info ? "" : "ⓘ fehlt", /Hausreferenzsignal/.test(out.popover) && /LTC- oder VITC-Generatoren/.test(out.popover)
+      ? "" : `Erklärung „${out.popover.slice(0, 60)}“`, got.popover === "" ? "" : "Esc schließt nicht", errors(got, msgs)]);
+  }
+  // Kleine Flächen: Kopfzeile im Bild (umbrochen, im flachen Streifen neben der Zeit), Ziffern deutlich größer als die
+  // Kopfzeile. Mit Kopfzeile und Band bleiben der Bühne bei 1920×100 nur 26 px, bei 1920×60 (kiosk) 12 px Höhe: Dort
+  // füllen die Ziffern die Höhe aus (mindestens so groß wie im Design digital), größer als die Kopfzeile geht nicht.
+  for (const [width, height, query, minSize] of [[240, 135, "?design=tc&layout=tile", 30], [256, 144, "?design=tc&layout=tile&sub=frames", 26],
+    [240, 135, "?design=tc&kiosk=1", 30], [280, 500, "?design=tc", 30], [1920, 100, "?design=tc&layout=strip", 20],
+    [1920, 60, "?design=tc&layout=strip&kiosk=1", 10], [640, 100, "?design=tc&layout=strip", 24]]) {
+    const { got, msgs } = await single(query, { width, height });
+    note(`/clock Timecode klein ${width}×${height} ${query} [${got.layout}]`, [
+      got.label === LABEL && (got.labelShown || minSize < 18) && got.headIn ? "" : `Kopfzeile sichtbar ${got.labelShown}, im Bild ${got.headIn}`,
+      got.labelSize >= 11.5 ? "" : `Kopfzeile nur ${got.labelSize.toFixed(1)} px`,
+      got.rowSize >= minSize && (minSize < 18 || got.rowSize >= 1.5 * got.labelSize) ? "" : `Ziffern nur ${got.rowSize.toFixed(1)} px (Kopfzeile ${got.labelSize.toFixed(1)} px)`,
+      got.rowIn && !got.wrapped ? "" : "Zeile außerhalb der Bühne oder umbrochen",
+      got.overflow > 0 || got.vscroll > 0 ? `Scrollbalken (${got.overflow}/${got.vscroll} px)` : "", errors(got, msgs)]);
+  }
+  // Graue Feinstelle ohne Platz für die Zeile darunter: Der Grund steht kurz in der Kopfzeile – nie nur Farbe.
+  for (const [width, height, query] of [[1920, 200, "?design=tc&sub=frames&fps=29.97"], [480, 270, "?design=tc&sub=frames&fps=29.97"],
+    [480, 270, "?design=tc&sub=frames&layout=tile"], [1920, 200, "?design=tc&sub=frames&layout=strip"], [640, 100, "?design=tc&sub=frames&layout=strip"], [240, 135, "?design=tc&sub=frames"],
+    [1920, 1080, "?design=tc&sub=frames"]]) {
+    const { got, msgs } = await single(query, { width, height, reply: reply({ accuracy: 0.03 }) });
+    const text = got.noteShown ? /Frames unsicher: Anzeige/.test(got.note) && !got.whyShown : got.whyShown && got.why === " · Frames unsicher";
+    note(`/clock Timecode Grund sichtbar ${width}×${height} ${query} [${got.layout}]`, [
+      got.level === "unsure" && got.grey ? "" : `Feinstelle ${got.level}, grau ${got.grey}`,
+      text ? "" : `Grund nicht zu lesen (Zeile darunter sichtbar ${got.noteShown}, Kopfzeile „${got.why}“ sichtbar ${got.whyShown})`,
+      got.headIn && got.rowIn ? "" : "Kopfzeile oder Zeit außerhalb der Bühne",
+      got.overflow > 0 || got.vscroll > 0 ? `Scrollbalken (${got.overflow}/${got.vscroll} px)` : "", errors(got, msgs)]);
+  }
+  {
+    const { got, msgs } = await single("?design=tc&maxerr=20", { width: 480, height: 270, reply: reply({ accuracy: 0.01 }) });
+    note("/clock Timecode Grund sichtbar: Feinstelle aus", [got.whyShown && got.why === " · Feinstelle aus" ? "" : `Kopfzeile „${got.why}“ sichtbar ${got.whyShown}`,
+      errors(got, msgs)]);
+  }
+  // Ausgeblendete Feinstelle bei Drop-Frame: Früh am Tag (Server in Los Angeles, 01:15) läuft der Timecode der Wanduhr
+  // nach. Kurz nach der vollen Sekunde gezeichnet, zeigen die Sekunden trotzdem die Wanduhr (01:15:43), nicht den
+  // Timecode (01:15:42;29).
+  for (const fps of ["29.97", "59.94"]) {
+    const { got, msgs } = await single(`?design=tc&sub=frames&fps=${fps}`, { reply: reply({ accuracy: 0.6, zone: "America/Los_Angeles" }) },
+      async (page, clock) => { await clock.run(750); });
+    note(`/clock Timecode Drop-Frame ${fps} ohne Feinstelle`, [got.level === "off" && !got.fineShown ? "" : `Feinstelle ${got.level}`,
+      got.text === "01:15:43" && got.dataTime === "01:15:43" ? "" : `zeigt „${got.text}“ (data-time ${got.dataTime}) statt 01:15:43`, errors(got, msgs)]);
+  }
+  // Bleibt die Feinstelle aus, rückt die Zeit nach 3 s zur Mitte (vorher bleibt der Platz frei).
+  {
+    const { got, msgs, out } = await single("?design=tc&maxerr=20", { reply: reply({ accuracy: 0.01 }) }, async (page, clock) => {
+      const before = await page.evaluate(tcState);
+      await clock.run(4500);
+      return before;
+    });
+    note("/clock Timecode Feinstelle aus: Zeit mittig", [out.offCentre > 20 ? "" : `Platz anfangs nicht frei (${out.offCentre.toFixed(1)} px)`,
+      got.offCentre <= 2 ? "" : `Zeit ${got.offCentre.toFixed(1)} px neben der Mitte`, got.level === "off" && !got.fineShown ? "" : `Feinstelle ${got.level}`,
+      got.rowIn && got.overflow <= 0 ? "" : "Zeile außerhalb der Bühne", errors(got, msgs)]);
+  }
+  // Taste T mit ?cd=main: Der Countdown ist die Hauptanzeige, T schaltet seine Zehntel (nicht die Feinstelle des Timecodes).
+  {
+    const { got, msgs, out } = await single("?design=tc&timer=90s&cd=main", {}, async (page) => {
+      const before = await page.evaluate(tcState);
+      await page.keyboard.press("t");
+      return before;
+    });
+    note("/clock Timecode Taste T mit cd=main", [/Zehntel (an|aus)/.test(got.hint) ? "" : `Hinweis „${got.hint}“`,
+      got.cdTime !== out.cdTime ? "" : `Countdown unverändert „${got.cdTime}“`, got.mode === out.mode ? "" : `Feinstelle ${got.mode}`, errors(got, msgs)]);
+  }
+  // Taste T ohne Sekunden: kein Wechsel, der Hinweis sagt warum.
+  {
+    const { got, msgs } = await single("?design=tc&show=time,status", {}, async (page) => { await page.keyboard.press("t"); });
+    note("/clock Timecode Taste T ohne Sekunden", [got.hint === "Ohne Sekunden gibt es keine Feinstelle." ? "" : `Hinweis „${got.hint}“`,
+      got.mode === "off" && got.text === "10:15" ? "" : `zeigt ${got.mode} „${got.text}“`, errors(got, msgs)]);
+  }
+  // ?sub=off: T führt im Dreierwechsel zurück zu „aus“ (aus → Zehntel → Frames → aus).
+  {
+    const { got, msgs, out } = await single("?design=tc&sub=off", {}, async (page, clock) => {
+      const seen = [];
+      for (let i = 0; i < 2; i += 1) {
+        await page.keyboard.press("t");
+        await clock.run(250);
+        const now = await page.evaluate(tcState);
+        seen.push(`${now.mode}|${now.hint}`);
+      }
+      await page.keyboard.press("t");
+      await clock.run(250);
+      return seen;
+    });
+    note("/clock Timecode Taste T mit sub=off", [
+      out.join(" ") === "tenths|Timecode: Zehntel frames|Timecode: Frames (nicht genlocked)" ? "" : `Folge „${out.join(" ")}“`,
+      got.mode === "off" && !got.fineShown && /^10:15:4\d$/.test(got.text) ? "" : `nach drittem T ${got.mode} „${got.text}“`,
+      got.hint === "Timecode: Feinstelle aus" ? "" : `Hinweis „${got.hint}“`, errors(got, msgs)]);
+  }
+  // Zone des Servers weicht ab (Honolulu, dort noch Montag, der 29.): Datum unter dem Timecode gehört zu dieser Zone;
+  // nach Taste U steht in der Nebenzeile die Zeit des Servers mit Zonenname, nicht die des Browsers.
+  {
+    const { got, msgs, out } = await single("?design=tc", { reply: reply({ zone: "Pacific/Honolulu" }) }, async (page) => {
+      const before = await page.evaluate(tcState);
+      await page.keyboard.press("u");
+      return before;
+    });
+    note("/clock Timecode Datum in der Zone des Servers", [/^22:15:42,[45]$/.test(out.text) ? "" : `zeigt „${out.text}“`,
+      out.date === "Montag, 29. Juni 2026" ? "" : `Datum „${out.date}“`, out.utcLabel === "UTC" && out.utcTime === "08:15:42" ? "" : `Nebenzeile „${out.utcLabel} ${out.utcTime}“`,
+      /^08:15:42,[45]$/.test(got.text) ? "" : `nach U „${got.text}“`,
+      got.utcLabel === "Honolulu" && got.utcTime === "22:15:42" ? "" : `Nebenzeile nach U „${got.utcLabel} ${got.utcTime}“`,
+      got.date === "Montag, 29. Juni 2026" ? "" : `Datum nach U „${got.date}“`, errors(got, msgs)]);
+  }
+  {
+    const { got, msgs } = await single("?design=tc", {}, async (page) => { await page.keyboard.press("u"); });
+    note("/clock Timecode Datum in eigener Zone", [got.date === "Dienstag, 30. Juni 2026" ? "" : `Datum „${got.date}“`,
+      got.utcLabel === "Ortszeit" && got.utcTime === "10:15:42" ? "" : `Nebenzeile nach U „${got.utcLabel} ${got.utcTime}“`, errors(got, msgs)]);
+  }
+  // Wechsel zurück zu einem anderen Design: keine Timecode-Zeile mehr, keine Fehler.
+  {
+    const { got, msgs } = await single("?design=tc&sub=frames", {}, async (page, clock) => {
+      await page.selectOption("#design", "digital");
+      await clock.run(500);
+    });
+    note("/clock Timecode → digital", [got.missing && got.design === "digital" ? "" : `Design ${got.design}`, errors(got, msgs)]);
+  }
+  return { found, lines };
+}
+
+// Studiouhr B2 (clockWorldChecks, TOUR_WORLD_ONLY=1): Weltzeit aus docs/konzept/studiouhr.md (Abschnitt 2.5,
+// Akzeptanz B). Mit angehaltener Playwright-Uhr (page.clock) und gemocktem /api/v1/time steht die Serverzeit fest.
+// Sechs Zonen als Leiste (Layout automatisch) und als Raster (?layout=world) auf allen neun Flächen: jede sichtbare Zone
+// mit richtiger Uhrzeit und Abweichung ganz in der Bühne, Schrift ab 12 px, Tag/Nacht-Symbol mit aria-label, kein
+// Scrollbalken, keine CSP-Verstöße; im Streifen und in der Kachel keine Leiste; fehlende Zonen nennt „+n“. Dazu bei
+// 1920×1080 mit festen Zeitpunkten: Europa stellt um (29.3., 25.10.), die USA stellen um (8.3.), Zonen mit 30 und 45
+// Minuten, Datumsgrenze mit „+1 Tag“/„−1 Tag“, Taste U (Bezug UTC), Kurznamen nur als Text, eine Zone wie bisher.
+// Einpassen: ?show= ohne tz (Layout world → Automatik, Banner ohne leere Zeile), Raster ohne Platz für eine Zone (Uhr im
+// automatischen Layout), breite Zelle im festen Banner, „+n“ zählt nicht als Zeile (800×480 mit vier und sechs Zonen,
+// „+2“ in der zweiten Zeile), Raster einspaltig bei 360×640, Leerzeichen nach dem Komma, ?h12=1 in den Zonen, Leiste
+// wächst bei 768×1024, Vorschlagsliste und Schreibweise im Panel „Anpassen“.
+function worldState() {
+  const root = document.documentElement;
+  const stage = document.getElementById("clock-stage");
+  const sb = stage.getBoundingClientRect();
+  const node = document.getElementById("world");
+  const vis = (n) => {
+    if (!n) return false;
+    const r = n.getBoundingClientRect();
+    const cs = getComputedStyle(n);
+    return r.width > 0 && r.height > 0 && cs.visibility !== "hidden" && cs.display !== "none";
+  };
+  const inStage = (n) => { const r = n.getBoundingClientRect();
+    return r.left >= sb.left - 1 && r.right <= sb.right + 1 && r.top >= sb.top - 1 && r.bottom <= sb.bottom + 1; };
+  const cells = [...node.querySelectorAll(".wz")].filter(vis);
+  const more = node.querySelector(".wz-more");
+  const text = (n, sel) => n.querySelector(sel).textContent;
+  const sizes = cells.flatMap((c) => [".wz-label", ".wz-time", ".wz-delta"].map((sel) => parseFloat(getComputedStyle(c.querySelector(sel)).fontSize)));
+  const time = [document.getElementById("local-time"), document.getElementById("face")].find(vis);
+  const tz2 = document.getElementById("tz2");
+  return {
+    layout: stage.dataset.layout || "", world: stage.dataset.world || "", flow: stage.dataset.worldFlow || "",
+    shown: vis(node), role: node.getAttribute("role"), aria: node.getAttribute("aria-label") || "",
+    total: node.querySelectorAll(".wz").length,
+    rows: cells.map((c) => `${text(c, ".wz-label")} ${text(c, ".wz-time")} ${text(c, ".wz-delta")} ${text(c, ".wz-day")}`.trim()),
+    night: cells.map((c) => c.dataset.night).join(""),
+    sunLabels: cells.map((c) => c.querySelector(".wz-sun").getAttribute("aria-label") || ""),
+    sunShown: cells.every((c) => vis(c.querySelector(".wz-sun")) && c.querySelector(".wz-sun").getAttribute("role") === "img"),
+    inside: cells.every(inStage) && (!vis(more) || inStage(more)), more: vis(more) ? more.textContent : "",
+    moreLabel: vis(more) ? more.getAttribute("aria-label") || "" : "",
+    smallest: sizes.length ? Math.min(...sizes) : null,
+    timeIn: time ? inStage(time) : false, timeHeight: time ? time.getBoundingClientRect().height : 0,
+    dateTop: Math.round(document.getElementById("local-date").getBoundingClientRect().top),
+    zoneFont: cells.length ? parseFloat(getComputedStyle(cells[0].querySelector(".wz-time")).fontSize) : 0,
+    dense: stage.dataset.worldDense || "",
+    lines: new Set(cells.map((c) => Math.round(c.getBoundingClientRect().top))).size,
+    tz2: vis(tz2) ? tz2.textContent.replace(/\s+/g, " ").trim() : "", html: node.querySelectorAll("img, b, script").length,
+    local: document.getElementById("local-time").textContent,
+    overflow: root.scrollWidth - root.clientWidth, vscroll: root.scrollHeight - root.clientHeight, csp: window.__csp || [],
+  };
+}
+
+async function clockWorldChecks(browser) {
+  const found = [];
+  const lines = [];
+  const note = (label, problems) => {
+    const list = problems.filter(Boolean);
+    lines.push(`${label}: ${list.length ? list.join("; ") : "ok"}`);
+    if (list.length) found.push(`${label}: ${list.join("; ")}`);
+  };
+  const errors = (got, msgs) => (got.csp.length || msgs.length ? `Fehler ${JSON.stringify([...got.csp, ...msgs])}` : "");
+  const M = "−";
+  const ZONES = "tz=Europe/London,America/New_York,Asia/Tokyo,Asia/Kolkata,Australia/Sydney,Pacific/Kiritimati&tzl=LON,NYC,TYO,,SYD,";
+  // Serverzeit 30.6. 10:15:42 in Berlin (MESZ).
+  const ROWS = [`LON 09:15 ${M}1 h`, `NYC 04:15 ${M}6 h`, "TYO 17:15 +7 h", "Kolkata 13:45 +3:30 h", "SYD 18:15 +8 h", "Kiritimati 22:15 +12 h"];
+  const NIGHT = "010011";
+  const ALL = new Set(["1920x1080", "390x844", "3840x1080", "1080x1920", "3840x2160"]);   // dort passen alle sechs
+
+  for (const [width, height] of STUDIO_VIEWPORTS) {
+    for (const [name, query] of [["Leiste", `?${ZONES}`], ["Raster", `?layout=world&${ZONES}`]]) {
+      const { ctx, page, msgs } = await openPausedClock(browser, { width, height, query });
+      const got = await page.evaluate(worldState);
+      await ctx.close();
+      const n = got.rows.length;
+      const off = name === "Leiste" && ["strip", "tile"].includes(got.layout);
+      note(`/clock Weltzeit ${name} ${width}×${height} [${got.layout || "?"}${got.flow ? ` ${got.flow}` : ""}, ${n} von 6]`, [
+        got.total === 6 ? "" : `${got.total} Zellen statt 6`,
+        name === "Raster" ? (got.layout === "world" ? "" : `Layout ${got.layout}`) : (got.layout !== "world" ? "" : "Layout world ohne Parameter"),
+        off ? (n === 0 && !got.shown ? "" : `Leiste im Layout ${got.layout} sichtbar`) : "",
+        JSON.stringify(got.rows) === JSON.stringify(ROWS.slice(0, n)) ? "" : `zeigt ${JSON.stringify(got.rows)}`,
+        got.night === NIGHT.slice(0, n) ? "" : `Tag/Nacht ${got.night}`,
+        got.sunShown && got.sunLabels.every((label, i) => label === (NIGHT[i] === "1" ? "Nacht" : "Tag")) ? "" : `Symbol ohne Text-Alternative ${JSON.stringify(got.sunLabels)}`,
+        got.inside ? "" : "Zone außerhalb der Bühne", got.timeIn ? "" : "Uhrzeit außerhalb der Bühne",
+        n === 0 || got.smallest >= 11.5 ? "" : `Schrift nur ${got.smallest.toFixed(1)} px`,
+        n > 0 && n < 6 ? (got.more === `+${6 - n}` && (6 - n === 1 ? got.moreLabel === "1 weitere Zeitzone passt hier nicht" : /^\d weitere Zeitzonen passen/.test(got.moreLabel)) ? "" : `fehlende Zonen nicht genannt („${got.more}“)`) : (got.more ? `„${got.more}“ ohne fehlende Zone` : ""),
+        ALL.has(`${width}x${height}`) && n !== 6 ? `nur ${n} von 6 Zonen` : "",
+        n === 0 || (got.role === "list" && got.aria === "Weltzeit") ? "" : `role ${got.role}, aria-label „${got.aria}“`,
+        got.local.startsWith("10:15:42") ? "" : `Uhr zeigt ${got.local}`,
+        got.overflow > 0 || got.vscroll > 0 ? `Scrollbalken (${got.overflow}/${got.vscroll} px)` : "", errors(got, msgs)]);
+    }
+  }
+
+  const single = async (query, opts = {}, act = null) => {
+    const { ctx, page, msgs, clock } = await openPausedClock(browser, { width: 1920, height: 1080, query, ...opts });
+    const before = await page.evaluate(worldState);
+    const out = act ? await act(page, clock) : null;
+    const got = await page.evaluate(worldState);
+    await ctx.close();
+    return { before, got, msgs, out };
+  };
+  const want = (got, rows) => (JSON.stringify(got.rows) === JSON.stringify(rows) ? "" : `zeigt ${JSON.stringify(got.rows)} statt ${JSON.stringify(rows)}`);
+  const cross = async (label, at, query, first, second) => {
+    // 10 s vor der Umstellung öffnen, dann 15 s weiter: Die Abweichung wechselt mit dem Minutensprung.
+    const { before, got, msgs } = await single(query, { at: Date.parse(at) - 10000 }, async (page, clock) => { await clock.run(15000); });
+    note(`/clock Weltzeit ${label}`, [want(before, first), want(got, second), got.inside ? "" : "Zone außerhalb der Bühne", errors(got, msgs)]);
+  };
+  const THREE = "?tz=Europe/London,America/New_York,Asia/Tokyo";
+  await cross("Europa stellt vor (29.3.)", "2026-03-29T01:00:00Z", THREE,
+    [`London 00:59 ${M}1 h`, `New York 20:59 ${M}5 h ${M}1 Tag`, "Tokyo 09:59 +8 h"],
+    [`London 02:00 ${M}1 h`, `New York 21:00 ${M}6 h ${M}1 Tag`, "Tokyo 10:00 +7 h"]);
+  await cross("Europa stellt zurück (25.10.)", "2026-10-25T01:00:00Z", THREE,
+    [`London 01:59 ${M}1 h`, `New York 20:59 ${M}6 h ${M}1 Tag`, "Tokyo 09:59 +7 h"],
+    [`London 01:00 ${M}1 h`, `New York 21:00 ${M}5 h ${M}1 Tag`, "Tokyo 10:00 +8 h"]);
+  await cross("USA stellen vor (8.3.)", "2026-03-08T07:00:00Z", "?layout=world&tz=America/New_York,America/Phoenix",
+    [`New York 01:59 ${M}6 h`, `Phoenix 23:59 ${M}8 h ${M}1 Tag`], [`New York 03:00 ${M}5 h`, `Phoenix 00:00 ${M}8 h`]);
+
+  {
+    const query = "?layout=world&tz=Asia/Kolkata,Asia/Kathmandu,Pacific/Kiritimati,Etc/GMT%2B12,Pacific/Chatham,Australia/Lord_Howe&tzl=,,,Baker%20Island";
+    const { got, msgs } = await single(query, { at: Date.parse("2026-01-15T12:00:30Z") });
+    note("/clock Weltzeit halbe Stunden und Datumsgrenze", [want(got, ["Kolkata 17:30 +4:30 h", "Kathmandu 17:45 +4:45 h",
+      "Kiritimati 02:00 +13 h +1 Tag", `Baker Island 00:00 ${M}13 h`, "Chatham 01:45 +12:45 h +1 Tag", "Lord Howe 23:00 +10 h"]),
+    got.night === "001111" ? "" : `Tag/Nacht ${got.night}`, got.inside ? "" : "Zone außerhalb der Bühne", errors(got, msgs)]);
+  }
+  {
+    // Taste U: Die große Zeit ist UTC, die Abweichungen beziehen sich darauf.
+    const { before, got, msgs } = await single(THREE, {}, async (page, clock) => { await page.keyboard.press("u"); await clock.run(250); });
+    note("/clock Weltzeit Taste U", [want(before, [`London 09:15 ${M}1 h`, `New York 04:15 ${M}6 h`, "Tokyo 17:15 +7 h"]),
+      want(got, ["London 09:15 +1 h", `New York 04:15 ${M}4 h`, "Tokyo 17:15 +9 h"]), errors(got, msgs)]);
+  }
+  {
+    // Kurzname mit Sonderzeichen: die ganze Liste gilt nicht, es bleibt der Ortsname – und nichts davon wird Markup.
+    const { got, msgs } = await single("?tz=Europe/London,Asia/Tokyo&tzl=LON,%3Cimg%20src%3Dx%3E");
+    note("/clock Weltzeit Kurzname mit Sonderzeichen", [want(got, [`London 09:15 ${M}1 h`, "Tokyo 17:15 +7 h"]),
+      got.html === 0 ? "" : "Markup aus dem Kurznamen im DOM", errors(got, msgs)]);
+  }
+  {
+    const { got, msgs } = await single("?tz=Europe/London&tz=Asia/Tokyo&tzl=Studio%202&tzl=T%C5%8Dky%C5%8D");
+    note("/clock Weltzeit mehrfach genannt", [want(got, [`Studio 2 09:15 ${M}1 h`, "Tōkyō 17:15 +7 h"]), got.tz2 === "" ? "" : `zweite Zeitzone zusätzlich („${got.tz2}“)`,
+      errors(got, msgs)]);
+  }
+  {
+    // Eine Zone: wie bisher als zweite Zeitzone in der Zeile unter der Uhr, ohne Leiste.
+    const { got, msgs } = await single("?tz=America/New_York&tzl=NYC");
+    note("/clock Weltzeit eine Zone", [got.tz2 === "NYC 04:15" ? "" : `zweite Zeitzone „${got.tz2}“`, got.shown || got.total ? "Leiste trotz einer Zone" : "",
+      errors(got, msgs)]);
+  }
+  {
+    // Profil mit Zonen und Kurznamen, die Adresse nennt eine andere Zone ohne Kurznamen: New York steht nicht unter „LON“.
+    const profile = (name) => (name === "regie" ? { name, title: "Regie 1", builtin: false, profiles_rev: "aaaa00000001",
+      params: { tz: "Europe/London,Asia/Tokyo", tzl: "LON,TYO" } } : null);
+    const { got, msgs } = await single("?p=regie&tz=America/New_York", { profile });
+    note("/clock Weltzeit Zone der Adresse ohne Kurznamen des Profils", [got.tz2 === "New York 04:15" ? "" : `zweite Zeitzone „${got.tz2}“`,
+      got.shown || got.total ? "Leiste trotz einer Zone" : "", errors(got, msgs)]);
+    const same = await single("?p=regie", { profile });
+    note("/clock Weltzeit Kurznamen des Profils", [want(same.got, ["LON 09:15 −1 h", "TYO 17:15 +7 h"].map((row) => row.replace("−", M))),
+      errors(same.got, same.msgs)]);
+  }
+  {
+    // Zu viele oder doppelte Zonen: nichts davon gilt, die Uhr läuft ohne Weltzeit.
+    const { got, msgs } = await single("?tz=UTC,Europe/London,America/New_York,Asia/Tokyo,Asia/Kolkata,Australia/Sydney,Europe/Paris");
+    note("/clock Weltzeit sieben Zonen", [!got.shown && got.total === 0 && got.tz2 === "" ? "" : `zeigt ${JSON.stringify(got.rows)}`,
+      got.local.startsWith("10:15:42") ? "" : `Uhr zeigt ${got.local}`, errors(got, msgs)]);
+  }
+  {
+    // Layout world ohne Zonen: UTC als einzige Zelle. Rotlicht und E-Ink: lesbar, nichts außerhalb.
+    const { got, msgs } = await single("?layout=world");
+    note("/clock Weltzeit Layout world ohne tz", [want(got, [`UTC 08:15 ${M}2 h`]), got.inside ? "" : "außerhalb der Bühne", errors(got, msgs)]);
+    for (const [label, opts, query] of [["Rotlicht", { red: true }, `?layout=world&${ZONES}`], ["E-Ink", {}, `?eink=1&${ZONES}`],
+      ["Design studio", {}, `?design=studio&${ZONES}`], ["Kiosk 480×270", { width: 480, height: 270 }, `?layout=world&kiosk=1&${ZONES}`]]) {
+      const r = await single(query, opts);
+      const n = r.got.rows.length;
+      note(`/clock Weltzeit ${label}`, [n > 0 && JSON.stringify(r.got.rows) === JSON.stringify(ROWS.slice(0, n)) ? "" : `zeigt ${JSON.stringify(r.got.rows)}`,
+        r.got.inside && r.got.timeIn ? "" : "außerhalb der Bühne", r.got.smallest >= 11.5 ? "" : `Schrift nur ${r.got.smallest} px`,
+        r.got.overflow > 0 || r.got.vscroll > 0 ? `Scrollbalken (${r.got.overflow}/${r.got.vscroll} px)` : "", errors(r.got, r.msgs)]);
+    }
+  }
+
+  // --- Einpassen ---
+  const Z6 = "tz=Europe/London,America/New_York,Asia/Tokyo,Asia/Kolkata,Australia/Sydney,Pacific/Kiritimati";
+  const LONG = `${Z6}&tzl=${["P", "Q", "R", "S", "T", "U"].map((c) => `ABCDEFGHIJKLMNO${c}`).join(",")}`;
+  const JAN = Date.parse("2026-01-15T12:00:30Z");   // Berlin 13:00:30 (MEZ)
+  const sized = (width, height, query, opts = {}) => single(query, { width, height, ...opts });
+  const base = (r) => [r.got.timeIn ? "" : "Uhrzeit außerhalb der Bühne", r.got.inside ? "" : "Zone außerhalb der Bühne",
+    r.got.overflow > 0 || r.got.vscroll > 0 ? `Scrollbalken (${r.got.overflow}/${r.got.vscroll} px)` : "", errors(r.got, r.msgs)];
+  {
+    // ?show= ohne tz: keine Weltzeit. Im Layout world gilt dann die Automatik – die Uhr so groß wie ohne layout=world.
+    const off = await sized(1920, 1080, `?layout=world&show=time,seconds,date&${Z6}`);
+    const plain = await sized(1920, 1080, "?show=time,seconds,date");
+    note("/clock Weltzeit show ohne tz im Layout world", [off.got.layout === "normal" && off.got.world === "" ? "" : `Layout ${off.got.layout}, data-world „${off.got.world}“`,
+      off.got.rows.length || off.got.total ? "Zonen trotz show ohne tz" : "",
+      Math.abs(off.got.timeHeight - plain.got.timeHeight) <= 1 ? "" : `Zeit ${Math.round(off.got.timeHeight)} px statt ${Math.round(plain.got.timeHeight)} px`, ...base(off)]);
+    // Banner im Kiosk: ohne dritte Zeile der Spalte, Datum auf derselben Höhe wie ohne Zonen.
+    const bar = await sized(1920, 200, `?kiosk=1&show=time,seconds,date,status&${Z6}`);
+    const none = await sized(1920, 200, "?kiosk=1&show=time,seconds,date,status");
+    note("/clock Weltzeit show ohne tz im Banner", [bar.got.layout === "banner" && bar.got.world === "" ? "" : `Layout ${bar.got.layout}, data-world „${bar.got.world}“`,
+      bar.got.dateTop === none.got.dateTop ? "" : `Datum bei ${bar.got.dateTop} px statt ${none.got.dateTop} px`, ...base(bar)]);
+    const shown = await sized(1920, 1080, `?show=time,seconds,date,tz&${Z6}`);
+    note("/clock Weltzeit show mit tz", [shown.got.rows.length === 6 && shown.got.world === "bar" ? "" : `${shown.got.rows.length} von 6, data-world „${shown.got.world}“`, ...base(shown)]);
+  }
+  for (const [width, height, query] of [[320, 180, `?kiosk=1&layout=world&${Z6}`], [320, 180, "?kiosk=1&layout=world"], [200, 400, `?kiosk=1&layout=world&${Z6}`]]) {
+    // Layout world ohne Platz für eine einzige Zone: Uhr im automatischen Layout, so groß wie ohne layout=world.
+    const r = await sized(width, height, query);
+    const auto = await sized(width, height, "?kiosk=1");
+    note(`/clock Weltzeit Raster ohne Platz ${width}×${height}${query.includes("tz=") ? "" : " ohne tz"}`, [
+      r.got.rows.length === 0 && r.got.world === "off" ? "" : `zeigt ${r.got.rows.length} Zonen (data-world „${r.got.world}“)`,
+      r.got.layout === auto.got.layout ? "" : `Layout ${r.got.layout} statt ${auto.got.layout}`,
+      r.got.timeHeight >= auto.got.timeHeight - 1 ? "" : `Zeit ${Math.round(r.got.timeHeight)} px statt ${Math.round(auto.got.timeHeight)} px`, ...base(r)]);
+  }
+  for (const [width, height, zones] of [[320, 240, "America/Argentina/ComodRivadavia,Asia/Tokyo"], [200, 400, "Europe/London,Asia/Tokyo"]]) {
+    // Festes Banner auf schmaler Fläche: Eine Zelle, die breiter ist als die Spalte, ragt nicht aus der Bühne.
+    const r = await sized(width, height, `?kiosk=1&layout=banner&tz=${zones}`);
+    note(`/clock Weltzeit breite Zelle im Banner ${width}×${height}`, [r.got.layout === "banner" ? "" : `Layout ${r.got.layout}`, ...base(r)]);
+  }
+  for (const [width, height, query, n, more, rows] of [
+    [800, 480, "?tz=Europe/London,America/New_York,Asia/Tokyo,Asia/Kolkata", 3, "+1", 1],
+    [800, 480, `?${Z6}`, 3, "+3", 1], [800, 400, `?kiosk=1&${Z6}`, 3, "+3", 1],
+    [1280, 400, `?kiosk=1&${Z6}`, 5, "+1", 2]]) {
+    // Der Hinweis „+n“ steht in der Zeile der letzten Zone und zählt nicht als eigene Zeile.
+    const r = await sized(width, height, query, { at: JAN });
+    const label = more === "+1" ? "1 weitere Zeitzone passt hier nicht" : `${more.slice(1)} weitere Zeitzonen passen hier nicht`;
+    note(`/clock Weltzeit „${more}“ in der Zeile ${width}×${height}${query.includes("kiosk") ? " Kiosk" : ""}`, [
+      r.got.rows.length === n && r.got.more === more ? "" : `${r.got.rows.length} Zonen und „${r.got.more}“ statt ${n} und „${more}“`,
+      r.got.moreLabel === label ? "" : `Text-Alternative „${r.got.moreLabel}“`, r.got.lines === rows ? "" : `${r.got.lines} Zeilen statt ${rows}`, ...base(r)]);
+  }
+  {
+    const r = await sized(1920, 1080, `?${LONG}`);
+    note("/clock Weltzeit „+2“ in der zweiten Zeile", [r.got.rows.length === 4 && r.got.more === "+2" && r.got.lines === 2 ? ""
+      : `${r.got.rows.length} Zonen, „${r.got.more}“, ${r.got.lines} Zeilen`, ...base(r)]);
+  }
+  for (const [label, width, height, query, at] of [
+    ["Timecode 360×640", 360, 640, "?layout=world&design=tc&tz=America/Argentina/Buenos_Aires,America/Los_Angeles,Asia/Ho_Chi_Minh,Europe/London,Asia/Tokyo,Australia/Sydney", JAN],
+    ["Countdown 360×640", 360, 640, "?layout=world&until=20:15&label=Sendung&tz=America/Argentina/Buenos_Aires,America/Los_Angeles,Asia/Ho_Chi_Minh,Europe/London,Asia/Tokyo,Australia/Sydney", JAN],
+    ["320×568", 320, 568, "?layout=world&tz=America/Argentina/Buenos_Aires,America/Los_Angeles,Asia/Ho_Chi_Minh,Europe/London,Asia/Tokyo,Australia/Sydney", JAN],
+    ["lange Kurznamen 390×844 mit Rand", 390, 844, `?layout=world&safe=10&${LONG}`, CLOCK_SERVER]]) {
+    // Fast hochformatige Fläche: Passen zwei Zellen nicht nebeneinander, steht das Raster als eine Spalte mit allen Zonen.
+    const r = await sized(width, height, query, { at });
+    note(`/clock Weltzeit Raster einspaltig ${label}`, [r.got.rows.length === 6 && !r.got.more ? "" : `${r.got.rows.length} von 6 („${r.got.more}“)`,
+      r.got.flow === "list" && r.got.lines === 6 ? "" : `Anordnung ${r.got.flow}, ${r.got.lines} Zeilen`,
+      r.got.smallest >= 11.5 ? "" : `Schrift nur ${r.got.smallest} px`, ...base(r)]);
+  }
+  {
+    // Leerzeichen nach dem Komma (auch als „+“): Die Liste gilt.
+    const r = await single("?tz=Europe/London,%20Asia/Tokyo&tzl=LON,+TYO");
+    note("/clock Weltzeit Leerzeichen nach dem Komma", [want(r.got, [`LON 09:15 ${M}1 h`, "TYO 17:15 +7 h"]), ...base(r)]);
+  }
+  {
+    // ?h12=1: Zonen wie die große Zeit zwölfstündig mit AM/PM – in Raster, Leiste und als zweite Zeitzone.
+    const grid = await single(`?layout=world&h12=1&${Z6}`, { at: JAN });
+    note("/clock Weltzeit h12 im Raster", [want(grid.got, [`London 12:00 PM ${M}1 h`, `New York 07:00 AM ${M}6 h`, "Tokyo 09:00 PM +8 h",
+      "Kolkata 05:30 PM +4:30 h", "Sydney 11:00 PM +10 h", "Kiritimati 02:00 AM +13 h +1 Tag"]),
+    grid.got.local.endsWith("PM") ? "" : `Uhr zeigt ${grid.got.local}`, grid.got.smallest >= 11.5 ? "" : `Schrift nur ${grid.got.smallest} px`, ...base(grid)]);
+    const bar = await single("?h12=1&tz=Europe/London,Asia/Tokyo", { at: JAN });
+    note("/clock Weltzeit h12 in der Leiste", [want(bar.got, [`London 12:00 PM ${M}1 h`, "Tokyo 09:00 PM +8 h"]), ...base(bar)]);
+    const one = await single("?h12=1&tz=Asia/Tokyo&tzl=TYO", { at: JAN });
+    note("/clock Weltzeit h12 mit einer Zone", [one.got.tz2 === "TYO 09:00 PM" ? "" : `zweite Zeitzone „${one.got.tz2}“`, ...base(one)]);
+    const h24 = await single(`?layout=world&${Z6}`, { at: JAN });
+    note("/clock Weltzeit ohne h12", [h24.got.rows[2] === "Tokyo 21:00 +8 h" ? "" : `zeigt ${h24.got.rows[2]}`, ...base(h24)]);
+  }
+  {
+    // Leiste nutzt freie Höhe: bei 768×1024 alle sechs Zonen, die Zonenzeit deutlich über der Grundgröße, die Zeit so
+    // groß wie ohne Zonen. Wo nichts frei ist (1920×200), bleibt alles in der Bühne.
+    const r = await sized(768, 1024, `?${Z6}`);
+    const plain = await sized(768, 1024, "");
+    note("/clock Weltzeit Leiste wächst 768×1024", [r.got.rows.length === 6 ? "" : `${r.got.rows.length} von 6`,
+      r.got.zoneFont >= 24 ? "" : `Zonenzeit nur ${r.got.zoneFont.toFixed(1)} px`,
+      r.got.zoneFont <= r.got.timeHeight * 0.2 + 0.5 ? "" : `Zonenzeit ${r.got.zoneFont.toFixed(1)} px bei ${Math.round(r.got.timeHeight)} px Zeit`,
+      r.got.timeHeight >= plain.got.timeHeight - 1 ? "" : `Zeit ${Math.round(r.got.timeHeight)} px statt ${Math.round(plain.got.timeHeight)} px`, ...base(r)]);
+  }
+  {
+    // Panel „Anpassen“: „A, B“ gilt, das Feld hat eine Vorschlagsliste – auch für die Zone nach dem Komma.
+    const { ctx, page, msgs } = await openPausedClock(browser, { width: 1280, height: 900, query: "" });
+    await page.click("#mode-custom");
+    await page.fill("#custom-tz", "Europe/London, Asia/Tokyo");
+    const typed = await page.evaluate(() => {
+      const input = document.getElementById("custom-tz");
+      const list = document.getElementById(input.getAttribute("list") || "");
+      return { invalid: input.getAttribute("aria-invalid"), list: input.getAttribute("list"), options: list ? [...list.options].map((o) => o.value) : [] };
+    });
+    await page.fill("#custom-tz", "Europe/London, Mars/Olympus");
+    const wrong = await page.getAttribute("#custom-tz", "aria-invalid");
+    await page.fill("#custom-tz", "");
+    const empty = await page.evaluate(() => [...document.getElementById("custom-zones").options].map((o) => o.value));
+    const got = await page.evaluate(worldState);
+    await ctx.close();
+    note("/clock Weltzeit Panel: Zonen mit Leerzeichen und Vorschlagsliste", [typed.invalid === "false" ? "" : "„A, B“ als ungültig markiert",
+      wrong === "true" ? "" : "unbekannte Zone nicht markiert", typed.list === "custom-zones" ? "" : `list „${typed.list}“`,
+      typed.options.includes("Europe/London, Asia/Tokyo") && typed.options.includes("Europe/London, America/New_York")
+        && !typed.options.includes("Europe/London, Europe/London") ? "" : `Vorschläge nach dem Komma: ${JSON.stringify(typed.options.slice(0, 3))}`,
+      empty.includes("Europe/London") && empty.length > 100 ? "" : `Vorschläge ohne Eingabe: ${empty.length}`, errors(got, msgs)]);
+  }
+  return { found, lines };
+}
+
+// Studiouhr B4 (clockSignalChecks, TOUR_SIGNAL_ONLY=1): On-Air/REC-Signal aus docs/konzept/studiouhr.md (Abschnitt 2.8,
+// Akzeptanz B: Screenshot-Matrix um On-Air erweitert). Mit angehaltener Playwright-Uhr (page.clock) und gemocktem
+// /api/v1/time steht die Serverzeit fest (10:15:42); die Antwort trägt signal und signal_rev.
+// Matrix: neun Flächen × ON AIR (digital), REC (Studio), ON AIR (Timecode), REC (Weltzeit als Raster), dazu Kachel, Kiosk
+// und E-Ink. Jede Fläche startet ohne Signal und schaltet dann um: Das Layout der Bühne springt dabei nicht. Geprüft: Balken sichtbar mit Text und Symbol (Symbol für Screenreader verborgen), Rahmen am body
+// (durchgezogen bzw. doppelt), nichts bewegt sich, Schrift ab 12 px, Text nicht abgeschnitten, Zeit in der Bühne und
+// unter dem Balken, kein Scrollbalken, keine CSP-Verstöße.
+// Verhalten: ohne signal=1 zeigt der Bildschirm das zentrale Signal nicht und fragt weiter alle 5 s ab, mit signal=1
+// jede Sekunde; ein Wechsel erscheint nach höchstens gut einer Sekunde und wird einmal angesagt; Taste O schaltet lokal
+// („nur dieses Gerät“), mit lock=1 nicht; das zentrale Signal geht vor; fremde Werte zeigen nichts; ohne Antwort des
+// Servers bleibt der Zustand stehen, gestrichelt und mit „Stand ungewiss“; signal=1 wirkt auch aus einem Profil.
+// Dashboard: Karte „On-Air-Signal“ im Reiter „Anzeigen“ setzt den Zustand am echten Server und stellt ihn zurück.
+// Dazu: „Stand ungewiss“ auf 240×135 und 320 px Breite (Symbol und Zustand bleiben im Balken, der Hinweis steht als
+// Kurzfassung da), Größe des Balkens auf 3840×2160 und 1920×200, Taste O neben dem zentralen Signal (wirkt nicht, der
+// Kurzhinweis sagt es und verdeckt den Balken nicht, nach dem zentralen „Aus“ bleibt nichts stehen), und im Dashboard
+// bleibt die Statuszeile über mehrere Neuzeichnungen ruhig und nennt die Ablaufzeit.
+function signalShown() {
+  const $ = (id) => document.getElementById(id);
+  const root = document.documentElement;
+  const body = document.body;
+  const stage = $("clock-stage");
+  const sb = stage.getBoundingClientRect();
+  const vis = (n) => {
+    if (!n) return false;
+    const r = n.getBoundingClientRect();
+    const cs = getComputedStyle(n);
+    return r.width > 0 && r.height > 0 && cs.visibility !== "hidden" && cs.display !== "none";
+  };
+  const bar = $("signal");
+  const icon = bar.querySelector(".clock-signal-icon");
+  const br = bar.getBoundingClientRect();
+  const cs = getComputedStyle(bar);
+  const bs = getComputedStyle(body);
+  const time = [$("local-time"), $("face")].find(vis) || null;
+  const tr = time ? time.getBoundingClientRect() : null;
+  const inBar = (n) => { const r = n.getBoundingClientRect(); return r.left >= br.left - 1 && r.right <= br.right + 1; };
+  const noteNode = [$("signal-note"), $("signal-note-short")].find(vis) || null;
+  const hintNode = $("clock-hint");
+  const hr = hintNode.getBoundingClientRect();
+  return {
+    iconIn: inBar(icon), textIn: inBar($("signal-text")), noteShown: noteNode ? noteNode.textContent : "",
+    noteCut: Boolean(noteNode) && (noteNode.scrollWidth > noteNode.clientWidth + 1 || !inBar(noteNode)),
+    barH: br.height, winH: window.innerHeight,
+    hintOver: !hintNode.hidden && vis(bar) && hr.top < br.bottom && hr.bottom > br.top && hr.left < br.right && hr.right > br.left,
+    shown: vis(bar), state: bar.dataset.signal || "", bodyState: body.dataset.signal || "", hasSignal: body.classList.contains("has-signal"),
+    stale: body.hasAttribute("data-signal-stale"), text: $("signal-text").textContent, note: $("signal-note").textContent,
+    icon: vis(icon), iconHidden: icon.getAttribute("aria-hidden"), iconStyle: `${getComputedStyle(icon).borderTopWidth}|${getComputedStyle(icon).backgroundImage.slice(0, 6)}`,
+    html: bar.querySelectorAll("b, img, script").length, size: parseFloat(cs.fontSize), clipped: bar.scrollWidth > bar.clientWidth + 1,
+    inPage: br.left >= -1 && br.right <= window.innerWidth + 1 && br.top >= -1 && br.bottom <= window.innerHeight + 1,
+    border: bs.borderTopStyle, borderW: parseFloat(bs.borderTopWidth) || 0, sameColor: bs.borderTopColor === cs.backgroundColor,
+    motion: [cs.animationName, cs.transitionDuration, bs.animationName, bs.transitionDuration, getComputedStyle(icon).animationName].join("|"),
+    layout: stage.dataset.layout || "", design: root.dataset.design || "",
+    timeIn: !tr || (tr.left >= sb.left - 1 && tr.right <= sb.right + 1 && tr.top >= sb.top - 1 && tr.bottom <= sb.bottom + 1),
+    timeBelow: !tr || !vis(bar) || tr.top >= br.bottom - 1, stageBelow: !vis(bar) || sb.top >= br.bottom - 1,
+    local: $("local-time").textContent, hint: $("clock-hint").hidden ? "" : $("clock-hint").textContent, live: $("clock-live").textContent,
+    keyO: [...document.querySelectorAll("#keys kbd")].some((k) => k.textContent === "O"),
+    overflow: root.scrollWidth - root.clientWidth, vscroll: root.scrollHeight - root.clientHeight, csp: window.__csp || [],
+  };
+}
+
+async function clockSignalChecks(browser) {
+  const found = [];
+  const lines = [];
+  const note = (label, problems) => {
+    const list = problems.filter(Boolean);
+    lines.push(`${label}: ${list.length ? list.join("; ") : "ok"}`);
+    if (list.length) found.push(`${label}: ${list.join("; ")}`);
+  };
+  const errors = (got, msgs) => (got.csp.length || msgs.length ? `Fehler ${JSON.stringify([...got.csp, ...msgs])}` : "");
+  const scroll = (got) => (got.overflow > 0 || got.vscroll > 0 ? `Scrollbalken (${got.overflow}/${got.vscroll} px)` : "");
+  const answer = (extra = {}) => (ms) => ({ t1: ms / 1000, t2: ms / 1000, synchronised: true, running: true, level: "good",
+    accuracy: 0.0004, stratum: 1, leap: "Normal", leap_next: null, source_kind: "GPS + PPS", source: null, public: true,
+    zone: "Europe/Berlin", ptp_state: "off", holdover: false, holdover_seconds: null, signal: "off", signal_rev: "aaaa00000001",
+    ...(typeof extra === "function" ? extra() : extra) });
+  const TEXT = { on_air: "ON AIR", rec: "REC" };
+  const BORDER = { on_air: "solid", rec: "double" };
+  const look = (got, state) => [
+    got.shown && got.hasSignal ? "" : "Balken nicht sichtbar",
+    got.state === state && got.bodyState === state ? "" : `Zustand ${got.state}/${got.bodyState} statt ${state}`,
+    got.text === TEXT[state] ? "" : `Text „${got.text}“ statt „${TEXT[state]}“`,
+    got.icon && got.iconHidden === "true" ? "" : "Symbol fehlt oder nicht verborgen",
+    got.border === BORDER[state] && got.borderW >= 4 && got.sameColor ? "" : `Rahmen ${got.borderW}px ${got.border}`,
+    /^none\|0s\|none\|0s\|none$/.test(got.motion) ? "" : `Bewegung ${got.motion}`,
+    got.size >= 12 ? "" : `Schrift ${got.size} px`, got.clipped ? "Text abgeschnitten" : "", got.inPage ? "" : "Balken außerhalb der Seite",
+    got.timeIn ? "" : "Zeit außerhalb der Bühne", got.timeBelow && got.stageBelow ? "" : "Balken überdeckt die Bühne",
+    got.html ? "HTML im Balken" : ""];
+
+  // --- Matrix: neun Flächen × Zustand und Design ---------------------------------------------------------------
+  const WORLD = "layout=world&tz=Europe/London,America/New_York,Asia/Tokyo&tzl=LON,NYC,TYO";
+  const VARIANTS = [["onair", "?signal=1", "on_air"], ["rec-studio", "?signal=1&design=studio", "rec"],
+    ["onair-tc", "?signal=1&design=tc", "on_air"], ["rec-world", `?signal=1&${WORLD}`, "rec"]];
+  const icons = {};
+  for (const [width, height] of STUDIO_VIEWPORTS) {
+    for (const [name, query, state] of VARIANTS) {
+      // Erst ohne Signal, dann schaltet der Server um: Das Layout der Bühne bleibt dasselbe.
+      let now = "off";
+      const { ctx, page, msgs, clock } = await openPausedClock(browser, { width, height, query, reply: answer(() => ({ signal: now })) });
+      const before = await page.evaluate(signalShown);
+      now = state;
+      await clock.run(1250);
+      const got = await page.evaluate(signalShown);
+      if (SHOTS) await page.screenshot({ path: `${SHOTS}/signal_${width}x${height}_${name}.png` });
+      await ctx.close();
+      icons[state] = got.iconStyle;
+      note(`/clock Signal ${name} ${width}×${height} [${got.layout || "?"}]`, [...look(got, state),
+        before.shown || before.hasSignal ? "ohne Signal schon sichtbar" : "", scroll(before),
+        before.layout === got.layout ? "" : `Layout springt beim Schalten von ${before.layout} auf ${got.layout}`,
+        scroll(got), errors(got, msgs)]);
+    }
+  }
+  note("/clock Signal Symbole", [icons.on_air && icons.rec && icons.on_air !== icons.rec ? "" : `ON AIR und REC mit gleichem Symbol (${icons.on_air})`]);
+  for (const [width, height, query, state] of [[480, 270, "?signal=1&layout=tile", "on_air"], [240, 135, "?signal=1&layout=tile&design=tc", "rec"],
+    [1920, 100, "?signal=1&layout=strip", "on_air"], [1280, 720, "?signal=1&kiosk=1&design=bahnhof", "rec"],
+    [1280, 720, "?signal=1&eink=1", "on_air"], [1280, 720, "?signal=1&bg=transparent&layout=tile", "rec"],
+    [1280, 720, "?signal=1&until=10:20&cd=main", "on_air"]]) {
+    const { ctx, page, msgs } = await openPausedClock(browser, { width, height, query, reply: answer({ signal: state }) });
+    const got = await page.evaluate(signalShown);
+    await ctx.close();
+    note(`/clock Signal ${query} ${width}×${height}`, [...look(got, state), scroll(got), errors(got, msgs)]);
+  }
+  {
+    const { ctx, page, msgs } = await openPausedClock(browser, { width: 1280, height: 720, query: "?signal=1", red: true, reply: answer({ signal: "on_air" }) });
+    const got = await page.evaluate(signalShown);
+    await ctx.close();
+    note("/clock Signal Rotlicht", [...look(got, "on_air"), errors(got, msgs)]);
+  }
+
+  // Höhen um die Grenze zum automatischen Streifen (Kopfzeile und Band fallen weg): Das Layout ist mit und ohne Signal
+  // dasselbe und pendelt nicht zwischen Streifen und Banner.
+  for (const height of [170, 180, 186, 190, 194, 200, 230, 244]) {
+    let now = "off";
+    const { ctx, page, msgs, clock } = await openPausedClock(browser, { width: 1920, height, query: "?signal=1", reply: answer(() => ({ signal: now })) });
+    const before = await page.evaluate(signalShown);
+    now = "rec";
+    await clock.run(1250);
+    const seen = [];
+    for (let i = 0; i < 6; i += 1) {
+      seen.push((await page.evaluate(signalShown)).layout);
+      await page.waitForTimeout(60);
+    }
+    const got = await page.evaluate(signalShown);
+    now = "off";
+    await clock.run(1250);
+    const after = await page.evaluate(signalShown);
+    await ctx.close();
+    note(`/clock Signal 1920×${height} [${before.layout} → ${got.layout} → ${after.layout}]`, [...look(got, "rec"),
+      new Set([before.layout, ...seen, got.layout, after.layout]).size === 1 ? "" : `Layout wechselt: ${before.layout}, ${seen.join(", ")}, ${after.layout}`,
+      scroll(before), scroll(got), scroll(after), errors(got, msgs)]);
+  }
+
+  // --- Nur mit signal=1, Abfragetakt ---------------------------------------------------------------------------
+  for (const [query, shown, min, max] of [["?signal=1", true, 9, 12], ["", false, 1, 3], ["?signal=0", false, 1, 3]]) {
+    const { ctx, page, msgs, clock } = await openPausedClock(browser, { width: 1280, height: 720, query, reply: answer({ signal: "rec" }) });
+    const before = clock.hits;
+    await clock.run(10000);
+    const polls = clock.hits - before;
+    const got = await page.evaluate(signalShown);
+    await ctx.close();
+    note(`/clock Signal Abfragetakt ${query || "ohne Parameter"}`, [
+      got.shown === shown && got.hasSignal === shown ? "" : `Balken sichtbar=${got.shown}, erwartet ${shown}`,
+      shown || (got.borderW === 0 && got.bodyState === "off") ? "" : `Rahmen ohne signal=1 (${got.borderW}px)`,
+      polls >= min && polls <= max ? "" : `${polls} Abfragen in 10 s (erwartet ${min} bis ${max})`, scroll(got), errors(got, msgs)]);
+  }
+  {
+    // Wechsel am Server: nach höchstens gut einer Sekunde auf dem Bildschirm, einmal angesagt.
+    let now = "off";
+    const { ctx, page, msgs, clock } = await openPausedClock(browser, { width: 1280, height: 720, query: "?signal=1",
+      reply: answer(() => ({ signal: now, signal_rev: `rev-${now}` })) });
+    const off = await page.evaluate(signalShown);
+    now = "on_air";
+    await clock.run(1250);
+    const on = await page.evaluate(signalShown);
+    now = "rec";
+    await clock.run(1250);
+    const rec = await page.evaluate(signalShown);
+    now = "off";
+    await clock.run(1250);
+    const gone = await page.evaluate(signalShown);
+    await ctx.close();
+    note("/clock Signal Wechsel", [off.shown || off.hasSignal || off.live ? `am Anfang sichtbar oder angesagt („${off.live}“)` : "",
+      ...look(on, "on_air"), on.live === "On Air" ? "" : `Ansage „${on.live}“`,
+      ...look(rec, "rec"), rec.live === "Aufnahme läuft" ? "" : `Ansage „${rec.live}“`,
+      gone.shown || gone.hasSignal || gone.borderW ? "nach „off“ noch sichtbar" : "", gone.live === "Signal aus" ? "" : `Ansage „${gone.live}“`,
+      on.local.startsWith("10:15:4") ? "" : `Uhr zeigt ${on.local}`, scroll(on), scroll(gone), errors(gone, msgs)]);
+  }
+
+  // --- Taste O: lokal, nur dieses Gerät ------------------------------------------------------------------------
+  {
+    const { ctx, page, msgs, clock } = await openPausedClock(browser, { width: 1280, height: 720, reply: answer({ signal: "off" }) });
+    const before = await page.evaluate(signalShown);
+    const hits = clock.hits;
+    await page.keyboard.press("o");
+    await page.waitForTimeout(150);
+    const on = await page.evaluate(signalShown);
+    await page.keyboard.press("O");
+    await page.waitForTimeout(150);
+    const off = await page.evaluate(signalShown);
+    await ctx.close();
+    note("/clock Signal Taste O", [before.shown ? "vor der Taste sichtbar" : "", before.keyO ? "" : "O fehlt in der Übersicht der Kürzel",
+      ...look(on, "on_air"), on.note === "nur dieses Gerät" ? "" : `Hinweis „${on.note}“`,
+      /nur auf diesem Gerät/.test(on.hint) ? "" : `Kurzhinweis „${on.hint}“`,
+      off.shown || off.hasSignal ? "zweite Taste schaltet nicht aus" : "", clock.hits === hits ? "" : "Taste löst eine Abfrage aus",
+      scroll(on), errors(off, msgs)]);
+  }
+  for (const [name, query, central, want, local] of [["mit lock=1", "?lock=1", "off", null, false],
+    ["zentrales Signal geht vor", "?signal=1", "rec", "rec", false], ["ohne signal=1 neben zentralem REC", "", "rec", "on_air", true]]) {
+    const { ctx, page, msgs } = await openPausedClock(browser, { width: 1280, height: 720, query, reply: answer({ signal: central }) });
+    await page.keyboard.press("o");
+    await page.waitForTimeout(150);
+    const got = await page.evaluate(signalShown);
+    await ctx.close();
+    note(`/clock Signal Taste O ${name}`, [...(want ? look(got, want) : [got.shown || got.hasSignal ? "Balken trotz lock=1" : ""]),
+      want && (got.note === "nur dieses Gerät") !== local ? `Hinweis „${got.note}“` : "", errors(got, msgs)]);
+  }
+
+  // --- Fremde Werte, fehlende Antwort, Profil ------------------------------------------------------------------
+  for (const value of ["ON_AIR", "<b>rec</b>", "standby", 7, null, ["rec"], true]) {
+    const { ctx, page, msgs } = await openPausedClock(browser, { width: 1280, height: 720, query: "?signal=1", reply: answer({ signal: value }) });
+    const got = await page.evaluate(signalShown);
+    await ctx.close();
+    note(`/clock Signal signal=${JSON.stringify(value)}`, [got.shown || got.hasSignal || got.text ? `zeigt „${got.text}“` : "",
+      got.html ? "HTML im Balken" : "", scroll(got), errors(got, msgs)]);
+  }
+  {
+    let failing = false;
+    const good = answer({ signal: "on_air" });
+    const { ctx, page, msgs, clock } = await openPausedClock(browser, { width: 1280, height: 720, query: "?signal=1",
+      reply: (ms) => (failing ? null : good(ms)) });
+    const before = await page.evaluate(signalShown);
+    failing = true;
+    await clock.run(12000);
+    const after = await page.evaluate(signalShown);
+    failing = false;
+    await clock.run(1500);
+    const back = await page.evaluate(signalShown);
+    await ctx.close();
+    note("/clock Signal ohne Antwort", [...look(before, "on_air"), before.stale || before.note ? "vorher schon ungewiss" : "",
+      after.shown && after.text === "ON AIR" ? "" : "Zustand verschwindet ohne Antwort",
+      after.stale && after.border === "dashed" && /Stand ungewiss/.test(after.note) ? "" : `nicht als ungewiss markiert (${after.border}, „${after.note}“)`,
+      after.clipped ? "Text abgeschnitten" : "", scroll(after),
+      !back.stale && back.border === "solid" && back.note === "" ? "" : "nach neuer Antwort noch ungewiss",
+      msgs.filter((m) => !/503|Failed to load resource/.test(m)).length ? `Fehler ${JSON.stringify(msgs)}` : ""]);
+  }
+  // „Stand ungewiss“ auf schmalen Flächen: Symbol und Zustand bleiben ganz im Balken, der Hinweis ist nicht abgeschnitten.
+  for (const [width, height, query, state, want] of [[240, 135, "?signal=1&layout=tile", "on_air", "ungewiss"],
+    [320, 568, "?signal=1", "rec", "ungewiss"], [390, 844, "?signal=1", "on_air", "ungewiss"],
+    [480, 270, "?signal=1", "rec", "Stand ungewiss – Server antwortet nicht"]]) {
+    let failing = false;
+    const good = answer({ signal: state });
+    const { ctx, page, msgs, clock } = await openPausedClock(browser, { width, height, query, reply: (ms) => (failing ? null : good(ms)) });
+    failing = true;
+    await clock.run(12000);
+    const got = await page.evaluate(signalShown);
+    if (SHOTS) await page.screenshot({ path: `${SHOTS}/signal_stale_${width}x${height}.png` });
+    await ctx.close();
+    note(`/clock Signal ohne Antwort ${width}×${height}`, [got.shown && got.text === TEXT[state] ? "" : `Zustand fehlt („${got.text}“)`,
+      got.stale && got.border === "dashed" ? "" : `nicht als ungewiss markiert (${got.border})`,
+      got.icon && got.iconIn ? "" : "Symbol außerhalb des Balkens", got.textIn ? "" : "Zustand außerhalb des Balkens",
+      got.noteShown === want ? "" : `Hinweis „${got.noteShown}“ statt „${want}“`, got.noteCut ? "Hinweis abgeschnitten" : "",
+      got.clipped ? "Balken abgeschnitten" : "", got.inPage ? "" : "Balken außerhalb der Seite", scroll(got),
+      msgs.filter((m) => !/503|Failed to load resource/.test(m)).length ? `Fehler ${JSON.stringify(msgs)}` : ""]);
+  }
+  // Größe: auf 3840×2160 derselbe Anteil der Höhe wie auf 1920×1080; auf einem flachen Streifen größer als die Untergrenze.
+  {
+    const sizes = {};
+    for (const [width, height] of [[1920, 1080], [3840, 2160], [1920, 200]]) {
+      const { ctx, page, msgs } = await openPausedClock(browser, { width, height, query: "?signal=1&kiosk=1", reply: answer({ signal: "rec" }) });
+      const got = await page.evaluate(signalShown);
+      await ctx.close();
+      sizes[`${width}x${height}`] = got;
+      note(`/clock Signal Größe ${width}×${height}`, [...look(got, "rec"), scroll(got), errors(got, msgs)]);
+    }
+    const hd = sizes["1920x1080"], uhd = sizes["3840x2160"], flat = sizes["1920x200"];
+    note("/clock Signal Größe im Verhältnis", [
+      Math.abs(uhd.size / uhd.winH - hd.size / hd.winH) < 0.001 ? "" : `Schrift auf 4K ${uhd.size} px, auf Full HD ${hd.size} px`,
+      Math.abs(uhd.borderW / uhd.winH - hd.borderW / hd.winH) < 0.001 ? "" : `Rahmen auf 4K ${uhd.borderW} px, auf Full HD ${hd.borderW} px`,
+      flat.size >= 20 ? "" : `Schrift auf 1920×200 nur ${flat.size} px`, flat.borderW >= 8 ? "" : `Rahmen auf 1920×200 nur ${flat.borderW} px`,
+      flat.barH <= 0.2 * flat.winH ? "" : `Balken auf 1920×200 ${flat.barH} px hoch`]);
+  }
+  // Taste O neben dem zentralen Signal: wirkt nicht, der Kurzhinweis sagt es und liegt nicht über dem Balken; nach dem
+  // zentralen „Aus“ steht kein lokales „On Air“ da – auch nicht, wenn es vorher lokal an war.
+  for (const first of [false, true]) {
+    let now = first ? "off" : "rec";
+    const { ctx, page, msgs, clock } = await openPausedClock(browser, { width: 480, height: 270, query: "?signal=1&kiosk=1",
+      reply: answer(() => ({ signal: now, signal_rev: `rev-${now}` })) });
+    let local = null;
+    if (first) {
+      await page.keyboard.press("o");
+      await page.waitForTimeout(150);
+      local = await page.evaluate(signalShown);
+      now = "rec";
+      await clock.run(1200);
+    }
+    await page.keyboard.press("o");
+    await page.waitForTimeout(150);
+    const got = await page.evaluate(signalShown);
+    now = "off";
+    await clock.run(1200);
+    const gone = await page.evaluate(signalShown);
+    await page.keyboard.press("o");
+    await page.waitForTimeout(150);
+    const again = await page.evaluate(signalShown);
+    await ctx.close();
+    note(`/clock Signal Taste O bei zentralem REC${first ? " (vorher lokal an)" : ""}`, [
+      !first || (local.text === "ON AIR" && local.note === "nur dieses Gerät") ? "" : "lokales On Air fehlt am Anfang",
+      !first || !local.hintOver ? "" : "Kurzhinweis liegt über dem lokalen Balken",
+      ...look(got, "rec"), got.note === "" ? "" : `Hinweis im Balken „${got.note}“`,
+      /Zentrales Signal ist an/.test(got.hint) ? "" : `Kurzhinweis „${got.hint}“`, got.hintOver ? "Kurzhinweis liegt über dem Balken" : "",
+      gone.shown || gone.hasSignal ? `nach zentralem Aus steht „${gone.text} ${gone.note}“` : "",
+      again.text === "ON AIR" && again.note === "nur dieses Gerät" ? "" : "nach zentralem Aus schaltet die Taste nicht lokal",
+      scroll(got), errors(again, msgs)]);
+  }
+  {
+    const profile = (name) => (name === "regie" ? { name, title: "Regie 1", builtin: false, params: { signal: "1", design: "studio" },
+      profiles_rev: "aaaa00000001" } : null);
+    const { ctx, page, msgs } = await openPausedClock(browser, { width: 1280, height: 720, query: "?p=regie", profile,
+      reply: answer({ signal: "rec", profiles_rev: "aaaa00000001" }) });
+    const got = await page.evaluate(signalShown);
+    await ctx.close();
+    note("/clock Signal aus dem Profil", [...look(got, "rec"), got.design === "studio" ? "" : `Design ${got.design}`, scroll(got), errors(got, msgs)]);
+  }
+
+  // --- Dashboard: Karte im Reiter „Anzeigen“ am echten Server ---------------------------------------------------
+  for (const width of [390, 1440]) {
+    const ctx = await browser.newContext({ viewport: { width, height: 900 } });
+    const page = await ctx.newPage();
+    const msgs = [];
+    page.on("console", (m) => { if (m.type() === "error") msgs.push(m.text()); });
+    page.on("pageerror", (e) => msgs.push(`pageerror: ${e.message}`));
+    const problems = [];
+    try {
+      await page.goto(`${BASE}/#/uhr/anzeigen`, { waitUntil: "load" });
+      await page.waitForSelector("#displays-signal-card", { timeout: 10000 });
+      const stateText = () => page.evaluate(() => document.getElementById("displays-signal-state").textContent);
+      const server = async () => (await apiJson("/api/v1/time")).signal;
+      await page.waitForFunction(() => /^Jetzt: /.test(document.getElementById("displays-signal-state").textContent), null, { timeout: 5000 });
+      if (await stateText() !== "Jetzt: aus") problems.push(`Anfang „${await stateText()}“`);
+      for (const [state, text] of [["on_air", "Jetzt: ON AIR"], ["rec", "Jetzt: REC – geht um etwa "], ["off", "Jetzt: aus"]]) {
+        if (state === "rec") await page.selectOption("#displays-signal-ttl", "300");
+        await page.click(`#displays-signal-card button[data-signal="${state}"]`);
+        await page.waitForFunction((want) => { const now = document.getElementById("displays-signal-state").textContent;
+          return want.endsWith(" ") ? now.startsWith(want) : now === want; }, text, { timeout: 5000 })
+          .catch(() => problems.push(`nach „${state}“ steht „…“ statt „${text}“`));
+        const now = await server();
+        if (now !== state) problems.push(`Server meldet ${now} statt ${state}`);
+        if (state !== "rec") continue;
+        // Mit Ablaufzeit: Statuszeile und Meldung nennen sie. Über mehrere Neuzeichnungen der Seite (alle 5 s) bleibt
+        // der Text stehen – kein „Zustand unbekannt“ dazwischen – und /api/v1/time wird nicht öfter als alle 5 s gelesen.
+        const shown = await stateText();
+        if (!/^Jetzt: REC – geht um etwa \d{1,2}[:.]\d{2}( [AP]M)? von selbst aus$/.test(shown)) problems.push(`Ablaufzeit fehlt: „${shown}“`);
+        const toastText = await page.evaluate(() => document.body.textContent);
+        if (!/Signal: REC – aus in 5 min/.test(toastText)) problems.push("Meldung nennt die Ablaufzeit nicht");
+        let reads = 0;
+        const count = (req) => { if (/\/api\/v1\/time(\?|$)/.test(req.url())) reads += 1; };
+        page.on("request", count);
+        await page.evaluate(() => {
+          window.__signalTexts = [];
+          const seen = () => { const node = document.getElementById("displays-signal-state");
+            const now = node ? node.textContent : "(fehlt)";
+            if (window.__signalTexts[window.__signalTexts.length - 1] !== now) window.__signalTexts.push(now); };
+          seen();
+          new MutationObserver(seen).observe(document.body, { childList: true, subtree: true, characterData: true });
+        });
+        await page.waitForTimeout(11500);
+        page.off("request", count);
+        const texts = await page.evaluate(() => window.__signalTexts);
+        if (texts.length !== 1 || texts[0] !== shown) problems.push(`Statuszeile wechselt ohne Anlass: ${JSON.stringify(texts)}`);
+        if (reads < 1 || reads > 3) problems.push(`${reads} Abrufe von /api/v1/time in 11,5 s`);
+        const label = await page.evaluate(() => document.querySelector('label[for="displays-signal-ttl"]').textContent);
+        if (label !== "Beim Setzen: automatisch aus nach") problems.push(`Etikett „${label}“`);
+      }
+      // Eine schon laufende Zustandsabfrage (alle 5 s) antwortet erst nach dem Schaltbefehl mit dem alten Zustand:
+      // Die Karte bleibt beim gerade gesetzten Zustand und nennt die Ablaufzeit weiter.
+      {
+        let release = () => {};
+        const gate = new Promise((resolve) => { release = resolve; });
+        let held = 0;
+        const slow = async (route) => {
+          const response = await route.fetch();   // der Zustand vor dem Schalten
+          held += 1;
+          await gate;
+          await route.fulfill({ response });
+        };
+        await page.route("**/api/v1/time", slow);
+        const until = Date.now() + 8000;
+        while (!held && Date.now() < until) await page.waitForTimeout(100);
+        if (!held) problems.push("keine Zustandsabfrage in 8 s");
+        await page.click('#displays-signal-card button[data-signal="on_air"]');
+        await page.waitForFunction(() => /^Jetzt: ON AIR – geht um etwa /.test(document.getElementById("displays-signal-state").textContent),
+          null, { timeout: 5000 }).catch(() => problems.push("nach dem Schalten steht nicht „ON AIR“ mit Ablaufzeit"));
+        const set = await stateText();
+        release();
+        await page.waitForTimeout(1200);
+        await page.unroute("**/api/v1/time", slow);
+        const after = await stateText();
+        if (after !== set) problems.push(`ältere Abfrage überschreibt den Schaltbefehl: „${after}“ statt „${set}“`);
+        await page.waitForTimeout(5500);   // die nächste Abfrage bestätigt den Zustand
+        if (await stateText() !== set) problems.push(`nach der nächsten Abfrage „${await stateText()}“ statt „${set}“`);
+        await page.click('#displays-signal-card button[data-signal="off"]');
+        await page.waitForFunction(() => document.getElementById("displays-signal-state").textContent === "Jetzt: aus", null, { timeout: 5000 })
+          .catch(() => problems.push("„Aus“ nach der verzögerten Abfrage wirkt nicht"));
+      }
+      const card = await page.evaluate(() => {
+        const node = document.getElementById("displays-signal-card");
+        const buttons = [...node.querySelectorAll("button[data-signal]")];
+        return { buttons: buttons.map((b) => b.textContent), pressed: buttons.some((b) => b.hasAttribute("aria-pressed")),
+          described: buttons.every((b) => b.getAttribute("aria-describedby") === "displays-signal-state"),
+          small: buttons.some((b) => b.getBoundingClientRect().height < 24), info: Boolean(node.querySelector("button.info, .info")),
+          text: node.textContent, overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth };
+      });
+      if (JSON.stringify(card.buttons) !== JSON.stringify(["ON AIR", "REC", "Aus"])) problems.push(`Knöpfe ${JSON.stringify(card.buttons)}`);
+      if (card.pressed || !card.described) problems.push("Knöpfe mit Umschalter-Zustand oder ohne Bezug zum Zustandstext");
+      if (card.small) problems.push("Knopf niedriger als 24 px");
+      if (!/kein Tally/.test(card.text)) problems.push("Hinweis „kein Tally“ fehlt");
+      if (card.overflow > 0) problems.push(`Überbreite ${card.overflow} px`);
+      if (SHOTS) await page.locator("#displays-signal-card").screenshot({ path: `${SHOTS}/signal_anzeigen_${width}.png` });
+    } catch (error) {
+      problems.push(`Abbruch: ${error.message.split("\n")[0]}`);
+    }
+    await apiJson("/api/v1/clock/signal", { state: "off" });
+    if (msgs.length) problems.push(`Fehler ${JSON.stringify(msgs)}`);
+    await ctx.close();
+    note(`#/uhr/anzeigen On-Air-Signal ${width}`, problems);
+  }
+  return { found, lines };
+}
+
+// Studiouhr B3 und B5 (clockStatusChecks, TOUR_STATUS_ONLY=1): Statuszeile, Kachel und Prüfbild aus
+// docs/konzept/studiouhr.md (Abschnitte 2.6, 2.7, Akzeptanz B). Mit angehaltener Playwright-Uhr (page.clock) und
+// gemocktem /api/v1/time steht die Serverzeit fest (10:15:42).
+// Statuszeile: ptp_state und holdover als Marken im Band – Symbol und Text, in der Seite, ohne Überbreite; ausgeschaltetes
+// PTP, unbekannte und fremde Werte (Kennung, HTML) zeigen nichts; ?show= ohne status blendet Marken und Zustandszeile
+// aus; ohne Antwort des Servers verschwinden sie.
+// Kachel (?layout=tile): Titel des Profils oben links, Zustandssymbol (bei Holdover zusätzlich „H“) oben rechts, Countdown
+// mit Symbol – alles in der Bühne, nichts überdeckt die Zeit oder einander, kein Scrollbalken.
+// Prüfbild (?test=sync): Warnhinweis sichtbar; die Fläche wechselt nur an der Sekundengrenze der angezeigten Zeit, über
+// sechs Sekunden genau sechsmal; Pfeiltaste ändert den Vorlauf; Esc beendet und schreibt lead= in die Adresse – auch mit
+// lock=1; aus Profil und gemerktem Stand startet es nicht; bei „weniger Bewegung“ und auf E-Ink nur der Hinweistext
+// (auch bei wenig Höhe). /clock?test=sync nimmt den gemerkten Stand als Grundlage und merkt den Vorlauf dort; mit Profil
+// steht ein eingemessener Wert 0 als lead=0 in der Adresse; hinter dem Prüfbild ruhen die Kürzel der Uhr; mit lock=1
+// nennt der Text keine Pfeiltasten; Knöpfe und Texte wachsen mit der Fläche. Die Dauer des Holdovers im Band steht in
+// einem Element mit aria-live="off".
+function statusState() {
+  const root = document.documentElement;
+  const stage = document.getElementById("clock-stage");
+  const sb = stage.getBoundingClientRect();
+  const vis = (n) => {
+    if (!n) return false;
+    const r = n.getBoundingClientRect();
+    const cs = getComputedStyle(n);
+    return r.width > 0 && r.height > 0 && cs.visibility !== "hidden" && cs.display !== "none";
+  };
+  const rect = (n) => { const r = n.getBoundingClientRect(); return { left: r.left, top: r.top, right: r.right, bottom: r.bottom, w: r.width, h: r.height }; };
+  const inStage = (n) => { const r = n.getBoundingClientRect();
+    return r.left >= sb.left - 1 && r.right <= sb.right + 1 && r.top >= sb.top - 1 && r.bottom <= sb.bottom + 1; };
+  const inPage = (n) => { const r = n.getBoundingClientRect(); return r.left >= -1 && r.right <= window.innerWidth + 1 && r.bottom <= window.innerHeight + 1; };
+  const apart = (a, b) => { const x = a.getBoundingClientRect(); const y = b.getBoundingClientRect();
+    return x.right <= y.left + 1 || y.right <= x.left + 1 || x.bottom <= y.top + 1 || y.bottom <= x.top + 1; };
+  const $ = (id) => document.getElementById(id);
+  const chip = (id) => (vis($(id)) ? { text: $(id).textContent.replace(/\s+/g, " ").trim(), icon: $(id).querySelector(".clock-chip-icon").textContent.trim(),
+    hidden: $(id).querySelector(".clock-chip-icon").getAttribute("aria-hidden"), level: $(id).dataset.level || "", state: $(id).dataset.state || "",
+    inPage: inPage($(id)), size: parseFloat(getComputedStyle($(id)).fontSize), title: $(id).getAttribute("title") || "" } : null);
+  const time = [$("local-time"), $("face")].find(vis) || null;
+  const title = $("tile-title");
+  const sync = $("clock-sync-icon");
+  const hold = $("clock-hold");
+  const cd = $("cd");
+  const test = $("sync-test");
+  const flash = $("sync-test-flash");
+  return {
+    layout: stage.dataset.layout || "", band: vis($("band")), bandStatus: vis($("band-status")),
+    ptp: chip("chip-ptp"), hold: chip("chip-hold"), html: document.querySelectorAll("#band b, #band img, #band script").length,
+    syncLine: vis($("clock-sync")), syncText: $("clock-sync-text").textContent,
+    title: vis(title) ? { text: title.textContent, box: rect(title), inStage: inStage(title), size: parseFloat(getComputedStyle(title).fontSize),
+      clipped: title.scrollWidth > title.clientWidth + 1 } : null,
+    titleText: title.textContent, barTitle: vis($("clock-title")) ? $("clock-title").textContent : "",
+    syncIcon: vis(sync) ? { text: sync.textContent.trim(), inStage: inStage(sync), box: rect(sync) } : null,
+    holdIcon: vis(hold) ? { text: hold.querySelector(".clock-hold-icon").textContent, label: $("clock-hold-text").textContent,
+      inStage: inStage(hold), box: rect(hold) } : null,
+    time: time ? { text: time.id === "local-time" ? time.textContent : "", inStage: inStage(time), box: rect(time) } : null,
+    cd: vis(cd) ? { icon: $("cd-icon").textContent.trim(), iconShown: vis($("cd-icon")), text: $("cd-time").textContent, inStage: inStage(cd),
+      level: cd.dataset.level, oneLine: (() => { const i = $("cd-icon").getBoundingClientRect(); const t = $("cd-time").getBoundingClientRect();
+        const mid = (i.top + i.bottom) / 2; return mid > t.top && mid < t.bottom && i.right <= t.left + 1; })() } : null,
+    apart: {
+      titleTime: !(vis(title) && time) || apart(title, time), titleSync: !(vis(title) && vis(sync)) || apart(title, sync),
+      titleHold: !(vis(title) && vis(hold)) || apart(title, hold), syncTime: !(vis(sync) && time) || apart(sync, time),
+      holdSync: !(vis(hold) && vis(sync)) || apart(hold, sync), cdTime: !(vis(cd) && time) || apart(cd, time),
+      titleCd: !(vis(title) && vis(cd)) || apart(title, cd),
+    },
+    test: { shown: vis(test), mode: test.dataset.mode || "", inStage: vis(test) ? inStage(test) : true,
+      warn: vis($("sync-test-warn")) ? $("sync-test-warn").textContent.replace(/\s+/g, " ").trim() : "",
+      warnSize: vis($("sync-test-warn")) ? parseFloat(getComputedStyle($("sync-test-warn")).fontSize) : 0,
+      warnIn: !vis($("sync-test-warn")) || inStage($("sync-test-warn")),
+      flash: vis(flash), on: flash.dataset.on, sec: $("sync-test-sec").textContent, bg: getComputedStyle(flash).backgroundColor,
+      area: vis(flash) ? Math.round(flash.getBoundingClientRect().width * flash.getBoundingClientRect().height) : 0,
+      motion: `${getComputedStyle(flash).transitionDuration}|${getComputedStyle(flash).animationName}`,
+      note: vis($("sync-test-note")) ? $("sync-test-note").textContent : "", noteText: $("sync-test-note").textContent,
+      lead: $("sync-test-lead").textContent, stop: vis($("sync-test-stop")) && inStage($("sync-test-stop")), tone: vis($("sync-test-tone")),
+      steps: vis($("sync-test-less")) || vis($("sync-test-more")), pressed: $("sync-test-tone").getAttribute("aria-pressed"),
+      noteIn: vis($("sync-test-note")) && inStage($("sync-test-note")), noteSize: parseFloat(getComputedStyle($("sync-test-note")).fontSize),
+      stopSize: parseFloat(getComputedStyle($("sync-test-stop")).fontSize), stopH: $("sync-test-stop").getBoundingClientRect().height },
+    design: root.dataset.design || "", inert: $("clock-main").inert === true, cdShown: vis(cd),
+    holdSince: { live: $("chip-hold-since").getAttribute("aria-live"), text: $("chip-hold-since").textContent, main: $("chip-hold-text").textContent },
+    stored: (() => { try { return localStorage.getItem("ntp-gui-clock-custom"); } catch (e) { return null; } })(),
+    local: $("local-time").textContent, search: window.location.search, hint: $("clock-hint").hidden ? "" : $("clock-hint").textContent,
+    overflow: root.scrollWidth - root.clientWidth, vscroll: root.scrollHeight - root.clientHeight, csp: window.__csp || [],
+  };
+}
+
+async function clockStatusChecks(browser) {
+  const found = [];
+  const lines = [];
+  const note = (label, problems) => {
+    const list = problems.filter(Boolean);
+    lines.push(`${label}: ${list.length ? list.join("; ") : "ok"}`);
+    if (list.length) found.push(`${label}: ${list.join("; ")}`);
+  };
+  const errors = (got, msgs) => (got.csp.length || msgs.length ? `Fehler ${JSON.stringify([...got.csp, ...msgs])}` : "");
+  const scroll = (got) => (got.overflow > 0 || got.vscroll > 0 ? `Scrollbalken (${got.overflow}/${got.vscroll} px)` : "");
+  const answer = (extra = {}) => (ms) => ({ t1: ms / 1000, t2: ms / 1000, synchronised: true, running: true, level: "good",
+    accuracy: 0.0004, stratum: 1, leap: "Normal", leap_next: null, source_kind: "GPS + PPS", source: null, public: true,
+    zone: "Europe/Berlin", ptp_state: "off", holdover: false, holdover_seconds: null, ...extra });
+  const profileOf = (params = {}, title = "Regie 1") => (name) => (name === "regie"
+    ? { name, title, builtin: false, params, profiles_rev: "aaaa00000001" } : null);
+  const M = "−";
+
+  // --- Statuszeile ---------------------------------------------------------------------------------------------
+  for (const [width, height] of [[1920, 1080], [390, 844], [768, 1024]]) {
+    const { ctx, page, msgs } = await openPausedClock(browser, { width, height,
+      reply: answer({ ptp_state: "locked", holdover: true, holdover_seconds: 185 }) });
+    const got = await page.evaluate(statusState);
+    await ctx.close();
+    note(`/clock Statuszeile ${width}×${height}`, [
+      got.band && got.bandStatus ? "" : "Marken im Band nicht sichtbar",
+      got.ptp && got.ptp.text === "◆ PTP eingerastet" ? "" : `PTP „${got.ptp && got.ptp.text}“`,
+      got.ptp && got.ptp.icon && got.ptp.hidden === "true" && got.ptp.level === "good" && got.ptp.state === "locked" ? "" : `PTP-Symbol ${JSON.stringify(got.ptp)}`,
+      got.hold && got.hold.text === "H Holdover seit 3 min" ? "" : `Holdover „${got.hold && got.hold.text}“`,
+      got.hold && got.hold.icon === "H" && got.hold.hidden === "true" && got.hold.title ? "" : "Holdover ohne Symbol oder Erklärung",
+      // Die Dauer wechselt jede Minute: Im Band (Live-Region) steht sie in einem Element, das nicht angesagt wird.
+      got.holdSince.live === "off" && got.holdSince.text === "seit 3 min" && got.holdSince.main === "Holdover" ? "" : `Dauer des Holdovers ${JSON.stringify(got.holdSince)}`,
+      got.ptp && got.hold && got.ptp.inPage && got.hold.inPage ? "" : "Marke außerhalb der Seite",
+      got.ptp && got.ptp.size >= 12 ? "" : `Schrift ${got.ptp && got.ptp.size} px`,
+      got.holdIcon ? "Holdover-Symbol der Kachel trotz Band" : "",
+      got.local.startsWith("10:15:42") ? "" : `Uhr zeigt ${got.local}`, scroll(got), errors(got, msgs)]);
+  }
+  const TEXTS = { master: "◈ PTP Grandmaster", locked: "◆ PTP eingerastet", acquiring: "◇ PTP sucht", passive: "◇ PTP passiv",
+    fault: "✕ PTP gestört", down: "✕ PTP antwortet nicht" };
+  for (const [state, want] of [...Object.entries(TEXTS), ["off", null], ["unknown", null], ["LOCKED", null],
+    ["<b>locked</b>", null], ["001b21.fffe.8a4c7e", null], [null, null], [7, null]]) {
+    const { ctx, page, msgs } = await openPausedClock(browser, { width: 1280, height: 720, reply: answer({ ptp_state: state }) });
+    const got = await page.evaluate(statusState);
+    await ctx.close();
+    note(`/clock Statuszeile ptp_state=${JSON.stringify(state)}`, [
+      want ? (got.ptp && got.ptp.text === want ? "" : `zeigt „${got.ptp && got.ptp.text}“ statt „${want}“`)
+        : (got.ptp || got.bandStatus ? `zeigt „${got.ptp && got.ptp.text}“` : ""),
+      got.hold ? "Holdover ohne Holdover" : "", got.html ? "HTML im Band" : "", scroll(got), errors(got, msgs)]);
+  }
+  for (const [name, extra, want] of [["ohne Dauer", { holdover: true, holdover_seconds: null }, "H Holdover"],
+    ["unter einer Minute", { holdover: true, holdover_seconds: 12 }, "H Holdover seit < 1 min"],
+    ["Stunden", { holdover: true, holdover_seconds: 7500 }, "H Holdover seit 2 h 5 min"],
+    ["Text statt Dauer", { holdover: true, holdover_seconds: "<img src=x>" }, "H Holdover"],
+    ["unbekannt", { holdover: null }, null], ["Text statt Wahrheitswert", { holdover: "true" }, null]]) {
+    const { ctx, page, msgs } = await openPausedClock(browser, { width: 1280, height: 720, reply: answer(extra) });
+    const got = await page.evaluate(statusState);
+    await ctx.close();
+    note(`/clock Statuszeile Holdover ${name}`, [
+      want ? (got.hold && got.hold.text === want ? "" : `zeigt „${got.hold && got.hold.text}“ statt „${want}“`) : (got.hold ? `zeigt „${got.hold.text}“` : ""),
+      got.html ? "HTML im Band" : "", errors(got, msgs)]);
+  }
+  for (const [query, shown] of [["?show=time,seconds,date", false], ["?show=time,status", true], ["", true]]) {
+    const { ctx, page, msgs } = await openPausedClock(browser, { width: 1280, height: 720, query,
+      reply: answer({ ptp_state: "master", holdover: true, holdover_seconds: 60 }) });
+    const got = await page.evaluate(statusState);
+    await ctx.close();
+    note(`/clock Statuszeile ${query || "ohne show"}`, [
+      Boolean(got.ptp) === shown && Boolean(got.hold) === shown ? "" : `Marken sichtbar=${Boolean(got.ptp)}/${Boolean(got.hold)}, erwartet ${shown}`,
+      got.syncLine === shown ? "" : `Zustandszeile sichtbar=${got.syncLine}`, got.band ? "" : "Band fehlt", errors(got, msgs)]);
+  }
+  {
+    // Der Server antwortet nicht mehr: Der Zustand ist unbekannt, die Marken verschwinden.
+    let failing = false;
+    const good = answer({ ptp_state: "locked", holdover: true, holdover_seconds: 185 });
+    const { ctx, page, msgs, clock } = await openPausedClock(browser, { width: 1280, height: 720, reply: (ms) => (failing ? null : good(ms)) });
+    const before = await page.evaluate(statusState);
+    failing = true;
+    await clock.run(12000);
+    const after = await page.evaluate(statusState);
+    await ctx.close();
+    note("/clock Statuszeile ohne Antwort", [before.ptp && before.hold ? "" : "Marken fehlen vorher",
+      after.ptp || after.hold || after.bandStatus ? "Marken trotz fehlender Antwort" : "",
+      msgs.filter((m) => !/503|Failed to load resource/.test(m)).length ? `Fehler ${JSON.stringify(msgs)}` : ""]);
+  }
+
+  // --- Kachel --------------------------------------------------------------------------------------------------
+  // Serverzeit 10:15:42, Ziel 10:20 → −04:18 (unter 5 min: Stufe warn, Symbol △).
+  for (const [width, height] of [[480, 270], [240, 135], [1280, 720], [1920, 1080], [3840, 2160], [640, 200]]) {
+    for (const [name, extra, design] of [["Titel, Holdover, Countdown", "&until=10:20", ""], ["Countdown groß", "&until=10:20&cd=main", ""],
+      ["Studio", "&until=10:20", "&design=studio"], ["Timecode", "", "&design=tc"]]) {
+      const { ctx, page, msgs } = await openPausedClock(browser, { width, height, query: `?p=regie&layout=tile${extra}${design}`,
+        profile: profileOf(), reply: answer({ ptp_state: "master", holdover: true, holdover_seconds: 185 }) });
+      const got = await page.evaluate(statusState);
+      await ctx.close();
+      const a = got.apart;
+      const main = name === "Countdown groß";
+      note(`/clock Kachel ${width}×${height} ${name}`, [
+        got.layout === "tile" ? "" : `Layout ${got.layout}`, got.band ? "Band sichtbar" : "", got.barTitle ? "Kopfzeile sichtbar" : "",
+        got.title && got.title.text === "Regie 1" ? "" : `Titel „${got.title && got.title.text}“`,
+        got.title && got.title.inStage && got.title.size >= 12 ? "" : `Titel außerhalb oder zu klein (${got.title && got.title.size} px)`,
+        got.title && got.title.box.left < width / 2 && got.title.box.top < height / 2 ? "" : "Titel nicht oben links",
+        got.syncIcon && got.syncIcon.text === "✓" && got.syncIcon.inStage ? "" : `Zustandssymbol ${JSON.stringify(got.syncIcon)}`,
+        got.syncIcon && got.syncIcon.box.left > width / 2 && got.syncIcon.box.top < height / 2 ? "" : "Zustandssymbol nicht oben rechts",
+        got.holdIcon && got.holdIcon.text === "H" && got.holdIcon.inStage && got.holdIcon.label === "Holdover seit 3 min" ? "" : `Holdover-Symbol ${JSON.stringify(got.holdIcon)}`,
+        main ? (got.time ? "Uhrzeit trotz cd=main groß" : "") : (got.time && got.time.inStage ? "" : "Zeit außerhalb der Bühne"),
+        main || design || (got.time && got.time.text.startsWith("10:15:42")) ? "" : `Uhr zeigt ${got.time && got.time.text}`,
+        // Titel und Countdown dürfen die Zeit nicht erdrücken: Sie bleibt der Hauptinhalt der Kachel.
+        main || !got.time || got.time.box.h >= (design === "&design=studio" ? 0.3 : 0.2) * height ? "" : `Zeit nur ${Math.round(got.time.box.h)} px hoch`,
+        extra ? (got.cd && got.cd.text === `${M}04:18` && got.cd.icon === "△" && got.cd.iconShown && got.cd.inStage && got.cd.level === "warn" ? "" : `Countdown ${JSON.stringify(got.cd)}`) : "",
+        extra && got.cd && !got.cd.oneLine ? "Symbol und Restzeit nicht in einer Zeile" : "",
+        Object.entries(a).filter(([, ok]) => !ok).map(([key]) => key).join(", ") ? `überdeckt: ${Object.entries(a).filter(([, ok]) => !ok).map(([key]) => key).join(", ")}` : "",
+        scroll(got), errors(got, msgs)]);
+    }
+  }
+  {
+    // Langer Titel: eine Zeile mit Auslassung, nie unter den Symbolen. Ohne Profil: kein Titel, keine leere Zeile.
+    const long = await openPausedClock(browser, { width: 240, height: 135, query: "?p=regie&layout=tile",
+      profile: profileOf({}, "Regie 1 – Hauptabendprogramm Studio Nord"), reply: answer({ holdover: true, holdover_seconds: 60 }) });
+    const gotLong = await long.page.evaluate(statusState);
+    await long.ctx.close();
+    const plain = await openPausedClock(browser, { width: 480, height: 270, query: "?layout=tile", reply: answer() });
+    const gotPlain = await plain.page.evaluate(statusState);
+    await plain.ctx.close();
+    const auto = await openPausedClock(browser, { width: 470, height: 400, query: "?p=regie", profile: profileOf(), reply: answer({ holdover: true }) });
+    const gotAuto = await auto.page.evaluate(statusState);
+    await auto.ctx.close();
+    note("/clock Kachel langer Titel", [gotLong.title && gotLong.title.clipped && gotLong.title.box.h < 2.2 * gotLong.title.size ? "" : `Titel ${JSON.stringify(gotLong.title)}`,
+      gotLong.apart.titleSync && gotLong.apart.titleHold && gotLong.apart.titleTime ? "" : "Titel überdeckt etwas", scroll(gotLong), errors(gotLong, long.msgs)]);
+    note("/clock Kachel ohne Profil", [gotPlain.title ? `Titel „${gotPlain.title.text}“` : "", gotPlain.holdIcon ? "Holdover-Symbol ohne Holdover" : "",
+      gotPlain.syncIcon && gotPlain.syncIcon.text === "✓" ? "" : "Zustandssymbol fehlt", gotPlain.time && gotPlain.time.inStage ? "" : "Zeit außerhalb",
+      scroll(gotPlain), errors(gotPlain, plain.msgs)]);
+    // Automatische Kachel (kleines Fenster ohne ?layout=tile): Kopfzeile und Band bleiben, der Titel steht in der Kopfzeile.
+    note(`/clock Kachel automatisch [${gotAuto.layout}]`, [gotAuto.layout === "tile" ? "" : "kein Layout tile", gotAuto.title ? "Titel doppelt (Bühne und Kopfzeile)" : "", gotAuto.barTitle === "Regie 1" ? "" : `Kopfzeile „${gotAuto.barTitle}“`,
+      gotAuto.hold && !gotAuto.holdIcon ? "" : "Holdover nicht im Band", errors(gotAuto, auto.msgs)]);
+  }
+  {
+    // Automatischer Streifen (ohne Band): Holdover als Symbol in der Zeile, die Zeit bleibt in der Bühne.
+    const { ctx, page, msgs } = await openPausedClock(browser, { width: 1920, height: 100, query: "?until=10:20",
+      reply: answer({ holdover: true, holdover_seconds: 185 }) });
+    const got = await page.evaluate(statusState);
+    await ctx.close();
+    note("/clock Streifen 1920×100 Holdover", [got.layout === "strip" ? "" : `Layout ${got.layout}`,
+      got.holdIcon && got.holdIcon.inStage && got.syncIcon && got.syncIcon.inStage ? "" : "Symbole fehlen oder ragen heraus",
+      got.apart.holdSync && got.apart.syncTime && got.apart.cdTime ? "" : "Überdeckung", got.time && got.time.inStage ? "" : "Zeit außerhalb",
+      scroll(got), errors(got, msgs)]);
+  }
+
+  // --- Prüfbild ------------------------------------------------------------------------------------------------
+  const stepFlash = async (page, clock, ms, each = 100) => {
+    const seen = [];
+    // Erst eine halbe Schrittweite: Die Proben fallen dann nie genau auf eine Sekundengrenze.
+    await page.clock.runFor(each / 2);
+    clock.advanced += each / 2;
+    for (let done = 0; done < ms; done += each) {
+      await page.clock.runFor(each);
+      clock.advanced += each;
+      await page.waitForTimeout(25);
+      seen.push(await page.evaluate(() => ({ on: document.getElementById("sync-test-flash").dataset.on,
+        sec: document.getElementById("sync-test-sec").textContent, local: document.getElementById("local-s").textContent })));
+    }
+    return seen;
+  };
+  for (const [width, height, query] of [[1920, 1080, "?test=sync&lead=40"], [390, 844, "?test=sync"], [480, 270, "?test=sync&layout=tile"],
+    [1920, 200, "?test=sync"], [1280, 720, "?test=sync&design=studio&kiosk=1"], [3840, 2160, "?test=sync&bg=transparent"]]) {
+    const { ctx, page, msgs, clock } = await openPausedClock(browser, { width, height, query, reply: answer() });
+    const got = await page.evaluate(statusState);
+    const seen = await stepFlash(page, clock, 6000);
+    await ctx.close();
+    const changes = seen.filter((item, i) => i > 0 && item.on !== seen[i - 1].on).length;
+    const offBeat = seen.filter((item, i) => i > 0 && (item.on !== seen[i - 1].on) !== (item.sec !== seen[i - 1].sec)).length;
+    const parity = seen.filter((item) => (item.on === "1") !== (Number(item.sec) % 2 === 0)).length;
+    const behind = seen.filter((item) => item.sec !== item.local).length;
+    let run = 0; let shortest = Infinity;
+    for (let i = 1; i < seen.length; i += 1) {
+      run += 1;
+      if (seen[i].on !== seen[i - 1].on) { if (i > run) shortest = Math.min(shortest, run); run = 0; }
+    }
+    note(`/clock Prüfbild ${width}×${height} ${query}`, [
+      got.test.shown && got.test.mode === "run" && got.test.flash ? "" : `nicht aktiv (${JSON.stringify([got.test.shown, got.test.mode, got.test.flash])})`,
+      /^⚠ Achtung: .*Esc beendet\.$/.test(got.test.warn) && got.test.warnIn && got.test.warnSize >= 12 ? "" : `Warnhinweis „${got.test.warn}“ (${got.test.warnSize} px, in Bühne ${got.test.warnIn})`,
+      got.test.inStage && got.test.stop ? "" : "Prüfbild oder Knopf „Beenden“ außerhalb der Bühne",
+      got.test.stopSize >= 12 ? "" : `Knöpfe nur ${got.test.stopSize} px`,
+      // 4K ohne Skalierung: Knöpfe, Warnhinweis und Erklärtext wachsen mit der Fläche.
+      width < 3840 || (got.test.stopSize >= 24 && got.test.stopH >= 48 && got.test.warnSize >= 36 && got.test.noteSize >= 30) ? ""
+        : `auf 4K zu klein (Knopf ${got.test.stopSize} px, ${Math.round(got.test.stopH)} px hoch, Warnhinweis ${got.test.warnSize} px, Text ${got.test.noteSize} px)`,
+      got.inert ? "" : "Uhr hinter dem Prüfbild nicht inert",
+      got.test.area >= 3000 ? "" : `Fläche nur ${got.test.area} px²`,
+      got.test.motion === "0s|none" ? "" : `Übergang oder Animation (${got.test.motion})`,
+      changes === 6 ? "" : `${changes} Wechsel in 6 s statt 6`,
+      offBeat ? `${offBeat} Wechsel nicht an der Sekundengrenze` : "", parity ? `${parity}× falsche Seite (gerade Sekunde = hell)` : "",
+      behind ? `${behind}× Sekunde der Fläche ≠ Sekunde der Uhr` : "",
+      shortest >= 9 ? "" : `Wechsel nach nur ${shortest * 100} ms (schneller als 1 Hz)`,
+      scroll(got), errors(got, msgs)]);
+  }
+  {
+    // Vorlauf mit den Pfeiltasten, Esc beendet und schreibt lead= in die Adresse.
+    const { ctx, page, msgs, clock } = await openPausedClock(browser, { width: 1920, height: 1080, query: "?design=studio&test=sync&lead=40", reply: answer() });
+    const before = await page.evaluate(statusState);
+    await page.keyboard.press("ArrowRight");
+    await page.keyboard.press("ArrowUp");
+    await page.keyboard.press("ArrowLeft");
+    await clock.run(250);
+    const stepped = await page.evaluate(statusState);
+    for (let i = 0; i < 30; i += 1) await page.keyboard.press("ArrowDown");
+    await clock.run(250);
+    const floor = await page.evaluate(statusState);
+    await page.keyboard.press("ArrowRight");
+    await page.keyboard.press("ArrowRight");
+    await page.keyboard.press("ArrowRight");
+    await page.keyboard.press("Escape");
+    await clock.run(500);
+    const ended = await page.evaluate(statusState);
+    const quiet = await stepFlash(page, clock, 2500);
+    await ctx.close();
+    note("/clock Prüfbild Vorlauf und Esc", [
+      before.test.lead === "Vorlauf 40 ms · im Link: lead=40" ? "" : `Vorlauf „${before.test.lead}“`,
+      stepped.test.lead === "Vorlauf 50 ms · im Link: lead=50" && /Vorlauf 50 ms/.test(stepped.syncText) ? "" : `nach den Pfeiltasten „${stepped.test.lead}“ / „${stepped.syncText}“`,
+      floor.test.lead === "Vorlauf 0 ms · im Link: lead=0" ? "" : `Untergrenze „${floor.test.lead}“`,
+      ended.test.shown ? "Esc beendet nicht" : "", ended.search === "?design=studio&lead=30" ? "" : `Adresse „${ended.search}“`,
+      ended.hint === "Prüfbild beendet" ? "" : `Hinweis „${ended.hint}“`,
+      new Set(quiet.map((item) => item.on)).size === 1 ? "" : "Fläche wechselt nach dem Beenden weiter",
+      ended.inert ? "Uhr nach dem Beenden noch inert" : "", ended.stored === null ? "" : `gemerkter Stand „${ended.stored}“ ohne Panel`,
+      ended.time && ended.time.inStage ? "" : "Uhr nach dem Beenden nicht sichtbar", errors(ended, msgs)]);
+  }
+  {
+    // lock=1: keine Knöpfe und keine Pfeiltasten für den Vorlauf, aber Esc beendet.
+    const { ctx, page, msgs, clock } = await openPausedClock(browser, { width: 1280, height: 720, query: "?test=sync&lock=1&lead=20", reply: answer() });
+    const before = await page.evaluate(statusState);
+    await page.keyboard.press("ArrowRight");
+    await clock.run(250);
+    const stepped = await page.evaluate(statusState);
+    await page.keyboard.press("Escape");
+    await clock.run(250);
+    const ended = await page.evaluate(statusState);
+    await ctx.close();
+    note("/clock Prüfbild lock=1", [before.test.shown && before.test.mode === "run" ? "" : "nicht aktiv", before.test.steps ? "Knöpfe für den Vorlauf trotz lock=1" : "",
+      stepped.test.lead === "Vorlauf 20 ms · im Link: lead=20" ? "" : `Pfeiltaste wirkt trotz lock=1 („${stepped.test.lead}“)`,
+      /Pfeiltasten/.test(before.test.note) || !/gesperrt \(lock=1\).*lead= im Link/.test(before.test.note) ? `Text fordert zu gesperrter Bedienung auf: „${before.test.note}“` : "",
+      ended.test.shown ? "Esc beendet nicht" : "", ended.search === "?lock=1&lead=20" ? "" : `Adresse „${ended.search}“`, errors(ended, msgs)]);
+  }
+  {
+    // Knopf „Beenden“ und der Klick (in der Prüfung ohne Tonausgabe: nur der Zustand des Knopfs).
+    const { ctx, page, msgs, clock } = await openPausedClock(browser, { width: 1280, height: 720, query: "?test=sync", reply: answer() });
+    await page.click("#sync-test-tone");
+    await clock.run(1250);
+    const toned = await page.evaluate(statusState);
+    await page.click("#sync-test-more");
+    await page.click("#sync-test-stop");
+    await clock.run(250);
+    const ended = await page.evaluate(statusState);
+    await ctx.close();
+    note("/clock Prüfbild Knöpfe", [toned.test.pressed === "true" ? "" : "Ton-Klick nicht eingeschaltet", ended.test.shown ? "Knopf beendet nicht" : "",
+      ended.search === "?lead=10" ? "" : `Adresse „${ended.search}“`, errors(ended, msgs)]);
+  }
+  {
+    // Gemerkter Stand (Panel „Anpassen“): /clock?test=sync misst genau diese Anzeige ein. Design und Vorlauf kommen aus
+    // dem Stand, der eingemessene Wert wird dort gemerkt, die Adresse bleibt /clock – auch nach dem Neuladen.
+    const { ctx, page, msgs, clock } = await openPausedClock(browser, { width: 1280, height: 720, query: "?test=sync",
+      storage: { "ntp-gui-clock-custom": "design=studio&lead=80" }, reply: answer() });
+    const before = await page.evaluate(statusState);
+    await page.keyboard.press("ArrowRight");
+    await page.keyboard.press("Escape");
+    await clock.run(500);
+    const ended = await page.evaluate(statusState);
+    await page.reload({ waitUntil: "load" });
+    await clock.run(1500);
+    const again = await page.evaluate(statusState);
+    await ctx.close();
+    note("/clock Prüfbild mit gemerktem Stand", [before.test.shown && before.test.mode === "run" ? "" : "nicht aktiv",
+      before.design === "studio" ? "" : `Design ${before.design} statt des gemerkten`,
+      before.test.lead === "Vorlauf 80 ms · im Link: lead=80" ? "" : `Vorlauf „${before.test.lead}“`,
+      ended.test.shown ? "Esc beendet nicht" : "", ended.search === "" ? "" : `Adresse „${ended.search}“`,
+      ended.stored === "design=studio&lead=90" ? "" : `gemerkter Stand „${ended.stored}“`,
+      ended.hint === "Prüfbild beendet · Vorlauf 90 ms gemerkt" ? "" : `Hinweis „${ended.hint}“`,
+      ended.design === "studio" && /Vorlauf 90 ms/.test(ended.syncText) ? "" : `nach dem Beenden ${ended.design} / „${ended.syncText}“`,
+      again.design === "studio" && /Vorlauf 90 ms/.test(again.syncText) && !again.test.shown ? "" : `nach dem Neuladen ${again.design} / „${again.syncText}“`,
+      errors(again, msgs)]);
+  }
+  {
+    // Profil mit eigenem Vorlauf: Auf 0 eingemessen steht lead=0 in der Adresse – nach dem Neuladen gilt nicht wieder das Profil.
+    const { ctx, page, msgs, clock } = await openPausedClock(browser, { width: 1280, height: 720, query: "?p=regie&test=sync",
+      profile: profileOf({ lead: "40" }), reply: answer() });
+    for (let i = 0; i < 4; i += 1) await page.keyboard.press("ArrowLeft");
+    await clock.run(250);
+    const floor = await page.evaluate(statusState);
+    await page.keyboard.press("Escape");
+    await clock.run(250);
+    const ended = await page.evaluate(statusState);
+    await page.reload({ waitUntil: "load" });
+    await clock.run(1500);
+    const again = await page.evaluate(statusState);
+    await ctx.close();
+    note("/clock Prüfbild Profil auf 0 eingemessen", [floor.test.lead === "Vorlauf 0 ms · im Link: lead=0" ? "" : `Vorlauf „${floor.test.lead}“`,
+      ended.search === "?p=regie&lead=0" ? "" : `Adresse „${ended.search}“`,
+      /Vorlauf/.test(again.syncText) ? `nach dem Neuladen „${again.syncText}“` : "", again.test.shown ? "Prüfbild startet wieder" : "", errors(again, msgs)]);
+  }
+  {
+    // Hinter dem Prüfbild ruhen die Kürzel der Uhr: keine Stoppuhr, kein anderes Design oder Layout, keine andere Größe.
+    const { ctx, page, msgs, clock } = await openPausedClock(browser, { width: 1280, height: 720, query: "?test=sync", reply: answer() });
+    const before = await page.evaluate(statusState);
+    const scale = () => page.evaluate(() => document.documentElement.style.getPropertyValue("--clock-scale"));
+    const scaleBefore = await scale();
+    for (const key of ["Space", "d", "l", "u", "t", "+", "r"]) await page.keyboard.press(key);
+    await clock.run(2500);
+    const during = await page.evaluate(statusState);
+    await page.keyboard.press("?");
+    await clock.run(250);
+    const help = await page.evaluate(() => !document.getElementById("keys").hidden);
+    await page.keyboard.press("Escape");
+    await clock.run(250);
+    const helpClosed = await page.evaluate(statusState);
+    await page.keyboard.press("Escape");
+    await clock.run(250);
+    const ended = await page.evaluate(statusState);
+    const scaleAfter = await scale();
+    // Danach wirken die Kürzel wieder.
+    await page.keyboard.press("d");
+    await clock.run(250);
+    const after = await page.evaluate(statusState);
+    await ctx.close();
+    note("/clock Prüfbild Tastenkürzel", [before.inert ? "" : "Uhr nicht inert",
+      during.test.shown && during.design === before.design && during.layout === before.layout && !during.hint ? "" : `Kürzel wirken hinter dem Prüfbild (${during.design}, ${during.layout}, „${during.hint}“)`,
+      help ? "" : "Hilfe (?) öffnet nicht", helpClosed.test.shown ? "" : "Esc schließt mit der Hilfe auch das Prüfbild",
+      ended.test.shown ? "Esc beendet nicht" : "", ended.cdShown ? `Stoppuhr läuft nach dem Beenden (${JSON.stringify(ended.cd)})` : "",
+      ended.design === before.design && ended.layout === before.layout && scaleAfter === scaleBefore ? "" : `Anzeige verändert (${ended.design}, ${ended.layout}, ${scaleAfter})`,
+      ended.search === "" ? "" : `Adresse „${ended.search}“`, ended.inert ? "Uhr noch inert" : "",
+      after.design !== before.design ? "" : "Kürzel D wirkt nach dem Beenden nicht", errors(after, msgs)]);
+  }
+  {
+    // Nur lead= in der Adresse, im Panel ein anderer Stand gemerkt: Auf 0 eingemessen bleibt lead=0 stehen – nach dem
+    // Neuladen gilt nicht der gemerkte Stand mit seinem Vorlauf.
+    const { ctx, page, msgs, clock } = await openPausedClock(browser, { width: 1280, height: 720, query: "?lead=20&test=sync",
+      storage: { "ntp-gui-clock-custom": "design=studio&lead=80" }, reply: answer() });
+    const before = await page.evaluate(statusState);
+    for (let i = 0; i < 2; i += 1) await page.keyboard.press("ArrowLeft");
+    await page.keyboard.press("Escape");
+    await clock.run(500);
+    const ended = await page.evaluate(statusState);
+    await page.reload({ waitUntil: "load" });
+    await clock.run(1500);
+    const again = await page.evaluate(statusState);
+    await ctx.close();
+    note("/clock Prüfbild nur lead= auf 0 eingemessen", [before.design !== "studio" && before.test.lead === "Vorlauf 20 ms · im Link: lead=20" ? "" : `Anfang ${before.design} / „${before.test.lead}“`,
+      ended.search === "?lead=0" ? "" : `Adresse „${ended.search}“`, ended.stored === "design=studio&lead=80" ? "" : `gemerkter Stand „${ended.stored}“`,
+      again.design === before.design && !/Vorlauf/.test(again.syncText) && !again.test.shown ? "" : `nach dem Neuladen ${again.design} / „${again.syncText}“`,
+      errors(again, msgs)]);
+  }
+  {
+    // „Weniger Bewegung“ wechselt mitten im Einmessen hin und zurück: Das Prüfbild hält an und läuft wieder; der schon
+    // eingemessene Vorlauf steht nach Esc trotzdem als lead= in der Adresse.
+    const { ctx, page, msgs, clock } = await openPausedClock(browser, { width: 1280, height: 720, query: "?design=tc&test=sync", reply: answer() });
+    for (let i = 0; i < 3; i += 1) await page.keyboard.press("ArrowRight");
+    await clock.run(250);
+    const mode = () => page.evaluate(() => document.getElementById("sync-test").dataset.mode || "");
+    const media = async (value, want) => {
+      for (let round = 0; round < 3 && await mode() !== want; round += 1) {
+        await page.emulateMedia({ reducedMotion: value });
+        for (let i = 0; i < 10 && await mode() !== want; i += 1) await clock.run(100);
+        if (await mode() !== want) await page.emulateMedia({ reducedMotion: value === "reduce" ? "no-preference" : "reduce" });
+      }
+      return mode();
+    };
+    const less = await media("reduce", "reduced");
+    const lessState = await page.evaluate(statusState);
+    const back = await media("no-preference", "run");
+    const backState = await page.evaluate(statusState);
+    await page.keyboard.press("Escape");
+    await clock.run(500);
+    const ended = await page.evaluate(statusState);
+    await ctx.close();
+    note("/clock Prüfbild weniger Bewegung mitten im Einmessen", [less === "reduced" ? "" : `Modus ${less} nach dem Wechsel auf „weniger Bewegung“`,
+      lessState.test.flash ? "Fläche sichtbar trotz „weniger Bewegung“" : "", back === "run" ? "" : `Modus ${back} nach dem Zurückschalten`,
+      backState.test.lead === "Vorlauf 30 ms · im Link: lead=30" ? "" : `Vorlauf „${backState.test.lead}“`,
+      ended.test.shown ? "Esc beendet nicht" : "", ended.search === "?design=tc&lead=30" ? "" : `Adresse „${ended.search}“`, errors(ended, msgs)]);
+  }
+  {
+    // Panel „Anpassen“ bei laufendem Prüfbild: „Link kopieren“ nimmt test=sync nicht mit (das Formular hat kein Feld dafür).
+    const { ctx, page, msgs, clock } = await openPausedClock(browser, { width: 1280, height: 720, query: "?test=sync",
+      storage: { "ntp-gui-clock-custom": "design=studio&lead=30" }, reply: answer() });
+    await ctx.grantPermissions(["clipboard-read", "clipboard-write"]).catch(() => {});
+    await page.click("#mode-custom");
+    await clock.run(250);
+    const field = await page.evaluate(() => Boolean(document.getElementById("custom-test")));
+    await page.click("#custom-copy");
+    await clock.run(500);
+    const copied = await page.evaluate(async () => {
+      const status = document.getElementById("custom-status").textContent;
+      let text = "";
+      try { text = await navigator.clipboard.readText(); } catch (error) { /* ohne Zwischenablage steht der Link in der Meldung */ }
+      return { status, text };
+    });
+    const got = await page.evaluate(statusState);
+    await ctx.close();
+    const linkText = /\/clock/.test(copied.text) ? copied.text : copied.status;
+    note("/clock Prüfbild Link kopieren ohne test=", [field ? "Formular hat ein Feld für test" : "",
+      /\/clock\?design=studio&lead=30(\s|$|[^&\w])/.test(`${linkText} `) ? "" : `kopierter Link „${linkText}“`,
+      /test=/.test(linkText) ? "Link enthält test=" : "", got.test.shown ? "" : "Prüfbild endet durch das Kopieren", errors(got, msgs)]);
+  }
+  // Nie ohne ausdrücklichen Parameter: nicht aus dem Profil, nicht aus dem gemerkten Stand, nicht ohne test=.
+  for (const [name, opts] of [["aus dem Profil", { query: "?p=regie", profile: profileOf({ design: "studio", test: "sync" }) }],
+    ["aus dem gemerkten Stand", { query: "", storage: { "ntp-gui-clock-custom": "design=flip&test=sync" } }],
+    ["ohne Parameter", { query: "?design=studio" }], ["falscher Wert", { query: "?test=1" }], ["Großschreibung", { query: "?test=SYNC" }]]) {
+    const { ctx, page, msgs, clock } = await openPausedClock(browser, { width: 1280, height: 720, reply: answer(), ...opts });
+    const got = await page.evaluate(statusState);
+    const seen = await stepFlash(page, clock, 2500);
+    await ctx.close();
+    note(`/clock Prüfbild ${name}`, [got.test.shown ? "Prüfbild gestartet" : "", new Set(seen.map((item) => item.on)).size === 1 ? "" : "Fläche wechselt",
+      got.time && got.time.inStage ? "" : "Uhr nicht sichtbar", errors(got, msgs)]);
+  }
+  // Profil mit ausdrücklichem Parameter in der Adresse: Dann gilt er.
+  {
+    const { ctx, page, msgs } = await openPausedClock(browser, { width: 1280, height: 720, query: "?p=regie&test=sync",
+      profile: profileOf({ design: "studio", lead: "30" }), reply: answer() });
+    const got = await page.evaluate(statusState);
+    await ctx.close();
+    note("/clock Prüfbild Profil und Adresse", [got.test.shown && got.test.mode === "run" ? "" : "nicht aktiv",
+      got.test.lead === "Vorlauf 30 ms · im Link: lead=30" ? "" : `Vorlauf „${got.test.lead}“`, errors(got, msgs)]);
+  }
+  // „Weniger Bewegung“ und E-Ink: kein Blitz, nur der Hinweistext; Esc schließt ihn.
+  for (const [name, opts, text] of [["weniger Bewegung", { query: "?test=sync", reduced: true }, /^Das Prüfbild startet nicht: Dein System wünscht weniger Bewegung/],
+    ["weniger Bewegung in der Kachel", { query: "?test=sync&layout=tile", reduced: true, width: 480, height: 270 }, /weniger Bewegung/],
+    ["weniger Bewegung 480×270", { query: "?test=sync", reduced: true, width: 480, height: 270 }, /weniger Bewegung/],
+    ["weniger Bewegung 1920×200", { query: "?test=sync", reduced: true, width: 1920, height: 200 }, /weniger Bewegung/],
+    ["E-Ink 480×270", { query: "?test=sync&eink=1", width: 480, height: 270 }, /^Das Prüfbild gibt es auf E-Ink nicht/],
+    ["E-Ink 1920×200", { query: "?test=sync&eink=1", width: 1920, height: 200 }, /^Das Prüfbild gibt es auf E-Ink nicht/],
+    ["E-Ink", { query: "?test=sync&eink=1" }, /^Das Prüfbild gibt es auf E-Ink nicht/]]) {
+    const { ctx, page, msgs, clock } = await openPausedClock(browser, { width: 1280, height: 720, reply: answer(), ...opts });
+    const got = await page.evaluate(statusState);
+    const seen = await stepFlash(page, clock, 3000);
+    await page.keyboard.press("ArrowRight");
+    await page.keyboard.press("Escape");
+    await clock.run(250);
+    const ended = await page.evaluate(statusState);
+    await ctx.close();
+    note(`/clock Prüfbild ${name}`, [got.test.shown ? "" : "Hinweis fehlt", got.test.mode !== "run" ? "" : "Modus run",
+      got.test.flash ? "Fläche sichtbar" : "", got.test.warn ? "Warnhinweis ohne Blitz" : "", got.test.tone || got.test.steps ? "Knöpfe für Ton oder Vorlauf sichtbar" : "",
+      // Der Hinweistext ist hier der ganze Inhalt: sichtbar, in der Bühne und lesbar – auch bei wenig Höhe.
+      text.test(got.test.note) ? "" : `Hinweistext nicht sichtbar („${got.test.note}“)`,
+      got.test.noteIn && got.test.noteSize >= 12 ? "" : `Hinweistext außerhalb der Bühne oder zu klein (${got.test.noteSize} px)`,
+      got.test.stop ? "" : "Knopf „Beenden“ fehlt",
+      new Set(seen.map((item) => item.on)).size === 1 && seen[0].on === "0" ? "" : "Fläche wechselt trotzdem",
+      ended.test.shown ? "Esc schließt den Hinweis nicht" : "", /lead=/.test(ended.search) ? `Adresse „${ended.search}“` : "", scroll(got), errors(got, msgs)]);
+  }
+  return { found, lines };
+}
+
 // Studiouhr A6 (clockLinkChecks): Profile und Link-Baukasten. /clock?p=regie mit gemocktem Profil auf allen neun Flächen
 // (Profilwerte wirken, Adresse schlägt Profil, Titel in der Kopfzeile, keine Überbreite, keine CSP-Verstöße); ein neues
 // profiles_rev lädt die Seite mit dem geänderten Profil neu, ein unverändertes Profil nicht. Panel „Anpassen“: Formular
@@ -2433,6 +4052,31 @@ async function setupChecks(browser) {
     }
     if (process.env.TOUR_COUNTDOWN_ONLY) {
       const result = await clockCountdownChecks(browser);
+      console.log(JSON.stringify(result, null, 1));
+      process.exitCode = result.found.length ? 1 : 0;
+      return;
+    }
+    if (process.env.TOUR_TC_ONLY) {
+      const result = await clockTimecodeChecks(browser);
+      console.log(JSON.stringify(result, null, 1));
+      process.exitCode = result.found.length ? 1 : 0;
+      return;
+    }
+    if (process.env.TOUR_STATUS_ONLY) {
+      const result = await clockStatusChecks(browser);
+      console.log(JSON.stringify(result, null, 1));
+      process.exitCode = result.found.length ? 1 : 0;
+      return;
+    }
+    if (process.env.TOUR_SIGNAL_ONLY) {
+      await apiJson("/api/setup", { action: "done" });
+      const result = await clockSignalChecks(browser);
+      console.log(JSON.stringify(result, null, 1));
+      process.exitCode = result.found.length ? 1 : 0;
+      return;
+    }
+    if (process.env.TOUR_WORLD_ONLY) {
+      const result = await clockWorldChecks(browser);
       console.log(JSON.stringify(result, null, 1));
       process.exitCode = result.found.length ? 1 : 0;
       return;

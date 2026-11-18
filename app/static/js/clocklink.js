@@ -19,9 +19,10 @@ const STORE_MAX = 2000;
 /**
  * Nicht im gemerkten Stand: kiosk und lock blenden Leiste bzw. Knopf „Anpassen“ aus. Gemerkt gälten sie für jeden
  * Aufruf von /clock ohne Parameter, und in der Oberfläche führte kein Weg zurück. Darum bietet das Panel sie nicht an
- * und storedQuery() streicht sie; im Link (Dashboard, Adresse) bleiben sie erlaubt.
+ * und storedQuery() streicht sie; im Link (Dashboard, Adresse) bleiben sie erlaubt. Ebenso das Prüfbild (test=sync,
+ * kit.ADDRESS_ONLY): Es wirkt nur aus der Adresse.
  */
-export const STORE_SKIP = Object.freeze(["kiosk", "lock"]);
+export const STORE_SKIP = Object.freeze(["kiosk", "lock", ...kit.ADDRESS_ONLY]);
 /** Ebenso einzelne Werte: layout=tile (Multiviewer-Kachel) blendet Leiste, Knopf „Anpassen“ und Mauszeiger aus. */
 export const STORE_SKIP_VALUES = Object.freeze({ layout: Object.freeze(["tile"]) });
 /** Neuer Versuch, wenn ein Profil (?p=) nicht geladen werden konnte: 5 s, dann verdoppelt bis 60 s. */
@@ -31,10 +32,10 @@ export const PROFILE_RETRY_MAX_MS = 60_000;
 /** Gruppen des Formulars; jeder Schema-Parameter steht in genau einer. */
 export const FORM_GROUPS = Object.freeze([
   { key: "look", names: ["design", "layout", "look", "accent", "scale", "weight", "show", "bg", "safe", "shift"] },
-  { key: "digits", names: ["color", "sub", "seconds", "h12", "face", "colon", "lz", "date"] },
-  { key: "zone", names: ["tz", "lead", "maxerr"] },
+  { key: "digits", names: ["color", "sub", "seconds", "h12", "face", "colon", "lz", "date", "fps"] },
+  { key: "zone", names: ["tz", "tzl", "lead", "maxerr"] },
   { key: "countdown", names: ["until", "timer", "after", "warn", "beep", "label", "cd"] },
-  { key: "mode", names: ["kiosk", "eink", "lock"] },
+  { key: "mode", names: ["kiosk", "eink", "lock", "signal", "test"] },
 ]);
 
 /** Feste Fenstergrößen der Vorschau (window.open im neuen Tab, kein iframe: frame-ancestors bleibt 'none'). */
@@ -103,18 +104,18 @@ export function rawValid(name, raw, zones = [], intl = globalThis.Intl) {
 
 /**
  * Rohwerte (Zeichenketten wie in der Adresse) aus einem Abfrageteil oder Objekt: nur Schema-Namen mit gültigem Wert.
- * Doppelte Namen: Der erste gilt (wie parseParams).
+ * Doppelte Namen: Der erste gilt, bei tz und tzl zählen alle (wie parseParams).
  */
 export function rawParams(source, zones = [], intl = globalThis.Intl, schema = kit.PARAM_SCHEMA) {
   const out = {};
   const get = source && typeof source === "object" && !(source instanceof URLSearchParams)
     ? (name) => (Object.prototype.hasOwnProperty.call(source, name) ? source[name] : null)
-    : ((params) => (name) => (params.has(name) ? params.get(name) : null))(new URLSearchParams(source || ""));
+    : ((params) => (name, entry) => kit.rawFromSearch(params, entry))(new URLSearchParams(source || ""));
   for (const entry of schema) {
-    const raw = get(entry.name);
+    const raw = get(entry.name, entry);
     if (raw === null || raw === undefined || raw === "") continue;
     const text = String(raw);
-    if (kit.checkParam(entry, text, zones, intl).ok) out[entry.name] = text;
+    if (kit.checkParam(entry, text, zones, intl).ok) out[entry.name] = kit.listRaw(entry, text);
   }
   return out;
 }
@@ -136,14 +137,23 @@ export function buildQuery(raw, zones = [], intl = globalThis.Intl, schema = kit
     if (value === undefined || value === null || value === "") continue;
     const result = kit.checkParam(entry, String(value), zones, intl);
     if (!result.ok || same(result.value, entry.default)) continue;
-    out.set(entry.name, String(value));
+    out.set(entry.name, kit.listRaw(entry, String(value)));
   }
   return out.toString().replace(/%2C/g, ",").replace(/%3A/g, ":");
 }
 
-/** Schichten zusammenführen (spätere gewinnen), ohne Standardwerte zu streichen: ein Override darf zurück auf Standard. */
+/**
+ * Schichten zusammenführen (spätere gewinnen), ohne Standardwerte zu streichen: ein Override darf zurück auf Standard.
+ * Zonen und ihre Kurznamen (tz, tzl) gehören zusammen, die Namen gelten der Reihe nach: Nennt eine Schicht tz ohne tzl,
+ * entfallen die Kurznamen der Schichten darunter – sonst beschrifteten sie andere Zonen.
+ */
 export function layerQuery(...layers) {
-  const merged = Object.assign({}, ...layers.filter(Boolean));
+  const merged = {};
+  for (const layer of layers.filter(Boolean)) {
+    const zones = layer.tz !== undefined && layer.tz !== "";
+    if (zones && (layer.tzl === undefined || layer.tzl === "") && String(layer.tz) !== String(merged.tz)) delete merged.tzl;
+    Object.assign(merged, layer);
+  }
   const out = new URLSearchParams();
   for (const entry of kit.PARAM_SCHEMA) {
     if (merged[entry.name] !== undefined && merged[entry.name] !== "") out.set(entry.name, String(merged[entry.name]));
@@ -153,19 +163,42 @@ export function layerQuery(...layers) {
 
 /**
  * Abfrageteil, mit dem die Uhr startet: mit Profil Profil < Adresse; ohne Profil die Adresse, wenn sie einen
- * Schema-Parameter oder ein Profil (?p=) nennt; sonst der im Panel gemerkte Stand (stored). Ein Profil-Bildschirm,
+ * Schema-Parameter oder ein Profil (?p=) nennt; sonst der im Panel gemerkte Stand (stored). Das Prüfbild (test=sync,
+ * kit.ADDRESS_ONLY) zählt dabei nicht als Schema-Parameter: /clock?test=sync misst die gemerkte Anzeige ein. Ein Profil-Bildschirm,
  * dessen Profil (noch) nicht geladen ist, zeigt also die Standarduhr, nicht die Panel-Einstellungen dieses Browsers.
  */
 export function effectiveQuery({ search = "", stored = "", profile = null, zones = [], intl = globalThis.Intl } = {}) {
   const url = rawParams(search, zones, intl);
-  if (profile) return layerQuery(rawParams(profile, zones, intl), url);
+  if (profile) return layerQuery(profileParams(rawParams(profile, zones, intl)), url);
   if (!storedApplies(search)) return layerQuery(url);
-  return layerQuery(rawParams(storedQuery(stored), zones, intl));
+  // Der gemerkte Stand gilt; aus der Adresse kommt dann höchstens noch ein Parameter aus kit.ADDRESS_ONLY (test=sync).
+  return layerQuery(rawParams(storedQuery(stored), zones, intl), url);
 }
 
-/** Gilt der im Panel gemerkte Stand für diese Adresse? Nur ohne Schema-Parameter und ohne Profil (?p=). */
+/**
+ * Adresse nach dem Prüfbild (kit.testDoneSearch) mit dem dort eingemessenen Vorlauf. Ein eingemessener Wert 0 bleibt
+ * ausdrücklich als lead=0 stehen, wenn die Adresse sonst keinen Parameter der Anzeige mehr nennte, vorher aber einen
+ * nannte (nur lead=): Sonst gälte nach dem Neuladen der im Panel gemerkte Stand mit dessen Vorlauf statt der 0.
+ */
+export function testDoneSearch(search, lead = null) {
+  const keepZero = lead === 0 && !storedApplies(search) && storedApplies(kit.testDoneSearch(search, 0));
+  return kit.testDoneSearch(search, lead, { keepZero });
+}
+
+/** Rohwerte ohne die Parameter, die nur aus der Adresse wirken (kit.ADDRESS_ONLY) – für Profile. */
+export function profileParams(raw) {
+  const out = { ...(raw || {}) };
+  for (const name of kit.ADDRESS_ONLY) delete out[name];
+  return out;
+}
+
+/**
+ * Gilt der im Panel gemerkte Stand für diese Adresse? Nur ohne Schema-Parameter und ohne Profil (?p=). Parameter, die
+ * nur aus der Adresse wirken (kit.ADDRESS_ONLY: das Prüfbild test=sync), zählen nicht: Sie legen keine Anzeige fest.
+ */
 export function storedApplies(search = "") {
-  return !hasSchemaParams(search) && !profileFromSearch(search);
+  const display = kit.PARAM_SCHEMA.filter((entry) => !kit.ADDRESS_ONLY.includes(entry.name));
+  return !hasSchemaParams(search, display) && !profileFromSearch(search);
 }
 
 /** Gemerkten Stand säubern: nur gültige Schema-Werte ohne STORE_SKIP und STORE_SKIP_VALUES, höchstens STORE_MAX Zeichen. */
@@ -186,6 +219,16 @@ export function storedWith(text, name, value, zones = [], intl = globalThis.Intl
   const raw = rawParams(clean, zones, intl);
   if (!Object.prototype.hasOwnProperty.call(raw, name)) return clean;
   raw[name] = value;
+  return storedQuery(buildQuery(raw, zones, intl), zones, intl);
+}
+
+/**
+ * Gemerkten Stand mit einem Wert, der außerhalb des Panels eingestellt wurde (Vorlauf aus dem Prüfbild): Anders als
+ * storedWith() kommt name auch dazu, wenn der Stand ihn noch nicht nennt. Ergebnis wie storedQuery().
+ */
+export function storedSet(text, name, value, zones = [], intl = globalThis.Intl) {
+  const raw = rawParams(storedQuery(text, zones, intl), zones, intl);
+  raw[name] = String(value);
   return storedQuery(buildQuery(raw, zones, intl), zones, intl);
 }
 
@@ -211,16 +254,34 @@ function node(tag, attrs = {}, ...children) {
   return item;
 }
 
-const EXAMPLES = { until: "20:15", timer: "25m", warn: "300,60,10", tz: "Europe/London", accent: "amber, ff8800" };
+const EXAMPLES = { until: "20:15", timer: "25m", warn: "300,60,10", tz: "Europe/London,Asia/Tokyo", tzl: "LON,TYO",
+  accent: "amber, ff8800" };
 
 function example(name) {
   if (name === "label") return t("clock.link.example_label");
   return EXAMPLES[name] || "";
 }
 
+/**
+ * Vorschläge für das Feld tz: Vor dem ersten Komma alle Zonen; danach der schon getippte Teil bis zum letzten Komma
+ * (wie getippt, damit der Browser weiter filtern kann) plus jede noch nicht genannte Zone. Sind schon MAX_ZONES
+ * genannt, keine.
+ */
+export function zoneSuggestions(value, zones = []) {
+  const text = String(value ?? "");
+  const cut = text.lastIndexOf(",");
+  if (cut < 0) return [...zones];
+  const head = text.slice(0, cut + 1);
+  const used = head.split(",").map((item) => item.trim().toLowerCase()).filter(Boolean);
+  if (used.length >= kit.MAX_ZONES) return [];
+  const gap = /^ */.exec(text.slice(cut + 1))[0];
+  return zones.filter((zone) => !used.includes(zone.toLowerCase())).map((zone) => `${head}${gap}${zone}`);
+}
+
 function optionText(name, value) {
   if (name === "design") return t(`clock.design.${value}`);
   if (name === "layout") return t(`clock.layout_name.${value}`);
+  if (name === "test") return t(`clock.link.test_value.${value}`);
   return value;
 }
 
@@ -233,9 +294,10 @@ function optionText(name, value) {
 export function buildForm({ values = {}, onChange = () => {}, prefix = "cl", disabled = false, zones = [],
   exclude = [], excludeValues = {} } = {}) {
   const root = node("div", { class: "link-form" });
+  const zoneList = node("datalist", { id: `${prefix}-zones` });
   const set = (name, raw, control) => {
     if (raw === "") delete values[name];
-    else values[name] = raw;
+    else values[name] = kit.listRaw(entryOf(name), raw);   // Listen ohne Leerzeichen um die Kommas
     if (control) control.setAttribute("aria-invalid", rawValid(name, raw, zones) ? "false" : "true");
     onChange(name, raw);
   };
@@ -277,13 +339,26 @@ export function buildForm({ values = {}, onChange = () => {}, prefix = "cl", dis
         control = node("input", {
           id, type: number ? "number" : "text", disabled, autocomplete: "off", spellcheck: "false",
           min: number ? entry.min : null, max: number ? entry.max : null, step: number ? 1 : null,
-          inputmode: number ? "numeric" : null, maxlength: number ? null : (entry.type === "label" ? entry.len : kit.MAX_LEN),
+          inputmode: number ? "numeric" : null, maxlength: number ? null : (entry.type === "label" ? entry.len : kit.rawLimit(entry) * (kit.multiParam(entry) ? 2 : 1)),
           placeholder: number ? (entry.default ?? "") : example(name),
           list: name === "accent" ? `${prefix}-palette` : (name === "tz" && zones.length ? `${prefix}-zones` : null),
         });
         control.value = current;
         control.setAttribute("aria-invalid", rawValid(name, current, zones) ? "false" : "true");
         control.addEventListener("input", () => set(name, control.value.trim(), control));
+        if (name === "tz" && zones.length) {
+          // Vorschlagsliste: Sie folgt dem Teil vor dem letzten Komma, damit auch die zweite bis sechste Zone wählbar ist.
+          let head = null;
+          const fill = () => {
+            const cut = control.value.lastIndexOf(",");
+            const now = `${control.value.slice(0, cut + 1)}${/^ */.exec(control.value.slice(cut + 1))[0]}`;
+            if (now === head) return;
+            head = now;
+            zoneList.replaceChildren(...zoneSuggestions(control.value, zones).map((value) => node("option", { value })));
+          };
+          control.addEventListener("input", fill);
+          fill();
+        }
       }
       box.append(node("div", { class: "link-field" }, label, control));
     }
@@ -292,10 +367,6 @@ export function buildForm({ values = {}, onChange = () => {}, prefix = "cl", dis
   const palette = node("datalist", { id: `${prefix}-palette` });
   for (const name of Object.keys(kit.PALETTE)) palette.append(node("option", { value: name }));
   root.append(palette);
-  if (zones.length) {
-    const list = node("datalist", { id: `${prefix}-zones` });
-    for (const zone of zones) list.append(node("option", { value: zone }));
-    root.append(list);
-  }
+  if (zones.length) root.append(zoneList);
   return root;
 }

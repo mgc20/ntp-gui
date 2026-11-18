@@ -147,7 +147,8 @@ function apiCard(ctx, readonly, auth) {
   }
   const name = el("input", { type: "text", maxlength: 64, placeholder: "z. B. Home Assistant", "aria-label": "Name des Schlüssels", disabled });
   const scope = el("select", { "aria-label": "Recht", disabled },
-    el("option", { value: "read", text: "nur lesen" }), el("option", { value: "admin", text: "lesen und verwalten" }));
+    el("option", { value: "read", text: "nur lesen" }), el("option", { value: "admin", text: "lesen und verwalten" }),
+    el("option", { value: "clock", text: "nur On-Air-Signal der Uhr" }));
   const create = async () => {
     try {
       const result = await apiPost("/api/apikeys", { name: name.value, scope: scope.value });

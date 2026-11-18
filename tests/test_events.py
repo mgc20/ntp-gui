@@ -84,6 +84,32 @@ class EventsTest(unittest.TestCase):
         events.prune()
         self.assertNotIn("uralt", [r["title"] for r in events.query()])
 
+    def test_prune_quota(self):
+        """Eine Sorte mit eigenem Kontingent (set_quota) behält nur ihre neuesten Zeilen und verdrängt die übrigen
+        Ereignisse nicht; die Zeilengrenze zählt Zeilen, nicht Nummern (nach dem Kürzen hat die Folge Lücken)."""
+        with mock.patch.dict(events._QUOTAS, {}, clear=True), mock.patch.object(events, "MAX_ROWS", 12):
+            events.set_quota("settings", "Signal:", 3)
+            for i in range(6):
+                events.emit("other", "info", f"wichtig{i}")
+            for i in range(40):
+                events.emit("settings", "info", f"Signal: {i}")
+                if i % 10 == 9:
+                    events.prune()
+            events.emit("settings", "info", "Signalweg geändert")   # anderer Titelanfang: zählt nicht zum Kontingent
+            events.emit("other", "info", "Signal: fremd")           # andere Art: auch nicht
+            events.prune()
+            titles = [r["title"] for r in events.query(limit=100)]
+            self.assertEqual([t for t in titles if t.startswith("Signal: ") and t != "Signal: fremd"],
+                             ["Signal: 39", "Signal: 38", "Signal: 37"])
+            self.assertEqual(sorted(t for t in titles if t.startswith("wichtig")), [f"wichtig{i}" for i in range(6)])
+            self.assertIn("Signalweg geändert", titles)
+            self.assertIn("Signal: fremd", titles)
+            self.assertEqual(events.count(), 11)
+            for i in range(5):
+                events.emit("other", "info", f"mehr{i}")
+            events.prune()
+            self.assertEqual(events.count(), 12, "die Zeilengrenze gilt weiter")
+
     def test_prune_skips_age_when_clock_implausible(self):
         """B4: Uhr ein Jahr vorgestellt und chrony nicht synchron → nichts nach Alter löschen,
         einmal Hinweis; die Zeilengrenze greift trotzdem."""

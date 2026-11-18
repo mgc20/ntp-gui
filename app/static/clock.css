@@ -440,6 +440,60 @@ body.is-tile, body.is-tile * { cursor: none; }
   --ink: #f3ecff; --ink-2: #d9cdf5; --ink-muted: #b8aedc; --ink-unsure: #857ca8; --accent: #ffb3d1; }
 :root[data-look]:not([data-mode]) .clock-band { background: var(--surface); }
 
+/* --- Studiouhr B1: Design tc (Timecode-Anzeige) -----------------------------------------------------------------
+   Kopfzeile „Anzeige-Timecode – nicht genlocked“ (immer sichtbar), Zeile HH:MM:SS mit Feinstelle, darunter Bildrate und
+   Zustand der Feinstelle. Die Ziffern hängen an der Schriftgröße von .face-tc (em), die Auto-Anpassung (--fit) misst
+   nur die Ziffernzeile; Kopfzeile und Zeile darunter haben eine Mindestgröße, brechen um statt aus dem Bild zu laufen,
+   und ihr Platz wird vorher abgezogen (clock.js, tcFixed). Die Feinstelle wird grau (data-level="unsure") oder
+   unsichtbar ("off": der Platz bleibt kurz frei, damit die Zeit nicht springt, danach rückt sie mit .is-gone zur
+   Mitte). Der Grund steht immer als Text da, nie nur als Farbe: in .tc-note, und wo diese Zeile keinen Platz hat
+   (niedrige Flächen, Streifen, Kachel), kurz in der Kopfzeile (.tc-why). Keine Animation: Die Ziffern wechseln per
+   textContent. */
+.face-tc { flex-direction: column; gap: 0.06em; color: var(--ink); font-size: min(15vw, 24vh); line-height: 1; }
+.tc-head { margin: 0; max-width: 100%; font-size: max(0.11em, 12px); line-height: 1.3; text-align: center;
+  font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-2); text-wrap: balance; }
+.tc-why { display: none; }
+/* ⓘ wächst mit der Kopfzeile (auf 4K wäre das feste 14-px-Symbol aus app.css kaum zu treffen). */
+.tc-head .info { font-size: max(0.85em, 10px); width: max(1.4em, 14px); height: max(1.4em, 14px); margin-left: 0.3em; }
+.tc-row { display: flex; align-items: baseline; justify-content: center; flex: none; white-space: nowrap; font-weight: 600;
+  font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+.tc-secs, .tc-fine { display: inline-flex; align-items: baseline; }
+.tc-secs[hidden], .tc-fine[hidden] { display: none; }
+.tc-sep { display: inline-block; width: 0.3em; text-align: center; }
+.tc-fine[data-level="unsure"] { color: var(--ink-unsure); }
+.tc-fine[data-level="off"] { visibility: hidden; }
+.tc-fine.is-gone { display: none; }
+.tc-note { margin: 0; max-width: 100%; font-size: max(0.085em, 12px); line-height: 1.3; color: var(--ink-2);
+  font-variant-numeric: tabular-nums; text-wrap: balance; overflow-wrap: anywhere; }
+:root[data-seconds="unsure"] .tc-secs { color: var(--ink-unsure); }
+:root[data-weight="thin"] .tc-row { font-weight: 300; }
+:root[data-weight="regular"] .tc-row { font-weight: 500; }
+:root[data-weight="bold"] .tc-row { font-weight: 750; }
+:root[data-face="mono"] .tc-row { font-family: ui-monospace, "DejaVu Sans Mono", Menlo, Consolas, monospace; letter-spacing: 0; }
+:root[data-show]:not([data-show~="seconds"]) .tc-secs { display: none; }
+/* Die eigene Kopfzeile ersetzt „Ortszeit“ über der Uhr: Der Timecode läuft in der Zeitzone des Servers. */
+:root[data-design="tc"] .clock-main > .clock-label { display: none; }
+:root[data-mode] .tc-head, :root[data-mode] .tc-note { color: var(--ink); }
+@media (max-height: 320px) { .face-tc { font-size: min(15vw, 30vh); } .tc-note { display: none; } .tc-why { display: inline; } }
+@supports (container-type: size) {
+  .clock-stage .face-tc { font-size: calc(min(var(--face-w) / 5.6, var(--face-h) / 1.55) * var(--clock-scale) * var(--fit)); }
+  .clock-stage :is(.tc-head, .tc-note) { max-width: var(--face-w); }
+  /* Streifen und Kachel: nur Kopfzeile und Zeit – ohne ⓘ (dort gibt es keine Bedienung) und ohne die Zeile darunter;
+     der Grund für eine graue Feinstelle steht dann kurz in der Kopfzeile. */
+  .clock-stage:is([data-layout="strip"], [data-layout="tile"]) :is(.tc-note, .tc-head .info) { display: none; }
+  .clock-stage:is([data-layout="strip"], [data-layout="tile"]) .tc-why { display: inline; }
+  /* Streifen: gestapelt wie die Kachel; ist er sehr flach (ab 5:1), steht die Kopfzeile links neben der Zeit, damit
+     die Ziffern die ganze Höhe bekommen. */
+  .clock-stage[data-layout="strip"] .face-tc { font-size: calc(min(90cqw / 5.6, var(--face-h) / 1.45) * var(--clock-scale) * var(--fit)); }
+  .clock-stage[data-layout="strip"] .tc-head { max-width: 90cqw; }
+  @container clock-stage (aspect-ratio >= 5/1) {
+    .clock-stage[data-layout="strip"] .face-tc { flex-direction: row; align-items: center; gap: 0.25em;
+      font-size: calc(min(var(--face-w) / 5.6, var(--face-h) / 1.05) * var(--clock-scale) * var(--fit)); }
+    .clock-stage[data-layout="strip"] .tc-head { max-width: 40cqw; line-height: 1.15; text-align: right; }
+  }
+}
+body:is(.is-kiosk, .is-tile, .is-compact) .tc-head .info { display: none; }
+
 /* --- Studiouhr A5: Countdown, Count-up, Timer, Tastenkürzel ----------------------------------------------------
    #cd steht unter der Uhrzeit (?cd=below) oder ersetzt sie als Hauptanzeige (?cd=main, data-cd am Root). Farbstufen
    über data-level (neutral, gelb, rot, fett rot, Überzeit), immer zusammen mit Symbol und Text – nie nur Farbe, kein
@@ -514,3 +568,226 @@ body:is(.is-kiosk, .is-tile, .is-compact, .is-eink) .clock-cd-actions { display:
    Nachttisch) und „Mein Gerät“ (reine Anzeige). */
 body.is-locked :is(.clock-design, #mode-tone, #mode-custom) { display: none; }
 .clock-tool-icon { padding-left: 0.6em; padding-right: 0.6em; min-width: 2.2em; }
+
+/* --- Studiouhr B2: Weltzeit (clockworld.js) ----------------------------------------------------------------------
+   #world zeigt bis zu sechs Zonen aus ?tz=: je Zone Kurzname, Uhrzeit, Abweichung zur großen Zeit („+6 h“),
+   Tageswechsel („+1 Tag“, als Text) und Tag oder Nacht als Symbol mit aria-label. Ab zwei Zonen steht es als Leiste
+   unter der Uhr (data-world="bar"), mit ?layout=world als Raster und Hauptinhalt (data-world="grid"). clock.js
+   blendet aus, was nicht passt (hidden an Zelle bzw. Leiste; „+2“ in .wz-more nennt die fehlenden Zonen) – im
+   Streifen und in der Kachel fehlt die Leiste ganz. Keine Animation, gezeichnet wird einmal je Minute. */
+.clock-world { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: center; gap: 0.25em 1.4em;
+  max-width: 100%; margin: clamp(4px, 1vh, 16px) 0 0; font-size: clamp(13px, 2.2vw, 5vh); line-height: 1.25;
+  color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.clock-world[hidden], .clock-world [hidden] { display: none; }
+.wz { display: inline-flex; align-items: baseline; gap: 0.4em; white-space: nowrap; }
+.wz-label { font-size: max(0.62em, 12px); letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-muted); }
+.wz-time { color: var(--ink); font-weight: 600; }
+.wz-ampm { font-size: max(0.62em, 12px); font-weight: 400; }   /* nur mit ?h12=1 gefüllt */
+.wz-ampm:empty { display: none; }
+.wz-meta { display: inline-flex; align-items: baseline; gap: 0.45em; font-size: max(0.72em, 12px); }
+.wz-day { color: var(--ink); font-weight: 700; }
+.wz-day:empty { display: none; }
+.wz-sun { font-family: "DejaVu Sans", "Segoe UI Symbol", "Apple Symbols", "Noto Sans Symbols2", sans-serif; }
+.wz-more { font-size: max(0.72em, 12px); white-space: nowrap; padding: 0 0.45em; border: 1px solid var(--border);
+  border-radius: 0.7em; }
+/* Rotlicht und E-Ink: --ink-muted und --ink-2 sind für kleinen Text zu dunkel bzw. gleich – alles in --ink. */
+:root[data-mode] .clock-world, :root[data-mode] .wz-label { color: var(--ink); }
+:root[data-show]:not([data-show~="tz"]) .clock-world { display: none; }
+.clock-stage:is([data-layout="strip"], [data-layout="tile"]) .clock-world { display: none; }
+@media (max-height: 480px) { .clock-world { margin-top: 2px; font-size: clamp(13px, 5vh, 32px); } }
+
+@supports (container-type: size) {
+  /* Leiste: etwas kleiner als die Zeile mit UTC, nie breiter als der sichere Bereich. Wo Höhe frei ist, vergrößert
+     clock.js sie über --world-grow (höchstens bis zu einem Fünftel der Zeithöhe). */
+  .clock-stage .clock-world { font-size: calc(max(13px, var(--info) * 0.82) * var(--world-grow, 1)); margin-top: 1.2cqh; max-width: 96cqw;
+    column-gap: 1.4em; row-gap: 0.2em; }
+  /* Banner: dritte Zeile der rechten Spalte, linksbündig wie Datum und Zustand. */
+  .clock-stage[data-layout="banner"][data-world="bar"] .clock-main { grid-template-areas: "time date" "time sub" "time world"; }
+  :root[data-cd="below"] .clock-stage[data-layout="banner"][data-world="bar"] .clock-main {
+    grid-template-areas: "time cd" "time date" "time sub" "time world"; }
+  .clock-stage[data-layout="banner"] .clock-world { grid-area: world; align-self: start; justify-content: flex-start;
+    margin: 0; max-width: 45cqw; column-gap: 1.1em; }
+  .clock-stage[data-layout="banner"]:not([data-world="bar"]) .clock-world { display: none; }
+  :root[data-design="studio"] .clock-stage[data-layout="banner"][data-world="bar"] .clock-sub { grid-row: 1 / 3; }
+
+  /* Layout world: das Raster ist der Hauptinhalt, die Uhr steht kleiner darüber. Die Zellen hängen an der
+     Schriftgröße des Rasters (--world-size je Spalten- und Zeilenzahl, mal --world-fit aus der Auto-Anpassung); alle
+     Abstände in em, damit das Einpassen linear wirkt. Spalten und Zeilen setzt clock.js (world.worldGrid). */
+  .clock-stage[data-layout="world"] { --time-size: min(11cqw, 14cqh); --face-w: 70cqw; --face-h: 27cqh;
+    --info: max(13px, min(2.1cqw, 4.2cqh)); --status: max(12px, min(1.6cqw, 2.8cqh)); }
+  .clock-stage[data-layout="world"] .clock-world { display: grid; grid-template-columns: repeat(var(--world-cols, 3), auto);
+    justify-content: center; align-items: start; gap: 0.45em 0.9em; flex: none; max-width: none; margin: 2.4cqh 0 0;
+    line-height: 1.15; --world-size: min(23cqw / var(--world-cols, 3), 34cqh / var(--world-rows, 2));
+    font-size: calc(var(--world-size) * var(--world-fit, 1)); }
+  .clock-stage[data-layout="world"] .wz { display: flex; flex-direction: column; align-items: center; gap: 0.06em; }
+  .clock-stage[data-layout="world"] .wz-label { font-size: 0.38em; }
+  .clock-stage[data-layout="world"] .wz-time { font-size: 1em; line-height: 1; letter-spacing: -0.02em; }
+  .clock-stage[data-layout="world"] .wz-meta { font-size: 0.38em; }
+  .clock-stage[data-layout="world"] .wz-ampm { font-size: 0.38em; }
+  .clock-stage[data-layout="world"] .wz-more { font-size: 0.38em; align-self: center; justify-self: center; }
+
+  /* Hochformat (Stele, Handy): je Zone eine Zeile – Kurzname links, Uhrzeit, rechts Abweichung in fester Breite,
+     damit die Uhrzeiten untereinander stehen. */
+  .clock-stage[data-layout="world"][data-world-flow="list"] { --time-size: min(19cqw, 11cqh); --face-w: 84cqw; --face-h: 26cqh;
+    --info: max(13px, min(4.2cqw, 3cqh)); --status: max(12px, min(3.2cqw, 2.2cqh)); }
+  .clock-stage[data-layout="world"][data-world-flow="list"] .clock-world { grid-template-columns: auto; gap: 0.3em;
+    --world-size: min(10cqw, 50cqh / var(--world-rows, 6)); }
+  .clock-stage[data-layout="world"][data-world-flow="list"] .wz { flex-direction: row; align-items: baseline; gap: 0.3em; }
+  .clock-stage[data-layout="world"][data-world-flow="list"] .wz-label { flex: 1 1 auto; text-align: left; font-size: 0.42em; }
+  .clock-stage[data-layout="world"][data-world-flow="list"] .wz-meta { flex: none; width: 9.4em; }
+
+  /* Sehr breit (ab 3:1): die Uhr links, alle Zonen in einer Zeile daneben; wie im Streifen ohne Datum und mit dem
+     Zustand nur als Symbol. */
+  .clock-stage[data-layout="world"][data-world-flow="row"] { --time-size: min(6cqw, 52cqh); --face-w: 24cqw; --face-h: 88cqh;
+    --status: max(12px, min(1.6cqw, 14cqh)); }
+  .clock-stage[data-layout="world"][data-world-flow="row"] .clock-main { flex-direction: row; align-items: center;
+    justify-content: center; gap: 2.4cqw; }
+  .clock-stage[data-layout="world"][data-world-flow="row"]
+    :is(.clock-main > .clock-label, .clock-date, .clock-utc, .clock-tz2, .clock-week, #clock-sync-text,
+      .clock-cd-label, .clock-cd-state, .clock-cd-actions, .clock-cd-now, .tc-note, .tc-head .info) { display: none; }
+  .clock-stage[data-layout="world"][data-world-flow="row"] .tc-why { display: inline; }
+  .clock-stage[data-layout="world"][data-world-flow="row"] :is(.clock-time, .clock-face) { margin: 0; flex: none; }
+  .clock-stage[data-layout="world"][data-world-flow="row"] .clock-sub { margin: 0; flex: none; }
+  .clock-stage[data-layout="world"][data-world-flow="row"] .clock-sync { flex: none; }
+  .clock-stage[data-layout="world"][data-world-flow="row"] .clock-cd { margin: 0; flex-wrap: nowrap; }
+  .clock-stage[data-layout="world"][data-world-flow="row"] .clock-world { margin: 0;
+    --world-size: min(60cqw / var(--world-cols, 6) / 3.4, 36cqh); }
+
+  /* Wenig Platz (die Schrift fiele unter 12 px): jede Zelle einzeilig, alles in einer Schriftgröße. */
+  .clock-stage[data-layout="world"][data-world-dense] .clock-world {
+    --world-size: min(90cqw / var(--world-cols, 3) / 9, 34cqh / var(--world-rows, 2)); }
+  .clock-stage[data-layout="world"][data-world-dense][data-world-flow="row"] .clock-world {
+    --world-size: min(66cqw / var(--world-cols, 6) / 9, 40cqh); }
+  .clock-stage[data-layout="world"][data-world-dense][data-world-flow="list"] .clock-world {
+    --world-size: min(5.6cqw, 50cqh / var(--world-rows, 6)); }
+  .clock-stage[data-layout="world"][data-world-dense] .wz { flex-direction: row; align-items: baseline; gap: 0.4em; }
+  .clock-stage[data-layout="world"][data-world-dense] :is(.wz-label, .wz-time, .wz-ampm, .wz-meta, .wz-more) { font-size: 1em; line-height: 1.15; }
+  .clock-stage[data-layout="world"][data-world-dense][data-world-flow="list"] .wz-meta { width: 8.6em; }
+}
+
+/* --- Studiouhr B3: Statuszeile mit PTP und Holdover, Kachel ---------------------------------------------------------
+   Im Band stehen der Zustand von PTP und ein Holdover als Marken: immer Symbol und Text, die Farbe des Symbols ist nur
+   Zusatz. ?show= ohne „status“ blendet sie wie die Zustandszeile unter der Uhr aus. Wo das Band fehlt (Kachel,
+   automatischer Streifen), steht ein Holdover als Symbol neben dem Zustandssymbol, der Text bleibt für Screenreader. */
+.clock-band-status { display: inline-flex; align-items: center; flex-wrap: wrap; justify-content: center; gap: 0.4em 0.6em; }
+.clock-band-status[hidden], .clock-chip[hidden] { display: none; }
+.clock-chip { display: inline-flex; align-items: baseline; gap: 0.35em; padding: 0.05em 0.6em; border: 1px solid var(--border);
+  border-radius: 999px; color: var(--ink); white-space: nowrap; }
+.clock-chip-icon { font-weight: 700; color: var(--ink-2); }
+.clock-chip[data-level="good"] .clock-chip-icon { color: var(--good-ink, var(--good)); }
+.clock-chip[data-level="warn"] .clock-chip-icon { color: var(--warn-ink, var(--warn)); }
+.clock-chip[data-level="crit"] .clock-chip-icon { color: var(--crit-ink, var(--crit)); }
+.clock-chip[data-level="warn"], .clock-chip[data-level="crit"] { border-style: dashed; border-color: currentColor; }
+:root[data-mode] .clock-chip, :root[data-mode] .clock-chip .clock-chip-icon { color: var(--ink); }
+:root[data-show]:not([data-show~="status"]) :is(.clock-band-status, .clock-hold) { display: none; }
+.clock-chip-letter { display: inline-flex; align-items: center; justify-content: center; width: 1.3em; height: 1.3em;
+  border: 1px dashed currentColor; border-radius: 50%; font-size: 0.75em; line-height: 1; align-self: center; }
+.clock-hold { display: none; }
+body:is(.is-tile, .is-compact) .clock-hold:not([hidden]) { display: inline-flex; flex: none;
+  font-size: max(12px, min(2vh + 4px, 1.6vw + 6px)); color: var(--warn-ink, var(--warn)); }
+.clock-hold-icon { display: inline-flex; align-items: center; justify-content: center; width: 1.3em; height: 1.3em;
+  border: 1px dashed currentColor; border-radius: 50%; font-size: 0.85em; line-height: 1; font-weight: 700; }
+:root[data-mode] body:is(.is-tile, .is-compact) .clock-hold { color: var(--ink); }
+/* Titel des Profils in der Kachel (dort fehlt die Kopfzeile): eine Zeile oben links, das Zustandssymbol bleibt in der
+   Ecke rechts. Die Bühne hält dafür oben eine Zeile frei (padding-top, --tile-title), die Auto-Anpassung zieht sie von
+   der Höhe für die Zeit ab (restHeight in clock.js) – so überdeckt die Zeit den Titel nie. */
+:root { --tile-title: max(12px, min(2vh + 4px, 1.6vw + 6px)); }
+.clock-tile-title { display: none; }
+body.is-tile .clock-tile-title:not([hidden]) { display: block; position: absolute; top: 0; left: 0; right: 3.8em; margin: 0;
+  text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600;
+  font-size: var(--tile-title); line-height: 1.3; color: var(--ink-2); }
+body.is-tile.has-tile-title .clock-stage > .clock-main { padding-top: calc(var(--tile-title) * 1.3); }
+body.is-tile .clock-tile-title.is-error { color: var(--warn-ink, var(--ink-2)); }
+:root[data-mode] body.is-tile .clock-tile-title { color: var(--ink); }
+@supports (container-type: size) {
+  body:is(.is-tile, .is-compact) .clock-stage .clock-hold:not([hidden]) { font-size: var(--status); }
+  .clock-stage[data-layout="strip"] .clock-sub { column-gap: 0.6em; flex-wrap: nowrap; align-items: center; }
+  body.is-tile .clock-stage { --tile-title: var(--status); }
+  .clock-stage[data-layout="tile"] .clock-sub { gap: 0.4em; align-items: center; flex-wrap: nowrap; }
+  /* Kachel mit Countdown: Symbol der Stufe und Restzeit in einer Zeile, deutlich kleiner als die Uhrzeit. */
+  .clock-stage[data-layout="tile"] .clock-cd { margin: 0; flex-wrap: nowrap; gap: 0.3em;
+    font-size: max(12px, min(4.4cqw, 11cqh)); }
+  :root[data-cd="main"] .clock-stage[data-layout="tile"] .clock-cd { flex-direction: row; align-items: baseline; gap: 0.12em; }
+  :root[data-cd="main"] .clock-stage[data-layout="tile"] .clock-cd-head { font-size: calc(var(--time-size) * var(--clock-scale) * var(--fit) * 0.4); }
+}
+
+/* --- Studiouhr B5: Prüfbild test=sync -------------------------------------------------------------------------------
+   Liegt über der Bühne. Die Fläche wechselt zur vollen Sekunde zwischen hell und dunkel (data-on, ohne Übergang) – ein
+   Wechsel je Sekunde. Der Warnhinweis steht immer darüber. Wünscht das System weniger Bewegung (oder auf E-Ink), gibt
+   es keine Fläche, nur den Hinweistext (data-mode="reduced" bzw. "eink"). */
+.clock-test { position: absolute; inset: 0; z-index: 5; display: flex; flex-direction: column; align-items: center;
+  justify-content: center; gap: clamp(6px, 1.6vh, 18px); padding: clamp(8px, 2vh, 28px) clamp(10px, 3vw, 48px);
+  box-sizing: border-box; background: var(--bg); color: var(--ink); text-align: center; overflow: auto; }
+.clock-test[hidden] { display: none; }
+:root[data-bg="transparent"] .clock-test { background: #000000; color: #f2f2f2; }
+/* Schriften wachsen mit der Fläche: Auf einem 4K-Schirm ohne Skalierung bleiben Texte und Knöpfe lesbar und treffbar. */
+.clock-test-title { margin: 0; font-size: clamp(14px, 1.2vw + 8px, max(26px, 2.4vh)); }
+.clock-test-warn { margin: 0; max-width: 46em; padding: 0.4em 0.9em; border: 2px solid var(--warn-ink, var(--warn));
+  border-radius: 10px; font-size: clamp(13px, 1vw + 8px, max(22px, 2vh)); font-weight: 600; color: var(--ink); }
+.clock-test-warn-icon { color: var(--warn-ink, var(--warn)); }
+.clock-test-flash { flex: 1 1 0; min-height: 60px; width: min(100%, 120vh); display: flex; align-items: center;
+  justify-content: center; border: 2px solid #808080; border-radius: 8px; background: #000000; color: #ffffff;
+  font-variant-numeric: tabular-nums; font-weight: 700; font-size: clamp(28px, 12vh, 220px); line-height: 1; }
+.clock-test-flash[data-on="1"] { background: #ffffff; color: #000000; }
+:root[data-mode="red"] .clock-test-flash { color: #ff2a1a; border-color: #8c120a; }
+:root[data-mode="red"] .clock-test-flash[data-on="1"] { background: #ff2a1a; color: #000000; }
+.clock-test-flash[hidden] { display: none; }
+.clock-test-note, .clock-test-lead, .clock-test-status { margin: 0; max-width: 52em; font-size: clamp(12px, 0.8vw + 8px, max(20px, 1.8vh)); }
+.clock-test-note { color: var(--ink-2); }
+.clock-test-lead { font-weight: 600; font-variant-numeric: tabular-nums; }
+.clock-test-status { color: var(--ink-2); min-height: 1.2em; }
+.clock-test-status:empty, .clock-test-lead:empty { display: none; }
+:root[data-mode] .clock-test-note, :root[data-mode] .clock-test-status { color: var(--ink); }
+.clock-test-actions { display: flex; flex-wrap: wrap; gap: 0.45em; justify-content: center; font-size: clamp(14px, 0.6vw + 8px, 30px); }
+.clock-test-actions [hidden] { display: none; }
+body.is-tile .clock-test, body.is-tile .clock-test *, body.is-kiosk .clock-test, body.is-kiosk .clock-test * { cursor: auto; }
+/* Wenig Höhe (Streifen, kleine Kachel): nur Warnhinweis, Fläche und Knöpfe. Ohne Fläche („weniger Bewegung“, E-Ink)
+   bleibt der Hinweistext stehen – er ist dort der ganze Inhalt. */
+@media (max-height: 320px) {
+  .clock-test { flex-direction: row; flex-wrap: wrap; align-content: center; gap: 4px 10px; padding: 4px 8px; }
+  .clock-test-title, .clock-test-status, .clock-test[data-mode="run"] .clock-test-note { display: none; }
+  .clock-test-note { font-size: 12px; line-height: 1.25; }
+  .clock-test-warn { font-size: 12px; padding: 0.15em 0.6em; border-width: 1px; }
+  .clock-test-flash { flex: 1 1 120px; min-height: 36px; align-self: stretch; font-size: clamp(18px, 20vh, 80px); }
+  .clock-test-lead { font-size: 12px; }
+  .clock-test-actions { font-size: 13.5px; }   /* Knöpfe (0,9 em) bleiben über 12 px */
+}
+
+/* --- Studiouhr B4: On-Air/REC-Signal --------------------------------------------------------------------
+   Ein Rahmen um die ganze Seite (Rand am body) und ein Balken mit Symbol und Text über der Bühne. Beides steht still:
+   kein Blinken, kein Übergang. Der Zustand ist nie nur Farbe – „ON AIR“ bzw. „REC“ steht als Text da, das Symbol und
+   die Art des Rahmens unterscheiden sich (durchgezogen bzw. doppelt). Antwortet der Server nicht mehr, ist der Rahmen
+   gestrichelt und der Balken nennt den Grund. Der Balken liegt im Fluss: Die Bühne wird kleiner und passt sich neu ein. */
+/* Größe: Anteil der kürzeren Seite, ohne enge Obergrenze – auf 3840×2160 so groß wie auf 1920×1080. Auf flachen, breiten
+   Flächen (Streifen, Banner) zählt zusätzlich die Breite, gedeckelt über die Höhe, damit der Uhrzeit Platz bleibt. */
+:root { --signal: #cc1f1a; --signal-ink: #ffffff; --signal-w: clamp(4px, max(0.9vmin, min(0.3vw, 3vh)), 40px); }
+:root[data-mode="red"] { --signal: #ff2a1a; --signal-ink: #000000; }
+:root[data-mode="eink"] { --signal: #000000; --signal-ink: #ffffff; }
+body.clock-page.has-signal { box-sizing: border-box; border: var(--signal-w) solid var(--signal); }
+body.clock-page.has-signal[data-signal="rec"] { border-style: double; border-width: calc(var(--signal-w) * 1.5); }
+body.clock-page.has-signal[data-signal-stale] { border-style: dashed; }
+.clock-signal { display: flex; align-items: center; justify-content: center; gap: 0.5em; flex: none; margin: 0;
+  padding: 0.18em 0.8em; background: var(--signal); color: var(--signal-ink); font-weight: 700; line-height: 1.2;
+  font-size: clamp(14px, max(3.2vmin, min(1.2vw, 11vh)), 96px); letter-spacing: 0.12em; text-align: center; white-space: nowrap; overflow: hidden; }
+.clock-signal[hidden] { display: none; }
+.clock-signal-icon { flex: none; width: 0.72em; height: 0.72em; border-radius: 50%; box-sizing: border-box;
+  background: currentColor; }
+.clock-signal[data-signal="rec"] .clock-signal-icon { border: 0.13em solid currentColor;
+  background: radial-gradient(circle, currentColor 0 36%, transparent 40%); }
+/* Symbol und Zustand schrumpfen nie; wird es eng, kürzt nur der Hinweis (…). Bis 440 px Breite steht die Kurzfassung da. */
+.clock-signal-text { flex: none; }
+.clock-signal-note { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-weight: 600;
+  font-size: max(12px, 0.6em); letter-spacing: 0.02em; }
+.clock-signal-note-short { display: none; }
+@media (max-width: 440px) {
+  .clock-signal-note { display: none; }
+  .clock-signal-note-short { display: block; }
+}
+.clock-signal .clock-signal-note:empty { display: none; }
+/* Der Kurzhinweis nach einer Taste liegt sonst oben über dem Balken: mit Signal steht er unten. */
+body.has-signal .clock-hint { top: auto; bottom: max(12px, env(safe-area-inset-bottom)); }
+/* Sehr wenig Höhe (fest gewählter Streifen mit Kopfzeile): Solange das Signal an ist, weicht die Kopfzeile dem Balken –
+   sonst bliebe für die Uhrzeit keine Zeile. */
+@media (max-height: 240px) {
+  body.has-signal .clock-bar { display: none; }
+}

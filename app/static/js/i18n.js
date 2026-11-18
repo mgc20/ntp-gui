@@ -179,8 +179,10 @@ export const CORE_DE = {
       "bahnhof": "Bahnhofsuhr",
       "nixie": "Nixie",
       "flip": "Klappzahlen",
-      "wort": "Wortuhr"
+      "wort": "Wortuhr",
+      "tc": "Timecode"
     },
+    "tc_label": "Anzeige-Timecode – nicht genlocked",
     "theme_title": "Hell oder dunkel",
     "theme_light": "Hell",
     "theme_dark": "Dunkel",
@@ -276,7 +278,8 @@ export const CORE_DE = {
       "d": "nächstes Design",
       "l": "nächstes Layout",
       "u": "UTC groß oder Ortszeit groß",
-      "t": "Zehntel bei Stoppuhr und Timer",
+      "t": "Zehntel bei Stoppuhr und Timer; im Design Timecode Zehntel oder Frames",
+      "o": "On Air an oder aus – nur auf diesem Gerät",
       "space": "Timer oder Stoppuhr starten und anhalten",
       "r": "Timer oder Stoppuhr zurücksetzen",
       "size": "größer oder kleiner",
@@ -285,6 +288,20 @@ export const CORE_DE = {
     },
     "keys_note": "Mit lock=1 in der Adresse sind die Kürzel aus. Esc schließt.",
     "keys_close": "Schließen",
+    "signal": {
+      "on_air": "ON AIR",
+      "rec": "REC"
+    },
+    "signal_local": "nur dieses Gerät",
+    "signal_stale": "Stand ungewiss – Server antwortet nicht",
+    "signal_stale_short": "ungewiss",
+    "test_title": "Prüfbild: Sekundenblitz",
+    "test_group": "Prüfbild",
+    "test_warn": "Achtung: Die Fläche wechselt jede Sekunde zwischen hell und dunkel. Nicht ins Sendebild und nicht vor Publikum zeigen. Esc beendet.",
+    "test_tone": "Ton-Klick",
+    "test_less": "Vorlauf − 10 ms",
+    "test_more": "Vorlauf + 10 ms",
+    "test_stop": "Beenden (Esc)",
     "say_time": "Es ist {time} Uhr.",
     "say_left": "Noch {limit}.",
     "say_target": "Ziel erreicht.",
@@ -302,8 +319,17 @@ export const CORE_DE = {
       "banner": "Banner",
       "column": "Spalte",
       "strip": "Streifen",
-      "tile": "Kachel"
-    }
+      "tile": "Kachel",
+      "world": "Weltzeit"
+    },
+    "world_label": "Weltzeit",
+    "world_day": "Tag",
+    "world_days": "Tage",
+    "world_daytime": "Tag",
+    "world_night": "Nacht",
+    "world_delta_title": "Abweichung zur großen Zeit ({ref})",
+    "world_more_one": "{count} weitere Zeitzone passt hier nicht",
+    "world_more_other": "{count} weitere Zeitzonen passen hier nicht"
   }
 };
 

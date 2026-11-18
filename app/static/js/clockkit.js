@@ -6,7 +6,7 @@
 import { fmtNumber } from "./util.js";
 
 /** Designs in der Reihenfolge der Auswahl. Schlüssel = Wert von ?design= und im Browser gemerkt. */
-export const DESIGNS = ["digital", "studio", "bahnhof", "nixie", "flip", "wort"];
+export const DESIGNS = ["digital", "studio", "bahnhof", "nixie", "flip", "wort", "tc"];
 export const DEFAULT_DESIGN = "digital";
 
 // --- Adressparameter (Schema-Tabelle) -------------------------------------------------
@@ -25,11 +25,17 @@ const DAILY_TIME = /^([01][0-9]|2[0-3]):([0-5][0-9])(?::([0-5][0-9]))?$/;
 // Dauer für ?timer=: „90s“, „25m“, „1h30m“, „2m30s“ (Einheiten absteigend, jede höchstens einmal).
 const DURATION = /^(?:([0-9]{1,2})h)?(?:([0-9]{1,4})m)?(?:([0-9]{1,5})s)?$/;
 export const MAX_TIMER_MS = 24 * 3600_000;
+// Kurznamen der Weltzeit (?tzl=): nur Buchstaben, Ziffern, Leerzeichen, Punkt und Bindestrich – strenger als LABEL_CHARS,
+// das Komma trennt die Einträge.
+export const ZONE_LABEL_CHARS = /^[\p{L}\p{N} .\-]+$/u;
+/** Weltzeit: höchstens so viele Zonen (?tz=) und Kurznamen (?tzl=), ein Kurzname höchstens so viele Zeichen. */
+export const MAX_ZONES = 6;
+export const ZONE_LABEL_LEN = 16;
 const ISO_TIME = /^([0-9]{4})-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):([0-5][0-9])(?::([0-5][0-9]))?$/;
 
 // --- Darstellung: Layouts, Elemente, Farben (Studiouhr A3/A4) ---------------------------------
 /** Layouts: auto wählt per resolveLayout() aus der Größe der Bühne, die anderen setzen es fest. */
-export const LAYOUTS = ["auto", "normal", "banner", "column", "strip", "tile"];
+export const LAYOUTS = ["auto", "normal", "banner", "column", "strip", "tile", "world"];
 /** Elemente, die sich mit ?show= einzeln zeigen lassen (Allowlist; was fehlt, wird ausgeblendet). */
 export const SHOW_ITEMS = ["time", "seconds", "date", "weekday", "week", "utc", "tz", "status", "countdown"];
 /** Themen (data-look in clock.css, höchstens sechs). bg: Hintergrund für die Kontrastprüfung der Akzentfarbe. */
@@ -51,19 +57,26 @@ export const PALETTE = Object.freeze({
 /** Farben des Designs studio (?color=). */
 export const STUDIO_COLORS = ["amber", "red", "green", "cyan", "white", "ice"];
 export const MIN_CONTRAST = 4.5;
+/** Bildraten der Timecode-Anzeige (?fps=, Design tc); 29.97 und 59.94 zählen Drop-Frame (clocktc.js). */
+export const TC_FPS = ["24", "25", "30", "50", "60", "29.97", "59.94"];
 
 /**
  * Parameter der Uhr. Typen: enum (values), flag (1/0/true/false), int (min, max; nur Ziffern), zone (siehe
  * checkZone), label (len, charset), time („20:15[:00]“ oder „2026-12-31T23:59[:59]“), list (kommagetrennt, nur
  * Einträge aus values; Unbekanntes fällt weg), color (Name aus PALETTE oder sechs Hexziffern ohne #), duration
- * („90s“, „25m“, „1h30m“; in ms), intlist (kommagetrennte ganze Zahlen in min … max, höchstens maxItems). default gilt,
+ * („90s“, „25m“, „1h30m“; in ms), intlist (kommagetrennte ganze Zahlen in min … max, höchstens maxItems), zonelist
+ * (kommagetrennte Zeitzonen, höchstens maxItems, ohne Doppelte; der Parameter darf auch mehrfach in der Adresse stehen),
+ * labellist (kommagetrennte Kurznamen zu den Zonen, je höchstens len Zeichen; leere Einträge erlaubt). default gilt,
  * wenn der Parameter fehlt oder ungültig ist. Standortangaben (lat/lon) kennt das Schema bewusst nicht.
  */
 export const PARAM_SCHEMA = Object.freeze([
   { name: "design", type: "enum", values: DESIGNS, default: null },
   { name: "kiosk", type: "flag", default: false },
   { name: "eink", type: "flag", default: false },
-  { name: "tz", type: "zone", default: null },
+  // Weltzeit (B2): bis zu sechs Zeitzonen (eine: zweite Zeitzone in der Zeile unter der Uhr, mehrere: Leiste bzw.
+  // Raster mit ?layout=world), dazu Kurznamen in derselben Reihenfolge.
+  { name: "tz", type: "zonelist", maxItems: MAX_ZONES, default: null },
+  { name: "tzl", type: "labellist", len: ZONE_LABEL_LEN, maxItems: MAX_ZONES, default: null },
   // Vorlauf der Anzeige in ms: gleicht die Verzögerung von Bildprozessoren im Fernseher aus.
   { name: "lead", type: "int", min: 0, max: 200, default: 0 },
   // Ab dieser Fehlerschranke (ms) gilt die Anzeige als unsicher (data-sync="degraded").
@@ -78,8 +91,9 @@ export const PARAM_SCHEMA = Object.freeze([
   { name: "weight", type: "enum", values: ["thin", "regular", "bold"], default: null },
   { name: "shift", type: "int", min: 0, max: 2, default: null },
   // Design studio (A4): Farbe von Kranz und Ziffern, Zeile unter der Zeit, Sekunden als Kranz/Ziffern, 12 h.
+  // sub gilt auch im Design tc (B1) für die Feinstelle: frames, off, sonst Zehntel (tenths ist dort der Standard).
   { name: "color", type: "enum", values: STUDIO_COLORS, default: "amber" },
-  { name: "sub", type: "enum", values: ["utc", "tz2", "date", "off"], default: "utc" },
+  { name: "sub", type: "enum", values: ["utc", "tz2", "date", "off", "tenths", "frames"], default: "utc" },
   { name: "seconds", type: "enum", values: ["ring", "digits", "both"], default: "both" },
   { name: "h12", type: "flag", default: false },
   // Design digital (A4): Ziffernsatz, Doppelpunkt, führende Null der Stunde, Datumszeile.
@@ -87,6 +101,8 @@ export const PARAM_SCHEMA = Object.freeze([
   { name: "colon", type: "enum", values: ["steady", "blink"], default: "steady" },
   { name: "lz", type: "flag", default: true },
   { name: "date", type: "enum", values: ["long", "short", "iso", "off"], default: "long" },
+  // Design tc (B1): Bildrate der Timecode-Anzeige. Die Feinstelle (Zehntel, Frames, aus) wählt ?sub=.
+  { name: "fps", type: "enum", values: TC_FPS, default: "25" },
   // Thema und Akzentfarbe (A4): gesetzt per CSSOM, nach Kontrastprüfung gegen den Hintergrund.
   { name: "look", type: "enum", values: Object.keys(LOOKS), default: null },
   { name: "accent", type: "color", default: null },
@@ -102,7 +118,16 @@ export const PARAM_SCHEMA = Object.freeze([
   { name: "cd", type: "enum", values: ["below", "main"], default: "below" },
   // Lokale Bedienung sperren: keine Tastenkürzel, keine Timer-Knöpfe (Kiosk, Regie-Monitor).
   { name: "lock", type: "flag", default: false },
+  // On-Air/REC-Signal (B4): Dieser Bildschirm zeigt das zentrale Signal aus /api/v1/time als Rahmen mit Text und fragt
+  // dafür im Sekundentakt ab (sonst alle 5 s). Die Taste O schaltet unabhängig davon ein lokales „On Air“.
+  { name: "signal", type: "flag", default: false },
+  // Prüfbild (B5): test=sync lässt eine Fläche zur vollen Sekunde wechseln und klickt dazu (Einmessen von ?lead=).
+  // Wirkt nur aus der Adresse (ADDRESS_ONLY, testMode) – nie aus einem Profil oder dem gemerkten Stand.
+  { name: "test", type: "enum", values: ["sync"], default: null },
 ].map((entry) => Object.freeze(entry)));
+
+/** Parameter, die nur aus der Adresse wirken: Profile und der gemerkte Stand tragen sie nie (clocklink.js, clockprofiles.py). */
+export const ADDRESS_ONLY = Object.freeze(["test"]);
 
 /** Zeitzonenliste des Browsers (Intl.supportedValuesOf), leer, wenn der Browser sie nicht kennt. */
 export function supportedZones(intl = globalThis.Intl) {
@@ -152,10 +177,52 @@ export function parseDuration(value) {
   return ms > 0 && ms <= MAX_TIMER_MS ? ms : null;
 }
 
+/** Mehrere Werte in einem Parameter (kommagetrennt, in der Adresse auch als wiederholter Name)? */
+export function multiParam(entry) {
+  return Boolean(entry) && (entry.type === "zonelist" || entry.type === "labellist");
+}
+
+/**
+ * Größte Länge eines Rohwerts: MAX_LEN, bei Listen aus Zonen bzw. Kurznamen je Eintrag (plus Kommas). Bei Listen
+ * zählen Zeichen (Codepunkte) der bereinigten Schreibweise (listRaw), wie in clockprofiles.py.
+ */
+export function rawLimit(entry) {
+  if (!multiParam(entry)) return MAX_LEN;
+  const items = entry.maxItems || MAX_ZONES;
+  const each = entry.type === "labellist" ? Math.min(entry.len || ZONE_LABEL_LEN, MAX_LEN) : MAX_LEN;
+  return items * each + (items - 1);
+}
+
+/** So viel länger als rawLimit darf der Rohwert einer Liste vor dem Bereinigen sein (Leerzeichen, zerlegte Zeichen). */
+export const LIST_SLACK = 4;
+
+/**
+ * Schreibweise einer Liste (tz, tzl), wie sie in die Adresse gehört: ohne Leerzeichen um die Kommas und am Rand
+ * („Europe/London, Asia/Tokyo“ → „Europe/London,Asia/Tokyo“), Kurznamen in NFC. Leerzeichen in einem Kurznamen
+ * („New York“) bleiben. Andere Parameter unverändert.
+ */
+export function listRaw(entry, raw) {
+  if (!multiParam(entry) || typeof raw !== "string") return raw;
+  const text = entry.type === "labellist" ? raw.normalize("NFC") : raw;
+  return text.replace(/ *, */g, ",").replace(/^ +| +$/g, "");
+}
+
+/** Rohwert eines Parameters aus der Adresse: der erste, bei Listen aus Zonen/Kurznamen alle Vorkommen mit Komma verbunden. */
+export function rawFromSearch(params, entry) {
+  if (!params.has(entry.name)) return null;
+  return multiParam(entry) ? params.getAll(entry.name).join(",") : String(params.get(entry.name) ?? "");
+}
+
 /** Einen Rohwert gegen einen Schema-Eintrag prüfen. Liefert { ok: true, value } oder { ok: false }. */
 export function checkParam(entry, raw, zones = [], intl = globalThis.Intl) {
   const fail = { ok: false };
-  if (!entry || typeof raw !== "string" || raw.length > MAX_LEN) return fail;
+  if (!entry || typeof raw !== "string") return fail;
+  if (multiParam(entry)) {
+    // Listen: erst bereinigen (Leerzeichen um die Kommas, NFC), dann in Zeichen messen – nicht in UTF-16-Einheiten.
+    if (raw.length > rawLimit(entry) * LIST_SLACK) return fail;
+    raw = listRaw(entry, raw);
+    if ([...raw].length > rawLimit(entry)) return fail;
+  } else if (raw.length > rawLimit(entry)) return fail;
   switch (entry.type) {
     case "enum":
       return entry.values.includes(raw) ? { ok: true, value: raw } : fail;
@@ -169,6 +236,29 @@ export function checkParam(entry, raw, zones = [], intl = globalThis.Intl) {
     case "zone": {
       const zone = checkZone(raw, zones, intl);
       return zone ? { ok: true, value: zone } : fail;
+    }
+    case "zonelist": {
+      // Jede Zone einzeln geprüft; ein unzulässiger oder doppelter Eintrag verwirft den ganzen Wert – sonst passten die
+      // Kurznamen (?tzl=, gleiche Reihenfolge) nicht mehr zu ihren Zonen.
+      const items = raw.split(",");
+      if (items.length > (entry.maxItems || MAX_ZONES)) return fail;
+      const values = [];
+      for (const item of items) {
+        const zone = checkZone(item, zones, intl);
+        if (!zone || values.some((v) => v.toLowerCase() === zone.toLowerCase())) return fail;
+        values.push(zone);
+      }
+      return { ok: true, value: Object.freeze(values) };
+    }
+    case "labellist": {
+      const items = raw.split(",");
+      const len = Math.min(entry.len || ZONE_LABEL_LEN, MAX_LEN);
+      const charset = entry.charset || ZONE_LABEL_CHARS;
+      if (items.length > (entry.maxItems || MAX_ZONES) || !items.some(Boolean)) return fail;
+      for (const item of items) {
+        if (item && !([...item].length <= len && item.trim() === item && charset.test(item))) return fail;
+      }
+      return { ok: true, value: Object.freeze(items) };
     }
     case "label": {
       const text = raw.normalize("NFC");
@@ -225,14 +315,15 @@ export function paramDefaults(schema = PARAM_SCHEMA) {
 /**
  * ?design=…&kiosk=1&eink=1&tz=Europe/London&lead=40 → { design, kiosk, eink, tz, lead, maxerr, ignored }.
  * Jeder Name aus dem Schema bekommt seinen geprüften Wert oder den Standard. ignored: Namen bekannter
- * Parameter mit unzulässigem Wert (für eine Konsolenzeile, nie für das DOM). Doppelte Namen: Der erste gilt.
+ * Parameter mit unzulässigem Wert (für eine Konsolenzeile, nie für das DOM). Doppelte Namen: Der erste gilt – außer bei
+ * tz und tzl, dort zählen alle (?tz=Europe/London&tz=Asia/Tokyo wie ?tz=Europe/London,Asia/Tokyo).
  */
 export function parseParams(search, zones = [], intl = globalThis.Intl, schema = PARAM_SCHEMA) {
   const params = new URLSearchParams(typeof search === "string" ? search : "");
   const out = { ...paramDefaults(schema), ignored: [] };
   for (const entry of schema) {
     if (!params.has(entry.name)) continue;
-    const result = checkParam(entry, String(params.get(entry.name) ?? ""), zones, intl);
+    const result = checkParam(entry, rawFromSearch(params, entry), zones, intl);
     if (result.ok) out[entry.name] = result.value;
     else out.ignored.push(entry.name);
   }
@@ -645,6 +736,7 @@ export const BEEP = {
   short: { freq: 1000, dur: 0.06 },
   long: { freq: 1000, dur: 0.5 },
   count: { freq: 1500, dur: 0.06 },
+  click: { freq: 2000, dur: 0.02 },   // Prüfbild test=sync: kurzer Klick auf jeder vollen Sekunde
 };
 /** „Uhr stellen“: so viele Sekunden vor der vollen Minute beginnt der Countdown. */
 export const COUNTDOWN_SECONDS = 10;
@@ -672,6 +764,7 @@ export function audioClock(ctx, perfNow, wallNow, offsetMs = 0) {
  * Töne für alle vollen Serversekunden nach `afterSecond` bis `horizonMs` voraus.
  * mode "seconds": kurzer Piep jede Sekunde, langer zur vollen Minute.
  * mode "countdown": nur die letzten COUNTDOWN_SECONDS vor der vollen Minute (höher) und der lange Ton bei 0.
+ * mode "click": ein kurzer Klick auf jeder vollen Sekunde, auch zur Minute (Prüfbild test=sync).
  * Ergebnis: [{ second (Unix-Sekunde des Servers), at (Audiozeit s), kind, freq, dur }].
  */
 export function planTones(clock, { mode = "seconds", afterSecond = -Infinity, horizonMs = 1500 } = {}) {
@@ -681,7 +774,8 @@ export function planTones(clock, { mode = "seconds", afterSecond = -Infinity, ho
   for (let second = first; second <= last; second += 1) {
     const inMinute = ((second % 60) + 60) % 60;
     let kind = null;
-    if (inMinute === 0) kind = "long";
+    if (mode === "click") kind = "click";
+    else if (inMinute === 0) kind = "long";
     else if (mode === "seconds") kind = "short";
     else if (mode === "countdown" && inMinute >= 60 - COUNTDOWN_SECONDS) kind = "count";
     if (!kind) continue;
@@ -724,6 +818,143 @@ export function countdownValue(serverMs) {
   if (inMinute === 0) return 0;
   const left = 60 - inMinute;
   return left <= COUNTDOWN_SECONDS ? left : null;
+}
+
+// --- Prüfbild test=sync (Studiouhr B5) ---------------------------------------------------
+/** Schrittweite und Grenzen beim Einmessen von ?lead= im Prüfbild (wie im Schema: 0 … 200 ms). */
+export const LEAD_STEP_MS = 10;
+export const LEAD_MAX_MS = 200;
+/** So viel früher darf der Zeitgeber feuern und zählt trotzdem schon zur nächsten Sekunde. */
+export const FLASH_EARLY_MS = 20;
+
+/**
+ * Soll das Prüfbild laufen? Nur mit test=sync ausdrücklich in der Adresse (erster Wert, wie parseParams):
+ * "off" ohne den Parameter, "reduced", wenn das System weniger Bewegung wünscht (dann nur ein Hinweis, kein Blitz),
+ * "eink" auf E-Ink (dort gibt es keinen Sekundentakt), sonst "run".
+ */
+export function testMode(search, { reduced = false, eink = false } = {}) {
+  let value = null;
+  try { value = new URLSearchParams(typeof search === "string" ? search : "").get("test"); } catch (error) { value = null; }
+  if (value !== "sync") return "off";
+  if (reduced) return "reduced";
+  return eink ? "eink" : "run";
+}
+
+/**
+ * Stand des Sekundenblitzes zur angezeigten Serverzeit: Die Fläche wechselt genau zur vollen Sekunde – hell in
+ * geraden, dunkel in ungeraden Sekunden, also ein Wechsel je Sekunde (höchstens 1 Hz, ein Hell-Dunkel-Paar dauert 2 s).
+ * Liefert { second (Unix-Sekunde), on, delay (ms bis zum nächsten Wechsel, mindestens 1) } oder null.
+ */
+export function flashStep(serverMs) {
+  if (!Number.isFinite(serverMs)) return null;
+  const second = Math.floor((serverMs + FLASH_EARLY_MS) / 1000);
+  return { second, on: second % 2 === 0, delay: Math.max(1, Math.ceil((second + 1) * 1000 - serverMs)) };
+}
+
+/** Vorlauf im Prüfbild um einen Schritt ändern (dir: +1 oder −1), begrenzt auf 0 … LEAD_MAX_MS. */
+export function leadStep(lead, dir) {
+  const base = Number.isFinite(lead) ? lead : 0;
+  return Math.min(LEAD_MAX_MS, Math.max(0, Math.round(base) + (dir > 0 ? LEAD_STEP_MS : -LEAD_STEP_MS)));
+}
+
+/**
+ * Adresse ohne das Prüfbild: Abfrageteil mit „?“ oder leer. lead: der im Prüfbild eingemessene Vorlauf; null: Der
+ * Vorlauf wurde nicht geändert, ein lead= der Adresse bleibt, wie es ist. Ein eingemessener Wert 0 steht mit einem
+ * Profil (?p=) ausdrücklich als lead=0 da – sonst gälte nach dem Neuladen wieder der Vorlauf des Profils; ohne Profil
+ * ist 0 der Standard und lead= entfällt, außer mit keepZero (clocklink.testDoneSearch: Ohne lead=0 gälte der gemerkte
+ * Stand). Unzulässige Werte: ohne lead.
+ */
+export function testDoneSearch(search, lead = null, { keepZero = false } = {}) {
+  const params = new URLSearchParams(typeof search === "string" ? search : "");
+  params.delete("test");
+  if (lead === null || lead === undefined) { /* unverändert */ }
+  else if (Number.isInteger(lead) && lead >= 0 && lead <= LEAD_MAX_MS && (lead > 0 || params.has("p") || keepZero)) params.set("lead", String(lead));
+  else params.delete("lead");
+  const text = params.toString().replace(/%2C/g, ",").replace(/%3A/g, ":").replace(/%2F/g, "/");
+  return text ? `?${text}` : "";
+}
+
+// --- Statuszeile: PTP und Holdover (Studiouhr B3) -----------------------------------------
+/** Zustände von PTP aus /api/v1/time (wie PTP_STATES in server.py). */
+export const PTP_STATES = Object.freeze(["off", "down", "master", "locked", "acquiring", "passive", "fault", "unknown"]);
+/** Symbol und Stufe je Zustand; off und unknown zeigen nichts. Bedeutung trägt immer auch der Text. */
+export const PTP_SHOWN = Object.freeze({
+  master: { icon: "◈", level: "good" }, locked: { icon: "◆", level: "good" }, acquiring: { icon: "◇", level: "warn" },
+  passive: { icon: "◇", level: "info" }, fault: { icon: "✕", level: "crit" }, down: { icon: "✕", level: "crit" },
+});
+/** Holdover: ein „H“ im gestrichelten Kreis (clock.css) – ein Buchstabe, den jede Schrift hat, auch am Smart-TV. */
+export const HOLDOVER_ICON = "H";
+
+/** Dauer eines Holdovers grob: „< 1 min“, „12 min“, „2 h 5 min“, „3 d 4 h“; ohne brauchbare Angabe "". */
+export function holdSpan(seconds) {
+  if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds < 0) return "";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 1) return "< 1 min";
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} h ${minutes % 60} min`;
+  return `${Math.floor(hours / 24)} d ${hours % 24} h`;
+}
+
+/**
+ * Was die Statuszeile über PTP und Holdover zeigt – nur aus festen Werten: { ptp: null | { state, icon, level },
+ * holdover: null | { icon, span } }. Unbekannte oder fremde Werte aus der Antwort zeigen nichts (nie als Text ins DOM).
+ */
+export function statusChips(status) {
+  const s = status && typeof status === "object" ? status : {};
+  const state = typeof s.ptp_state === "string" && PTP_STATES.includes(s.ptp_state) ? s.ptp_state : "unknown";
+  const shown = Object.prototype.hasOwnProperty.call(PTP_SHOWN, state) ? PTP_SHOWN[state] : null;
+  return {
+    ptp: shown ? { state, icon: shown.icon, level: shown.level } : null,
+    holdover: s.holdover === true ? { icon: HOLDOVER_ICON, span: holdSpan(s.holdover_seconds) } : null,
+  };
+}
+
+// --- On-Air/REC-Signal (Studiouhr B4) --------------------------------------------------------------------
+/** Feste Zustände des Signals (wie clocksignal.STATES auf dem Server). */
+export const SIGNAL_STATES = Object.freeze(["off", "on_air", "rec"]);
+/** Abstand der Zustandsabfrage: mit ?signal=1 jede Sekunde, sonst alle 5 s. */
+export const POLL_MS = 5_000;
+export const SIGNAL_POLL_MS = 1_000;
+
+/** Wert aus /api/v1/time prüfen: nur ein fester Zustand, alles andere ist „off“. */
+export function signalState(value) {
+  return typeof value === "string" && SIGNAL_STATES.includes(value) ? value : "off";
+}
+
+/** Abstand der Zustandsabfrage in ms für diese Parameter. */
+export function pollInterval(params = {}) {
+  return params && params.signal === true ? SIGNAL_POLL_MS : POLL_MS;
+}
+
+/**
+ * Was der Bildschirm zeigt: { state, local, stale }. Das zentrale Signal zählt nur mit ?signal=1 (enabled) und geht vor;
+ * ist es aus, gilt das lokale „On Air“ der Taste O (local: nur dieses Gerät). stale: Der Server antwortet seit
+ * staleMs nicht mehr – der zuletzt gemeldete Zustand bleibt stehen, ist aber als ungewiss markiert.
+ */
+export function signalView({ enabled = false, central = "off", local = false, sinceOkMs = 0, staleMs = STALE_MS } = {}) {
+  const state = enabled ? signalState(central) : "off";
+  if (state !== "off") return { state, local: false, stale: !(sinceOkMs <= staleMs) };
+  if (local === true) return { state: "on_air", local: true, stale: false };
+  return { state: "off", local: false, stale: false };
+}
+
+/**
+ * Taste O: { local, blocked }. Solange der Bildschirm das zentrale Signal zeigt, schaltet die Taste nichts (blocked) –
+ * sonst stünde nach dem zentralen „Aus“ unbemerkt ein lokales „On Air“ da. Ohne zentrales Signal wechselt local.
+ */
+export function signalToggle({ enabled = false, central = "off", local = false } = {}) {
+  if (enabled && signalState(central) !== "off") return { local: false, blocked: true };
+  return { local: local !== true, blocked: false };
+}
+
+/**
+ * Wann das Signal von selbst ausgeht (ms seit 1970) oder null. until ist { rev, at } aus der Antwort auf das eigene
+ * Setzen; es gilt nur, solange der Server noch denselben Stand (signal_rev) meldet und die Zeit nicht um ist.
+ */
+export function signalExpiry({ state = "off", rev = "", until = null, now = 0 } = {}) {
+  if (signalState(state) === "off" || !until || typeof rev !== "string" || !rev) return null;
+  return until.rev === rev && Number.isFinite(until.at) && until.at > now ? until.at : null;
 }
 
 // --- „Wie falsch geht dein Gerät?“ -------------------------------------------------------

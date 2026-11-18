@@ -14,6 +14,8 @@ Rechte (scope):
     public   – ohne Anmeldung (/healthz)
     read     – Anmeldung oder API-Schlüssel mit Recht „read“ oder „admin“
     admin    – Anmeldung oder API-Schlüssel mit Recht „admin“
+    clock    – Anmeldung oder API-Schlüssel mit Recht „clock“ oder „admin“ (nur POST /clock/signal). Ein
+               Schlüssel mit Recht „clock“ darf nichts anderes: weder lesen noch sonst etwas ändern.
     session  – nur mit Anmeldung (Benutzer/Passwort), nie per API-Schlüssel:
                Zugang und Schlüssel selbst verwalten. So kann ein entwendeter
                Schlüssel weder das Passwort ändern noch sich neue Schlüssel
@@ -34,7 +36,7 @@ ENDPOINTS: list[dict[str, Any]] = []
 def endpoint(method: str, path: str, legacy: str | None, scope: str, description: str,
              keys: list[str] | None = None, query: dict[str, str] | None = None) -> None:
     """Trägt einen Endpunkt ein (auch für andere Module, die eigene Endpunkte mitbringen)."""
-    assert path.startswith("/") and scope in {"public", "read", "admin", "session"}
+    assert path.startswith("/") and scope in {"public", "read", "admin", "clock", "session"}
     method = method.upper()
     for entry in ENDPOINTS:
         if entry["method"] == method and entry["path"] == path:
@@ -135,6 +137,15 @@ endpoint("POST", "/reload", "/api/reload", "admin",
          "Zeitdienste neu laden (Konfiguration neu erzeugen und Dienste neu starten).",
          ["reload_triggered"])
 
+# --- On-Air/REC-Signal der Vollbild-Uhr (eigenes Recht „clock“) ------------------
+endpoint("POST", "/clock/signal", None, "clock",
+         "On-Air/REC-Signal der Vollbild-Uhr setzen. Body: {\"state\": \"on_air\"|\"rec\"|\"off\", \"ttl\": Sekunden "
+         "(optional, 1–86400: danach wieder „off“)}. Bildschirme mit signal=1 zeigen den Zustand nach höchstens "
+         "etwa 1 s als Rahmen mit Text – eine gespiegelte Anzeige, kein Tally. Andere Werte: 400. Höchstens "
+         "10 Anfragen je Sekunde und Schlüssel, sonst 429. Der Zustand steht nur im Speicher (nach einem Neustart "
+         "„off“) und nicht in der Sicherung.",
+         ["signal", "signal_rev", "expires_in"])
+
 # --- Nur mit Anmeldung (nie per API-Schlüssel) -----------------------------------
 endpoint("POST", "/auth", "/api/auth", "session",
          "Benutzer und Passwort des Dashboards setzen oder entfernen.", ["ok", "auth"])
@@ -208,7 +219,7 @@ def describe() -> dict:
             "basic": "Benutzer und Passwort des Dashboards (HTTP Basic) – darf alles.",
             "bearer": "Header „Authorization: Bearer ntpg_…“ mit einem API-Schlüssel aus "
                       "System → Einstellungen → Dashboard & Zugang. Recht „read“: nur GET. Recht „admin“: auch "
-                      "POST, aber nicht „session“-Endpunkte.",
+                      "POST, aber nicht „session“-Endpunkte. Recht „clock“: nur POST /api/v1/clock/signal.",
             "csrf": "Mit API-Schlüssel ist kein X-NTP-GUI-Header nötig; POST braucht "
                     "Content-Type: application/json.",
             "note": "Ist kein Passwort gesetzt, ist das Dashboard offen und Schlüssel werden "

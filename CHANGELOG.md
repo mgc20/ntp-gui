@@ -6,6 +6,56 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 
 ## [Unveröffentlicht]
 
+Schwerpunkt: Die Studiouhr bekommt Timecode, Weltzeit, eine Statuszeile für PTP und Holdover, ein
+Prüfbild zum Einmessen und ein On-Air/REC-Signal.
+
+### Hinzugefügt
+- **Timecode-Anzeige (Design `tc`):** `/clock?design=tc` zeigt die Tageszeit des Servers als Timecode
+  `HH:MM:SS` mit Feinstelle, gerechnet in der Zeitzone des Servers. `?fps=24|25|30|50|60|29.97|59.94`
+  wählt die Bildrate (Standard 25); bei 29,97 und 59,94 zählt die Uhr Drop-Frame mit `;` vor den Frames.
+  - Die Feinstelle zeigt Zehntel. Frames gibt es nur auf ausdrücklichen Wunsch mit `?sub=frames` oder
+    Taste T, `?sub=off` blendet sie aus. E-Ink zeigt keine Feinstelle; wünscht dein System weniger
+    Bewegung, bleiben es Zehntel.
+  - Über der Zeit steht immer „Anzeige-Timecode – nicht genlocked“. Das ⓘ erklärt die Grenze: kein
+    Hausreferenzsignal, der Monitor zeichnet in seinem eigenen Takt, rechne mit ± 1 bis 2 Frames.
+  - Die Feinstelle wird grau, wenn die Fehlerschranke größer ist als ein halbes Frame (bei Zehnteln
+    50 ms) oder dein Browser seine Zeitgeber grob rundet; der Grund steht dabei. Über `?maxerr=`
+    verschwindet sie, und die Sekunden kommen aus der Wanduhr.
+- **Weltzeit:** `?tz=` nimmt bis zu sechs Zeitzonen (mit Komma getrennt oder mehrfach genannt),
+  `?tzl=` die Kurznamen dazu, z. B. `/clock?tz=Europe/London,America/New_York,Asia/Tokyo&tzl=LON,NYC,TYO`.
+  - Ab zwei Zonen steht unter der Uhr eine Leiste: je Zone Uhrzeit, Abweichung zur großen Zeit
+    („+6 h“, „+5:30 h“), Tageswechsel („+1 Tag“) und Tag oder Nacht als Symbol. Die Abweichung stimmt
+    auch an Umstellungstagen.
+  - Neues Layout `?layout=world` (auch über Taste L): die Zonen als Raster und Hauptinhalt.
+  - Was nicht auf die Fläche passt, blendet die Uhr aus und nennt die Zahl („+2“). Mit `?h12=1` stehen
+    auch die Zonen zwölfstündig.
+- **Statuszeile:** Das Band der Vollbild-Uhr zeigt den Zustand von PTP („PTP eingerastet“, „PTP sucht“)
+  und einen Holdover mit Dauer („Holdover seit 12 min“), immer als Symbol mit Text. Ein Screenreader
+  sagt Beginn und Ende an, nicht jede Minute die Dauer.
+- **Kachel (`?layout=tile`):** Der Titel des Profils steht oben links, der Zustand als Symbol in der Ecke.
+- **Prüfbild `?test=sync`:** Eine Fläche wechselt genau zur vollen Sekunde zwischen hell und dunkel, auf
+  Wunsch mit Klick. Damit misst du `?lead=` ein (Pfeiltasten ändern den Vorlauf, Esc beendet). Es startet
+  nur mit dem Parameter in der Adresse, nie aus einem Profil, und nicht, wenn dein System weniger
+  Bewegung wünscht.
+- **On-Air/REC-Signal:** Mit `signal=1` im Link oder Profil zeigt ein Bildschirm einen roten Rahmen und
+  einen Balken mit „ON AIR“ oder „REC“ – immer mit Text und Symbol, ohne Blinken.
+  - Du schaltest es unter **Uhr & Hardware → Anzeigen → On-Air-Signal**, auf Wunsch mit Ablaufzeit, oder
+    per `POST /api/v1/clock/signal` mit `{"state": "on_air"|"rec"|"off", "ttl": Sekunden}` – zum Beispiel
+    vom Stream Deck über Bitfocus Companion.
+  - Neues Recht für API-Schlüssel „nur On-Air-Signal der Uhr“ (`clock`): Der Schlüssel darf nur das
+    Signal setzen, nichts lesen und sonst nichts ändern. Höchstens 10 Anfragen je Sekunde und Schlüssel.
+  - Taste O auf der Uhr schaltet „On Air“ nur auf diesem einen Gerät.
+  - Es ist eine gespiegelte Anzeige mit bis zu etwa 1 s Verzögerung, kein Tally am Bildmischer.
+    Antwortet der Server nicht, bleibt der letzte Zustand stehen und ist als ungewiss markiert. Nach
+    einem Neustart ist das Signal aus; in der Sicherung steht es nicht. Jeder Wechsel steht im
+    Ereignisprotokoll.
+- `/api/v1/time` liefert zusätzlich `ptp_state`, `holdover`, `holdover_seconds`, `signal` und
+  `signal_rev`. Auch ohne Anmeldung stehen dort nur feste Zustände, nie Namen, Adressen oder Kennungen.
+- Link-Baukasten und Uhr-Profile kennen die neuen Felder (Bildrate, Feinstelle, Zeitzonen, Kurznamen,
+  Signal).
+- Doku `docs/integrationen/studiouhr.md`: Timecode, Weltzeit, Statuszeile, Prüfbild, On-Air-Signal und
+  die Anbindung über Bitfocus Companion.
+
 ### Geändert
 - Diagnosepaket: In der Aufzeichnung steht HDOP nur noch als Stufe (1, 2, 5, 10, 20) statt auf eine
   Stelle gerundet. Der Wert springt, sobald ein Satellit in die Lösung kommt oder herausfällt – dieselbe

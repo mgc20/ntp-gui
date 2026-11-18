@@ -1141,7 +1141,7 @@ Die Seite **Uhrqualität** zeigt, was die Uhr deines Servers langfristig beeinfl
   Der Browser merkt sich deine Wahl; per Adresse geht es auch: `/clock?design=bahnhof`
   (`digital`, `bahnhof`, `nixie`, `flip`, `wort`). `?kiosk=1` blendet Leiste und Mauszeiger aus,
   `?eink=1` zeigt schwarz auf weiß und ändert die Anzeige nur zur vollen Minute, `?tz=Europe/London`
-  zeigt eine zweite Zeitzone. Unbekannte Werte werden ignoriert. **Ton** piept nach einem Klick auf
+  zeigt eine zweite Zeitzone (mehrere Zonen: siehe Weltzeit unten). Unbekannte Werte werden ignoriert. **Ton** piept nach einem Klick auf
   jeder vollen Sekunde (langer Ton zur Minute) oder zählt zum Uhrenstellen die letzten 10 s bis zur
   vollen Minute herunter. **Mein Gerät** zeigt, wie falsch die Uhr deines Handys oder PCs geht –
   das Ergebnis bleibt im Browser, nichts wird gespeichert oder gesendet.
@@ -1152,7 +1152,7 @@ Die Seite **Uhrqualität** zeigt, was die Uhr deines Servers langfristig beeinfl
   `?lead=0…200` lässt die Anzeige für Fernseher mit Bildverzögerung so viele Millisekunden vorlaufen.
 - **Jede Fläche, eigenes Aussehen (ab 1.7, Studiouhr):** Die Uhr richtet sich nach ihrer eigenen Fläche statt nach
   dem Fenster: Streifen (unter 120 px Höhe: nur die Zeit), Banner (ab 3:1, z. B. 32:9 oder 1920×200: Zeit links,
-  Datum und Zustand rechts), Spalte (Hochformat), Kachel (kleiner als 480×270) oder normal. `?layout=` legt das
+  Datum und Zustand rechts), Spalte (Hochformat), Kachel (kleiner als 480×270) oder normal. `?layout=auto|normal|banner|column|strip|tile|world` legt das
   Layout fest (`tile` blendet zusätzlich Leiste und Band aus), `?safe=0…10` lässt einen Sicherheitsrand in Prozent,
   `?scale=50…200` ändert die Größe, `?show=time,seconds,date,weekday,week,utc,tz,status` zeigt nur diese Elemente,
   `?bg=black|transparent` (durchsichtig zum Keyen in OBS), `?weight=thin|regular|bold` und `?shift=1|2` verschiebt
@@ -1169,9 +1169,47 @@ Die Seite **Uhrqualität** zeigt, was die Uhr deines Servers langfristig beeinfl
   Sekunden über den Ton der Uhr (Browser brauchen dafür eine erste Berührung oder Taste), `?label=` beschriftet den
   Countdown (bis 24 Zeichen), `?cd=main` macht ihn zur Hauptanzeige statt der Zeile unter der Uhr. `?timer=90s|25m|1h30m`
   ist eine Eieruhr nur für dieses Gerät (Leertaste startet und hält an, R setzt zurück); ohne Ziel startet die Leertaste
-  eine Stoppuhr. Tasten: F Vollbild, D Design, L Layout, U UTC groß, T Zehntel, + und − Größe, A Uhrzeit ansagen
+  eine Stoppuhr. Tasten: F Vollbild, D Design, L Layout, U UTC groß, T Zehntel (im Design `tc`: Zehntel oder
+  Frames; ist dort der Countdown mit `?cd=main` die Hauptanzeige, schaltet T dessen Zehntel), O On Air nur auf diesem Gerät, + und − Größe, A Uhrzeit ansagen
   (Screenreader), ? Übersicht. `?lock=1` schaltet die Tasten ab und blendet Design, Ton und Anpassen aus; Vollbild,
   Hell/Dunkel, Rotlicht und „Mein Gerät“ bleiben (Rotlicht und Hell/Dunkel gelten je Gerät und haben keinen Parameter).
+- **Timecode-Anzeige (Studiouhr, Design `tc`):** `/clock?design=tc` zeigt die Tageszeit des Servers als Timecode
+  `HH:MM:SS` mit einer Feinstelle, gerechnet in der Zeitzone des Servers; weicht sie von der deines Geräts ab, gehören
+  auch Datum und Woche darunter zur Zone des Servers, und nach Taste U steht dessen Zeit mit Zonenname in der
+  Nebenzeile. `?fps=24|25|30|50|60|29.97|59.94` wählt die
+  Bildrate (Standard 25); bei 29,97 und 59,94 zählt die Uhr Drop-Frame mit `;` vor den Frames. Die Feinstelle zeigt
+  Zehntel; Frames gibt es nur auf ausdrücklichen Wunsch mit `?sub=frames` oder Taste T (`?sub=off` blendet sie aus,
+  `?sub=tenths` ist der Standard; mit `?sub=off` wechselt T aus → Zehntel → Frames → aus). Über der Zeit steht immer **„Anzeige-Timecode – nicht genlocked“**: Es gibt kein
+  Hausreferenzsignal, der Monitor zeichnet in seinem eigenen Takt, rechne mit ± 1 bis 2 Frames. Die Feinstelle wird
+  grau, wenn die Fehlerschranke größer ist als ein halbes Frame (bei Zehnteln 50 ms) oder der Browser seine Zeitgeber
+  grob rundet (der Grund steht darunter, auf kleinen Flächen kurz in der Kopfzeile), und verschwindet über `?maxerr=`
+  – dann zeigen die Sekunden die Wanduhr, und die Zeit rückt nach drei Sekunden zur Mitte. E-Ink zeigt keine Feinstelle; wünscht dein
+  System weniger Bewegung, bleiben es Zehntel. Echten Timecode liefern LTC- oder VITC-Generatoren.
+- **Weltzeit (Studiouhr):** `?tz=` nimmt bis zu sechs Zeitzonen, mit Komma getrennt oder mehrfach genannt:
+  `/clock?tz=Europe/London,America/New_York,Asia/Tokyo&tzl=LON,NYC,TYO`. `?tzl=` gibt Kurznamen in derselben
+  Reihenfolge (je bis 16 Zeichen aus Buchstaben, Ziffern, Leerzeichen, Punkt und Bindestrich; ein leerer Eintrag
+  nimmt den Ortsnamen der Zone). Eine Zone steht wie bisher als zweite Zeitzone unter der Uhr. Ab zwei Zonen gibt es
+  eine Leiste: je Zone Uhrzeit, Abweichung zur großen Zeit („+6 h“, „+5:30 h“), Tageswechsel („+1 Tag“, „−1 Tag“)
+  und Tag oder Nacht als Symbol (6 bis 18 Uhr der Zone gilt als Tag – einen Standort kennt die Uhr nicht).
+  `?layout=world` macht daraus ein Raster als Hauptinhalt: auf 16:9 drei Spalten, im Hochformat eine Zeile je Zone, auf
+  sehr breiten Flächen alle Zonen neben der Uhr. Gerechnet wird für jeden Zeitpunkt neu, darum stimmt die Abweichung
+  auch an Umstellungstagen, wenn erst eine Seite umgestellt hat. Was nicht passt, wird ausgeblendet („+2“ nennt die
+  fehlenden Zonen); im Streifen und in der Kachel fehlt die Leiste. Ein Doppelter oder ein unbekannter Name verwirft
+  die ganze Liste; Leerzeichen nach dem Komma stören nicht. Mit `?h12=1` stehen auch die Zonen zwölfstündig mit AM/PM.
+  Die Leiste wächst, wo unter der Uhr Höhe frei ist; für Bildwände und große Abstände nimm `?layout=world`. Passt im
+  Layout `world` keine einzige Zone auf die Fläche oder blendet `?show=` die Weltzeit aus (ohne `tz`), steht die Uhr
+  im automatischen Layout.
+- **Statuszeile, Kachel und Prüfbild:** Das Band unten nennt neben Ampel und Quelle den Zustand von PTP („PTP
+  eingerastet“, „PTP Grandmaster“, „PTP sucht“, „PTP gestört“) und einen Holdover mit Dauer („Holdover seit 12 min“:
+  Die Serveruhr läuft gerade ohne Referenz weiter) – immer als Symbol mit Text. `?show=` ohne `status` blendet beides
+  und die Zustandszeile unter der Uhr aus. In der Kachel (`?layout=tile`) steht der Titel des Profils oben links, der
+  Zustand als Symbol in der Ecke (bei Holdover zusätzlich ein „H“), ein Countdown mit dem Symbol seiner Stufe.
+  `?test=sync` zeigt ein Prüfbild zum Einmessen von `?lead=`: Eine Fläche wechselt genau zur vollen Sekunde zwischen
+  hell und dunkel (ein Wechsel je Sekunde), auf Wunsch klickt es dazu. Mit den Pfeiltasten stellst du den Vorlauf, bis
+  Wechsel und Klick zusammenfallen; Esc beendet und schreibt `lead=` in die Adresse (gilt der im Panel „Anpassen“
+  gemerkte Stand, wird der Vorlauf dort gemerkt). Das Prüfbild startet nur mit dem
+  Parameter in der Adresse, nie aus einem Profil, und nicht, wenn dein System weniger Bewegung wünscht. Nicht ins
+  Sendebild und nicht vor Publikum zeigen.
 - **Anzeigen und Profile (ab 1.7, Studiouhr):** Unter **Uhr & Hardware → Anzeigen** baust du den Link aus einem
   Formular zusammen, kopierst ihn und öffnest eine Vorschau in fester Größe (Handy, Monitor, Banner, Kachel, Stele) in
   einem neuen Fenster. Auf der Uhr selbst geht dasselbe über **Anpassen**; der Stand gilt auf diesem Gerät, wenn
@@ -1180,6 +1218,14 @@ Die Seite **Uhrqualität** zeigt, was die Uhr deines Servers langfristig beeinfl
   `studio`, `tile`, `banner`, `kitchen`, `workshop`, `night` und `nerd`. Parameter in der Adresse gehen vor dem Profil.
   Profile kommen mit in die Sicherung. Browserquellen in OBS, vMix und CasparCG sowie der Pi-Kiosk:
   [docs/integrationen/studiouhr.md](docs/integrationen/studiouhr.md).
+- **On-Air-Signal (Studiouhr):** Ein roter Rahmen mit „ON AIR“ oder „REC“ – immer mit Text und Symbol, ohne Blinken.
+  Zentral setzt du es unter **Uhr & Hardware → Anzeigen → On-Air-Signal** oder per `POST /api/v1/clock/signal`
+  (API-Schlüssel mit dem Recht „nur On-Air-Signal der Uhr“, z. B. für Stream Deck über Bitfocus Companion), auf
+  Wunsch mit Ablaufzeit. Es zeigen nur Bildschirme mit `signal=1` im Link oder Profil; sie fragen dafür jede Sekunde
+  ab statt alle 5 s. Die Taste **O** schaltet „On Air“ nur auf diesem einen Gerät; solange der
+  Bildschirm das zentrale Signal zeigt, wirkt sie nicht. Es ist eine gespiegelte Anzeige mit
+  bis zu etwa 1 s Verzögerung, kein Tally am Bildmischer. Der Zustand steht nur im Arbeitsspeicher: Nach einem
+  Neustart ist er aus, in der Sicherung steht er nicht.
 - **Holdover-Test:** misst, wie lange die Uhr ohne Zeitquelle hält – siehe
   [GNSS-Störungen, GPS-Sperre und Holdover-Test](#gnss-störungen-gps-sperre-und-holdover-test-ab-15).
 
@@ -1189,7 +1235,8 @@ Die Seite **Uhrqualität** zeigt, was die Uhr deines Servers langfristig beeinfl
 </picture>
 
 Mit `CLOCK_PUBLIC=true` sind `/clock` und `/api/v1/time` ohne Anmeldung erreichbar (nur Zeit,
-Ampel, Genauigkeit, Art der Quelle, die Zeitzone des Servers, das Datum einer angekündigten Schaltsekunde
+Ampel, Genauigkeit, Art der Quelle, der Zustand von PTP als fester Wert, Holdover mit Dauer, die Zeitzone des
+Servers, der Zustand des On-Air-Signals (`off`, `on_air`, `rec`), das Datum einer angekündigten Schaltsekunde
 sowie Anzeigewerte und Titel der Uhr-Profile – keine Namen, Adressen oder Einstellungen; dazu die
 Skripte und Sprachkataloge der Uhr). Ab 1.5.1
 antwortet die Uhr dann über **jeden** Namen, auch über einen eigenen DNS-Namen des
@@ -1786,7 +1833,8 @@ Einstellungen laufen) und `ntpgui_service_restarts_total`. Der mitgelieferte Ala
 | `/api/clients/groups?by=group\|vlan\|software`, `/api/clients/quality`, `/api/clients/rules`, `/api/clients/pass?ip=` | Clients 3: Gruppen, Uhrgüte, Regeln, Gerätepass (`&share=1` = gefilterte Kopie); `POST /api/clients/groups`, `/groups/delete`, `/rules` mit Verwaltungsrecht |
 | `/api/temperature`, `/api/leap` | Temperatur und Frequenz bzw. Schaltsekunden-Liste (Seite Uhrqualität) |
 | `/api/clockquality/allan` | Allan-Abweichung der Systemuhr (Seite Uhrqualität, ab 1.5.4) |
-| `/api/v1/time` | Serverzeit mit Zeitstempeln für die Vollbild-Uhr `/clock`, dazu `leap_next` (nächste angekündigte Schaltsekunde) |
+| `/api/v1/time` | Serverzeit mit Zeitstempeln für die Vollbild-Uhr `/clock`, dazu `leap_next` (nächste angekündigte Schaltsekunde), `ptp_state` (`off`, `down`, `master`, `locked`, `acquiring`, `passive`, `fault`, `unknown`), `holdover` mit `holdover_seconds` sowie `signal` (`off`, `on_air`, `rec`) und `signal_rev` |
+| `POST /api/v1/clock/signal` | On-Air/REC-Signal der Vollbild-Uhr setzen: `{"state": "on_air"\|"rec"\|"off", "ttl": Sekunden}` (`ttl` optional, 1–86400). Mit Anmeldung oder API-Schlüssel mit dem Recht `clock` (oder `admin`); andere Werte `400`, mehr als 10 Anfragen je Sekunde und Schlüssel `429` |
 | `/api/update` | Zustand des Update-Hinweises (ohne Netzzugriff, wenn ausgeschaltet) |
 | `/api/setup` | Willkommens-Assistent: Erststart oder Update, Prüfpunkte mit Abhilfe, Checkliste der Übersicht; `POST {"action": "done"\|"never"\|"close_hint"\|"close_checklist"\|"reset"}` mit Verwaltungsrecht (ändert keine Einstellungen) |
 | `/api/apikeys` (Alias `/api/keys`) | API-Schlüssel auflisten, `POST` legt an, `/api/apikeys/revoke` widerruft (nur mit Benutzer/Passwort) |
@@ -1815,6 +1863,7 @@ widerrufen.
 |---|---|
 | **nur lesen** (`read`) | alle `GET`-Endpunkte, auch `/metrics` und das Diagnosepaket |
 | **lesen und verwalten** (`admin`) | zusätzlich Änderungen per `POST` (Einstellungen, Neustart, Kalibrierung zurücknehmen, Aufzeichnung) |
+| **nur On-Air-Signal der Uhr** (`clock`) | allein `POST /api/v1/clock/signal` – liest nichts und ändert sonst nichts (für Stream Deck, Bitfocus Companion) |
 | nur mit Benutzer und Passwort | Passwort ändern, API-Schlüssel anlegen/widerrufen, Instanz-Kennung neu erzeugen |
 
 Die letzte Zeile ist Absicht: Kein Schlüssel – auch kein `admin`-Schlüssel – kann das Passwort
@@ -1842,6 +1891,10 @@ curl -s -H "Authorization: Bearer $TOKEN" \
 # Dienste neu starten (Recht „lesen und verwalten“)
 curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{}' http://<host>:8080/api/v1/reload
+
+# On-Air-Signal der Vollbild-Uhr für eine Stunde setzen (Recht „nur On-Air-Signal der Uhr“)
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"state": "on_air", "ttl": 3600}' http://<host>:8080/api/v1/clock/signal
 ```
 
 Ein falscher oder widerrufener Schlüssel ergibt `401`, ein zu schwaches Recht `403` mit
