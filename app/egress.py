@@ -1652,6 +1652,7 @@ class Sanitizer:
 
 
 _CSV_NUMBER_RE = re.compile(r"[-+]?\d+\.\d+")
+_CSV_INT_RE = re.compile(r"\d+")
 
 
 def _exp_text(text: str) -> str:
@@ -1687,9 +1688,15 @@ def _unpair_columns(parts: list[str]) -> str:
         start = 0
         for i, part in enumerate(parts):
             end = start + len(part)
-            if any(a < end and start < b for a, b in spans) and _CSV_NUMBER_RE.fullmatch(part):
-                parts[i] = _exp_text(part)
-                changed = True
+            if any(a < end and start < b for a, b in spans):
+                if _CSV_NUMBER_RE.fullmatch(part):
+                    parts[i] = _exp_text(part)
+                    changed = True
+                elif _CSV_INT_RE.fullmatch(part):
+                    # Ganzzahlen wie „0,127,127,184“ (chronyc -c clients: 127 = unbekanntes Intervall) liest die
+                    # Schlussprüfung als Dezimalzahlen mit Komma. Ein „+“ davor trennt sie; int() liest es weiter.
+                    parts[i] = "+" + part
+                    changed = True
             start = end + 1
         if not changed:
             return row

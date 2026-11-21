@@ -6,6 +6,12 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 
 ## [Unveröffentlicht]
 
+### Behoben
+- Diagnosepaket: Die Aufzeichnung verwarf jede Client-Liste (`chronyc -c clients`) als „Zeile entfernt“.
+  chrony schreibt unbekannte Werte dort als 127; zwei Nachbarn wie `0,127,127,184` hielt die Schlussprüfung
+  für Dezimalzahlen mit Komma und damit für ein Koordinatenpaar. Ganzzahlige Spalten in solchen Bereichen
+  bekommen jetzt ein `+` davor – der Wert bleibt gleich, die Prüfung bleibt unverändert streng.
+
 ## [1.8.0] – 2026-11-18
 
 Schwerpunkt: Die Studiouhr bekommt Timecode, Weltzeit, eine Statuszeile für PTP und Holdover, ein

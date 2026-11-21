@@ -135,3 +135,34 @@ class AuthdataAgeTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ClientListTest(unittest.TestCase):
+    """chronyc -c clients schreibt unbekannte Werte als 127 und 4294967295. Zwei Nachbarn wie „0,127,127,184“
+    las die Schlussprüfung als Dezimalzahlen mit Komma (0,127 / 127,184) – ein Koordinatenpaar. Jede Client-Liste
+    der Aufzeichnung fiel deshalb als „Zeile entfernt“ heraus."""
+
+    ROW = "192.168.1.2,20,0,127,127,184,0,0,127,4294967295"
+
+    def test_row_with_placeholders_survives(self):
+        import chrony
+        import diagnostics
+        record = json.dumps({"t": 1.0, "kind": "chronyc", "args": ["-c", "clients"],
+                             "out": self.ROW + "\n", "rc": 0}) + "\n"
+        content = diagnostics._process({"names": ["recording"], "raw": {"recording": record},
+                                        "known_names": [], "known_values": []})[0]
+        text = content["recording"]
+        self.assertNotIn("Zeile entfernt", text)
+        out = json.loads(text)["out"]
+        self.assertNotIn("192.168", out)
+        sanitizer = egress.Sanitizer("diagnostics")
+        self.assertEqual(egress.check_no_leaks(text), [])
+        self.assertEqual(egress.backstop({"a": text.encode()}, sanitizer.backstop_known()), [])
+        # Werte bleiben lesbar: das „+“ ändert nichts an der Zahl.
+        parsed = chrony.parse_clients(out)[0]
+        self.assertEqual((parsed["ntp_packets"], parsed["ntp_last_rx"], parsed["ntp_interval"]), (20, 184, None))
+        self.assertIsNone(parsed["cmd_last_rx"])
+
+    def test_real_pairs_still_caught(self):
+        # Die Entschärfung gilt nur für chronyc-Spalten; Koordinaten im Freitext bleiben ein Fund.
+        self.assertTrue(egress.check_no_leaks("Position 48.1371,11.5761"))
