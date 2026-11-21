@@ -1,5 +1,5 @@
 // Einstieg: Navigation, Aktualisierung, Datencache, Neustart-Anzeige.
-import { el, apiGet, storageGet, storageSet, fmtTime, fmtServerDateTime, serverZone, staleText, isNum, serverClock, serverNow, reloadSettled } from "./util.js";
+import { el, apiGet, storageGet, storageSet, fmtTime, fmtServerDateTime, serverZone, staleText, isNum, serverClock, serverNow, reloadSettled, logout } from "./util.js";
 import { toast, isPopoverOpen, infoButton, badge } from "./ui.js";
 import { resetChartState, setChartMarkers } from "./charts.js";
 import * as overview from "./pages/overview.js";
@@ -197,6 +197,9 @@ function renderHeader() {
   setBadge("overview", serious.length);
   setBadge("uhr", serious.filter((i) => i.action === "hardware").length);
   renderUpdateBanner(status.update);
+  // Abmelden nur, wenn diese Sitzung mit Benutzer/Passwort angemeldet ist.
+  const logoutButton = document.getElementById("logout-button");
+  if (logoutButton) logoutButton.hidden = !status.ui?.auth?.login;
   document.getElementById("footer-note").textContent =
     t("app.footer", { version: sys.version || "", time: fmtTime(sys.time, true, serverZone(sys) ? sys : 0),
       seconds: sys.refresh_seconds });
@@ -641,6 +644,7 @@ document.addEventListener("keydown", (event) => {
   onShortcut(event);
 });
 document.getElementById("shortcuts-button")?.addEventListener("click", showShortcuts);
+document.getElementById("logout-button")?.addEventListener("click", () => logout());
 
 // „Zum Inhalt springen“: Fokus auf den Inhalt, ohne den Hash (die Route) zu ändern.
 document.querySelector(".skip-link")?.addEventListener("click", (event) => {

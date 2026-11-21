@@ -1434,6 +1434,7 @@ ENV_ONLY = [
     ("EXTRA_PTP4L_CONF", "Zusätzliche ptp4l-Zeilen"),
     ("CLIENTLOGLIMIT", "Speicher für die Client-Liste"),
     ("WEB_READONLY", "Einstellungen im Dashboard sperren"),
+    ("WEB_REQUIRE_AUTH", "Anmeldung erzwingen (ohne Zugang gesperrt)"),
 ]
 
 
@@ -1789,7 +1790,35 @@ def _is_mounted(path: str) -> bool:
 # Passwort für das Dashboard
 # ---------------------------------------------------------------------------
 
-_PBKDF2_ROUNDS = 200_000
+# 1.9: 600 000 Runden (OWASP-Empfehlung für PBKDF2-HMAC-SHA256). Ältere Hashes (200 000) gelten weiter und
+# werden bei der nächsten erfolgreichen Anmeldung neu berechnet (needs_rehash/upgrade_hash). Gelesene Runden
+# sind nach oben begrenzt – ein Hash mit absurd hoher Zahl würde jede Anmeldung zur Dauerlast machen.
+_PBKDF2_ROUNDS = 600_000
+_PBKDF2_MIN_ROUNDS = 1_000
+_PBKDF2_MAX_ROUNDS = 5_000_000
+
+# Zu einfache Passwörter (Beispielwerte aus Anleitungen und Compose-Vorlagen, Allerweltswörter).
+WEAK_PASSWORDS = frozenset({
+    "bitte-aendern", "bitteaendern", "bitte-ändern", "changeme", "change-me", "password", "passwort",
+    "password1", "passwort1", "admin", "admin123", "administrator", "geheim", "geheim123", "secret",
+    "12345678", "123456789", "1234567890", "qwertz", "qwertzu", "qwertzui", "qwerty", "qwertyui",
+    "letmein", "ntp-gui", "ntpgui", "chrony", "zeitserver", "timeserver",
+})
+RECOMMENDED_LENGTH = 12
+
+
+def password_weakness(password: str, user: str = "") -> str | None:
+    """Grund, warum ein Passwort zu schwach ist – oder None. Für Warnungen (Umgebung) und Ablehnung (Dashboard)."""
+    password = str(password or "")
+    if password.strip().lower() in WEAK_PASSWORDS:
+        return "ein bekannter Beispielwert"
+    if user and password.strip().lower() == str(user).strip().lower():
+        return "gleich dem Benutzernamen"
+    if len(set(password)) <= 2:
+        return "zu gleichförmig"
+    if len(password) < RECOMMENDED_LENGTH:
+        return f"kürzer als {RECOMMENDED_LENGTH} Zeichen"
+    return None
 
 
 def hash_password(password: str) -> str:
@@ -1804,11 +1833,37 @@ def verify_password(password: str, encoded: str) -> bool:
         scheme, rounds, salt, digest = encoded.split("$")
         if scheme != "pbkdf2_sha256":
             return False
+        rounds_n = int(rounds)
+        if not _PBKDF2_MIN_ROUNDS <= rounds_n <= _PBKDF2_MAX_ROUNDS:
+            return False
         calc = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"),
-                                   base64.b64decode(salt), int(rounds))
+                                   base64.b64decode(salt), rounds_n)
         return hmac.compare_digest(calc, base64.b64decode(digest))
     except (ValueError, TypeError):
         return False
+
+
+def needs_rehash(encoded: str) -> bool:
+    """True, wenn ein gespeicherter Hash mit weniger als den aktuellen Runden berechnet wurde."""
+    try:
+        scheme, rounds, _salt, _digest = str(encoded).split("$")
+        return scheme == "pbkdf2_sha256" and int(rounds) < _PBKDF2_ROUNDS
+    except (ValueError, TypeError):
+        return False
+
+
+def upgrade_hash(user: str, password: str, old_hash: str) -> bool:
+    """Nach erfolgreicher Anmeldung: Hash mit den aktuellen Runden neu berechnen – nur, wenn der gespeicherte
+    Zugang noch derselbe ist (keine gleichzeitige Änderung überschreiben). True, wenn neu geschrieben."""
+    new_hash = hash_password(password)
+    with _LOCK:
+        data = dict(_load_file())
+        auth = data.get("auth")
+        if not (isinstance(auth, dict) and auth.get("user") == user and auth.get("hash") == old_hash):
+            return False
+        data["auth"] = {**auth, "hash": new_hash}
+        _write_file(data)
+    return True
 
 
 def stored_credentials() -> dict | None:
@@ -1831,6 +1886,9 @@ def set_credentials(user: str, password: str | None) -> None:
                 raise ValidationError("Benutzername: 1–64 Zeichen, nur Buchstaben, Ziffern und ._@-")
             if len(password) < 8:
                 raise ValidationError("Passwort: mindestens 8 Zeichen")
+            weak = password_weakness(password, user)
+            if weak and not weak.startswith("kürzer"):
+                raise ValidationError(f"Passwort zu einfach ({weak}) – bitte ein anderes wählen")
             data["auth"] = {"user": user, "hash": hash_password(password)}
         _write_file(data)
 

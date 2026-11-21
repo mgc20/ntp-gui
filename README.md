@@ -322,7 +322,8 @@ dabei seine Messwerte).
   Neuerstellung des Containers übersteht, muss `/var/lib/chrony` auf einem **Volume** liegen –
   die mitgelieferten Compose-Dateien tun das; das Dashboard warnt, wenn nicht.
 - Ein **Passwort** fürs Dashboard lässt sich direkt dort setzen (gespeichert als PBKDF2-Hash).
-  `WEB_USER`/`WEB_PASSWORD` aus der Umgebung haben Vorrang.
+  `WEB_USER`/`WEB_PASSWORD` aus der Umgebung haben Vorrang. Mehr dazu, auch zum Betrieb auf einem
+  VPS, unter [Anmeldung und Zugang](#anmeldung-und-zugang).
 - `WEB_READONLY=true` sperrt alle Änderungen – das Dashboard zeigt dann nur an.
 - **Exportieren/Importieren** (Reiter Sichern → „Nur Einstellungen übertragen“) überträgt nur die
   Dashboard-Werte als JSON (ohne Passwort). Alles andere sichert
@@ -1633,7 +1634,9 @@ PHC-Refclock dient ihm als Referenz für Stratum und Statistik.
 |---|---|---|
 | `WEB_PORT` / `WEB_BIND` | `8080` / `0.0.0.0` | Adresse des Dashboards. IPv6 geht auch: `::` nimmt IPv4 und IPv6 an; mit `::1` oder einer anderen einzelnen Adresse erreicht der Docker-Healthcheck (fragt `127.0.0.1`) das Dashboard nicht. |
 | `WEB_TITLE` | `NTP / PTP Time Server` | Überschrift |
-| `WEB_USER` / `WEB_PASSWORD` | – | Beide gesetzt ⇒ HTTP Basic Auth (alternativ Passwort im Dashboard setzen) |
+| `WEB_USER` / `WEB_PASSWORD` | – | HTTP Basic Auth (alternativ Passwort im Dashboard setzen). Nur `WEB_PASSWORD` ⇒ Benutzer `admin`; nur `WEB_USER` ⇒ Dashboard gesperrt, bis auch das Passwort gesetzt ist. Siehe [Anmeldung und Zugang](#anmeldung-und-zugang) |
+| `WEB_PASSWORD_FILE` | – | Passwort aus einer Datei statt aus der Umgebung (z. B. Docker Secret `/run/secrets/…`); hat Vorrang vor `WEB_PASSWORD`. Unlesbar oder leer ⇒ Dashboard gesperrt |
+| `WEB_REQUIRE_AUTH` | `false` | `true` = ohne Zugang (Passwort) bleibt das Dashboard gesperrt: Nur `/healthz` und eine Einrichtungs-Meldung antworten. Für Server, die aus dem Internet erreichbar sind (VPS) |
 | `WEB_ALLOWED_HOSTS` | – | Weitere Namen, unter denen das Dashboard **ohne Passwort** antworten darf, kommagetrennt; `*.example.org` für alle Unternamen, `*` schaltet die Prüfung ab. Gilt zusätzlich zu „Erlaubte Namen“ im Dashboard (Einstellungen → Dashboard & Zugang). Siehe [Schutz vor DNS-Rebinding](#schutz-vor-dns-rebinding) |
 | `WEB_READONLY` | `false` | Einstellungen im Dashboard sperren |
 | `WEB_REFRESH_SECONDS` | `5` | Aktualisierungsintervall im Browser |
@@ -1649,7 +1652,7 @@ PHC-Refclock dient ihm als Referenz für Stratum und Statistik.
 | `UPDATE_CHECK` | `false` | Einmal am Tag bei GitHub nach einer neuen Version fragen, siehe [Update-Hinweis](#update-hinweis-opt-in) |
 
 Nur per Umgebung (sie betreffen den Start selbst oder sind Expertenwerte): `WEB_PORT`,
-`WEB_BIND`, `WEB_READONLY`, `WEB_USER`/`WEB_PASSWORD`, `WEB_ALLOWED_HOSTS`, `WEB_ACCESS_LOG`, `HISTORY_SIZE`,
+`WEB_BIND`, `WEB_READONLY`, `WEB_USER`/`WEB_PASSWORD`/`WEB_PASSWORD_FILE`, `WEB_REQUIRE_AUTH`, `WEB_ALLOWED_HOSTS`, `WEB_ACCESS_LOG`, `HISTORY_SIZE`,
 `HISTORY_DAYS`, `NTPGUI_LOGTEE`, `NTPGUI_REPLAY`/`NTPGUI_REPLAY_SPEED`,
 `DISABLE_CLOCK_CONTROL`, `EXTRA_CHRONY_CONF`, `EXTRA_PTP4L_CONF`, `CHRONY_LOG`,
 `CLIENTLOGLIMIT`, `MAXUPDATESKEW`, `CUSTOM_CHRONY_CONF`, `CUSTOM_PTP4L_CONF`, `GPS_OPTIONS`,
@@ -1672,6 +1675,59 @@ Nur per Umgebung (sie betreffen den Start selbst oder sind Expertenwerte): `WEB_
 
 Der Healthcheck (Dockerfile und alle Compose-Dateien) liest `WEB_PORT` selbst; bei einem
 anderen Port musst du ihn nicht anpassen.
+
+### Anmeldung und Zugang
+
+**Im eigenen LAN** darf das Dashboard ohne Passwort laufen – das ist der Auslieferungszustand. Dann kann
+aber jedes Gerät im Netz alles ändern, ein eigenes Passwort setzen und API-Schlüssel anlegen. Lauscht
+das Dashboard dabei auf allen Adressen (`WEB_BIND` `0.0.0.0` oder `::`), warnt das Start-Log deutlich.
+
+**Auf einem VPS** oder überall, wo Fremde Port 8080 erreichen könnten, setz
+`WEB_REQUIRE_AUTH=true` und einen Zugang:
+
+```yaml
+    environment:
+      WEB_REQUIRE_AUTH: "true"
+      WEB_USER: "admin"
+      WEB_PASSWORD_FILE: /run/secrets/ntp_gui_password   # oder WEB_PASSWORD: "…"
+    secrets: [ntp_gui_password]
+secrets:
+  ntp_gui_password:
+    file: ./ntp-gui-passwort.txt
+```
+
+Ohne Zugang antwortet das Dashboard dann nur mit einer Einrichtungs-Meldung (`503`), auch API-Schlüssel
+wirken nicht; `/healthz` bleibt für den Docker-Healthcheck offen. Unvollständige Angaben gelten nie als
+„offen“: Nur `WEB_USER` ohne Passwort oder eine unlesbare `WEB_PASSWORD_FILE` sperren das Dashboard
+ebenso (ein im Dashboard gesetztes Passwort gilt dann weiter). Nur `WEB_PASSWORD` ohne `WEB_USER` heißt:
+Benutzer `admin`. Ein Passwort aus der Umgebung unter 12 Zeichen oder ein bekannter Beispielwert
+(`bitte-aendern`) wird beim Start und in der Übersicht als schwach gemeldet.
+
+- **Bremse gegen Passwort-Raten:** Nach 5 Fehlversuchen von einer Adresse (IPv6: je /64) muss diese
+  warten – 2 s, 4 s, 8 s … bis 15 min; in der Zeit antwortet der Server mit `429` und `Retry-After`,
+  ohne das Passwort zu prüfen. Häufen sich Fehlversuche aus vielen Quellen (mehr als 30 je Minute),
+  werden neue Anmeldungen 1 min lang gebremst; ausgenommen sind Adressen, von denen in den letzten 24 h
+  eine Anmeldung gelang, und bereits angemeldete Browser. Höchstens zwei Passwortprüfungen laufen
+  gleichzeitig. Hinter einem Reverse Proxy zählt die echte Adresse nur, wenn der Proxy in
+  `TRUSTED_PROXIES` steht – sonst zählen alle Zugriffe über ihn zusammen.
+- **Protokoll:** Jeder Fehlversuch steht mit Absenderadresse im Container-Log
+  (`[web] Anmeldung fehlgeschlagen von …`) – darauf kann z. B. fail2ban am Host oder am Reverse Proxy
+  aufsetzen. Ins Ereignisprotokoll (Art „Zugang“) kommt höchstens eine Zusammenfassung je Minute, ohne
+  Adresse; ebenso jede Änderung oder Entfernung des Zugangs.
+- **Passwort ändern oder entfernen** verlangt im Dashboard das bisherige Passwort. Mit
+  `WEB_REQUIRE_AUTH=true` lässt sich der Zugang ändern, aber nicht entfernen.
+- **Schlüssel aus der Zeit ohne Passwort:** Wer im offenen Modus API-Schlüssel anlegt, markiert sie.
+  Setzt du danach ein Passwort, zeigt das Dashboard sie unter „API-Schlüssel“ mit „ohne Passwort
+  angelegt“ – behalte nur, was du selbst angelegt hast, und widerrufe den Rest.
+- **Abmelden:** Knopf unten auf der Seite bzw. in Einstellungen → Dashboard & Zugang. Basic-Auth kennt
+  eigentlich kein Abmelden; ntp-gui vergisst die Anmeldung und bringt den Browser dazu, sie ebenfalls zu
+  vergessen. Klappt das in einem Browser nicht, alle Fenster schließen.
+- **Speicherung:** Ein im Dashboard gesetztes Passwort liegt als PBKDF2-SHA256-Hash mit 600 000 Runden
+  in `settings.json`; ältere Hashes (200 000 Runden) werden bei der nächsten Anmeldung umgestellt.
+  Ein Lese-Schlüssel sieht den Benutzernamen nicht.
+- **HTTPS:** Kommt eine Anfrage über einen eingetragenen Reverse Proxy per HTTPS an, sendet ntp-gui
+  `Strict-Transport-Security`. Ohne HTTPS geht das Passwort bei jedem Aufruf lesbar durchs Netz –
+  aus dem Internet also nur mit Proxy, siehe nächster Abschnitt.
 
 ### HTTPS fürs Dashboard
 

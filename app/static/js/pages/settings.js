@@ -1,4 +1,4 @@
-import { el, rich, apiPost, apiGet, apiUpload, fmtNumber, fmtDate as fmtDateTime, fmtZoned, serverZone, isNum } from "../util.js";
+import { el, rich, apiPost, apiGet, apiUpload, logout, fmtNumber, fmtDate as fmtDateTime, fmtZoned, serverZone, isNum } from "../util.js";
 import { card, infoButton, badge, kv, emptyState, toast, copyButton, isPopoverOpen } from "../ui.js";
 import { t, has, language, setLanguage, LANGUAGES } from "../i18n.js";
 import { HELP } from "../help.js";
@@ -94,6 +94,17 @@ let keysTimer = null;
 function keyListNodes(ctx, keys, disabled) {
   if (keys === undefined) return [emptyState("Schlüssel werden geladen …")];
   if (!keys || !keys.keys || !keys.keys.length) return [emptyState("Noch keine Schlüssel angelegt.")];
+  // Ohne Passwort konnte jeder im Netz Schlüssel anlegen: Nach dem Setzen eines Passworts zur Prüfung zeigen.
+  const review = Boolean(keys.auth_enabled);
+  const open = review ? keys.keys.filter((key) => key.open_mode) : [];
+  const keep = async (key) => {
+    try {
+      await apiPost("/api/apikeys/keep", { id: key.id });
+      toast("Behalten");
+      ctx.invalidate("apikeys");
+      ctx.rerender();
+    } catch (error) { toast(error.message, "crit"); }
+  };
   const revoke = async (key) => {
     if (!window.confirm(`Schlüssel „${key.name}“ widerrufen? Programme, die ihn nutzen, bekommen danach keinen Zugriff mehr.`)) return;
     try {
@@ -103,12 +114,19 @@ function keyListNodes(ctx, keys, disabled) {
       ctx.rerender();
     } catch (error) { toast(error.message, "crit"); }
   };
-  return [el("ul", { class: "apikey-list" }, keys.keys.map((key) => el("li", { class: "apikey" },
+  const flagged = (key) => review && key.open_mode;
+  return [open.length ? el("p", { class: "apikey-review", role: "status" }, rich(
+    `**${open.length === 1 ? "1 Schlüssel wurde" : `${open.length} Schlüssel wurden`} angelegt, als das Dashboard noch ohne Passwort offen war.** `
+    + "Das kann jedes Gerät im Netz gewesen sein. Behalte nur, was du selbst angelegt hast, und widerrufe den Rest.")) : null,
+  el("ul", { class: "apikey-list" }, keys.keys.map((key) => el("li", { class: "apikey" },
     el("div", { class: "apikey-main" },
       el("strong", { text: key.name }), " ", badge(key.scope_label || key.scope, key.scope === "admin" ? "warn" : "info"),
+      flagged(key) ? badge("ohne Passwort angelegt", "warn") : null,
       el("span", { class: "mono muted", text: ` ntpg_${key.id}…` })),
     kv([["Angelegt", dateOrNever(key.created), "api_keys"], ["Zuletzt benutzt", dateOrNever(key.last_used), "api_key_used"]]),
-    el("button", { type: "button", class: "button", text: "Widerrufen", disabled, onclick: () => revoke(key) }))))];
+    el("div", { class: "button-row" },
+      flagged(key) ? el("button", { type: "button", class: "button", text: "Behalten", disabled, onclick: () => keep(key) }) : null,
+      el("button", { type: "button", class: "button", text: "Widerrufen", disabled, onclick: () => revoke(key) })))))];
 }
 
 function watchKeys(ctx, box, disabled) {
@@ -1110,29 +1128,49 @@ function accessCards(ctx, schema, readonly) {
   const auth = schema.auth || {};
   const authBody = [];
   if (auth.source === "env") {
-    authBody.push(emptyState(`Geschützt per Umgebungsvariable (Benutzer **${auth.user}**). Ändern nur in der Compose-Datei.`));
+    authBody.push(emptyState(auth.user ? `Geschützt per Umgebungsvariable (Benutzer **${auth.user}**). Ändern nur in der Compose-Datei.`
+      : "Geschützt per Umgebungsvariable. Ändern nur in der Compose-Datei."));
+    if (auth.weak) {
+      authBody.push(el("p", { class: "field-error" }, rich("Das Passwort aus der Umgebung ist **schwach** (kurz oder ein Beispielwert). "
+        + "Setz in der Compose-Datei ein längeres – mindestens 12 Zeichen – oder nimm `WEB_PASSWORD_FILE` mit einem Docker Secret.")));
+    }
   } else {
     const user = el("input", { type: "text", autocomplete: "username", value: auth.user || "admin", "aria-label": "Benutzername", disabled: readonly ? true : null });
-    const pass = el("input", { type: "password", autocomplete: "new-password", placeholder: "mindestens 8 Zeichen", "aria-label": "Passwort", disabled: readonly ? true : null });
+    const current = auth.enabled ? el("input", { type: "password", autocomplete: "current-password", placeholder: "zur Bestätigung", "aria-label": "Bisheriges Passwort", disabled: readonly ? true : null }) : null;
+    const pass = el("input", { type: "password", autocomplete: "new-password", placeholder: "mindestens 8, besser 12 Zeichen", "aria-label": "Passwort", disabled: readonly ? true : null });
     const pass2 = el("input", { type: "password", autocomplete: "new-password", placeholder: "wiederholen", "aria-label": "Passwort wiederholen", disabled: readonly ? true : null });
     const setPw = async () => {
       if (pass.value !== pass2.value) { toast("Die Passwörter stimmen nicht überein", "crit"); return; }
       try {
-        await apiPost("/api/auth", { user: user.value, password: pass.value });
+        const body = { user: user.value, password: pass.value };
+        if (current) body.current_password = current.value;
+        const result = await apiPost("/api/auth", body);
+        const open = (result.open_keys || []).length;
+        if (open) {
+          toast(`${open === 1 ? "1 API-Schlüssel wurde" : `${open} API-Schlüssel wurden`} ohne Passwort angelegt – bitte unten prüfen (behalten oder widerrufen)`, "warn");
+        }
         toast("Passwort gesetzt – der Browser fragt gleich danach");
-        setTimeout(() => window.location.reload(), 900);
+        setTimeout(() => window.location.reload(), open ? 2500 : 900);
       } catch (error) { toast(error.message, "crit"); }
     };
-    authBody.push(el("p", {}, rich(auth.enabled ? `Geschützt – Benutzer **${auth.user}**.` : "**Ohne Passwort** kann jeder im LAN die Einstellungen ändern.")));
+    const clearPw = async () => {
+      if (!current.value) { toast("Zum Entfernen bitte das bisherige Passwort eingeben", "crit"); current.focus(); return; }
+      if (!window.confirm("Passwortschutz entfernen? Danach kann jeder, der das Dashboard erreicht, alles ändern.")) return;
+      try { await apiPost("/api/auth", { clear: true, current_password: current.value }); toast("Schutz entfernt"); ctx.invalidate("settings"); ctx.rerender(); } catch (error) { toast(error.message, "crit"); }
+    };
+    authBody.push(el("p", {}, rich(auth.enabled ? (auth.user ? `Geschützt – Benutzer **${auth.user}**.` : "Geschützt.") : "**Ohne Passwort** kann jeder im LAN die Einstellungen ändern.")));
     authBody.push(el("div", { class: "auth-form" },
       el("label", {}, el("span", { text: "Benutzer" }), user),
+      current ? el("label", {}, el("span", { text: "Bisheriges Passwort" }), current) : null,
       el("label", {}, el("span", { text: auth.enabled ? "Neues Passwort" : "Passwort" }), pass),
       el("label", {}, el("span", { text: "Wiederholen" }), pass2),
       el("button", { type: "button", class: "button primary", text: auth.enabled ? "Passwort ändern" : "Passwort setzen", disabled: readonly ? true : null, onclick: setPw }),
-      auth.enabled ? el("button", { type: "button", class: "button", text: "Schutz entfernen", disabled: readonly ? true : null, onclick: async () => {
-        try { await apiPost("/api/auth", { clear: true }); toast("Schutz entfernt"); ctx.invalidate("settings"); ctx.rerender(); } catch (error) { toast(error.message, "crit"); }
-      } }) : null));
+      auth.enabled ? el("button", { type: "button", class: "button", text: "Schutz entfernen", disabled: readonly ? true : null, onclick: clearPw }) : null));
     authBody.push(emptyState("Gilt für das Dashboard und die API. `/healthz` bleibt für den Docker-Healthcheck offen. Kein TLS – für Zugriff von außen einen Reverse Proxy davorsetzen."));
+  }
+  if (auth.login) {
+    authBody.push(el("div", { class: "button-row" },
+      el("button", { type: "button", class: "button", text: "Abmelden", onclick: () => logout() })));
   }
   out.push(card("Zugang zum Dashboard", { id: "s-auth" }, authBody));
   if (auth.enabled || !readonly) out.push(apiCard(ctx, readonly, auth));

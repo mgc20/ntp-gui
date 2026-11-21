@@ -53,6 +53,7 @@ from urllib.parse import parse_qs, urlparse
 
 import allan
 import apikeys
+import authguard
 import apiv1
 import autocal
 import backup
@@ -874,13 +875,76 @@ def _request_reload(name: str) -> bool:
         return False
 
 
+MAX_PASSWORD_FILE = 4096
+
+
+def env_credentials() -> dict:
+    """Zugang aus der Umgebung: WEB_USER und WEB_PASSWORD bzw. WEB_PASSWORD_FILE (z. B. Docker Secret).
+
+    Rückgabe: user, password (beide "" = nicht gesetzt), error (Text, wenn die Angaben unvollständig oder
+    unlesbar sind – dann gilt fail-closed, siehe auth_info), defaulted_user (nur ein Passwort gesetzt:
+    Benutzer „admin“), from_file.
+    """
+    user = os.environ.get("WEB_USER", "").strip()
+    password = os.environ.get("WEB_PASSWORD", "")
+    path = os.environ.get("WEB_PASSWORD_FILE", "").strip()
+    out = {"user": "", "password": "", "error": None, "defaulted_user": False, "from_file": bool(path)}
+    if path:
+        try:
+            with open(path, "rb") as handle:
+                raw = handle.read(MAX_PASSWORD_FILE + 1)
+            if len(raw) > MAX_PASSWORD_FILE:
+                raise ValueError("zu groß")
+            password = raw.decode("utf-8").rstrip("\r\n")
+        except (OSError, ValueError, UnicodeDecodeError):
+            out["error"] = "WEB_PASSWORD_FILE ist gesetzt, die Datei aber nicht lesbar"
+            return out
+        if not password:
+            out["error"] = "WEB_PASSWORD_FILE ist gesetzt, die Datei aber leer"
+            return out
+    if password and not user:
+        user = "admin"
+        out["defaulted_user"] = True
+    if user and not password:
+        out["error"] = "WEB_USER ist gesetzt, aber kein WEB_PASSWORD bzw. WEB_PASSWORD_FILE"
+        return out
+    out["user"], out["password"] = user, password
+    return out
+
+
+def require_auth() -> bool:
+    """WEB_REQUIRE_AUTH=true: ohne Zugang (Passwort) bleibt das Dashboard gesperrt (VPS-Betrieb)."""
+    return env_flag("WEB_REQUIRE_AUTH")
+
+
 def auth_info() -> dict:
-    if os.environ.get("WEB_USER") and os.environ.get("WEB_PASSWORD"):
-        return {"enabled": True, "source": "env", "user": os.environ["WEB_USER"]}
+    """Stand der Anmeldung: enabled, source ("env"|"gui"|None), user, locked (+ reason), weak (nur env).
+
+    locked: kein Zugang gesetzt, aber einer verlangt (WEB_REQUIRE_AUTH) oder die Angaben aus der Umgebung
+    sind unvollständig/unlesbar – dann ist das Dashboard gesperrt statt offen (fail-closed).
+    """
+    env = env_credentials()
+    if env["user"] and env["password"]:
+        return {"enabled": True, "source": "env", "user": env["user"], "locked": False,
+                "weak": bool(settings.password_weakness(env["password"], env["user"]))}
     stored = settings.stored_credentials()
     if stored:
-        return {"enabled": True, "source": "gui", "user": stored["user"]}
-    return {"enabled": False, "source": None, "user": None}
+        return {"enabled": True, "source": "gui", "user": stored["user"], "locked": False}
+    if env["error"]:
+        return {"enabled": False, "source": None, "user": None, "locked": True, "reason": env["error"]}
+    if require_auth():
+        return {"enabled": False, "source": None, "user": None, "locked": True,
+                "reason": "WEB_REQUIRE_AUTH=true ist gesetzt, aber noch kein Zugang"}
+    return {"enabled": False, "source": None, "user": None, "locked": False}
+
+
+def auth_public(info: dict, ident: dict | None) -> dict:
+    """auth_info() für eine Antwort: den Benutzernamen nur für eine Anmeldung mit Benutzer/Passwort – ein
+    API-Schlüssel (auch „read“) braucht ihn nicht. login: diese Anfrage kam mit Benutzer/Passwort."""
+    kind = (ident or {}).get("kind")
+    out = {k: v for k, v in info.items() if k != "user" or kind == "basic"}
+    out["login"] = kind == "basic"
+    return out
 
 
 def build_status() -> dict:
@@ -909,7 +973,7 @@ def build_status() -> dict:
             "phc_refclock")},
         "ui": {
             "readonly": env_flag("WEB_READONLY"),
-            "auth": auth_info(),
+            "auth": auth_public(auth_info(), None),  # Benutzername ergänzt der Handler nur für Basic
             "storage": settings.storage_info(),
             "reload": reload_status(),
             # 1.6 (T3): Assistent von selbst öffnen (Erststart) bzw. Hinweis „Einrichtung prüfen“ (Update).
@@ -1580,16 +1644,28 @@ class AuthCache:
         self._lock = threading.Lock()
         self.clock = clock
 
-    def check(self, header: str, verify) -> bool:
+    def known(self, header: str) -> bool:
+        key = hashlib.sha256(header.encode()).hexdigest()
+        with self._lock:
+            return self._ok.get(key, 0) > self.clock()
+
+    def remember(self, header: str) -> None:
         key = hashlib.sha256(header.encode()).hexdigest()
         now = self.clock()
         with self._lock:
-            if self._ok.get(key, 0) > now:
-                return True
+            self._ok = {k: v for k, v in self._ok.items() if v > now}
+            self._ok[key] = now + 300
+
+    def forget(self, header: str) -> None:
+        key = hashlib.sha256(header.encode()).hexdigest()
+        with self._lock:
+            self._ok.pop(key, None)
+
+    def check(self, header: str, verify) -> bool:
+        if self.known(header):
+            return True
         if verify():
-            with self._lock:
-                self._ok = {k: v for k, v in self._ok.items() if v > now}
-                self._ok[key] = now + 300
+            self.remember(header)
             return True
         return False
 
@@ -1774,6 +1850,12 @@ REAPER = _Reaper()
 # data: nur für Bilder (Favicon). Gilt für jede Antwort, auch für JSON und Fehlerseiten.
 CSP = ("default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; "
        "object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+# Abmelden bei Basic-Auth: Die Seite ruft diesen Pfad mit dem Benutzer LOGOUT_USER auf; die Antwort 200 bringt
+# den Browser dazu, diese (wertlosen) Angaben statt der echten zu merken. Der Pfad prüft nichts und gibt nichts preis.
+LOGOUT_PATH = "/logout"
+LOGOUT_USER = "abgemeldet"
+HSTS_VALUE = "max-age=31536000"
+
 SECURITY_HEADERS = {
     "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": "same-origin",
@@ -1855,6 +1937,98 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             return super().address_string()
 
+    def _via_https(self) -> bool:
+        try:
+            info = self._transport()
+        except Exception:
+            return False
+        return bool(info.get("proxied") and info.get("scheme") == "https")
+
+    def _logout_probe(self) -> None:
+        """LOGOUT_PATH: prüft nichts und gibt nichts preis.
+
+        Im Browser (Accept: text/html) die Seite „Abgemeldet“. Für den Abruf aus der Seite: 200 nur für den
+        Platzhalter-Benutzer LOGOUT_USER, ganz ohne Angaben 401 mit Basic-Aufforderung (damit der Browser die
+        Platzhalter-Angaben überhaupt schickt), mit anderen Angaben 401 ohne Aufforderung (kein Anmeldedialog).
+        """
+        if "text/html" in self.headers.get("Accept", ""):
+            body = ("<!doctype html><html lang=\"de\"><meta charset=\"utf-8\">"
+                    "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+                    "<title>Abgemeldet</title><body><h1>Abgemeldet</h1>"
+                    "<p>Du bist vom Dashboard abgemeldet. Fragt der Browser beim nächsten Aufruf nicht nach dem "
+                    "Passwort, schließ alle Fenster des Browsers.</p>"
+                    "<p><a href=\"/\">Wieder anmelden</a></p></body></html>\n")
+            self._send(HTTPStatus.OK, body.encode("utf-8"), "text/html; charset=utf-8", {"Cache-Control": "no-store"})
+            return
+        header = self.headers.get("Authorization", "")
+        user = None
+        if header.startswith("Basic "):
+            try:
+                user = base64.b64decode(header[6:], validate=True).decode("utf-8").partition(":")[0]
+            except Exception:
+                user = ""
+        if user == LOGOUT_USER:
+            self._send_json({"ok": True, "logged_out": True})
+        elif user is None:
+            self._send_json({"ok": False, "logged_out": False}, HTTPStatus.UNAUTHORIZED,
+                            {"WWW-Authenticate": 'Basic realm="ntp-gui", charset="UTF-8"'})
+        else:
+            self._send_json({"ok": False, "logged_out": False}, HTTPStatus.UNAUTHORIZED)
+
+    def _set_auth(self, data: dict) -> None:
+        """POST /api/auth: Zugang setzen, ändern oder entfernen.
+
+        Besteht schon ein Zugang, ist das bisherige Passwort nötig (current_password) – derselbe Schutz wie bei
+        der Anmeldung (Bremse je Quelle). Jede Änderung landet im Ereignisprotokoll (Art „access“, Stufe warn).
+        """
+        info = auth_info()
+        if info["source"] == "env":
+            raise settings.ValidationError("Der Zugang ist per WEB_USER/WEB_PASSWORD festgelegt "
+                                           "und lässt sich hier nicht ändern.")
+        clear = bool(data.get("clear"))
+        if info["enabled"]:
+            if clear and require_auth():
+                raise settings.ValidationError("WEB_REQUIRE_AUTH=true ist gesetzt – den Zugang kannst du "
+                                               "ändern, aber nicht entfernen.")
+            key = self._client_key()
+            wait = authguard.GUARD.retry_after(key)
+            if wait > 0:
+                self._auth_retry = wait
+                self._deny_auth()
+                return
+            stored = settings.stored_credentials()
+            current = str(data.get("current_password") or "")
+            with authguard.GUARD.slot() as got:
+                if not got:
+                    self._auth_retry = 2.0
+                    self._deny_auth()
+                    return
+                ok = bool(stored and current and settings.verify_password(current, stored["hash"]))
+            if not ok:
+                self._auth_retry = 0.0
+                self._auth_failed(key)
+                if self._auth_retry > 0:
+                    self._deny_auth()
+                    return
+                self._error(HTTPStatus.FORBIDDEN, "Das bisherige Passwort stimmt nicht.",
+                            fields={"current_password": "Bitte das bisherige Passwort eingeben"})
+                return
+        if clear:
+            if info["enabled"]:
+                settings.set_credentials("", None)
+                events.emit("access", "warn", "Zugang zum Dashboard entfernt – Dashboard ohne Passwort",
+                            {}, source="web")
+        else:
+            settings.set_credentials(str(data.get("user", "")), str(data.get("password", "")))
+            events.emit("access", "warn", "Passwort des Dashboards geändert" if info["enabled"]
+                        else "Zugang zum Dashboard eingerichtet", {}, source="web")
+        AUTH_CACHE.clear()
+        out = {"ok": True, "auth": auth_public(auth_info(), {"kind": "basic"})}
+        if not clear:
+            # Ohne Passwort konnte jeder im Netz Schlüssel anlegen – zur Prüfung zeigen (behalten/widerrufen).
+            out["open_keys"] = apikeys.open_mode_keys()
+        self._send_json(out)
+
     def _note_transport(self, ident: dict) -> None:
         try:
             # Nur Passwort und Verwaltungsschlüssel dürfen eine Adresse für „per Klick eintragen“
@@ -1869,6 +2043,10 @@ class Handler(BaseHTTPRequestHandler):
         super().send_response(code, message)
         for key, value in SECURITY_HEADERS.items():
             self.send_header(key, value)
+        if self._via_https():
+            # Nur, wenn die Anfrage nachweislich per HTTPS kam (vertrauenswürdiger Proxy) – über reines HTTP
+            # wäre der Kopf wirkungslos bzw. könnte ein Dashboard ohne Proxy unerreichbar machen.
+            self.send_header("Strict-Transport-Security", HSTS_VALUE)
         if getattr(self, "_body_unread", False):
             # Antwort vor dem Lesen des Bodys: ankündigen und danach schließen (setzt close_connection).
             self._body_unread = False
@@ -1922,13 +2100,33 @@ class Handler(BaseHTTPRequestHandler):
         Ein API-Schlüssel gilt immer mit seinem Recht – auch ohne gesetztes
         Passwort. Sonst: ohne Passwort ist alles offen, mit Passwort Basic-Auth.
         """
+        self._auth_retry = 0.0  # Handler lebt bei Keep-Alive über mehrere Anfragen
+        info = auth_info()
+        if info.get("locked"):
+            return {"kind": "locked"}  # Zugang verlangt, aber keiner eingerichtet: nichts geht (auch kein Schlüssel)
         header = self.headers.get("Authorization", "")
         if header[:7].lower() == "bearer ":
             key = apikeys.verify(header[7:].strip())
             return {"kind": "key", "scope": key["scope"], "id": key["id"]} if key else None
-        if not auth_info()["enabled"]:
+        if not info["enabled"]:
             return {"kind": "open"}
-        return {"kind": "basic"} if self._authorised() else None
+        return {"kind": "basic"} if self._authorised(info) else None
+
+    def _deny_locked(self) -> None:
+        """WEB_REQUIRE_AUTH ohne Zugang bzw. unvollständige Angaben in der Umgebung: Einrichtungs-Meldung (503)."""
+        self.close_connection = True
+        reason = auth_info().get("reason") or "Noch kein Zugang eingerichtet"
+        text = (f"{reason}. Das Dashboard bleibt gesperrt, bis ein Zugang gesetzt ist: in der Compose-Datei "
+                "WEB_USER und WEB_PASSWORD (oder WEB_PASSWORD_FILE für ein Docker Secret) eintragen und den "
+                "Container neu erstellen. /healthz bleibt erreichbar.")
+        path = urlparse(self.path).path
+        if path.startswith("/api") or path == "/metrics" or "json" in self.headers.get("Accept", ""):
+            self._error(HTTPStatus.SERVICE_UNAVAILABLE, text, reason="auth_setup_required")
+            return
+        body = ("<!doctype html><html lang=\"de\"><meta charset=\"utf-8\"><title>Einrichtung nötig</title>"
+                f"<body><h1>Einrichtung nötig</h1><p>{html.escape(text)}</p></body></html>\n")
+        self._send(HTTPStatus.SERVICE_UNAVAILABLE, body.encode("utf-8"), "text/html; charset=utf-8",
+                   {"Cache-Control": "no-store"})
 
     def _host_known(self) -> bool:
         """Host-Kopf bekannt/lokal/erlaubt (host_allowed) – ohne selbst zu antworten."""
@@ -2003,8 +2201,26 @@ class Handler(BaseHTTPRequestHandler):
                     f"„{needed}“ nötig.")
         self._error(HTTPStatus.FORBIDDEN, text, scope_required=needed)
 
-    def _authorised(self) -> bool:
-        info = auth_info()
+    def _client_key(self) -> str:
+        """Zählschlüssel für die Anmeldebremse: echte Adresse (Proxy-Köpfe nur von TRUSTED_PROXIES)."""
+        try:
+            return authguard.source_key(self._transport()["client"])
+        except Exception:
+            return authguard.source_key(self.client_address[0] if self.client_address else "")
+
+    def _client_text(self) -> str:
+        try:
+            return safe_host_for_log(self._transport()["client"])
+        except Exception:
+            return "?"
+
+    def _authorised(self, info: dict | None = None) -> bool:
+        """Basic-Anmeldung prüfen – mit Merker für gültige Zugänge und Bremse vor der teuren Prüfung.
+
+        Ist die Quelle gerade gebremst, steht in self._auth_retry die Wartezeit (→ 429 in _deny_auth).
+        """
+        self._auth_retry = 0.0
+        info = info or auth_info()
         if not info["enabled"]:
             return True
         header = self.headers.get("Authorization", "")
@@ -2015,21 +2231,72 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             return False
         user, _, password = decoded.partition(":")
-
-        def verify() -> bool:
-            if info["source"] == "env":
-                ok_user = hmac.compare_digest(user.encode(), os.environ["WEB_USER"].encode())
-                ok_pass = hmac.compare_digest(password.encode(), os.environ["WEB_PASSWORD"].encode())
-                return ok_user & ok_pass
-            stored = settings.stored_credentials()
-            if not stored:
+        cache_key = header + "|" + str(info["source"])
+        if AUTH_CACHE.known(cache_key):
+            return True  # schon geprüft und gültig: nie gebremst
+        key = self._client_key()
+        wait = authguard.GUARD.retry_after(key)
+        if wait > 0:
+            self._auth_retry = wait
+            return False
+        if authguard.GUARD.is_negative(cache_key):
+            self._auth_failed(key, cache_key)
+            return False
+        with authguard.GUARD.slot() as got:
+            if not got:
+                self._auth_retry = 2.0  # zu viele Prüfungen gleichzeitig
                 return False
-            return (hmac.compare_digest(user.encode(), stored["user"].encode())
-                    & settings.verify_password(password, stored["hash"]))
+            ok = self._check_password(info, user, password)
+        if ok:
+            AUTH_CACHE.remember(cache_key)
+            authguard.GUARD.success(key)
+            return True
+        self._auth_failed(key, cache_key)
+        return False
 
-        return AUTH_CACHE.check(header + "|" + str(info["source"]), verify)
+    @staticmethod
+    def _check_password(info: dict, user: str, password: str) -> bool:
+        if info["source"] == "env":
+            env = env_credentials()
+            ok_user = hmac.compare_digest(user.encode(), env["user"].encode())
+            ok_pass = hmac.compare_digest(password.encode(), env["password"].encode())
+            return bool(ok_user & ok_pass)
+        stored = settings.stored_credentials()
+        if not stored:
+            return False
+        ok = bool(hmac.compare_digest(user.encode(), stored["user"].encode())
+                  & settings.verify_password(password, stored["hash"]))
+        if ok and settings.needs_rehash(stored["hash"]):
+            try:
+                settings.upgrade_hash(stored["user"], password, stored["hash"])
+            except Exception as exc:  # die Anmeldung gilt trotzdem
+                print(f"[web] Passwort-Hash nicht aktualisiert: {type(exc).__name__}", flush=True)
+        return ok
+
+    def _auth_failed(self, key: str, cache_key: str | None = None) -> None:
+        """Fehlversuch zählen, ins Log (mit Adresse) und gedrosselt ins Ereignisprotokoll (ohne Adresse)."""
+        result = authguard.GUARD.failure(key, cache_key)
+        client = self._client_text()
+        if result["blocked_for"]:
+            self._auth_retry = result["blocked_for"]
+        line = f"[web] Anmeldung fehlgeschlagen von {client} ({result['count']}. Fehlversuch)"
+        if result["started"]:
+            line += f" – Quelle für {int(result['blocked_for'])} s gebremst"
+        print(line, flush=True)
+        if result["report"]:
+            events.emit("access", "warn", "Anmeldung fehlgeschlagen",
+                        {"attempts": result["reported"], "blocked_sources": authguard.GUARD.blocked_sources()},
+                        source="web")
 
     def _deny_auth(self) -> None:
+        retry = float(getattr(self, "_auth_retry", 0.0) or 0.0)
+        if retry > 0:
+            seconds = max(1, int(retry + 0.999))
+            self.close_connection = True
+            text = (f"Zu viele fehlgeschlagene Anmeldungen – bitte in {seconds} s erneut versuchen.")
+            self._send_json({"error": text, "retry_after": seconds}, HTTPStatus.TOO_MANY_REQUESTS,
+                            {"Retry-After": str(seconds)})
+            return
         if self.headers.get("Authorization", "")[:7].lower() == "bearer ":
             # Kein Basic-Dialog im Browser für ein Skript mit falschem Schlüssel.
             self._send_json({"error": "API-Schlüssel ungültig oder widerrufen"}, HTTPStatus.UNAUTHORIZED,
@@ -2073,7 +2340,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         received = time.time()   # t1 für /api/v1/time – so früh wie möglich
         path, index = self._api_path(self.path)
-        if path in CLOCK_PUBLIC_PATHS and self._clock_public():
+        if path in CLOCK_PUBLIC_PATHS and self._clock_public() and not auth_info().get("locked"):
             # Wer gültig angemeldet ist, bekommt die volle Antwort (mit Quellennamen); sonst die
             # öffentliche – nie 401 und für jeden Host-Namen (kein 403): Die öffentliche Antwort
             # enthält nur Zeit, Ampel, Genauigkeit und Art der Quelle, nichts, was DNS-Rebinding
@@ -2092,9 +2359,15 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"status": "ok" if healthy else "degraded", "chrony": healthy},
                             HTTPStatus.OK if healthy else HTTPStatus.SERVICE_UNAVAILABLE)
             return
+        if path == LOGOUT_PATH:
+            self._logout_probe()
+            return
         ident = self._identity()
         if ident is None:
             self._deny_auth()
+            return
+        if ident["kind"] == "locked":
+            self._deny_locked()
             return
         if not self._host_ok(ident):
             return
@@ -2141,6 +2414,8 @@ class Handler(BaseHTTPRequestHandler):
             self._serve_static(path[len("/static/"):])
         elif path == "/api/status":
             status = build_status()
+            if isinstance(status.get("ui"), dict):
+                status["ui"]["auth"] = auth_public(auth_info(), getattr(self, "_ident", None))
             if self._read_only_key() or env_flag("WEB_READONLY"):
                 # Knöpfe „per Klick beheben“ nur für den, der sie auch drücken darf (Admin).
                 status["insights"] = [{k: v for k, v in item.items() if k != "fixes"}
@@ -2165,7 +2440,7 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/settings":
             schema = settings.public_schema(masked=self._read_only_key())
             schema["readonly"] = env_flag("WEB_READONLY")
-            schema["auth"] = auth_info()
+            schema["auth"] = auth_public(auth_info(), getattr(self, "_ident", None))
             schema["reload"] = reload_status()
             schema["schema_version"] = settings.SCHEMA_VERSION
             schema["notes"] = settings.migration_notes(include_seen=False)
@@ -2490,6 +2765,9 @@ class Handler(BaseHTTPRequestHandler):
             self.close_connection = True  # Body bleibt ungelesen – nicht als nächste Anfrage deuten
             self._deny_auth()
             return
+        if ident["kind"] == "locked":
+            self._deny_locked()
+            return
         if not self._host_ok(ident):
             return
         self._note_transport(ident)
@@ -2760,7 +3038,8 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/v1/clock/signal":
             self._clock_signal(data, ident)
         elif path == "/api/apikeys":
-            key_id, token = apikeys.create(data.get("name"), data.get("scope"))
+            key_id, token = apikeys.create(data.get("name"), data.get("scope"),
+                                           open_mode=ident.get("kind") == "open")
             entry = next((k for k in apikeys.list() if k["id"] == key_id), {})
             self._send_json({"id": key_id, "token": token, "name": entry.get("name"),
                              "scope": entry.get("scope"), "scope_label": entry.get("scope_label")})
@@ -2773,15 +3052,19 @@ class Handler(BaseHTTPRequestHandler):
             instance.rotate()  # schreibt selbst ein Ereignis
             self._send_json(instance.info())
         elif path == "/api/auth":
-            if auth_info()["source"] == "env":
-                raise settings.ValidationError("Der Zugang ist per WEB_USER/WEB_PASSWORD festgelegt "
-                                               "und lässt sich hier nicht ändern.")
-            if data.get("clear"):
-                settings.set_credentials("", None)
-            else:
-                settings.set_credentials(str(data.get("user", "")), str(data.get("password", "")))
-            AUTH_CACHE.clear()
-            self._send_json({"ok": True, "auth": auth_info()})
+            self._set_auth(data)
+        elif path == "/api/auth/logout":
+            # Diesen Anmeldekopf vergessen; den Browser bringt die Seite danach über LOGOUT_PATH dazu, ihn
+            # ebenfalls zu vergessen (Basic-Auth kennt kein Abmelden).
+            header = self.headers.get("Authorization", "")
+            info = auth_info()
+            AUTH_CACHE.forget(header + "|" + str(info.get("source")))
+            self._send_json({"ok": True, "probe": LOGOUT_PATH, "probe_user": LOGOUT_USER})
+        elif path == "/api/apikeys/keep":
+            if not apikeys.keep(str(data.get("id", ""))):
+                self._error(HTTPStatus.NOT_FOUND, "Diesen Schlüssel gibt es nicht (mehr)")
+                return
+            self._send_json({"ok": True})
         elif path == "/api/web/proxies/trust":
             self._trust_proxy(data, ident)
         elif path == "/api/setup":
@@ -2872,12 +3155,47 @@ def make_server(bind: str, port: int) -> QuietHTTPServer:
         raise SystemExit(f"[web] {bind}:{port} nicht nutzbar ({exc}). {hint}") from None
 
 
+def _binds_everywhere(bind: str) -> bool:
+    return bind.strip().strip("[]") in {"0.0.0.0", "::", ""}
+
+
+def startup_auth_warnings(bind: str) -> list[str]:
+    """Hinweise zur Anmeldung beim Start: gesperrt, offen auf allen Adressen, schwaches Passwort, Angaben unklar."""
+    out: list[str] = []
+    env = env_credentials()
+    info = auth_info()
+    if env["from_file"] and os.environ.get("WEB_PASSWORD"):
+        out.append("[web] Hinweis: WEB_PASSWORD und WEB_PASSWORD_FILE sind gesetzt – es gilt WEB_PASSWORD_FILE.")
+    if env["defaulted_user"]:
+        out.append("[web] Hinweis: Nur ein Passwort aus der Umgebung, kein WEB_USER – Benutzername ist „admin“.")
+    if env["error"]:
+        if info["enabled"]:
+            out.append(f"[web] WARNUNG: {env['error']} – es gilt das im Dashboard gesetzte Passwort.")
+        else:
+            out.append(f"[web] WARNUNG: {env['error']}. Das Dashboard bleibt GESPERRT (nur /healthz antwortet), "
+                       "bis WEB_USER und WEB_PASSWORD (oder WEB_PASSWORD_FILE) vollständig gesetzt sind.")
+    elif info.get("locked"):
+        out.append("[web] WARNUNG: WEB_REQUIRE_AUTH=true, aber kein Zugang gesetzt. Das Dashboard bleibt GESPERRT "
+                   "(nur /healthz antwortet). WEB_USER und WEB_PASSWORD (oder WEB_PASSWORD_FILE) setzen und den "
+                   "Container neu erstellen.")
+    elif not info["enabled"] and _binds_everywhere(bind):
+        out.append("[web] WARNUNG: Dashboard OHNE PASSWORT auf allen Adressen (WEB_BIND=" + (bind or "0.0.0.0") + "). "
+                   "Jeder, der Port und Adresse erreicht, kann alles ändern, ein eigenes Passwort setzen und "
+                   "API-Schlüssel anlegen. Im eigenen LAN ist das so gewollt; ist der Server aus dem Internet "
+                   "erreichbar (VPS), WEB_REQUIRE_AUTH=true und WEB_USER/WEB_PASSWORD setzen.")
+    if info.get("source") == "env":
+        weak = settings.password_weakness(env["password"], env["user"])
+        if weak:
+            out.append(f"[web] WARNUNG: Das Passwort aus der Umgebung ist schwach ({weak}). Empfohlen: mindestens "
+                       f"{settings.RECOMMENDED_LENGTH} Zeichen, kein Beispielwert.")
+    return out
+
+
 def main() -> None:
     port = env_number("WEB_PORT", 8080, int, minimum=1)
     bind = os.environ.get("WEB_BIND", "0.0.0.0")
-    if bool(os.environ.get("WEB_USER", "").strip()) != bool(os.environ.get("WEB_PASSWORD", "")):
-        print("[web] WARNUNG: WEB_USER und WEB_PASSWORD müssen beide gesetzt sein – "
-              "das Dashboard läuft ohne Authentifizierung.", flush=True)
+    for line in startup_auth_warnings(bind):
+        print(line, flush=True)
 
     for entry in settings.env_allowed_hosts():
         if entry.startswith("*.") and settings.shared_suffix(entry[2:]):
@@ -2920,8 +3238,9 @@ def main() -> None:
 
     server = make_server(bind, port)
     server.daemon_threads = True
+    info = auth_info()
     note = {"env": "mit Basic-Auth (Umgebungsvariable)", "gui": "mit Passwort aus dem Dashboard",
-            None: "ohne Passwort"}[auth_info()["source"]]
+            None: "GESPERRT – kein Zugang eingerichtet" if info.get("locked") else "ohne Passwort"}[info["source"]]
     shown = f"[{bind.strip().strip('[]')}]" if ":" in bind else bind
     print(f"[web] Dashboard auf http://{shown}:{port} ({note})", flush=True)
     try:

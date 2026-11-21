@@ -41,4 +41,6 @@ dort noch besteht.
   melden. Neue Paketstände kommen mit dem nächsten Release (er baut ohne Cache mit aktuellen
   Paketen).
 - **Das Dashboard gehört ins LAN**, nicht ungeschützt ins Internet. Dass es ohne gesetztes
-  Verwaltungspasswort im LAN lesbar ist, ist so gewollt und keine Lücke.
+  Verwaltungspasswort im LAN lesbar und änderbar ist, ist so gewollt und keine Lücke. Für Server,
+  die aus dem Internet erreichbar sind, gibt es `WEB_REQUIRE_AUTH=true` (ohne Zugang gesperrt), siehe
+  README → „Anmeldung und Zugang“.

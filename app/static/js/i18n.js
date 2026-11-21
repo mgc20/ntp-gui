@@ -42,6 +42,7 @@ export const CORE_DE = {
     "more_label": "Weitere Bereiche",
     "ptp_off": "Nicht genutzt – in {link} einschalten.",
     "ptp_off_link": "System → Einstellungen → PTP",
+    "logout": "Abmelden",
     "shortcuts": {
       "hint": "Tastenkürzel (?)",
       "title": "Tastenkürzel",

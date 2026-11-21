@@ -18,6 +18,7 @@
     "more_label": "More sections",
     "ptp_off": "Not in use – turn it on in {link}.",
     "ptp_off_link": "System → Settings → PTP",
+    "logout": "Log out",
     "shortcuts": {
       "hint": "Keyboard shortcuts (?)",
       "title": "Keyboard shortcuts",

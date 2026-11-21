@@ -477,6 +477,11 @@ def build(status: dict[str, Any], cfg: dict[str, Any]) -> list[dict[str, Any]]:
         add("info", "Dashboard ohne Passwort",
             "Jeder im LAN kann die Einstellungen ändern. Ein Passwort lässt sich unter "
             "System → Einstellungen → Dashboard & Zugang setzen.", action="settings", key="no_auth")
+    if (ui.get("auth") or {}).get("weak"):
+        add("warn", "Schwaches Passwort aus der Umgebung",
+            "Das Passwort in WEB_PASSWORD bzw. WEB_PASSWORD_FILE ist kurz oder ein bekannter Beispielwert. "
+            "Setz in der Compose-Datei ein längeres (mindestens 12 Zeichen) und erstelle den Container neu.",
+            action="settings", key="weak_auth")
 
     if status.get("client_count") == 0 and tracking.get("synchronised"):
         add("info", "Noch keine Clients",

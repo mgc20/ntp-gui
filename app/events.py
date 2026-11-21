@@ -34,7 +34,7 @@ import store
 import textsafe
 
 KINDS = ("service", "reload", "settings", "source", "gps", "pps", "calibration", "cert",
-         "leap", "startup", "clients", "api", "notify", "dns", "update", "pi", "other")
+         "leap", "startup", "clients", "api", "notify", "dns", "update", "pi", "access", "other")
 LEVELS = ("info", "warn", "crit")
 
 RETENTION_DAYS = 90

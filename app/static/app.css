@@ -907,12 +907,14 @@ details.enforce-names { margin-top: 10px; }
   grid-template-columns: minmax(0, 1fr) auto; gap: 6px 12px; align-items: center; }
 .apikey-main { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; min-width: 0; }
 .apikey .kv-list { margin: 0; }
+.apikey > .button-row { justify-content: flex-end; }
+.apikey-review { margin: 0 0 4px; padding: 10px 12px; border-radius: 10px; background: var(--warn-soft); color: var(--warn-ink); font-size: 14px; }
 .instance-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; }
 .instance-row .kv-list { flex: 1 1 280px; min-width: 0; margin: 0; }
 .instance-row code { overflow-wrap: anywhere; }
 @media (max-width: 640px) {
   .apikey { grid-template-columns: minmax(0, 1fr); }
-  .apikey > .button { justify-self: start; }
+  .apikey > .button, .apikey > .button-row { justify-self: start; justify-content: flex-start; }
 }
 
 /* Ereignisse: Filter nach Art und Stufe */

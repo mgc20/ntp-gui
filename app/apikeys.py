@@ -60,6 +60,9 @@ _SCHEMA = [
         last_used REAL
     )
     """,
+    # 1.9: Schlüssel, die angelegt wurden, als das Dashboard noch ohne Passwort offen war. Beim ersten
+    # Setzen eines Passworts zeigt das Dashboard sie zur Prüfung an (behalten oder widerrufen).
+    "ALTER TABLE api_keys ADD COLUMN open_mode INTEGER NOT NULL DEFAULT 0",
 ]
 
 HASH_SCHEME = "sha256"
@@ -112,8 +115,10 @@ def _validate(name: Any, scope: Any) -> tuple[str, str]:
     return name, scope
 
 
-def create(name: str, scope: str) -> tuple[str, str]:
-    """Legt einen Schlüssel an. Gibt (id, Klartext-Schlüssel) zurück – nur dieses eine Mal."""
+def create(name: str, scope: str, open_mode: bool = False) -> tuple[str, str]:
+    """Legt einen Schlüssel an. Gibt (id, Klartext-Schlüssel) zurück – nur dieses eine Mal.
+
+    open_mode: angelegt ohne Anmeldung (Dashboard ohne Passwort) – zur späteren Prüfung markiert."""
     name, scope = _validate(name, scope)
     _ensure()
     with store.transaction() as conn:
@@ -125,18 +130,29 @@ def create(name: str, scope: str) -> tuple[str, str]:
             key_id, token = body[:8], PREFIX + body
             if not conn.execute("SELECT 1 FROM api_keys WHERE id=?", (key_id,)).fetchone():
                 break
-        conn.execute("INSERT INTO api_keys(id, name, scope, hash, created) VALUES(?, ?, ?, ?, ?)",
-                     (key_id, name, scope, hash_token(token), time.time()))
+        conn.execute("INSERT INTO api_keys(id, name, scope, hash, created, open_mode) VALUES(?, ?, ?, ?, ?, ?)",
+                     (key_id, name, scope, hash_token(token), time.time(), 1 if open_mode else 0))
     _event("API-Schlüssel angelegt", key_id, scope)
     return key_id, token
 
 
 def list() -> list[dict]:  # noqa: A001 – Name laut Schnittstelle
-    """Alle Schlüssel ohne Geheimnisse: id, name, scope, created, last_used."""
+    """Alle Schlüssel ohne Geheimnisse: id, name, scope, created, last_used, open_mode."""
     _ensure()
-    rows = store.query("SELECT id, name, scope, created, last_used FROM api_keys ORDER BY created")
+    rows = store.query("SELECT id, name, scope, created, last_used, open_mode FROM api_keys ORDER BY created")
     return [{"id": i, "name": n, "scope": s, "scope_label": SCOPE_LABELS.get(s, s),
-             "created": c, "last_used": u} for i, n, s, c, u in rows]
+             "created": c, "last_used": u, "open_mode": bool(o)} for i, n, s, c, u, o in rows]
+
+
+def open_mode_keys() -> list[dict]:
+    """Noch nicht bestätigte Schlüssel, die ohne Anmeldung (offenes Dashboard) angelegt wurden."""
+    return [key for key in list() if key["open_mode"]]
+
+
+def keep(key_id: str) -> bool:
+    """Einen ohne Anmeldung angelegten Schlüssel bewusst behalten (Markierung entfernen). True, wenn es ihn gab."""
+    _ensure()
+    return store.execute("UPDATE api_keys SET open_mode=0 WHERE id=?", (str(key_id),)) > 0
 
 
 def revoke(key_id: str) -> bool:

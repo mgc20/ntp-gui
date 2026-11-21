@@ -33,6 +33,7 @@ cleanup() {
     "${PREFIX}-g" "${PREFIX}-h" "${PREFIX}-i" "${PREFIX}-j" >/dev/null 2>&1
   docker rm -f "${PREFIX}-k" "${PREFIX}-l" "${PREFIX}-m" "${PREFIX}-n" "${PREFIX}-o" >/dev/null 2>&1
   docker rm -f "${PREFIX}-p" "${PREFIX}-q" "${PREFIX}-r" "${PREFIX}-s" "${PREFIX}-t" >/dev/null 2>&1
+  docker rm -f "${PREFIX}-u" >/dev/null 2>&1
   docker network rm "${PREFIX}-net" "${PREFIX}-net2" >/dev/null 2>&1
   docker volume rm "${PREFIX}-data" "${PREFIX}-hist" >/dev/null 2>&1
   rm -rf "$CFG_DIR" "$NTS_DIR" "$DIAG_DIR"
@@ -414,6 +415,21 @@ print(sorted(a) == sorted(b))" "$(curl -s -u 'admin:S3hr geheim' "$B/api/status"
 check "/api/v1/status hat dieselben Schlüssel wie /api/status" True "$SAME"
 contains "GET /api/v1 beschreibt die Endpunkte" "$(curl -s -u 'admin:S3hr geheim' "$B/api/v1")" '"path": "/api/v1/status"'
 contains "Instanz-Kennung abrufbar" "$(curl -s -H "Authorization: Bearer $ADMIN_KEY" "$B/api/v1/instance")" '"instance_id"'
+# 1.9: Bremse gegen Passwort-Raten – nach wiederholten Fehlversuchen 429, ein schon geprüfter Zugang bleibt gültig.
+for i in 1 2 3 4 5; do LAST=$(http -u "admin:falsch-$i" "$B/api/status"); done
+check "Wiederholte Fehlversuche: 429" 429 "$LAST"
+contains "Fehlversuch steht im Log" "$(docker logs "${PREFIX}-b" 2>&1)" "Anmeldung fehlgeschlagen von"
+check "Geprüfter Zugang bleibt gültig" 200 "$(http -u 'admin:S3hr geheim' "$B/api/status")"
+
+echo
+echo "3c) WEB_REQUIRE_AUTH ohne Zugang: gesperrt bis auf /healthz"
+docker run -d --name "${PREFIX}-u" -p 18097:8080 -e WEB_REQUIRE_AUTH=true -e NTP_POOLS="" "$IMAGE" >/dev/null
+wait_for_health http://127.0.0.1:18097/healthz 90 || true
+check "healthz offen"                        200 "$(http http://127.0.0.1:18097/healthz)"
+check "Status gesperrt (Einrichtung nötig)"  503 "$(http http://127.0.0.1:18097/api/status)"
+check "Passwort setzen gesperrt"             503 "$(http -X POST -H 'Content-Type: application/json' -H 'X-NTP-GUI: 1' -d '{"user":"x","password":"lang-genug-12345"}' http://127.0.0.1:18097/api/auth)"
+contains "Start-Log warnt" "$(docker logs "${PREFIX}-u" 2>&1)" "WEB_REQUIRE_AUTH=true, aber kein Zugang"
+docker rm -f "${PREFIX}-u" >/dev/null 2>&1
 
 echo
 echo "4) GPS und PTP aktiviert, aber keine Hardware vorhanden"

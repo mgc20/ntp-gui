@@ -318,6 +318,22 @@ export async function apiPost(path, body) {
   return data;
 }
 
+// Abmelden. Basic-Auth kennt kein Abmelden: Der Server vergisst die geprüfte Anmeldung, danach bringt ein Abruf von
+// /logout mit dem Platzhalter-Benutzer „abgemeldet“ den Browser dazu, diesen statt der echten Angaben zu merken.
+// Die Seite /logout sagt danach, dass man abgemeldet ist (mit Link zum erneuten Anmelden).
+export async function logout() {
+  try { await apiPost("/api/auth/logout", {}); } catch (error) { /* trotzdem den Browser abmelden */ }
+  await new Promise((resolve) => {
+    try {
+      const xhr = new XMLHttpRequest();
+      xhr.open("GET", "/logout", true, "abgemeldet", "abgemeldet");
+      xhr.onloadend = () => resolve();
+      xhr.send();
+    } catch (error) { resolve(); }
+  });
+  window.location.replace("/logout");
+}
+
 // Datei als Body hochladen (Sicherung wiederherstellen). Gleicher Schutz wie apiPost: Pflicht-Kopf X-NTP-GUI.
 export async function apiUpload(path, file, type = "application/gzip") {
   const response = await fetch(path, {
