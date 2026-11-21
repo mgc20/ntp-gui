@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import os
 import re
 import secrets
 import threading
@@ -75,12 +76,32 @@ _LAST_WRITE: dict[str, float] = {}
 _READY: dict[str, Any] = {"db": None}
 
 
+OPEN_MODE_STEP = 1  # Schemastand vor der Spalte open_mode (Installationen vor 1.9)
+
+
 def _ensure() -> None:
     db = store.path()
     if _READY["db"] != db:
-        store.migrate("apikeys", _SCHEMA)
+        before = store.schema_version("apikeys")
+        applied = store.migrate("apikeys", _SCHEMA)
+        if applied and before == OPEN_MODE_STEP and not _access_configured():
+            # Update von einer Installation ohne Passwort: Alle vorhandenen Schlüssel entstanden ohne
+            # Anmeldung – zur Prüfung markieren, sobald ein Passwort gesetzt wird.
+            store.execute("UPDATE api_keys SET open_mode=1")
         _READY["db"] = db
         clear_cache()
+
+
+def prepare() -> None:
+    """Datenbank und Migration jetzt – vor dem ersten Setzen eines Passworts (beim Start des Servers)."""
+    _ensure()
+
+
+def _access_configured() -> bool:
+    """Gab es beim Update schon einen Zugang (gespeichert oder per WEB_PASSWORD/WEB_PASSWORD_FILE)?"""
+    if settings.stored_credentials():
+        return True
+    return bool(os.environ.get("WEB_PASSWORD") or os.environ.get("WEB_PASSWORD_FILE", "").strip())
 
 
 def clear_cache() -> None:

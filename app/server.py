@@ -1677,6 +1677,37 @@ class AuthCache:
 AUTH_CACHE = AuthCache()
 
 
+class SingleFlight:
+    """Gleiche Prüfungen bündeln: Kommt derselbe Anmeldekopf mehrmals gleichzeitig (Seite mit mehreren
+    Abrufen), prüft nur die erste Anfrage; die übrigen warten auf deren Ergebnis statt selbst zu prüfen."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._calls: dict[str, dict] = {}
+
+    def do(self, key: str, fn, timeout: float):
+        """Ergebnis von fn() – für Wartende das der laufenden Prüfung; None, wenn sie zu lange dauert."""
+        digest = hashlib.sha256(key.encode("utf-8", "replace")).hexdigest()
+        with self._lock:
+            call = self._calls.get(digest)
+            leader = call is None
+            if leader:
+                call = {"done": threading.Event(), "result": None}
+                self._calls[digest] = call
+        if not leader:
+            return call["result"] if call["done"].wait(timeout) else None
+        try:
+            call["result"] = fn()
+        finally:
+            with self._lock:
+                self._calls.pop(digest, None)
+            call["done"].set()
+        return call["result"]
+
+
+AUTH_FLIGHT = SingleFlight()
+
+
 # --- Schutz vor DNS-Rebinding -------------------------------------------------
 
 # Namen, die keine fremde Webseite für sich auf eine LAN-Adresse zeigen lassen
@@ -1991,28 +2022,34 @@ class Handler(BaseHTTPRequestHandler):
                 raise settings.ValidationError("WEB_REQUIRE_AUTH=true ist gesetzt – den Zugang kannst du "
                                                "ändern, aber nicht entfernen.")
             key = self._client_key()
-            wait = authguard.GUARD.retry_after(key)
+            wait = authguard.GUARD.reserve(key)
             if wait > 0:
                 self._auth_retry = wait
                 self._deny_auth()
                 return
-            stored = settings.stored_credentials()
-            current = str(data.get("current_password") or "")
-            with authguard.GUARD.slot() as got:
-                if not got:
-                    self._auth_retry = 2.0
-                    self._deny_auth()
-                    return
-                ok = bool(stored and current and settings.verify_password(current, stored["hash"]))
+            try:
+                stored = settings.stored_credentials()
+                current = str(data.get("current_password") or "")
+                with authguard.GUARD.slot() as got:
+                    if not got:
+                        self._auth_retry = 2.0
+                        self._deny_auth()
+                        return
+                    ok = bool(stored and current and settings.verify_password(current, stored["hash"]))
+                if not ok:
+                    self._auth_retry = 0.0
+                    self._auth_failed(key)
+            finally:
+                authguard.GUARD.release(key)
             if not ok:
-                self._auth_retry = 0.0
-                self._auth_failed(key)
                 if self._auth_retry > 0:
                     self._deny_auth()
                     return
                 self._error(HTTPStatus.FORBIDDEN, "Das bisherige Passwort stimmt nicht.",
                             fields={"current_password": "Bitte das bisherige Passwort eingeben"})
                 return
+        if not info["enabled"]:
+            apikeys.prepare()  # Migration vor dem ersten Passwort: markiert Schlüssel aus der Zeit ohne Zugang
         if clear:
             if info["enabled"]:
                 settings.set_credentials("", None)
@@ -2218,6 +2255,8 @@ class Handler(BaseHTTPRequestHandler):
         """Basic-Anmeldung prüfen – mit Merker für gültige Zugänge und Bremse vor der teuren Prüfung.
 
         Ist die Quelle gerade gebremst, steht in self._auth_retry die Wartezeit (→ 429 in _deny_auth).
+        Der Platzhalter-Benutzer nach dem Abmelden (LOGOUT_USER) und die Wiederholung eines gerade
+        abgelehnten Anmeldekopfs werden ohne Prüfung und ohne neuen Fehlversuch abgewiesen.
         """
         self._auth_retry = 0.0
         info = info or auth_info()
@@ -2231,28 +2270,46 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             return False
         user, _, password = decoded.partition(":")
+        if user == LOGOUT_USER and info.get("user") != LOGOUT_USER:
+            return False  # abgemeldeter Browser: nur erneut fragen, kein Fehlversuch
         cache_key = header + "|" + str(info["source"])
         if AUTH_CACHE.known(cache_key):
             return True  # schon geprüft und gültig: nie gebremst
         key = self._client_key()
-        wait = authguard.GUARD.retry_after(key)
-        if wait > 0:
-            self._auth_retry = wait
-            return False
         if authguard.GUARD.is_negative(cache_key):
-            self._auth_failed(key, cache_key)
+            self._auth_retry = authguard.GUARD.retry_after(key)
             return False
-        with authguard.GUARD.slot() as got:
-            if not got:
-                self._auth_retry = 2.0  # zu viele Prüfungen gleichzeitig
-                return False
-            ok = self._check_password(info, user, password)
-        if ok:
-            AUTH_CACHE.remember(cache_key)
-            authguard.GUARD.success(key)
-            return True
-        self._auth_failed(key, cache_key)
-        return False
+        outcome = AUTH_FLIGHT.do(cache_key + "|" + key,
+                                 lambda: self._verify_login(info, user, password, key, cache_key),
+                                 authguard.SLOT_WAIT + 30.0)
+        if outcome is None:
+            self._auth_retry = 2.0
+            return False
+        ok, retry = outcome
+        self._auth_retry = retry
+        return ok
+
+    def _verify_login(self, info: dict, user: str, password: str, key: str, cache_key: str) -> tuple[bool, float]:
+        """Eine Prüfung: Platz bei der Bremse reservieren, Passwort prüfen, Ergebnis festhalten."""
+        wait = authguard.GUARD.reserve(key)
+        if wait > 0:
+            return False, wait
+        try:
+            with authguard.GUARD.slot() as got:
+                if not got:
+                    return False, 2.0  # zu viele Prüfungen gleichzeitig
+                if AUTH_CACHE.known(cache_key):
+                    return True, 0.0  # inzwischen von einer anderen Anfrage geprüft
+                ok = self._check_password(info, user, password)
+            if ok:
+                AUTH_CACHE.remember(cache_key)
+                authguard.GUARD.success(key)
+                return True, 0.0
+            self._auth_retry = 0.0
+            self._auth_failed(key, cache_key)  # zählen, bevor die Reservierung frei wird
+            return False, self._auth_retry
+        finally:
+            authguard.GUARD.release(key)
 
     @staticmethod
     def _check_password(info: dict, user: str, password: str) -> bool:
@@ -2276,6 +2333,8 @@ class Handler(BaseHTTPRequestHandler):
     def _auth_failed(self, key: str, cache_key: str | None = None) -> None:
         """Fehlversuch zählen, ins Log (mit Adresse) und gedrosselt ins Ereignisprotokoll (ohne Adresse)."""
         result = authguard.GUARD.failure(key, cache_key)
+        if not result.get("counted", True):
+            return  # derselbe falsche Anmeldekopf wie zuvor (z. B. offener Tab mit altem Passwort)
         client = self._client_text()
         if result["blocked_for"]:
             self._auth_retry = result["blocked_for"]
@@ -3054,8 +3113,9 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/auth":
             self._set_auth(data)
         elif path == "/api/auth/logout":
-            # Diesen Anmeldekopf vergessen; den Browser bringt die Seite danach über LOGOUT_PATH dazu, ihn
-            # ebenfalls zu vergessen (Basic-Auth kennt kein Abmelden).
+            # Basic-Auth kennt kein Abmelden: Die Seite bringt den Browser über LOGOUT_PATH dazu, die Angaben zu
+            # vergessen. Der Server streicht nur seinen Merker; derselbe Kopf bleibt gültig, bis das Passwort
+            # geändert wird.
             header = self.headers.get("Authorization", "")
             info = auth_info()
             AUTH_CACHE.forget(header + "|" + str(info.get("source")))
@@ -3204,6 +3264,12 @@ def main() -> None:
                   f"eintragen, z. B. meinzeit.{entry[2:]}", flush=True)
     # 1.6 (T3): Erststart oder Update festschreiben, bevor irgendetwas anderes ins Datenverzeichnis schreibt.
     onboarding.remember()
+    # 1.9: Bekannte Quellen für die Anmeldebremse über Neustarts halten (nur HMAC-Werte, keine Adressen).
+    authguard.GUARD.persist(os.path.join(settings.DATA_DIR, ".anmeldung-bekannt.json"))
+    try:
+        apikeys.prepare()  # Migration jetzt: Schlüssel aus der Zeit ohne Passwort markieren
+    except Exception as exc:
+        print(f"[web] API-Schlüssel: Datenbank nicht vorbereitet ({type(exc).__name__})", flush=True)
     # 1.5.3: Folgen eines laufenden Holdover-Tests (keine Quelle ausgewählt …) nur als „info“, ohne Meldung.
     events.add_filter(holdover.event_filter)
     holdover.configure(trigger_reload=trigger_reload)

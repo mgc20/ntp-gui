@@ -11,6 +11,7 @@ import os
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -86,6 +87,42 @@ class GuardTest(unittest.TestCase):
         self.assertFalse(self.guard.is_negative("Basic abd|gui"))
         self.now[0] += authguard.NEGATIVE_SECONDS + 1
         self.assertFalse(self.guard.is_negative("Basic abc|gui"))
+
+    def test_identical_wrong_header_counts_once(self):
+        for _ in range(authguard.FREE_FAILURES + 3):
+            result = self.guard.failure("192.0.2.1", "Basic alt|gui")
+            self.now[0] += authguard.NEGATIVE_SECONDS + 1  # Negativ-Merker abgelaufen: erneut geprüft
+        self.assertFalse(result["counted"])
+        self.assertEqual(self.guard.retry_after("192.0.2.1"), 0)
+        for i in range(authguard.FREE_FAILURES):  # verschiedene falsche Köpfe zählen weiter
+            self.guard.failure("192.0.2.1", f"Basic x{i}|gui")
+        self.assertGreater(self.guard.retry_after("192.0.2.1"), 0)
+
+    def test_running_checks_count_like_failures(self):
+        reserved = [self.guard.reserve("192.0.2.1") for _ in range(authguard.FREE_FAILURES)]
+        self.assertEqual(reserved, [0.0] * authguard.FREE_FAILURES)
+        self.assertGreater(self.guard.reserve("192.0.2.1"), 0)
+        self.assertEqual(self.guard.reserve("192.0.2.2"), 0)  # andere Quelle unberührt
+        self.guard.release("192.0.2.2")
+        for i in range(authguard.FREE_FAILURES):
+            self.guard.failure("192.0.2.1", f"Basic f{i}|gui")
+            self.guard.release("192.0.2.1")
+        self.assertGreater(self.guard.reserve("192.0.2.1"), 0)  # jetzt gebremst
+
+    def test_known_good_survives_restart_without_addresses(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "bekannt.json")
+            self.guard.persist(path)
+            self.guard.success("192.0.2.200")
+            text = Path(path).read_text()
+            self.assertNotIn("192.0.2", text)
+            self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+            restarted = authguard.Guard(clock=lambda: self.now[0])
+            restarted.persist(path)
+            for i in range(authguard.GLOBAL_LIMIT + 1):
+                restarted.failure(f"198.51.100.{i}")
+            self.assertEqual(restarted.retry_after("192.0.2.200"), 0)
+            self.assertGreater(restarted.retry_after("203.0.113.9"), 0)
 
     def test_concurrent_checks_are_limited(self):
         with mock.patch.object(authguard, "SLOT_WAIT", 0.01):
@@ -315,6 +352,76 @@ class BruteForceTest(_ServerBase):
         with mock.patch.object(server.Handler, "_check_password", side_effect=AssertionError("geprüft")):
             self.assertEqual(self.request("GET", "/api/v1/instance", headers=wrong)[0], 401)
 
+    def test_stale_tab_with_old_password_does_not_lock_out(self):
+        old = {"Authorization": basic("admin", "altes-passwort")}
+        with mock.patch.object(authguard, "NEGATIVE_SECONDS", 0.0):  # jede Abfrage wird neu geprüft
+            statuses = [self.request("GET", "/api/v1/instance", headers=old)[0]
+                        for _ in range(authguard.FREE_FAILURES + 3)]
+        self.assertEqual(set(statuses), {401})
+        good = {"Authorization": basic("admin", "ein-langes-geheimnis")}
+        self.assertEqual(self.request("GET", "/api/v1/instance", headers=good)[0], 200)
+
+    def test_logout_placeholder_is_not_a_failure(self):
+        placeholder = {"Authorization": basic(server.LOGOUT_USER, server.LOGOUT_USER)}
+        for _ in range(authguard.FREE_FAILURES + 2):
+            status, _, headers = self.request("GET", "/", headers=placeholder)
+            self.assertEqual(status, 401)
+            self.assertIn("Basic", headers.get("WWW-Authenticate", ""))
+        self.assertEqual(self.access_events(), [])
+        self.assertEqual(authguard.GUARD.retry_after("127.0.0.1"), 0)
+        self.assertEqual(authguard.GUARD.reserve("127.0.0.1"), 0)  # kein Fehlversuch gezählt
+        authguard.GUARD.release("127.0.0.1")
+
+    def _parallel(self, headers_list):
+        results = [None] * len(headers_list)
+
+        def run(i):
+            results[i] = self.request("GET", "/api/v1/instance", headers=headers_list[i])[0]
+
+        threads = [threading.Thread(target=run, args=(i,)) for i in range(len(headers_list))]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(30)
+        return results
+
+    def test_parallel_wrong_passwords_get_at_most_free_checks(self):
+        checks = []
+        lock = threading.Lock()
+        real = server.Handler._check_password
+
+        def slow(info, user, password):
+            with lock:
+                checks.append(password)
+            time.sleep(0.05)
+            return real(info, user, password)
+
+        with mock.patch.object(server.Handler, "_check_password", staticmethod(slow)):
+            statuses = self._parallel([{"Authorization": basic("admin", f"falsch-{i}")} for i in range(30)])
+            self.assertLessEqual(len(checks), authguard.FREE_FAILURES)
+            self.assertIn(429, statuses)
+            # Aus der gebremsten Quelle wird auch das richtige Passwort nicht geprüft.
+            good = {"Authorization": basic("admin", "ein-langes-geheimnis")}
+            self.assertEqual(self.request("GET", "/api/v1/instance", headers=good)[0], 429)
+        self.assertLessEqual(len(checks), authguard.FREE_FAILURES)
+
+    def test_parallel_identical_valid_header_is_checked_once(self):
+        checks = []
+        lock = threading.Lock()
+        real = server.Handler._check_password
+
+        def slow(info, user, password):
+            with lock:
+                checks.append(password)
+            time.sleep(0.5)
+            return real(info, user, password)
+
+        good = {"Authorization": basic("admin", "ein-langes-geheimnis")}
+        with mock.patch.object(server.Handler, "_check_password", staticmethod(slow)):
+            statuses = self._parallel([good] * 6)
+        self.assertEqual(statuses, [200] * 6)
+        self.assertEqual(len(checks), 1)
+
     def test_trusted_proxy_counts_real_client(self):
         settings.save({"trusted_proxies": ["127.0.0.1/32"]})
         for i in range(authguard.FREE_FAILURES):
@@ -391,6 +498,27 @@ class OpenModeKeysTest(_ServerBase):
         flags = {k["id"]: k["open_mode"] for k in apikeys.list()}
         self.assertFalse(flags[second["id"]])
         self.assertEqual(self.request("POST", "/api/apikeys/keep", {"id": created["id"]}, auth)[0], 200)
+        self.assertEqual(apikeys.open_mode_keys(), [])
+
+
+class OpenModeMigrationTest(_ServerBase):
+    """Update von einer Installation vor 1.9: vorhandene Schlüssel ohne Zugang gelten als offen angelegt."""
+
+    def _old_install_with_key(self):
+        store.migrate("apikeys", apikeys._SCHEMA[:1])  # Stand vor 1.9: ohne Spalte open_mode
+        store.execute("INSERT INTO api_keys(id, name, scope, hash, created) VALUES(?, ?, ?, ?, ?)",
+                      ("altkey01", "alt", "admin", apikeys.hash_token("ntpg_" + "a" * 32), time.time()))
+        apikeys._READY["db"] = None
+
+    def test_old_keys_without_access_are_shown_after_first_password(self):
+        self._old_install_with_key()
+        status, payload, _ = self.request("POST", "/api/auth", {"user": "admin", "password": "lang-und-eigen-42"})
+        self.assertEqual(status, 200)
+        self.assertEqual([k["id"] for k in payload["open_keys"]], ["altkey01"])
+
+    def test_old_keys_with_password_stay_unmarked(self):
+        settings.set_credentials("admin", "lang-und-eigen-42")
+        self._old_install_with_key()
         self.assertEqual(apikeys.open_mode_keys(), [])
 
 

@@ -1705,23 +1705,34 @@ Benutzer `admin`. Ein Passwort aus der Umgebung unter 12 Zeichen oder ein bekann
 
 - **Bremse gegen Passwort-Raten:** Nach 5 Fehlversuchen von einer Adresse (IPv6: je /64) muss diese
   warten – 2 s, 4 s, 8 s … bis 15 min; in der Zeit antwortet der Server mit `429` und `Retry-After`,
-  ohne das Passwort zu prüfen. Häufen sich Fehlversuche aus vielen Quellen (mehr als 30 je Minute),
-  werden neue Anmeldungen 1 min lang gebremst; ausgenommen sind Adressen, von denen in den letzten 24 h
-  eine Anmeldung gelang, und bereits angemeldete Browser. Höchstens zwei Passwortprüfungen laufen
-  gleichzeitig. Hinter einem Reverse Proxy zählt die echte Adresse nur, wenn der Proxy in
-  `TRUSTED_PROXIES` steht – sonst zählen alle Zugriffe über ihn zusammen.
-- **Protokoll:** Jeder Fehlversuch steht mit Absenderadresse im Container-Log
+  ohne das Passwort zu prüfen. Laufende Prüfungen zählen dabei mit: Auch viele gleichzeitige Anfragen
+  einer Adresse bekommen zusammen nicht mehr als 5 Prüfungen. Derselbe falsche Anmeldekopf (z. B. ein
+  offener Tab mit dem alten Passwort, der regelmäßig nachfragt) zählt nur einmal; der Platzhalter nach
+  dem Abmelden zählt gar nicht. Häufen sich Fehlversuche aus vielen Quellen (mehr als 30 je Minute),
+  werden neue Anmeldungen 1 min lang gebremst; ausgenommen sind Adressen, von denen in den letzten
+  30 Tagen eine Anmeldung gelang (übersteht Neustarts; gespeichert nur als HMAC-Wert, ohne Adresse),
+  und bereits angemeldete Browser. Höchstens zwei Passwortprüfungen laufen gleichzeitig. Hinter einem
+  Reverse Proxy zählt die echte Adresse nur, wenn der Proxy in `TRUSTED_PROXIES` steht – sonst zählen
+  alle Zugriffe über ihn zusammen.
+- **Grenze der Gesamtbremse:** Wer über viele Adressen (etwa ein ganzes IPv6-Netz) dauerhaft Fehlversuche
+  schickt, kann die Gesamtbremse immer wieder auslösen. Wer sich dann von einer neuen Adresse anmeldet
+  (Mobilfunk, neues Gerät), bekommt `429`, solange das anhält. Auf einem VPS also das Dashboard nicht
+  offen ins Internet stellen: Reverse Proxy mit eigener Zugangsbeschränkung (Allowlist, VPN, Client-
+  Zertifikat) oder fail2ban auf die Log-Zeile unten – das sperrt die Absender, bevor sie ntp-gui erreichen.
+- **Protokoll:** Jeder gezählte Fehlversuch steht mit Absenderadresse im Container-Log
   (`[web] Anmeldung fehlgeschlagen von …`) – darauf kann z. B. fail2ban am Host oder am Reverse Proxy
   aufsetzen. Ins Ereignisprotokoll (Art „Zugang“) kommt höchstens eine Zusammenfassung je Minute, ohne
   Adresse; ebenso jede Änderung oder Entfernung des Zugangs.
 - **Passwort ändern oder entfernen** verlangt im Dashboard das bisherige Passwort. Mit
   `WEB_REQUIRE_AUTH=true` lässt sich der Zugang ändern, aber nicht entfernen.
 - **Schlüssel aus der Zeit ohne Passwort:** Wer im offenen Modus API-Schlüssel anlegt, markiert sie.
-  Setzt du danach ein Passwort, zeigt das Dashboard sie unter „API-Schlüssel“ mit „ohne Passwort
+  Beim Update auf 1.9 gilt das für alle vorhandenen Schlüssel, wenn bis dahin kein Zugang eingerichtet
+  war. Setzt du danach ein Passwort, zeigt das Dashboard sie unter „API-Schlüssel“ mit „ohne Passwort
   angelegt“ – behalte nur, was du selbst angelegt hast, und widerrufe den Rest.
 - **Abmelden:** Knopf unten auf der Seite bzw. in Einstellungen → Dashboard & Zugang. Basic-Auth kennt
-  eigentlich kein Abmelden; ntp-gui vergisst die Anmeldung und bringt den Browser dazu, sie ebenfalls zu
-  vergessen. Klappt das in einem Browser nicht, alle Fenster schließen.
+  kein Abmelden: Das Abmelden wirkt nur im Browser, der dazu gebracht wird, die Angaben zu vergessen.
+  Klappt das in einem Browser nicht, alle Fenster schließen. Benutzer und Passwort bleiben gültig, bis du
+  das Passwort änderst – wer befürchtet, dass es mitgelesen wurde, ändert es.
 - **Speicherung:** Ein im Dashboard gesetztes Passwort liegt als PBKDF2-SHA256-Hash mit 600 000 Runden
   in `settings.json`; ältere Hashes (200 000 Runden) werden bei der nächsten Anmeldung umgestellt.
   Ein Lese-Schlüssel sieht den Benutzernamen nicht.

@@ -152,7 +152,8 @@ endpoint("POST", "/auth", "/api/auth", "session",
          "bzw. {\"clear\": true}; ist schon ein Zugang gesetzt, zusätzlich \"current_password\". "
          "open_keys: ohne Anmeldung angelegte API-Schlüssel zur Prüfung.", ["ok", "auth", "open_keys"])
 endpoint("POST", "/auth/logout", "/api/auth/logout", "session",
-         "Abmelden: vergisst die geprüfte Anmeldung dieser Sitzung im Server.", ["ok"])
+         "Abmelden im Browser: liefert den Pfad, über den die Seite den Browser die Angaben vergessen lässt. "
+         "Benutzer und Passwort bleiben gültig, bis das Passwort geändert wird.", ["ok"])
 endpoint("GET", "/apikeys", "/api/apikeys", "session",
          "API-Schlüssel auflisten (Name, Recht, zuletzt benutzt – nie das Geheimnis).", ["keys"])
 endpoint("POST", "/apikeys", "/api/apikeys", "session",
