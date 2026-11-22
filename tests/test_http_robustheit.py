@@ -8,7 +8,9 @@
 - Schutzköpfe (COOP, CORP, Permissions-Policy, Trusted Types), Server-Kopf ohne Python-Version.
 - Teure GET-Routen nur aus dem Dashboard; HEAD auf sie baut nichts.
 - Sicherung: Namensmuster ohne angehängten Zeilenumbruch, kein doppelter Kopf.
-- Watchdog im Entrypoint: Prüfung ohne Subshell, ein laufender Dienst gilt nie als tot.
+- Grenze je Quelladresse, reservierte Plätze für Loopback, kurze Frist für leere Verbindungen bei Last,
+  Grenze passend zur Prozessgrenze des Containers.
+- Watchdog im Entrypoint: Prüfung und Runde ohne Prozess, ein laufender Dienst gilt nie als tot.
 """
 
 import http.client
@@ -241,6 +243,16 @@ class CostlyGetTest(_Base):
             self.assertEqual(resp.getheader("Allow"), "GET")
             create.assert_not_called()
 
+    def test_head_hardware_refresh_checks_nothing(self):
+        import hardware
+        with mock.patch.object(hardware, "report", return_value={"ok": True}) as report:
+            resp, _ = self.request("HEAD", "/api/hardware?refresh=1")
+            self.assertEqual(resp.status, 405)
+            self.assertEqual(resp.getheader("Allow"), "GET")
+            report.assert_not_called()
+            resp, _ = self.request("HEAD", "/api/hardware")
+            self.assertEqual(resp.status, 200)  # ohne Neuprüfung weiter erlaubt
+
     def test_stored_name_with_trailing_newline_does_not_match(self):
         self.assertIsNotNone(backup._STORED_RE.match("nacht-20261121.tar.gz"))
         self.assertIsNone(backup._STORED_RE.match("nacht-20261121.tar.gz\n"))
@@ -283,7 +295,7 @@ class ConnectionLimitTest(unittest.TestCase):
     def _wait_busy(self, count):
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
-            if self.LIMIT - self.httpd._slots._value >= count:
+            if self.httpd.active_connections >= count:
                 return
             time.sleep(0.02)
         self.fail("Verbindungen nicht angenommen")
@@ -304,7 +316,7 @@ class ConnectionLimitTest(unittest.TestCase):
         for sock in idle:
             sock.close()
         deadline = time.monotonic() + 5
-        while self.httpd._slots._value < self.LIMIT and time.monotonic() < deadline:
+        while self.httpd.active_connections and time.monotonic() < deadline:
             time.sleep(0.02)
         self.assertEqual(self._healthz(), 200, "nach dem Schließen wieder Platz")
 
@@ -324,13 +336,127 @@ class ConnectionLimitTest(unittest.TestCase):
             except ConnectionResetError:
                 data = b""
             self.assertEqual(data, b"")
-        self.assertEqual(self.httpd._slots._value, self.LIMIT, "Platz nicht freigegeben")
+        self.assertEqual(self.httpd.active_connections, 0, "Platz nicht freigegeben")
         self.assertEqual(self._healthz(), 200)
 
     def test_limit_from_environment(self):
         text = (ROOT / "app" / "server.py").read_text(encoding="utf-8")
         self.assertIn('env_number("WEB_MAX_CONNECTIONS"', text)
         self.assertIn("`WEB_MAX_CONNECTIONS`", (ROOT / "README.md").read_text(encoding="utf-8"))
+
+
+class PerSourceLimitTest(unittest.TestCase):
+    """Eine einzelne Quelle belegt nur einen Teil der Plätze; Loopback (Healthcheck) kommt immer durch.
+    127.0.0.2 gilt hier als fremdes Gerät im LAN, nur 127.0.0.1 als die eigene Maschine."""
+    LIMIT = 64
+
+    def setUp(self):
+        patches = [mock.patch.object(server.Handler, "timeout", 20.0),
+                   mock.patch.object(server.QuietHTTPServer, "max_connections", self.LIMIT),
+                   mock.patch.object(server, "_is_local_peer", lambda a: str(a) == "127.0.0.1"),
+                   mock.patch.object(chrony, "tracking", return_value=TRACKING)]
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+        server._HEALTHZ_CACHE.update(t=None, tracking=None)
+        self.httpd = server.make_server("127.0.0.1", 0)
+        self.httpd.daemon_threads = True
+        self.port = self.httpd.server_address[1]
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        self.addCleanup(self._stop)
+
+    def _stop(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+    def _idle(self, source):
+        sock = socket.create_connection(("127.0.0.1", self.port), timeout=5, source_address=(source, 0))
+        self.addCleanup(sock.close)
+        return sock
+
+    def _healthz(self, source):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5, source_address=(source, 0))
+        try:
+            conn.request("GET", "/healthz")
+            return conn.getresponse().status
+        finally:
+            conn.close()
+
+    def _settle(self, count):
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and self.httpd.active_connections < count:
+            time.sleep(0.02)
+        time.sleep(0.2)
+
+    def test_many_empty_connections_from_one_source_do_not_block_others(self):
+        per_source = server.per_source_limit(self.LIMIT)
+        held = [self._idle("127.0.0.2") for _ in range(self.LIMIT)]
+        self._settle(per_source)
+        self.assertEqual(self.httpd.active_connections, per_source)
+        self.assertGreaterEqual(self.httpd.rejected_connections, self.LIMIT - per_source)
+        self.assertEqual(self._healthz("127.0.0.1"), 200, "Healthcheck gesperrt")
+        self.assertEqual(self._healthz("127.0.0.3"), 200, "anderes Gerät gesperrt")
+        self.assertEqual(len(held), self.LIMIT)
+
+    def test_loopback_keeps_reserved_places(self):
+        sources = [f"127.0.1.{n}" for n in range(1, 20)]
+        held = []
+        for source in sources:
+            held += [self._idle(source) for _ in range(server.per_source_limit(self.LIMIT))]
+        self._settle(self.LIMIT - server.local_reserve(self.LIMIT))
+        self.assertEqual(self.httpd.active_connections, self.LIMIT - server.local_reserve(self.LIMIT))
+        self.assertEqual(self._healthz("127.0.0.1"), 200, "Healthcheck ohne reservierten Platz")
+
+    def test_empty_connection_closed_early_when_busy(self):
+        with mock.patch.object(server, "BUSY_IDLE_TIMEOUT", 0.5):
+            for n in range(1, 8):
+                for _ in range(server.per_source_limit(self.LIMIT)):
+                    self._idle(f"127.0.2.{n}")
+            self._settle(int(self.LIMIT * server.BUSY_SHARE) + 1)
+            deadline = time.monotonic() + 5
+            while self.httpd.active_connections > self.LIMIT * server.BUSY_SHARE and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertLessEqual(self.httpd.active_connections, self.LIMIT * server.BUSY_SHARE,
+                                 "leere Verbindungen bei Auslastung nicht früh geschlossen")
+
+    def test_trusted_proxy_not_limited_per_source(self):
+        with mock.patch.object(settings, "values", return_value={"trusted_proxies": ["127.0.0.2/32"]}):
+            per_source = server.per_source_limit(self.LIMIT)
+            for _ in range(per_source + 4):
+                self._idle("127.0.0.2")
+            self._settle(per_source + 4)
+            self.assertEqual(self.httpd.active_connections, per_source + 4)
+
+    def test_ipv6_grouped_by_64(self):
+        a = server.webtransport.parse_ip("2001:db8:1:2::1")
+        b = server.webtransport.parse_ip("2001:db8:1:2:ffff::9")
+        c = server.webtransport.parse_ip("2001:db8:1:3::1")
+        self.assertEqual(server._source_key(a), server._source_key(b))
+        self.assertNotEqual(server._source_key(a), server._source_key(c))
+        mapped = server.webtransport.parse_ip("::ffff:192.0.2.7")
+        self.assertEqual(server._source_key(mapped), "192.0.2.7")
+
+
+class PidsLimitTest(unittest.TestCase):
+    def _file(self, text):
+        with tempfile.NamedTemporaryFile("w", delete=False) as fh:
+            fh.write(text)
+        self.addCleanup(os.unlink, fh.name)
+        return fh.name
+
+    def test_limit_kept_below_pids_max(self):
+        value, note = server.pids_capped_connections(200, (self._file("120\n"),))
+        self.assertEqual(value, 120 - server.PIDS_RESERVE)
+        self.assertIn("pids-limit", note)
+
+    def test_unlimited_or_missing_keeps_value(self):
+        self.assertEqual(server.pids_capped_connections(200, (self._file("max\n"),)), (200, ""))
+        self.assertEqual(server.pids_capped_connections(200, ("/nonexistent/pids.max",)), (200, ""))
+        self.assertEqual(server.pids_capped_connections(200, (self._file("1000\n"),)), (200, ""))
+
+    def test_small_pids_max_keeps_minimum(self):
+        value, _ = server.pids_capped_connections(200, (self._file("30\n"),))
+        self.assertEqual(value, 8)
 
 
 def _entrypoint_function(name: str) -> str:
@@ -370,9 +496,45 @@ class WatchdogWithoutForkTest(unittest.TestCase):
     def test_normal_case(self):
         self.assertEqual(self.run_alive(""), ["lebt", "tot", "tot"])
 
-    def test_watchdog_loop_survives_failed_clock_read(self):
-        text = (ROOT / "docker" / "entrypoint.sh").read_text(encoding="utf-8")
-        self.assertIn("MONO=$(mono) || MONO=${MONO:-0}", text)
+
+
+def _watchdog_loop() -> str:
+    text = (ROOT / "docker" / "entrypoint.sh").read_text(encoding="utf-8")
+    start = text.index("\nwhile true; do\n  process_reload_requests")
+    return text[start:text.index("\ndone\n", start)]
+
+
+@unittest.skipUnless(shutil.which("bash") and hasattr(os, "geteuid") and os.geteuid() == 0,
+                     "braucht bash und root (Wechsel zu einem Nutzer mit Prozessgrenze)")
+class WatchdogRoundWithoutProcessTest(unittest.TestCase):
+    """Eine Watchdog-Runde startet keinen Prozess: Bei erreichter Prozessgrenze läuft das Skript weiter.
+    (Scheitert ein fork dauerhaft, beendet bash ein Skript nach rund 15 s – '|| …' hilft dagegen nicht.)"""
+
+    def test_round_uses_set_mono_and_pause(self):
+        loop = _watchdog_loop()
+        self.assertIn("set_mono", loop)
+        self.assertIn("pause 2", loop)
+        self.assertNotIn("$(mono)", loop)
+        self.assertNotIn("sleep", loop)
+
+    def test_rounds_continue_at_process_limit(self):
+        script = ("set -euo pipefail\n" + _entrypoint_function("set_mono")
+                  + "\nPAUSE_FD=\"\"\n" + _entrypoint_function("open_pause") + "\n" + _entrypoint_function("pause")
+                  + "\nopen_pause\n[[ -n \"$PAUSE_FD\" ]] || { echo ohne-pipe; exit 3; }\n"
+                  + "ulimit -u 1\nMONO=0\n"
+                  + "for i in 1 2 3; do set_mono; (( MONO > 0 )); pause 0.2; echo \"runde $i\"; done\n"
+                  + "echo ende\n")
+
+        def drop():
+            os.setgid(65534)
+            os.setuid(65534)
+
+        started = time.monotonic()
+        proc = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=60,
+                              preexec_fn=drop, cwd="/")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout.split("\n")[:4], ["runde 1", "runde 2", "runde 3", "ende"])
+        self.assertLess(time.monotonic() - started, 10)
 
 
 if __name__ == "__main__":

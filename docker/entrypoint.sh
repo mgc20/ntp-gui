@@ -82,6 +82,33 @@ mono() {
   fi
 }
 
+# Wie mono, setzt aber MONO direkt – ohne Subshell. Im Watchdog darf keine Runde einen Prozess brauchen:
+# Lässt sich gerade keiner starten (Prozessgrenze erreicht), gibt bash nach rund 15 s auf und beendet das
+# ganze Skript (PID 1) – kein '|| …' fängt das ab.
+set_mono() {
+  local up _
+  if { read -r up _ < /proc/uptime; } 2>/dev/null && [[ "$up" =~ ^[0-9]+ ]]; then
+    MONO="${BASH_REMATCH[0]}"
+  else
+    printf -v MONO '%(%s)T' -1
+  fi
+}
+
+# Warten ohne Prozess: 'read -t' auf eine Pipe, in die niemand schreibt (beide Enden hält nur diese Shell,
+# es entsteht keine Datei). open_pause einmal beim Start – dort ist der Prozess für '<(:)' unkritisch;
+# klappt das nicht, wartet pause wie bisher mit sleep.
+PAUSE_FD=""
+open_pause() {
+  exec {PAUSE_FD}<> <(:) 2>/dev/null || PAUSE_FD=""
+}
+pause() {  # pause <sekunden>
+  if [[ -n "$PAUSE_FD" ]]; then
+    read -r -t "$1" -u "$PAUSE_FD" _ 2>/dev/null || true
+  else
+    sleep "$1" & wait $! 2>/dev/null || true
+  fi
+}
+
 is_true() {
   case "${1,,}" in 1|true|yes|on) return 0 ;; *) return 1 ;; esac
 }
@@ -757,6 +784,7 @@ NTPGUI_VERSION="${NTPGUI_VERSION:-$(sed -n 's/^VERSION = os\.environ\.get("NTPGU
 "$EMIT_EVENT" startup info "ntp-gui gestartet" version="${NTPGUI_VERSION:-}"
 
 # --- Watchdog ------------------------------------------------------------------
+open_pause
 # Statt 'wait -n': bash 5.2 übersieht damit Kinder, die vor dem Aufruf gestorben
 # sind. Der Watchdog erkennt jeden toten Dienst, auch beim Start.
 while true; do
@@ -772,7 +800,7 @@ while true; do
       shutdown 1
     fi
   done
-  MONO=$(mono) || MONO=${MONO:-0}   # Fristen (SVC_NEXT, NEXT_HOTPLUG, NEXT_NTS_CERT) nach monotoner Uhr
+  set_mono   # Fristen (SVC_NEXT, NEXT_HOTPLUG, NEXT_NTS_CERT) nach monotoner Uhr
   for name in gpsd ptp4l phc2sys dnsfwd; do
     case "${SVC_STATE[$name]:-stopped}" in
       running)
@@ -784,6 +812,15 @@ while true; do
   if (( MONO >= NEXT_HOTPLUG )); then
     NEXT_HOTPLUG=$(( MONO + HOTPLUG_EVERY ))
     check_hotplug
+    # ptp4l schreibt sein Log unbegrenzt; ab 5 MB auf die letzten 256 KB kürzen (stat ist ein eigener
+    # Prozess – darum nur alle HOTPLUG_EVERY Sekunden, nicht in jeder Runde).
+    # In-place (cat >), damit der O_APPEND-Deskriptor von ptp4l gültig bleibt.
+    if [[ -f "$PTP_LOG_FILE" ]] && (( $(stat -c %s "$PTP_LOG_FILE" 2>/dev/null || echo 0) > 5242880 )); then
+      tail -c 262144 "$PTP_LOG_FILE" > "${PTP_LOG_FILE}.tmp" 2>/dev/null \
+        && cat "${PTP_LOG_FILE}.tmp" > "$PTP_LOG_FILE" \
+        && rm -f "${PTP_LOG_FILE}.tmp" \
+        && log ptp "Log auf die letzten 256 KB gekürzt" || true
+    fi
   fi
   if (( MONO >= NEXT_NTS_CERT )) && check_nts_cert "$MONO"; then
     NTS_CERT_DEFERRED=1
@@ -797,14 +834,6 @@ while true; do
     log nts "Zertifikat erneuert – chronyd lädt neu"
     reload_chronyd
   fi
-  # ptp4l schreibt sein Log unbegrenzt; ab 5 MB auf die letzten 256 KB kürzen.
-  # In-place (cat >), damit der O_APPEND-Deskriptor von ptp4l gültig bleibt.
-  if [[ -f "$PTP_LOG_FILE" ]] && (( $(stat -c %s "$PTP_LOG_FILE" 2>/dev/null || echo 0) > 5242880 )); then
-    tail -c 262144 "$PTP_LOG_FILE" > "${PTP_LOG_FILE}.tmp" 2>/dev/null \
-      && cat "${PTP_LOG_FILE}.tmp" > "$PTP_LOG_FILE" \
-      && rm -f "${PTP_LOG_FILE}.tmp" \
-      && log ptp "Log auf die letzten 256 KB gekürzt" || true
-  fi
-  # 'wait' auf ein Hintergrund-sleep, damit ein (manuelles) SIGHUP sofort wirkt.
-  sleep 2 & wait $! 2>/dev/null || true
+  # Ohne neuen Prozess warten; ein (manuelles) SIGHUP wirkt spätestens nach dieser Pause.
+  pause 2
 done

@@ -1934,6 +1934,59 @@ SAME_ORIGIN_FETCH = frozenset({"same-origin", "none"})
 # könnten viele offen gehaltene Verbindungen Speicher und Prozessgrenze (pids-limit) des Containers aufbrauchen.
 # Darüber hinaus wird eine neue Verbindung sofort geschlossen, ohne Thread.
 MAX_CONNECTIONS_DEFAULT = 200
+
+
+# Darüber hinaus darf eine einzelne Quelladresse (IPv6: ein /64-Netz) nur einen Teil der Plätze belegen – sonst
+# sperrte ein einzelnes Gerät mit offen gehaltenen leeren Verbindungen alle anderen aus. Ausgenommen sind die
+# eigene Maschine (Loopback) und eingetragene vertrauenswürdige Proxys.
+def per_source_limit(max_connections: int) -> int:
+    return max(8, max_connections // 8)
+
+
+# So viele Plätze bleiben Verbindungen von der eigenen Maschine vorbehalten (Docker-Healthcheck auf /healthz).
+def local_reserve(max_connections: int) -> int:
+    return min(4, max_connections // 4)
+
+
+# Ist mehr als dieser Anteil belegt, bekommt eine Verbindung ohne Anfrage nur noch diese kurze Frist (statt
+# REQUEST_IDLE_TIMEOUT), bevor sie geschlossen wird – Loopback und vertrauenswürdige Proxys ausgenommen.
+BUSY_SHARE = 0.75
+BUSY_IDLE_TIMEOUT = 10.0
+# Jede Verbindung belegt einen Thread und damit einen Platz der Prozessgrenze (pids-limit) des Containers.
+# So viele Plätze bleiben dort für Watchdog, Zeitdienste, chronyc und Healthcheck frei.
+PIDS_RESERVE = 64
+PIDS_MAX_FILES = ("/sys/fs/cgroup/pids.max", "/sys/fs/cgroup/pids/pids.max")
+
+
+def pids_capped_connections(max_connections: int, files=PIDS_MAX_FILES) -> tuple[int, str]:
+    """max_connections passend zur Prozessgrenze des Containers – mit Hinweis, falls gekürzt."""
+    for name in files:
+        try:
+            with open(name, encoding="ascii") as fh:
+                text = fh.read().strip()
+        except (OSError, ValueError):
+            continue
+        if not text.isdigit():
+            return max_connections, ""  # „max“: keine Grenze
+        cap = max(8, int(text) - PIDS_RESERVE)
+        if cap < max_connections:
+            return cap, (f"[web] Hinweis: Prozessgrenze des Containers ist {text} – höchstens {cap} gleichzeitige "
+                         f"Verbindungen statt {max_connections}, damit Platz für die Zeitdienste bleibt. "
+                         "Setze pids-limit deutlich über WEB_MAX_CONNECTIONS + 64.")
+        return max_connections, ""
+    return max_connections, ""
+
+
+def _is_local_peer(address) -> bool:
+    return address is not None and address.is_loopback
+
+
+def _source_key(address) -> str:
+    if address is None:
+        return "?"
+    if address.version == 6:
+        return str(ipaddress.ip_network(f"{address}/64", strict=False))
+    return str(address)
 # /healthz fragt chronyd höchstens so oft (Docker-Healthcheck, Überwachung) – nie ein chronyc-Prozess je Anfrage.
 HEALTHZ_CACHE_SECONDS = 2.0
 
@@ -1950,10 +2003,18 @@ class Handler(BaseHTTPRequestHandler):
     def handle_one_request(self) -> None:
         # Leerlauf (bis REQUEST_IDLE_TIMEOUT) ohne Frist abwarten; die Lesefrist beginnt erst mit dem
         # ersten Byte – sonst schlösse sie still offene Keep-alive-Verbindungen schon nach 60 s.
+        # Bei hoher Auslastung wartet eine Verbindung ohne Anfrage nur kurz – leere Verbindungen halten so
+        # keinen Platz bis REQUEST_IDLE_TIMEOUT.
+        busy = getattr(self.server, "busy_for", None)
+        short = bool(busy and busy(self.request))
         try:
+            if short:
+                self.connection.settimeout(BUSY_IDLE_TIMEOUT)
             if not self.rfile.peek(1):
                 self.close_connection = True  # Gegenstelle hat geschlossen
                 return
+            if short:
+                self.connection.settimeout(self.timeout)
         except OSError:
             self.close_connection = True  # Leerlauf zu lang oder Verbindung weg
             return
@@ -2454,13 +2515,17 @@ class Handler(BaseHTTPRequestHandler):
 
     def _cross_site_get(self, ident: dict, path: str) -> bool:
         """Teure GET-Route, angestoßen von einer fremden Seite? (Bearer-Schlüssel hängt kein Browser von sich aus an.)"""
-        if path not in COSTLY_GET_PATHS and not (path == "/api/hardware" and
-                                                 self._query().get("refresh") in {"1", "true"}):
+        if not self._costly_get(path):
             return False
         if ident.get("kind") == "key":
             return False
         site = (self.headers.get("Sec-Fetch-Site") or "").strip().lower()
         return bool(site) and site not in SAME_ORIGIN_FETCH
+
+    def _costly_get(self, path: str) -> bool:
+        """GET-Route, die spürbar Arbeit macht (Sicherung, Diagnose, Hardware neu prüfen)?"""
+        return path in COSTLY_GET_PATHS or (path == "/api/hardware"
+                                            and self._query().get("refresh") in {"1", "true"})
 
     def _query(self) -> dict:
         return {k: v[-1] for k, v in parse_qs(urlparse(self.path).query).items()}
@@ -2468,7 +2533,7 @@ class Handler(BaseHTTPRequestHandler):
     # --- GET -----------------------------------------------------------------
     def do_HEAD(self) -> None:
         path, _ = self._api_path(self.path)
-        if path in COSTLY_GET_PATHS:
+        if self._costly_get(path):
             # Nur Köpfe, aber dieselbe Arbeit wie ein Download – dafür gibt es GET.
             self._send(HTTPStatus.METHOD_NOT_ALLOWED, b"", "text/plain; charset=utf-8", {"Allow": "GET"})
             return
@@ -3262,14 +3327,66 @@ class QuietHTTPServer(ThreadingHTTPServer):
     max_connections = MAX_CONNECTIONS_DEFAULT
 
     def __init__(self, *args, **kwargs):
-        self._slots = threading.BoundedSemaphore(self.max_connections)
+        self._conn_lock = threading.Lock()
+        self._conns: dict = {}           # Socket -> (Quellschlüssel oder None, ausgenommen?)
+        self._per_source: dict[str, int] = {}
+        self.active_connections = 0
         self.rejected_connections = 0
         super().__init__(*args, **kwargs)
 
+    def _classify(self, client_address) -> tuple[str | None, bool]:
+        """(Schlüssel für die Grenze je Quelle oder None, von der eigenen Maschine?)"""
+        address = webtransport.parse_ip(client_address[0] if client_address else "")
+        if _is_local_peer(address):
+            return None, True
+        try:
+            trusted = webtransport.parse_networks(settings.values().get("trusted_proxies"))
+        except Exception:
+            trusted = []
+        if address is not None and any(address.version == net.version and address in net for net in trusted):
+            return None, False
+        return _source_key(address), False
+
+    def _admit(self, request, client_address) -> bool:
+        key, local = self._classify(client_address)
+        limit = self.max_connections if local else self.max_connections - local_reserve(self.max_connections)
+        with self._conn_lock:
+            if self.active_connections >= limit:
+                return False
+            if key is not None and self._per_source.get(key, 0) >= per_source_limit(self.max_connections):
+                return False
+            self.active_connections += 1
+            if key is not None:
+                self._per_source[key] = self._per_source.get(key, 0) + 1
+            self._conns[request] = (key, local or key is None)
+        return True
+
+    def _release(self, request) -> None:
+        with self._conn_lock:
+            entry = self._conns.pop(request, None)
+            if entry is None:
+                return
+            self.active_connections -= 1
+            key = entry[0]
+            if key is not None:
+                left = self._per_source.get(key, 0) - 1
+                if left > 0:
+                    self._per_source[key] = left
+                else:
+                    self._per_source.pop(key, None)
+
+    def busy_for(self, request) -> bool:
+        """Soll diese Verbindung nur die kurze Frist bis zur ersten Anfrage bekommen?"""
+        with self._conn_lock:
+            entry = self._conns.get(request)
+            return (entry is not None and not entry[1]
+                    and self.active_connections > self.max_connections * BUSY_SHARE)
+
     def process_request(self, request, client_address):
-        # Ein Thread je Verbindung, aber höchstens max_connections zugleich. Ist alles belegt, wird die neue
-        # Verbindung sofort geschlossen – ohne Thread, ohne Antwort (eine Antwort kostete wieder Zeit und Speicher).
-        if not self._slots.acquire(blocking=False):
+        # Ein Thread je Verbindung, aber höchstens max_connections zugleich und je Quelle nur ein Teil davon.
+        # Ist kein Platz frei, wird die neue Verbindung sofort geschlossen – ohne Thread, ohne Antwort (eine
+        # Antwort kostete wieder Zeit und Speicher).
+        if not self._admit(request, client_address):
             self.rejected_connections += 1
             self.shutdown_request(request)
             return
@@ -3278,18 +3395,18 @@ class QuietHTTPServer(ThreadingHTTPServer):
         except RuntimeError:
             # Thread ließ sich nicht starten (Prozessgrenze erreicht): Platz freigeben, Verbindung schließen –
             # der Server selbst läuft weiter.
-            self._slots.release()
+            self._release(request)
             self.rejected_connections += 1
             self.shutdown_request(request)
         except BaseException:
-            self._slots.release()
+            self._release(request)
             raise
 
     def process_request_thread(self, request, client_address):
         try:
             super().process_request_thread(request, client_address)
         finally:
-            self._slots.release()
+            self._release(request)
 
     def server_activate(self):
         # Lauschender Socket nicht blockierend: select() meldet eine wartende Verbindung, der Client
@@ -3418,7 +3535,10 @@ def main() -> None:
 
     signal.signal(signal.SIGTERM, save_and_exit)
 
-    QuietHTTPServer.max_connections = env_number("WEB_MAX_CONNECTIONS", MAX_CONNECTIONS_DEFAULT, int, minimum=8)
+    wanted = env_number("WEB_MAX_CONNECTIONS", MAX_CONNECTIONS_DEFAULT, int, minimum=8)
+    QuietHTTPServer.max_connections, pids_note = pids_capped_connections(wanted)
+    if pids_note:
+        print(pids_note, flush=True)
     server = make_server(bind, port)
     server.daemon_threads = True
     info = auth_info()
