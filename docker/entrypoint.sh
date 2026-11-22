@@ -116,22 +116,31 @@ spawn() {  # spawn <name> <cmd...>  -> setzt SPAWNED
 # tot (reload_chronyd ließe den alten chronyd laufen, der Watchdog meldete „unerwartet
 # beendet“). wait_exec wartet höchstens ~1 s, bis das exec geschehen ist.
 wait_exec() {  # wait_exec <pid>
-  local pid="$1" own i
-  own=$(cat "/proc/$$/comm" 2>/dev/null) || return 0
+  local pid="$1" own="" now="" i
+  { read -r own < "/proc/$$/comm"; } 2>/dev/null || return 0
   for (( i = 0; i < 100; i++ )); do
-    [[ "$(cat "/proc/${pid}/comm" 2>/dev/null)" != "$own" ]] && return 0
-    sleep 0.01
+    now=""
+    { read -r now < "/proc/${pid}/comm"; } 2>/dev/null || true
+    [[ "$now" != "$own" ]] && return 0
+    sleep 0.01 || true
   done
   return 0
 }
 
+# Lebt der Dienst noch? Liest /proc nur mit Shell-Bordmitteln (read, Umleitung) – ohne Subshell und ohne
+# externes Programm. Lässt sich gerade kein Prozess starten (Prozessgrenze des Containers erreicht), hielte
+# eine fehlgeschlagene Prüfung sonst einen laufenden Pflichtdienst für tot und stoppte den Container.
 service_alive() {
-  local pid="${1%%=*}" comm="${1#*=}" actual
+  local pid="${1%%=*}" comm="${1#*=}" actual="" own=""
   [[ -n "$pid" ]] || return 1
-  actual=$(cat "/proc/${pid}/comm" 2>/dev/null) || return 1
-  if [[ "$actual" != "$comm" && "$actual" == "$(cat "/proc/$$/comm" 2>/dev/null)" ]]; then
+  if ! { read -r actual < "/proc/${pid}/comm"; } 2>/dev/null; then
+    [[ -d "/proc/${pid}" ]] || return 1
+    return 0  # Prozess besteht, nur das Lesen scheiterte: nicht als Ausfall werten
+  fi
+  { read -r own < "/proc/$$/comm"; } 2>/dev/null || true
+  if [[ "$actual" != "$comm" && -n "$own" && "$actual" == "$own" ]]; then
     wait_exec "$pid"  # gerade erst gestartet: exec abwarten statt „tot“ zu melden
-    actual=$(cat "/proc/${pid}/comm" 2>/dev/null) || return 1
+    { read -r actual < "/proc/${pid}/comm"; } 2>/dev/null || return 1
   fi
   [[ "$actual" == "$comm" ]]
 }
@@ -763,7 +772,7 @@ while true; do
       shutdown 1
     fi
   done
-  MONO=$(mono)   # Fristen (SVC_NEXT, NEXT_HOTPLUG, NEXT_NTS_CERT) nach monotoner Uhr
+  MONO=$(mono) || MONO=${MONO:-0}   # Fristen (SVC_NEXT, NEXT_HOTPLUG, NEXT_NTS_CERT) nach monotoner Uhr
   for name in gpsd ptp4l phc2sys dnsfwd; do
     case "${SVC_STATE[$name]:-stopped}" in
       running)

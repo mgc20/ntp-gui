@@ -38,6 +38,8 @@ EXPECTED = {
     "frame-ancestors": "'none'",
     "base-uri": "'none'",
     "form-action": "'self'",
+    "require-trusted-types-for": "'script'",
+    "trusted-types": "'none'",
 }
 
 

@@ -146,7 +146,7 @@ NIGHTLY_PREFIX = "nacht-"
 KEEP_AUTO = 5
 KEEP_NIGHTLY = 7
 NIGHTLY_HOUR = 3                         # Ortszeit des Servers
-_STORED_RE = re.compile(r"^(?:vor-wiederherstellung|nacht)-\d{8}(?:-\d{6})?\.tar\.gz$")
+_STORED_RE = re.compile(r"^(?:vor-wiederherstellung|nacht)-\d{8}(?:-\d{6})?\.tar\.gz\Z")
 
 # Einstellungen, die Geheimnisse enthalten können – nie sichern: DoH-Pfad, DoT-Name und feste Adressen
 # tragen bei NextDNS die persönliche Konto-Kennung (<id>.dns.nextdns.io). Beim Wiederherstellen bleibt
@@ -1033,7 +1033,7 @@ def _read_json(path: str, what: str) -> Any:
     try:
         with open(path, encoding="utf-8") as handle:
             return json.load(handle)
-    except (OSError, ValueError, UnicodeDecodeError):
+    except (OSError, ValueError, UnicodeDecodeError, RecursionError):
         raise RestoreError(f"{what} in der Sicherung ist kein gültiges JSON – abgelehnt.") from None
 
 

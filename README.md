@@ -1639,6 +1639,7 @@ PHC-Refclock dient ihm als Referenz für Stratum und Statistik.
 | `WEB_REQUIRE_AUTH` | `false` | `true` = ohne Zugang (Passwort) bleibt das Dashboard gesperrt: Nur `/healthz` und eine Einrichtungs-Meldung antworten. Für Server, die aus dem Internet erreichbar sind (VPS) |
 | `WEB_ALLOWED_HOSTS` | – | Weitere Namen, unter denen das Dashboard **ohne Passwort** antworten darf, kommagetrennt; `*.example.org` für alle Unternamen, `*` schaltet die Prüfung ab. Gilt zusätzlich zu „Erlaubte Namen“ im Dashboard (Einstellungen → Dashboard & Zugang). Siehe [Schutz vor DNS-Rebinding](#schutz-vor-dns-rebinding) |
 | `WEB_READONLY` | `false` | Einstellungen im Dashboard sperren |
+| `WEB_MAX_CONNECTIONS` | `200` | Höchstzahl gleichzeitig offener Verbindungen zum Dashboard (mindestens 8). Weitere Verbindungen schließt der Server sofort, statt für jede einen Thread zu starten. Auf einem VPS zusätzlich im Reverse Proxy die Verbindungen je Adresse begrenzen |
 | `WEB_REFRESH_SECONDS` | `5` | Aktualisierungsintervall im Browser |
 | `HISTORY_INTERVAL` | `10` | Messintervall des Verlaufs in Sekunden |
 | `HISTORY_DAYS` | `30` | So viele Tage hält der Verlauf (SQLite, `ntp-gui.db`; 1–3650). Neue Punkte werden gesammelt und alle 5 Minuten sowie beim Stoppen geschrieben – das schont SD-Karten |
@@ -1652,7 +1653,7 @@ PHC-Refclock dient ihm als Referenz für Stratum und Statistik.
 | `UPDATE_CHECK` | `false` | Einmal am Tag bei GitHub nach einer neuen Version fragen, siehe [Update-Hinweis](#update-hinweis-opt-in) |
 
 Nur per Umgebung (sie betreffen den Start selbst oder sind Expertenwerte): `WEB_PORT`,
-`WEB_BIND`, `WEB_READONLY`, `WEB_USER`/`WEB_PASSWORD`/`WEB_PASSWORD_FILE`, `WEB_REQUIRE_AUTH`, `WEB_ALLOWED_HOSTS`, `WEB_ACCESS_LOG`, `HISTORY_SIZE`,
+`WEB_BIND`, `WEB_READONLY`, `WEB_USER`/`WEB_PASSWORD`/`WEB_PASSWORD_FILE`, `WEB_REQUIRE_AUTH`, `WEB_ALLOWED_HOSTS`, `WEB_ACCESS_LOG`, `WEB_MAX_CONNECTIONS`, `HISTORY_SIZE`,
 `HISTORY_DAYS`, `NTPGUI_LOGTEE`, `NTPGUI_REPLAY`/`NTPGUI_REPLAY_SPEED`,
 `DISABLE_CLOCK_CONTROL`, `EXTRA_CHRONY_CONF`, `EXTRA_PTP4L_CONF`, `CHRONY_LOG`,
 `CLIENTLOGLIMIT`, `MAXUPDATESKEW`, `CUSTOM_CHRONY_CONF`, `CUSTOM_PTP4L_CONF`, `GPS_OPTIONS`,

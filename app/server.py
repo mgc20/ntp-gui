@@ -1246,6 +1246,25 @@ def _clock_tracking() -> dict:
         return tracking
 
 
+_HEALTHZ_CACHE: dict = {"t": None, "tracking": None}
+_HEALTHZ_LOCK = threading.Lock()
+
+
+def _healthz_tracking() -> dict:
+    """chronyc tracking für /healthz, höchstens einmal je HEALTHZ_CACHE_SECONDS.
+
+    /healthz ist auch ohne Anmeldung erreichbar – viele Anfragen sollen nicht je einen chronyc-Prozess starten.
+    Wer gleichzeitig fragt, wartet auf dieselbe Abfrage (Sperre), statt eine eigene zu starten.
+    """
+    with _HEALTHZ_LOCK:
+        now = time.monotonic()
+        if _HEALTHZ_CACHE["t"] is not None and now - _HEALTHZ_CACHE["t"] < HEALTHZ_CACHE_SECONDS:
+            return _HEALTHZ_CACHE["tracking"]
+        tracking = chrony.tracking()
+        _HEALTHZ_CACHE.update(t=time.monotonic(), tracking=tracking)
+        return tracking
+
+
 def _clock_leap_next(cfg: dict) -> str | None:
     """Datum der nächsten angekündigten Schaltsekunde (Beginn des neuen TAI−UTC, „2017-01-01“) für /clock.
 
@@ -1879,8 +1898,15 @@ REAPER = _Reaper()
 # Content-Security-Policy: nur eigene Skripte, Stylesheets und Verbindungen. Inline-Skripte,
 # on…-Attribute und style-Attribute sind gesperrt (el() setzt Stile per CSSOM, das bleibt erlaubt);
 # data: nur für Bilder (Favicon). Gilt für jede Antwort, auch für JSON und Fehlerseiten.
+# Trusted Types: Das Frontend setzt Inhalte nur als Text bzw. per DOM-Knoten – HTML-Senken wie innerHTML sind damit
+# auch künftig gesperrt (Tiefenverteidigung gegen eingeschleustes Markup).
 CSP = ("default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; "
-       "object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+       "object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; "
+       "require-trusted-types-for 'script'; trusted-types 'none'")
+# Gerätezugriffe, die weder Dashboard noch Uhr brauchen, gar nicht erst anbieten. Vollbild, Wachhalten des
+# Bildschirms, Ton und Zwischenablage nutzt die Uhr bzw. das Dashboard – die bleiben erlaubt.
+PERMISSIONS_POLICY = ("accelerometer=(), camera=(), display-capture=(), geolocation=(), gyroscope=(), hid=(), "
+                      "magnetometer=(), microphone=(), midi=(), payment=(), serial=(), usb=()")
 # Abmelden bei Basic-Auth: Die Seite ruft diesen Pfad mit dem Benutzer LOGOUT_USER auf; die Antwort 200 bringt
 # den Browser dazu, diese (wertlosen) Angaben statt der echten zu merken. Der Pfad prüft nichts und gibt nichts preis.
 LOGOUT_PATH = "/logout"
@@ -1892,13 +1918,34 @@ SECURITY_HEADERS = {
     "Referrer-Policy": "same-origin",
     "X-Frame-Options": "DENY",
     "Content-Security-Policy": CSP,
+    "Cross-Origin-Opener-Policy": "same-origin",
+    "Cross-Origin-Resource-Policy": "same-origin",
+    "Permissions-Policy": PERMISSIONS_POLICY,
 }
+
+# GET-Routen, die spürbar Arbeit machen (Sicherung bauen, Diagnose sammeln, Hardware neu prüfen). Ein Browser
+# schickt GETs auch für fremde Seiten (<img>, Links) samt gemerkter Anmeldung mit – diese Routen nehmen darum nur
+# Aufrufe aus dem Dashboard selbst, direkt eingegebene Adressen und Werkzeuge ohne Sec-Fetch-Site an.
+COSTLY_GET_PATHS = frozenset({"/api/backup", "/api/diagnostics/preview", "/api/diagnostics/bundle"})
+# Gilt eine Sec-Fetch-Site-Angabe als „aus dem Dashboard“? „none“: Adresszeile, Lesezeichen, Download-Manager.
+SAME_ORIGIN_FETCH = frozenset({"same-origin", "none"})
+
+# Höchstzahl gleichzeitig offener Verbindungen zum Dashboard. Jede Verbindung belegt einen Thread; ohne Grenze
+# könnten viele offen gehaltene Verbindungen Speicher und Prozessgrenze (pids-limit) des Containers aufbrauchen.
+# Darüber hinaus wird eine neue Verbindung sofort geschlossen, ohne Thread.
+MAX_CONNECTIONS_DEFAULT = 200
+# /healthz fragt chronyd höchstens so oft (Docker-Healthcheck, Überwachung) – nie ein chronyc-Prozess je Anfrage.
+HEALTHZ_CACHE_SECONDS = 2.0
 
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "ntp-gui"
+    sys_version = ""  # keine Python-Version im Server-Kopf
     protocol_version = "HTTP/1.1"
     timeout = REQUEST_IDLE_TIMEOUT  # StreamRequestHandler.setup(): settimeout() auf der Verbindung
+
+    def version_string(self) -> str:
+        return self.server_version
 
     def handle_one_request(self) -> None:
         # Leerlauf (bis REQUEST_IDLE_TIMEOUT) ohne Frist abwarten; die Lesefrist beginnt erst mit dem
@@ -2382,18 +2429,49 @@ class Handler(BaseHTTPRequestHandler):
         return path, False
 
     def _serve_static(self, name: str) -> None:
-        path = (STATIC_DIR / name).resolve()
-        if not path.is_file() or STATIC_DIR.resolve() not in path.parents:
+        try:
+            # Steuerzeichen und überlange Namen gibt es unter static/ nicht – gar nicht erst ans Dateisystem.
+            if len(name) > 200 or any(ord(c) < 32 for c in name):
+                raise ValueError("ungültiger Name")
+            path = (STATIC_DIR / name).resolve()
+            found = path.is_file() and STATIC_DIR.resolve() in path.parents
+        except (OSError, ValueError):
+            found = False
+        if not found:
             self._send(HTTPStatus.NOT_FOUND, b"not found\n", "text/plain; charset=utf-8")
             return
         content_type = CONTENT_TYPES.get(path.suffix, "application/octet-stream")
         self._send(HTTPStatus.OK, path.read_bytes(), content_type, {"Cache-Control": "no-cache"})
+
+    def _internal_error(self, where: str, exc: BaseException) -> None:
+        """Unerwarteter Fehler: Einzelheiten nur ins Log, an den Client eine allgemeine Meldung (keine Pfade)."""
+        print(f"[web] Fehler bei {self.command} {where}: {type(exc).__name__}: {exc}", flush=True)
+        self.close_connection = True
+        try:
+            self._error(HTTPStatus.INTERNAL_SERVER_ERROR, "Interner Fehler – Einzelheiten stehen im Log.")
+        except OSError:
+            pass
+
+    def _cross_site_get(self, ident: dict, path: str) -> bool:
+        """Teure GET-Route, angestoßen von einer fremden Seite? (Bearer-Schlüssel hängt kein Browser von sich aus an.)"""
+        if path not in COSTLY_GET_PATHS and not (path == "/api/hardware" and
+                                                 self._query().get("refresh") in {"1", "true"}):
+            return False
+        if ident.get("kind") == "key":
+            return False
+        site = (self.headers.get("Sec-Fetch-Site") or "").strip().lower()
+        return bool(site) and site not in SAME_ORIGIN_FETCH
 
     def _query(self) -> dict:
         return {k: v[-1] for k, v in parse_qs(urlparse(self.path).query).items()}
 
     # --- GET -----------------------------------------------------------------
     def do_HEAD(self) -> None:
+        path, _ = self._api_path(self.path)
+        if path in COSTLY_GET_PATHS:
+            # Nur Köpfe, aber dieselbe Arbeit wie ein Download – dafür gibt es GET.
+            self._send(HTTPStatus.METHOD_NOT_ALLOWED, b"", "text/plain; charset=utf-8", {"Allow": "GET"})
+            return
         self.do_GET()
 
     def do_GET(self) -> None:
@@ -2414,7 +2492,7 @@ class Handler(BaseHTTPRequestHandler):
                 pass
             return
         if path == "/healthz":
-            healthy = bool(chrony.tracking())
+            healthy = bool(_healthz_tracking())
             self._send_json({"status": "ok" if healthy else "degraded", "chrony": healthy},
                             HTTPStatus.OK if healthy else HTTPStatus.SERVICE_UNAVAILABLE)
             return
@@ -2433,6 +2511,9 @@ class Handler(BaseHTTPRequestHandler):
         if not self._scope_ok(ident, "GET", path):
             self._deny_scope(ident, "GET", path)
             return
+        if self._cross_site_get(ident, path):
+            self._error(HTTPStatus.FORBIDDEN, "Anfrage abgelehnt (nur aus dem Dashboard heraus)")
+            return
         self._ident = ident
         self._note_transport(ident)
         try:
@@ -2443,7 +2524,7 @@ class Handler(BaseHTTPRequestHandler):
         except BrokenPipeError:
             pass
         except Exception as exc:  # nie wegen eines Parserfehlers ausfallen
-            self._error(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
+            self._internal_error(path, exc)
 
     @staticmethod
     def _clock_public() -> bool:
@@ -2718,7 +2799,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _send_backup(self, query: dict) -> None:
         """GET /api/backup: neue Sicherung (oder mit name= eine gespeicherte) als Download."""
-        headers = {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"}
+        headers = {"Cache-Control": "no-store"}  # nosniff kommt mit SECURITY_HEADERS
         name = query.get("name")
         if name is not None:
             path = backup.stored_path(name)
@@ -2812,7 +2893,10 @@ class Handler(BaseHTTPRequestHandler):
             self.close_connection = True
             raise ValueError("Anfrage unvollständig")
         self._body_unread = False
-        data = json.loads(raw.decode("utf-8") or "{}")
+        try:
+            data = json.loads(raw.decode("utf-8") or "{}")
+        except RecursionError:
+            raise ValueError("JSON zu tief verschachtelt") from None
         if not isinstance(data, dict):
             raise ValueError("JSON-Objekt erwartet")
         return data
@@ -2873,7 +2957,7 @@ class Handler(BaseHTTPRequestHandler):
         except BrokenPipeError:
             pass
         except Exception as exc:
-            self._error(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
+            self._internal_error(path, exc)
 
     def _after_change(self, result: dict) -> dict:
         changed = result.get("changed")
@@ -3175,6 +3259,38 @@ class QuietHTTPServer(ThreadingHTTPServer):
             return
         super().handle_error(request, client_address)
 
+    max_connections = MAX_CONNECTIONS_DEFAULT
+
+    def __init__(self, *args, **kwargs):
+        self._slots = threading.BoundedSemaphore(self.max_connections)
+        self.rejected_connections = 0
+        super().__init__(*args, **kwargs)
+
+    def process_request(self, request, client_address):
+        # Ein Thread je Verbindung, aber höchstens max_connections zugleich. Ist alles belegt, wird die neue
+        # Verbindung sofort geschlossen – ohne Thread, ohne Antwort (eine Antwort kostete wieder Zeit und Speicher).
+        if not self._slots.acquire(blocking=False):
+            self.rejected_connections += 1
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except RuntimeError:
+            # Thread ließ sich nicht starten (Prozessgrenze erreicht): Platz freigeben, Verbindung schließen –
+            # der Server selbst läuft weiter.
+            self._slots.release()
+            self.rejected_connections += 1
+            self.shutdown_request(request)
+        except BaseException:
+            self._slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._slots.release()
+
     def server_activate(self):
         # Lauschender Socket nicht blockierend: select() meldet eine wartende Verbindung, der Client
         # bricht sie aber vor accept() ab (RST) – ein blockierendes accept() wartete dann bis zur
@@ -3302,6 +3418,7 @@ def main() -> None:
 
     signal.signal(signal.SIGTERM, save_and_exit)
 
+    QuietHTTPServer.max_connections = env_number("WEB_MAX_CONNECTIONS", MAX_CONNECTIONS_DEFAULT, int, minimum=8)
     server = make_server(bind, port)
     server.daemon_threads = True
     info = auth_info()
