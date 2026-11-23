@@ -908,9 +908,35 @@ class SettingsTest(unittest.TestCase):
                "dns_pin": ["dns.quad9.net=9.9.9.9"]}
         ups = dnsfwd.build_upstreams(cfg, boot)
         self.assertEqual([(u.proto, u.label, u.port, u.pins) for u in ups],
-                         [("dot", "dns.quad9.net", 853, ["9.9.9.9"]), ("dot", "one.one.one.one:8853", 8853, [])])
+                         [("dot", "dns.quad9.net", 853, ["9.9.9.9"]), ("dot", "….one.one.one:8853", 8853, [])])
         ups = dnsfwd.build_upstreams({"dns_mode": "servers", "dns_servers": ["[2620:fe::fe]:5353", "9.9.9.9"]}, boot)
         self.assertEqual([(u.ip, u.port) for u in ups], [("2620:fe::fe", 5353), ("9.9.9.9", 53)])
+
+
+class DotLabelTest(unittest.TestCase):
+    """Konto-Kennung im DoT-Namen: nach außen gekürzt wie in den Einstellungen für Leser."""
+
+    def test_status_and_events_without_account_id(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        cfg = {"dns_mode": "dot", "dns_dot": ["abc123.dns.nextdns.io", "abc123.dns.nextdns.io:8853"]}
+        ups = dnsfwd.build_upstreams(cfg, dnsfwd.Bootstrap(lambda: []))
+        self.assertEqual([u.label for u in ups], ["….dns.nextdns.io", "….dns.nextdns.io:8853"])
+        self.assertEqual(ups[0].host, "abc123.dns.nextdns.io")  # Verbindung weiter zum vollen Namen
+        events = []
+        gate = dnsfwd.UpstreamGate(lambda level, title, data: events.append((level, title, data)))
+        fwd = dnsfwd.Forwarder("dot", ups[:1], use_fallback=False, on_upstream=gate)
+        for _ in range(dnsfwd.DOWN_AFTER):
+            ups[0].down_until = 0
+            fwd.resolve(dnsfwd.build_query("pool.ntp.org", 1))
+        self.assertIn("….dns.nextdns.io", ups[0].last_error)  # Fehlertext nennt den Namen gekürzt
+        self.assertEqual(len(events), 1)
+        dnsfwd.write_json(dnsfwd.status_path(tmp), {"pid": os.getpid(), "state": "failing",
+                                                     "upstreams": [u.public() for u in ups]})
+        text = json.dumps(dnsfwd.api_status(cfg, tmp), ensure_ascii=False) + json.dumps(events, ensure_ascii=False)
+        self.assertIn("dns.nextdns.io", text)
+        self.assertNotIn("abc123", text)
+        self.assertEqual(settings.mask_value("dns_dot", ["abc123.dns.nextdns.io"]), ["….dns.nextdns.io"])
 
 
 class StatusTest(unittest.TestCase):

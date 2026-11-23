@@ -148,7 +148,12 @@ endpoint("POST", "/clock/signal", None, "clock",
 
 # --- Nur mit Anmeldung (nie per API-Schlüssel) -----------------------------------
 endpoint("POST", "/auth", "/api/auth", "session",
-         "Benutzer und Passwort des Dashboards setzen oder entfernen.", ["ok", "auth"])
+         "Benutzer und Passwort des Dashboards setzen oder entfernen. Body: {\"user\": …, \"password\": …} "
+         "bzw. {\"clear\": true}; ist schon ein Zugang gesetzt, zusätzlich \"current_password\". "
+         "open_keys: ohne Anmeldung angelegte API-Schlüssel zur Prüfung.", ["ok", "auth", "open_keys"])
+endpoint("POST", "/auth/logout", "/api/auth/logout", "session",
+         "Abmelden im Browser: liefert den Pfad, über den die Seite den Browser die Angaben vergessen lässt. "
+         "Benutzer und Passwort bleiben gültig, bis das Passwort geändert wird.", ["ok"])
 endpoint("GET", "/apikeys", "/api/apikeys", "session",
          "API-Schlüssel auflisten (Name, Recht, zuletzt benutzt – nie das Geheimnis).", ["keys"])
 endpoint("POST", "/apikeys", "/api/apikeys", "session",
@@ -156,6 +161,9 @@ endpoint("POST", "/apikeys", "/api/apikeys", "session",
          "steht nur in dieser einen Antwort.", ["id", "token", "name", "scope"])
 endpoint("POST", "/apikeys/revoke", "/api/apikeys/revoke", "session",
          "API-Schlüssel widerrufen. Body: {\"id\": …}.", ["ok"])
+endpoint("POST", "/apikeys/keep", "/api/apikeys/keep", "session",
+         "Einen ohne Anmeldung angelegten API-Schlüssel bewusst behalten (Markierung open_mode entfernen). "
+         "Body: {\"id\": …}.", ["ok"])
 endpoint("POST", "/instance/rotate", "/api/instance/rotate", "session",
          "Neue zufällige Instanz-Kennung erzeugen.", ["instance_id", "since", "note"])
 
@@ -223,7 +231,8 @@ def describe() -> dict:
             "csrf": "Mit API-Schlüssel ist kein X-NTP-GUI-Header nötig; POST braucht "
                     "Content-Type: application/json.",
             "note": "Ist kein Passwort gesetzt, ist das Dashboard offen und Schlüssel werden "
-                    "nicht gebraucht.",
+                    "nicht gebraucht – außer mit WEB_REQUIRE_AUTH=true: dann ist ohne Zugang alles gesperrt. "
+                    "Nach wiederholten Fehlversuchen antwortet der Server mit 429 und Retry-After.",
         },
         "stability": "Innerhalb von v1 kommen höchstens neue Felder hinzu; nichts wird "
                      "umbenannt oder entfernt.",

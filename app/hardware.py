@@ -191,10 +191,16 @@ def _device_major(cls: str, name: str) -> int | None:
 
 
 def _try_open(path: str) -> tuple[bool | None, str | None]:
-    """Öffnet ein PPS-/PTP-Gerät kurz lesend. (usable, Fehlercode)."""
+    """Öffnet ein PPS-/PTP-Gerät kurz lesend. (usable, Fehlercode).
+
+    Das Dashboard läuft ab 1.9 ohne root; chronyd, gpsd und ptp4l öffnen die Geräte als root. Fehlen
+    nur dem Dashboard die Dateirechte (EACCES, z. B. Gerät 0600 root), ist das kein Befund über das
+    Gerät: usable bleibt dann offen (None) statt „nicht nutzbar“."""
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
     except OSError as exc:
+        if exc.errno == errno.EACCES and os.geteuid() != 0:
+            return None, None
         return False, errno.errorcode.get(exc.errno or 0, str(exc.errno))
     os.close(fd)
     return True, None
@@ -324,9 +330,11 @@ def _modules() -> dict[str, bool]:
 
 
 def permissions_info() -> dict[str, Any]:
-    caps = devices.cap_eff()
+    # Rechte des Containers (Supervisor), nicht des Dashboards: Es läuft ab 1.9 ohne root, chronyd und ptp4l
+    # bekommen ihre Rechte vom Supervisor.
+    caps = devices.container_caps()
     last_cap = _read_int(_proc("sys", "kernel", "cap_last_cap")) or 40
-    seccomp = devices.proc_status_field("Seccomp")
+    seccomp = devices.container_seccomp()
     privileged = bool(caps is not None and caps == (1 << (last_cap + 1)) - 1 and seccomp in {"0", ""})
     by_id = os.path.isdir(os.path.join(dev_root(), "serial", "by-id"))
     dev_mounted = parse_mountinfo_dev(_read(_proc("self", "mountinfo"))) or by_id

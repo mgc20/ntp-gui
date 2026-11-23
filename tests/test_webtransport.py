@@ -58,7 +58,7 @@ class ResolveTest(unittest.TestCase):
         self.assertEqual(info, {"client": "192.168.1.5", "peer": "192.168.1.5", "scheme": "http",
                                 "proxied": False, "untrusted_forward": False, "proto_missing": False,
                                 "peer_loopback": False, "peer_trusted": False, "forward_headers": (),
-                                "proto_value": ""})
+                                "proto_value": "", "forward_conflict": ()})
 
     def test_trusted_proxy_gives_browser_address_and_scheme(self):
         info = wt.resolve("127.0.0.1", headers(X_Forwarded_For="192.168.1.50", X_Forwarded_Proto="https"), TRUST_LOCAL)
@@ -131,6 +131,70 @@ class ResolveTest(unittest.TestCase):
         self.assertIn("kein Hinweis auf Klartext", items[0]["text"])
         self.assertIn("127.0.0.1 schickt X-Real-IP, aber weder", items[0]["text"])
         self.assertTrue(wt.resolve("192.168.1.9", hdrs({"X-Real-IP": "1.2.3.4"}), [])["untrusted_forward"])
+
+    def test_x_real_ip_proxy_ignores_forwarding_headers_from_browser(self):
+        # Proxy setzt nur X-Real-IP und reicht X-Forwarded-For/Forwarded des Browsers durch.
+        trusted = wt.parse_networks(["192.0.2.10/32"])
+        info = wt.resolve("192.0.2.10", hdrs({"X-Real-IP": "203.0.113.5",
+                                              "X-Forwarded-For": "198.51.100.77"}), trusted)
+        self.assertNotEqual(info["client"], "198.51.100.77")
+        self.assertIn(info["client"], ("192.0.2.10", "203.0.113.5"))
+        info = wt.resolve("192.0.2.10", hdrs({"X-Real-IP": "203.0.113.5",
+                                              "Forwarded": "for=198.51.100.78;proto=https"}), trusted)
+        self.assertNotEqual(info["client"], "198.51.100.78")
+        self.assertEqual((info["scheme"], info["proto_missing"]), ("http", True))
+        # Stimmt die Kette mit X-Real-IP überein, zählt der Browser selbst – auch mit eigenem proto=.
+        info = wt.resolve("192.0.2.10", hdrs({"X-Real-IP": "203.0.113.5",
+                                              "Forwarded": "for=203.0.113.5;proto=https"}), trusted)
+        self.assertEqual((info["client"], info["scheme"], info["proto_missing"]), ("203.0.113.5", "http", True))
+
+    def test_proxy_writing_x_real_ip_and_xff_agrees(self):
+        # NPM/Traefik/Zoraxy: X-Real-IP = rechter Eintrag der Kette; links davon schreibt der Browser.
+        trusted = wt.parse_networks(["192.0.2.10/32"])
+        info = wt.resolve("192.0.2.10", hdrs({"X-Forwarded-For": "1.2.3.4, 203.0.113.5",
+                                              "X-Real-IP": "203.0.113.5", "X-Forwarded-Proto": "https"}), trusted)
+        self.assertEqual((info["client"], info["scheme"]), ("203.0.113.5", "https"))
+
+    def test_browser_x_real_ip_behind_xff_proxy_gains_nothing(self):
+        # Caddy schreibt X-Forwarded-For/-Proto und reicht ein X-Real-IP des Browsers durch.
+        trusted = wt.parse_networks(["192.0.2.10/32"])
+        info = wt.resolve("192.0.2.10", hdrs({"X-Forwarded-For": "203.0.113.5", "X-Real-IP": "198.51.100.9",
+                                              "X-Forwarded-Proto": "https"}), trusted)
+        self.assertNotEqual(info["client"], "198.51.100.9")
+        self.assertEqual(info["scheme"], "https")
+        self.assertEqual(info["forward_conflict"], ("203.0.113.5", "198.51.100.9"))
+
+    def test_conflicting_headers_get_own_counting_key_and_log_text(self):
+        # Widerspruch zwischen Kette und X-Real-IP: weder die Adresse des Proxys (auch der Weg per
+        # SSH-Tunnel) noch eine der beiden Angaben ist der Zählschlüssel der Anmeldebremse.
+        import authguard
+
+        class Stub:
+            client_address = ("127.0.0.1", 40000)
+
+            def __init__(self, values):
+                self.headers = hdrs(values)
+
+            def _transport(self):
+                return wt.resolve(self.client_address[0], self.headers, TRUST_LOCAL)
+
+        conflict = Stub({"X-Forwarded-For": "203.0.113.5", "X-Real-IP": "198.51.100.9",
+                         "X-Forwarded-Proto": "https"})
+        key = server.Handler._client_key(conflict)
+        self.assertNotIn(key, ("127.0.0.1", "203.0.113.5", "198.51.100.9"))
+        self.assertEqual(key, authguard.conflict_key("127.0.0.1"))
+        self.assertEqual(server.Handler._client_key(Stub({"X-Forwarded-For": "203.0.113.5"})), "203.0.113.5")
+        text = server.Handler._client_text(conflict)
+        self.assertFalse(text.startswith("127.0.0.1"))
+        self.assertIn("203.0.113.5", text)
+        self.assertIn("198.51.100.9", text)
+        # Eine gelungene Anmeldung macht diesen Schlüssel nie zur bewährten Quelle.
+        guard = authguard.Guard()
+        guard.success(key)
+        guard.success("127.0.0.1")
+        with guard._lock:
+            self.assertFalse(guard._good_locked(key))
+            self.assertTrue(guard._good_locked("127.0.0.1"))
 
     def test_trust_all_is_dropped(self):
         self.assertEqual(wt.parse_networks(["0.0.0.0/0", "::/0", "kaputt"]), [])
@@ -725,8 +789,8 @@ class ComposeTemplateTest(unittest.TestCase):
                 hint = "\n".join(lines[max(0, index - 8):index])
                 if any(line.strip() == "build: ." for line in lines):
                     self.assertIn("lokalen Stand", hint)  # Version im Tag gilt nur fürs geladene Image
-                self.assertIn("„:1.5“", hint)
-                self.assertIn("„:1.5.1“", hint)
+                self.assertIn("„:1.9“", hint)
+                self.assertIn("„:1.9.0“", hint)
                 self.assertIn("ghcr.io/congp20/ntp-gui", hint)
                 # Erklärung, nie eine einkommentierbare Zeile („#  “ nach der Einrückung)
                 self.assertNotRegex(hint, r"(?m)^ +#  ")

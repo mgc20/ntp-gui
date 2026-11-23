@@ -1,0 +1,138 @@
+# Zeitserver auf einem Server im Internet (VPS): NTP für alle, Dashboard nur
+# über einen Reverse Proxy oder einen SSH-Tunnel.
+#
+#   docker compose -f docker-compose.vps.yml up -d
+#
+# Schritt für Schritt (Firewall, Caddy mit Let's Encrypt, Cloudflare Tunnel,
+# NTS, Updates, Sicherung): docs/integrationen/vps.md
+#
+# Was hier anders ist als in docker-compose.yml (Erklärung im README unter
+# „Öffentlich erreichbarer Zeitserver“ und „Anmeldung und Zugang“):
+#   - Host-Netzwerk: chrony sieht die echten Absender. Im Bridge-Netz sieht es
+#     je nach Docker-Setup (IPv6 ohne ip6tables, userland-proxy) nur das
+#     Gateway des Docker-Netzes – dann greifen „Erlaubte Netze“ und das
+#     Ratelimit nicht je Client.
+#   - NTP antwortet jeder Adresse, mit strengem Ratelimit und ohne
+#     Inselbetrieb (Clients weichen bei einem Ausfall auf andere Server aus).
+#   - Das Dashboard lauscht nur auf 127.0.0.1 und verlangt eine Anmeldung.
+#   - Container-Härtung komplett: schreibgeschütztes Root-Dateisystem, keine
+#     Capabilities außer den nötigen, no-new-privileges, Grenzen für Prozesse,
+#     Speicher und Log.
+#
+# Belegt auf dem Host: 123/udp (NTP), 127.0.0.1:8080 (Dashboard) und – nur
+# mit NTS-Server – 4460/tcp.
+services:
+  ntp-gui:
+    build: .
+    # Version festhalten statt „:latest“: „:1.9“ bleibt auf 1.9.x (nur
+    # Fehlerbehebungen), „:1.9.0“ bleibt fest auf genau dieser Version.
+    # Gilt für das geladene Image – mit „build: .“ (docker compose build bzw.
+    # up --build) baust du stattdessen den lokalen Stand unter diesem Namen.
+    # Umgezogen: Früher hieß das Image ghcr.io/congp20/ntp-gui – dort kommen
+    # keine neuen Versionen mehr, bitte auf ghcr.io/mgc20/ntp-gui umstellen.
+    image: ghcr.io/mgc20/ntp-gui:latest
+    container_name: ntp-gui
+    restart: unless-stopped
+    network_mode: host
+
+    # SYS_TIME erlaubt chronyd, die Uhr zu stellen. Der Container teilt sich
+    # die Uhr mit dem Host – auf einem VPS also mit allem, was dort läuft.
+    # Alles andere ist für den Start und die Rechteabgabe nötig: Nur der
+    # Supervisor bleibt root, das Dashboard läuft als Benutzer ntpgui ohne
+    # Capabilities, chronyd als _chrony nur mit SYS_TIME (und NET_BIND_SERVICE
+    # für den NTP-Port). Kein NET_RAW: Die Messung der Client-Uhren ist hier
+    # aus (CLIENTMON unten).
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - SYS_TIME
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETUID
+      - SETGID
+      - KILL              # ohne hängt das Neuladen nach dem Speichern
+      - NET_BIND_SERVICE  # Port 123 mit Host-Netzwerk
+    pids_limit: 512
+    mem_limit: 512m
+    cpus: 1.0
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    # Schreibgeschütztes Root-Dateisystem. Beschreibbar bleiben nur das Volume
+    # (/var/lib/chrony) und diese tmpfs. Die erzeugte chrony.conf landet dann
+    # automatisch unter /run/ntp-gui-conf. Für die DNS-Modi des Dashboards
+    # (eigene Server, DoT, DoH) zusätzlich „dns: [127.0.0.1]“ setzen – die
+    # resolv.conf lässt sich hier nicht umschreiben.
+    read_only: true
+    tmpfs:
+      - /run:rw,nosuid,nodev,noexec,mode=0755,size=64m
+      - /tmp:rw,nosuid,nodev,noexec,size=16m
+      - /var/log:rw,nosuid,nodev,noexec,mode=0755,size=32m
+
+    environment:
+      TZ: "Etc/UTC"
+      WEB_TITLE: "Zeitserver"
+
+      # Quellen: mehrere unabhängige, am besten mit NTS.
+      NTP_POOLS: "pool.ntp.org"
+      # NTP_NTS_SERVERS: "ptbtime1.ptb.de,ptbtime2.ptb.de"
+      NTP_MINSOURCES: "2"
+
+      # NTP für jede Adresse. Nur so lassen, wenn der Server bewusst öffentlich
+      # ist – sonst die eigenen Netze eintragen (z. B. das WireGuard-Netz).
+      ALLOW_NETWORKS: "all"
+      # Beides gilt bei öffentlichen Adressen ohnehin als Standard; hier steht es
+      # zur Klarheit ausdrücklich. Ein im Dashboard gespeicherter Wert hat aber
+      # Vorrang vor diesen Zeilen – weicht er ab, meldet die Übersicht das.
+      NTP_RATELIMIT: "streng"
+      SERVE_UNSYNCED: "false"
+
+      # Dashboard: nur lokal (Reverse Proxy mit HTTPS oder ssh -L 8080:127.0.0.1:8080)
+      # und ohne Zugang gesperrt. Passwort aus einer Datei statt im Klartext.
+      WEB_BIND: "127.0.0.1"
+      WEB_REQUIRE_AUTH: "true"
+      WEB_USER: "admin"
+      WEB_PASSWORD_FILE: "/run/secrets/web_password"
+      # Caddy (oder ein anderer Reverse Proxy) auf diesem Rechner reicht die
+      # Adresse des Browsers weiter (docs/integrationen/vps.md).
+      TRUSTED_PROXIES: "127.0.0.1/32,::1/128"
+
+      # Uhren der NTP-Clients nicht beobachten: Im Internet sind das fremde Geräte.
+      CLIENTMON: "false"
+
+      # Benachrichtigungen und DNS-Weiterleiter nur zu öffentlichen Zielen.
+      OUTBOUND_TARGETS: "public"
+
+      # [OPTION NTS-Server] Zertifikat nach /config legen (siehe README
+      # „NTS-Server für das LAN“) und Port 4460/tcp in der Firewall öffnen –
+      # dort auch die gleichzeitigen Verbindungen je Adresse begrenzen.
+      # NTS_SERVER: "true"
+      # NTS_SERVER_NAME: "zeit.example.com"
+
+    secrets:
+      - web_password
+
+    volumes:
+      - chrony-data:/var/lib/chrony   # Drift, Messwerte, Dashboard-Einstellungen und Verlauf
+      # - ./config:/config:ro         # NTS-Zertifikat, eigene chrony.conf
+
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import os,urllib.request;urllib.request.urlopen('http://127.0.0.1:'+os.environ.get('WEB_PORT','8080')+'/healthz',timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+# Passwort einmal anlegen, z. B.: umask 077; openssl rand -base64 18 > web_password.txt
+secrets:
+  web_password:
+    file: ./web_password.txt
+
+volumes:
+  chrony-data:

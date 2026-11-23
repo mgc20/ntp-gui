@@ -4,6 +4,10 @@
 FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2
 
 ARG DEBIAN_FRONTEND=noninteractive
+# Paketversionen bewusst nicht festgenagelt: Debian entfernt ältere Stände aus dem Archiv, ein Pin
+# ließe den Release-Bau nach dem nächsten Sicherheitsupdate scheitern. Der Release baut ohne Cache mit
+# den aktuellen Paketen; welche genau drin sind, belegen SBOM, Schwachstellen-Bericht und
+# Herkunftsnachweis am Image-Digest.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         chrony \
@@ -16,7 +20,16 @@ RUN apt-get update \
         procps \
         ethtool \
     && rm -rf /var/lib/apt/lists/* \
-    && mkdir -p /var/run/chrony /var/lib/chrony /var/log/chrony /etc/linuxptp /config
+    && mkdir -p /var/run/chrony /var/lib/chrony /var/log/chrony /etc/linuxptp /config \
+    # Eigener Benutzer für Dashboard und DNS-Weiterleiter (der Entrypoint wechselt per setpriv);
+    # Mitglied von _chrony für den Kommando-Socket von chronyd. Feste IDs, damit das Datenverzeichnis
+    # über Image-Versionen hinweg demselben Benutzer gehört.
+    && groupadd --system --gid 990 ntpgui \
+    && useradd --system --uid 990 --gid ntpgui --groups _chrony --no-create-home \
+         --home-dir /nonexistent --shell /usr/sbin/nologin ntpgui \
+    # Keine SUID-/SGID-Programme im Image (su, mount, passwd …): Wer einen Dienst übernimmt, soll
+    # darüber nicht zurück zu root kommen.
+    && find / -xdev -type f -perm /6000 -exec chmod a-s {} +
 
 COPY app/ /app/
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh

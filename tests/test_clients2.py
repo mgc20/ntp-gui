@@ -815,6 +815,59 @@ class AlarmTest(unittest.TestCase):
         self.assertEqual(self.events[1][1], "info")
         self.assertIn("wieder im Rahmen", self.events[1][2])
 
+    def test_many_addresses_do_not_use_up_the_notification_budget(self):
+        """Jede Absenderadresse zählt als Gerät: Über CLIENT_NOTIFY_PER_HOUR hinaus gehen Alarme (und das
+        zugehörige „wieder im Rahmen“) nur ins Protokoll, nicht an die Benachrichtigungen."""
+        now = [1000.0]
+        watch = statewatch.StateWatcher(lambda *a, **k: self.events.append(a), clock=lambda: now[0])
+        limit = statewatch.CLIENT_NOTIFY_PER_HOUR
+        ips = [f"192.0.2.{i}" for i in range(1, limit + 6)]
+        for count in (1, 2):
+            watch.clients({ip: {"measurable": True, "offset": 5.0, "count": count} for ip in ips}, 1000)
+        alarms = [e for e in self.events if e[1] == "warn"]
+        self.assertEqual(len(alarms), len(ips))  # alle im Protokoll
+        loud = [e for e in alarms if e[3].get("notify") is not False]
+        self.assertEqual(len(loud), limit)
+        self.events.clear()
+        for count in (3, 4):
+            watch.clients({ip: {"measurable": True, "offset": 0.0, "count": count} for ip in ips}, 1000)
+        # „wieder im Rahmen“ zählt mit: Die Alarme haben die Stunde schon aufgebraucht – alle Enden still.
+        quiet = [e for e in self.events if e[3].get("notify") is False]
+        self.assertEqual(len(self.events), len(ips))
+        self.assertEqual(len(quiet), len(ips))
+        now[0] += 3600  # nach einer Stunde wieder frei
+        self.events.clear()
+        for count in (5, 6):
+            watch.clients({ips[0]: {"measurable": True, "offset": 5.0, "count": count}}, 1000)
+        self.assertNotIn("notify", self.events[0][3])
+
+    def test_alarms_and_recoveries_share_the_budget(self):
+        """Alarm und „wieder im Rahmen“ zusammen höchstens CLIENT_NOTIFY_PER_HOUR je Stunde laut."""
+        now = [1000.0]
+        watch = statewatch.StateWatcher(lambda *a, **k: self.events.append(a), clock=lambda: now[0])
+        limit = statewatch.CLIENT_NOTIFY_PER_HOUR
+        ips = [f"198.51.100.{i}" for i in range(1, 41)]
+        count = 0
+        for offset in (5.0, 0.0) * 3:
+            for _ in range(2):
+                count += 1
+                watch.clients({ip: {"measurable": True, "offset": offset, "count": count} for ip in ips}, 1000)
+            now[0] += 60
+        loud = [e for e in self.events if e[3].get("notify") is not False]
+        self.assertEqual(len(loud), limit)
+        self.assertEqual(len(self.events), 6 * len(ips))
+
+    def test_client_alarm_events_have_own_quota(self):
+        """Von außen auslösbare Client-Einträge verdrängen nie andere Ereignisse aus dem Protokoll."""
+        import events
+        import server  # noqa: F401 – setzt die Kontingente
+        for title in ("Uhr von 192.0.2.1 weicht um +5 s ab", "Uhr von 192.0.2.1 wieder im Rahmen (+0 s)",
+                      "Alarm für 192.0.2.1 beendet – nicht mehr in der Liste"):
+            quota = [rows for (kind, prefix), rows in events._QUOTAS.items()
+                     if kind == "clients" and title.startswith(prefix)]
+            self.assertTrue(quota, title)
+            self.assertLess(quota[0], events.MAX_ROWS // 5)
+
     def test_single_spike_no_alarm(self):
         self.feed(2.0, 1)
         self.feed(0.01, 2)

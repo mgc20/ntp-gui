@@ -128,6 +128,75 @@ def ptp_role_insights(cfg: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
+def _plain_ip(text: Any) -> str:
+    """„::ffff:172.17.0.1“ → „172.17.0.1“ (chrony meldet IPv4 über IPv6-Sockets so)."""
+    import ipaddress
+    try:
+        addr = ipaddress.ip_address(str(text or "").strip())
+    except ValueError:
+        return str(text or "")
+    if addr.version == 6 and addr.ipv4_mapped:
+        return str(addr.ipv4_mapped)
+    return str(addr)
+
+
+def exposure_insights(cfg: dict[str, Any], clients: list[dict] | None = None, gateway: str | None = None,
+                      network: str = "unknown") -> list[dict[str, Any]]:
+    """Erreichbarkeit des Zeitservers: öffentliche Adressen unter „Erlaubte Netze“ und Anfragen, die über
+    das Gateway des Docker-Netzes kommen (Portfreigabe mit userland-proxy) – dann sieht chrony nicht die
+    echte Adresse, und „Erlaubte Netze“ sowie das Ratelimit wirken auf alle Clients zusammen."""
+    import settings  # spät importieren: insights bleibt leicht testbar
+    out: list[dict[str, Any]] = []
+    public = settings.public_networks(cfg.get("allow_networks"))
+    level = cfg.get("ntp_ratelimit")
+    if public:
+        missing = []
+        if level != "streng":
+            missing.append("„Anfragen begrenzen“ auf „streng“ stellen (NTP_RATELIMIT=streng)")
+        if cfg.get("serve_unsynced"):
+            missing.append("„Auch ohne Quelle Zeit ausliefern“ ausschalten (SERVE_UNSYNCED=false), damit Clients "
+                           "aus dem Internet bei einem Ausfall nicht die frei laufende Uhr übernehmen")
+        text = (f"Unter „Erlaubte Netze“ steht {', '.join(public)[:60]}: Der Zeitserver antwortet damit jedem, der "
+                "ihn erreicht. Richtig ist das nur mit einer Firewall davor oder für einen bewusst öffentlichen "
+                "Zeitserver.")
+        if missing:
+            text += " Dann außerdem: " + "; ".join(missing) + "."
+        else:
+            text += " Ratelimit „streng“ und kein Inselbetrieb sind eingestellt."
+        out.append({"level": "warn" if missing else "info", "title": "Zeitserver für alle Adressen offen",
+                    "text": text, "action": "settings", "key": "allow_public"})
+    gw = _plain_ip(gateway) if gateway else ""
+    addresses = {_plain_ip(c.get("address")) for c in clients or []} - {""}
+    if gw and network == "bridge" and gw in addresses:
+        # Wie clientmon.nat_hint: Nur wenn ausschließlich das Gateway fragt, ist die Umschreibung durch
+        # Docker wahrscheinlich. Neben echten Adressen ist das Gateway oft ein legitimer Absender – der
+        # Docker-Host selbst über die Portfreigabe, im macvlan-/ipvlan-Netz der Router –, dann nur „info“.
+        only = addresses == {gw}
+        if only:
+            text = (f"Alle Anfragen kommen vom Gateway des Docker-Netzes ({gw}). Vermutlich reicht Docker sie über "
+                    "den userland-proxy weiter (Portfreigabe auf 127.0.0.1, oft auch bei IPv6), und chrony sieht "
+                    "statt der echten Absender nur diese private Adresse.")
+        else:
+            text = (f"Mindestens ein Client erscheint als Gateway des Docker-Netzes ({gw}). Das kann der Docker-Host "
+                    "selbst sein (Abfrage über die Portfreigabe) oder – im macvlan-/ipvlan-Netz – dein Router; dann "
+                    "ist alles in Ordnung. Reicht Docker dagegen Anfragen über den userland-proxy weiter "
+                    "(Portfreigabe auf 127.0.0.1, oft auch bei IPv6), sieht chrony statt der echten Absender nur "
+                    "diese private Adresse.")
+        text += (" Folgen dann: „Erlaubte Netze“ lässt alle so weitergereichten Anfragen durch – auf einem Server im "
+                 "Internet also jeden –, und die Clients-Seite zeigt sie als ein Gerät.")
+        if level != "aus":
+            text += (f" Außerdem teilen sie sich ein Ratelimit („{level}“): Starten viele gleichzeitig neu, bremst "
+                     "chrony sie gemeinsam.")
+        if only and cfg.get("serve_unsynced"):
+            text += " Fallen die Quellen aus, bekommen sie die frei laufende Uhr (Inselbetrieb)."
+        text += (" Abhilfe: network_mode: host, oder im Docker-Daemon IPv6 mit ip6tables bzw. „userland-proxy“: "
+                 "false einstellen.")
+        out.append({"level": "warn" if only else "info",
+                    "title": "Clients erscheinen als Docker-Gateway", "text": text, "action": "clients",
+                    "key": "docker_gateway"})
+    return out
+
+
 DNS_MODE_HINT = ("Stell unter System → Einstellungen → Quellen → „DNS für ntp-gui“ eigene Server ein – "
                  "am robustesten "
                  "DNS-over-TLS oder DNS-over-HTTPS, weil die auch eine Umleitung von Port 53 nicht "
@@ -468,6 +537,12 @@ def build(status: dict[str, Any], cfg: dict[str, Any]) -> list[dict[str, Any]]:
     out.extend(ptp_role_insights(cfg))
 
     ui = status.get("ui") or {}
+    if (ui.get("storage") or {}).get("error"):
+        add("crit", "Einstellungen nicht lesbar – Speichern gesperrt",
+            "settings.json im Datenverzeichnis ist vorhanden, aber nicht lesbar. Es gelten Umgebung und "
+            "Standardwerte; der Zeitserver läuft im Notbetrieb (antwortet nur Netzen aus ALLOW_NETWORKS, "
+            "Ratelimit „streng“). Speichern ist gesperrt, damit die Datei nicht überschrieben wird. Datei "
+            "reparieren oder ersetzen und den Container neu starten.", key="settings_unreadable")
     if not (ui.get("storage") or {}).get("persistent", True):
         add("warn", "Einstellungen gehen beim Neuerstellen verloren",
             "/var/lib/chrony liegt nicht auf einem Volume. Im Dashboard gespeicherte "
@@ -477,6 +552,11 @@ def build(status: dict[str, Any], cfg: dict[str, Any]) -> list[dict[str, Any]]:
         add("info", "Dashboard ohne Passwort",
             "Jeder im LAN kann die Einstellungen ändern. Ein Passwort lässt sich unter "
             "System → Einstellungen → Dashboard & Zugang setzen.", action="settings", key="no_auth")
+    if (ui.get("auth") or {}).get("weak"):
+        add("warn", "Schwaches Passwort aus der Umgebung",
+            "Das Passwort in WEB_PASSWORD bzw. WEB_PASSWORD_FILE ist kurz oder ein bekannter Beispielwert. "
+            "Setz in der Compose-Datei ein längeres (mindestens 12 Zeichen) und erstelle den Container neu.",
+            action="settings", key="weak_auth")
 
     if status.get("client_count") == 0 and tracking.get("synchronised"):
         add("info", "Noch keine Clients",

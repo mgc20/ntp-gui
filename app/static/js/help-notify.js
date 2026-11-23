@@ -35,7 +35,11 @@ export const HELP_NOTIFY = {
       + "bei Apprise der **Schlüssel** einer in der Apprise-API gespeicherten Konfiguration. Für ntfy, Gotify und Apprise nur "
       + "die **Server-Adresse** ohne `?…` – „https://ntfy.sh/mein-thema“ geht auch, das Thema wird dann herausgelöst (ntfy "
       + "nimmt JSON nur an der Wurzel an). Steckt in der Adresse selbst ein Schlüssel (Home-Assistant-Webhook-ID, Discord- oder "
-      + "Slack-Token im Pfad), zeigen Dashboard und API den Pfad nur gekürzt als „/…“; beim Bearbeiten leer lassen behält ihn.",
+      + "Slack-Token im Pfad), zeigen Dashboard und API den Pfad nur gekürzt als „/…“; beim Bearbeiten leer lassen behält ihn. "
+      + "**Gesperrte Ziele:** link-local (`169.254.x.x`, `fe80::`, dort antworten bei Cloud-Anbietern die Metadaten-Dienste) "
+      + "und der Server selbst (`127.0.0.1`, `localhost`). Geprüft wird die Adresse, zu der der Name aufgelöst wird. Ein "
+      + "Dienst auf demselben Rechner (z. B. Apprise bei `network_mode: host`) geht mit `OUTBOUND_TARGETS=loopback` in der "
+      + "Compose-Datei; `OUTBOUND_TARGETS=public` erlaubt nur öffentliche Ziele (Server im Internet).",
   },
   notify_secret: {
     title: "Token",
@@ -45,7 +49,8 @@ export const HELP_NOTIFY = {
       + "Diagnosepaket. **Änderst du Art oder Ziel** (Schema, Host, Port), musst du das Token neu eingeben: Sonst könnte jemand "
       + "mit Schreibrecht die Adresse auf seinen eigenen Server umbiegen und bekäme das gespeicherte Token zugeschickt. "
       + "Ein Token geht nur über `https://` hinaus – oder über `http://` an eine Adresse im eigenen Netz (private IP, "
-      + "`*.lan`, `*.local`, `*.home.arpa`, ein Name ohne Punkt wie `apprise`), sonst läge es im Klartext im Internet.",
+      + "`*.lan`, `*.local`, `*.home.arpa`, ein Name ohne Punkt wie `apprise`), sonst läge es im Klartext im Internet. "
+      + "Beim Senden zählt die aufgelöste Adresse: Zeigt der Name ins Internet, geht über `http://` nichts hinaus.",
   },
   notify_filter: {
     title: "Filter: Stufe und Arten",
@@ -93,11 +98,13 @@ export const HELP_NOTIFY = {
   },
   notify_error: {
     title: "Letzter Fehler",
-    text: "Kurz und ohne Adresse: **Verbindung abgelehnt** (Dienst läuft nicht, Port falsch), **Name nicht auflösbar** (Tippfehler, "
+    text: "Kurz und ohne Adresse: **Ziel nicht erreichbar oder nicht erlaubt** (Dienst läuft nicht, Port falsch, keine "
+      + "gültige HTTP-Antwort oder ein gesperrtes Ziel – bewusst eine Meldung für alles), **Name nicht auflösbar** (Tippfehler, "
       + "DNS), **Zeitüberschreitung** (alles zusammen – Namensauflösung, Verbindung, Antwort – höchstens 10 s; auch ein Ziel, "
       + "das die Antwort nur tröpfchenweise schickt, hält den Versand nicht länger auf), **HTTP 401/403** (Token falsch), **Weiterleitung abgelehnt** (Adresse zeigt auf "
       + "eine Umleitung – trag das endgültige Ziel ein, oft fehlt nur `https://` oder ein `/` am Ende), **TLS-Fehler** "
-      + "(Zertifikat abgelaufen oder selbst signiert).",
+      + "(Zertifikat abgelaufen oder selbst signiert). Der Test-Knopf geht höchstens fünfmal je Minute und je Kanal alle "
+      + "5 Sekunden.",
   },
   notify_counts: {
     title: "Gesendet, fehlgeschlagen, verworfen",

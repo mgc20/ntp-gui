@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _isolation  # noqa: E402,F401 – vor jedem App-Import: Host-Pfade umlenken
 
+import events  # noqa: E402
 import history  # noqa: E402
 import settings  # noqa: E402
 import store  # noqa: E402
@@ -42,6 +43,10 @@ class TempDataDir(unittest.TestCase):
         self.addCleanup(env.stop)
         for key in ("HISTORY_SIZE", "HISTORY_DAYS"):
             os.environ.pop(key, None)
+        # Aufräumen nach Alter folgt dem Urteil über die Systemzeit (events._CLOCK): je Test „unbekannt“.
+        clock = dict(events._CLOCK)
+        events._CLOCK.update(plausible=None, at=None, noted=False, held=False)
+        self.addCleanup(lambda: (events._CLOCK.clear(), events._CLOCK.update(clock)))
 
     def tearDown(self):
         store.close_all()
@@ -195,6 +200,40 @@ class DecodeOutsideLockTest(TempDataDir):
             self.assertEqual(len(h.snapshot()), 20)
             self.assertEqual(len(h.query(None, 1000)), 20)
         self.assertEqual(held, [False, False])
+
+
+class AggregateOutsideLockTest(TempDataDir):
+    """Die Verdichtung in query() hält weder self._lock noch die Sperre der gemeinsamen Verbindung –
+    sonst wartet die Messschleife bei jeder großen Verlaufsabfrage."""
+
+    def test_aggregate_without_locks(self):
+        h = self.make()
+        now = int(time.time())
+        for i in range(60):
+            h.add(sample(now - 600 + i * 10, offset=i * 1e-6))
+        h.save(force=True)
+        h.add(sample(now - 5, offset=99e-6))  # noch im Puffer: zählt trotzdem mit
+        free = []
+        real = history._aggregate
+
+        def spy(db, table, params):
+            def probe():
+                for lock in (h._lock, store.lock(h.db_path)):
+                    got = lock.acquire(timeout=1)
+                    free.append(got)
+                    if got:
+                        lock.release()
+            t = threading.Thread(target=probe)
+            t.start()
+            t.join()
+            return real(db, table, params)
+
+        with mock.patch.object(history, "_aggregate", spy):
+            points = h.query(None, 10)
+        self.assertEqual(free, [True, True])
+        self.assertLessEqual(len(points), 10)
+        self.assertEqual(points[-1]["t"], now - 5)
+        self.assertEqual(points, h._query_sql(None, 10)[1])  # gleiches Ergebnis wie unter den Sperren
 
 
 class GpsMeasuredTest(unittest.TestCase):

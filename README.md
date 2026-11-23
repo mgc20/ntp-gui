@@ -7,7 +7,7 @@
 
 <p align="center">
   <a href="https://github.com/mgc20/ntp-gui/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/mgc20/ntp-gui/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="https://github.com/mgc20/ntp-gui/releases/latest"><img alt="Release" src="https://img.shields.io/badge/release-v1.8.0-0969da"></a>
+  <a href="https://github.com/mgc20/ntp-gui/releases/latest"><img alt="Release" src="https://img.shields.io/badge/release-v1.9.0-0969da"></a>
   <img alt="Plattformen" src="https://img.shields.io/badge/platform-amd64%20%7C%20arm64-1a7f37">
   <img alt="Image" src="https://img.shields.io/badge/image-ghcr.io-8250df">
   <a href="LICENSE"><img alt="Lizenz: MIT" src="https://img.shields.io/badge/license-MIT-59636e"></a>
@@ -316,13 +316,37 @@ wirkt erst mit „Speichern“. Die Speicherleiste unten zählt die Änderungen,
 Zeitdienste nötig ist, und zeigt mit **Vorschau** als Diff, welche Zeilen sich in `chrony.conf` und
 `ptp4l.conf` ändern würden, ohne etwas zu schreiben. Nach dem Speichern startet der
 Container die Zeitdienste bei Bedarf mit der neuen Konfiguration neu (wenige Sekunden, chrony behält
-dabei seine Messwerte).
+dabei seine Messwerte). Vorher prüft chronyd die neue `chrony.conf`: Würde er sie ablehnen, speichert
+ntp-gui die Änderung nicht und nennt den Grund (auch schon in der Vorschau); lehnt er eine Datei beim
+Neuladen ab, bleibt die bisherige aktiv, und Übersicht und Ereignisprotokoll nennen den Grund. Ist eine
+gespeicherte Einstellung beim Start des Containers ungültig, startet ntp-gui ohne genau diesen Wert und
+meldet das, statt gar nicht zu starten. Schützende Einstellungen (Bind-Adresse, erlaubte und gesperrte
+Netze, Ratelimit) lässt es dabei nie weg – betrifft die Ablehnung eine davon, startet der Container nicht.
+Liegt die Ursache in der Compose-Datei (z. B. `EXTRA_CHRONY_CONF`), sagt das Start-Log das. Werte, die in `chrony.conf` oder
+`ptp4l.conf` landen, dürfen keine Steuerzeichen enthalten; IPv6-Adressen und Netze nehmen keine
+Scope-ID (`%eth0`) an.
 
 - Gespeichert wird in `/var/lib/chrony/ntp-gui/settings.json` (Rechte `0600`). Damit das eine
   Neuerstellung des Containers übersteht, muss `/var/lib/chrony` auf einem **Volume** liegen –
   die mitgelieferten Compose-Dateien tun das; das Dashboard warnt, wenn nicht.
+- **Schutzmodus bei nicht lesbarer `settings.json`:** Ist die Datei vorhanden, aber beschädigt,
+  abgeschnitten oder nicht lesbar, läuft ntp-gui nicht still mit Standardwerten weiter (ein dort
+  gesetztes Passwort fiele sonst weg):
+  - Das Dashboard antwortet bis auf `/healthz` mit 503 „Einstellungen nicht lesbar“ – auch `/metrics`
+    und die API. Mit `WEB_USER`/`WEB_PASSWORD` aus der Umgebung kommst du nach der Anmeldung
+    trotzdem hinein; Speichern, Passwort ändern und das Wiederherstellen einer Sicherung bleiben
+    gesperrt, damit die Datei nicht überschrieben wird.
+  - Der Zeitserver läuft im Notbetrieb: Die gespeicherten schützenden Einstellungen sind unbekannt,
+    deshalb antwortet er nur Netzen aus `ALLOW_NETWORKS` (ohne die Variable keinem Client) und mit
+    Ratelimit „streng“. Sonst gelten Umgebung und Standardwerte.
+  - Repariere die Datei oder ersetze sie durch eine funktionierende Kopie (z. B. aus einer Sicherung
+    entpackt); danach entsperrt sich das Dashboard von selbst, für den Zeitserver starte den
+    Container neu. Löschst du sie stattdessen, beginnt alles mit Standardwerten – dann ist auch ein
+    im Dashboard gesetztes Passwort weg. Setze vorher `WEB_USER`/`WEB_PASSWORD` oder
+    `WEB_REQUIRE_AUTH=true`.
 - Ein **Passwort** fürs Dashboard lässt sich direkt dort setzen (gespeichert als PBKDF2-Hash).
-  `WEB_USER`/`WEB_PASSWORD` aus der Umgebung haben Vorrang.
+  `WEB_USER`/`WEB_PASSWORD` aus der Umgebung haben Vorrang. Mehr dazu, auch zum Betrieb auf einem
+  VPS, unter [Anmeldung und Zugang](#anmeldung-und-zugang).
 - `WEB_READONLY=true` sperrt alle Änderungen – das Dashboard zeigt dann nur an.
 - **Exportieren/Importieren** (Reiter Sichern → „Nur Einstellungen übertragen“) überträgt nur die
   Dashboard-Werte als JSON (ohne Passwort). Alles andere sichert
@@ -482,6 +506,10 @@ Ereignisprotokoll. ntp-gui prüft alle eigenen Server 20 s nach dem Start und da
 die Einstellungen zeigen „Letzte erfolgreiche Auflösung“ und „Erreichbar“. NTS-Quellen brauchen
 ihren Namen – mit nur einem eigenen DNS-Server rät ntp-gui zu einem zweiten, unabhängigen.
 
+Link-local-Adressen (`169.254.0.0/16`, `fe80::/10`) und bekannte Metadaten-Adressen nimmt ntp-gui
+nie als DNS-Server, DoT-/DoH-Server oder feste Adresse an. Ein Resolver auf Loopback (anderer Port
+als 53) bleibt im LAN möglich; mit `OUTBOUND_TARGETS=public` sind nur öffentliche Adressen erlaubt.
+
 ### Schleifen erkennen (DNS-Umschreibung / NAT-Umleitung)
 
 Leitest du Zeitserver-Anfragen im LAN auf ntp-gui um (AdGuard/Pi-hole per DNS, UniFi/OPNsense per NAT), braucht **ntp-gui selbst eine Ausnahme**. Sonst fragt chronyd beim Versuch, `pool.ntp.org` zu erreichen, am Ende sich selbst. ntp-gui erkennt das von allein:
@@ -512,7 +540,9 @@ Voraussetzungen:
 
 - **`CAP_NET_RAW`** – der Container liest NTP-Pakete über einen Paket-Socket mit; ein Filter
   im Kernel lässt nur UDP an den NTP-Port durch. In Docker ist `NET_RAW` Standard; wer
-  Capabilities mit `cap_drop: [ALL]` entfernt, ergänzt `cap_add: [NET_RAW]`.
+  Capabilities mit `cap_drop: [ALL]` entfernt, ergänzt `cap_add: [NET_RAW]` (die Vorlagen tun das).
+  Hat der Container `NET_RAW`, bekommt das Dashboard sie immer – die Messung lässt sich deshalb
+  jederzeit ohne Neustart ein- und ausschalten.
 - **Host-Netzwerk** (`network_mode: host`, wie in der All-in-one-Datei) – nur ohne NAT sieht
   der Container die echten Client-Adressen. Hinter der Docker-Bridge erscheinen alle Geräte
   unter einer Adresse.
@@ -624,8 +654,9 @@ Geräte bleibt es bei normalem NTP.
    muss im Zertifikat stehen (ohne Reverse Proxy ist das derselbe Name wie für NTS-KE).
 
 Beim Start prüft ntp-gui das Paar (PEM-Format, höchstens 1 MB, Schlüssel passt zum
-Zertifikat) und legt Kopien für chronyd an (`root:_chrony`, `0640` – chronyd darf lesen, aber
-nicht schreiben). Passt das Paar nicht – typisch mitten in einer Erneuerung –, bleiben die
+Zertifikat) und legt Kopien für chronyd an (Zertifikat `root:_chrony` `0640`, Schlüssel
+`_chrony` `0400` – chronyd darf lesen, aber nicht schreiben; das Dashboard kann den Schlüssel nicht
+lesen). Passt das Paar nicht – typisch mitten in einer Erneuerung –, bleiben die
 letzten gültigen Kopien aktiv; gibt es keine, bleibt der NTS-Server aus, statt chronyd am
 Start zu hindern. Die Seite **Zeitquellen** zeigt Name, Aussteller, Restlaufzeit und ob der
 Name im Zertifikat steht.
@@ -1264,9 +1295,11 @@ Die Kachel **Dienste** der Übersicht zeigt, ob die Zustellung klappt.
 | Apprise-API | `http://apprise:8000` | Schlüssel einer gespeicherten Konfiguration | oder direkt Apprise-URLs |
 
 - **Entprellen:** dieselbe Meldung höchstens einmal je N Minuten; „behoben“ kommt mit Dauer,
-  „Kritisch“ immer sofort.
+  „Kritisch“ immer sofort. Offene Probleme, Sperrzeiten und offene Client-Alarme überstehen einen
+  Neustart des Containers (in der Datenbank): Kein doppelter Alarm, und „behoben“ fehlt nicht.
 - **Wiederholung:** nach 30 s, 2 min und 10 min, danach verworfen (steht im Ereignisprotokoll).
-- **Limit:** standardmäßig höchstens 30 Nachrichten je Stunde und Kanal.
+- **Limit:** standardmäßig höchstens 30 Nachrichten je Stunde und Kanal. „Kritisch“ zählt nicht
+  mit, sondern hat einen eigenen Rahmen von 30 je Stunde – ein voller Kanal verschluckt keinen Ausfall.
 - **Link:** Mit `NOTIFY_DASHBOARD_URL=http://zeitserver.lan:8080/` enthält jede Nachricht einen
   Link auf die passende Seite.
 
@@ -1276,9 +1309,18 @@ Für ntfy, Gotify und Apprise nur die Server-Adresse eintragen (ohne `?…`).
 API-Schlüssel „lesen und verwalten“). Damit kann nur ein Admin den Server Anfragen an beliebige
 Adressen schicken lassen (SSRF) – und Admins können die Zeitversorgung ohnehin umstellen.
 Erlaubt sind nur `http`/`https`. Weiterleitungen werden nicht befolgt, Proxys aus der Umgebung
-nicht benutzt, Gesamtfrist 10 s, Antwort höchstens 64 KiB. Tokens gehen nur über `https://`
-hinaus oder über `http://` an Adressen im eigenen Netz (private IP, `*.lan`, `*.local`,
-`*.home.arpa`, Name ohne Punkt wie `apprise`). Änderst du Ziel oder Art eines Kanals, musst du
+nicht benutzt, Gesamtfrist 10 s, Antwort höchstens 64 KiB. **Gesperrte Ziele:** link-local
+(`169.254.0.0/16`, `fe80::/10` – dort antworten bei Cloud-Anbietern die Metadaten-Dienste), bekannte
+Metadaten-Adressen, Multicast, reservierte Bereiche und standardmäßig auch Loopback (der Server selbst).
+Geprüft wird die Adresse nach der Namensauflösung, auch in IPv6-Hüllen. Ziele im Heimnetz (ntfy, Gotify,
+Apprise im LAN oder im Docker-Netz) gehen weiter. Den Rahmen setzt `OUTBOUND_TARGETS` (nur per Umgebung):
+`lan` (Standard), `loopback` (zusätzlich Dienste auf demselben Rechner, z. B. Apprise bei
+`network_mode: host`) oder `public` (nur öffentliche Ziele, für einen VPS). Fehler nennen nur „Ziel nicht
+erreichbar oder nicht erlaubt“, ohne zu unterscheiden, ob gesperrt, abgelehnt oder kein HTTP-Dienst; der
+Test-Knopf geht höchstens fünfmal je Minute und je Kanal alle 5 s. Tokens gehen nur über `https://`
+hinaus oder über `http://` an Adressen im eigenen Netz (private IP, auch `100.64.0.0/10` wie bei Tailscale, `*.lan`, `*.local`,
+`*.home.arpa`, Name ohne Punkt wie `apprise`) – entscheidend ist die aufgelöste Adresse: Zeigt der Name
+ins Internet, geht über `http://` nichts hinaus. Änderst du Ziel oder Art eines Kanals, musst du
 das Token neu eingeben. Tokens liegen in der Datenbank im Volume, werden im Dashboard und in der
 API nie wieder angezeigt und landen nie im Diagnosepaket; Adressen mit Pfad zeigen Dashboard
 und API nur gekürzt. Jede Nachricht läuft durch den Datenschutzfilter: keine Koordinaten, keine
@@ -1319,7 +1361,22 @@ In der Apprise-Oberfläche unter einem Schlüssel wie `ntp` die Ziele speichern 
 „Apprise-API“ mit Adresse `http://apprise:8000` und Schlüssel `ntp` anlegen. So liegen
 E-Mail-Passwörter nur bei Apprise. Läuft ntp-gui mit `network_mode: host`, erreicht es den
 Apprise-Container nicht über den Dienstnamen – dann Apprise einen Port geben
-(`ports: ["127.0.0.1:8000:8000"]`) und `http://127.0.0.1:8000` eintragen.
+(`ports: ["127.0.0.1:8000:8000"]`), `OUTBOUND_TARGETS=loopback` setzen und `http://127.0.0.1:8000`
+eintragen. **Nach dem Update von 1.8:** Ein so eingerichteter Kanal braucht die Freigabe
+`OUTBOUND_TARGETS=loopback` neu. Bis dahin meldet er bei jeder Zustellung „Dieses Ziel ist gesperrt
+(Loopback …)“, und das Start-Log sowie das Ereignisprotokoll warnen je betroffenem Kanal.
+
+Trägst du statt eines Schlüssels Apprise-URLs direkt ein, sendet der Apprise-Container selbst an diese
+Ziele – die Sperren oben gelten dann nur für den Weg zu Apprise. Die Apprise-API also nie öffentlich
+erreichbar betreiben und Ziele lieber als gespeicherte Konfiguration unter einem Schlüssel ablegen.
+
+**Auf einem VPS** zusätzlich den ausgehenden Verkehr des Containers am Host begrenzen. ntp-gui nutzt
+bewusst keinen Proxy aus der Umgebung; eine Firewall-Regel sperrt die Metadaten-Dienste für alle
+Programme im Container, z. B. mit iptables:
+
+```bash
+iptables -I DOCKER-USER -d 169.254.0.0/16 -j DROP
+```
 
 Zustand für Monitoring (Lese-Schlüssel genügt): `GET /api/v1/notify/status` – je Kanal nur
 Kennung, Art und Zustellstand.
@@ -1432,8 +1489,11 @@ landet eine Sicherung im Datenverzeichnis unter `/var/lib/chrony/ntp-gui/sicheru
 Datenträger wie die Daten – gegen einen Kartendefekt hilft nur eine heruntergeladene Kopie.
 
 **Wiederherstellen in zwei Schritten:** „Wiederherstellen …“ → Datei wählen; ntp-gui prüft sie und zeigt
-eine Vorschau (Zeitraum, Geräte, Regeln, Kanäle, sicherheitsrelevante Einstellungen mit altem und neuem
-Wert, was verworfen wird), ohne etwas zu ändern. Erst „Übernehmen“ schreibt – vorher sichert ntp-gui den
+eine Vorschau (Zeitraum, Geräte, Regeln, Kanäle, sicherheitsrelevante Einstellungen – Zugang,
+Erreichbarkeit, ausgehende Verbindungen und die ausgelieferte Zeit wie Port, Stratum und Quellen-Optionen –
+und darunter alle weiteren geänderten Einstellungen, jeweils mit altem und neuem Wert, was verworfen
+wird), ohne etwas zu ändern. Es wird immer nur eine Sicherung gleichzeitig hochgeladen und erstellt; vor
+dem Hochladen prüft ntp-gui, ob genug Platz frei bleibt. Erst „Übernehmen“ schreibt – vorher sichert ntp-gui den
 jetzigen Stand automatisch in denselben Ordner. Kanäle, die es hier noch nicht gibt, kommen
 ausgeschaltet an, bis du Ziel und Token geprüft hast.
 
@@ -1458,14 +1518,14 @@ dem Speichern eine `chrony.conf`, die unter `/api/config` einsehbar ist.
 | `NTP_MINSOURCES` | `1` | So viele Quellen müssen übereinstimmen, bevor die Uhr gestellt wird |
 | `NTP_SERVER_OPTIONS` | `iburst` | Optionen hinter jedem Server/Pool (z. B. `iburst minpoll 4`) |
 | `NTP_POOL_MAXSOURCES` | `4` | Quellen je Pool |
-| `ALLOW_NETWORKS` | alle privaten Netze | Wer die Zeit abfragen darf |
+| `ALLOW_NETWORKS` | alle privaten Netze | Wer die Zeit abfragen darf. Stehen hier öffentliche Adressen (`all`, `0.0.0.0/0`, ein Provider-Netz), gelten strengere Standards für `NTP_RATELIMIT` und `SERVE_UNSYNCED`, siehe [Öffentlich erreichbarer Zeitserver](#öffentlich-erreichbarer-zeitserver) |
 | `DENY_NETWORKS` | – | Ausnahmen dazu |
-| `SERVE_UNSYNCED` | `true` | Zeit auch ohne Uplink ausliefern (Inselbetrieb) |
+| `SERVE_UNSYNCED` | `true` (`false` bei öffentlichen Adressen in `ALLOW_NETWORKS`) | Zeit auch ohne Uplink ausliefern (Inselbetrieb). Die Antworten gelten dann als gültig – ein Client, der nur diesen Server kennt, übernimmt die frei laufende Uhr |
 | `LOCAL_STRATUM` | `10` | Stratum im Inselbetrieb |
 | `LOCAL_ORPHAN` | `false` | Orphan-Modus: zwei ntp-gui-Server, die sich gegenseitig als Quelle haben, einigen sich ohne Internet auf **eine** Inselzeit (der mit der kleinsten Referenz-ID gibt sie vor). Wirkt nur mit `SERVE_UNSYNCED` |
-| `NTP_RATELIMIT` | `false` | Anfragen je Client begrenzen (`ratelimit`) |
+| `NTP_RATELIMIT` | `schonend` (`streng` bei öffentlichen Adressen in `ALLOW_NETWORKS`) | Anfragen je Adresse begrenzen, für NTP (`ratelimit`) und den NTS-Schlüsselaustausch (`ntsratelimit`): `schonend` bremst nur Überflutung, `streng` passt für einen öffentlich erreichbaren Server, `aus` beantwortet alles. `true` entspricht `streng`, `false` `aus` (wie bis 1.8) |
 | `LEAPSECLIST` | `/usr/share/zoneinfo/leap-seconds.list` | Schaltsekunden-Liste der IERS aus tzdata (`leapseclist`); eigene Liste unter `/config/` möglich, leer schaltet die Ankündigung ab |
-| `LEAPSECTZ` | – | Nur für eigene Images mit `right/`-Zeitzonen (`leapsectz`). Bis 1.3.0 Standard `right/UTC`; fehlt die Zone, gilt die Liste |
+| `LEAPSECTZ` | – | Nur für eigene Images mit `right/`-Zeitzonen (`leapsectz`). Nur ein Zonenname unter `/usr/share/zoneinfo` (z. B. `right/UTC`), kein Pfad. Bis 1.3.0 Standard `right/UTC`; fehlt die Zone, gilt die Liste |
 | `NTS_NOCERTTIMECHECK` | `true` | Zertifikatszeit beim ersten NTS-Abgleich nicht prüfen |
 | `NTS_SERVER` | `false` | Selbst NTS-Server sein, siehe [NTS-Server für das LAN](#nts-server-für-das-lan) |
 | `NTS_SERVER_CERT` / `NTS_SERVER_KEY` | `/config/nts.crt` / `/config/nts.key` | Zertifikat (PEM, am besten fullchain) und Schlüssel. Nur Pfade unter `/config`, `/certs` oder `/etc/letsencrypt` |
@@ -1479,12 +1539,61 @@ dem Speichern eine `chrony.conf`, die unter `/api/config` einsehbar ist.
 | `MAKESTEP` | `1.0 3` | `makestep`-Parameter |
 | `MAXUPDATESKEW` | `100.0` | `maxupdateskew` in ppm |
 | `EXTRA_CHRONY_CONF` | – | Beliebige zusätzliche Zeilen (`\n` als Trenner) |
-| `CHRONY_LOG` | – | Inhalt einer `log`-Zeile, z. B. `measurements statistics tracking` (Logs unter `/var/log/chrony`) |
-| `CLIENTLOGLIMIT` | `10000000` | Speicher (Bytes) für die Client-Liste von chronyd |
+| `CHRONY_LOG` | – | Inhalt einer `log`-Zeile, z. B. `measurements statistics tracking` (Logs unter `/var/log/chrony`); erlaubt sind `measurements`, `statistics`, `tracking`, `rtc`, `refclocks`, `tempcomp`, `rawmeasurements`, `selection` |
+| `CLIENTLOGLIMIT` | `2097152` | Speicher (Bytes) für die Client-Liste von chronyd, auch Grundlage des Ratelimits. 2 MiB reichen für etwa 16 000 gleichzeitig bekannte Adressen (bis 1.8: 10 MB) |
 | `CUSTOM_CHRONY_CONF` | `/config/chrony.conf` | Pfad einer eigenen chrony.conf, die – falls vorhanden – die erzeugte ersetzt |
 
 Reicht das nicht, mountet man eine eigene Datei nach `/config/chrony.conf` – die wird dann
 unverändert übernommen und alle NTP-Variablen ignoriert.
+
+### Öffentlich erreichbarer Zeitserver
+
+Standardmäßig antwortet der Zeitserver nur privaten Netzen. Auf einem Server im Internet (VPS)
+bekommen fremde Clients also keine Antwort, bis du `ALLOW_NETWORKS` bewusst öffnest. Eine Vorlage
+mit passenden Werten ist [`docker-compose.vps.yml`](docker-compose.vps.yml), die Anleitung dazu (Firewall,
+Caddy mit Let's Encrypt, Cloudflare Tunnel, NTS, Updates, Sicherung) steht in
+[docs/integrationen/vps.md](docs/integrationen/vps.md).
+
+Stehen unter `ALLOW_NETWORKS` öffentliche Adressen (`all`, `0.0.0.0/0`, `::/0` oder ein
+Provider-Netz), gilt:
+
+* **Ratelimit „streng“** (sofern nicht ausdrücklich gesetzt): im Mittel eine NTP-Anfrage alle 2 s
+  je Adresse (Stöße bis 16) und ein NTS-Schlüsselaustausch alle 8 s (Stöße bis 8). Gebremste
+  Anfragen beantwortet chrony nur noch zum Teil (jede vierte). Ohne öffentliche Adressen gilt
+  „schonend“: Erst im Mittel mehr als 4 Anfragen je Sekunde (Stöße bis 32) werden gebremst – das
+  stört einzelne Geräte im LAN nicht. Teilen sich Geräte eine Absenderadresse (NAT, Docker-Gateway),
+  gilt die Grenze für alle zusammen: im Dauerbetrieb reicht sie für etwa 250 Geräte (Abfrage alle
+  64 s); starten mehr als etwa ein Dutzend gleichzeitig neu (z. B. nach einem Stromausfall), bremst
+  chrony sie kurz. Dann „aus“ wählen oder `network_mode: host` nutzen.
+* **Kein Inselbetrieb** (sofern nicht ausdrücklich gesetzt): Im Inselbetrieb liefert chrony die
+  eigene, frei laufende Uhr als gültige Zeit (Stratum 10, ohne Hinweis „nicht synchron“). Im LAN
+  hält das alle Geräte beisammen; Clients aus dem Internet sollen bei einem Ausfall der Quellen
+  dagegen auf andere Server ausweichen.
+* **Hinweis in Übersicht und Container-Log:** „Zeitserver für alle Adressen offen“, mit dem, was
+  noch fehlt.
+
+**Docker-Gateway statt echter Adressen.** Bei einer Portfreigabe im Bridge-Netz reicht Docker
+manche Anfragen über den userland-proxy weiter: Freigaben auf `127.0.0.1` und oft IPv6, wenn
+der Docker-Daemon IPv6 nicht per ip6tables weiterleitet. chrony sieht dann als Absender nur das
+Gateway des Docker-Netzes (z. B. `172.17.0.1`). Diese Adresse liegt in `172.16.0.0/12` – die
+Standardliste lässt damit **alle** so weitergereichten Anfragen durch, auch aus dem Internet. Alle
+diese Clients teilen sich außerdem ein Ratelimit und erscheinen auf der Clients-Seite als ein
+Gerät. Die Übersicht meldet den Fall („Clients erscheinen als Docker-Gateway“): als Warnung, wenn
+alle Anfragen vom Gateway kommen, sonst als Information – fragt der Docker-Host selbst über die
+Portfreigabe, erscheint auch er als Gateway, und in einem macvlan-/ipvlan-Netz ist das Gateway dein
+Router. Abhilfe:
+`network_mode: host` (wie in der VPS-Vorlage) oder im Docker-Daemon IPv6 mit ip6tables bzw.
+`"userland-proxy": false`; danach `ALLOW_NETWORKS` bewusst setzen.
+
+**NTS-Schlüsselaustausch (TCP 4460).** Das Ratelimit begrenzt, wie oft eine Adresse einen
+Schlüsselaustausch bekommt, nicht wie viele Verbindungen sie gleichzeitig offen hält. Ist 4460
+aus dem Internet erreichbar, begrenze die gleichzeitigen Verbindungen je Adresse zusätzlich in
+der Firewall (z. B. nftables `ct count`) oder im Reverse Proxy, siehe
+[NTS hinter einem Reverse Proxy](#nts-hinter-einem-reverse-proxy).
+
+**Client-Log.** chronyd merkt sich je Adresse Zähler für Ratelimit und Client-Liste, begrenzt
+durch `CLIENTLOGLIMIT` (Standard 2 MiB, etwa 16 000 Adressen). Ist der Speicher voll, ersetzt
+chronyd die ältesten Einträge.
 
 ### GPS
 
@@ -1528,6 +1637,13 @@ PTP lohnt sich nur, wenn alle Voraussetzungen erfüllt sind – sonst ist NTP ge
 | **Netzwerk** | Jeder einfache Switch kostet Mikrosekunden. Für Nanosekunden: PTP-fähige Switches (Transparent/Boundary Clock) oder direkte Verbindung. |
 | **Clients, die PTP sprechen** | Linux (linuxptp), viele Audio-/Video- und Netzwerkgeräte. Windows nur eingeschränkt, macOS nicht – die bleiben bei NTP. |
 
+**Keine Authentifizierung.** PTP (IEEE 1588 in dem Profil, das linuxptp hier nutzt) prüft nicht,
+wer einen Takt ankündigt. Jedes Gerät im selben Netzsegment kann sich als besserer Grandmaster
+ausgeben; Teilnehmer mit der Rolle „automatisch“ oder „Slave“ folgen ihm. Betreibe PTP deshalb
+nur in einem Netz, dem du vertraust (eigenes VLAN, keine Gäste), und gib einem Server mit GPS die
+Rolle **Grandmaster** (`PTP_MODE=master`): Dann folgt er keinem fremden Takt. Clients im selben
+Segment schützt das nicht – das kann nur die Trennung des Netzes.
+
 Die Seite **PTP** im Dashboard prüft das live: Host-Netzwerk, Interface, Hardware-Zeitstempel
 (`ethtool -T`) und PTP-Uhr je Netzwerkkarte. Von Hand:
 
@@ -1559,7 +1675,7 @@ docker compose -f docker-compose.ptp.yml up -d
 | `PHC2SYS_ENABLE` | `false` | Systemuhr und PTP-Hardwareuhr koppeln |
 | `PHC2SYS_OPTIONS` | automatisch | Leer = passend zur Rolle: Grandmaster `-a -rr -m`, sonst `-a -r -m`. Der alte Standard `-a -r -m` (bis 1.1.0) gilt als Grandmaster ebenfalls als „automatisch“ und wird zu `-a -rr -m` (HINWEIS im Log). Andere eigene Optionen, mit denen phc2sys als Grandmaster die Systemuhr stellen würde, laufen wie angegeben, erzeugen aber eine WARNUNG im Log und im Dashboard |
 | `PHC_REFCLOCK` | – | PTP-Uhr als chrony-Referenz, z. B. `/dev/ptp0` (PTP→NTP-Brücke). **Nur als PTP-Slave** (`PTP_MODE` `slave` oder `auto`), nicht mit `master`: Dort stellt phc2sys die PTP-Uhr nach der Systemuhr, chrony bekäme seine eigene Zeit zurück. ntp-gui lässt die Refclock-Zeile dann weg und schreibt eine WARNUNG ins Log |
-| `PHC_REFCLOCK_OPTIONS` | `poll 0 dpoll -2 offset 0 stratum 1` | Optionen der PHC-Refclock-Zeile |
+| `PHC_REFCLOCK_OPTIONS` | `poll 0 dpoll -2 offset 0 stratum 1` | Optionen der PHC-Refclock-Zeile (Refclock-Optionen von chrony, z. B. `tai`, `local`, `offset -37`). Ein ungültiger Wert verhindert bei aktivem PHC-Refclock den Start (mit Meldung im Log), statt still auf den Standard zu fallen |
 | `EXTRA_PTP4L_CONF` | – | Zusätzliche Zeilen im `[global]`-Abschnitt |
 | `CUSTOM_PTP4L_CONF` | `/config/ptp4l.conf` | Pfad einer eigenen ptp4l.conf, die – falls vorhanden – die erzeugte ersetzt |
 | `PTP_UTC_OFFSET` | `37` | Expertenwert, nur per Umgebung: TAI−UTC in Sekunden (0–100), den ein Grandmaster als `currentUtcOffset` ankündigt; weicht er von 37 ab, steht er auch als `utc_offset` in der ptp4l.conf. Erst nach einer neuen Schaltsekunde ändern |
@@ -1633,9 +1749,12 @@ PHC-Refclock dient ihm als Referenz für Stratum und Statistik.
 |---|---|---|
 | `WEB_PORT` / `WEB_BIND` | `8080` / `0.0.0.0` | Adresse des Dashboards. IPv6 geht auch: `::` nimmt IPv4 und IPv6 an; mit `::1` oder einer anderen einzelnen Adresse erreicht der Docker-Healthcheck (fragt `127.0.0.1`) das Dashboard nicht. |
 | `WEB_TITLE` | `NTP / PTP Time Server` | Überschrift |
-| `WEB_USER` / `WEB_PASSWORD` | – | Beide gesetzt ⇒ HTTP Basic Auth (alternativ Passwort im Dashboard setzen) |
+| `WEB_USER` / `WEB_PASSWORD` | – | HTTP Basic Auth (alternativ Passwort im Dashboard setzen). Nur `WEB_PASSWORD` ⇒ Benutzer `admin`; nur `WEB_USER` ⇒ Dashboard gesperrt, bis auch das Passwort gesetzt ist. Siehe [Anmeldung und Zugang](#anmeldung-und-zugang) |
+| `WEB_PASSWORD_FILE` | – | Passwort aus einer Datei statt aus der Umgebung (z. B. Docker Secret `/run/secrets/…`); hat Vorrang vor `WEB_PASSWORD`. Unlesbar oder leer ⇒ Dashboard gesperrt. Im Container gilt ein geänderter Inhalt nach spätestens etwa 30 s (ohne Neustart, im Log „Passwortdatei geändert“) – aber nur, wenn die Datei überschrieben wird (`… > datei`). Wird sie ersetzt (`mv`, `sed -i`, viele Editoren), sieht ein als Datei eingehängtes Secret weiter den alten Inhalt; dann den Container neu erstellen (`docker compose up -d --force-recreate`) |
+| `WEB_REQUIRE_AUTH` | `false` | `true` = ohne Zugang (Passwort) bleibt das Dashboard gesperrt: Nur `/healthz` und eine Einrichtungs-Meldung antworten. Für Server, die aus dem Internet erreichbar sind (VPS) |
 | `WEB_ALLOWED_HOSTS` | – | Weitere Namen, unter denen das Dashboard **ohne Passwort** antworten darf, kommagetrennt; `*.example.org` für alle Unternamen, `*` schaltet die Prüfung ab. Gilt zusätzlich zu „Erlaubte Namen“ im Dashboard (Einstellungen → Dashboard & Zugang). Siehe [Schutz vor DNS-Rebinding](#schutz-vor-dns-rebinding) |
 | `WEB_READONLY` | `false` | Einstellungen im Dashboard sperren |
+| `WEB_MAX_CONNECTIONS` | `200` | Höchstzahl gleichzeitig offener Verbindungen zum Dashboard (mindestens 8). Weitere Verbindungen schließt der Server sofort, statt für jede einen Thread zu starten. Eine einzelne Adresse (IPv6: ein /64-Netz) darf höchstens ein Achtel davon belegen (mindestens 8); Verbindungen von der eigenen Maschine (Healthcheck) und von eingetragenen vertrauenswürdigen Proxys sind davon ausgenommen und haben einige Plätze für sich. Ist mehr als ¾ belegt, schließt der Server Verbindungen ohne Anfrage schon nach 10 s. Jede Verbindung braucht einen Thread: Setzt du für den Container ein `pids-limit`, muss es deutlich über `WEB_MAX_CONNECTIONS` + 64 liegen – sonst senkt der Server die Grenze beim Start selbst (Hinweis im Log). Auf einem VPS zusätzlich im Reverse Proxy die Verbindungen je Adresse begrenzen |
 | `WEB_REFRESH_SECONDS` | `5` | Aktualisierungsintervall im Browser |
 | `HISTORY_INTERVAL` | `10` | Messintervall des Verlaufs in Sekunden |
 | `HISTORY_DAYS` | `30` | So viele Tage hält der Verlauf (SQLite, `ntp-gui.db`; 1–3650). Neue Punkte werden gesammelt und alle 5 Minuten sowie beim Stoppen geschrieben – das schont SD-Karten |
@@ -1647,15 +1766,19 @@ PHC-Refclock dient ihm als Referenz für Stratum und Statistik.
 | `TEMP_SENSOR` | `auto` | Temperatursensor für die Seite [Uhrqualität](#uhrqualität-temperatur-schaltsekunden-vollbild-uhr) (`auto`, `off` oder Kennung aus dem Hardware-Check) |
 | `CLOCK_PUBLIC` | `false` | `true` = `/clock` und `/api/v1/time` ohne Anmeldung und über jeden Host-Namen (nur Zeit und Status; alle anderen Seiten bleiben gegen DNS-Rebinding geprüft). Nicht einschalten, wenn das Dashboard aus dem Internet erreichbar ist |
 | `UPDATE_CHECK` | `false` | Einmal am Tag bei GitHub nach einer neuen Version fragen, siehe [Update-Hinweis](#update-hinweis-opt-in) |
+| `OUTBOUND_TARGETS` | `lan` | Erlaubte Ziele für Benachrichtigungen und den DNS-Weiterleiter: `lan` (öffentliche und private Adressen, kein Loopback), `loopback` (zusätzlich der Rechner selbst), `public` (nur öffentliche Adressen, für einen VPS). Link-local und Metadaten-Dienste sind immer gesperrt, siehe [Benachrichtigungen](#benachrichtigungen) |
 
 Nur per Umgebung (sie betreffen den Start selbst oder sind Expertenwerte): `WEB_PORT`,
-`WEB_BIND`, `WEB_READONLY`, `WEB_USER`/`WEB_PASSWORD`, `WEB_ALLOWED_HOSTS`, `WEB_ACCESS_LOG`, `HISTORY_SIZE`,
+`WEB_BIND`, `WEB_READONLY`, `WEB_USER`/`WEB_PASSWORD`/`WEB_PASSWORD_FILE`, `WEB_REQUIRE_AUTH`, `WEB_ALLOWED_HOSTS`, `WEB_ACCESS_LOG`, `WEB_MAX_CONNECTIONS`, `OUTBOUND_TARGETS`, `HISTORY_SIZE`,
 `HISTORY_DAYS`, `NTPGUI_LOGTEE`, `NTPGUI_REPLAY`/`NTPGUI_REPLAY_SPEED`,
 `DISABLE_CLOCK_CONTROL`, `EXTRA_CHRONY_CONF`, `EXTRA_PTP4L_CONF`, `CHRONY_LOG`,
 `CLIENTLOGLIMIT`, `MAXUPDATESKEW`, `CUSTOM_CHRONY_CONF`, `CUSTOM_PTP4L_CONF`, `GPS_OPTIONS`,
 `GPS_SHM_UNIT`, `GPS_PPS_SHM_UNIT`, `GPS_WAIT_SECONDS`, `GPSD_HOST`/`GPSD_PORT`,
 `PHC_REFCLOCK_OPTIONS`, `PTP_UTC_OFFSET`, `PTP_HOLDOVER_SECONDS`, `PTP_TX_TIMESTAMP_TIMEOUT`,
-`PTP_UDS_ADDRESS`.
+`PTP_UDS_ADDRESS`. Expertenwerte, die in `chrony.conf` landen (`GPS_SHM_UNIT`, `GPS_PPS_SHM_UNIT`,
+`MAXUPDATESKEW`, `CLIENTLOGLIMIT`, `CHRONY_LOG`, `PHC_REFCLOCK_OPTIONS`), werden geprüft; ein ungültiger
+Wert fällt mit Warnung im Start-Log auf den Standard zurück – außer `PHC_REFCLOCK_OPTIONS`: Ohne `tai` oder
+`offset` wäre die übernommene Zeit falsch, deshalb startet ntp-gui dann mit klarer Meldung nicht. Nur `EXTRA_CHRONY_CONF` bleibt bewusst frei.
 
 ### Clients, Diagnose und Entwicklung
 
@@ -1672,6 +1795,74 @@ Nur per Umgebung (sie betreffen den Start selbst oder sind Expertenwerte): `WEB_
 
 Der Healthcheck (Dockerfile und alle Compose-Dateien) liest `WEB_PORT` selbst; bei einem
 anderen Port musst du ihn nicht anpassen.
+
+### Anmeldung und Zugang
+
+**Im eigenen LAN** darf das Dashboard ohne Passwort laufen – das ist der Auslieferungszustand. Dann kann
+aber jedes Gerät im Netz alles ändern, ein eigenes Passwort setzen und API-Schlüssel anlegen. Lauscht
+das Dashboard dabei auf allen Adressen (`WEB_BIND` `0.0.0.0` oder `::`), warnt das Start-Log deutlich.
+
+**Auf einem VPS** oder überall, wo Fremde Port 8080 erreichen könnten, setz
+`WEB_REQUIRE_AUTH=true` und einen Zugang:
+
+```yaml
+    environment:
+      WEB_REQUIRE_AUTH: "true"
+      WEB_USER: "admin"
+      WEB_PASSWORD_FILE: /run/secrets/ntp_gui_password   # oder WEB_PASSWORD: "…"
+    secrets: [ntp_gui_password]
+secrets:
+  ntp_gui_password:
+    file: ./ntp-gui-passwort.txt
+```
+
+Ohne Zugang antwortet das Dashboard dann nur mit einer Einrichtungs-Meldung (`503`), auch API-Schlüssel
+wirken nicht; `/healthz` bleibt für den Docker-Healthcheck offen. Unvollständige Angaben gelten nie als
+„offen“: Nur `WEB_USER` ohne Passwort oder eine unlesbare `WEB_PASSWORD_FILE` sperren das Dashboard
+ebenso (ein im Dashboard gesetztes Passwort gilt dann weiter). Nur `WEB_PASSWORD` ohne `WEB_USER` heißt:
+Benutzer `admin`, und es gilt vor einem im Dashboard gesetzten Passwort – das Start-Log und die
+Einstellungsseite weisen darauf hin, wenn dort zusätzlich eines gespeichert ist. Ein Passwort aus
+der Umgebung unter 12 Zeichen, ein bekannter Beispielwert (`bitte-aendern`) oder eines gleich dem
+Benutzernamen wird beim Start und in der Übersicht als schwach gemeldet. Mit `WEB_REQUIRE_AUTH=true`
+gilt es als nicht gesetzt, wie unvollständige Angaben: Das Dashboard bleibt gesperrt, außer im
+Dashboard ist ein eigenes Passwort gesetzt (das Dashboard lehnt solche Passwörter ohnehin ab).
+
+- **Bremse gegen Passwort-Raten:** Nach 5 Fehlversuchen von einer Adresse (IPv6: je /64) muss diese
+  warten – 2 s, 4 s, 8 s … bis 15 min; in der Zeit antwortet der Server mit `429` und `Retry-After`,
+  ohne das Passwort zu prüfen. Laufende Prüfungen zählen dabei mit: Auch viele gleichzeitige Anfragen
+  einer Adresse bekommen zusammen nicht mehr als 5 Prüfungen. Derselbe falsche Anmeldekopf (z. B. ein
+  offener Tab mit dem alten Passwort, der regelmäßig nachfragt) zählt nur einmal; der Platzhalter nach
+  dem Abmelden zählt gar nicht. Häufen sich Fehlversuche aus vielen Quellen (mehr als 30 je Minute),
+  werden neue Anmeldungen 1 min lang gebremst; ausgenommen sind Adressen, von denen in den letzten
+  30 Tagen eine Anmeldung gelang (übersteht Neustarts; gespeichert nur als HMAC-Wert, ohne Adresse),
+  und bereits angemeldete Browser. Höchstens zwei Passwortprüfungen laufen gleichzeitig. Hinter einem
+  Reverse Proxy zählt die echte Adresse nur, wenn der Proxy in `TRUSTED_PROXIES` steht – sonst zählen
+  alle Zugriffe über ihn zusammen.
+- **Grenze der Gesamtbremse:** Wer über viele Adressen (etwa ein ganzes IPv6-Netz) dauerhaft Fehlversuche
+  schickt, kann die Gesamtbremse immer wieder auslösen. Wer sich dann von einer neuen Adresse anmeldet
+  (Mobilfunk, neues Gerät), bekommt `429`, solange das anhält. Auf einem VPS also das Dashboard nicht
+  offen ins Internet stellen: Reverse Proxy mit eigener Zugangsbeschränkung (Allowlist, VPN, Client-
+  Zertifikat) oder fail2ban auf die Log-Zeile unten – das sperrt die Absender, bevor sie ntp-gui erreichen.
+- **Protokoll:** Jeder gezählte Fehlversuch steht mit Absenderadresse im Container-Log
+  (`[web] Anmeldung fehlgeschlagen von …`) – darauf kann z. B. fail2ban am Host oder am Reverse Proxy
+  aufsetzen. Ins Ereignisprotokoll (Art „Zugang“) kommt höchstens eine Zusammenfassung je Minute, ohne
+  Adresse; ebenso jede Änderung oder Entfernung des Zugangs.
+- **Passwort ändern oder entfernen** verlangt im Dashboard das bisherige Passwort. Mit
+  `WEB_REQUIRE_AUTH=true` lässt sich der Zugang ändern, aber nicht entfernen.
+- **Schlüssel aus der Zeit ohne Passwort:** Wer im offenen Modus API-Schlüssel anlegt, markiert sie.
+  Beim Update auf 1.9 gilt das für alle vorhandenen Schlüssel, wenn bis dahin kein Zugang eingerichtet
+  war. Setzt du danach ein Passwort, zeigt das Dashboard sie unter „API-Schlüssel“ mit „ohne Passwort
+  angelegt“ – behalte nur, was du selbst angelegt hast, und widerrufe den Rest.
+- **Abmelden:** Knopf unten auf der Seite bzw. in Einstellungen → Dashboard & Zugang. Basic-Auth kennt
+  kein Abmelden: Das Abmelden wirkt nur im Browser, der dazu gebracht wird, die Angaben zu vergessen.
+  Klappt das in einem Browser nicht, alle Fenster schließen. Benutzer und Passwort bleiben gültig, bis du
+  das Passwort änderst – wer befürchtet, dass es mitgelesen wurde, ändert es.
+- **Speicherung:** Ein im Dashboard gesetztes Passwort liegt als PBKDF2-SHA256-Hash mit 600 000 Runden
+  in `settings.json`; ältere Hashes (200 000 Runden) werden bei der nächsten Anmeldung umgestellt.
+  Ein Lese-Schlüssel sieht den Benutzernamen nicht.
+- **HTTPS:** Kommt eine Anfrage über einen eingetragenen Reverse Proxy per HTTPS an, sendet ntp-gui
+  `Strict-Transport-Security`. Ohne HTTPS geht das Passwort bei jedem Aufruf lesbar durchs Netz –
+  aus dem Internet also nur mit Proxy, siehe nächster Abschnitt.
 
 ### HTTPS fürs Dashboard
 
@@ -1758,20 +1949,49 @@ Namen. Alle anderen Seiten und die übrige API bleiben geprüft.
 
 ### Was im Container unter welchem Benutzer läuft
 
-| Prozess | Benutzer | Warum |
+| Prozess | Benutzer | Rechte |
 |---|---|---|
-| `chronyd` | `_chrony` | legt Privilegien nach dem Start selbst ab |
-| `gpsd` | `gpsd` | ebenso |
-| `ptp4l` / `phc2sys` | root | brauchen `CAP_NET_ADMIN` für Hardware-Zeitstempel |
-| Dashboard (`python3`) | root | ruft `chronyc` und `pmc` auf, deren Sockets root bzw. `_chrony` gehören |
+| Supervisor (`entrypoint.sh`) | root | startet und überwacht die Dienste, erzeugt die Konfiguration |
+| `chronyd` | `_chrony` | legt die Rechte nach dem Start selbst ab, behält nur `SYS_TIME` (und `NET_BIND_SERVICE` für den NTP-Port) |
+| `gpsd` | `gpsd` | legt die Rechte nach dem Öffnen des Geräts selbst ab |
+| `ptp4l` / `phc2sys` | root | brauchen `NET_ADMIN`/`SYS_TIME` für Hardware-Zeitstempel und die PTP-Uhr |
+| Dashboard (`python3 server.py`) | `ntpgui` (ab 1.9) | keine Capabilities außer `NET_RAW` für die Client-Messung (sofern der Container sie hat) und `NET_BIND_SERVICE` nur bei `WEB_PORT` unter 1024; `no-new-privs` |
+| DNS-Weiterleiter (`dnsfwd.py`) | `ntpgui` (ab 1.9) | nur `NET_BIND_SERVICE` für Port 53 |
 
-Das Dashboard schreibt nur nach `/var/lib/chrony/ntp-gui` (Einstellungen, die Datenbank
-`ntp-gui.db` mit Verlauf, Ereignissen, Client-Messwerten und API-Schlüssel-Hashes,
-`autocal.json`, `instance-id`) und nach `/run/ntp-gui` (Log, Aufzeichnungen), führt keine Shell-Kommandos aus (alle Aufrufe nutzen feste
-Argumentlisten) und prüft jeden Wert gegen eine Positivliste, bevor er in eine
-Konfigurationsdatei gelangt. Trotzdem gilt: der Container ist für das eigene
-LAN gedacht, nicht für das offene Internet. Wer ihn exponiert, gehört hinter einen Reverse
-Proxy mit TLS und Authentifizierung.
+Das Dashboard schreibt nur in sein Datenverzeichnis `/var/lib/chrony/ntp-gui` (Einstellungen, die
+Datenbank `ntp-gui.db` mit Verlauf, Ereignissen, Client-Messwerten und API-Schlüssel-Hashes,
+`autocal.json`, `instance-id`) und nach `/run/ntp-gui/web` (Aufzeichnungen, Anforderungen an den
+Supervisor). `/run/ntp-gui` selbst (Log, Zustand der Dienste) gehört dem Supervisor. Neustarts der
+Zeitdienste fordert das Dashboard nur über zwei feste Dateien an (`reload.request` für alle Dienste,
+`reload-chronyd.request` nur für chronyd); was dann geschieht, entscheidet der Supervisor. Den
+Kommando-Socket von chronyd erreicht das Dashboard über die Gruppe `_chrony`; die Kopie des
+NTS-Schlüssels kann es nicht lesen. Es führt keine Shell-Kommandos aus (alle Aufrufe nutzen feste
+Argumentlisten) und prüft jeden Wert gegen eine Positivliste, bevor er in eine Konfigurationsdatei
+gelangt. Das Image enthält keine SUID-Programme.
+
+Beim ersten Start nach dem Update übergibt der Supervisor das Datenverzeichnis an den Benutzer
+`ntpgui` (UID/GID 990); das steht einmal im Container-Log. Fehlt dem Container `SETUID`/`SETGID`
+(oder läuft er nicht als root), laufen Dashboard und Weiterleiter wie bis 1.8 als root – mit
+deutlicher Warnung im Log.
+
+**Container-Härtung.** Alle Compose-Vorlagen setzen `no-new-privileges`, entfernen alle
+Capabilities und geben nur die nötigen zurück, begrenzen Prozesse, Speicher und Log:
+
+| Capability | wofür |
+|---|---|
+| `SYS_TIME` | chronyd stellt die Uhr (ohne: `-x`, nur Ausliefern) |
+| `SETUID`, `SETGID` | Rechte abgeben (chronyd, gpsd, Dashboard) |
+| `CHOWN`, `FOWNER`, `DAC_OVERRIDE` | Verzeichnisse beim Start vorbereiten, Dateien der Dienste lesen. **Ohne DAC_OVERRIDE** erreicht der Supervisor die Verzeichnisse von chronyd und Dashboard nicht und bricht den Start mit einer Meldung im Log ab. |
+| `KILL` | Dienste beim Speichern neu starten. **Ohne KILL** kann der Supervisor chronyd (anderer Benutzer) nicht beenden: Er warnt beim Start, lässt beim Speichern alle Dienste unverändert weiterlaufen und meldet den gescheiterten Neustart. |
+| `NET_BIND_SERVICE` | Port 123 (und 53 für den DNS-Weiterleiter) mit `network_mode: host` |
+| `NET_RAW` | Messung der Client-Uhren; PTP über Ethernet |
+| `NET_ADMIN` | nur PTP: Hardware-Zeitstempel |
+
+**Schreibgeschütztes Root-Dateisystem.** Mit `read_only: true` legt der Container die erzeugte
+`chrony.conf`/`ptp4l.conf` selbst unter `/run/ntp-gui-conf` ab (sofern `CHRONY_CONF`/`PTP4L_CONF`
+nicht gesetzt sind). Nötig sind dann nur tmpfs für `/run`, `/tmp` und `/var/log` und das Volume
+für `/var/lib/chrony` – siehe [`docker-compose.vps.yml`](docker-compose.vps.yml). Die DNS-Modi des
+Dashboards können `/etc/resolv.conf` dann nicht umstellen; dafür `dns: [127.0.0.1]` setzen.
 
 `/healthz` ist **bewusst ohne Login** erreichbar, damit der Docker-Healthcheck funktioniert.
 Der Endpunkt verrät nur, ob chronyd antwortet.
@@ -1946,7 +2166,8 @@ derselben Instanz zuzuordnen. **Einstellungen → Dashboard & Zugang → API-Sch
 
 ## Update-Hinweise
 
-Beim Update musst du nichts von Hand umbauen:
+Meist musst du beim Update nichts von Hand umbauen. Was sich zwischen zwei Versionen am Verhalten
+ändert, steht unten; lies den Abschnitt zu deiner Version vor dem Update.
 
 - **Einstellungen tragen eine Schema-Version.** Beim ersten Start einer neuen Version bringt
   ntp-gui die gespeicherten Einstellungen einmalig auf den neuen Stand. Was dabei geändert
@@ -1961,11 +2182,36 @@ Beim Update musst du nichts von Hand umbauen:
   Compose-Datei, kannst du die Zeile löschen.
 - **Sicherungen aus älteren Versionen** lassen sich importieren; sie durchlaufen dieselben
   Schritte. Eine Datei aus einer *neueren* Version bleibt unangetastet.
-- **Liegt `/var/lib/chrony` schreibgeschützt**, gelten die Änderungen nur im Speicher; die
-  Hinweise erscheinen trotzdem.
+- **`/var/lib/chrony` muss beschreibbar sein.** Der Container bereitet das Verzeichnis beim Start
+  vor (Besitzer und Rechte) und startet nicht, wenn es schreibgeschützt eingehängt ist. Ist nur
+  `settings.json` nicht beschreibbar, gilt eine Migration nur im Speicher; die Hinweise erscheinen
+  trotzdem.
 - **Verlauf:** Ein vorhandenes `history.json.gz` (bis 1.2) wird beim ersten Start in
   `ntp-gui.db` übernommen und als `history.json.gz.migrated` aufbewahrt. Kann die Datenbank
   nicht geöffnet werden, arbeitet der Verlauf wie in 1.2 weiter.
+
+### Von 1.8 auf 1.9
+
+Diese Änderungen greifen ohne Hinweiskarte, weil sich das Einstellungsschema nicht ändert:
+
+- **Ratelimit ab Werk:** Wer „Anfragen begrenzen“ (`ntp_ratelimit`, `NTP_RATELIMIT`) nie gesetzt
+  hat, bekommt jetzt „schonend“ für NTP und den NTS-Schlüsselaustausch (bis 1.8: kein Ratelimit).
+  Stehen viele Geräte hinter einer gemeinsamen Absenderadresse (Docker-Bridge, NAT), kann das
+  bremsen – dann `NTP_RATELIMIT=aus` setzen oder im Dashboard „aus“ wählen.
+- **`CLIENTLOGLIMIT`:** Standard 2 MiB statt 10 MB (etwa 16 000 Adressen). Brauchst du mehr,
+  setz den alten Wert (`10000000`).
+- **Benachrichtigungen an den eigenen Rechner** (Loopback, z. B. Apprise auf `127.0.0.1`) gehen
+  erst mit `OUTBOUND_TARGETS=loopback`; bis dahin meldet das Log „Dieses Ziel ist gesperrt“.
+- **Zugang aus der Umgebung:** `WEB_USER` ohne Passwort sperrt das Dashboard jetzt, statt es offen
+  zu lassen. `WEB_PASSWORD` allein heißt Benutzer `admin` und gilt **vor** einem im Dashboard
+  gesetzten Passwort; das Start-Log warnt, wenn dort eines gespeichert ist. Soll das
+  Dashboard-Passwort weiter gelten, entferne `WEB_PASSWORD` aus der Compose-Datei.
+- **Datenverzeichnis:** Beim ersten Start übergibt der Supervisor `/var/lib/chrony/ntp-gui` an den
+  Benutzer `ntpgui` (UID/GID 990). Wichtig bei Bind-Mounts und Sicherungen auf dem Host
+  (Rechte beim Zurückkopieren).
+- **Eigene `cap_drop`-Listen:** Dashboard und DNS-Weiterleiter brauchen `SETUID` und `SETGID`, um
+  root abzugeben, sonst laufen sie wie bisher als root (mit Warnung im Log). Die Vorlagen setzen
+  beides; siehe [Was im Container unter welchem Benutzer läuft](#was-im-container-unter-welchem-benutzer-läuft).
 
 ### Update-Hinweis (opt-in)
 
@@ -2036,12 +2282,11 @@ CSV-Zeile, „nie gehört“ ist `4294967295` und `pmc` antwortet nur, wenn die 
 * Englisch umfasst bisher Navigation, Kopfzeile, Statusband und Einstellungs-Abschnitte;
   alles andere ist noch deutsch.
 * PTP braucht das Host-Netzwerk; über eine Docker-Bridge funktioniert es nicht.
+* PTP hat keine Authentifizierung: Ein Gerät im selben Netzsegment kann sich als Grandmaster
+  ausgeben. PTP gehört in ein vertrauenswürdiges Netz (siehe [PTP](#ptp)).
 * `ts2phc` (PPS direkt in die PTP-Uhr der Netzwerkkarte) wird nicht unterstützt; der
   Grandmaster-Betrieb geht immer über die Systemuhr (chrony → phc2sys).
 * Hotplug und `device_cgroup_rules` gibt es nur auf Linux-Hosts, nicht mit Docker Desktop.
-* Entprellung und offene Probleme der Benachrichtigungen sowie der Zustand des Client-Alarms
-  liegen nur im Speicher: Nach einem Neustart des Containers gibt es für ein noch offenes Problem
-  keine „behoben“-Meldung, und ein noch falsch gehender Client meldet sich einmal neu.
 * Ohne OUI-Liste im Image zeigt die Client-Detailseite keinen Hersteller (eigene Datei unter
   `/config/oui.txt` möglich).
 * Ohne IPv6 im Docker-Netz meldet chronyd „Could not open … socket on [::]“ – harmlos,
@@ -2088,7 +2333,7 @@ Updates vor. Ein Release-Build läuft ohne Cache, zieht also immer aktuelle Debi
 **Herkunft prüfen** (GitHub-CLI, sobald das Repository öffentlich ist):
 
 ```bash
-gh attestation verify oci://ghcr.io/mgc20/ntp-gui:1.8.0 -R mgc20/ntp-gui
+gh attestation verify oci://ghcr.io/mgc20/ntp-gui:1.9.0 -R mgc20/ntp-gui
 ```
 
 Scheitert ein Schritt, entsteht kein halber Release. Bei einem privaten Repository

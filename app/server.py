@@ -53,6 +53,7 @@ from urllib.parse import parse_qs, urlparse
 
 import allan
 import apikeys
+import authguard
 import apiv1
 import autocal
 import backup
@@ -96,7 +97,7 @@ PTP4L_CONF = os.environ.get("PTP4L_CONF", "/etc/linuxptp/ptp4l.conf")
 RUN_DIR = os.environ.get("NTPGUI_RUN_DIR", "/run/ntp-gui")
 START_MONO = time.monotonic()  # Laufzeit nach monotoner Uhr – ein Uhrsprung verfälscht sie nicht
 MAX_BODY = 64 * 1024
-VERSION = os.environ.get("NTPGUI_VERSION", "1.8.0")
+VERSION = os.environ.get("NTPGUI_VERSION", "1.9.0")
 EVENTS_INTERVAL = 5.0          # so oft liest der Server die Supervisor-Ereignisse ein
 CALIBRATION_DEFAULT_WINDOW = 86400.0  # /api/gps/calibration ohne window: letzte 24 h
 CALIBRATION_MAX_WINDOW = 7 * 86400.0  # … und höchstens 7 Tage (0 = „so viel wie möglich“ = 7 Tage)
@@ -546,12 +547,35 @@ def loop_guard_runner(stop: threading.Event | None = None) -> None:
         stop.wait(min(loopguard.MAX_INTERVAL, max(1.0, LOOP_GUARD.seconds_until_due())))
 
 
+CLIENT_ALARMS_KEY = "client_alarms"   # notify_meta: Adressen mit offenem Client-Alarm (überlebt Neustart)
+_CLIENT_ALARMS: dict = {"loaded": False, "saved": None}
+
+
+def _client_alarms_persist() -> None:
+    """Offene Client-Alarme sichern bzw. nach dem Start einmal übernehmen (notify_meta)."""
+    if not _CLIENT_ALARMS["loaded"]:
+        _CLIENT_ALARMS["loaded"] = True
+        raw = notify.meta_get(CLIENT_ALARMS_KEY)
+        try:
+            STATE_WATCH.restore_client_alarms(json.loads(raw) if raw else [])
+        except (ValueError, TypeError, RecursionError):
+            pass
+        _CLIENT_ALARMS["saved"] = raw
+        return
+    text = json.dumps(STATE_WATCH.client_alarm_ips(), separators=(",", ":"))
+    if text != _CLIENT_ALARMS["saved"] and notify.meta_set(CLIENT_ALARMS_KEY, text):
+        _CLIENT_ALARMS["saved"] = text
+
+
 def client_alarms() -> None:
     """Alarm-Schwelle für Client-Uhren (clients_alarm_ms) prüfen – Ereignis „clients“."""
     try:
+        if not _CLIENT_ALARMS["loaded"]:
+            _client_alarms_persist()
         threshold = settings.values().get("clients_alarm_ms") or 0
         if not threshold:
             STATE_WATCH.clients({}, 0)
+            _client_alarms_persist()
             return
         # Titel nur mit der Adresse (egress pseudonymisiert sie): Ein eigener Name im gespeicherten
         # Titel bliebe nach Umbenennen/Löschen 90 Tage stehen und ginge dann ungefiltert hinaus.
@@ -562,6 +586,7 @@ def client_alarms() -> None:
                             fmt=clientinfo.fmt_offset,
                             data_for=lambda ip: {"notify": False} if (rule_map.get(ip) or {}).get("mute") else {},
                             handover=clients3.own_threshold_ips(rule_map))
+        _client_alarms_persist()
     except Exception as exc:  # ein Alarm darf die Messung nie aufhalten
         print(f"[web] Alarm für Client-Uhren nicht geprüft: {exc}", flush=True)
 
@@ -598,14 +623,19 @@ def hardware_refresher(stop: threading.Event | None = None) -> None:
 
 
 def events_ingester(stop: threading.Event | None = None, interval: float = EVENTS_INTERVAL) -> None:
-    """Übernimmt die Ereignisse des Supervisors (RUN_DIR/events.jsonl) ins Protokoll."""
+    """Übernimmt die Ereignisse des Supervisors (RUN_DIR/events.jsonl) und des DNS-Weiterleiters
+    (events.jsonl in NTPGUI_REQUEST_DIR, wenn der ohne root läuft) ins Protokoll."""
     stop = stop or threading.Event()
-    path = os.path.join(RUN_DIR, "events.jsonl")
+    paths = [os.path.join(RUN_DIR, "events.jsonl")]
+    request_dir = os.environ.get("NTPGUI_REQUEST_DIR")
+    if request_dir and os.path.abspath(request_dir) != os.path.abspath(RUN_DIR):
+        paths.append(os.path.join(request_dir, "events.jsonl"))
     while True:
-        try:
-            events.ingest_supervisor(path)
-        except Exception as exc:  # nie den Thread verlieren
-            print(f"[web] Ereignisse des Supervisors nicht gelesen: {exc}", flush=True)
+        for path in paths:
+            try:
+                events.ingest_supervisor(path)
+            except Exception as exc:  # nie den Thread verlieren
+                print(f"[web] Ereignisse des Supervisors nicht gelesen: {exc}", flush=True)
         if stop.wait(interval):
             return
 
@@ -864,7 +894,8 @@ def _request_reload(name: str) -> bool:
     supervisor = os.path.join(RUN_DIR, "supervisor.pid")
     if not os.path.exists(supervisor):
         return False  # kein Supervisor (Entwicklung, Tests) – niemand würde die Datei lesen
-    path = os.path.join(RUN_DIR, name)
+    # Nur in das eigene Verzeichnis (NTPGUI_REQUEST_DIR): RUN_DIR gehört dem Supervisor (root).
+    path = os.path.join(os.environ.get("NTPGUI_REQUEST_DIR") or RUN_DIR, name)
     try:
         with open(path + ".tmp", "w", encoding="utf-8") as handle:
             handle.write(f"{time.time():.3f}\n")
@@ -874,13 +905,92 @@ def _request_reload(name: str) -> bool:
         return False
 
 
+MAX_PASSWORD_FILE = 4096
+
+
+def env_credentials() -> dict:
+    """Zugang aus der Umgebung: WEB_USER und WEB_PASSWORD bzw. WEB_PASSWORD_FILE (z. B. Docker Secret).
+
+    Rückgabe: user, password (beide "" = nicht gesetzt), error (Text, wenn die Angaben unvollständig oder
+    unlesbar sind – dann gilt fail-closed, siehe auth_info), defaulted_user (nur ein Passwort gesetzt:
+    Benutzer „admin“), from_file.
+    """
+    user = os.environ.get("WEB_USER", "").strip()
+    password = os.environ.get("WEB_PASSWORD", "")
+    path = os.environ.get("WEB_PASSWORD_FILE", "").strip()
+    out = {"user": "", "password": "", "error": None, "defaulted_user": False, "from_file": bool(path)}
+    if path:
+        try:
+            with open(path, "rb") as handle:
+                raw = handle.read(MAX_PASSWORD_FILE + 1)
+            if len(raw) > MAX_PASSWORD_FILE:
+                raise ValueError("zu groß")
+            password = raw.decode("utf-8").rstrip("\r\n")
+        except (OSError, ValueError, UnicodeDecodeError):
+            out["error"] = "WEB_PASSWORD_FILE ist gesetzt, die Datei aber nicht lesbar"
+            return out
+        if not password:
+            out["error"] = "WEB_PASSWORD_FILE ist gesetzt, die Datei aber leer"
+            return out
+    if password and not user:
+        user = "admin"
+        out["defaulted_user"] = True
+    if user and not password:
+        out["error"] = "WEB_USER ist gesetzt, aber kein WEB_PASSWORD bzw. WEB_PASSWORD_FILE"
+        return out
+    weak = settings.password_weakness(password, user) if password and require_auth() else None
+    if weak:
+        # Mit WEB_REQUIRE_AUTH (VPS) gilt ein schwaches Passwort aus der Umgebung als nicht gesetzt – wie im
+        # Dashboard, das solche Passwörter ablehnt. Ohne WEB_REQUIRE_AUTH bleibt es bei der Warnung.
+        out["error"] = (f"Das Passwort aus der Umgebung ist zu schwach ({weak}) und gilt mit WEB_REQUIRE_AUTH=true "
+                        f"nicht – mindestens {settings.RECOMMENDED_LENGTH} Zeichen, kein Beispielwert, nicht gleich "
+                        "dem Benutzernamen")
+        return out
+    out["user"], out["password"] = user, password
+    return out
+
+
+def require_auth() -> bool:
+    """WEB_REQUIRE_AUTH=true: ohne Zugang (Passwort) bleibt das Dashboard gesperrt (VPS-Betrieb)."""
+    return env_flag("WEB_REQUIRE_AUTH")
+
+
 def auth_info() -> dict:
-    if os.environ.get("WEB_USER") and os.environ.get("WEB_PASSWORD"):
-        return {"enabled": True, "source": "env", "user": os.environ["WEB_USER"]}
+    """Stand der Anmeldung: enabled, source ("env"|"gui"|None), user, locked (+ reason), weak (nur env).
+
+    locked: kein Zugang gesetzt, aber einer verlangt (WEB_REQUIRE_AUTH) oder die Angaben aus der Umgebung
+    sind unvollständig/unlesbar – dann ist das Dashboard gesperrt statt offen (fail-closed).
+    """
+    env = env_credentials()
+    if env["user"] and env["password"]:
+        # gui_overridden: Ein im Dashboard gesetztes Passwort gilt nicht, solange eines aus der Umgebung gesetzt
+        # ist (ab 1.9 genügt dafür WEB_PASSWORD allein) – Start-Log und Einstellungsseite sagen es.
+        return {"enabled": True, "source": "env", "user": env["user"], "locked": False,
+                "weak": bool(settings.password_weakness(env["password"], env["user"])),
+                "gui_overridden": bool(settings.stored_credentials())}
+    broken = settings.load_error()
+    if broken:
+        # settings.json nicht lesbar: Ein dort gesetztes Passwort wäre still weg – gesperrt statt offen.
+        return {"enabled": False, "source": None, "user": None, "locked": True, "reason": broken,
+                "code": "settings_unreadable"}
     stored = settings.stored_credentials()
     if stored:
-        return {"enabled": True, "source": "gui", "user": stored["user"]}
-    return {"enabled": False, "source": None, "user": None}
+        return {"enabled": True, "source": "gui", "user": stored["user"], "locked": False}
+    if env["error"]:
+        return {"enabled": False, "source": None, "user": None, "locked": True, "reason": env["error"]}
+    if require_auth():
+        return {"enabled": False, "source": None, "user": None, "locked": True,
+                "reason": "WEB_REQUIRE_AUTH=true ist gesetzt, aber noch kein Zugang"}
+    return {"enabled": False, "source": None, "user": None, "locked": False}
+
+
+def auth_public(info: dict, ident: dict | None) -> dict:
+    """auth_info() für eine Antwort: den Benutzernamen nur für eine Anmeldung mit Benutzer/Passwort – ein
+    API-Schlüssel (auch „read“) braucht ihn nicht. login: diese Anfrage kam mit Benutzer/Passwort."""
+    kind = (ident or {}).get("kind")
+    out = {k: v for k, v in info.items() if k != "user" or kind == "basic"}
+    out["login"] = kind == "basic"
+    return out
 
 
 def build_status() -> dict:
@@ -909,7 +1019,7 @@ def build_status() -> dict:
             "phc_refclock")},
         "ui": {
             "readonly": env_flag("WEB_READONLY"),
-            "auth": auth_info(),
+            "auth": auth_public(auth_info(), None),  # Benutzername ergänzt der Handler nur für Basic
             "storage": settings.storage_info(),
             "reload": reload_status(),
             # 1.6 (T3): Assistent von selbst öffnen (Erststart) bzw. Hinweis „Einrichtung prüfen“ (Update).
@@ -932,6 +1042,8 @@ def build_status() -> dict:
         status["holdover_active"] = False
     status["notify"] = _notify_summary()
     status["insights"] = combine_insights(insights.build(status, cfg),
+                                          insights.exposure_insights(cfg, clients, clientmon.default_gateway(),
+                                                                     devices.network_mode()),
                                           loopguard.insights(LOOP_GUARD.loops()),
                                           insights.dns_insights(status["dns"], cfg, status["sources"],
                                                                 status["system"].get("addresses") or [],
@@ -1182,6 +1294,25 @@ def _clock_tracking() -> dict:
         return tracking
 
 
+_HEALTHZ_CACHE: dict = {"t": None, "tracking": None}
+_HEALTHZ_LOCK = threading.Lock()
+
+
+def _healthz_tracking() -> dict:
+    """chronyc tracking für /healthz, höchstens einmal je HEALTHZ_CACHE_SECONDS.
+
+    /healthz ist auch ohne Anmeldung erreichbar – viele Anfragen sollen nicht je einen chronyc-Prozess starten.
+    Wer gleichzeitig fragt, wartet auf dieselbe Abfrage (Sperre), statt eine eigene zu starten.
+    """
+    with _HEALTHZ_LOCK:
+        now = time.monotonic()
+        if _HEALTHZ_CACHE["t"] is not None and now - _HEALTHZ_CACHE["t"] < HEALTHZ_CACHE_SECONDS:
+            return _HEALTHZ_CACHE["tracking"]
+        tracking = chrony.tracking()
+        _HEALTHZ_CACHE.update(t=time.monotonic(), tracking=tracking)
+        return tracking
+
+
 def _clock_leap_next(cfg: dict) -> str | None:
     """Datum der nächsten angekündigten Schaltsekunde (Beginn des neuen TAI−UTC, „2017-01-01“) für /clock.
 
@@ -1215,6 +1346,7 @@ def _clock_zone() -> str | None:
 # Studiouhr B4: On-Air/REC-Signal. Nur im Speicher (clocksignal.py) – nach einem Neustart „off“, nie in der Sicherung.
 CLOCK_SIGNAL = clocksignal.Signal()
 CLOCK_SIGNAL_RATE = clocksignal.RateLimit()
+BACKUP_DOWNLOAD_SLOT = threading.BoundedSemaphore(1)   # GET /api/backup: eine neue Sicherung gleichzeitig
 SIGNAL_TITLES = {"off": "aus", "on_air": "ON AIR", "rec": "REC"}
 SIGNAL_AUDIT_TITLE = "On-Air-Signal der Uhr:"
 # Einträge ins Ereignisprotokoll: Die ersten SIGNAL_AUDIT_BURST stehen sofort da (ein Abend mit vielen Wechseln), danach
@@ -1228,6 +1360,8 @@ SIGNAL_AUDIT_KEYS_MAX = 8    # so viele Schlüsselkennungen übersprungener Wech
 _SIGNAL_AUDIT: dict = {"t": None, "tokens": SIGNAL_AUDIT_BURST, "pending": None, "skipped": 0, "keys": []}
 _SIGNAL_AUDIT_LOCK = threading.Lock()
 events.set_quota("settings", SIGNAL_AUDIT_TITLE, SIGNAL_AUDIT_ROWS)
+for _title in statewatch.CLIENT_EVENT_TITLES:  # von außen auslösbar: verdrängt nie andere Ereignisse
+    events.set_quota("clients", _title, statewatch.CLIENT_EVENT_ROWS)
 _SIGNAL_TIMERS: dict = {"audit": None, "expiry": None}
 _SIGNAL_TIMERS_LOCK = threading.Lock()
 
@@ -1578,27 +1712,93 @@ class AuthCache:
     def __init__(self, clock=time.monotonic) -> None:
         self._ok: dict[str, float] = {}  # Schlüssel → gültig bis (monotonic: Uhrsprünge zählen nicht)
         self._lock = threading.Lock()
+        self._generation = 0  # erhöht bei jedem clear()
         self.clock = clock
 
-    def check(self, header: str, verify) -> bool:
+    def generation(self) -> int:
+        """Stand vor einer Prüfung – remember() merkt nur, wenn seitdem kein clear() lief."""
+        with self._lock:
+            return self._generation
+
+    def known(self, header: str) -> bool:
+        key = hashlib.sha256(header.encode()).hexdigest()
+        with self._lock:
+            return self._ok.get(key, 0) > self.clock()
+
+    def remember(self, header: str, generation: int | None = None) -> None:
         key = hashlib.sha256(header.encode()).hexdigest()
         now = self.clock()
         with self._lock:
-            if self._ok.get(key, 0) > now:
-                return True
+            if generation is not None and generation != self._generation:
+                return  # Passwort inzwischen geändert: Prüfung mit dem alten Stand nicht merken
+            self._ok = {k: v for k, v in self._ok.items() if v > now}
+            self._ok[key] = now + 300
+
+    def forget(self, header: str) -> None:
+        key = hashlib.sha256(header.encode()).hexdigest()
+        with self._lock:
+            self._ok.pop(key, None)
+
+    def check(self, header: str, verify) -> bool:
+        if self.known(header):
+            return True
         if verify():
-            with self._lock:
-                self._ok = {k: v for k, v in self._ok.items() if v > now}
-                self._ok[key] = now + 300
+            self.remember(header)
             return True
         return False
 
     def clear(self) -> None:
         with self._lock:
             self._ok.clear()
+            self._generation += 1
 
 
 AUTH_CACHE = AuthCache()
+
+
+def auth_cache_key(header: str, info: dict) -> str:
+    """Schlüssel für AUTH_CACHE. Bei WEB_PASSWORD_FILE gehört der Stand der Datei dazu: Ändert sich das
+    Passwort in der Datei, gilt ein gemerkter Zugang mit dem alten nicht weiter."""
+    key = header + "|" + str(info.get("source"))
+    path = os.environ.get("WEB_PASSWORD_FILE", "").strip()
+    if info.get("source") == "env" and path:
+        try:
+            st = os.stat(path)
+            key += f"|{st.st_ino}:{st.st_size}:{st.st_mtime_ns}"
+        except OSError:
+            key += "|-"
+    return key
+
+
+class SingleFlight:
+    """Gleiche Prüfungen bündeln: Kommt derselbe Anmeldekopf mehrmals gleichzeitig (Seite mit mehreren
+    Abrufen), prüft nur die erste Anfrage; die übrigen warten auf deren Ergebnis statt selbst zu prüfen."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._calls: dict[str, dict] = {}
+
+    def do(self, key: str, fn, timeout: float):
+        """Ergebnis von fn() – für Wartende das der laufenden Prüfung; None, wenn sie zu lange dauert."""
+        digest = hashlib.sha256(key.encode("utf-8", "replace")).hexdigest()
+        with self._lock:
+            call = self._calls.get(digest)
+            leader = call is None
+            if leader:
+                call = {"done": threading.Event(), "result": None}
+                self._calls[digest] = call
+        if not leader:
+            return call["result"] if call["done"].wait(timeout) else None
+        try:
+            call["result"] = fn()
+        finally:
+            with self._lock:
+                self._calls.pop(digest, None)
+            call["done"].set()
+        return call["result"]
+
+
+AUTH_FLIGHT = SingleFlight()
 
 
 # --- Schutz vor DNS-Rebinding -------------------------------------------------
@@ -1772,28 +1972,123 @@ REAPER = _Reaper()
 # Content-Security-Policy: nur eigene Skripte, Stylesheets und Verbindungen. Inline-Skripte,
 # on…-Attribute und style-Attribute sind gesperrt (el() setzt Stile per CSSOM, das bleibt erlaubt);
 # data: nur für Bilder (Favicon). Gilt für jede Antwort, auch für JSON und Fehlerseiten.
+# Trusted Types: Das Frontend setzt Inhalte nur als Text bzw. per DOM-Knoten – HTML-Senken wie innerHTML sind damit
+# auch künftig gesperrt (Tiefenverteidigung gegen eingeschleustes Markup).
 CSP = ("default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; "
-       "object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+       "object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; "
+       "require-trusted-types-for 'script'; trusted-types 'none'")
+# Gerätezugriffe, die weder Dashboard noch Uhr brauchen, gar nicht erst anbieten. Vollbild, Wachhalten des
+# Bildschirms, Ton und Zwischenablage nutzt die Uhr bzw. das Dashboard – die bleiben erlaubt.
+PERMISSIONS_POLICY = ("accelerometer=(), camera=(), display-capture=(), geolocation=(), gyroscope=(), hid=(), "
+                      "magnetometer=(), microphone=(), midi=(), payment=(), serial=(), usb=()")
+# Abmelden bei Basic-Auth: Die Seite ruft diesen Pfad mit dem Benutzer LOGOUT_USER auf; die Antwort 200 bringt
+# den Browser dazu, diese (wertlosen) Angaben statt der echten zu merken. Der Pfad prüft nichts und gibt nichts preis.
+LOGOUT_PATH = "/logout"
+LOGOUT_USER = "abgemeldet"
+HSTS_VALUE = "max-age=31536000"
+
 SECURITY_HEADERS = {
     "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": "same-origin",
     "X-Frame-Options": "DENY",
     "Content-Security-Policy": CSP,
+    "Cross-Origin-Opener-Policy": "same-origin",
+    "Cross-Origin-Resource-Policy": "same-origin",
+    "Permissions-Policy": PERMISSIONS_POLICY,
 }
+
+# GET-Routen, die spürbar Arbeit machen (Sicherung bauen, Diagnose sammeln, Hardware neu prüfen). Ein Browser
+# schickt GETs auch für fremde Seiten (<img>, Links) samt gemerkter Anmeldung mit – diese Routen nehmen darum nur
+# Aufrufe aus dem Dashboard selbst, direkt eingegebene Adressen und Werkzeuge ohne Sec-Fetch-Site an.
+COSTLY_GET_PATHS = frozenset({"/api/backup", "/api/diagnostics/preview", "/api/diagnostics/bundle"})
+# Gilt eine Sec-Fetch-Site-Angabe als „aus dem Dashboard“? „none“: Adresszeile, Lesezeichen, Download-Manager.
+SAME_ORIGIN_FETCH = frozenset({"same-origin", "none"})
+
+# Höchstzahl gleichzeitig offener Verbindungen zum Dashboard. Jede Verbindung belegt einen Thread; ohne Grenze
+# könnten viele offen gehaltene Verbindungen Speicher und Prozessgrenze (pids-limit) des Containers aufbrauchen.
+# Darüber hinaus wird eine neue Verbindung sofort geschlossen, ohne Thread.
+MAX_CONNECTIONS_DEFAULT = 200
+
+
+# Darüber hinaus darf eine einzelne Quelladresse (IPv6: ein /64-Netz) nur einen Teil der Plätze belegen – sonst
+# sperrte ein einzelnes Gerät mit offen gehaltenen leeren Verbindungen alle anderen aus. Ausgenommen sind die
+# eigene Maschine (Loopback) und eingetragene vertrauenswürdige Proxys.
+def per_source_limit(max_connections: int) -> int:
+    return max(8, max_connections // 8)
+
+
+# So viele Plätze bleiben Verbindungen von der eigenen Maschine vorbehalten (Docker-Healthcheck auf /healthz).
+def local_reserve(max_connections: int) -> int:
+    return min(4, max_connections // 4)
+
+
+# Ist mehr als dieser Anteil belegt, bekommt eine Verbindung ohne Anfrage nur noch diese kurze Frist (statt
+# REQUEST_IDLE_TIMEOUT), bevor sie geschlossen wird – Loopback und vertrauenswürdige Proxys ausgenommen.
+BUSY_SHARE = 0.75
+BUSY_IDLE_TIMEOUT = 10.0
+# Jede Verbindung belegt einen Thread und damit einen Platz der Prozessgrenze (pids-limit) des Containers.
+# So viele Plätze bleiben dort für Watchdog, Zeitdienste, chronyc und Healthcheck frei.
+PIDS_RESERVE = 64
+PIDS_MAX_FILES = ("/sys/fs/cgroup/pids.max", "/sys/fs/cgroup/pids/pids.max")
+
+
+def pids_capped_connections(max_connections: int, files=PIDS_MAX_FILES) -> tuple[int, str]:
+    """max_connections passend zur Prozessgrenze des Containers – mit Hinweis, falls gekürzt."""
+    for name in files:
+        try:
+            with open(name, encoding="ascii") as fh:
+                text = fh.read().strip()
+        except (OSError, ValueError):
+            continue
+        if not text.isdigit():
+            return max_connections, ""  # „max“: keine Grenze
+        cap = max(8, int(text) - PIDS_RESERVE)
+        if cap < max_connections:
+            return cap, (f"[web] Hinweis: Prozessgrenze des Containers ist {text} – höchstens {cap} gleichzeitige "
+                         f"Verbindungen statt {max_connections}, damit Platz für die Zeitdienste bleibt. "
+                         "Setze pids-limit deutlich über WEB_MAX_CONNECTIONS + 64.")
+        return max_connections, ""
+    return max_connections, ""
+
+
+def _is_local_peer(address) -> bool:
+    return address is not None and address.is_loopback
+
+
+def _source_key(address) -> str:
+    if address is None:
+        return "?"
+    if address.version == 6:
+        return str(ipaddress.ip_network(f"{address}/64", strict=False))
+    return str(address)
+# /healthz fragt chronyd höchstens so oft (Docker-Healthcheck, Überwachung) – nie ein chronyc-Prozess je Anfrage.
+HEALTHZ_CACHE_SECONDS = 2.0
 
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "ntp-gui"
+    sys_version = ""  # keine Python-Version im Server-Kopf
     protocol_version = "HTTP/1.1"
     timeout = REQUEST_IDLE_TIMEOUT  # StreamRequestHandler.setup(): settimeout() auf der Verbindung
+
+    def version_string(self) -> str:
+        return self.server_version
 
     def handle_one_request(self) -> None:
         # Leerlauf (bis REQUEST_IDLE_TIMEOUT) ohne Frist abwarten; die Lesefrist beginnt erst mit dem
         # ersten Byte – sonst schlösse sie still offene Keep-alive-Verbindungen schon nach 60 s.
+        # Bei hoher Auslastung wartet eine Verbindung ohne Anfrage nur kurz – leere Verbindungen halten so
+        # keinen Platz bis REQUEST_IDLE_TIMEOUT.
+        busy = getattr(self.server, "busy_for", None)
+        short = bool(busy and busy(self.request))
         try:
+            if short:
+                self.connection.settimeout(BUSY_IDLE_TIMEOUT)
             if not self.rfile.peek(1):
                 self.close_connection = True  # Gegenstelle hat geschlossen
                 return
+            if short:
+                self.connection.settimeout(self.timeout)
         except OSError:
             self.close_connection = True  # Leerlauf zu lang oder Verbindung weg
             return
@@ -1855,6 +2150,104 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             return super().address_string()
 
+    def _via_https(self) -> bool:
+        try:
+            info = self._transport()
+        except Exception:
+            return False
+        return bool(info.get("proxied") and info.get("scheme") == "https")
+
+    def _logout_probe(self) -> None:
+        """LOGOUT_PATH: prüft nichts und gibt nichts preis.
+
+        Im Browser (Accept: text/html) die Seite „Abgemeldet“. Für den Abruf aus der Seite: 200 nur für den
+        Platzhalter-Benutzer LOGOUT_USER, ganz ohne Angaben 401 mit Basic-Aufforderung (damit der Browser die
+        Platzhalter-Angaben überhaupt schickt), mit anderen Angaben 401 ohne Aufforderung (kein Anmeldedialog).
+        """
+        if "text/html" in self.headers.get("Accept", ""):
+            body = ("<!doctype html><html lang=\"de\"><meta charset=\"utf-8\">"
+                    "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+                    "<title>Abgemeldet</title><body><h1>Abgemeldet</h1>"
+                    "<p>Du bist vom Dashboard abgemeldet. Fragt der Browser beim nächsten Aufruf nicht nach dem "
+                    "Passwort, schließ alle Fenster des Browsers.</p>"
+                    "<p><a href=\"/\">Wieder anmelden</a></p></body></html>\n")
+            self._send(HTTPStatus.OK, body.encode("utf-8"), "text/html; charset=utf-8", {"Cache-Control": "no-store"})
+            return
+        header = self.headers.get("Authorization", "")
+        user = None
+        if header.startswith("Basic "):
+            try:
+                user = base64.b64decode(header[6:], validate=True).decode("utf-8").partition(":")[0]
+            except Exception:
+                user = ""
+        if user == LOGOUT_USER:
+            self._send_json({"ok": True, "logged_out": True})
+        elif user is None:
+            self._send_json({"ok": False, "logged_out": False}, HTTPStatus.UNAUTHORIZED,
+                            {"WWW-Authenticate": 'Basic realm="ntp-gui", charset="UTF-8"'})
+        else:
+            self._send_json({"ok": False, "logged_out": False}, HTTPStatus.UNAUTHORIZED)
+
+    def _set_auth(self, data: dict) -> None:
+        """POST /api/auth: Zugang setzen, ändern oder entfernen.
+
+        Besteht schon ein Zugang, ist das bisherige Passwort nötig (current_password) – derselbe Schutz wie bei
+        der Anmeldung (Bremse je Quelle). Jede Änderung landet im Ereignisprotokoll (Art „access“, Stufe warn).
+        """
+        info = auth_info()
+        if info["source"] == "env":
+            raise settings.ValidationError("Der Zugang ist per WEB_USER/WEB_PASSWORD festgelegt "
+                                           "und lässt sich hier nicht ändern.")
+        clear = bool(data.get("clear"))
+        if info["enabled"]:
+            if clear and require_auth():
+                raise settings.ValidationError("WEB_REQUIRE_AUTH=true ist gesetzt – den Zugang kannst du "
+                                               "ändern, aber nicht entfernen.")
+            key = self._client_key()
+            wait = authguard.GUARD.reserve(key)
+            if wait > 0:
+                self._auth_retry = wait
+                self._deny_auth()
+                return
+            try:
+                stored = settings.stored_credentials()
+                current = str(data.get("current_password") or "")
+                with authguard.GUARD.slot() as got:
+                    if not got:
+                        self._auth_retry = 2.0
+                        self._deny_auth()
+                        return
+                    ok = bool(stored and current and settings.verify_password(current, stored["hash"]))
+                if not ok:
+                    self._auth_retry = 0.0
+                    self._auth_failed(key)
+            finally:
+                authguard.GUARD.release(key)
+            if not ok:
+                if self._auth_retry > 0:
+                    self._deny_auth()
+                    return
+                self._error(HTTPStatus.FORBIDDEN, "Das bisherige Passwort stimmt nicht.",
+                            fields={"current_password": "Bitte das bisherige Passwort eingeben"})
+                return
+        if not info["enabled"]:
+            apikeys.prepare()  # Migration vor dem ersten Passwort: markiert Schlüssel aus der Zeit ohne Zugang
+        if clear:
+            if info["enabled"]:
+                settings.set_credentials("", None)
+                events.emit("access", "warn", "Zugang zum Dashboard entfernt – Dashboard ohne Passwort",
+                            {}, source="web")
+        else:
+            settings.set_credentials(str(data.get("user", "")), str(data.get("password", "")))
+            events.emit("access", "warn", "Passwort des Dashboards geändert" if info["enabled"]
+                        else "Zugang zum Dashboard eingerichtet", {}, source="web")
+        AUTH_CACHE.clear()
+        out = {"ok": True, "auth": auth_public(auth_info(), {"kind": "basic"})}
+        if not clear:
+            # Ohne Passwort konnte jeder im Netz Schlüssel anlegen – zur Prüfung zeigen (behalten/widerrufen).
+            out["open_keys"] = apikeys.open_mode_keys()
+        self._send_json(out)
+
     def _note_transport(self, ident: dict) -> None:
         try:
             # Nur Passwort und Verwaltungsschlüssel dürfen eine Adresse für „per Klick eintragen“
@@ -1869,6 +2262,10 @@ class Handler(BaseHTTPRequestHandler):
         super().send_response(code, message)
         for key, value in SECURITY_HEADERS.items():
             self.send_header(key, value)
+        if self._via_https():
+            # Nur, wenn die Anfrage nachweislich per HTTPS kam (vertrauenswürdiger Proxy) – über reines HTTP
+            # wäre der Kopf wirkungslos bzw. könnte ein Dashboard ohne Proxy unerreichbar machen.
+            self.send_header("Strict-Transport-Security", HSTS_VALUE)
         if getattr(self, "_body_unread", False):
             # Antwort vor dem Lesen des Bodys: ankündigen und danach schließen (setzt close_connection).
             self._body_unread = False
@@ -1922,13 +2319,40 @@ class Handler(BaseHTTPRequestHandler):
         Ein API-Schlüssel gilt immer mit seinem Recht – auch ohne gesetztes
         Passwort. Sonst: ohne Passwort ist alles offen, mit Passwort Basic-Auth.
         """
+        self._auth_retry = 0.0  # Handler lebt bei Keep-Alive über mehrere Anfragen
+        info = auth_info()
+        if info.get("locked"):
+            return {"kind": "locked"}  # Zugang verlangt, aber keiner eingerichtet: nichts geht (auch kein Schlüssel)
         header = self.headers.get("Authorization", "")
         if header[:7].lower() == "bearer ":
             key = apikeys.verify(header[7:].strip())
             return {"kind": "key", "scope": key["scope"], "id": key["id"]} if key else None
-        if not auth_info()["enabled"]:
+        if not info["enabled"]:
             return {"kind": "open"}
-        return {"kind": "basic"} if self._authorised() else None
+        return {"kind": "basic"} if self._authorised(info) else None
+
+    def _deny_locked(self) -> None:
+        """WEB_REQUIRE_AUTH ohne Zugang bzw. unvollständige Angaben in der Umgebung: Einrichtungs-Meldung (503)."""
+        self.close_connection = True
+        info = auth_info()
+        reason = info.get("reason") or "Noch kein Zugang eingerichtet"
+        if info.get("code") == "settings_unreadable":
+            code, heading = "settings_unreadable", "Einstellungen nicht lesbar"
+            text = (f"{reason}. Mit WEB_USER und WEB_PASSWORD in der Compose-Datei ist das Dashboard trotzdem "
+                    "mit Anmeldung erreichbar (Speichern bleibt gesperrt). /healthz bleibt erreichbar.")
+        else:
+            code, heading = "auth_setup_required", "Einrichtung nötig"
+            text = (f"{reason}. Das Dashboard bleibt gesperrt, bis ein Zugang gesetzt ist: in der Compose-Datei "
+                    "WEB_USER und WEB_PASSWORD (oder WEB_PASSWORD_FILE für ein Docker Secret) eintragen und den "
+                    "Container neu erstellen. /healthz bleibt erreichbar.")
+        path = urlparse(self.path).path
+        if path.startswith("/api") or path == "/metrics" or "json" in self.headers.get("Accept", ""):
+            self._error(HTTPStatus.SERVICE_UNAVAILABLE, text, reason=code)
+            return
+        body = (f"<!doctype html><html lang=\"de\"><meta charset=\"utf-8\"><title>{heading}</title>"
+                f"<body><h1>{heading}</h1><p>{html.escape(text)}</p></body></html>\n")
+        self._send(HTTPStatus.SERVICE_UNAVAILABLE, body.encode("utf-8"), "text/html; charset=utf-8",
+                   {"Cache-Control": "no-store"})
 
     def _host_known(self) -> bool:
         """Host-Kopf bekannt/lokal/erlaubt (host_allowed) – ohne selbst zu antworten."""
@@ -2003,8 +2427,37 @@ class Handler(BaseHTTPRequestHandler):
                     f"„{needed}“ nötig.")
         self._error(HTTPStatus.FORBIDDEN, text, scope_required=needed)
 
-    def _authorised(self) -> bool:
-        info = auth_info()
+    def _client_key(self) -> str:
+        """Zählschlüssel für die Anmeldebremse: echte Adresse (Proxy-Köpfe nur von TRUSTED_PROXIES)."""
+        try:
+            info = self._transport()
+            if info.get("forward_conflict"):
+                return authguard.conflict_key(info["peer"])
+            return authguard.source_key(info["client"])
+        except Exception:
+            return authguard.source_key(self.client_address[0] if self.client_address else "")
+
+    def _client_text(self) -> str:
+        try:
+            info = self._transport()
+            conflict = info.get("forward_conflict")
+            if conflict:
+                # Welche Angabe vom Proxy stammt, ist unklar: beide nennen, keine als Absender.
+                return (f"unklarer Adresse (Proxy {safe_host_for_log(info['peer'])}: X-Forwarded-For "
+                        f"{safe_host_for_log(conflict[0])}, X-Real-IP {safe_host_for_log(conflict[1])})")
+            return safe_host_for_log(info["client"])
+        except Exception:
+            return "?"
+
+    def _authorised(self, info: dict | None = None) -> bool:
+        """Basic-Anmeldung prüfen – mit Merker für gültige Zugänge und Bremse vor der teuren Prüfung.
+
+        Ist die Quelle gerade gebremst, steht in self._auth_retry die Wartezeit (→ 429 in _deny_auth).
+        Der Platzhalter-Benutzer nach dem Abmelden (LOGOUT_USER) und die Wiederholung eines gerade
+        abgelehnten Anmeldekopfs werden ohne Prüfung und ohne neuen Fehlversuch abgewiesen.
+        """
+        self._auth_retry = 0.0
+        info = info or auth_info()
         if not info["enabled"]:
             return True
         header = self.headers.get("Authorization", "")
@@ -2015,21 +2468,93 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             return False
         user, _, password = decoded.partition(":")
+        if user == LOGOUT_USER and info.get("user") != LOGOUT_USER:
+            return False  # abgemeldeter Browser: nur erneut fragen, kein Fehlversuch
+        cache_key = auth_cache_key(header, info)
+        if AUTH_CACHE.known(cache_key):
+            return True  # schon geprüft und gültig: nie gebremst
+        key = self._client_key()
+        if authguard.GUARD.is_negative(cache_key):
+            self._auth_retry = authguard.GUARD.retry_after(key)
+            return False
+        outcome = AUTH_FLIGHT.do(cache_key + "|" + key,
+                                 lambda: self._verify_login(info, user, password, key, cache_key),
+                                 authguard.SLOT_WAIT + 30.0)
+        if outcome is None:
+            self._auth_retry = 2.0
+            return False
+        ok, retry = outcome
+        self._auth_retry = retry
+        return ok
 
-        def verify() -> bool:
-            if info["source"] == "env":
-                ok_user = hmac.compare_digest(user.encode(), os.environ["WEB_USER"].encode())
-                ok_pass = hmac.compare_digest(password.encode(), os.environ["WEB_PASSWORD"].encode())
-                return ok_user & ok_pass
-            stored = settings.stored_credentials()
-            if not stored:
-                return False
-            return (hmac.compare_digest(user.encode(), stored["user"].encode())
-                    & settings.verify_password(password, stored["hash"]))
+    def _verify_login(self, info: dict, user: str, password: str, key: str, cache_key: str) -> tuple[bool, float]:
+        """Eine Prüfung: Platz bei der Bremse reservieren, Passwort prüfen, Ergebnis festhalten."""
+        wait = authguard.GUARD.reserve(key)
+        if wait > 0:
+            return False, wait
+        try:
+            with authguard.GUARD.slot() as got:
+                if not got:
+                    return False, 2.0  # zu viele Prüfungen gleichzeitig
+                if AUTH_CACHE.known(cache_key):
+                    return True, 0.0  # inzwischen von einer anderen Anfrage geprüft
+                generation = AUTH_CACHE.generation()
+                ok = self._check_password(info, user, password)
+            if ok:
+                AUTH_CACHE.remember(cache_key, generation)
+                authguard.GUARD.success(key)
+                return True, 0.0
+            self._auth_retry = 0.0
+            self._auth_failed(key, cache_key)  # zählen, bevor die Reservierung frei wird
+            return False, self._auth_retry
+        finally:
+            authguard.GUARD.release(key)
 
-        return AUTH_CACHE.check(header + "|" + str(info["source"]), verify)
+    @staticmethod
+    def _check_password(info: dict, user: str, password: str) -> bool:
+        if info["source"] == "env":
+            env = env_credentials()
+            ok_user = hmac.compare_digest(user.encode(), env["user"].encode())
+            ok_pass = hmac.compare_digest(password.encode(), env["password"].encode())
+            return bool(ok_user & ok_pass)
+        stored = settings.stored_credentials()
+        if not stored:
+            return False
+        ok = bool(hmac.compare_digest(user.encode(), stored["user"].encode())
+                  & settings.verify_password(password, stored["hash"]))
+        if ok and settings.needs_rehash(stored["hash"]):
+            try:
+                settings.upgrade_hash(stored["user"], password, stored["hash"])
+            except Exception as exc:  # die Anmeldung gilt trotzdem
+                print(f"[web] Passwort-Hash nicht aktualisiert: {type(exc).__name__}", flush=True)
+        return ok
+
+    def _auth_failed(self, key: str, cache_key: str | None = None) -> None:
+        """Fehlversuch zählen, ins Log (mit Adresse) und gedrosselt ins Ereignisprotokoll (ohne Adresse)."""
+        result = authguard.GUARD.failure(key, cache_key)
+        if not result.get("counted", True):
+            return  # derselbe falsche Anmeldekopf wie zuvor (z. B. offener Tab mit altem Passwort)
+        client = self._client_text()
+        if result["blocked_for"]:
+            self._auth_retry = result["blocked_for"]
+        line = f"[web] Anmeldung fehlgeschlagen von {client} ({result['count']}. Fehlversuch)"
+        if result["started"]:
+            line += f" – Quelle für {int(result['blocked_for'])} s gebremst"
+        print(line, flush=True)
+        if result["report"]:
+            events.emit("access", "warn", "Anmeldung fehlgeschlagen",
+                        {"attempts": result["reported"], "blocked_sources": authguard.GUARD.blocked_sources()},
+                        source="web")
 
     def _deny_auth(self) -> None:
+        retry = float(getattr(self, "_auth_retry", 0.0) or 0.0)
+        if retry > 0:
+            seconds = max(1, int(retry + 0.999))
+            self.close_connection = True
+            text = (f"Zu viele fehlgeschlagene Anmeldungen – bitte in {seconds} s erneut versuchen.")
+            self._send_json({"error": text, "retry_after": seconds}, HTTPStatus.TOO_MANY_REQUESTS,
+                            {"Retry-After": str(seconds)})
+            return
         if self.headers.get("Authorization", "")[:7].lower() == "bearer ":
             # Kein Basic-Dialog im Browser für ein Skript mit falschem Schlüssel.
             self._send_json({"error": "API-Schlüssel ungültig oder widerrufen"}, HTTPStatus.UNAUTHORIZED,
@@ -2056,24 +2581,59 @@ class Handler(BaseHTTPRequestHandler):
         return path, False
 
     def _serve_static(self, name: str) -> None:
-        path = (STATIC_DIR / name).resolve()
-        if not path.is_file() or STATIC_DIR.resolve() not in path.parents:
+        try:
+            # Steuerzeichen und überlange Namen gibt es unter static/ nicht – gar nicht erst ans Dateisystem.
+            if len(name) > 200 or any(ord(c) < 32 for c in name):
+                raise ValueError("ungültiger Name")
+            path = (STATIC_DIR / name).resolve()
+            found = path.is_file() and STATIC_DIR.resolve() in path.parents
+        except (OSError, ValueError):
+            found = False
+        if not found:
             self._send(HTTPStatus.NOT_FOUND, b"not found\n", "text/plain; charset=utf-8")
             return
         content_type = CONTENT_TYPES.get(path.suffix, "application/octet-stream")
         self._send(HTTPStatus.OK, path.read_bytes(), content_type, {"Cache-Control": "no-cache"})
+
+    def _internal_error(self, where: str, exc: BaseException) -> None:
+        """Unerwarteter Fehler: Einzelheiten nur ins Log, an den Client eine allgemeine Meldung (keine Pfade)."""
+        print(f"[web] Fehler bei {self.command} {where}: {type(exc).__name__}: {exc}", flush=True)
+        self.close_connection = True
+        try:
+            self._error(HTTPStatus.INTERNAL_SERVER_ERROR, "Interner Fehler – Einzelheiten stehen im Log.")
+        except OSError:
+            pass
+
+    def _cross_site_get(self, ident: dict, path: str) -> bool:
+        """Teure GET-Route, angestoßen von einer fremden Seite? (Bearer-Schlüssel hängt kein Browser von sich aus an.)"""
+        if not self._costly_get(path):
+            return False
+        if ident.get("kind") == "key":
+            return False
+        site = (self.headers.get("Sec-Fetch-Site") or "").strip().lower()
+        return bool(site) and site not in SAME_ORIGIN_FETCH
+
+    def _costly_get(self, path: str) -> bool:
+        """GET-Route, die spürbar Arbeit macht (Sicherung, Diagnose, Hardware neu prüfen)?"""
+        return path in COSTLY_GET_PATHS or (path == "/api/hardware"
+                                            and self._query().get("refresh") in {"1", "true"})
 
     def _query(self) -> dict:
         return {k: v[-1] for k, v in parse_qs(urlparse(self.path).query).items()}
 
     # --- GET -----------------------------------------------------------------
     def do_HEAD(self) -> None:
+        path, _ = self._api_path(self.path)
+        if self._costly_get(path):
+            # Nur Köpfe, aber dieselbe Arbeit wie ein Download – dafür gibt es GET.
+            self._send(HTTPStatus.METHOD_NOT_ALLOWED, b"", "text/plain; charset=utf-8", {"Allow": "GET"})
+            return
         self.do_GET()
 
     def do_GET(self) -> None:
         received = time.time()   # t1 für /api/v1/time – so früh wie möglich
         path, index = self._api_path(self.path)
-        if path in CLOCK_PUBLIC_PATHS and self._clock_public():
+        if path in CLOCK_PUBLIC_PATHS and self._clock_public() and not auth_info().get("locked"):
             # Wer gültig angemeldet ist, bekommt die volle Antwort (mit Quellennamen); sonst die
             # öffentliche – nie 401 und für jeden Host-Namen (kein 403): Die öffentliche Antwort
             # enthält nur Zeit, Ampel, Genauigkeit und Art der Quelle, nichts, was DNS-Rebinding
@@ -2088,18 +2648,27 @@ class Handler(BaseHTTPRequestHandler):
                 pass
             return
         if path == "/healthz":
-            healthy = bool(chrony.tracking())
+            healthy = bool(_healthz_tracking())
             self._send_json({"status": "ok" if healthy else "degraded", "chrony": healthy},
                             HTTPStatus.OK if healthy else HTTPStatus.SERVICE_UNAVAILABLE)
+            return
+        if path == LOGOUT_PATH:
+            self._logout_probe()
             return
         ident = self._identity()
         if ident is None:
             self._deny_auth()
             return
+        if ident["kind"] == "locked":
+            self._deny_locked()
+            return
         if not self._host_ok(ident):
             return
         if not self._scope_ok(ident, "GET", path):
             self._deny_scope(ident, "GET", path)
+            return
+        if self._cross_site_get(ident, path):
+            self._error(HTTPStatus.FORBIDDEN, "Anfrage abgelehnt (nur aus dem Dashboard heraus)")
             return
         self._ident = ident
         self._note_transport(ident)
@@ -2111,7 +2680,7 @@ class Handler(BaseHTTPRequestHandler):
         except BrokenPipeError:
             pass
         except Exception as exc:  # nie wegen eines Parserfehlers ausfallen
-            self._error(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
+            self._internal_error(path, exc)
 
     @staticmethod
     def _clock_public() -> bool:
@@ -2141,6 +2710,8 @@ class Handler(BaseHTTPRequestHandler):
             self._serve_static(path[len("/static/"):])
         elif path == "/api/status":
             status = build_status()
+            if isinstance(status.get("ui"), dict):
+                status["ui"]["auth"] = auth_public(auth_info(), getattr(self, "_ident", None))
             if self._read_only_key() or env_flag("WEB_READONLY"):
                 # Knöpfe „per Klick beheben“ nur für den, der sie auch drücken darf (Admin).
                 status["insights"] = [{k: v for k, v in item.items() if k != "fixes"}
@@ -2165,7 +2736,7 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/settings":
             schema = settings.public_schema(masked=self._read_only_key())
             schema["readonly"] = env_flag("WEB_READONLY")
-            schema["auth"] = auth_info()
+            schema["auth"] = auth_public(auth_info(), getattr(self, "_ident", None))
             schema["reload"] = reload_status()
             schema["schema_version"] = settings.SCHEMA_VERSION
             schema["notes"] = settings.migration_notes(include_seen=False)
@@ -2384,7 +2955,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _send_backup(self, query: dict) -> None:
         """GET /api/backup: neue Sicherung (oder mit name= eine gespeicherte) als Download."""
-        headers = {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"}
+        headers = {"Cache-Control": "no-store"}  # nosniff kommt mit SECURITY_HEADERS
         name = query.get("name")
         if name is not None:
             path = backup.stored_path(name)
@@ -2394,16 +2965,25 @@ class Handler(BaseHTTPRequestHandler):
             headers["Content-Disposition"] = f'attachment; filename="ntp-gui-{name}"'
             self._send_file(path, "application/gzip", headers)
             return
-        dest = backup.download_path()
+        # Nur eine neue Sicherung gleichzeitig: Jede legt bis zur Auslieferung eine volle Kopie im
+        # Datenverzeichnis ab – viele langsam gelesene Downloads füllten sonst den Speicher.
+        if not BACKUP_DOWNLOAD_SLOT.acquire(blocking=False):
+            self._error(HTTPStatus.TOO_MANY_REQUESTS,
+                        "Es wird gerade schon eine Sicherung erstellt oder heruntergeladen – bitte warten.")
+            return
         try:
-            manifest = backup.create(dest, VERSION)
-            headers["Content-Disposition"] = f'attachment; filename="{backup.file_name(manifest["created"])}"'
-            self._send_file(dest, "application/gzip", headers)
-        finally:
+            dest = backup.download_path()
             try:
-                os.unlink(dest)
-            except OSError:
-                pass
+                manifest = backup.create(dest, VERSION)
+                headers["Content-Disposition"] = f'attachment; filename="{backup.file_name(manifest["created"])}"'
+                self._send_file(dest, "application/gzip", headers)
+            finally:
+                try:
+                    os.unlink(dest)
+                except OSError:
+                    pass
+        finally:
+            BACKUP_DOWNLOAD_SLOT.release()
 
     def _csrf_upload_ok(self, ident: dict | None) -> bool:
         """Wie _csrf_ok, aber für den Upload einer Sicherung (Body ist die .tar.gz, kein JSON).
@@ -2437,7 +3017,9 @@ class Handler(BaseHTTPRequestHandler):
             result = backup.stage_upload(self.rfile, length)
         except backup.RestoreError as exc:
             if not REAPER.disarm(self.connection):  # Frist abgelaufen: Verbindung ist schon zu
-                self._error(HTTPStatus.UNPROCESSABLE_ENTITY, str(exc), written=False)
+                status = (HTTPStatus.CONFLICT if isinstance(exc, backup.RestoreBusy)
+                          else HTTPStatus.UNPROCESSABLE_ENTITY)
+                self._error(status, str(exc), written=False)
             return
         if REAPER.disarm(self.connection):
             backup.discard(result["token"])
@@ -2478,7 +3060,10 @@ class Handler(BaseHTTPRequestHandler):
             self.close_connection = True
             raise ValueError("Anfrage unvollständig")
         self._body_unread = False
-        data = json.loads(raw.decode("utf-8") or "{}")
+        try:
+            data = json.loads(raw.decode("utf-8") or "{}")
+        except RecursionError:
+            raise ValueError("JSON zu tief verschachtelt") from None
         if not isinstance(data, dict):
             raise ValueError("JSON-Objekt erwartet")
         return data
@@ -2489,6 +3074,9 @@ class Handler(BaseHTTPRequestHandler):
         if ident is None:
             self.close_connection = True  # Body bleibt ungelesen – nicht als nächste Anfrage deuten
             self._deny_auth()
+            return
+        if ident["kind"] == "locked":
+            self._deny_locked()
             return
         if not self._host_ok(ident):
             return
@@ -2536,7 +3124,7 @@ class Handler(BaseHTTPRequestHandler):
         except BrokenPipeError:
             pass
         except Exception as exc:
-            self._error(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
+            self._internal_error(path, exc)
 
     def _after_change(self, result: dict) -> dict:
         changed = result.get("changed")
@@ -2618,6 +3206,15 @@ class Handler(BaseHTTPRequestHandler):
         result["trusted_proxies"] = settings.values().get("trusted_proxies")
         self._send_json(result)
 
+    @staticmethod
+    def _chrony_accepts(changes: dict, defaults=None) -> None:
+        """Vor dem Speichern: Lehnte chronyd die Konfiguration mit diesen Werten ab, wird nichts gespeichert
+        (sonst stünde der Wert in settings.json und gälte beim nächsten Start)."""
+        problem = confgen.check_changes(changes, defaults)
+        if problem:
+            raise settings.ValidationError(f"chronyd würde diese Konfiguration ablehnen ({problem}) – nichts "
+                                           "gespeichert, die bisherige Einstellung bleibt.")
+
     def _route_post(self, path: str, data: dict, ident: dict | None = None) -> None:
         ident = ident or {"kind": "open"}
         if path in {"/api/settings", "/api/settings/preview"}:
@@ -2634,6 +3231,7 @@ class Handler(BaseHTTPRequestHandler):
                 # Kein Pfad aus der Anfrage: verglichen wird mit den Dateien, die confgen selbst schreibt.
                 self._send_json(confgen.preview(changes, defaults))
                 return
+            self._chrony_accepts(changes, defaults)
             result = settings.save(changes, defaults)
             self._settings_event("Einstellungen geändert", result, ident)
             self._send_json(self._after_change(result))
@@ -2654,6 +3252,8 @@ class Handler(BaseHTTPRequestHandler):
                       if not (isinstance(masked, list) and k in masked)}
             # Auch Sicherungen älterer Versionen: erst auf das aktuelle Schema bringen.
             values, notes = settings.migrate_import({"schema": data.get("schema", 1), "values": values})
+            if values:
+                self._chrony_accepts(values)
             result = settings.save(values) if values else {"changed": [], "restart": False}
             self._settings_event("Einstellungen importiert", result, ident)
             result = self._after_change(result)
@@ -2755,12 +3355,15 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/notify/test":
             try:
                 self._send_json(notify.send_test(str(data.get("id", ""))))
+            except notify.TestRateLimited as exc:
+                self._error(HTTPStatus.TOO_MANY_REQUESTS, str(exc))
             except notify.NotifyError as exc:
                 self._error(HTTPStatus.NOT_FOUND, str(exc))
         elif path == "/api/v1/clock/signal":
             self._clock_signal(data, ident)
         elif path == "/api/apikeys":
-            key_id, token = apikeys.create(data.get("name"), data.get("scope"))
+            key_id, token = apikeys.create(data.get("name"), data.get("scope"),
+                                           open_mode=ident.get("kind") == "open")
             entry = next((k for k in apikeys.list() if k["id"] == key_id), {})
             self._send_json({"id": key_id, "token": token, "name": entry.get("name"),
                              "scope": entry.get("scope"), "scope_label": entry.get("scope_label")})
@@ -2773,15 +3376,24 @@ class Handler(BaseHTTPRequestHandler):
             instance.rotate()  # schreibt selbst ein Ereignis
             self._send_json(instance.info())
         elif path == "/api/auth":
-            if auth_info()["source"] == "env":
-                raise settings.ValidationError("Der Zugang ist per WEB_USER/WEB_PASSWORD festgelegt "
-                                               "und lässt sich hier nicht ändern.")
-            if data.get("clear"):
-                settings.set_credentials("", None)
-            else:
-                settings.set_credentials(str(data.get("user", "")), str(data.get("password", "")))
-            AUTH_CACHE.clear()
-            self._send_json({"ok": True, "auth": auth_info()})
+            self._set_auth(data)
+        elif path == "/api/auth/logout":
+            # Basic-Auth kennt kein Abmelden: Die Seite bringt den Browser über LOGOUT_PATH dazu, die Angaben zu
+            # vergessen. Der Server streicht nur seinen Merker; derselbe Kopf bleibt gültig, bis das Passwort
+            # geändert wird.
+            header = self.headers.get("Authorization", "")
+            info = auth_info()
+            AUTH_CACHE.forget(auth_cache_key(header, info))
+            self._send_json({"ok": True, "probe": LOGOUT_PATH, "probe_user": LOGOUT_USER})
+        elif path == "/api/apikeys/keep":
+            if ident.get("kind") != "basic":
+                # Behalten bestätigt die Prüfung beim ersten Passwort – das darf nur, wer es kennt.
+                self._error(HTTPStatus.FORBIDDEN, "Schlüssel behalten geht nur mit Anmeldung (Passwort)")
+                return
+            if not apikeys.keep(str(data.get("id", ""))):
+                self._error(HTTPStatus.NOT_FOUND, "Diesen Schlüssel gibt es nicht (mehr)")
+                return
+            self._send_json({"ok": True})
         elif path == "/api/web/proxies/trust":
             self._trust_proxy(data, ident)
         elif path == "/api/setup":
@@ -2832,6 +3444,90 @@ class QuietHTTPServer(ThreadingHTTPServer):
             return
         super().handle_error(request, client_address)
 
+    max_connections = MAX_CONNECTIONS_DEFAULT
+
+    def __init__(self, *args, **kwargs):
+        self._conn_lock = threading.Lock()
+        self._conns: dict = {}           # Socket -> (Quellschlüssel oder None, ausgenommen?)
+        self._per_source: dict[str, int] = {}
+        self.active_connections = 0
+        self.rejected_connections = 0
+        super().__init__(*args, **kwargs)
+
+    def _classify(self, client_address) -> tuple[str | None, bool]:
+        """(Schlüssel für die Grenze je Quelle oder None, von der eigenen Maschine?)"""
+        address = webtransport.parse_ip(client_address[0] if client_address else "")
+        if _is_local_peer(address):
+            return None, True
+        try:
+            trusted = webtransport.parse_networks(settings.values().get("trusted_proxies"))
+        except Exception:
+            trusted = []
+        if address is not None and any(address.version == net.version and address in net for net in trusted):
+            return None, False
+        return _source_key(address), False
+
+    def _admit(self, request, client_address) -> bool:
+        key, local = self._classify(client_address)
+        limit = self.max_connections if local else self.max_connections - local_reserve(self.max_connections)
+        with self._conn_lock:
+            if self.active_connections >= limit:
+                return False
+            if key is not None and self._per_source.get(key, 0) >= per_source_limit(self.max_connections):
+                return False
+            self.active_connections += 1
+            if key is not None:
+                self._per_source[key] = self._per_source.get(key, 0) + 1
+            self._conns[request] = (key, local or key is None)
+        return True
+
+    def _release(self, request) -> None:
+        with self._conn_lock:
+            entry = self._conns.pop(request, None)
+            if entry is None:
+                return
+            self.active_connections -= 1
+            key = entry[0]
+            if key is not None:
+                left = self._per_source.get(key, 0) - 1
+                if left > 0:
+                    self._per_source[key] = left
+                else:
+                    self._per_source.pop(key, None)
+
+    def busy_for(self, request) -> bool:
+        """Soll diese Verbindung nur die kurze Frist bis zur ersten Anfrage bekommen?"""
+        with self._conn_lock:
+            entry = self._conns.get(request)
+            return (entry is not None and not entry[1]
+                    and self.active_connections > self.max_connections * BUSY_SHARE)
+
+    def process_request(self, request, client_address):
+        # Ein Thread je Verbindung, aber höchstens max_connections zugleich und je Quelle nur ein Teil davon.
+        # Ist kein Platz frei, wird die neue Verbindung sofort geschlossen – ohne Thread, ohne Antwort (eine
+        # Antwort kostete wieder Zeit und Speicher).
+        if not self._admit(request, client_address):
+            self.rejected_connections += 1
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except RuntimeError:
+            # Thread ließ sich nicht starten (Prozessgrenze erreicht): Platz freigeben, Verbindung schließen –
+            # der Server selbst läuft weiter.
+            self._release(request)
+            self.rejected_connections += 1
+            self.shutdown_request(request)
+        except BaseException:
+            self._release(request)
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._release(request)
+
     def server_activate(self):
         # Lauschender Socket nicht blockierend: select() meldet eine wartende Verbindung, der Client
         # bricht sie aber vor accept() ab (RST) – ein blockierendes accept() wartete dann bis zur
@@ -2872,12 +3568,55 @@ def make_server(bind: str, port: int) -> QuietHTTPServer:
         raise SystemExit(f"[web] {bind}:{port} nicht nutzbar ({exc}). {hint}") from None
 
 
+def _binds_everywhere(bind: str) -> bool:
+    return bind.strip().strip("[]") in {"0.0.0.0", "::", ""}
+
+
+def startup_auth_warnings(bind: str) -> list[str]:
+    """Hinweise zur Anmeldung beim Start: gesperrt, offen auf allen Adressen, schwaches Passwort, Angaben unklar."""
+    out: list[str] = []
+    env = env_credentials()
+    info = auth_info()
+    if env["from_file"] and os.environ.get("WEB_PASSWORD"):
+        out.append("[web] Hinweis: WEB_PASSWORD und WEB_PASSWORD_FILE sind gesetzt – es gilt WEB_PASSWORD_FILE.")
+    if env["defaulted_user"]:
+        out.append("[web] Hinweis: Nur ein Passwort aus der Umgebung, kein WEB_USER – Benutzername ist „admin“.")
+    if info.get("code") == "settings_unreadable":
+        out.append(f"[web] WARNUNG: {info['reason']}. Das Dashboard bleibt GESPERRT (nur /healthz antwortet); "
+                   "mit WEB_USER und WEB_PASSWORD ist es mit Anmeldung erreichbar, Speichern bleibt gesperrt.")
+    elif env["error"]:
+        if info["enabled"]:
+            out.append(f"[web] WARNUNG: {env['error']} – es gilt das im Dashboard gesetzte Passwort.")
+        else:
+            out.append(f"[web] WARNUNG: {env['error']}. Das Dashboard bleibt GESPERRT (nur /healthz antwortet), "
+                       "bis WEB_USER und WEB_PASSWORD (oder WEB_PASSWORD_FILE) vollständig gesetzt sind.")
+    elif info.get("locked"):
+        out.append("[web] WARNUNG: WEB_REQUIRE_AUTH=true, aber kein Zugang gesetzt. Das Dashboard bleibt GESPERRT "
+                   "(nur /healthz antwortet). WEB_USER und WEB_PASSWORD (oder WEB_PASSWORD_FILE) setzen und den "
+                   "Container neu erstellen.")
+    elif not info["enabled"] and _binds_everywhere(bind):
+        out.append("[web] WARNUNG: Dashboard OHNE PASSWORT auf allen Adressen (WEB_BIND=" + (bind or "0.0.0.0") + "). "
+                   "Jeder, der Port und Adresse erreicht, kann alles ändern, ein eigenes Passwort setzen und "
+                   "API-Schlüssel anlegen. Im eigenen LAN ist das so gewollt; ist der Server aus dem Internet "
+                   "erreichbar (VPS), WEB_REQUIRE_AUTH=true und WEB_USER/WEB_PASSWORD setzen.")
+    if info.get("gui_overridden"):
+        out.append("[web] WARNUNG: Im Dashboard ist ein eigenes Passwort gesetzt, es gilt aber nicht, solange "
+                   "WEB_PASSWORD bzw. WEB_PASSWORD_FILE gesetzt ist – angemeldet wird mit Benutzer "
+                   f"„{env['user']}“ und dem Passwort aus der Umgebung. Soll das Dashboard-Passwort gelten, "
+                   "entferne WEB_PASSWORD (und WEB_USER) aus der Compose-Datei.")
+    if info.get("source") == "env":
+        weak = settings.password_weakness(env["password"], env["user"])
+        if weak:
+            out.append(f"[web] WARNUNG: Das Passwort aus der Umgebung ist schwach ({weak}). Empfohlen: mindestens "
+                       f"{settings.RECOMMENDED_LENGTH} Zeichen, kein Beispielwert.")
+    return out
+
+
 def main() -> None:
     port = env_number("WEB_PORT", 8080, int, minimum=1)
     bind = os.environ.get("WEB_BIND", "0.0.0.0")
-    if bool(os.environ.get("WEB_USER", "").strip()) != bool(os.environ.get("WEB_PASSWORD", "")):
-        print("[web] WARNUNG: WEB_USER und WEB_PASSWORD müssen beide gesetzt sein – "
-              "das Dashboard läuft ohne Authentifizierung.", flush=True)
+    for line in startup_auth_warnings(bind):
+        print(line, flush=True)
 
     for entry in settings.env_allowed_hosts():
         if entry.startswith("*.") and settings.shared_suffix(entry[2:]):
@@ -2886,6 +3625,12 @@ def main() -> None:
                   f"eintragen, z. B. meinzeit.{entry[2:]}", flush=True)
     # 1.6 (T3): Erststart oder Update festschreiben, bevor irgendetwas anderes ins Datenverzeichnis schreibt.
     onboarding.remember()
+    # 1.9: Bekannte Quellen für die Anmeldebremse über Neustarts halten (nur HMAC-Werte, keine Adressen).
+    authguard.GUARD.persist(os.path.join(settings.DATA_DIR, ".anmeldung-bekannt.json"))
+    try:
+        apikeys.prepare()  # Migration jetzt: Schlüssel aus der Zeit ohne Passwort markieren
+    except Exception as exc:
+        print(f"[web] API-Schlüssel: Datenbank nicht vorbereitet ({type(exc).__name__})", flush=True)
     # 1.5.3: Folgen eines laufenden Holdover-Tests (keine Quelle ausgewählt …) nur als „info“, ohne Meldung.
     events.add_filter(holdover.event_filter)
     holdover.configure(trigger_reload=trigger_reload)
@@ -2918,10 +3663,15 @@ def main() -> None:
 
     signal.signal(signal.SIGTERM, save_and_exit)
 
+    wanted = env_number("WEB_MAX_CONNECTIONS", MAX_CONNECTIONS_DEFAULT, int, minimum=8)
+    QuietHTTPServer.max_connections, pids_note = pids_capped_connections(wanted)
+    if pids_note:
+        print(pids_note, flush=True)
     server = make_server(bind, port)
     server.daemon_threads = True
+    info = auth_info()
     note = {"env": "mit Basic-Auth (Umgebungsvariable)", "gui": "mit Passwort aus dem Dashboard",
-            None: "ohne Passwort"}[auth_info()["source"]]
+            None: "GESPERRT – kein Zugang eingerichtet" if info.get("locked") else "ohne Passwort"}[info["source"]]
     shown = f"[{bind.strip().strip('[]')}]" if ":" in bind else bind
     print(f"[web] Dashboard auf http://{shown}:{port} ({note})", flush=True)
     try:

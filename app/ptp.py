@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
 import threading
 import time
 from typing import Any
@@ -135,6 +136,10 @@ def _pmc_base(cfg: dict) -> list[str]:
     args = [PMC, "-u", "-b", "0", "-d", str(cfg["ptp_domain"]), "-s", socket]
     if cfg.get("ptp_profile") == "gptp":
         args += ["-t", "1"]
+    if os.geteuid() != 0:
+        # Ohne root darf pmc seinen eigenen Socket nicht unter /var/run anlegen (Standard
+        # /var/run/pmc.<pid>) – er kommt in das Verzeichnis des Dashboards.
+        args += ["-i", os.path.join(providers.request_dir(), f"pmc-{secrets.token_hex(6)}")]
     return args
 
 

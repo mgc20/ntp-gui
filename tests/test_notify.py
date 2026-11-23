@@ -27,6 +27,18 @@ import notify  # noqa: E402
 import settings  # noqa: E402
 import store  # noqa: E402
 
+# Die Testziele laufen auf 127.0.0.1 – Loopback ist als Ziel standardmäßig gesperrt (netguard) und wird
+# hier bewusst erlaubt, wie mit OUTBOUND_TARGETS=loopback in der Compose-Datei.
+_OUTBOUND = mock.patch.dict(os.environ, {"OUTBOUND_TARGETS": "loopback"})
+
+
+def setUpModule():  # noqa: N802
+    _OUTBOUND.start()
+
+
+def tearDownModule():  # noqa: N802
+    _OUTBOUND.stop()
+
 
 # --------------------------------------------------------------------------- Testziel
 class Target:
@@ -555,6 +567,23 @@ class EndToEndTest(TempData):
         self.assertEqual(notify.get_channel(cid)["dropped"], 3)
         self.assertEqual(len(events.query(kinds=["notify"])), 1)
 
+    def test_crit_gets_through_after_rate_limit(self):
+        # Viele warn-Meldungen haben das Stundenkontingent aufgebraucht: crit kommt trotzdem an.
+        cid = self.add(rate_per_hour=2, debounce_min=0)
+        notify.start("test")
+        for i in range(4):
+            events.emit("service", "warn", f"Dienst d{i} beendet", {"service": f"d{i}"})
+        end = time.monotonic() + 10
+        while time.monotonic() < end and notify.get_channel(cid)["dropped"] < 2:
+            time.sleep(0.05)
+        events.emit("service", "crit", "Pflichtdienst chronyd ausgefallen", {"service": "chronyd"})
+        self.assertTrue(self.target.wait(3, timeout=10))
+        self.settle()
+        titles = [json.loads(r["body"])["title"] for r in self.target.requests]
+        self.assertEqual(len(titles), 3)
+        self.assertEqual(titles[-1], "Pflichtdienst chronyd ausgefallen")
+        self.assertEqual(notify.get_channel(cid)["dropped"], 2)
+
     def test_rate_limit_event_shortly_after_boot(self):
         # Fehler aus der CI: monotonic() zählt ab Systemstart. War der Rechner kürzer als eine Stunde an,
         # blieb das „gedrosselt“-Ereignis aus, weil limit_noted mit 0.0 begann.
@@ -597,6 +626,7 @@ class EndToEndTest(TempData):
         self.assertEqual(result["status"]["state"], "ok")
         self.target.status = 302
         self.target.location = "http://example.org/"
+        notify._TEST_LAST.clear()  # Bremse des Test-Knopfs (eigener Test) hier nicht abwarten
         result = notify.send_test(cid)
         self.assertFalse(result["ok"])
         self.assertIn("Weiterleitung", result["error"])

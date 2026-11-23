@@ -717,7 +717,9 @@ class MaliciousArchiveTest(BackupTestBase):
         parts = self.good_parts()
         usage = shutil.disk_usage(self.tmp)
         tight = usage._replace(free=backup.DISK_RESERVE + 1024)
-        with mock.patch.object(backup.shutil, "disk_usage", return_value=tight):
+        # Hier geht es um die Prüfung je Teil beim Entpacken – die Prüfung vor dem Upload ist eigens getestet.
+        with mock.patch.object(backup.shutil, "disk_usage", return_value=tight), \
+                mock.patch.object(backup, "_check_upload_space"):
             text = self.assert_rejected(self.rebuild(parts), "Zu wenig freier Speicher", "MiB")
         self.assertIn(backup.DB_PART, text)
         # Kleine Teile werden in KiB genannt, nicht auf „1 MiB“ aufgerundet.
@@ -1588,6 +1590,26 @@ class HttpTest(_DataDir, unittest.TestCase):
         status, _raw, _resp = self.request("POST", "/api/restore/apply", body, self.basic(**js, **{"X-NTP-GUI": "1"}))
         self.assertEqual(status, 409)
 
+    def test_paralleler_upload_bekommt_409(self):
+        _status, data, _resp = self.request("GET", "/api/backup", headers=self.basic())
+        self.assertTrue(backup._UPLOAD_SLOT.acquire(blocking=False))
+        try:
+            status, raw, _resp = self.request("POST", "/api/restore/preview", data,
+                                              self.basic(**{"Content-Type": "application/gzip", "X-NTP-GUI": "1"}))
+        finally:
+            backup._UPLOAD_SLOT.release()
+        self.assertEqual(status, 409, raw)
+        self.assertIn("gerade schon", json.loads(raw)["error"])
+
+    def test_nur_eine_neue_sicherung_gleichzeitig(self):
+        self.assertTrue(server.BACKUP_DOWNLOAD_SLOT.acquire(blocking=False))
+        try:
+            status, raw, _resp = self.request("GET", "/api/backup", headers=self.basic())
+        finally:
+            server.BACKUP_DOWNLOAD_SLOT.release()
+        self.assertEqual(status, 429, raw)
+        self.assertEqual(self.request("GET", "/api/backup", headers=self.basic())[0], 200)
+
     def test_admin_key_may_restore_without_csrf_header(self):
         _status, data, _resp = self.request("GET", "/api/backup", headers=self.basic())
         status, raw, _resp = self.request("POST", "/api/v1/restore/preview", data,
@@ -1637,6 +1659,64 @@ class HttpTest(_DataDir, unittest.TestCase):
             status, _raw, _resp = self.request("POST", "/api/restore/preview", b"x",
                                                self.basic(**{"Content-Type": "application/gzip", "X-NTP-GUI": "1"}))
         self.assertEqual(status, 403)
+
+
+class UploadSchutzTest(BackupTestBase):
+    """Uploads: nur einer gleichzeitig, Platz vor dem Schreiben, Version und Einstellungen in der Vorschau."""
+
+    def test_zweiter_upload_waehrend_eines_laufenden_wird_abgewiesen(self):
+        data = self.make_backup()
+        self.assertTrue(backup._UPLOAD_SLOT.acquire(blocking=False))
+        try:
+            stream = io.BytesIO(data)
+            with self.assertRaises(backup.RestoreBusy):
+                backup.stage_upload(stream, len(data))
+            self.assertEqual(stream.tell(), 0, "der zweite Upload wird gar nicht erst gelesen")
+        finally:
+            backup._UPLOAD_SLOT.release()
+        self.assertIn("token", backup.stage_upload(io.BytesIO(data), len(data)))
+
+    def test_upload_ohne_platz_wird_vor_dem_schreiben_abgelehnt(self):
+        data = self.make_backup()
+        usage = shutil.disk_usage(self.tmp)
+        tight = usage._replace(free=backup.DISK_RESERVE + len(data) - 1)
+        stream = io.BytesIO(data)
+        with mock.patch.object(backup.shutil, "disk_usage", return_value=tight), \
+                self.assertRaises(backup.RestoreError) as caught:
+            backup.stage_upload(stream, len(data))
+        self.assertIn("Zu wenig freier Speicher", str(caught.exception))
+        self.assertEqual(stream.tell(), 0, "nichts gelesen, nichts geschrieben")
+        self.assertEqual(os.listdir(backup.staging_root()), [])
+
+    def test_manifest_version_nur_als_versionsnummer(self):
+        parts = self.good_parts()
+        for given, shown in (("1.8.2", "1.8.2"), ("1.9.0-rc1", "1.9.0-rc1"), ("", ""),
+                             ("1.8.0<b>fett</b>", "unbekannt"), ("bitte sofort übernehmen", "unbekannt"),
+                             (["1.8.0"], "unbekannt")):
+            with self.subTest(given=given):
+                data = self.rebuild(parts, manifest_patch=lambda m, v=given: m.update(ntp_gui_version=v))
+                preview = backup.stage_upload(io.BytesIO(data), len(data))["preview"]
+                self.assertEqual(preview["version"], shown)
+                backup.discard()
+
+    def test_vorschau_nennt_zeit_einstellungen_und_alle_weiteren_aenderungen(self):
+        parts = self.good_parts()
+        stored = json.loads(parts[backup.SETTINGS_PART])
+        stored["values"].update(serve_unsynced=not settings.values()["serve_unsynced"], local_stratum=1, ntp_port=1123, makestep="10 -1",
+                                gps_refclock_options="trust prefer", web_refresh_seconds=7)
+        parts[backup.SETTINGS_PART] = json.dumps(stored).encode()
+        data = self.rebuild(parts)
+        plan = backup.stage_upload(io.BytesIO(data), len(data))["preview"]["settings"]
+        security = {item["key"]: item for item in plan["security"]}
+        for key in ("serve_unsynced", "local_stratum", "ntp_port", "makestep", "gps_refclock_options"):
+            self.assertIn(key, security)
+        self.assertEqual(security["local_stratum"]["after"], "1")
+        changes = {item["key"]: item for item in plan["changes"]}
+        self.assertIn("web_refresh_seconds", changes)
+        self.assertRegex(changes["web_refresh_seconds"]["after"], r"^7(\.0)?$")
+        self.assertFalse(set(changes) & set(security), "jede Änderung steht nur einmal")
+        self.assertFalse(set(changes) & backup.SECRET_SETTINGS)
+
 
 
 if __name__ == "__main__":

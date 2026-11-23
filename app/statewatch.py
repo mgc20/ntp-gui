@@ -28,6 +28,15 @@ from typing import Any, Callable
 import numfmt
 
 CONFIRM = 2  # so oft hintereinander muss ein neuer Zustand gemessen werden
+CLIENT_RESTORE_GRACE = 3600.0  # s – übernommene Client-Alarme warten so lange auf die Client-Liste
+# Client-Uhren lassen sich von außen auslösen (jede Absenderadresse ein eigenes Gerät): Höchstens so viele
+# Meldungen je Stunde – Alarme und „wieder im Rahmen“ zusammen – gehen an die Benachrichtigungen, weitere
+# nur ins Protokoll (ein still gemeldetes Ende schließt den Betreff im Router ohne Nachricht). Sonst
+# verbrauchten sie das Stundenkontingent der Kanäle, und spätere wichtige Meldungen fielen weg.
+CLIENT_NOTIFY_PER_HOUR = 10
+# Eigenes Kontingent im Ereignisprotokoll für diese Einträge (events.set_quota, in server.py gesetzt).
+CLIENT_EVENT_ROWS = 5_000
+CLIENT_EVENT_TITLES = ("Uhr von ", "Alarm für ")
 # GPS-Fix: Bei schwachem Empfang (Antenne innen) kommt und geht der Fix im Minutentakt. Ein
 # Wechsel zählt erst, wenn er so lange anhält – sonst füllt sich das Protokoll mit
 # „verloren/wieder da“-Paaren, die nichts aussagen (chrony überbrückt kurze Lücken ohnehin).
@@ -190,6 +199,7 @@ class StateWatcher:
         self._pps: dict[str, _Tracker] = {}
         self._clients: dict[str, dict] = {}
         self._clients_threshold: float | None = None
+        self._client_notified: deque = deque()  # Zeitpunkte gemeldeter Client-Alarme (letzte Stunde)
 
     def _fix_tracker(self) -> _Tracker:
         return _Tracker(self._confirm, self._fix_hold, self._clock)
@@ -219,6 +229,36 @@ class StateWatcher:
             self._emit(kind, level, title, data, source="web")
         except Exception:  # Ereignisse sind nie kritisch
             pass
+
+    def client_alarm_ips(self) -> list[str]:
+        """Adressen mit offenem Client-Alarm – zum Sichern über einen Neustart (server.client_alarms)."""
+        with self._lock:
+            return sorted(ip for ip, state in self._clients.items() if state.get("alarm"))
+
+    def restore_client_alarms(self, ips: Any) -> int:
+        """Nach einem Neustart: offene Client-Alarme wieder übernehmen, ohne sie neu zu melden. Ein Gerät, das
+        noch abweicht, meldet sich so nicht doppelt; eines, das wieder im Rahmen ist, meldet „wieder im
+        Rahmen“. Fehlt ein Gerät in der Liste, bleibt sein Alarm CLIENT_RESTORE_GRACE lang stehen (die Liste
+        füllt sich nach dem Start erst wieder), danach wird er wie sonst still geschlossen."""
+        if not isinstance(ips, (list, tuple)):
+            return 0
+        until = self._clock() + CLIENT_RESTORE_GRACE
+        restored = 0
+        with self._lock:
+            for ip in ips[:5000]:
+                if isinstance(ip, str) and ip and ip not in self._clients:
+                    self._clients[ip] = {"alarm": True, "streak": 0, "count": None, "restored_until": until}
+                    restored += 1
+        return restored
+
+    def _client_notify_ok(self, now: float) -> bool:
+        """Darf ein weiterer Client-Alarm an die Benachrichtigungen (CLIENT_NOTIFY_PER_HOUR)?"""
+        while self._client_notified and now - self._client_notified[0] >= 3600:
+            self._client_notified.popleft()
+        if len(self._client_notified) >= CLIENT_NOTIFY_PER_HOUR:
+            return False
+        self._client_notified.append(now)
+        return True
 
     def _close_client(self, ip: str, why: str) -> None:
         """Offenen Client-Alarm still schließen (nur Protokoll; notify-Router schließt den Betreff)."""
@@ -509,7 +549,10 @@ class StateWatcher:
                 for state in self._clients.values():
                     state["streak"] = 0
                 self._clients_threshold = threshold
+            now = self._clock()
             for ip in [ip for ip in self._clients if ip not in clients]:
+                if ip not in handover and self._clients[ip].get("restored_until", now) > now:
+                    continue  # nach einem Neustart: Die Client-Liste füllt sich erst wieder
                 self._close_client(ip, "eigene Schwelle übernimmt" if ip in handover
                                    else "nicht mehr in der Liste")
                 del self._clients[ip]
@@ -524,22 +567,28 @@ class StateWatcher:
                 if count == state["count"]:
                     continue  # keine neue Messung
                 state["count"] = count
+                state.pop("restored_until", None)
                 if not state["alarm"]:
                     over = abs(value) > threshold
                     state["streak"] = state["streak"] + 1 if over else 0
                     if state["streak"] >= CONFIRM:
-                        state.update(alarm=True, streak=0)
+                        extra = _extra(data_for, ip)
+                        quiet = extra.get("notify") is not False and not self._client_notify_ok(now)
+                        state.update(alarm=True, streak=0, quiet=quiet)
                         self._send("clients", "warn", f"Uhr von {ip} weicht um {fmt(value)} ab",
                                    {"address": ip, "offset": value, "threshold_ms": threshold * 1000,
-                                    **_extra(data_for, ip)})
+                                    **extra, **({"notify": False} if quiet else {})})
                 else:
                     back = abs(value) < threshold / 2
                     state["streak"] = state["streak"] + 1 if back else 0
                     if state["streak"] >= CONFIRM:
                         state.update(alarm=False, streak=0)
+                        extra = _extra(data_for, ip)
+                        quiet = state.pop("quiet", False) or (extra.get("notify") is not False
+                                                              and not self._client_notify_ok(now))
                         self._send("clients", "info", f"Uhr von {ip} wieder im Rahmen ({fmt(value)})",
                                    {"address": ip, "offset": value, "threshold_ms": threshold * 1000,
-                                    **_extra(data_for, ip)})
+                                    **extra, **({"notify": False} if quiet else {})})
             if len(self._clients) > 5000:
                 for ip in list(self._clients)[:len(self._clients) - 5000]:
                     del self._clients[ip]

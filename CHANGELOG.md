@@ -6,6 +6,254 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 
 ## [Unveröffentlicht]
 
+## [1.9.0] – 2026-11-23
+
+Schwerpunkt: Sicherheit und Betrieb auf einem VPS. Anmeldung, HTTP-Server, Eingaben, Netzdienste
+und Container sind gehärtet; Dashboard und DNS-Weiterleiter laufen nicht mehr als root. Neu sind
+eine Vorlage `docker-compose.vps.yml` und die Anleitung [docs/integrationen/vps.md](docs/integrationen/vps.md).
+Einige Standards ändern sich (Ratelimit ab Werk, `CLIENTLOGLIMIT`, Ziele für Benachrichtigungen,
+Zugang aus der Umgebung, Besitzer des Datenverzeichnisses). Lies vor dem Update die
+Update-Hinweise „Von 1.8 auf 1.9“ in der [README](README.md#von-18-auf-19).
+
+### Sicherheit
+- **Anmeldung und Zugang**
+  - **Bremse gegen Passwort-Raten:** Nach 5 Fehlversuchen von einer Adresse (IPv6: je /64) muss
+    diese warten, zuerst 2 s, dann jeweils doppelt so lange, höchstens 15 min. In der Zeit
+    antwortet der Server mit `429` und `Retry-After`, ohne das Passwort zu prüfen. Häufen sich
+    Fehlversuche aus vielen Quellen, werden neue Anmeldungen kurz gebremst. Angemeldete Browser und
+    Adressen mit erfolgreicher Anmeldung in den letzten 24 h sind davon ausgenommen.
+  - Gleichzeitige Passwortprüfungen sind begrenzt, und ein gerade abgelehnter, identischer
+    Anmeldekopf wird nicht erneut berechnet. Viele Fehlversuche lasten die CPU damit nicht mehr aus.
+  - Fehlversuche stehen mit Absenderadresse im Container-Log, etwa für fail2ban. Ins
+    Ereignisprotokoll kommt höchstens eine Zusammenfassung je Minute, ohne Adresse; dafür gibt es
+    die neue Ereignisart „Zugang“.
+  - **Zugang aus der Umgebung:** Unvollständige Zugangsdaten öffnen das Dashboard nicht mehr: Ist
+    nur `WEB_USER` gesetzt oder ist `WEB_PASSWORD_FILE` unlesbar, bleibt es gesperrt. Ist nur
+    `WEB_PASSWORD` gesetzt, gilt der Benutzer `admin`. Mit `WEB_REQUIRE_AUTH=true` gilt ein
+    schwaches Passwort aus der Umgebung (bekannter Beispielwert, gleich dem Benutzernamen, unter 12
+    Zeichen) als nicht gesetzt; das Dashboard bleibt gesperrt, das Start-Log nennt den Grund. Die
+    Compose-Vorlagen enthalten kein Beispielpasswort mehr.
+  - **Passwort ändern oder entfernen** verlangt das bisherige Passwort; jede Änderung steht im
+    Ereignisprotokoll. Eine Anmeldeprüfung, die beim Ändern noch lief, landet nicht mehr im Merker
+    für geprüfte Zugänge – das alte Passwort gilt nicht noch einige Minuten weiter.
+  - Ein im Dashboard gesetztes Passwort wird mit 600 000 PBKDF2-Runden gespeichert. Ältere Hashes
+    werden bei der nächsten Anmeldung umgestellt.
+  - `Strict-Transport-Security`, wenn das Dashboard über einen eingetragenen Reverse Proxy per
+    HTTPS aufgerufen wird.
+- **API-Schlüssel**
+  - Schlüssel, die angelegt wurden, als das Dashboard noch ohne Passwort war, werden nach dem
+    ersten Setzen eines Passworts zur Prüfung angezeigt (behalten oder widerrufen). „Behalten“
+    (`POST /api/apikeys/keep`) geht nur mit Anmeldung per Passwort.
+  - Der Benutzername ist für API-Schlüssel nicht mehr sichtbar, auch nicht für Lese-Schlüssel.
+  - **Leserecht:** Schlüssel mit Leserecht sehen DoT-Server (`dns_dot`) und feste Adressen
+    (`dns_pin`) nur gekürzt – dort kann wie im DoH-Pfad eine Konto-Kennung stehen (z. B. NextDNS).
+    Ebenso gekürzt erscheint der Name eines DoT-Servers im DNS-Status (`/api/dns`, Übersicht), in
+    dessen Fehlertexten und in den Ereignissen „DNS für ntp-gui: … nicht erreichbar/antwortet
+    wieder“.
+  - **Alte Schlüssel (PBKDF2, Vorabversion 1.3):** Ihre Prüfung läuft höchstens einmal gleichzeitig
+    und nach einem Fehlschlag erst nach einer Sekunde wieder. Falsche Schlüssel binden ohne
+    Anmeldung keine beliebige Rechenzeit mehr.
+- **Reverse Proxy:** Die echte Adresse zählt nur, wenn der Proxy in `TRUSTED_PROXIES` steht. Schickt
+  ein eingetragener Proxy neben `X-Real-IP` auch `X-Forwarded-For` oder `Forwarded`, zählt die
+  Kette nur, wenn ihr rechter Eintrag mit `X-Real-IP` übereinstimmt. Widersprechen sich beide, gilt
+  keine der Angaben: Die Anmeldebremse zählt solche Anfragen unter einem eigenen Schlüssel, der nie
+  als bewährte Quelle gilt und sich nichts mit der Adresse des Proxys teilt (etwa `127.0.0.1` eines
+  SSH-Tunnels); die Log-Zeile „Anmeldung fehlgeschlagen von unklarer Adresse (…)“ nennt beide
+  Angaben. `Forwarded: proto=` zählt neben `X-Real-IP` nicht, nur `X-Forwarded-Proto`. Vom Browser
+  durchgereichte Köpfe bestimmen damit weder Adresse (Anmeldebremse, Zugriffsprotokoll) noch
+  HTTPS-Erkennung. Caddy, NPM, Zoraxy und Traefik arbeiten unverändert.
+- **HTTP-Server**
+  - Das Dashboard hält höchstens `WEB_MAX_CONNECTIONS` Verbindungen gleichzeitig offen (Standard
+    200). Weitere schließt es sofort, ohne einen Thread zu starten. Kann ein Thread nicht starten,
+    läuft der Server weiter.
+  - `/healthz` fragt chronyd höchstens alle 2 Sekunden ab, nicht mehr bei jeder Anfrage.
+  - Unerwartete Fehler zeigen dem Client nur noch eine allgemeine Meldung; Einzelheiten wie
+    Dateipfade stehen nur im Log. Ungültige Namen unter `/static/` ergeben 404.
+  - Neue Schutzköpfe: Trusted Types in der Content-Security-Policy, Cross-Origin-Opener-Policy,
+    Cross-Origin-Resource-Policy und Permissions-Policy. Der Server-Kopf nennt keine Python-Version
+    mehr.
+  - Sicherung herunterladen, Diagnose erstellen und Hardware neu prüfen nehmen keine Aufrufe von
+    fremden Seiten mehr an (Sec-Fetch-Site).
+- **Konfiguration für chrony und ptp4l:** Werte, die in `chrony.conf` oder `ptp4l.conf` landen, sind
+  immer genau eine Zeile. IPv6-Adressen und Netze nehmen keine Scope-ID (`%eth0`) mehr an, und jede
+  erzeugte Zeile wird vor dem Schreiben auf Steuerzeichen geprüft. `LEAPSECTZ` und die Zeitzone für
+  Schaltsekunden nehmen nur Zonennamen unter `/usr/share/zoneinfo` an, keine Pfade.
+- **Ausgehende Ziele**
+  - Benachrichtigungen prüfen die Zieladresse nach der Namensauflösung, auch in IPv6-Hüllen.
+    Link-local (`169.254.0.0/16`, `fe80::/10`), bekannte Metadaten-Dienste, Multicast und
+    reservierte Bereiche sind nie ein Ziel. Loopback ist standardmäßig gesperrt. Ziele im Heimnetz
+    und im Docker-Netz gehen weiter. Ein Token über `http://` geht nur noch hinaus, wenn die
+    aufgelöste Adresse im eigenen Netz liegt.
+  - Der Test-Knopf für Benachrichtigungen meldet abgelehnte, gesperrte und nicht erreichbare Ziele
+    einheitlich und lässt höchstens fünf Tests je Minute zu, je Kanal einen alle 5 s.
+  - Der DNS-Weiterleiter nimmt keine Link-local- oder Metadaten-Adressen als Server, DoT-/DoH-Ziel
+    oder feste Adresse an. Mit `OUTBOUND_TARGETS=public` ist auch Loopback gesperrt. Die Warnung zu
+    einer ungültigen DNS-Einstellung (`DNS_DOH`, `DNS_DOT`, `DNS_PIN`) nennt den Wert nicht mehr
+    wörtlich, nur die Einstellung und den gekürzten Ersatzwert.
+- **Benachrichtigungen und Ereignisse**
+  - Kritische Meldungen (`crit`) haben je Kanal einen eigenen Rahmen von 30 je Stunde und scheitern
+    nicht mehr daran, dass andere Meldungen das eingestellte Stundenkontingent aufgebraucht haben.
+  - **Alarm für Client-Uhren:** Höchstens 10 solcher Meldungen je Stunde – Alarme und „wieder im
+    Rahmen“ zusammen – gehen an die Benachrichtigungen, weitere nur ins Ereignisprotokoll. Dort
+    haben sie ein eigenes Kontingent und verdrängen keine anderen Ereignisse mehr.
+- **Sichern und wiederherstellen:** Es läuft nur ein Upload gleichzeitig, und vor dem Schreiben wird
+  geprüft, ob genug Platz bleibt. Auch eine neue Sicherung zum Herunterladen wird nur einmal
+  gleichzeitig erstellt. Die Vorschau beim Wiederherstellen nennt zusätzlich Einstellungen, die die
+  ausgelieferte Zeit bestimmen (NTP- und NTS-Port, Zertifikat, Stratum, Ratenbegrenzung, makestep,
+  Quellen- und GPS-Optionen), und darunter alle weiteren Änderungen mit altem und neuem Wert. Die
+  Versionsangabe der Sicherung erscheint nur, wenn sie eine gültige Versionsnummer ist.
+- **Verlauf:** Die Verdichtung für `/api/history` läuft über eine eigene Leseverbindung und hält die
+  Messschleife nicht mehr auf; höchstens eine läuft gleichzeitig.
+- **Zeitserver im Internet**
+  - Der NTS-Schlüsselaustausch (NTS-KE) des eigenen NTS-Servers ist je Adresse begrenzt
+    (`ntsratelimit`), passend zur Stufe von „Anfragen begrenzen“. „Anfragen begrenzen“ ist
+    standardmäßig an; die Stufe „schonend“ bremst nur Überflutung und stört LAN-Clients nicht.
+  - Stehen unter „Erlaubte Netze“ öffentliche Adressen (`all`, `0.0.0.0/0`, `::/0`, Provider-Netze),
+    gelten sicherere Standards: Ratelimit „streng“ und kein Inselbetrieb. Clients aus dem Internet
+    weichen so bei einem Ausfall der Quellen auf andere Server aus, statt eine frei laufende Uhr als
+    gültige Zeit zu übernehmen. Ausdrücklich gesetzte Werte bleiben.
+  - Übersicht und Container-Log weisen deutlich darauf hin, wenn der Zeitserver allen Adressen
+    antwortet, und nennen, was noch fehlt. Die Übersicht erkennt außerdem, wenn Clients nur als
+    Gateway des Docker-Netzes erscheinen (Portfreigabe über den userland-proxy), und erklärt die
+    Folgen für „Erlaubte Netze“ und das Ratelimit.
+- **Container**
+  - Dashboard und DNS-Weiterleiter laufen nicht mehr als root, sondern als eigener Benutzer
+    `ntpgui` mit no-new-privs und ohne Capabilities. Ausnahmen: `NET_RAW` für die Client-Messung,
+    `NET_BIND_SERVICE` für Port 53 bzw. einen Dashboard-Port unter 1024. Nur der Supervisor bleibt
+    root, chronyd behält nur `SYS_TIME`.
+  - Neustarts der Zeitdienste fordert das Dashboard nur noch über zwei feste Anforderungsdateien in
+    seinem eigenen Verzeichnis (`/run/ntp-gui/web`) an. Das Verzeichnis des Supervisors kann es
+    nicht beschreiben.
+  - Der Watchdog prüft Dienste ohne zusätzliche Prozesse. Bei erreichter Prozessgrenze gilt ein
+    laufender Pflichtdienst nicht mehr fälschlich als ausgefallen, und der Container wird nicht
+    gestoppt.
+  - Das Image enthält keine SUID-/SGID-Programme mehr.
+  - Alle Compose-Vorlagen setzen `no-new-privileges`, entfernen alle Capabilities und geben nur die
+    nötigen zurück. Sie begrenzen Prozesse und Speicher und rotieren das Docker-Log (10 MB × 3).
+- **NTS-Server:** Die Kopie des Schlüssels für chronyd ist nur für chronyd lesbar (`_chrony`,
+  `0400`). Die Kopie des Zertifikats (`server.crt`, für die Gruppe `_chrony` lesbar) enthält nur die
+  Zertifikatsblöcke; eine kombinierte PEM-Datei mit Zertifikat und privatem Schlüssel gibt den
+  Schlüssel nicht mehr an diese Gruppe – und damit an das Dashboard – weiter. Das Dashboard
+  erreicht den Kommando-Socket von chronyd über die Gruppe `_chrony`.
+- **Supervisor:** `settings.json` und `noselect.list` im Datenverzeichnis liest er nur als
+  gewöhnliche Dateien: keinem Link folgen, nicht an Pipes warten, höchstens 4 MiB bzw. 4 KiB. Alles
+  andere gilt bei `settings.json` als nicht lesbar: Das Dashboard geht in den Schutzmodus, der
+  Zeitserver in den Notbetrieb. Die Konfiguration wird beim Neuladen mit einer Frist erzeugt,
+  sodass Watchdog, Neustarts und Hotplug weiterlaufen.
+- **Einstellungen**
+  - Eine vorhandene, aber nicht lesbare `settings.json` (abgeschnitten, beschädigt, ohne Leserecht)
+    lässt den Passwortschutz nicht mehr still wegfallen. Das Dashboard startet dann im Schutzmodus:
+    gesperrt bis auf `/healthz`, mit der Meldung „Einstellungen nicht lesbar“ und einer deutlichen
+    Warnung im Log. Speichern ist gesperrt, damit die Datei nicht überschrieben wird. Mit
+    `WEB_USER`/`WEB_PASSWORD` bleibt das Dashboard mit Anmeldung erreichbar. Nach einer Reparatur
+    der Datei hebt sich der Schutzmodus von selbst auf.
+  - Muss `settings.json` auf ein neues Schema gehoben werden, speichert der root-Teil
+    (Konfiguration für chronyd) das Ergebnis nicht selbst ins Datenverzeichnis des Dashboards; die
+    Migration gilt dort nur im Speicher, das Dashboard speichert sie. Die Rechte der Zwischendatei
+    werden am geöffneten Deskriptor gesetzt statt über ihren Namen.
+
+### Hinzugefügt
+- **`WEB_REQUIRE_AUTH=true`:** Ohne Zugang bleibt das Dashboard gesperrt. Nur `/healthz` und eine
+  Einrichtungs-Meldung antworten. Gedacht für Server, die aus dem Internet erreichbar sind (VPS).
+- **`WEB_PASSWORD_FILE`:** Passwort aus einer Datei, zum Beispiel einem Docker Secret.
+- **`WEB_MAX_CONNECTIONS`** (Standard 200, mindestens 8). Auf einem VPS begrenzt du die Verbindungen
+  je Adresse zusätzlich im Reverse Proxy.
+- **`OUTBOUND_TARGETS`** (nur per Umgebung): `lan` (Standard), `loopback` (zusätzlich Dienste auf
+  demselben Rechner, z. B. Apprise bei `network_mode: host`) oder `public` (nur öffentliche Ziele,
+  für einen VPS).
+- **Knopf „Abmelden“** unten auf der Seite und unter Einstellungen → Dashboard & Zugang.
+- **Warnungen im Start-Log**, wenn das Dashboard ohne Passwort auf allen Adressen lauscht, gesperrt
+  ist oder ein schwaches Passwort aus der Umgebung nutzt. Ein schwaches Passwort aus der Umgebung
+  meldet auch die Übersicht. Ist `WEB_PASSWORD` gesetzt und im Dashboard zusätzlich ein eigenes
+  Passwort gespeichert, warnen Start-Log und Einstellungsseite, dass das Dashboard-Passwort nicht
+  gilt.
+- **Vorlage `docker-compose.vps.yml`** für einen Zeitserver im Internet: Host-Netz, strenges
+  Ratelimit, kein Inselbetrieb, Dashboard nur lokal und mit `WEB_REQUIRE_AUTH=true`,
+  schreibgeschütztes Root-Dateisystem mit tmpfs, `TRUSTED_PROXIES` für einen Reverse Proxy auf
+  demselben Rechner, ohne Client-Messung.
+- **Anleitung [docs/integrationen/vps.md](docs/integrationen/vps.md):** Firewall, Caddy mit Let's
+  Encrypt, alternativ Cloudflare Tunnel mit Access (mit der Grenze, dass NTP und NTS nicht durch
+  Cloudflare gehen), NTS-Zertifikat, Updates, Sicherung.
+- **Benachrichtigungen überstehen einen Neustart:** Offene Probleme, Sperrzeiten und offene
+  Client-Alarme liegen in der Datenbank. Es gibt keinen doppelten Alarm, und die Meldung „behoben“
+  fehlt nicht.
+- Der Supervisor legt die Rechte des Containers beim Start in `/run/ntp-gui/container-caps` ab,
+  lesbar für das Dashboard. Hardware-Check, Einrichtungs-Assistent und PTP-Prüfung werten sie aus.
+- Hilfe (ⓘ) „Anfragen begrenzen“.
+
+### Geändert
+- **„Anfragen begrenzen“** (`NTP_RATELIMIT`) hat die Stufen `aus`, `schonend` (Standard) und
+  `streng`. `true` entspricht `streng` (der bisherigen Einstellung), `false` entspricht `aus`.
+- **`CLIENTLOGLIMIT`** hat als Standard 2 MiB (etwa 16 000 Adressen) statt 10 MB.
+- **Passwörter im Dashboard:** Bekannte Beispielwerte (etwa `bitte-aendern`), sehr gleichförmige
+  Passwörter und ein Passwort gleich dem Benutzernamen werden abgelehnt.
+- **Expertenvariablen**, die in `chrony.conf` landen (`GPS_SHM_UNIT`, `GPS_PPS_SHM_UNIT`,
+  `MAXUPDATESKEW`, `CLIENTLOGLIMIT`, `CHRONY_LOG`, `PHC_REFCLOCK_OPTIONS`), werden geprüft. Ein
+  ungültiger Wert fällt mit Warnung im Start-Log auf den Standard zurück.
+- **Fehlermeldung bei Benachrichtigungen:** „Ziel nicht erreichbar oder nicht erlaubt“ ersetzt
+  „Verbindung abgelehnt“, „Netzwerkfehler“ und „Ungültige Antwort vom Ziel“.
+- **Datenverzeichnis:** Beim ersten Start nach dem Update übergibt der Container
+  `/var/lib/chrony/ntp-gui` an den Benutzer `ntpgui` (UID/GID 990). Das steht einmal im Log.
+- **Anzeige:** Sehr große Abweichungen erscheinen gegliedert (z. B. „−20.717 d 14 h“ statt
+  „−1790000000 s“). Schlüssel/Wert-Zeilen haben eine Höchstbreite: Auf sehr breiten Bildschirmen
+  stehen Bezeichnung und Wert nicht mehr weit auseinander.
+- **Dokumentation:** README mit den Abschnitten „Anmeldung und Zugang“ (mit Beispiel für den
+  VPS-Betrieb), „Öffentlich erreichbarer Zeitserver“ (Ratelimit-Stufen, Inselbetrieb,
+  Docker-Gateway, NTS-Schlüsselaustausch, Client-Log) und den Update-Hinweisen „Von 1.8 auf 1.9“;
+  dazu gesperrte Ziele, `OUTBOUND_TARGETS`, direkt eingetragene Apprise-URLs, eine Firewall-Regel
+  gegen Metadaten-Dienste, die Passwortdatei (überschreiben statt ersetzen), Prozesse unter root
+  (`ptp4l`/`phc2sys`) und `/var/lib/chrony` (muss beschreibbar sein). PTP hat keine
+  Authentifizierung: Es gehört in ein vertrauenswürdiges Netz, und ein Grandmaster mit GPS sollte
+  die Rolle „Grandmaster“ haben (README, Hilfe, SECURITY.md). SECURITY.md: unterstützte Version
+  1.9.x, Betrieb auf einem VPS ist unterstützt. Versionsbeispiel in den Vorlagen: `:1.9`.
+
+### Behoben
+- **Neue Konfiguration abgelehnt:** Lehnt chronyd eine neue Konfiguration ab, bleibt die bisherige
+  aktiv, statt dass der Container beim Neustart stehen bleibt. chronyd prüft die Datei vorher
+  (`chronyd -p`). Status, Ereignisprotokoll und Vorschau nennen den Grund. Ist eine gespeicherte
+  Einstellung beim Start ungültig, startet ntp-gui mit Umgebung und Standardwerten und meldet das.
+- **Ohne `CAP_KILL`** (z. B. `cap_drop: [ALL]` ohne `KILL`) hing der Supervisor beim ersten
+  Speichern mit Neustart dauerhaft. Jetzt wartet er nur begrenzt, versucht SIGKILL und meldet einen
+  gescheiterten Neustart; der laufende chronyd bleibt aktiv. Beim Start warnt das Log, wenn
+  `CAP_KILL` fehlt.
+- **Schreibgeschütztes Root-Dateisystem:** Mit `read_only: true` startete der Container nicht. Die
+  erzeugte Konfiguration liegt dann automatisch unter `/run/ntp-gui-conf`.
+- **Dashboard ohne Antwort des Servers:** Es bleibt nicht mehr auf dem letzten Stand stehen;
+  Abfragen haben ein Zeitlimit, danach erscheint der Hinweis „Werte veraltet“.
+- Einstellungen und andere Formulare melden nicht mehr „Gespeichert“, wenn statt des Dashboards
+  etwas anderes leer oder mit einer HTML-Seite antwortet (Proxy, Anmeldeseite). Leere Antworten
+  zeigen eine deutsche Meldung statt eines englischen Browsertexts.
+- Einstellungen, Hardware-Check, GPS-Empfänger, Kalibrierung, Störungserkennung, Holdover- und
+  Antennen-Test zeigen nach einem Serverfehler die Ursache statt endlos „Wird geladen …“.
+- **Uhr in der Zukunft:** Ging die Systemuhr weit vor, ging der ganze Verlauf verloren und das
+  1-h-Diagramm blieb danach leer. Jetzt bleibt der Verlauf erhalten, die Diagramme enden bei der
+  aktuellen Zeit, und Messpunkte aus der Zukunft verschwinden, sobald chrony die Uhr wieder als
+  plausibel meldet. Die Update-Prüfung setzt danach nicht mehr wochenlang aus.
+- **Sicherungen bei kleinem Messintervall** wurden größer, als die eigene Wiederherstellung annimmt.
+  Jetzt wird der Rohverlauf in der Sicherung bei Bedarf ausgedünnt (der 5-Minuten-Verlauf bleibt
+  vollständig), sodass jede Sicherung wiederherstellbar ist.
+- Eine unendliche oder sehr große Zahl in den Einstellungen (auch über die API) ergibt eine
+  verständliche Meldung am Feld statt HTTP 500. Ganzzahl-Felder lehnen Nachkommastellen und
+  ungewöhnliche Schreibweisen ab.
+- Tief verschachteltes JSON wird mit 400 abgelehnt, statt die Anfrage ohne Antwort abzubrechen. Das
+  gilt auch für das Manifest einer Sicherung.
+- HEAD auf `/api/backup` und die Diagnose-Downloads ergibt 405 und baut keine Sicherung mehr. Die
+  Sicherungs-Antwort trägt den Kopf `X-Content-Type-Options` nur noch einmal. Das Namensmuster
+  gespeicherter Sicherungen akzeptiert keinen angehängten Zeilenumbruch mehr.
+- Der Datenschutzfilter braucht bei langen Leerraum-Folgen keine übermäßige Rechenzeit mehr.
+- `GPS_SHM_UNIT` mit Text bricht die Erzeugung der Konfiguration nicht mehr ab.
+- **Diagnosepaket:** Die Aufzeichnung verwarf jede Client-Liste (`chronyc -c clients`) als „Zeile
+  entfernt“. chrony schreibt unbekannte Werte dort als 127; zwei Nachbarn wie `0,127,127,184` hielt
+  die Schlussprüfung für Dezimalzahlen mit Komma und damit für ein Koordinatenpaar. Ganzzahlige
+  Spalten in solchen Bereichen bekommen jetzt ein `+` davor – der Wert bleibt gleich, die Prüfung
+  bleibt unverändert streng.
+- Lange Rechnernamen und Pfade werden in Statusband und Hinweisen auf dem Handy umgebrochen statt
+  abgeschnitten.
+- Ein per Tastatur fokussiertes Element liegt auf schmalen Bildschirmen nicht mehr hinter der
+  unteren Leiste oder der Speicherleiste.
+- Die Client-Messung lässt sich ohne Neustart einschalten, auch wenn sie beim Start des Containers
+  aus war: Das Dashboard bekommt `NET_RAW` immer, wenn der Container sie hat.
+
 ## [1.8.0] – 2026-11-18
 
 Schwerpunkt: Die Studiouhr bekommt Timecode, Weltzeit, eine Statuszeile für PTP und Holdover, ein
@@ -1592,6 +1840,7 @@ Erste Veröffentlichung.
 - CI mit Unittests und Integrationstest gegen das gebaute Image; Release-Workflow,
   der das Image für amd64 und arm64 nach ghcr.io veröffentlicht.
 
+[1.9.0]: https://github.com/mgc20/ntp-gui/compare/v1.8.0...v1.9.0
 [1.8.0]: https://github.com/mgc20/ntp-gui/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/mgc20/ntp-gui/compare/v1.6.3...v1.7.0
 [1.6.3]: https://github.com/mgc20/ntp-gui/compare/v1.6.2...v1.6.3

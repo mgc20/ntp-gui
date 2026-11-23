@@ -30,5 +30,10 @@ PATHS = {
     "CHRONY_CONF": os.path.join(ROOT, "etc", "chrony.conf"),       # fehlt absichtlich
     "PTP4L_CONF": os.path.join(ROOT, "etc", "ptp4l.conf"),         # fehlt absichtlich
     "NTPGUI_NTS_CERT_DIR": os.path.join(ROOT, "nts-certs"),
+    "NTPGUI_CHRONYD": os.path.join(ROOT, "kein-chronyd"),          # Prüfung mit chronyd -p nur, wo ein Test sie will
 }
 os.environ.update(PATHS)
+# Erlaubte Ziele ausgehender Verbindungen: immer der Standard, nicht ein Wert aus der Shell.
+os.environ.pop("OUTBOUND_TARGETS", None)
+# Verzeichnis für Anforderungen des Dashboards: wie ohne Supervisor gleich RUN_DIR.
+os.environ.pop("NTPGUI_REQUEST_DIR", None)

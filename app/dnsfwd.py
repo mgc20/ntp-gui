@@ -42,6 +42,7 @@ import http.client
 import ipaddress
 import json
 import os
+import re
 import secrets
 import select
 import signal
@@ -59,11 +60,14 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import textsafe  # noqa: E402 – reine Funktionen, ohne Seiteneffekte
 
-RUN_DIR = os.environ.get("NTPGUI_RUN_DIR", "/run/ntp-gui")
+# Zustand, Bereitmeldung und Ereignisse des Weiterleiters. Er läuft ohne root und schreibt deshalb in
+# das Verzeichnis des Benutzers ntpgui (NTPGUI_REQUEST_DIR); ohne die Variable in RUN_DIR.
+RUN_DIR = os.environ.get("NTPGUI_REQUEST_DIR") or os.environ.get("NTPGUI_RUN_DIR", "/run/ntp-gui")
 RESOLV_CONF = os.environ.get("NTPGUI_RESOLV_CONF", "/etc/resolv.conf")
 STATUS_NAME = "dns.json"
 READY_NAME = "dnsfwd.ready"
 EVENTS_NAME = "events.jsonl"
+EVENTS_MAX = 1_048_576  # ab 1 MB nach events.jsonl.1 verschieben
 MARKER = "# ntp-gui: dnsfwd"
 
 MODES = ("system", "servers", "dot", "doh")
@@ -152,6 +156,24 @@ def pins_from(cfg: dict) -> dict[str, list[str]]:
         if name and ip:
             pins.setdefault(name.lower().rstrip("."), []).append(ip)
     return pins
+
+
+def mask_host(host: str) -> str:
+    """Servername ohne vordere Teile (z. B. Konto-Kennung vor dns.nextdns.io): nur die letzten drei."""
+    labels = host.split(".")
+    if len(labels) <= 3:
+        return host
+    try:
+        ipaddress.ip_address(host.strip("[]"))
+        return host
+    except ValueError:
+        return "…." + ".".join(labels[-3:])
+
+
+def dot_label(host: str, port: int) -> str:
+    """Anzeigename eines DoT-Servers – wie doh_label ohne mögliche Konto-Kennung im Namen."""
+    shown = mask_host(host)
+    return shown if port == DOT_PORT else f"{shown}:{port}"
 
 
 def doh_label(url: str) -> str:
@@ -608,6 +630,10 @@ class Upstream:
     def exchange(self, query: bytes, deadline: float) -> bytes:  # pragma: no cover - abstrakt
         raise NotImplementedError
 
+    def scrub(self, text: str) -> str:
+        """Fehlertext für Status, Ereignisse und Oberfläche (DoT: ohne vollen Servernamen)."""
+        return text
+
     def public(self) -> dict:
         # down_until ist monotonic (für die Dauer); nach außen als Uhrzeit (Epoch) wie die übrigen Zeiten.
         left = self.down_until - time.monotonic()
@@ -636,6 +662,7 @@ class _NamedUpstream(Upstream):
                  bootstrap: "Bootstrap", context: ssl.SSLContext | None) -> None:
         super().__init__(label)
         self.host, self.port, self.pins = host, port, list(pins)
+        self.shown_host = host  # nach außen (Status, Fehlertexte); DoT kürzt ihn
         self.bootstrap = bootstrap
         self.context = context or tls_context()
         self.bootstrap_failed = False
@@ -665,12 +692,26 @@ class _NamedUpstream(Upstream):
 
     def public(self) -> dict:
         data = super().public()
-        data.update(host=self.host, pinned=self.is_pinned(), bootstrap_failed=self.bootstrap_failed)
+        data.update(host=self.shown_host, pinned=self.is_pinned(), bootstrap_failed=self.bootstrap_failed)
         return data
+
+    def scrub(self, text: str) -> str:
+        if self.shown_host == self.host or not self.host:
+            return text
+        return re.sub(re.escape(self.host), lambda _m: self.shown_host, text, flags=re.IGNORECASE)
 
 
 class DotUpstream(_NamedUpstream):
+    """DNS-over-TLS. Der Servername kann eine Konto-Kennung enthalten (abc123.dns.nextdns.io): Nach
+    außen – Bezeichnung, Status, Ereignisse, Fehlertexte – erscheint er gekürzt wie in den
+    Einstellungen für Schlüssel mit Leserecht."""
+
     proto = "dot"
+
+    def __init__(self, label: str, host: str, port: int, pins: list[str],
+                 bootstrap: "Bootstrap", context: ssl.SSLContext | None) -> None:
+        super().__init__(label, host, port, pins, bootstrap, context)
+        self.shown_host = mask_host(host)
 
     def exchange(self, query: bytes, deadline: float) -> bytes:
         error: Exception | None = None
@@ -909,7 +950,7 @@ def build_upstreams(cfg: dict, bootstrap: Bootstrap, context: ssl.SSLContext | N
             ups.append(PlainUpstream(ip, port))
         elif mode == "dot":
             host, port = split_host_port(item, DOT_PORT)
-            up = DotUpstream(host if port == DOT_PORT else f"{host}:{port}", host, port,
+            up = DotUpstream(dot_label(host, port), host, port,
                              pins.get(host.lower(), []), bootstrap, context)
             ups.append(up)
         elif mode == "doh":
@@ -1246,7 +1287,7 @@ class Forwarder:
         except (OSError, ssl.SSLError, DnsError, http.client.HTTPException, ValueError) as exc:
             # Sauber und verständlich: Rohe Bytes (z. B. ein HTTP/2-Rahmen) kämen sonst bis in Ereignisse,
             # Hinweise und die Oberfläche.
-            text = describe_error(exc, up.proto, int(getattr(up, "port", 0) or 0))
+            text = up.scrub(describe_error(exc, up.proto, int(getattr(up, "port", 0) or 0)))
             went_down = False
             cut_short = shortened and _is_timeout(exc)
             with self._lock:
@@ -1491,7 +1532,13 @@ def emit_event(level: str, title: str, data: dict | None = None, run_dir: str | 
                        "data": data or {}}, ensure_ascii=False) + "\n"
     try:
         os.makedirs(run_dir or RUN_DIR, exist_ok=True)
-        fd = os.open(os.path.join(run_dir or RUN_DIR, EVENTS_NAME), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+        path = os.path.join(run_dir or RUN_DIR, EVENTS_NAME)
+        try:
+            if os.path.getsize(path) > EVENTS_MAX:
+                os.replace(path, path + ".1")  # wie der Supervisor: das Dashboard liest den Rest aus .1
+        except OSError:
+            pass
+        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
         try:
             os.write(fd, line.encode("utf-8"))
         finally:

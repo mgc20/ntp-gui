@@ -1652,6 +1652,7 @@ class Sanitizer:
 
 
 _CSV_NUMBER_RE = re.compile(r"[-+]?\d+\.\d+")
+_CSV_INT_RE = re.compile(r"\d+")
 
 
 def _exp_text(text: str) -> str:
@@ -1687,9 +1688,15 @@ def _unpair_columns(parts: list[str]) -> str:
         start = 0
         for i, part in enumerate(parts):
             end = start + len(part)
-            if any(a < end and start < b for a, b in spans) and _CSV_NUMBER_RE.fullmatch(part):
-                parts[i] = _exp_text(part)
-                changed = True
+            if any(a < end and start < b for a, b in spans):
+                if _CSV_NUMBER_RE.fullmatch(part):
+                    parts[i] = _exp_text(part)
+                    changed = True
+                elif _CSV_INT_RE.fullmatch(part):
+                    # Ganzzahlen wie „0,127,127,184“ (chronyc -c clients: 127 = unbekanntes Intervall) liest die
+                    # Schlussprüfung als Dezimalzahlen mit Komma. Ein „+“ davor trennt sie; int() liest es weiter.
+                    parts[i] = "+" + part
+                    changed = True
             start = end + 1
         if not changed:
             return row
@@ -2241,6 +2248,16 @@ def _bs_float_pairs(line: str) -> list[str]:
 
 
 _BS_ECEF_GAP = re.compile(r"(?i)\s*(?:c?m\b)?\s*[,;/ ]\s*(?:[\"']?(?:ecef[_-]?)?[yz][\"']?\s*[:=]\s*)?")
+_BS_ECEF_GAP_MAX = 40    # länger (nach dem Zusammenfassen) ist keine Lücke zwischen zwei Koordinaten
+_BS_SPACE_RUN = re.compile(r"\s+")
+
+
+def _bs_ecef_gap(line: str, start: int, end: int) -> bool:
+    """Passt die Lücke zwischen zwei Zahlen? Leerraum wird vorher zu je einem Leerzeichen zusammengefasst:
+    Die Leerzeichen-Teile des Musters überlappen sich, und auf langen Leerraum-Folgen bräuchte fullmatch
+    sonst kubische Zeit. Mit einzelnen Leerzeichen bleibt es linear, das Ergebnis ist dasselbe."""
+    gap = _BS_SPACE_RUN.sub(" ", line[start:end])
+    return len(gap) <= _BS_ECEF_GAP_MAX and _BS_ECEF_GAP.fullmatch(gap) is not None
 
 
 def _bs_ecef(line: str) -> list[str]:
@@ -2250,7 +2267,7 @@ def _bs_ecef(line: str) -> list[str]:
     big = [m for m in re.finditer(r"(?<![\d.])[-+]?\d{4,10}(?:\.\d+)?(?![\d.])", line)]
     hits = []
     for a, b, c in zip(big, big[1:], big[2:]):
-        if not (_BS_ECEF_GAP.fullmatch(line, a.end(), b.start()) and _BS_ECEF_GAP.fullmatch(line, b.end(), c.start())):
+        if not (_bs_ecef_gap(line, a.end(), b.start()) and _bs_ecef_gap(line, b.end(), c.start())):
             continue
         try:
             r = (float(a.group(0)) ** 2 + float(b.group(0)) ** 2 + float(c.group(0)) ** 2) ** 0.5

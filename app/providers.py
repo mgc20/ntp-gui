@@ -83,6 +83,13 @@ def run_dir() -> str:
     return os.environ.get("NTPGUI_RUN_DIR", "/run/ntp-gui")
 
 
+def request_dir() -> str:
+    """Wo das Dashboard schreiben darf (Anforderungen, Aufzeichnungen). Im Container ein eigenes
+    Verzeichnis des Benutzers ntpgui unter RUN_DIR (NTPGUI_REQUEST_DIR); RUN_DIR selbst gehört dem
+    Supervisor. Ohne die Variable (Entwicklung, Tests) ist es RUN_DIR."""
+    return os.environ.get("NTPGUI_REQUEST_DIR") or run_dir()
+
+
 def binary(kind: str) -> str:
     """Pfad zum Programm für einen Provider (Umgebungsvariable > PATH > Standard)."""
     override = os.environ.get(_BINARY_ENV.get(kind, ""), "").strip()
@@ -130,7 +137,7 @@ def start_recording(seconds: float = 300) -> dict[str, Any]:
         raise ValueError("Dauer muss eine Zahl (Sekunden) sein") from None
     if not 1 <= seconds <= MAX_SECONDS:
         raise ValueError(f"Dauer muss zwischen 1 und {MAX_SECONDS} Sekunden liegen")
-    directory = run_dir()
+    directory = request_dir()
     os.makedirs(directory, exist_ok=True)
     now = time.time()
     stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(now))

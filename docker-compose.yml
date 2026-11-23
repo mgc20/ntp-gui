@@ -9,8 +9,8 @@
 services:
   ntp-gui:
     build: .
-    # Version festhalten statt „:latest“: „:1.5“ bleibt auf 1.5.x (nur
-    # Fehlerbehebungen), „:1.5.1“ bleibt fest auf genau dieser Version.
+    # Version festhalten statt „:latest“: „:1.9“ bleibt auf 1.9.x (nur
+    # Fehlerbehebungen), „:1.9.0“ bleibt fest auf genau dieser Version.
     # Gilt für das geladene Image – mit „build: .“ (docker compose build bzw.
     # up --build) baust du stattdessen den lokalen Stand unter diesem Namen.
     # Umgezogen: Früher hieß das Image ghcr.io/congp20/ntp-gui – dort kommen
@@ -27,8 +27,31 @@ services:
     # Container teilt sich die Uhr mit dem Host – deshalb gehört dieser Dienst
     # in eine eigene VM oder auf einen dedizierten Host. Ohne SYS_TIME läuft
     # chronyd automatisch mit -x und liefert nur die (ungeregelte) Hostzeit aus.
+    # Härtung (1.9): Nur der Supervisor läuft als root. Dashboard und DNS-Weiterleiter laufen
+    # als Benutzer ntpgui (höchstens NET_RAW bzw. NET_BIND_SERVICE), chronyd als _chrony.
+    # Alle Capabilities weg, nur die nötigen zurück.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     cap_add:
-      - SYS_TIME
+      - SYS_TIME          # chronyd stellt die Uhr
+      - CHOWN             # Start: Verzeichnisse für chronyd und das Dashboard
+      - DAC_OVERRIDE      # Supervisor liest Dateien von chronyd und Dashboard
+      - FOWNER            # Start: Dateirechte setzen
+      - SETUID            # Rechte abgeben: chronyd, gpsd, Dashboard
+      - SETGID
+      - KILL              # Dienste beim Speichern neu starten – ohne hängt das Neuladen
+      - NET_BIND_SERVICE  # Port 123 (und 53 für den DNS-Weiterleiter) mit Host-Netzwerk
+      - NET_RAW           # Messung der Client-Uhren (passives Mitlesen)
+    pids_limit: 512
+    mem_limit: 512m
+    # Logs begrenzen, damit die Platte nicht vollläuft.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
     # Alle Werte unten sind nur Startwerte – im Dashboard unter „Einstellungen“
     # lässt sich alles ändern; dort gespeicherte Werte haben Vorrang.
@@ -46,7 +69,7 @@ services:
 
       # Dashboard absichern (leer lassen = ohne Login erreichbar)
       # WEB_USER: "admin"
-      # WEB_PASSWORD: "bitte-aendern"
+      # WEB_PASSWORD: ""   # eigenes Passwort, mindestens 12 Zeichen
 
     volumes:
       - chrony-data:/var/lib/chrony   # Drift, Messwerte, Dashboard-Einstellungen und Verlauf

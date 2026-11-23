@@ -56,10 +56,12 @@ import hmac
 import http.client
 import ipaddress
 import json
+import math
 import re
 import secrets
 import socket
 import ssl
+import sys
 import threading
 import time
 import urllib.error
@@ -70,6 +72,7 @@ from typing import Any, Callable
 
 import egress
 import events
+import netguard
 import numfmt
 import settings
 import store
@@ -83,14 +86,15 @@ KIND_LABELS = {
     "service": "Dienste", "reload": "Neuladen", "settings": "Einstellungen", "source": "Zeitquellen",
     "gps": "GPS", "pps": "PPS", "calibration": "Kalibrierung", "cert": "Zertifikat",
     "leap": "Schaltsekunde", "startup": "Start", "clients": "Clients", "api": "API", "dns": "DNS für ntp-gui",
-    "update": "Update-Hinweis", "pi": "Pi-Zustand", "other": "Sonstiges",
+    "update": "Update-Hinweis", "pi": "Pi-Zustand", "access": "Zugang", "other": "Sonstiges",
 }
 # Seite im Dashboard, auf die der Link einer Meldung zeigt – Pfade wie die Routen in
 # app/static/js/routes.js (seit 1.6; alte Pfade leitet das Dashboard weiter).
 KIND_PAGES = {"gps": "gps", "pps": "gps", "calibration": "gps", "source": "quellen", "clients": "clients",
               "service": "system/diagnose", "reload": "system/diagnose", "cert": "system/einstellungen",
               "settings": "system/einstellungen", "leap": "quellen", "dns": "system/einstellungen",
-              "update": "system/einstellungen", "pi": "uhr/hardware"}
+              "update": "system/einstellungen", "pi": "uhr/hardware",
+              "access": "system/einstellungen"}
 
 MAX_CHANNELS = 10
 QUEUE_MAX = 50                     # Meldungen je Kanal; bei Überlauf fällt die älteste weg
@@ -99,9 +103,13 @@ TIMEOUT = 10.0
 MAX_RESPONSE = 64 * 1024
 POLL_SECONDS = 2.0
 BATCH = 200
+ROUTER_STATE_PREFIX = "router:"       # notify_meta: Zustand je Kanal (offene Probleme, Entprellen)
+ROUTER_STATE_KEYS = 500               # höchstens so viele Betreffe je Kanal sichern
+ROUTER_STATE_EVERY = 10.0             # s – Zustand höchstens so oft schreiben (außer beim Beenden)
 BACKLOG_SECONDS = 300.0            # nach einem Neustart: ältere, noch nicht verschickte Ereignisse verwerfen
 DEFAULT_DEBOUNCE_MIN = 15
 DEFAULT_RATE_PER_HOUR = 30
+CRIT_RATE_PER_HOUR = 30  # crit-Meldungen je Kanal und Stunde – zusätzlich zu rate_per_hour, nicht darin
 KNOWN_NAMES_TTL = 600.0
 
 SERVER_EXAMPLES = {"ntfy": "https://ntfy.sh", "gotify": "http://gotify.lan", "apprise": "http://apprise:8000"}
@@ -151,6 +159,30 @@ def _ensure() -> None:
     if _READY["db"] != db:
         store.migrate("notify", _SCHEMA)
         _READY["db"] = db
+
+
+def meta_get(key: str) -> str | None:
+    """Kleiner Schlüssel-Wert-Speicher in notify_meta (Zustand, der einen Neustart überleben soll)."""
+    try:
+        _ensure()
+        rows = store.query("SELECT value FROM notify_meta WHERE key=?", (str(key),))
+        return str(rows[0][0]) if rows and rows[0][0] is not None else None
+    except Exception:  # noqa: BLE001 – ohne gespeicherten Zustand geht es auch
+        return None
+
+
+def meta_set(key: str, value: str | None) -> bool:
+    """Wert setzen (None: löschen). False, wenn die Datenbank nicht schreibbar ist."""
+    try:
+        _ensure()
+        if value is None:
+            store.execute("DELETE FROM notify_meta WHERE key=?", (str(key),))
+        else:
+            store.execute("INSERT INTO notify_meta(key, value) VALUES(?, ?) ON CONFLICT(key) "
+                          "DO UPDATE SET value=excluded.value", (str(key), str(value)))
+        return True
+    except Exception:  # noqa: BLE001
+        return False
 
 
 class NotifyError(ValueError):
@@ -215,11 +247,10 @@ def _origin(url: str) -> tuple[str, str, int | None]:
 def local_host(host: str) -> bool:
     """IP im eigenen Netz (privat, Loopback, link-local) oder ein Name, der nur lokal auflöst."""
     host = (host or "").strip("[]").lower().rstrip(".")
-    try:
-        ip = ipaddress.ip_address(host)
-    except ValueError:
+    ip = netguard.literal(host)
+    if ip is None:
         return bool(host) and ("." not in host or host.endswith(LOCAL_SUFFIXES) or host == "localhost")
-    return ip.is_private or ip.is_loopback or ip.is_link_local
+    return netguard.local_address(ip) or ip.is_link_local
 
 
 def url_hidden(url: str) -> bool:
@@ -238,6 +269,53 @@ def display_url(url: str) -> str:
         return url
     parts = urllib.parse.urlsplit(url)
     return f"{parts.scheme}://{parts.netloc}/…"
+
+
+LOOPBACK_HINT = ("Für einen Dienst auf demselben Rechner (z. B. Apprise bei network_mode: host) "
+                 "OUTBOUND_TARGETS=loopback in der Compose-Datei setzen.")
+
+
+def _blocked_literal(url: str, env: dict | None = None) -> str | None:
+    """Steht schon in der Adresse ein gesperrtes Ziel (IP-Adresse in jeder Schreibweise oder localhost)?
+    Dann beim Speichern, beim Start und bei der Zustellung sagen, warum. Namen prüft erst die Zustellung –
+    nach der Auflösung (netguard). Die Meldung nennt nur, was ohnehin in der Adresse steht."""
+    _scheme, host, _port = _origin(url)
+    target = netguard.literal(host)
+    if target is None and (host == "localhost" or host.endswith(".localhost")):
+        target = ipaddress.ip_address("127.0.0.1")
+    if target is None:
+        return None
+    why = netguard.reason(target, "notify", env)
+    if why is None:
+        return None
+    hint = f" {LOOPBACK_HINT}" if netguard.unwrap(target).is_loopback else ""
+    return f"Dieses Ziel ist gesperrt ({why}).{hint}"
+
+
+def blocked_channels(env: dict | None = None) -> list[tuple[dict, str]]:
+    """Eingeschaltete gespeicherte Kanäle, deren Adresse ein gesperrtes Ziel nennt – z. B. Apprise unter
+    http://127.0.0.1:8000 aus einer Einrichtung vor 1.9, in der Loopback noch erlaubt war."""
+    try:
+        rows = _load_all()
+    except Exception:
+        return []
+    out = []
+    for channel in rows:
+        why = _blocked_literal(channel["url"], env) if channel["enabled"] else None
+        if why:
+            out.append((channel, why))
+    return out
+
+
+def warn_blocked_channels(env: dict | None = None) -> int:
+    """Beim Start: je betroffenem Kanal eine Warnung ins Container-Log und ins Ereignisprotokoll (nur
+    Kennung und Art, nie die Adresse). Sonst fiele ein solcher Kanal nach dem Update ohne Hinweis aus."""
+    found = blocked_channels(env)
+    for channel, why in found:
+        text = f"Benachrichtigungskanal {_label(channel)}: {why}"
+        print(f"[notify] WARNUNG: {text}", file=sys.stderr, flush=True)
+        events.emit("notify", "warn", text, {"channel": channel["id"], "reason": "blocked"})
+    return len(found)
 
 
 def validate(data: dict, existing: dict | None = None) -> dict:
@@ -262,6 +340,9 @@ def validate(data: dict, existing: dict | None = None) -> dict:
     if not settings.http_url_ok(url):
         raise NotifyError("Adresse: http:// oder https:// mit Hostname bzw. IP, ohne Leerzeichen und ohne "
                           "Benutzer/Passwort in der Adresse (dafür gibt es das Token-Feld)")
+    blocked = _blocked_literal(url)
+    if blocked:
+        raise NotifyError(f"Adresse: {blocked}")
     topic = str(data.get("topic", base.get("topic", "")) or "").strip()
     if kind in ("ntfy", "gotify", "apprise"):
         parts = urllib.parse.urlsplit(url)
@@ -431,6 +512,7 @@ def delete_channel(channel_id: str) -> bool:
         _ensure()
         removed = store.execute("DELETE FROM notify_channels WHERE id=?", (channel_id,))
     if removed:
+        meta_set(ROUTER_STATE_PREFIX + channel_id, None)
         events.emit("settings", "info", f"Benachrichtigungskanal gelöscht: {channel_id}", {"channel": channel_id})
         NOTIFIER.reload()
     return bool(removed)
@@ -505,6 +587,15 @@ def _level_rank(level: str) -> int:
     return LEVELS.index(level) if level in LEVELS else 0
 
 
+def _num(value: Any) -> float | None:
+    return value if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) \
+        else None
+
+
+def _lvl(value: Any) -> str | None:
+    return value if value in LEVELS else None
+
+
 class ChannelRouter:
     """Regeln eines Kanals. Reine Logik mit eingespeister Uhr – offer() und tick() geben Meldungen zurück.
 
@@ -521,6 +612,44 @@ class ChannelRouter:
 
     def configure(self, channel: dict) -> None:
         self.channel = channel
+
+    def export_state(self) -> dict:
+        """Zustand für notify_meta: Sperrzeiten (monotonic) als Uhrzeit, damit sie einen Neustart überstehen."""
+        clock, wall = self.clock(), self.wall()
+        out = {}
+        for key, st in list(self.state.items())[-ROUTER_STATE_KEYS:]:
+            item = {k: st[k] for k in ("open_since", "notified", "suppressed", "sent_level", "resolved_sent")}
+            item["last_sent"] = None if st["last_sent"] is None else wall - max(0.0, clock - st["last_sent"])
+            pending = st["pending"]
+            item["pending"] = {k: pending.get(k) for k in ("id", "t", "kind", "level", "title", "data")} \
+                if isinstance(pending, dict) else None
+            out[key] = item
+        return out
+
+    def import_state(self, saved: Any) -> int:
+        """Gesicherten Zustand übernehmen (nach einem Neustart). Unbrauchbare Einträge werden übersprungen.
+        Eine Sperrzeit läuft in Uhrzeit weiter; liegt ihr Beginn in der Zukunft (Uhr gestellt), gilt sie ab
+        jetzt."""
+        if not isinstance(saved, dict):
+            return 0
+        clock, wall = self.clock(), self.wall()
+        count = 0
+        for key, item in list(saved.items())[:ROUTER_STATE_KEYS]:
+            if not isinstance(key, str) or not isinstance(item, dict):
+                continue
+            last = _num(item.get("last_sent"))
+            pending = item.get("pending") if isinstance(item.get("pending"), dict) else None
+            self.state[key] = {
+                "open_since": _num(item.get("open_since")),
+                "notified": _lvl(item.get("notified")),
+                "last_sent": None if last is None else clock - max(0.0, wall - last),
+                "pending": pending,
+                "suppressed": max(0, min(10 ** 6, int(_num(item.get("suppressed")) or 0))),
+                "sent_level": _lvl(item.get("sent_level")),
+                "resolved_sent": item.get("resolved_sent") is True,
+            }
+            count += 1
+        return count
 
     def _matches(self, event: dict, ignore_level: bool = False) -> bool:
         kinds = self.channel.get("kinds") or []
@@ -770,6 +899,15 @@ class DeliveryError(Exception):
     """Zustellung gescheitert – Text ist kurz, deutsch und enthält weder Adresse noch Token."""
 
 
+class TargetBlocked(OSError):
+    """Die aufgelöste Adresse ist als Ziel gesperrt (netguard) – nach außen wie „nicht erreichbar“."""
+
+
+# Eine Meldung für gesperrt, abgelehnt, nicht erreichbar und „kein HTTP“: Sonst ließe sich über den
+# Test-Knopf herausfinden, welche Adressen und Ports im Netz des Servers offen sind.
+UNREACHABLE_TEXT = "Ziel nicht erreichbar oder nicht erlaubt – Adresse und Port prüfen"
+
+
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     """Weiterleitungen nie folgen: urllib würde sonst still an ein anderes Ziel senden."""
 
@@ -784,7 +922,9 @@ class _Deadline:
     schaltet ein Timer die Verbindung ab (shutdown über ein Duplikat des Sockets – wirkt auch auf
     die TLS-Hülle) und der blockierte Aufruf kehrt sofort zurück."""
 
-    def __init__(self, seconds: float) -> None:
+    def __init__(self, seconds: float, local_only: bool = False) -> None:
+        # local_only: Token über http:// – nur an eine Adresse im eigenen Netz (nach der Auflösung).
+        self.local_only = local_only
         self.end = time.monotonic() + seconds
         self.fired = False
         self._lock = threading.Lock()
@@ -839,7 +979,21 @@ class _Deadline:
         """Ersatz für socket.create_connection (http.client._create_connection)."""
         host, port = address[0], address[1]
         error: BaseException | None = None
+        refused_plain = False
         for family, kind, proto, _name, sockaddr in self._resolve(host, port):
+            # Erst die tatsächlich aufgelöste Adresse prüfen (netguard): so zählt jede Schreibweise
+            # (Name, Dezimalzahl, IPv6-Hülle) und auch ein Name, der später woandershin zeigt.
+            try:
+                target = ipaddress.ip_address(str(sockaddr[0]).split("%", 1)[0])
+            except ValueError:
+                error = TargetBlocked()
+                continue
+            if netguard.reason(target, "notify") is not None:
+                error = error or TargetBlocked()
+                continue
+            if self.local_only and not netguard.local_address(target):
+                refused_plain = True
+                continue
             left = self.remaining()
             if left <= 0 or self.fired:
                 raise TimeoutError("Frist")
@@ -853,6 +1007,9 @@ class _Deadline:
             except OSError as exc:
                 sock.close()
                 error = exc
+        if refused_plain and (error is None or isinstance(error, TargetBlocked)):
+            raise DeliveryError("Token über http:// geht nur an Adressen im eigenen Netz – dieser Name zeigt "
+                                "nicht ins eigene Netz. Bitte https:// verwenden.")
         raise error or OSError("keine Adresse")
 
 
@@ -968,14 +1125,10 @@ def _describe(exc: BaseException) -> str:
         return _timeout_text()
     if isinstance(reason, ssl.SSLError) or isinstance(exc, ssl.SSLError):
         return "TLS-Fehler (Zertifikat ungültig oder nicht vertrauenswürdig)"
-    if isinstance(reason, ConnectionRefusedError):
-        return "Verbindung abgelehnt – läuft der Dienst, stimmt der Port?"
     if isinstance(reason, socket.gaierror):
         return "Name nicht auflösbar – Adresse prüfen"
-    if isinstance(reason, OSError):
-        return "Netzwerkfehler – Ziel nicht erreichbar"
-    if isinstance(exc, http.client.HTTPException):
-        return "Ungültige Antwort vom Ziel"
+    if isinstance(reason, OSError) or isinstance(exc, (OSError, http.client.HTTPException)):
+        return UNREACHABLE_TEXT  # abgelehnt, gesperrt, Netzwerkfehler, keine gültige HTTP-Antwort
     return "Zustellung fehlgeschlagen"
 
 
@@ -988,8 +1141,17 @@ def deliver(channel: dict, clean: dict, version: str = "") -> None:
     url, body, headers = build_request(channel, clean, version)
     if not settings.http_url_ok(url, max_len=400):
         raise DeliveryError("Adresse ungültig")
+    blocked = _blocked_literal(url)
+    if blocked:
+        # Steht das gesperrte Ziel schon in der Adresse, den Grund nennen (mit Hinweis auf
+        # OUTBOUND_TARGETS) – das verrät nichts, was nicht ohnehin in der Kanal-Einstellung steht.
+        raise DeliveryError(blocked)
     request = urllib.request.Request(url, data=body, headers=headers, method="POST")
-    deadline = _Deadline(TIMEOUT)
+    # Ein Token (nicht nur seine Signatur) geht im Klartext mit: dann nur an Adressen im eigenen Netz.
+    carries_token = (any(h in headers for h in ("Authorization", "X-Gotify-Key"))
+                     or (channel.get("type") == "apprise" and not channel.get("topic") and bool(channel.get("secret"))))
+    plain_token = carries_token and urllib.parse.urlsplit(url).scheme.lower() == "http"
+    deadline = _Deadline(TIMEOUT, local_only=plain_token)
     try:
         with _opener(deadline).open(request, timeout=TIMEOUT) as response:
             code = getattr(response, "status", 200)
@@ -1030,6 +1192,7 @@ class _Sender:
         self.queue: deque = deque()
         self.cond = threading.Condition()
         self.sent_times: deque = deque()
+        self.crit_times: deque = deque()  # eigener Rahmen für crit (CRIT_RATE_PER_HOUR)
         self.stopped = False
         self.limit_noted: float | None = None  # nicht 0.0: monotonic() zählt ab Systemstart
         self.thread = threading.Thread(target=self._run, daemon=True, name=f"notify-{channel['id']}")
@@ -1063,11 +1226,19 @@ class _Sender:
                 self.cond.wait(timeout=max(0.05, min(wait, 60)))
             return None
 
-    def _rate_ok(self) -> bool:
+    def _times(self, msg: dict) -> tuple[deque, int]:
+        """Zeitstempel und Stundengrenze für diese Meldung: crit hat einen eigenen Rahmen – viele
+        warn/info-Meldungen (manche lassen sich von außen auslösen) verdrängen so nie einen Ausfall."""
+        if msg.get("level") == "crit" and not msg.get("resolved"):
+            return self.crit_times, CRIT_RATE_PER_HOUR
+        return self.sent_times, int(self.channel.get("rate_per_hour") or DEFAULT_RATE_PER_HOUR)
+
+    def _rate_ok(self, msg: dict | None = None) -> bool:
+        times, limit = self._times(msg or {})
         now = time.monotonic()
-        while self.sent_times and now - self.sent_times[0] > 3600:
-            self.sent_times.popleft()
-        return len(self.sent_times) < int(self.channel.get("rate_per_hour") or DEFAULT_RATE_PER_HOUR)
+        while times and now - times[0] > 3600:
+            times.popleft()
+        return len(times) < limit
 
     def _run(self) -> None:
         while True:
@@ -1075,7 +1246,7 @@ class _Sender:
             if msg is None:
                 return
             channel = self.channel
-            if not msg.get("attempt") and not self._rate_ok():
+            if not msg.get("attempt") and not self._rate_ok(msg):
                 _record(channel["id"], True, dropped=1, attempt=False)
                 if self.limit_noted is None or time.monotonic() - self.limit_noted > 3600:
                     self.limit_noted = time.monotonic()
@@ -1091,7 +1262,7 @@ class _Sender:
                             {"channel": channel["id"], "reason": "filter"})
                 continue
             if not msg.get("attempt"):
-                self.sent_times.append(time.monotonic())
+                self._times(msg)[0].append(time.monotonic())
             try:
                 self.notifier.deliver(channel, clean)
             except DeliveryError as exc:
@@ -1130,6 +1301,8 @@ class Notifier:
         self._dirty = True
         self.batch_full = False
         self.stopped = False
+        self.states_saved: dict[str, str] = {}
+        self.states_saved_at = float("-inf")
 
     # --- Steuerung -------------------------------------------------------------
     def start(self, version: str = "") -> None:
@@ -1157,8 +1330,35 @@ class Notifier:
                 sender.stop()
 
     def flush(self) -> None:
-        """Position sofort speichern (SIGTERM): sonst schickt ein Neustart schon Zugestelltes noch einmal."""
+        """Position und Zustand der Kanäle sofort speichern (SIGTERM): sonst schickt ein Neustart schon
+        Zugestelltes noch einmal, und für ein offenes Problem fehlte später „behoben“."""
         self._save_position(force=True)
+        self._save_states(force=True)
+
+    def _load_state(self, cid: str, router: ChannelRouter) -> None:
+        raw = meta_get(ROUTER_STATE_PREFIX + cid)
+        if not raw:
+            return
+        try:
+            router.import_state(json.loads(raw))
+            self.states_saved[cid] = raw
+        except (ValueError, TypeError, RecursionError):
+            pass
+
+    def _save_states(self, force: bool = False) -> None:
+        """Zustand je Kanal in notify_meta – nur, wenn er sich geändert hat, höchstens alle ROUTER_STATE_EVERY s."""
+        if not force and time.monotonic() - self.states_saved_at < ROUTER_STATE_EVERY:
+            return
+        with self.lock:
+            routers = list(self.routers.items())
+        for cid, router in routers:
+            try:
+                text = json.dumps(router.export_state(), sort_keys=True, separators=(",", ":"), default=str)
+            except (TypeError, ValueError):
+                continue
+            if self.states_saved.get(cid) != text and meta_set(ROUTER_STATE_PREFIX + cid, text):
+                self.states_saved[cid] = text
+        self.states_saved_at = time.monotonic()
 
     def skip_to(self, event_id: int) -> None:
         """Nach einer Wiederherstellung (backup.py): Ereignisse bis event_id gelten als verteilt – die
@@ -1199,6 +1399,7 @@ class Notifier:
                     self.routers[cid].configure(channel)
                 else:
                     self.routers[cid] = ChannelRouter(channel)
+                    self._load_state(cid, self.routers[cid])
                     self.senders[cid] = _Sender(self, channel)
             self._dirty = False
 
@@ -1251,6 +1452,7 @@ class Notifier:
         # Hat der Durchgang Meldungen erzeugt, Position sofort sichern (eine UPSERT-Zeile) – sonst
         # verschickt ein Neustart innerhalb der nächsten Sekunden dieselben Meldungen noch einmal.
         self._save_position(force=count > 0)
+        self._save_states(force=count > 0)
         return count
 
     def _run(self) -> None:
@@ -1272,6 +1474,7 @@ NOTIFIER = Notifier()
 
 def start(version: str = "") -> None:
     NOTIFIER.start(version)
+    warn_blocked_channels()
 
 
 def flush() -> None:
@@ -1279,11 +1482,41 @@ def flush() -> None:
     NOTIFIER.flush()
 
 
+class TestRateLimited(NotifyError):
+    """Zu viele Testnachrichten in kurzer Zeit (Text nennt die Wartezeit)."""
+
+
+TEST_PER_MINUTE = 5          # Testnachrichten insgesamt je Minute
+TEST_CHANNEL_GAP = 5.0       # Sekunden zwischen zwei Tests desselben Kanals
+_TEST_LOCK = threading.Lock()
+_TEST_TIMES: deque = deque()
+_TEST_LAST: dict[str, float] = {}
+
+
+def _test_allowed(channel_id: str, now: float | None = None) -> None:
+    """Bremse für den Test-Knopf: höchstens TEST_PER_MINUTE je Minute, je Kanal alle TEST_CHANNEL_GAP s."""
+    now = time.monotonic() if now is None else now
+    with _TEST_LOCK:
+        while _TEST_TIMES and now - _TEST_TIMES[0] >= 60.0:
+            _TEST_TIMES.popleft()
+        last = _TEST_LAST.get(channel_id)
+        if last is not None and now - last < TEST_CHANNEL_GAP:
+            raise TestRateLimited(f"Bitte {numfmt.number(TEST_CHANNEL_GAP, 0)} s warten, bevor du diesen Kanal "
+                                  "erneut testest.")
+        if len(_TEST_TIMES) >= TEST_PER_MINUTE:
+            raise TestRateLimited(f"Höchstens {TEST_PER_MINUTE} Testnachrichten je Minute – bitte kurz warten.")
+        _TEST_TIMES.append(now)
+        _TEST_LAST[channel_id] = now
+        for key in [k for k, t in _TEST_LAST.items() if now - t >= 60.0]:
+            del _TEST_LAST[key]
+
+
 def send_test(channel_id: str) -> dict:
     """Testnachricht sofort und ohne Wiederholung senden (Knopf im Dashboard)."""
     channel = get_channel(str(channel_id or ""))
     if channel is None:
         raise NotifyError("Diesen Kanal gibt es nicht (mehr)")
+    _test_allowed(channel["id"])
     msg = {"title": "Testnachricht von ntp-gui", "level": "info", "kind": "notify", "time": time.time(),
            "test": True}
     try:
@@ -1335,5 +1568,8 @@ def _reset_for_tests() -> None:
     NOTIFIER.stop()
     events._LISTENERS[:] = [cb for cb in events._LISTENERS if cb != NOTIFIER.wake]
     NOTIFIER = Notifier()
+    with _TEST_LOCK:
+        _TEST_TIMES.clear()
+        _TEST_LAST.clear()
     _READY["db"] = None
     _KNOWN.update(t=0.0, ok=False, names=[], values={})

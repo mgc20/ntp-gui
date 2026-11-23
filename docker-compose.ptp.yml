@@ -14,8 +14,8 @@
 services:
   ntp-gui:
     build: .
-    # Version festhalten statt „:latest“: „:1.5“ bleibt auf 1.5.x (nur
-    # Fehlerbehebungen), „:1.5.1“ bleibt fest auf genau dieser Version.
+    # Version festhalten statt „:latest“: „:1.9“ bleibt auf 1.9.x (nur
+    # Fehlerbehebungen), „:1.9.0“ bleibt fest auf genau dieser Version.
     # Gilt für das geladene Image – mit „build: .“ (docker compose build bzw.
     # up --build) baust du stattdessen den lokalen Stand unter diesem Namen.
     # Umgezogen: Früher hieß das Image ghcr.io/congp20/ntp-gui – dort kommen
@@ -25,10 +25,33 @@ services:
     restart: unless-stopped
 
     network_mode: host          # PTP funktioniert nicht über eine Docker-Bridge
+    # Härtung (1.9): Als root laufen nur der Supervisor und – mit PTP – ptp4l/phc2sys.
+    # Dashboard und DNS-Weiterleiter laufen als Benutzer ntpgui (höchstens NET_RAW bzw.
+    # NET_BIND_SERVICE), chronyd als _chrony. Alle Capabilities weg, nur die nötigen zurück.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     cap_add:
-      - SYS_TIME                # Systemuhr stellen
-      - NET_ADMIN               # Hardware-Zeitstempel aktivieren
-      - NET_RAW                 # PTP über Ethernet (L2, gPTP), Messung der Client-Uhren
+      - SYS_TIME          # chronyd stellt die Uhr
+      - CHOWN             # Start: Verzeichnisse für chronyd und das Dashboard
+      - DAC_OVERRIDE      # Supervisor liest Dateien von chronyd und Dashboard
+      - FOWNER            # Start: Dateirechte setzen
+      - SETUID            # Rechte abgeben: chronyd, gpsd, Dashboard
+      - SETGID
+      - KILL              # Dienste beim Speichern neu starten – ohne hängt das Neuladen
+      - NET_BIND_SERVICE  # Port 123 (und 53 für den DNS-Weiterleiter) mit Host-Netzwerk
+      - NET_RAW           # PTP über Ethernet (L2, gPTP), Messung der Client-Uhren
+      - NET_ADMIN         # Hardware-Zeitstempel der Netzwerkkarte (PTP)
+    pids_limit: 512
+    mem_limit: 512m
+    # Logs begrenzen, damit die Platte nicht vollläuft.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
     devices:
       - /dev/ptp0:/dev/ptp0     # PTP Hardware Clock der NIC
 
@@ -56,6 +79,11 @@ services:
       # Als PTP-Slave die PTP-Uhr zusätzlich als chrony-Referenz nutzen
       # (PTP→NTP-Brücke):
       # PHC_REFCLOCK: "/dev/ptp0"
+
+      # Apprise auf demselben Rechner (http://127.0.0.1:8000, bei network_mode:
+      # host der einzige Weg): Loopback-Ziele ab 1.9 erst nach Freigabe – sonst
+      # meldet der Kanal „Dieses Ziel ist gesperrt“, das Start-Log warnt.
+      # OUTBOUND_TARGETS: "loopback"
 
     volumes:
       - chrony-data:/var/lib/chrony

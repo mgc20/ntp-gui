@@ -172,8 +172,18 @@ def _default_emit(kind: str, level: str, title: str, data: dict) -> None:
     events.emit(kind, level, title, data)
 
 
+def _run_dir() -> str:
+    return os.environ.get("NTPGUI_RUN_DIR", "/run/ntp-gui")
+
+
+def _request_dir() -> str:
+    """Anforderungen und Sperre schreibt das Dashboard in sein eigenes Verzeichnis (NTPGUI_REQUEST_DIR);
+    reload.json liegt beim Supervisor in RUN_DIR. Ohne die Variable ist beides RUN_DIR."""
+    return os.environ.get("NTPGUI_REQUEST_DIR") or _run_dir()
+
+
 def _hold_path() -> str:
-    return os.path.join(os.environ.get("NTPGUI_RUN_DIR", "/run/ntp-gui"), HOLD_FILE)
+    return os.path.join(_request_dir(), HOLD_FILE)
 
 
 def configure(trigger_reload: Callable[[], bool] | None = None) -> None:
@@ -183,11 +193,11 @@ def configure(trigger_reload: Callable[[], bool] | None = None) -> None:
 
 def reload_busy(now: float | None = None) -> str:
     """Steht ein Neustart der Zeitdienste an oder läuft er gerade? Dann Grund, sonst ""."""
-    run_dir = os.path.dirname(_hold_path())
-    if any(os.path.exists(os.path.join(run_dir, name)) for name in ("reload.request", "reload-chronyd.request")):
+    requests = _request_dir()
+    if any(os.path.exists(os.path.join(requests, name)) for name in ("reload.request", "reload-chronyd.request")):
         return "Ein Neustart der Zeitdienste ist angefordert"
     try:
-        with open(os.path.join(run_dir, "reload.json"), encoding="utf-8") as handle:
+        with open(os.path.join(_run_dir(), "reload.json"), encoding="utf-8") as handle:
             info = json.load(handle)
     except (OSError, ValueError):
         return ""

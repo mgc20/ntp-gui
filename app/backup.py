@@ -146,18 +146,24 @@ NIGHTLY_PREFIX = "nacht-"
 KEEP_AUTO = 5
 KEEP_NIGHTLY = 7
 NIGHTLY_HOUR = 3                         # Ortszeit des Servers
-_STORED_RE = re.compile(r"^(?:vor-wiederherstellung|nacht)-\d{8}(?:-\d{6})?\.tar\.gz$")
+_STORED_RE = re.compile(r"^(?:vor-wiederherstellung|nacht)-\d{8}(?:-\d{6})?\.tar\.gz\Z")
 
 # Einstellungen, die Geheimnisse enthalten können – nie sichern: DoH-Pfad, DoT-Name und feste Adressen
 # tragen bei NextDNS die persönliche Konto-Kennung (<id>.dns.nextdns.io). Beim Wiederherstellen bleibt
 # der jetzige Wert stehen; fehlt er, nennt die Vorschau ihn unter „neu eingeben“.
 SECRET_SETTINGS = frozenset(settings.MASKED_FOR_READ) | {"dns_dot", "dns_pin"}
 
-# Einstellungen, deren Änderung Zugang, Erreichbarkeit oder ausgehende Verbindungen betrifft – die
-# Vorschau nennt sie einzeln mit altem und neuem Wert (ein präpariertes Archiv soll nichts still ändern).
+# Einstellungen, deren Änderung Zugang, Erreichbarkeit, ausgehende Verbindungen oder die ausgelieferte
+# Zeit betrifft – die Vorschau nennt sie zuerst und einzeln mit altem und neuem Wert (ein präpariertes
+# Archiv soll nichts still ändern). Alle übrigen Änderungen stehen darunter („changes“).
 SECURITY_SETTINGS = ("bind_address", "allow_networks", "deny_networks", "trusted_proxies", "web_allowed_hosts",
                      "clock_public", "notify_lan_addresses", "notify_dashboard_url", "update_check",
-                     "clients_rdns", "nts_server_enable", "ntp_sources", "dns_mode", "dns_servers")
+                     "clients_rdns", "nts_server_enable", "ntp_sources", "dns_mode", "dns_servers",
+                     "ntp_port", "nts_server_port", "nts_server_cert", "nts_server_key", "serve_unsynced",
+                     "local_stratum", "local_orphan", "ntp_ratelimit", "makestep", "ntp_minsources",
+                     "ntp_source_options", "gps_refclock_options", "gps_pps_options")
+# Versionsangabe im Manifest (nicht signiert): nur in dieser Form anzeigen, sonst „unbekannt“.
+_VERSION_RE = re.compile(r"[0-9]{1,4}(\.[0-9]{1,4}){1,3}([-+][0-9A-Za-z.]{1,20})?")
 MAX_META_HEADERS = 32                    # PAX-/Langname-Köpfe je Archiv (sonst Rekursion in tarfile)
 # Zeitpunkt der Sicherung (manifest.created, nicht signiert): höchstens so weit in der Zukunft, sonst
 # abgelehnt. Messpunkte übernimmt das Einspielen nur bis created und bis jetzt + FUTURE_TOL – Messpunkte
@@ -615,8 +621,45 @@ def autocal_part() -> dict:
     return scrub(state)
 
 
+# Ausdünnen des Rohverlaufs in der Sicherung, wenn sie sonst größer würde als das, was die Wiederherstellung
+# annimmt (kleines Messintervall, langer Verlauf): je Fenster dieser Breite bleibt der erste Messpunkt. Die
+# 5-Minuten-Verdichtung (samples_5m) bleibt vollständig, der älteste Punkt auch – die Diagramme über Tage und
+# Wochen sehen danach gleich aus, nur die feinste Auflösung wird gröber.
+THIN_STEPS = (10, 30, 60, 300)
+
+
+def _thin_samples(path: str, step: int) -> int:
+    """Rohverlauf in der Sicherungsdatenbank auf einen Punkt je step Sekunden kürzen. Gibt die Restzeilen."""
+    conn = sqlite3.connect(_uri(path, "rw"), uri=True, isolation_level=None)
+    try:
+        conn.execute("PRAGMA secure_delete=ON")
+        conn.execute("DELETE FROM samples WHERE t NOT IN (SELECT min(t) FROM samples GROUP BY t / ?)",
+                     (int(step),))
+        conn.execute("VACUUM")
+        return int(conn.execute("SELECT count(*) FROM samples").fetchone()[0])
+    finally:
+        conn.close()
+
+
+def _write_archive(tmp: str, manifest: dict, files: dict[str, str], created: float) -> None:
+    with open(tmp, "wb") as raw:
+        os.chmod(tmp, 0o600)
+        with tarfile.open(fileobj=raw, mode="w:gz", format=tarfile.PAX_FORMAT,
+                          compresslevel=COMPRESS_LEVEL) as tar:
+            data = (json.dumps(manifest, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+            _add(tar, MANIFEST, io.BytesIO(data), len(data), created)
+            for name, path in files.items():
+                with open(path, "rb") as handle:
+                    _add(tar, name, handle, os.path.getsize(path), created)
+
+
 def create(dest: str, version: str = "") -> dict:
-    """Schreibt eine Sicherung nach dest (.tar.gz). Gibt das Manifest zurück."""
+    """Schreibt eine Sicherung nach dest (.tar.gz). Gibt das Manifest zurück.
+
+    Die Sicherung muss sich mit diesem Aufbau wiederherstellen lassen: daten.sqlite höchstens
+    PART_LIMITS[DB_PART], die Datei höchstens MAX_UPLOAD. Wird sie größer (kleines Messintervall), wird der
+    Rohverlauf in der Sicherung stufenweise ausgedünnt (THIN_STEPS); das Manifest nennt die Stufe
+    („history_thinned_s“)."""
     with _CREATE_LOCK:
         _flush()
         with contextlib.suppress(Exception):
@@ -637,29 +680,33 @@ def create(dest: str, version: str = "") -> dict:
                 with open(files[name], "w", encoding="utf-8") as handle:
                     json.dump(content, handle, indent=2, ensure_ascii=False, sort_keys=True)
                     handle.write("\n")
-            manifest = {
-                "format": FORMAT, "format_version": FORMAT_VERSION, "ntp_gui_version": str(version or ""),
-                "created": round(created, 3),
-                "schema": {"dump": DUMP_SCHEMA, "settings": settings.SCHEMA_VERSION},
-                "parts": [{"name": name, "size": os.path.getsize(path), "sha256": _sha256(path)}
-                          for name, path in files.items()],
-                "rows": counts,
-                "excluded": ["GPS-Position", "Satellitenwinkel", "API-Schlüssel", "Passwort",
-                             "Kanal-Tokens", "NTS-Schlüssel und -Zertifikate"],
-            }
-            files_order = [(MANIFEST, None)] + list(files.items())
+            steps = list(THIN_STEPS)
+            thinned = None
+            while os.path.getsize(files[DB_PART]) > PART_LIMITS[DB_PART] and steps and counts.get("samples"):
+                thinned = steps.pop(0)
+                counts["samples"] = _thin_samples(files[DB_PART], thinned)
             tmp = dest + ".tmp"
-            with open(tmp, "wb") as raw:
-                os.chmod(tmp, 0o600)
-                with tarfile.open(fileobj=raw, mode="w:gz", format=tarfile.PAX_FORMAT,
-                                  compresslevel=COMPRESS_LEVEL) as tar:
-                    for name, path in files_order:
-                        if path is None:
-                            data = (json.dumps(manifest, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
-                            _add(tar, name, io.BytesIO(data), len(data), created)
-                        else:
-                            with open(path, "rb") as handle:
-                                _add(tar, name, handle, os.path.getsize(path), created)
+            while True:
+                manifest = {
+                    "format": FORMAT, "format_version": FORMAT_VERSION, "ntp_gui_version": str(version or ""),
+                    "created": round(created, 3),
+                    "schema": {"dump": DUMP_SCHEMA, "settings": settings.SCHEMA_VERSION},
+                    "parts": [{"name": name, "size": os.path.getsize(path), "sha256": _sha256(path)}
+                              for name, path in files.items()],
+                    "rows": counts,
+                    "excluded": ["GPS-Position", "Satellitenwinkel", "API-Schlüssel", "Passwort",
+                                 "Kanal-Tokens", "NTS-Schlüssel und -Zertifikate"],
+                }
+                if thinned:
+                    manifest["history_thinned_s"] = thinned
+                _write_archive(tmp, manifest, files, created)
+                if os.path.getsize(tmp) <= MAX_UPLOAD or not steps or not counts.get("samples"):
+                    break
+                thinned = steps.pop(0)
+                counts["samples"] = _thin_samples(files[DB_PART], thinned)
+            if thinned:
+                print(f"[web] Sicherung: Rohverlauf auf einen Messpunkt je {thinned} s ausgedünnt, damit sie sich "
+                      "wiederherstellen lässt (5-Minuten-Verlauf vollständig).", flush=True)
             os.replace(tmp, dest)
             return manifest
         finally:
@@ -1033,7 +1080,7 @@ def _read_json(path: str, what: str) -> Any:
     try:
         with open(path, encoding="utf-8") as handle:
             return json.load(handle)
-    except (OSError, ValueError, UnicodeDecodeError):
+    except (OSError, ValueError, UnicodeDecodeError, RecursionError):
         raise RestoreError(f"{what} in der Sicherung ist kein gültiges JSON – abgelehnt.") from None
 
 
@@ -1048,9 +1095,9 @@ def check_manifest_head(manifest: Any) -> tuple[int, int, int, dict[str, dict]]:
     except (TypeError, ValueError, AttributeError):
         raise RestoreError("manifest.json ist unvollständig (Versionen fehlen) – abgelehnt.") from None
     if fmt > FORMAT_VERSION or dump_schema > DUMP_SCHEMA or settings_schema > settings.SCHEMA_VERSION:
-        origin = manifest.get("ntp_gui_version")
+        origin = manifest_version(manifest.get("ntp_gui_version"))
         raise RestoreError("Die Sicherung stammt aus einer neueren Version von ntp-gui"
-                           + (f" ({_show(origin)})" if origin else "")
+                           + (f" ({origin})" if origin and origin != "unbekannt" else "")
                            + " – bitte zuerst ntp-gui aktualisieren, dann wiederherstellen.")
     if fmt < 1 or dump_schema < 1 or settings_schema < 1:
         raise RestoreError("manifest.json nennt ungültige Versionen – abgelehnt.")
@@ -1086,7 +1133,15 @@ def check_manifest(manifest: Any, hashes: dict[str, str], workdir: str) -> dict:
         raise RestoreError("manifest.json nennt einen Zeitpunkt in der Zukunft – abgelehnt (stimmt die Uhrzeit "
                            "dieses Geräts?).")
     return {"format_version": fmt, "dump": dump_schema, "settings": settings_schema, "created": created,
-            "version": str(manifest.get("ntp_gui_version") or "")[:40]}
+            "version": manifest_version(manifest.get("ntp_gui_version"))}
+
+
+def manifest_version(value: Any) -> str:
+    """ntp_gui_version aus dem Manifest: leer, eine Versionsnummer wie 1.8.2 – oder „unbekannt“."""
+    if value is None or value == "":
+        return ""
+    text = str(value)
+    return text if _VERSION_RE.fullmatch(text) else "unbekannt"
 
 
 def _open_dump(path: str, readonly: bool = True) -> sqlite3.Connection:
@@ -1200,7 +1255,8 @@ def _settings_plan(data: Any) -> dict:
     restart = any(settings.FIELDS[k]["restart"] == settings.RESTART_SERVICES and clean.get(k) != current.get(k)
                   for k in set(clean) | {k for k in current if k not in SECRET_SETTINGS})
     return {"values": clean, "skipped": skipped, "reenter": reenter, "kept": kept, "restart": restart,
-            "notes": [str(n)[:500] for n in notes], "security": _security_changes(clean, current)}
+            "notes": [str(n)[:500] for n in notes], "security": _security_changes(clean, current),
+            "changes": _setting_changes(clean, current)}
 
 
 def _fmt_setting(value: Any) -> str:
@@ -1221,12 +1277,23 @@ def _fmt_setting(value: Any) -> str:
 
 def _security_changes(clean: dict, current: dict) -> list[dict]:
     """Sicherheitsrelevante Einstellungen, die sich beim Übernehmen ändern (alt → neu)."""
+    return _changes(SECURITY_SETTINGS, clean, current)
+
+
+def _setting_changes(clean: dict, current: dict) -> list[dict]:
+    """Alle übrigen Einstellungen, die sich ändern (alt → neu) – ohne die sicherheitsrelevanten (stehen
+    schon oben) und ohne Geheimnisse (die werden nie übernommen)."""
+    keys = [k for k in settings.FIELDS if k not in SECURITY_SETTINGS and k not in SECRET_SETTINGS]
+    return _changes(keys, clean, current)
+
+
+def _changes(keys, clean: dict, current: dict) -> list[dict]:
     try:
         effective = settings.values()
     except Exception:
         effective = {}
     out = []
-    for key in SECURITY_SETTINGS:
+    for key in keys:
         if key not in settings.FIELDS or (key not in clean and key not in current):
             continue
         before = current.get(key, effective.get(key))
@@ -1543,22 +1610,55 @@ def _summary(workdir: str, info: dict, settings_plan: dict, autocal_plan: dict) 
         "settings": {"count": len(settings_plan["values"]), "skipped": settings_plan["skipped"],
                      "reenter": settings_plan["reenter"], "kept": settings_plan["kept"],
                      "restart": settings_plan["restart"], "notes": settings_plan["notes"],
-                     "security": settings_plan["security"]},
+                     "security": settings_plan["security"], "changes": settings_plan["changes"]},
     }
 
 
+class RestoreBusy(RestoreError):
+    """Es läuft schon ein Upload – nur einer gleichzeitig."""
+
+
+_UPLOAD_SLOT = threading.BoundedSemaphore(1)
+
+
+def _check_upload_space(root: str, length: int, reserve: int = DISK_RESERVE) -> None:
+    """Vor dem Schreiben: Passt der Upload, und bleibt danach reserve frei? (Verlauf, settings.json und
+    SQLite liegen im selben Dateisystem.)"""
+    try:
+        free = shutil.disk_usage(root).free
+    except OSError:
+        return
+    if free < length + reserve:
+        raise RestoreError(f"Zu wenig freier Speicher im Datenverzeichnis für den Upload: Er braucht "
+                           f"{_size_text(length)}, frei sind {_size_text(free, up=False)}, und "
+                           f"{reserve // MIB} MiB müssen für den laufenden Betrieb frei bleiben. Bitte erst "
+                           "Platz schaffen.")
+
+
 def stage_upload(stream, length: int) -> dict:
-    """Upload lesen (genau length Bytes), prüfen, Vorschau liefern. Bei Fehler: nichts bleibt liegen."""
+    """Upload lesen (genau length Bytes), prüfen, Vorschau liefern. Bei Fehler: nichts bleibt liegen.
+    Nur ein Upload gleichzeitig (RestoreBusy); vor dem Schreiben wird der freie Platz geprüft."""
     if length <= 0:
         raise RestoreError("Keine Datei hochgeladen.")
     if length > MAX_UPLOAD:
         raise RestoreError(f"Die Datei ist zu groß (höchstens {MAX_UPLOAD // (1024 * 1024)} MiB).")
+    if not _UPLOAD_SLOT.acquire(blocking=False):
+        raise RestoreBusy("Es wird gerade schon eine Sicherung hochgeladen oder geprüft – bitte warten, "
+                          "bis sie fertig ist.")
+    try:
+        return _stage_upload(stream, length)
+    finally:
+        _UPLOAD_SLOT.release()
+
+
+def _stage_upload(stream, length: int) -> dict:
     cleanup_staging()
     discard()  # immer nur ein offener Upload – älterer verfällt
     root = staging_root()
     os.makedirs(root, mode=0o700, exist_ok=True)
     with contextlib.suppress(OSError):
         os.chmod(root, 0o700)
+    _check_upload_space(root, length)
     with _PENDING_LOCK:
         workdir = tempfile.mkdtemp(prefix="upload-", dir=root)
         _ACTIVE.add(os.path.basename(workdir))

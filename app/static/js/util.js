@@ -110,6 +110,7 @@ export function fmtSeconds(value, digits = 3, signed = false) {
   if (!isNum(value)) return "–";
   const abs = Math.abs(value);
   if (abs === 0) return "0 s";
+  if (abs >= LONG_SECONDS) return fmtLongSeconds(value, signed);
   // [Einheit, Faktor, Nachkommastellen]. Höchstens vier bis fünf signifikante Stellen.
   const units = [
     ["ns", 1e9, abs < 1e-8 ? 1 : 0],
@@ -126,6 +127,20 @@ export function fmtSeconds(value, digits = 3, signed = false) {
   }
   const [unit, factor, places] = units[index];
   return `${fmtNumber(value * factor, places, { group: false, signed })} ${unit}`;
+}
+
+// Ab 2 Minuten (Uhr steht falsch, Quelle mit falschem Jahr): gegliedert in min/h/d statt einer zehnstelligen
+// Sekundenzahl – „−20.717 d 14 h“ statt „−1790000000 s“. Tage mit Tausenderpunkt.
+const LONG_SECONDS = 120;
+function fmtLongSeconds(value, signed) {
+  const sign = value < 0 ? MINUS : signed ? "+" : "";
+  const s = Math.round(Math.abs(value));
+  const pair = (big, bigUnit, small, smallUnit) => (small ? `${big} ${bigUnit} ${small} ${smallUnit}` : `${big} ${bigUnit}`);
+  let text;
+  if (s < 3600) text = pair(Math.floor(s / 60), "min", s % 60, "s");
+  else if (s < 86400) text = pair(Math.floor(s / 3600), "h", Math.floor((s % 3600) / 60), "min");
+  else text = pair(fmtNumber(Math.floor(s / 86400), 0), "d", Math.floor((s % 86400) / 3600), "h");
+  return `${sign}${text}`;
 }
 
 export function fmtNs(value) {
@@ -289,33 +304,109 @@ export function sourceLabel(source) {
 
 // --- API -------------------------------------------------------------------
 
-export async function apiGet(path) {
-  const response = await fetch(path, { cache: "no-store", headers: { Accept: "application/json" } });
+// Zeitlimits: Antwortet der Server nicht (hängt, Verbindung ohne RST weg), endet die Abfrage trotzdem – sonst
+// bliebe die Anzeige ohne Veraltet-Hinweis auf dem letzten Stand stehen und „Lade …“ für immer.
+export const API_TIMEOUT_MS = 20000;
+export const POST_TIMEOUT_MS = 60000;
+export const UNEXPECTED_RESPONSE = "Unerwartete Antwort des Servers (keine gültigen Daten). Steht ein Proxy oder eine Anmeldeseite davor?";
+
+function timeoutSignal(ms) {
+  if (!(ms > 0)) return { signal: undefined, done() {} };
+  if (typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function") {
+    return { signal: AbortSignal.timeout(ms), done() {} };
+  }
+  if (typeof AbortController === "undefined") return { signal: undefined, done() {} };
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  return { signal: controller.signal, done() { clearTimeout(timer); } };
+}
+
+// fetch mit Zeitlimit; ein Abbruch wird zu einer deutschen Meldung (status 0 wie ein Netzfehler).
+async function fetchWithin(path, options, ms) {
+  const limit = timeoutSignal(ms);
+  try {
+    return await fetch(path, { ...options, ...(limit.signal ? { signal: limit.signal } : {}) });
+  } catch (error) {
+    if (error && (error.name === "TimeoutError" || error.name === "AbortError")) {
+      const failure = new Error(`Zeitüberschreitung: Der Server hat nicht innerhalb von ${Math.round(ms / 1000)} s geantwortet.`);
+      failure.status = 0;
+      failure.timeout = true;
+      throw failure;
+    }
+    throw error;
+  } finally {
+    limit.done();
+  }
+}
+
+// Rumpf als JSON lesen. null, wenn er leer oder kein JSON ist (HTML-Seite eines Proxys, abgeschnitten).
+async function readJson(response) {
+  if (typeof response.text !== "function") {
+    try { return await response.json(); } catch (error) { return null; }
+  }
+  let text = "";
+  try { text = await response.text(); } catch (error) { return null; }
+  if (!text.trim()) return null;
+  try { return JSON.parse(text); } catch (error) { return null; }
+}
+
+function unexpected(status) {
+  const failure = new Error(UNEXPECTED_RESPONSE);
+  failure.status = status;
+  failure.unexpected = true;
+  return failure;
+}
+
+export async function apiGet(path, { timeout = API_TIMEOUT_MS } = {}) {
+  const response = await fetchWithin(path, { cache: "no-store", headers: { Accept: "application/json" } }, timeout);
+  const data = await readJson(response);
   if (!response.ok) {
-    let message = "";
-    try { message = (await response.json()).error || ""; } catch (error) { /* keine JSON-Antwort */ }
-    const failure = new Error(message || `${path}: HTTP ${response.status}`);
+    const failure = new Error(data?.error || `${path}: HTTP ${response.status}`);
     failure.status = response.status;
     throw failure;
   }
-  return response.json();
+  if (data === null || typeof data !== "object") throw unexpected(response.status);
+  return data;
 }
 
-export async function apiPost(path, body) {
-  const response = await fetch(path, {
+// POST: Erfolg nur mit einer JSON-Antwort (Objekt oder Liste). Ein 2xx mit leerem Rumpf oder einer HTML-Seite
+// (Proxy, Anmeldeseite eines Portals) ist kein „Gespeichert“.
+export async function apiPost(path, body, { timeout = POST_TIMEOUT_MS } = {}) {
+  const response = await fetchWithin(path, {
     method: "POST",
     cache: "no-store",
     headers: { "Content-Type": "application/json", "X-NTP-GUI": "1" },
     body: JSON.stringify(body || {}),
-  });
-  let data = {};
-  try { data = await response.json(); } catch (error) { /* leere Antwort */ }
+  }, timeout);
+  const data = await readJson(response);
   if (!response.ok) {
-    const failure = new Error(data.error || `HTTP ${response.status}`);
-    failure.fields = data.fields || {};
+    const failure = new Error(data?.error || `HTTP ${response.status}`);
+    failure.fields = data?.fields || {};
+    failure.status = response.status;
+    throw failure;
+  }
+  if (data === null || typeof data !== "object") {
+    const failure = unexpected(response.status);
+    failure.fields = {};
     throw failure;
   }
   return data;
+}
+
+// Abmelden. Basic-Auth kennt kein Abmelden: Der Server vergisst die geprüfte Anmeldung, danach bringt ein Abruf von
+// /logout mit dem Platzhalter-Benutzer „abgemeldet“ den Browser dazu, diesen statt der echten Angaben zu merken.
+// Die Seite /logout sagt danach, dass man abgemeldet ist (mit Link zum erneuten Anmelden).
+export async function logout() {
+  try { await apiPost("/api/auth/logout", {}); } catch (error) { /* trotzdem den Browser abmelden */ }
+  await new Promise((resolve) => {
+    try {
+      const xhr = new XMLHttpRequest();
+      xhr.open("GET", "/logout", true, "abgemeldet", "abgemeldet");
+      xhr.onloadend = () => resolve();
+      xhr.send();
+    } catch (error) { resolve(); }
+  });
+  window.location.replace("/logout");
 }
 
 // Datei als Body hochladen (Sicherung wiederherstellen). Gleicher Schutz wie apiPost: Pflicht-Kopf X-NTP-GUI.
@@ -326,9 +417,9 @@ export async function apiUpload(path, file, type = "application/gzip") {
     headers: { "Content-Type": type, "X-NTP-GUI": "1" },
     body: file,
   });
-  let data = {};
-  try { data = await response.json(); } catch (error) { /* leere Antwort */ }
-  if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+  const data = await readJson(response);
+  if (!response.ok) throw new Error(data?.error || `HTTP ${response.status}`);
+  if (data === null || typeof data !== "object") throw unexpected(response.status);
   return data;
 }
 

@@ -179,9 +179,10 @@ class PrepareFilesTest(unittest.TestCase):
         paths = self.prepare(*first)
         self.assertEqual(paths, (str(self.target / "server.crt"), str(self.target / "server.key")))
         self.assertEqual(stat.S_IMODE(os.stat(self.target).st_mode), 0o750)
-        for path in paths:
-            # Nur lesbar für die Gruppe _chrony: sonst meldet chronyd Schreibzugriff.
-            self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o640)
+        # Zertifikat nur lesbar für die Gruppe _chrony (sonst meldet chronyd Schreibzugriff), der
+        # Schlüssel nur für _chrony selbst – das Dashboard ist für den Kommando-Socket in der Gruppe.
+        self.assertEqual(stat.S_IMODE(os.stat(paths[0]).st_mode), 0o640)
+        self.assertEqual(stat.S_IMODE(os.stat(paths[1]).st_mode), 0o400)
         self.assertEqual(Path(paths[0]).read_bytes(), first[0].read_bytes())
         self.assertEqual(Path(paths[1]).read_bytes(), first[1].read_bytes())
         # Mitten in der Erneuerung: neues Zertifikat, alter Schlüssel -> alte Kopien bleiben.
@@ -191,6 +192,20 @@ class PrepareFilesTest(unittest.TestCase):
         # Ohne frühere Kopien bleibt der NTS-Server bei einem falschen Paar aus.
         shutil.rmtree(self.target)
         self.assertIsNone(self.prepare(second[0], first[1]))
+
+    def test_combined_pem_copies_only_certificates(self):
+        # Zertifikat und Schlüssel in einer Datei: Die gruppenlesbare Kopie enthält nur Zertifikate.
+        pair = _openssl_pair(self.tmp, "eins")
+        if not pair:
+            self.skipTest("openssl kann kein Testzertifikat erzeugen")
+        combined = self.tmp / "kombiniert.pem"
+        combined.write_bytes(pair[1].read_bytes() + pair[0].read_bytes() + pair[0].read_bytes())
+        paths = self.prepare(combined, combined)
+        self.assertEqual(paths, (str(self.target / "server.crt"), str(self.target / "server.key")))
+        copy = Path(paths[0]).read_bytes()
+        self.assertNotIn(b"PRIVATE KEY", copy)
+        self.assertEqual(copy, pair[0].read_bytes() * 2)  # Kette bleibt vollständig
+        self.assertEqual(stat.S_IMODE(os.stat(paths[1]).st_mode), 0o400)
 
     def test_copy_failure_falls_back_to_originals(self):
         pair = _openssl_pair(self.tmp, "eins")
@@ -382,7 +397,8 @@ BACKOFF=(5 15 60 300); STABLE_AFTER=600
 """
 
     def run_bash(self, body, timeout=20):
-        script = self.STUBS + _entrypoint_functions(*self.FUNCS) + "\n" + body
+        script = (self.STUBS + f"APP_DIR={ROOT / 'app'}\n" + _entrypoint_functions(*self.FUNCS)
+                  + "\n" + body)
         return subprocess.run(["bash", "-c", script], capture_output=True, text=True,
                               timeout=timeout, check=True).stdout.split()
 
@@ -420,7 +436,7 @@ kill "$q"
         self.assertEqual(out, ["lebt", "exec_fertig"])
 
     def test_cert_renewal_restarts_only_chronyd(self):
-        self.FUNCS = ("wait_exec", "service_alive", "reload_chronyd")
+        self.FUNCS = ("wait_exec", "service_alive", "proc_ended", "stop_pid", "reload_chronyd")
         out = self.run_bash("""
 apply_config() { echo apply; }
 start_chronyd() { sleep 60 >/dev/null 2>&1 & SVC_ENTRY[chronyd]="$!=sleep"; echo start_chronyd; }
@@ -556,7 +572,7 @@ hold_active || echo frei
         block = text[text.index("apply_config() {"):]
         block = block[:block.index("\n}")]
         self.assertIn("NTS_CERT_DEFERRED=0", block)
-        loop = text[text.index('if [[ -e "${RUN_DIR}/reload.request" ]]; then'):]
+        loop = text[text.index('if [[ -e "${req}/reload.request"'):]
         loop = loop[:loop.index("fi")]
         self.assertLess(loop.index("write_status running"), loop.index("rm -f"))
 

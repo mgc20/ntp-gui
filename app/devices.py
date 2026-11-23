@@ -79,6 +79,39 @@ def cap_eff() -> int | None:
     return parse_cap_hex(proc_status_field("CapEff"))
 
 
+CONTAINER_CAPS_NAME = "container-caps"
+
+
+def _container_caps_file() -> dict[str, str]:
+    """Rechte des Containers, wie sie der Supervisor (root) beim Start nach RUN_DIR schreibt (CapPrm, CapBnd,
+    Seccomp). Leer ohne Supervisor (z. B. Entwicklung) – dann gilt der eigene Prozess."""
+    run_dir = os.environ.get("NTPGUI_RUN_DIR", "/run/ntp-gui")
+    out: dict[str, str] = {}
+    try:
+        with open(os.path.join(run_dir, CONTAINER_CAPS_NAME), encoding="utf-8") as handle:
+            for line in handle.read(4096).splitlines():
+                key, _, value = line.partition(":")
+                out[key.strip()] = value.strip()
+    except (OSError, UnicodeDecodeError):
+        return {}
+    return out
+
+
+def container_caps() -> int | None:
+    """Capabilities, mit denen die Zeitdienste laufen (chronyd, ptp4l, phc2sys starten als root).
+
+    Das Dashboard läuft ab 1.9 ohne root und hat selbst höchstens NET_RAW – an seinem eigenen Prozess
+    gemessen fehlten SYS_TIME und NET_ADMIN immer. Maßgeblich ist deshalb der Supervisor."""
+    caps = parse_cap_hex(_container_caps_file().get("CapPrm", ""))
+    return caps if caps is not None else cap_eff()
+
+
+def container_seccomp() -> str:
+    """Seccomp-Modus des Supervisors (für die Erkennung von privileged), sonst des eigenen Prozesses."""
+    data = _container_caps_file()
+    return data["Seccomp"] if "Seccomp" in data else proc_status_field("Seccomp")
+
+
 def has_cap(bit: int, caps: int | None = None) -> bool | None:
     caps = cap_eff() if caps is None else caps
     if caps is None:
@@ -306,7 +339,7 @@ def ptp_readiness(cfg: dict) -> list[dict[str, Any]]:
         if candidates:
             checks.append({"key": "candidates", "ok": True, "title": "Geeignete Karten gefunden",
                            "detail": "Mit Hardware-Zeitstempeln: " + ", ".join(candidates)})
-    caps = cap_eff()
+    caps = container_caps()   # ptp4l läuft als root: die Rechte des Containers zählen
     net_admin, net_raw = has_cap(CAP_NET_ADMIN, caps), has_cap(CAP_NET_RAW, caps)
     # Effektiver Transport nach Profil (gPTP läuft immer über L2/Raw-Socket).
     import settings  # spät importieren: devices.py bleibt ohne settings testbar

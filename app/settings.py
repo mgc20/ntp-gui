@@ -19,6 +19,7 @@ wird abgelehnt statt "repariert".
 from __future__ import annotations
 
 import base64
+import errno
 import hashlib
 import hmac
 import ipaddress
@@ -27,12 +28,15 @@ import math
 import os
 import re
 import secrets
+import stat as stat_mod
+import sys
 import tempfile
 import threading
 import time
 from typing import Any, Callable
 
 import numfmt
+import textsafe
 
 DATA_DIR = os.environ.get("NTPGUI_DATA_DIR", "/var/lib/chrony/ntp-gui")
 SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json")
@@ -70,6 +74,8 @@ _SAFE_TEXT_RE = re.compile(r"^[^\x00-\x1f\x7f]{0,120}$")
 _REFID_RE = re.compile(r"^[A-Za-z0-9]{1,4}$")
 _NUMBER_RE = re.compile(r"^-?[0-9]+(\.[0-9]+)?([eE]-?[0-9]+)?$")
 _INTEGER_RE = re.compile(r"^-?[0-9]+$")
+_IP_CHARS_RE = re.compile(r"[0-9A-Fa-f:.]{2,45}")
+_NET_CHARS_RE = re.compile(r"[0-9A-Fa-f:.]{2,45}(/[0-9.]{1,15})?")
 
 # chrony-Optionen für server/pool/peer, die im Dashboard erlaubt sind.
 # Wert = Anzahl erwarteter Zahlenargumente.
@@ -106,6 +112,27 @@ PHC2SYS_FLAGS = {
 }
 
 
+def _ip(text: str, version: int | None = None):
+    """Wie ipaddress.ip_address, aber ohne IPv6-Scope-ID („fe80::1%eth0“): Python nimmt nach dem „%“
+    fast jedes Zeichen an, auch Zeilenumbrüche – und chrony versteht Scope-IDs ohnehin nicht. Wirft
+    ValueError wie ip_address."""
+    text = str(text)
+    if not _IP_CHARS_RE.fullmatch(text):
+        raise ValueError("keine IP-Adresse ohne Zusätze")
+    address = ipaddress.ip_address(text)
+    if version is not None and address.version != version:
+        raise ValueError("falsche IP-Version")
+    return address
+
+
+def _net(text: str):
+    """ip_network(strict=False) ohne Scope-ID und ohne fremde Zeichen (siehe _ip)."""
+    text = str(text)
+    if not _NET_CHARS_RE.fullmatch(text):
+        raise ValueError("kein Netz ohne Zusätze")
+    return ipaddress.ip_network(text, strict=False)
+
+
 def _as_bool(value: Any) -> bool:
     if isinstance(value, bool):
         return value
@@ -119,22 +146,81 @@ def _as_bool(value: Any) -> bool:
     raise ValidationError(f"„{value}“ ist kein Ja/Nein-Wert")
 
 
+# Zahlen als Text: nur ASCII-Ziffern in der üblichen Schreibweise (kein „1_0“, keine anderen Ziffernsysteme,
+# kein „inf“/„nan“). Ganzzahl-Felder ohne Nachkommastellen.
+_INT_TEXT = re.compile(r"[+-]?[0-9]+", re.ASCII)
+_FLOAT_TEXT = re.compile(r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?", re.ASCII)
+
+
 def _as_number(kind: type, minimum=None, maximum=None) -> Callable[[Any], Any]:
     def convert(value: Any):
         if isinstance(value, bool):
             raise ValidationError("Zahl erwartet")
+        if isinstance(value, float) and not math.isfinite(value):
+            raise ValidationError("Zahl erwartet (endlicher Wert)")
+        if kind is int and isinstance(value, float) and not value.is_integer():
+            raise ValidationError(f"Ganze Zahl erwartet (nicht {value})")
+        if not isinstance(value, (int, float)):
+            text = str(value).strip()
+            if not (_INT_TEXT if kind is int else _FLOAT_TEXT).fullmatch(text):
+                raise ValidationError(f"„{textsafe.clean(value, 40)}“ ist keine gültige Zahl"
+                                      + (" (ganze Zahl erwartet)" if kind is int else ""))
+            value = text
         try:
-            number = kind(str(value).strip()) if not isinstance(value, (int, float)) else kind(value)
-        except (TypeError, ValueError):
-            raise ValidationError(f"„{value}“ ist keine gültige Zahl") from None
-        if kind is float and (number != number or number in (float("inf"), float("-inf"))):
-            raise ValidationError("Zahl erwartet")
+            number = kind(value)
+        except (TypeError, ValueError, OverflowError):
+            raise ValidationError(f"„{textsafe.clean(value, 40)}“ ist keine gültige Zahl") from None
+        if kind is float and not math.isfinite(number):
+            raise ValidationError("Zahl erwartet (endlicher Wert)")
         if minimum is not None and number < minimum:
             raise ValidationError(f"Mindestens {minimum}")
         if maximum is not None and number > maximum:
             raise ValidationError(f"Höchstens {maximum}")
         return number
     return convert
+
+
+# Ratelimit für NTP und NTS-KE (Stufen, chrony-Zeilen in confgen.RATELIMIT_LINES). Ja/Nein aus älteren
+# Versionen und aus NTP_RATELIMIT=true/false gilt weiter: „ja“ war die heutige Stufe „streng“.
+RATELIMIT_LEVELS = ("aus", "schonend", "streng")
+
+
+def _as_ratelimit(value: Any) -> str:
+    text = str(value).strip().lower() if not isinstance(value, bool) else ""
+    if text in RATELIMIT_LEVELS:
+        return text
+    try:
+        return "streng" if _as_bool(value) else "aus"
+    except ValidationError:
+        raise ValidationError(f"Erlaubt: {', '.join(RATELIMIT_LEVELS)} (oder true/false)") from None
+
+
+# Netze, die nicht öffentlich erreichbar sind: privat, CGNAT, Loopback, Link-Local, ULA, Dokumentation.
+_NON_PUBLIC = [ipaddress.ip_network(net) for net in (
+    "0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16", "172.16.0.0/12",
+    "192.0.0.0/24", "192.0.2.0/24", "192.168.0.0/16", "198.18.0.0/15", "198.51.100.0/24", "203.0.113.0/24",
+    "::1/128", "::/128", "fc00::/7", "fe80::/10", "2001:db8::/32")]
+
+
+def public_networks(networks: Any) -> list[str]:
+    """Einträge aus „Erlaubte Netze“, die öffentliche Adressen einschließen („all“, 0.0.0.0/0, ::/0,
+    ein Netz eines Providers …). Leer heißt: Der Zeitserver antwortet nur privaten Netzen."""
+    out = []
+    for item in networks or []:
+        text = str(item).strip()
+        if text.lower() == "all":
+            out.append(text)
+            continue
+        try:
+            net = ipaddress.ip_network(text, strict=False)
+        except ValueError:
+            continue
+        if net.version == 6 and net.prefixlen >= 96 and net.network_address.ipv4_mapped:
+            mapped = ipaddress.ip_network(f"{net.network_address.ipv4_mapped}/{net.prefixlen - 96}", strict=False)
+            net = mapped
+        if not any(net.version == other.version and net.subnet_of(other) for other in _NON_PUBLIC):
+            out.append(text)
+    return out
 
 
 def _as_choice(*choices: str) -> Callable[[Any], str]:
@@ -189,7 +275,7 @@ def _as_interface(value: Any) -> str:
 def _as_host(value: Any) -> str:
     text = str(value).strip()
     try:
-        ipaddress.ip_address(text)
+        _ip(text)
         return text
     except ValueError:
         pass
@@ -249,6 +335,8 @@ def http_url_ok(text: str, max_len: int = 300) -> bool:
     """
     if not isinstance(text, str) or not text or len(text) > max_len:
         return False
+    if any(ord(c) <= 0x20 or 0x7f <= ord(c) <= 0x9f or c in "\u2028\u2029" for c in text):
+        return False  # Leer- und Steuerzeichen, auch ein Zeilenumbruch am Ende
     match = re.match(r"^(https?)://([^/?#]+)([^?#]*)(\?[^#]*)?(#.*)?$", text)
     if not match:
         return False
@@ -260,7 +348,7 @@ def http_url_ok(text: str, max_len: int = 300) -> bool:
         host, _, rest = netloc[1:].partition("]")
         port = rest[1:] if rest.startswith(":") else ("" if not rest else None)
         try:
-            ipaddress.IPv6Address(host)
+            _ip(host, 6)
         except ValueError:
             return False
     else:
@@ -411,6 +499,15 @@ def _dns_port(text: str) -> int:
     return int(text)
 
 
+def _dns_target_ok(item: str, addr) -> None:
+    """Ziele des DNS-Weiterleiters: nie link-local oder ein Metadaten-Dienst; Loopback nur, solange
+    OUTBOUND_TARGETS nicht „public“ ist (siehe netguard)."""
+    import netguard
+    why = netguard.reason(addr, "dns")
+    if why:
+        raise ValidationError(f"„{item}“: als DNS-Server gesperrt ({why})")
+
+
 def _as_dns_servers(value: Any) -> list[str]:
     """DNS-Server als IP-Adresse, optional mit Port: 9.9.9.9, 9.9.9.9:5353, [2620:fe::fe]:53."""
     out: list[str] = []
@@ -425,7 +522,7 @@ def _as_dns_servers(value: Any) -> list[str]:
             text, _, raw_port = item.partition(":")
             port = _dns_port(raw_port)
         try:
-            addr = ipaddress.ip_address(text)
+            addr = _ip(text)
         except ValueError:
             raise ValidationError(f"„{item}“ ist keine IP-Adresse – hier nur Adressen, z. B. 9.9.9.9 "
                                   "(Namen bräuchten selbst wieder DNS)") from None
@@ -436,6 +533,7 @@ def _as_dns_servers(value: Any) -> list[str]:
         if addr.is_loopback and port == 53:
             raise ValidationError(f"„{item}“ zeigt auf den Weiterleiter von ntp-gui selbst (Loopback, Port 53) "
                                   "– das wäre eine Schleife")
+        _dns_target_ok(item, addr)
         norm = str(addr) if port == 53 else (f"[{addr}]:{port}" if addr.version == 6 else f"{addr}:{port}")
         if norm not in out:
             out.append(norm)
@@ -456,12 +554,13 @@ def _as_dot_servers(value: Any) -> list[str]:
             host, _, raw_port = host.partition(":")
             port = _dns_port(raw_port)
         try:
-            addr = ipaddress.ip_address(host)
+            addr = _ip(host)
         except ValueError:
             if not _HOST_RE.match(host) or "." not in host:
                 raise ValidationError(f"„{item}“ ist kein gültiger Servername, z. B. dns.quad9.net") from None
             norm = host
         else:
+            _dns_target_ok(item, addr)
             norm = f"[{addr}]" if addr.version == 6 else str(addr)
         if port and port != 853:
             norm = f"{norm}:{port}"
@@ -482,6 +581,13 @@ def _as_doh_urls(value: Any) -> list[str]:
                                   "z. B. https://dns.quad9.net/dns-query")
         if "#" in text:
             raise ValidationError(f"„{item}“: kein #-Anteil erlaubt")
+        host = re.match(r"https://(\[[^\]]*\]|[^/:?#]*)", text, re.I).group(1).strip("[]")
+        try:
+            literal = _ip(host)
+        except ValueError:
+            literal = None
+        if literal is not None:
+            _dns_target_ok(item, literal)
         if text not in out:
             out.append(text)
     if len(out) > MAX_DNS_SERVERS:
@@ -498,11 +604,12 @@ def _as_dns_pins(value: Any) -> list[str]:
         if not sep or not _HOST_RE.match(name) or "." not in name:
             raise ValidationError(f"„{item}“: Format Name=IP, z. B. dns.quad9.net=9.9.9.9")
         try:
-            addr = ipaddress.ip_address(ip.strip().strip("[]"))
+            addr = _ip(ip.strip().strip("[]"))
         except ValueError:
             raise ValidationError(f"„{item}“: „{ip}“ ist keine IP-Adresse") from None
         if addr.is_unspecified or addr.is_multicast or addr.is_loopback:
             raise ValidationError(f"„{item}“: keine brauchbare Adresse")
+        _dns_target_ok(item, addr)
         norm = f"{name}={addr}"
         if norm not in out:
             out.append(norm)
@@ -522,7 +629,7 @@ def _as_network_list(value: Any) -> list[str]:
             networks.append("all")
             continue
         try:
-            networks.append(str(ipaddress.ip_network(item, strict=False)))
+            networks.append(str(_net(item)))
         except ValueError:
             raise ValidationError(f"„{item}“ ist kein Netz, z. B. 192.168.0.0/16") from None
     return networks
@@ -539,7 +646,7 @@ def _as_proxy_list(value: Any) -> list[str]:
             raise ValidationError("„all“ geht hier nicht – dann könnte jeder seine Adresse fälschen. "
                                   "Nur die Adresse des Proxys eintragen, z. B. 127.0.0.1/32")
         try:
-            net = ipaddress.ip_network(item, strict=False)
+            net = _net(item)
         except ValueError:
             raise ValidationError(f"„{item}“ ist keine Adresse und kein Netz, z. B. 127.0.0.1/32") from None
         if net.prefixlen == 0:
@@ -624,9 +731,11 @@ def _as_makestep(value: Any) -> str:
 
 
 def _as_timezone(value: Any) -> str:
+    """Name einer Zeitzone unter /usr/share/zoneinfo (z. B. right/UTC) – relativ, ohne „..“."""
     text = str(value or "").strip()
-    if text and not re.match(r"^[A-Za-z0-9_+/-]{1,64}$", text):
-        raise ValidationError("Ungültige Zeitzone")
+    if text and (not re.fullmatch(r"[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+)*", text) or len(text) > 64
+                 or any(part in {".", ".."} for part in text.split("/"))):
+        raise ValidationError("Ungültige Zeitzone – Name wie Europe/Berlin oder right/UTC, kein Pfad")
     return text
 
 
@@ -819,7 +928,12 @@ SCHEMA: list[dict] = [
            _as_network_list, env="ALLOW_NETWORKS",
            help="Nur Geräte aus diesen Netzen bekommen eine Antwort. Standard: alle privaten "
                 "Netze (10.x, 172.16–31.x, 192.168.x, IPv6 ULA und Link-Local). „all“ erlaubt "
-                "jedem – nur sinnvoll, wenn eine Firewall davor sitzt."),
+                "jedem – nur mit einer Firewall davor oder für einen bewusst öffentlichen Zeitserver. "
+                "Enthält die Liste öffentliche Adressen, gelten strengere Standards: Ratelimit „streng“ "
+                "und kein Inselbetrieb (beides lässt sich ausdrücklich anders einstellen); Dashboard und "
+                "Container-Log weisen darauf hin. Kommen die Anfragen über das Gateway des Docker-Netzes "
+                "(Portfreigabe mit userland-proxy, oft bei IPv6), sieht chrony nur diese private Adresse – "
+                "dann greift die Liste nicht nach der echten Adresse; die Übersicht meldet das."),
     _field("deny_networks", "lan", "Ausgenommene Netze", "networks", [], _as_network_list,
            env="DENY_NETWORKS", advanced=True,
            help="Netze innerhalb der erlaubten, die trotzdem keine Antwort bekommen, z. B. ein "
@@ -829,11 +943,16 @@ SCHEMA: list[dict] = [
            hint="Inselbetrieb: Ist keine Quelle erreichbar, liefert der Server trotzdem seine eigene Uhrzeit aus – mit hohem Stratum.",
            help="Inselbetrieb: Ist keine Quelle erreichbar, liefert der Server trotzdem die "
                 "eigene Uhrzeit aus (mit hohem Stratum, damit Clients sie als zweite Wahl "
-                "erkennen). Hält das LAN einheitlich, auch wenn das Internet ausfällt."),
+                "erkennen). Hält das LAN einheitlich, auch wenn das Internet ausfällt. Die Antworten "
+                "gelten dabei als gültig (kein Hinweis „nicht synchron“): Clients mit nur diesem Server "
+                "übernehmen die frei laufende Uhr. Standard: an – außer „Erlaubte Netze“ enthält "
+                "öffentliche Adressen, dann aus, damit Clients aus dem Internet bei einem Ausfall auf "
+                "andere Server ausweichen. Für einen öffentlichen Zeitserver aus lassen."),
     _field("local_stratum", "lan", "Stratum im Inselbetrieb", "int", 10,
            _as_number(int, 1, 15), env="LOCAL_STRATUM", advanced=True,
            help="Wie „weit weg“ von einer echten Referenz sich der Server im Inselbetrieb "
-                "ausgibt. 10 ist üblich und sorgt dafür, dass echte Server Vorrang behalten."),
+                "ausgibt. 10 ist üblich und sorgt dafür, dass echte Server Vorrang behalten. Ein Client, "
+                "der nur diesen Server kennt, übernimmt die Inselzeit trotzdem."),
     _field("local_orphan", "lan", "Orphan-Modus (zwei Server im Verbund)", "bool", False, _as_bool,
            env="LOCAL_ORPHAN", advanced=True,
            help="Für zwei (oder mehr) ntp-gui-Server, die sich gegenseitig als Quelle eingetragen "
@@ -842,10 +961,23 @@ SCHEMA: list[dict] = [
                 "der Server mit der kleinsten Referenz-ID, der andere folgt ihm. Hängt „orphan“ an "
                 "die Zeile „local stratum …“ an und wirkt deshalb nur zusammen mit „Auch ohne "
                 "Quelle Zeit ausliefern“. Beide Server brauchen dasselbe Stratum im Inselbetrieb."),
-    _field("ntp_ratelimit", "lan", "Anfragen begrenzen", "bool", False, _as_bool,
+    _field("ntp_ratelimit", "lan", "Anfragen begrenzen", "select", "schonend", _as_ratelimit,
            env="NTP_RATELIMIT", advanced=True,
-           help="Begrenzt, wie oft ein einzelner Client fragen darf. Schützt vor fehlerhaften "
-                "Geräten, die im Sekundentakt fragen. Im Heimnetz meist unnötig."),
+           options=[("schonend", "schonend – nur Überflutung bremsen"),
+                    ("streng", "streng – öffentlicher Server"),
+                    ("aus", "aus – alles beantworten")],
+           hint="Begrenzt, wie oft eine einzelne Adresse fragen darf (NTP und NTS-Schlüsselaustausch).",
+           help="Begrenzt, wie oft eine einzelne Adresse fragen darf (NTP und NTS-Schlüsselaustausch). "
+                "„schonend“ bremst nur Überflutung (im Mittel mehr als 4 Anfragen je Sekunde, Stöße bis 32) "
+                "und stört normale Clients nicht. Teilen sich Geräte eine Absenderadresse (NAT, Docker-Gateway), "
+                "gilt die Grenze für alle zusammen: im Dauerbetrieb reicht sie für etwa 250 Geräte (Abfrage "
+                "alle 64 s), starten aber mehr als etwa ein Dutzend gleichzeitig neu, bremst chrony kurz – "
+                "dann „aus“ wählen. "
+                "„streng“ erlaubt im Mittel eine Anfrage alle 2 s (Stöße bis 16) und einen "
+                "Schlüsselaustausch alle 8 s (Stöße bis 8) – passend, wenn Fremde den Server erreichen. "
+                "Gebremste Anfragen beantwortet chrony nur noch zum Teil (jede vierte), damit echte Clients "
+                "nicht ganz abreißen. Standard: „schonend“, bei öffentlichen Adressen unter „Erlaubte Netze“ "
+                "„streng“. NTP_RATELIMIT=true entspricht „streng“, false „aus“."),
     _field("ntp_port", "lan", "NTP-Port", "int", 123, _as_number(int, 1, 65535),
            env="NTP_PORT", advanced=True,
            help="Standard ist 123. Nur ändern, wenn Clients einen anderen Port erwarten."),
@@ -1434,6 +1566,8 @@ ENV_ONLY = [
     ("EXTRA_PTP4L_CONF", "Zusätzliche ptp4l-Zeilen"),
     ("CLIENTLOGLIMIT", "Speicher für die Client-Liste"),
     ("WEB_READONLY", "Einstellungen im Dashboard sperren"),
+    ("WEB_REQUIRE_AUTH", "Anmeldung erzwingen (ohne Zugang gesperrt)"),
+    ("OUTBOUND_TARGETS", "Erlaubte Ziele ausgehender Verbindungen"),
 ]
 
 
@@ -1442,40 +1576,158 @@ ENV_ONLY = [
 # ---------------------------------------------------------------------------
 
 _LOCK = threading.RLock()  # reentrant: save() ruft values() unter der Sperre
-_CACHE: dict[str, Any] = {"mtime": None, "data": None}
+_CACHE: dict[str, Any] = {"mtime": None, "data": None, "error": None}
+_UNREADABLE_NOTED: dict[str, Any] = {"error": None}
+
+
+class SettingsUnreadable(ValidationError):
+    """settings.json ist vorhanden, aber nicht lesbar: Schreiben ist gesperrt, damit die Datei (mit dem
+    Passwort-Hash und allen Einstellungen) nicht durch eine fast leere ersetzt wird."""
+
+
+def load_error() -> str | None:
+    """Grund, wenn settings.json vorhanden, aber nicht lesbar ist (beschädigt, abgeschnitten, keine Rechte,
+    kein JSON-Objekt). None, wenn sie lesbar ist oder fehlt. Liest die Datei bei Bedarf neu (mtime)."""
+    with _LOCK:
+        _load_file()
+        return _CACHE["error"]
+
+
+def _unreadable(reason: str) -> str:
+    return (f"settings.json im Datenverzeichnis ist nicht lesbar ({reason}). Das Dashboard läuft im Schutzmodus: "
+            "Ein dort gesetztes Passwort könnte sonst still wegfallen, und Speichern würde die Datei "
+            "überschreiben. Repariere die Datei oder ersetze sie durch eine funktionierende Kopie; danach entsperrt "
+            "sich das Dashboard von selbst. Entfernst du sie, beginnt alles mit Standardwerten – dann ist auch ein "
+            "im Dashboard gesetztes Passwort weg und das Dashboard ohne Anmeldung erreichbar; setze vorher "
+            "WEB_USER/WEB_PASSWORD oder WEB_REQUIRE_AUTH=true in der Compose-Datei")
+
+
+# Größer wird settings.json nie (Einstellungen, Passwort-Hash, Hinweise); mehr liest auch root nicht ein.
+SETTINGS_MAX_BYTES = 4 * 1024 * 1024
+
+
+class _NotRegular(Exception):
+    """settings.json ist keine gewöhnliche Datei (Link, Pipe, Gerät …) oder zu groß."""
+
+
+def _read_regular(path: str, limit: int) -> bytes:
+    """Liest eine gewöhnliche Datei ohne Links zu folgen und ohne zu blockieren (höchstens limit Bytes).
+
+    confgen.py liest settings.json als root aus dem Verzeichnis, das dem Dashboard-Benutzer gehört. Ein
+    Link, eine Pipe oder ein Gerät an dieser Stelle gilt deshalb als nicht lesbar (Schutzmodus), statt
+    dem Link zu folgen oder den Supervisor warten zu lassen. Geprüft wird am geöffneten Deskriptor."""
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_NOCTTY | os.O_CLOEXEC
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise _NotRegular("ein symbolischer Link statt einer Datei") from None
+        raise
+    try:
+        info = os.fstat(fd)
+        if not stat_mod.S_ISREG(info.st_mode):
+            raise _NotRegular("keine gewöhnliche Datei")
+        if info.st_size > limit:
+            raise _NotRegular(f"größer als {limit // (1024 * 1024)} MiB")
+        chunks, total = [], 0
+        while True:
+            chunk = os.read(fd, min(65536, limit + 1 - total))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > limit:
+                raise _NotRegular(f"größer als {limit // (1024 * 1024)} MiB")
+        return b"".join(chunks)
+    finally:
+        os.close(fd)
 
 
 def _load_file() -> dict:
     try:
-        stat = os.stat(SETTINGS_FILE)
-    except OSError:
+        # lstat: Ein Link wird nicht verfolgt (er gilt beim Öffnen ohnehin als nicht lesbar).
+        stat = os.lstat(SETTINGS_FILE)
+    except FileNotFoundError:
+        _CACHE.update(mtime=None, data=None, error=None)
         return {}
-    if _CACHE["mtime"] == stat.st_mtime_ns and _CACHE["data"] is not None:
-        return _CACHE["data"]
+    except OSError as exc:
+        return _broken(None, f"Dateiinfo nicht lesbar: {exc.strerror or type(exc).__name__}")
+    if _CACHE["mtime"] == stat.st_mtime_ns and (_CACHE["data"] is not None or _CACHE["error"]):
+        return {} if _CACHE["error"] else _CACHE["data"]
     try:
-        with open(SETTINGS_FILE, encoding="utf-8") as handle:
-            data = json.load(handle)
-        if not isinstance(data, dict):
-            data = {}
-    except (OSError, ValueError):
-        data = {}
+        raw = _read_regular(SETTINGS_FILE, SETTINGS_MAX_BYTES)
+    except FileNotFoundError:
+        _CACHE.update(mtime=None, data=None, error=None)
+        return {}
+    except OSError as exc:
+        return _broken(stat.st_mtime_ns, exc.strerror or type(exc).__name__)
+    except _NotRegular as exc:
+        return _broken(stat.st_mtime_ns, str(exc))
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (ValueError, RecursionError):
+        return _broken(stat.st_mtime_ns, "kein gültiges JSON – beschädigt oder abgeschnitten")
+    if not isinstance(data, dict):
+        return _broken(stat.st_mtime_ns, "kein JSON-Objekt")
     if data and _schema_of(data) < SCHEMA_VERSION:
         with _LOCK:
+            # Die Datei ist (wieder) lesbar: Ein Fehlerzustand von vorher darf das Speichern der Migration
+            # nicht mehr sperren (_write_tmp prüft den Zwischenspeicher).
+            _CACHE.update(error=None)
             data, notes = migrate_data(data)
             try:
-                _write_file(data)
-                stat = os.stat(SETTINGS_FILE)
-            except OSError as exc:
+                # confgen.py (root) speichert die Migration nicht in ein Verzeichnis, das dem Dashboard
+                # gehört: Sie gilt dort nur im Speicher; das Dashboard speichert sie selbst.
+                if os.geteuid() != 0 or _dir_owned_by_us(DATA_DIR):
+                    _write_file(data)
+                    stat = os.stat(SETTINGS_FILE)
+            except (OSError, ValidationError) as exc:
                 # Nur lesbares Volume: Migration gilt im Speicher, Hinweis bleibt sichtbar.
-                print(f"[web] Einstellungen migriert, aber nicht gespeichert: {exc}", flush=True)
+                _log(f"Einstellungen migriert, aber nicht gespeichert: {exc}")
             for note in notes:
-                print(f"[web] Update der Einstellungen: {note['title']}", flush=True)
-    _CACHE.update(mtime=stat.st_mtime_ns, data=data)
+                _log(f"Update der Einstellungen: {note['title']}")
+    _CACHE.update(mtime=stat.st_mtime_ns, data=data, error=None)
+    _UNREADABLE_NOTED["error"] = None
     return data
 
 
+def _dir_owned_by_us(path: str) -> bool:
+    """Verzeichnis gehört dem eigenen Benutzer, ist kein Link und für niemanden sonst beschreibbar
+    (fehlt es, legt der eigene Prozess es an)."""
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    return (stat_mod.S_ISDIR(info.st_mode) and info.st_uid == os.geteuid()
+            and not info.st_mode & 0o022)
+
+
+def _broken(mtime: int | None, reason: str) -> dict:
+    """Vorhandene, aber nicht lesbare settings.json: leer weiterarbeiten, Grund merken (fail-closed über
+    load_error: Dashboard gesperrt, Schreiben gesperrt). Einmal je Grund ins Log."""
+    error = _unreadable(reason)
+    _CACHE.update(mtime=mtime, data=None, error=error)
+    if _UNREADABLE_NOTED["error"] != error:
+        _UNREADABLE_NOTED["error"] = error
+        _log(f"FEHLER: {error}.")
+    return {}
+
+
+def _log(message: str) -> None:
+    """Meldung ins Container-Log – auf stderr: confgen.py gibt auf stdout Shell-Zuweisungen aus, die der
+    Entrypoint per eval übernimmt; eine Meldung dort würde sie unbrauchbar machen."""
+    print(f"[web] {message}", file=sys.stderr, flush=True)
+
+
 def _write_tmp(data: dict) -> str:
-    """settings.json-Inhalt in eine temporäre Datei im Datenverzeichnis (0600). Gibt ihren Pfad."""
+    """settings.json-Inhalt in eine temporäre Datei im Datenverzeichnis (0600). Gibt ihren Pfad.
+    Ist die vorhandene settings.json nicht lesbar, wird nichts geschrieben (SettingsUnreadable)."""
+    # Alle Schreibwege lesen die Datei vorher (_load_file); der Stand steht daher im Zwischenspeicher. Nicht
+    # load_error() aufrufen: Die Migration in _load_file schreibt selbst und käme sonst hierher zurück.
+    if _CACHE["error"]:
+        raise SettingsUnreadable(_CACHE["error"])
     data = dict(data)
     data.setdefault("schema", SCHEMA_VERSION)
     os.makedirs(DATA_DIR, mode=0o700, exist_ok=True)
@@ -1489,8 +1741,8 @@ def _write_tmp(data: dict) -> str:
             json.dump(data, handle, indent=2, ensure_ascii=False, sort_keys=True)
             handle.write("\n")
             handle.flush()
+            os.fchmod(handle.fileno(), 0o600)  # am Deskriptor, nicht über den Namen
             os.fsync(handle.fileno())
-        os.chmod(tmp, 0o600)
     except BaseException:
         if os.path.exists(tmp):
             os.unlink(tmp)
@@ -1505,7 +1757,7 @@ def _write_file(data: dict) -> None:
     finally:
         if os.path.exists(tmp):
             os.unlink(tmp)
-    _CACHE.update(mtime=None, data=None)
+    _CACHE.update(mtime=None, data=None, error=None)
 
 
 def _env_value(field: dict, env: dict[str, str]):
@@ -1536,7 +1788,8 @@ def effective(env: dict[str, str] | None = None, saved: dict[str, Any] | None = 
     result = {}
     for field in SCHEMA:
         key = field["key"]
-        entry = {"value": field["default"], "source": "default", "error": None, "env": None}
+        entry = {"value": field["default"], "source": "default", "error": None, "env": None,
+                 "default": field["default"]}
         try:
             env_value = _env_value(field, env)
         except ValidationError as exc:
@@ -1550,7 +1803,25 @@ def effective(env: dict[str, str] | None = None, saved: dict[str, Any] | None = 
             except ValidationError as exc:
                 entry["error"] = f"Gespeicherter Wert ungültig: {exc}"
         result[key] = entry
+    _public_defaults(result)
     return result
+
+
+def _public_defaults(result: dict[str, dict]) -> None:
+    """Antwortet der Zeitserver auch öffentlichen Adressen, gelten sicherere Standards: Ratelimit
+    „streng“ und kein Inselbetrieb (Clients aus dem Internet sollen bei einem Ausfall der Quellen
+    auf andere Server ausweichen statt eine frei laufende Uhr zu übernehmen). Ausdrücklich gesetzte
+    Werte (Umgebung, Dashboard) bleiben unberührt. entry["default"] ist danach der wirksame Standard –
+    den zeigt das Dashboard an und darauf setzt „zurücksetzen“ zurück."""
+    allow = result.get("allow_networks")
+    if not allow or not public_networks(allow["value"]):
+        return
+    for key, value in (("ntp_ratelimit", "streng"), ("serve_unsynced", False)):
+        entry = result.get(key)
+        if entry:
+            entry["default"] = value
+            if entry["source"] == "default":
+                entry["value"] = value
 
 
 def values(env: dict[str, str] | None = None) -> dict[str, Any]:
@@ -1596,35 +1867,46 @@ def _stored_after(stored: dict[str, Any], clean: dict[str, Any], defaults: list[
                   env: dict[str, str] | None = None) -> dict[str, Any]:
     """Gespeicherte Werte nach dem Speichern: clean übernommen, defaults auf den Standard.
 
-    „Auf den Standard“ heißt: den Dashboard-Wert entfernen – setzt aber die Umgebung einen anderen
-    Wert, wird der Standard ausdrücklich gespeichert (sonst gälte wieder der Wert aus der Compose-Datei).
+    „Auf den Standard“ heißt: den Dashboard-Wert entfernen – gilt danach aber ein anderer Wert als
+    der wirksame Standard (die Umgebung setzt etwas anderes), wird der Standard ausdrücklich
+    gespeichert. Wirksamer Standard: bei öffentlichen Adressen unter „Erlaubte Netze“ die sichereren
+    Werte aus _public_defaults, sonst der Schema-Standard.
     """
     env = dict(os.environ if env is None else env)
     out = dict(stored)
     out.update(clean)
-    for key in defaults:
-        if key in clean:
-            continue  # ausdrücklich gesetzter Wert gewinnt
+    keys = [key for key in defaults if key not in clean]  # ausdrücklich gesetzter Wert gewinnt
+    for key in keys:
         out.pop(key, None)
-        field = FIELDS[key]
-        try:
-            env_value = _env_value(field, env)
-        except ValidationError:
-            env_value = None
-        if env_value is not None and env_value != field["default"]:
-            out[key] = field["default"]
+    if keys:
+        eff = effective(env, out)
+        for key in keys:
+            entry = eff[key]
+            if entry["value"] != entry["default"]:
+                out[key] = entry["default"]
     return out
+
+
+def saved_values() -> dict[str, Any]:
+    """Im Dashboard gespeicherte Werte (Inhalt von settings.json, ungeprüft)."""
+    with _LOCK:
+        return dict(_load_file().get("values", {}))
+
+
+def saved_after(changes: dict[str, Any], defaults: Any = None,
+                env: dict[str, str] | None = None) -> dict[str, Any]:
+    """Gespeicherte Werte, wie sie nach save(changes, defaults) stünden – ohne etwas zu schreiben.
+    Prüft genauso streng wie save() (ValidationError mit Feldbezug)."""
+    clean = validate(changes)
+    keys = validate_defaults(defaults)
+    return _stored_after(saved_values(), clean, keys, env)
 
 
 def preview_values(changes: dict[str, Any], defaults: Any = None,
                    env: dict[str, str] | None = None) -> dict[str, Any]:
     """Effektive Werte, wie sie nach save(changes, defaults) gälten – ohne etwas zu schreiben.
     Prüft genauso streng wie save() (ValidationError mit Feldbezug)."""
-    clean = validate(changes)
-    keys = validate_defaults(defaults)
-    with _LOCK:
-        stored = dict(_load_file().get("values", {}))
-    after = _stored_after(stored, clean, keys, env)
+    after = saved_after(changes, defaults, env)
     return {key: entry["value"] for key, entry in effective(env, after).items()}
 
 
@@ -1702,7 +1984,7 @@ def commit_replace(staged: dict[str, Any]) -> dict[str, Any]:
     with _LOCK:
         before = values()
         os.replace(staged["tmp"], SETTINGS_FILE)
-        _CACHE.update(mtime=None, data=None)
+        _CACHE.update(mtime=None, data=None, error=None)
     after = values()
     changed = [key for key in FIELDS if before.get(key) != after.get(key)]
     restart = any(FIELDS[key]["restart"] == RESTART_SERVICES for key in changed)
@@ -1717,14 +1999,34 @@ def discard_staged(staged: dict[str, Any]) -> None:
 
 
 # Werte, die keine Geheimnisse sind, aber Konto-Kennungen enthalten können (NextDNS-ID im
-# DoH-Pfad): API-Schlüssel mit Leserecht sehen sie nur gekürzt.
-MASKED_FOR_READ = ("dns_doh",)
+# DoH-Pfad oder als erster Teil des DoT-Namens): API-Schlüssel mit Leserecht sehen sie nur gekürzt.
+MASKED_FOR_READ = ("dns_doh", "dns_dot", "dns_pin")
 
 
-def _mask_value(key: str, value: Any) -> Any:
-    if key == "dns_doh" and isinstance(value, list):
+def _mask_host(host: str) -> str:
+    """Servername ohne vordere Teile (z. B. Konto-Kennung vor dns.nextdns.io): nur die letzten drei."""
+    import dnsfwd
+    return dnsfwd.mask_host(host)
+
+
+def mask_value(key: str, value: Any) -> Any:
+    if not isinstance(value, list):
+        return value
+    if key == "dns_doh":
         import dnsfwd
         return [dnsfwd.doh_label(str(item)) for item in value]
+    if key == "dns_dot":
+        out = []
+        for item in map(str, value):
+            host, sep, port = item.rpartition(":") if item.count(":") == 1 else (item, "", "")
+            out.append(_mask_host(host) + sep + port)
+        return out
+    if key == "dns_pin":
+        out = []
+        for item in map(str, value):
+            name, sep, addr = item.partition("=")
+            out.append(_mask_host(name) + sep + addr)
+        return out
     return value
 
 
@@ -1736,8 +2038,8 @@ def public_schema(masked: bool = False) -> dict:
     for field in SCHEMA:
         entry = eff[field["key"]]
         if masked and field["key"] in MASKED_FOR_READ:
-            entry = dict(entry, value=_mask_value(field["key"], entry["value"]),
-                         env=_mask_value(field["key"], entry["env"]) if entry["env"] is not None else None,
+            entry = dict(entry, value=mask_value(field["key"], entry["value"]),
+                         env=mask_value(field["key"], entry["env"]) if entry["env"] is not None else None,
                          error="Wert ungültig (Einzelheiten nur mit Admin-Recht)" if entry["error"] else None)
         hint, more = help_parts(field)
         fields.append({
@@ -1747,7 +2049,7 @@ def public_schema(masked: bool = False) -> dict:
             "restart": field["restart"], "unit": field["unit"],
             "placeholder": field["placeholder"], "env": field["env"],
             "options": [{"value": v, "label": l} for v, l in (field["options"] or [])],
-            "default": field["default"], "value": entry["value"], "source": entry["source"],
+            "default": entry["default"], "value": entry["value"], "source": entry["source"],
             "env_value": entry["env"], "error": entry["error"],
             **({"env_extra": {"name": "WEB_ALLOWED_HOSTS", "values": env_allowed_hosts()}}
                if field["key"] == "web_allowed_hosts" else {}),
@@ -1767,7 +2069,7 @@ def storage_info() -> dict:
     """Wo gespeichert wird und ob es einen Neustart des Containers übersteht."""
     persistent = _is_mounted(os.path.dirname(DATA_DIR.rstrip("/")) or DATA_DIR)
     return {"path": SETTINGS_FILE, "persistent": persistent,
-            "exists": os.path.exists(SETTINGS_FILE)}
+            "exists": os.path.exists(SETTINGS_FILE), "error": load_error()}
 
 
 def _is_mounted(path: str) -> bool:
@@ -1789,7 +2091,35 @@ def _is_mounted(path: str) -> bool:
 # Passwort für das Dashboard
 # ---------------------------------------------------------------------------
 
-_PBKDF2_ROUNDS = 200_000
+# 1.9: 600 000 Runden (OWASP-Empfehlung für PBKDF2-HMAC-SHA256). Ältere Hashes (200 000) gelten weiter und
+# werden bei der nächsten erfolgreichen Anmeldung neu berechnet (needs_rehash/upgrade_hash). Gelesene Runden
+# sind nach oben begrenzt – ein Hash mit absurd hoher Zahl würde jede Anmeldung zur Dauerlast machen.
+_PBKDF2_ROUNDS = 600_000
+_PBKDF2_MIN_ROUNDS = 1_000
+_PBKDF2_MAX_ROUNDS = 5_000_000
+
+# Zu einfache Passwörter (Beispielwerte aus Anleitungen und Compose-Vorlagen, Allerweltswörter).
+WEAK_PASSWORDS = frozenset({
+    "bitte-aendern", "bitteaendern", "bitte-ändern", "changeme", "change-me", "password", "passwort",
+    "password1", "passwort1", "admin", "admin123", "administrator", "geheim", "geheim123", "secret",
+    "12345678", "123456789", "1234567890", "qwertz", "qwertzu", "qwertzui", "qwerty", "qwertyui",
+    "letmein", "ntp-gui", "ntpgui", "chrony", "zeitserver", "timeserver",
+})
+RECOMMENDED_LENGTH = 12
+
+
+def password_weakness(password: str, user: str = "") -> str | None:
+    """Grund, warum ein Passwort zu schwach ist – oder None. Für Warnungen (Umgebung) und Ablehnung (Dashboard)."""
+    password = str(password or "")
+    if password.strip().lower() in WEAK_PASSWORDS:
+        return "ein bekannter Beispielwert"
+    if user and password.strip().lower() == str(user).strip().lower():
+        return "gleich dem Benutzernamen"
+    if len(set(password)) <= 2:
+        return "zu gleichförmig"
+    if len(password) < RECOMMENDED_LENGTH:
+        return f"kürzer als {RECOMMENDED_LENGTH} Zeichen"
+    return None
 
 
 def hash_password(password: str) -> str:
@@ -1804,11 +2134,37 @@ def verify_password(password: str, encoded: str) -> bool:
         scheme, rounds, salt, digest = encoded.split("$")
         if scheme != "pbkdf2_sha256":
             return False
+        rounds_n = int(rounds)
+        if not _PBKDF2_MIN_ROUNDS <= rounds_n <= _PBKDF2_MAX_ROUNDS:
+            return False
         calc = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"),
-                                   base64.b64decode(salt), int(rounds))
+                                   base64.b64decode(salt), rounds_n)
         return hmac.compare_digest(calc, base64.b64decode(digest))
     except (ValueError, TypeError):
         return False
+
+
+def needs_rehash(encoded: str) -> bool:
+    """True, wenn ein gespeicherter Hash mit weniger als den aktuellen Runden berechnet wurde."""
+    try:
+        scheme, rounds, _salt, _digest = str(encoded).split("$")
+        return scheme == "pbkdf2_sha256" and int(rounds) < _PBKDF2_ROUNDS
+    except (ValueError, TypeError):
+        return False
+
+
+def upgrade_hash(user: str, password: str, old_hash: str) -> bool:
+    """Nach erfolgreicher Anmeldung: Hash mit den aktuellen Runden neu berechnen – nur, wenn der gespeicherte
+    Zugang noch derselbe ist (keine gleichzeitige Änderung überschreiben). True, wenn neu geschrieben."""
+    new_hash = hash_password(password)
+    with _LOCK:
+        data = dict(_load_file())
+        auth = data.get("auth")
+        if not (isinstance(auth, dict) and auth.get("user") == user and auth.get("hash") == old_hash):
+            return False
+        data["auth"] = {**auth, "hash": new_hash}
+        _write_file(data)
+    return True
 
 
 def stored_credentials() -> dict | None:
@@ -1831,6 +2187,9 @@ def set_credentials(user: str, password: str | None) -> None:
                 raise ValidationError("Benutzername: 1–64 Zeichen, nur Buchstaben, Ziffern und ._@-")
             if len(password) < 8:
                 raise ValidationError("Passwort: mindestens 8 Zeichen")
+            weak = password_weakness(password, user)
+            if weak and not weak.startswith("kürzer"):
+                raise ValidationError(f"Passwort zu einfach ({weak}) – bitte ein anderes wählen")
             data["auth"] = {"user": user, "hash": hash_password(password)}
         _write_file(data)
 
@@ -1844,7 +2203,7 @@ def export_values(masked: bool = False) -> dict:
     if masked:
         hidden = [key for key in MASKED_FOR_READ if key in values]
         for key in hidden:
-            values[key] = _mask_value(key, values[key])
+            values[key] = mask_value(key, values[key])
         if hidden:
             out["masked"] = hidden
     return out

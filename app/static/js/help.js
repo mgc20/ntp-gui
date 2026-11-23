@@ -221,7 +221,10 @@ export const HELP = {
     text: "Ist keine Quelle erreichbar, kann der Server trotzdem seine eigene Uhrzeit verteilen – "
       + "mit absichtlich schlechtem Stratum (Standard 10). So bleiben alle Geräte im LAN "
       + "untereinander einig, auch wenn das Internet ausfällt. Sobald eine echte Quelle zurück "
-      + "ist, übernimmt die wieder.",
+      + "ist, übernimmt die wieder. Die Antworten gelten dabei als **gültig** (kein „nicht synchron“): "
+      + "Ein Client, der nur diesen Server kennt, übernimmt die frei laufende Uhr. Deshalb ist der "
+      + "Inselbetrieb standardmäßig **aus**, sobald unter „Erlaubte Netze“ öffentliche Adressen stehen – "
+      + "Clients aus dem Internet sollen bei einem Ausfall auf andere Server ausweichen.",
   },
   local_orphan: {
     title: "Orphan-Modus (zwei Server im Verbund)",
@@ -738,7 +741,11 @@ export const HELP = {
     title: "Grandmaster",
     text: "Die Uhr, nach der sich alle PTP-Teilnehmer richten. Welche das ist, handeln die Geräte "
       + "automatisch aus (Best Master Clock Algorithm): Priority 1, Clock Class, Genauigkeit, "
-      + "Priority 2, zuletzt die Kennung. Mit GPS sollte dieser Server Grandmaster sein.",
+      + "Priority 2, zuletzt die Kennung. Mit GPS sollte dieser Server Grandmaster sein. "
+      + "**Grenze:** PTP (IEEE 1588, wie linuxptp es hier nutzt) hat **keine Authentifizierung**. Jedes "
+      + "Gerät im selben Netzsegment kann sich als besserer Grandmaster ausgeben. Betreibe PTP deshalb nur "
+      + "in einem vertrauenswürdigen Netz. Die Rolle **Grandmaster** folgt keinem fremden Takt; "
+      + "„automatisch“ und „Slave“ übernehmen den besten angekündigten Takt.",
   },
   port_state: {
     title: "Port-Zustand",
@@ -913,7 +920,35 @@ export const HELP = {
     text: "Nur Geräte aus diesen Netzen bekommen eine NTP-Antwort, alle anderen werden still ignoriert. "
       + "Standard sind alle **privaten Netze** (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, IPv6 ULA "
       + "und Link-Local). Ein Netz pro Zeile in CIDR-Schreibweise. `all` erlaubt jedem – nur sinnvoll, "
-      + "wenn eine Firewall davor sitzt, sonst kann der Server für Angriffe missbraucht werden.",
+      + "wenn eine Firewall davor sitzt oder der Server bewusst öffentlich ist. Stehen hier öffentliche "
+      + "Adressen, gelten strengere Standards (Ratelimit **streng**, kein Inselbetrieb), und Übersicht "
+      + "sowie Container-Log weisen darauf hin. "
+      + "**Docker-Gateway:** Leitet Docker Anfragen über den userland-proxy weiter (Portfreigabe auf "
+      + "127.0.0.1, oft auch bei IPv6), sieht chrony als Absender nur das Gateway des Docker-Netzes, z. B. "
+      + "`172.17.0.1`. Das liegt in `172.16.0.0/12` – die Liste lässt dann **alle** diese Anfragen durch, "
+      + "auch aus dem Internet. Die Übersicht meldet das. Abhilfe: `network_mode: host` oder im "
+      + "Docker-Daemon IPv6 mit ip6tables bzw. `\"userland-proxy\": false`.",
+  },
+  ratelimit: {
+    title: "Anfragen begrenzen (Ratelimit)",
+    text: "chrony merkt sich je Absenderadresse, wie oft sie fragt, und bremst Adressen, die zu oft "
+      + "fragen. Gebremste Anfragen beantwortet chrony nur noch zum Teil (jede vierte), damit echte "
+      + "Clients nicht ganz abreißen. Die Stufe gilt für NTP und – beim eigenen NTS-Server – für den "
+      + "Schlüsselaustausch (NTS-KE, TCP 4460). "
+      + "**schonend** (Standard): bremst erst ab im Mittel mehr als 4 Anfragen je Sekunde (Stöße bis 32), "
+      + "beim Schlüsselaustausch ab einer je Sekunde. Normale Clients merken davon nichts. Teilen sich "
+      + "Geräte eine Absenderadresse (NAT, Docker-Gateway), gilt die Grenze für alle zusammen: Im "
+      + "Dauerbetrieb reicht sie für etwa 250 Geräte (Abfrage alle 64 s). Starten mehr als etwa ein "
+      + "Dutzend gleichzeitig neu (z. B. nach einem Stromausfall), bremst chrony sie kurz – dann **aus** "
+      + "wählen oder die echten Adressen sichtbar machen (`network_mode: host`). "
+      + "**streng**: im Mittel eine Anfrage alle 2 s (Stöße bis 16), ein Schlüsselaustausch alle 8 s "
+      + "(Stöße bis 8). Für Server, die aus dem Internet erreichbar sind; Standard, sobald unter "
+      + "„Erlaubte Netze“ öffentliche Adressen stehen. "
+      + "**aus**: jede Anfrage wird beantwortet. "
+      + "Das Ratelimit schützt nicht gegen viele gleichzeitig offene Verbindungen zum Schlüsselaustausch. "
+      + "Ist Port 4460 aus dem Internet erreichbar, begrenze die Verbindungen je Adresse zusätzlich in "
+      + "der Firewall oder im Reverse Proxy. Wie viele Adressen chrony sich merkt, legt `CLIENTLOGLIMIT` "
+      + "fest (Standard 2 MiB, etwa 16 000 Adressen).",
   },
   gps_show_position: {
     title: "Position anzeigen",
@@ -978,7 +1013,7 @@ export const HELP_GROUPS = [
   { title: "Clients", keys: ["client_address", "client_packets", "client_dropped", "client_interval", "client_last", "served_rate"] },
   HELP_GROUP_CLIENTS,
   { title: "Einstellungen", keys: ["settings_source", "settings_export", "web_title", "web_refresh", "history_interval",
-    "allow_networks", "gps_show_position"] },
+    "allow_networks", "ratelimit", "gps_show_position"] },
   HELP_GROUP_BACKUP,
   HELP_GROUP_API,
   HELP_GROUP_NOTIFY,

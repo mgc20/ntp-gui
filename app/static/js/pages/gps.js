@@ -1,9 +1,9 @@
 import { el, fmtSeconds, fmtDuration, fmtNumber, fmtIsoUtc, fmtDate, isNum, rich, apiPost, holdoverNote } from "../util.js";
-import { card, statCard, kv, infoButton, badge, emptyState, toast, chartCard } from "../ui.js";
+import { card, statCard, kv, infoButton, badge, emptyState, errorState, loadingOr, toast, chartCard } from "../ui.js";
 import { lineChart, skyPlot, snrBars } from "../charts.js";
 import { stateBadge, reasonCell, reasonDiffers } from "./sources.js";
 import { axisSeconds } from "./overview.js";
-import { hardwareData, pickReceiver, accuracyLadder, PPS_PATH } from "./hardware.js";
+import { hardwareData, hardwareError, pickReceiver, accuracyLadder, PPS_PATH } from "./hardware.js";
 import { receptionCard, roleCard, antennaCard } from "./gpsquality.js";
 import { gnssCard } from "./gnss.js";
 
@@ -15,7 +15,11 @@ const CAL_DEFAULT_WINDOW = 86400;
 // Karte „Dein Empfänger“ aus dem Hardware-Check – auch bei ausgeschaltetem GPS.
 function receiverCard(ctx, report) {
   const link = el("a", { href: "#/uhr/hardware", class: "insight-action", text: "Details → Hardware-Check" });
-  if (!report) return card("Dein Empfänger", { help: "gps_receiver_card" }, emptyState("Hardware wird geprüft …"));
+  if (!report) {
+    const failed = hardwareError(ctx);
+    return card("Dein Empfänger", { help: "gps_receiver_card" },
+      failed ? errorState(failed, "den Hardware-Bericht") : emptyState("Hardware wird geprüft …"));
+  }
   const receiver = pickReceiver(report);
   if (!receiver) {
     return card("Dein Empfänger", { help: "gps_receiver_card" },
@@ -202,7 +206,7 @@ function autocalPlan(auto, applyOffer) {
 function autocalSection(ctx, applyOffer = null) {
   const auto = ctx.data("autocal", "/api/gps/autocal", 60);
   const head = el("h3", { class: "mini-head" }, "Automatische Kalibrierung ", infoButton("autocal_mode", "Automatische Kalibrierung"));
-  if (!auto) return el("div", { class: "autocal" }, head, emptyState("Wird geladen …"));
+  if (!auto) return el("div", { class: "autocal" }, head, loadingOr(ctx, "autocal", "/api/gps/autocal", "die Kalibrierung"));
   const decision = auto.decision || {};
   const [actionLabel, actionTone] = AUTOCAL_ACTION[decision.action] || AUTOCAL_ACTION.none;
   const settingsLink = el("a", { href: "#/system/einstellungen?s=gps", text: "Modus in den Einstellungen ändern" });
@@ -245,7 +249,8 @@ function calibrationCard(ctx, gpsSource) {
   const cfg = ctx.status.config || {};
   const windowSeconds = WINDOWS.some(([s]) => s === ctx.uiState.calWindow) ? ctx.uiState.calWindow : CAL_DEFAULT_WINDOW;
   // Lange Fenster seltener neu messen: 7 Tage ändern sich in 15 s nicht.
-  const cal = ctx.data("calibration", `/api/gps/calibration?window=${windowSeconds}`, windowSeconds > CAL_DEFAULT_WINDOW ? 120 : 15);
+  const calUrl = `/api/gps/calibration?window=${windowSeconds}`;
+  const cal = ctx.data("calibration", calUrl, windowSeconds > CAL_DEFAULT_WINDOW ? 120 : 15);
   // Für die Rückfrage beim Übernehmen: Meldet die Störungserkennung gerade etwas?
   const gnssNow = ctx.data("gnss", "/api/gnss", 10);
   const autoNow = ctx.data("autocal", "/api/gps/autocal", 60);
@@ -260,7 +265,7 @@ function calibrationCard(ctx, gpsSource) {
     })))));
 
   if (!cal) {
-    body.push(emptyState("Messung wird geladen …"));
+    body.push(loadingOr(ctx, "calibration", calUrl, "die Messung"));
     body.push(autocalSection(ctx));
     return card("GPS kalibrieren", { help: "gps_offset", id: "kalibrierung" }, body);
   }

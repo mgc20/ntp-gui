@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import os
 import re
 import secrets
 import threading
@@ -60,6 +61,9 @@ _SCHEMA = [
         last_used REAL
     )
     """,
+    # 1.9: Schlüssel, die angelegt wurden, als das Dashboard noch ohne Passwort offen war. Beim ersten
+    # Setzen eines Passworts zeigt das Dashboard sie zur Prüfung an (behalten oder widerrufen).
+    "ALTER TABLE api_keys ADD COLUMN open_mode INTEGER NOT NULL DEFAULT 0",
 ]
 
 HASH_SCHEME = "sha256"
@@ -72,12 +76,32 @@ _LAST_WRITE: dict[str, float] = {}
 _READY: dict[str, Any] = {"db": None}
 
 
+OPEN_MODE_STEP = 1  # Schemastand vor der Spalte open_mode (Installationen vor 1.9)
+
+
 def _ensure() -> None:
     db = store.path()
     if _READY["db"] != db:
-        store.migrate("apikeys", _SCHEMA)
+        before = store.schema_version("apikeys")
+        applied = store.migrate("apikeys", _SCHEMA)
+        if applied and before == OPEN_MODE_STEP and not _access_configured():
+            # Update von einer Installation ohne Passwort: Alle vorhandenen Schlüssel entstanden ohne
+            # Anmeldung – zur Prüfung markieren, sobald ein Passwort gesetzt wird.
+            store.execute("UPDATE api_keys SET open_mode=1")
         _READY["db"] = db
         clear_cache()
+
+
+def prepare() -> None:
+    """Datenbank und Migration jetzt – vor dem ersten Setzen eines Passworts (beim Start des Servers)."""
+    _ensure()
+
+
+def _access_configured() -> bool:
+    """Gab es beim Update schon einen Zugang (gespeichert oder per WEB_PASSWORD/WEB_PASSWORD_FILE)?"""
+    if settings.stored_credentials():
+        return True
+    return bool(os.environ.get("WEB_PASSWORD") or os.environ.get("WEB_PASSWORD_FILE", "").strip())
 
 
 def clear_cache() -> None:
@@ -91,13 +115,36 @@ def hash_token(token: str) -> str:
     return f"{HASH_SCHEME}${hashlib.sha256(token.encode('utf-8')).hexdigest()}"
 
 
+# Altbestand (PBKDF2) wird vor jeder Anmeldung geprüft und kostet viel Rechenzeit: höchstens eine
+# solche Prüfung gleichzeitig, nach einem Fehlschlag LEGACY_PAUSE Sekunden keine weitere.
+LEGACY_PAUSE = 1.0
+_LEGACY_SLOT = threading.Lock()
+_LEGACY_NEXT = [0.0]
+
+
+class _LegacyBusy(Exception):
+    """Prüfung gerade gebremst – abgelehnt, aber nicht als ungültig gemerkt (verify() fängt sie)."""
+
+
+def _legacy_matches(token: str, encoded: str) -> bool:
+    if time.monotonic() < _LEGACY_NEXT[0] or not _LEGACY_SLOT.acquire(blocking=False):
+        raise _LegacyBusy
+    try:
+        ok = settings.verify_password(token, encoded)
+        if not ok:
+            _LEGACY_NEXT[0] = time.monotonic() + LEGACY_PAUSE
+        return ok
+    finally:
+        _LEGACY_SLOT.release()
+
+
 def _token_matches(token: str, encoded: str) -> tuple[bool, bool]:
     """(passt, sollte neu gehasht werden)."""
     encoded = str(encoded or "")
     if encoded.startswith(HASH_SCHEME + "$"):
         return hmac.compare_digest(hash_token(token).encode(), encoded.encode()), False
     if encoded.startswith("pbkdf2_sha256$"):
-        return settings.verify_password(token, encoded), True
+        return _legacy_matches(token, encoded), True
     return False, False
 
 
@@ -112,8 +159,10 @@ def _validate(name: Any, scope: Any) -> tuple[str, str]:
     return name, scope
 
 
-def create(name: str, scope: str) -> tuple[str, str]:
-    """Legt einen Schlüssel an. Gibt (id, Klartext-Schlüssel) zurück – nur dieses eine Mal."""
+def create(name: str, scope: str, open_mode: bool = False) -> tuple[str, str]:
+    """Legt einen Schlüssel an. Gibt (id, Klartext-Schlüssel) zurück – nur dieses eine Mal.
+
+    open_mode: angelegt ohne Anmeldung (Dashboard ohne Passwort) – zur späteren Prüfung markiert."""
     name, scope = _validate(name, scope)
     _ensure()
     with store.transaction() as conn:
@@ -125,18 +174,29 @@ def create(name: str, scope: str) -> tuple[str, str]:
             key_id, token = body[:8], PREFIX + body
             if not conn.execute("SELECT 1 FROM api_keys WHERE id=?", (key_id,)).fetchone():
                 break
-        conn.execute("INSERT INTO api_keys(id, name, scope, hash, created) VALUES(?, ?, ?, ?, ?)",
-                     (key_id, name, scope, hash_token(token), time.time()))
+        conn.execute("INSERT INTO api_keys(id, name, scope, hash, created, open_mode) VALUES(?, ?, ?, ?, ?, ?)",
+                     (key_id, name, scope, hash_token(token), time.time(), 1 if open_mode else 0))
     _event("API-Schlüssel angelegt", key_id, scope)
     return key_id, token
 
 
 def list() -> list[dict]:  # noqa: A001 – Name laut Schnittstelle
-    """Alle Schlüssel ohne Geheimnisse: id, name, scope, created, last_used."""
+    """Alle Schlüssel ohne Geheimnisse: id, name, scope, created, last_used, open_mode."""
     _ensure()
-    rows = store.query("SELECT id, name, scope, created, last_used FROM api_keys ORDER BY created")
+    rows = store.query("SELECT id, name, scope, created, last_used, open_mode FROM api_keys ORDER BY created")
     return [{"id": i, "name": n, "scope": s, "scope_label": SCOPE_LABELS.get(s, s),
-             "created": c, "last_used": u} for i, n, s, c, u in rows]
+             "created": c, "last_used": u, "open_mode": bool(o)} for i, n, s, c, u, o in rows]
+
+
+def open_mode_keys() -> list[dict]:
+    """Noch nicht bestätigte Schlüssel, die ohne Anmeldung (offenes Dashboard) angelegt wurden."""
+    return [key for key in list() if key["open_mode"]]
+
+
+def keep(key_id: str) -> bool:
+    """Einen ohne Anmeldung angelegten Schlüssel bewusst behalten (Markierung entfernen). True, wenn es ihn gab."""
+    _ensure()
+    return store.execute("UPDATE api_keys SET open_mode=0 WHERE id=?", (str(key_id),)) > 0
 
 
 def revoke(key_id: str) -> bool:

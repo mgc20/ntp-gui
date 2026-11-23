@@ -2,7 +2,7 @@
 // Fehlerschranke und Antennen-Test. Daten: GET /api/gps/quality und /api/gps/antenna.
 // Alles landet als Text im DOM (el/textContent) – auch die Namen der Messungen.
 import { el, fmtNumber, fmtDate, isNum, rich, apiPost, holdoverNote } from "../util.js";
-import { card, kv, infoButton, badge, emptyState, toast } from "../ui.js";
+import { card, kv, infoButton, badge, emptyState, loadingOr, toast } from "../ui.js";
 
 const LEVEL = {
   green: ["gut", "good"], yellow: ["mäßig", "warn"], red: ["zu schwach", "crit"], unknown: ["noch offen", "muted"],
@@ -41,7 +41,7 @@ function stabilityRow(stability) {
 export function receptionCard(ctx) {
   const q = qualityData(ctx);
   const head = { help: "gpsq_assessment", sub: "Über die letzten 24 Stunden aus dem gespeicherten Verlauf." };
-  if (!q) return card("Empfang", head, emptyState("Bewertung wird geladen …"));
+  if (!q) return card("Empfang", head, loadingOr(ctx, "gpsquality", "/api/gps/quality", "die Bewertung"));
   if (!q.enabled || !q.assessment) return card("Empfang", head, emptyState(q.reason || "Nicht verfügbar."));
   const a = q.assessment;
   const [label, tone] = LEVEL[a.level] || LEVEL.unknown;
@@ -89,7 +89,7 @@ async function resetBound(ctx, button) {
 export function roleCard(ctx) {
   const q = qualityData(ctx);
   const head = { help: "gpsq_role" };
-  if (!q || !q.role) return card("Rolle des GPS", head, emptyState(q ? (q.reason || "Nicht verfügbar.") : "Wird geladen …"));
+  if (!q || !q.role) return card("Rolle des GPS", head, q ? emptyState(q.reason || "Nicht verfügbar.") : loadingOr(ctx, "gpsquality", "/api/gps/quality", "die GPS-Qualität"));
   const role = q.role;
   const bound = q.bound || {};
   const measured = bound.measured || {};
@@ -200,7 +200,7 @@ export function antennaCard(ctx) {
   const running = ctx.uiState.antennaRunning;
   const data = ctx.data("antenna", `/api/gps/antenna${query.size ? `?${query}` : ""}`, running ? 3 : 30);
   const head = { help: "gpsq_antenna", sub: "5 Minuten messen, Empfänger umstellen, erneut messen – der Vergleich zeigt, welcher Platz besser ist. Bleibt auf diesem Gerät, ohne Satellitenwinkel." };
-  if (!data) return card("Antennen-Test", head, emptyState("Wird geladen …"));
+  if (!data) return card("Antennen-Test", head, loadingOr(ctx, "antenna", `/api/gps/antenna${query.size ? `?${query}` : ""}`, "den Antennen-Test"));
   const test = data.test || {};
   ctx.uiState.antennaRunning = Boolean(test.running);
   const body = [];

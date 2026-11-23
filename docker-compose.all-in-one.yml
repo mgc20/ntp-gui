@@ -42,8 +42,8 @@
 
 services:
   ntp-gui:
-    # Version festhalten statt „:latest“: „:1.5“ bleibt auf 1.5.x (nur
-    # Fehlerbehebungen), „:1.5.1“ bleibt fest auf genau dieser Version.
+    # Version festhalten statt „:latest“: „:1.9“ bleibt auf 1.9.x (nur
+    # Fehlerbehebungen), „:1.9.0“ bleibt fest auf genau dieser Version.
     # Umgezogen: Früher hieß das Image ghcr.io/congp20/ntp-gui – dort kommen
     # keine neuen Versionen mehr, bitte auf ghcr.io/mgc20/ntp-gui umstellen.
     image: ghcr.io/mgc20/ntp-gui:latest   # amd64 und arm64 (Raspberry Pi)
@@ -72,16 +72,29 @@ services:
 
     # SYS_TIME erlaubt chronyd, die Uhr zu stellen. Ohne startet chronyd
     # automatisch mit -x und verteilt nur die ungeregelte Hostzeit.
+    # Härtung (1.9): Als root laufen nur der Supervisor und – mit PTP – ptp4l/phc2sys.
+    # Dashboard und DNS-Weiterleiter laufen als Benutzer ntpgui (höchstens NET_RAW bzw.
+    # NET_BIND_SERVICE), chronyd als _chrony. Alle Capabilities weg, nur die nötigen zurück.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     cap_add:
-      - SYS_TIME
+      - SYS_TIME          # chronyd stellt die Uhr
+      - CHOWN             # Start: Verzeichnisse für chronyd und das Dashboard
+      - DAC_OVERRIDE      # Supervisor liest Dateien von chronyd und Dashboard
+      - FOWNER            # Start: Dateirechte setzen
+      - SETUID            # Rechte abgeben: chronyd, gpsd, Dashboard
+      - SETGID
+      - KILL              # Dienste beim Speichern neu starten – ohne hängt das Neuladen
+      - NET_BIND_SERVICE  # Port 123 (und 53 für den DNS-Weiterleiter) mit Host-Netzwerk
+      - NET_RAW           # Messung der Client-Uhren (passives Mitlesen)
       # [OPTION PTP] Hardware-Zeitstempel der Netzwerkkarte einschalten
-      # (NET_ADMIN) und PTP direkt über Ethernet senden (NET_RAW, für
-      # PTP_TRANSPORT=L2 und das gPTP-Profil).
-      # NET_RAW braucht auch die passive Messung der Client-Uhren (Seite
-      # „Clients“). Docker gibt es standardmäßig mit; ausdrücklich eintragen
-      # musst du es nur, wenn dein Setup Capabilities entfernt (cap_drop).
+      # (NET_ADMIN). PTP direkt über Ethernet (PTP_TRANSPORT=L2, gPTP)
+      # nutzt NET_RAW von oben mit.
       #  - NET_ADMIN
-      #  - NET_RAW
+    pids_limit: 512
+    mem_limit: 512m
 
     # [OPTION Geräte einzeln durchreichen] Der einfache Weg für Hardware, die
     # IMMER steckt. Achtung: Fehlt ein hier eingetragenes Gerät beim Start,
@@ -227,10 +240,18 @@ services:
       #  LOCAL_ORPHAN: "true"
       #  NTP_PEERS: "192.168.1.11"
 
+      # [OPTION Apprise auf diesem Rechner] Mit network_mode: host erreicht
+      # ntp-gui einen Apprise-Container nur über http://127.0.0.1:8000
+      # (Apprise mit ports: ["127.0.0.1:8000:8000"]). Ziele auf dem Rechner
+      # selbst (Loopback) sind für Benachrichtigungen ab 1.9 gesperrt, bis du
+      # sie hier freigibst – ein so eingetragener Kanal meldet sonst
+      # „Dieses Ziel ist gesperrt“, das Start-Log warnt.
+      #  OUTBOUND_TARGETS: "loopback"
+
       # [OPTION Dashboard absichern] Ohne Passwort kann jeder im LAN die
       # Einstellungen ändern. Alternativ das Passwort im Dashboard setzen.
       #  WEB_USER: "admin"
-      #  WEB_PASSWORD: "bitte-aendern"
+      #  WEB_PASSWORD: ""   # eigenes Passwort, mindestens 12 Zeichen
       # Nur anzeigen, nichts ändern (z. B. wenn die Datei hier maßgeblich ist):
       #  WEB_READONLY: "true"
       # Anderer Dashboard-Port, falls 8080 auf dem Host belegt ist (der

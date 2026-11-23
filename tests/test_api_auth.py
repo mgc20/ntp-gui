@@ -140,6 +140,27 @@ class ApiAuthTest(unittest.TestCase):
             self.assertIn(path, paths)
         self.assertEqual(self.request("GET", "/api/v1/gibtsnicht", headers=self.basic())[0], 404)
 
+    def test_dot_and_pin_account_masked_for_read_key(self):
+        """Auch im DoT-Namen und in festen Adressen steht die Konto-Kennung – nur Admin/Passwort sehen sie."""
+        settings.save({"dns_dot": ["abc123.dns.nextdns.io", "dns.quad9.net", "9.9.9.9:8853"],
+                       "dns_pin": ["abc123.dns.nextdns.io=45.90.28.0"]})
+        self.addCleanup(settings.save, {"dns_dot": [], "dns_pin": []})
+
+        def value(payload, key):
+            return next(f for f in payload["fields"] if f["key"] == key)["value"]
+
+        for path in ("/api/settings", "/api/v1/settings"):
+            status, payload = self.request("GET", path, headers=self.bearer(self.read_key))
+            self.assertEqual(status, 200)
+            self.assertEqual(value(payload, "dns_dot"), ["….dns.nextdns.io", "dns.quad9.net", "9.9.9.9:8853"])
+            self.assertEqual(value(payload, "dns_pin"), ["….dns.nextdns.io=45.90.28.0"])
+            self.assertNotIn("abc123", json.dumps(payload))
+        status, payload = self.request("GET", "/api/v1/settings/export", headers=self.bearer(self.read_key))
+        self.assertNotIn("abc123", json.dumps(payload))
+        self.assertLessEqual({"dns_dot", "dns_pin"}, set(payload["masked"]))
+        full = self.request("GET", "/api/v1/settings", headers=self.bearer(self.admin_key))[1]
+        self.assertEqual(value(full, "dns_dot")[0], "abc123.dns.nextdns.io")
+
     def test_settings_notes_in_schema(self):
         status, payload = self.request("GET", "/api/v1/settings", headers=self.bearer(self.read_key))
         self.assertEqual(status, 200)
@@ -534,6 +555,28 @@ class AuthCacheClockTest(unittest.TestCase):
         self.assertTrue(cache.check("Basic x", verify))
         self.assertEqual(len(calls), 2)
         self.assertFalse(cache.check("Basic y", lambda: False))
+
+    def test_check_started_before_clear_is_not_remembered(self):
+        """Läuft eine Prüfung noch, während das Passwort geändert wird (clear()), darf ihr Ergebnis
+        nicht mehr in den Merker – sonst gälte das alte Passwort weitere 300 s."""
+        cache = server.AuthCache()
+        generation = cache.generation()
+        cache.clear()  # Passwort geändert, während die Prüfung lief
+        cache.remember("Basic alt", generation)
+        self.assertFalse(cache.known("Basic alt"))
+        cache.remember("Basic neu", cache.generation())
+        self.assertTrue(cache.known("Basic neu"))
+
+    def test_login_check_racing_password_change_is_not_remembered(self):
+        def check(info, user, password):
+            server.AUTH_CACHE.clear()  # Passwortwechsel, während PBKDF2 noch rechnet
+            return True
+        server.AUTH_CACHE.clear()
+        handler = mock.Mock(_check_password=check)
+        ok, _ = server.Handler._verify_login(handler, {"source": "gui"}, "admin", "alt",
+                                             "198.51.100.7", "Basic alt|gui")
+        self.assertTrue(ok)
+        self.assertFalse(server.AUTH_CACHE.known("Basic alt|gui"))
 
 
 if __name__ == "__main__":
