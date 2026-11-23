@@ -80,7 +80,7 @@ echo "Image: $IMAGE"
 echo
 echo "1) Start ohne CAP_SYS_TIME"
 docker run -d --name "${PREFIX}-a" -p 18080:8080 \
-  -e NTP_PORT=10123 -e NTP_POOLS="" -e NTP_SERVERS="" -e ALLOW_NETWORKS="0.0.0.0/0" \
+  -e NTP_PORT=10123 -e NTP_POOLS="" -e NTP_SERVERS="" -e ALLOW_NETWORKS="0.0.0.0/0" -e SERVE_UNSYNCED=true \
   -e OUTBOUND_TARGETS=loopback \
   "$IMAGE" >/dev/null
 if wait_for_health http://127.0.0.1:18080/healthz 90; then ok "healthz wird gesund"; else bad "healthz bleibt ungesund"; fi
@@ -389,7 +389,10 @@ if command -v chronyd >/dev/null 2>&1; then
   QUERY=$(timeout 25 chronyd -Q -t 15 "server $IP port 10123 iburst maxsamples 1" 2>&1)
   contains "Container beantwortet NTP-Anfragen" "$QUERY" "System clock wrong by"
 else
-  echo "  – chronyd auf dem Host nicht vorhanden, NTP-Abfrage übersprungen"
+  # Ohne chronyd auf dem Host fragt chronyd aus dem Image in einem Wegwerf-Container ab.
+  QUERY=$(timeout 40 docker run --rm --entrypoint chronyd "$IMAGE" -Q -t 15 \
+    "server $IP port 10123 iburst maxsamples 1" 2>&1)
+  contains "Container beantwortet NTP-Anfragen" "$QUERY" "System clock wrong by"
 fi
 
 echo
