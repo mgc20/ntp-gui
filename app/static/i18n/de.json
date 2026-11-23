@@ -887,12 +887,13 @@
         "goal": "Eingebauter Countdown",
         "pomo": "Pomodoro: Arbeit",
         "pause": "Pomodoro: Pause",
-        "fun": "Spielereien (Timer, Nacht)",
+        "fun": "Spielereien (Timer, Nacht, Spiel)",
         "dim": "Nachtmodus von–bis (Stunden)",
         "dimlevel": "Helligkeit nachts (%)",
         "dimred": "Nachtmodus in Rot",
         "bin": "Binäruhr: Darstellung",
-        "bars": "Fortschrittsbalken (mit „Fortschritt“ unter Elemente)"
+        "bars": "Fortschrittsbalken (mit „Fortschritt“ unter Elemente)",
+        "eggs": "Ostereier (13:37, Neujahr, Konami-Code)"
       },
       "test_value": {
         "sync": "Sekundenblitz mit Klick"
@@ -954,6 +955,49 @@
       "week": "Die Woche ist zu {pct} % vorbei.",
       "month": "Der Monat ist zu {pct} % vorbei.",
       "year": "Dieses Jahr ist zu {pct} % vorbei."
-    }
+    },
+    "game": "Spiel",
+    "game_title": "Tippe auf :00",
+    "game_line": "Tippe auf „Jetzt!“, genau wenn die Uhr auf die volle Sekunde bzw. Minute springt.",
+    "game_group": "Ziel",
+    "game_unit_second": "volle Sekunde",
+    "game_unit_minute": "volle Minute",
+    "game_tap": "Jetzt!",
+    "game_wait": "Noch nicht mit dem Server abgeglichen – gleich geht es los.",
+    "game_early": "{ms} zu früh",
+    "game_late": "{ms} zu spät",
+    "game_exact": "genau drauf",
+    "game_level": {
+      "perfect": "Wahnsinn!",
+      "great": "Sehr gut!",
+      "good": "Gut.",
+      "ok": "Knapp daneben.",
+      "off": "Daneben – noch mal?"
+    },
+    "game_within": "Das liegt innerhalb der Messgenauigkeit.",
+    "game_detail": "Messgenauigkeit: Abgleich {device} (halbe Laufzeit) · Server {server} · Bild {frame}",
+    "game_best": "Bestwert ({unit}): {ms}",
+    "game_best_none": "Noch kein Bestwert.",
+    "game_record": "Neuer Bestwert!",
+    "game_unsaved": "Neuer Bestwert – der Browser lässt kein Speichern zu, er gilt nur bis zum Neuladen.",
+    "game_reset": "Bestwert löschen",
+    "game_reset_done": "Bestwerte gelöscht.",
+    "game_note": "Der Bestwert bleibt nur in diesem Browser.",
+    "game_info_title": "Spiel „Tippe auf :00“",
+    "game_info": "Gemessen wird der Moment deines Tippens (Maus, Finger oder Taste) mit der monotonen Uhr des Browsers und auf die Serverzeit dieser Uhr umgerechnet – dieselbe Zeit, die groß angezeigt wird. Die Abweichung zählt zur nächsten vollen Sekunde bzw. Minute: negativ zu früh, positiv zu spät. Genauer als die Messung kann das Spiel nicht sein: Abgleich mit dem Server (halbe Laufzeit), Genauigkeit der Serveruhr und eine Bildauffrischung, bis die neue Ziffer zu sehen ist. Touchscreens und Funkmäuse kommen noch dazu. Der Bestwert steht nur im Speicher dieses Browsers, nichts wird gesendet.",
+    "tone_pips_hour": "Zeitzeichen zur Stunde",
+    "tone_pips_minute": "Zeitzeichen jede Minute",
+    "tone_pips_line": "Zeitzeichen wie im Radio: fünf kurze Töne, der lange Ton ist die volle Stunde bzw. Minute. Zum Spaß, keine Referenz: Browser und Lautsprecher verzögern den Ton um einige bis weit über 100 ms.",
+    "tone_pips_running": "Zeitzeichen läuft ({scope}). Browser-Audio und Lautsprecher verzögern den Ton – keine Referenz.",
+    "tone_pips_scope": {
+      "hour": "zur vollen Stunde",
+      "minute": "jede Minute"
+    },
+    "egg_newyear": "Frohes neues Jahr!",
+    "egg_straight": "12:34:56 – alle Ziffern der Reihe nach.",
+    "egg_leet": "13:37 – leet.",
+    "egg_dst_forward": "Heute wird die Uhr um {min} Minuten vorgestellt – weniger Schlaf.",
+    "egg_dst_back": "Heute wird die Uhr um {min} Minuten zurückgestellt – geschenkte Zeit.",
+    "egg_konami": "↑ ↑ ↓ ↓ ← → ← → B A – Binäruhr freigeschaltet, bis zum Neuladen."
   }
 }

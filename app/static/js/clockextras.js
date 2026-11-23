@@ -9,6 +9,7 @@
 // wird wie beim Countdown (clockcount.js) – lokale Timer auf performance.now(), Ziele auf der korrigierten Serverzeit.
 import * as kit from "./clockkit.js";
 import * as cd from "./clockcount.js";
+import { fmtNumber } from "./util.js";
 
 const MIN = 60_000;
 
@@ -565,4 +566,190 @@ export function timerProgress(timer, now) {
 /** Prozent für die Anzeige: abgerundet (erst bei wirklich vollem Zeitraum 100 %). */
 export function percentOf(fraction) {
   return Number.isFinite(fraction) ? Math.min(100, Math.max(0, Math.floor(fraction * 100))) : null;
+}
+
+// --- C3: Spiel „Tippe auf :00“, Zeitzeichen, Ostereier -------------------------------------------------------------
+// Alles nur im Browser: Der Bestwert des Spiels steht im localStorage (clock.js schreibt mit try/catch), Ostereier und
+// Konfetti entstehen aus der angezeigten Zeit bzw. einer Tastenfolge, Zeitzeichen sind WebAudio-Töne nach einem Klick.
+
+/**
+ * Gibt es Ostereier (und Konfetti)? Nur wo auch die Spielereien erscheinen (funControls: nicht mit fun=0 – Voreinstellungen
+ * studio, tile, banner –, lock=1, im Kiosk, in der Kachel, in OBS und auf E-Ink) und nicht mit eggs=0.
+ */
+export function eggsAllowed({ eggs = true, fun = true, kiosk = false, lock = false, layout = "auto", obs = false,
+  eink = false } = {}) {
+  return eggs === true && funControls({ fun, kiosk, lock, layout, obs, eink }).fun;
+}
+
+/** Ziel des Spiels: die volle Sekunde oder die volle Minute (Schrittweite in ms). */
+export const TAP_UNITS = Object.freeze({ second: 1000, minute: 60_000 });
+/** localStorage: Bestwerte des Spiels je Ziel ({"second": 12.3, "minute": 410}), nur dieser Browser. */
+export const TAP_BEST_KEY = "ntp-gui-clock-tap";
+/** Stufen der Wertung (Betrag der Abweichung in ms, aufsteigend); darüber „daneben“. */
+export const TAP_LEVELS = Object.freeze([["perfect", 10], ["great", 30], ["good", 100], ["ok", 300]]);
+
+/**
+ * Abweichung eines Tipps zur nächsten vollen Sekunde bzw. Minute (ms, Serverzeit): negativ zu früh, positiv zu spät.
+ * Bereich [−½, +½) Schritt. Unbekanntes Ziel oder keine Zeit: null.
+ */
+export function tapDeviation(serverMs, unit = "second") {
+  const step = TAP_UNITS[unit];
+  if (!step || !Number.isFinite(serverMs)) return null;
+  const rest = ((serverMs % step) + step) % step;
+  return rest < step / 2 ? rest : rest - step;
+}
+
+/** Wertung einer Abweichung: perfect | great | good | ok | off. */
+export function tapLevel(deviation) {
+  if (!Number.isFinite(deviation)) return null;
+  const abs = Math.abs(deviation);
+  for (const [level, limit] of TAP_LEVELS) if (abs <= limit) return level;
+  return "off";
+}
+
+/**
+ * Wie genau kann das Spiel überhaupt messen? device: halbe Laufzeit der besten Messung (RTT/2), server: Genauigkeit
+ * der Serveruhr (accuracy), frame: eine Bildauffrischung (so spät erscheint die neue Ziffer frühestens). Alles in ms,
+ * unbekannt: null. total: Summe der bekannten Teile.
+ */
+export function tapUncertainty({ rttMs = NaN, serverAccMs = NaN, frameMs = NaN } = {}) {
+  const part = (v) => (Number.isFinite(v) && v >= 0 ? v : null);
+  const device = part(rttMs / 2);
+  const server = part(serverAccMs);
+  const frame = part(frameMs);
+  const total = (device || 0) + (server || 0) + (frame || 0);
+  return { device, server, frame, total };
+}
+
+/** Betrag einer Abweichung lesbar: unter 10 ms mit einer Nachkommastelle („3,4 ms“), sonst wie kit.fmtDrift. */
+export function tapText(absMs) {
+  if (!Number.isFinite(absMs)) return "–";
+  const v = Math.abs(absMs);
+  return v < 9.95 ? `${fmtNumber(v, 1, { group: false })} ms` : kit.fmtDrift(v);
+}
+
+/** Bestwerte aus dem localStorage lesen – nur endliche Zahlen in [0, ½ Schritt] je bekanntem Ziel, sonst leer. */
+export function tapBestRead(text) {
+  const out = {};
+  if (typeof text !== "string" || !text || text.length > 200) return out;
+  let raw;
+  try { raw = JSON.parse(text); } catch (error) { return out; }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return out;
+  for (const [unit, step] of Object.entries(TAP_UNITS)) {
+    const value = raw[unit];
+    if (typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= step / 2) out[unit] = value;
+  }
+  return out;
+}
+
+/** Neuer Tipp: { best (neue Bestwerte), record (neuer Bestwert?) }. Gemerkt wird der Betrag auf 0,1 ms. */
+export function tapBestUpdate(best, unit, deviation) {
+  const now = { ...(best || {}) };
+  if (!TAP_UNITS[unit] || !Number.isFinite(deviation)) return { best: now, record: false };
+  const abs = Math.round(Math.abs(deviation) * 10) / 10;
+  const record = !(unit in now) || abs < now[unit];
+  if (record) now[unit] = abs;
+  return { best: now, record };
+}
+
+/** Bestwerte als Text für den localStorage (leer: nichts zu merken). */
+export function tapBestText(best) {
+  const out = tapBestRead(JSON.stringify(best || {}));
+  return Object.keys(out).length ? JSON.stringify(out) : "";
+}
+
+// Zeitzeichen wie im Rundfunk: fünf kurze Töne auf den Sekunden 55 … 59, ein langer auf der vollen Minute bzw. Stunde.
+export const PIPS = Object.freeze({
+  short: Object.freeze({ freq: 1000, dur: 0.1 }),
+  long: Object.freeze({ freq: 1000, dur: 0.5 }),
+  shorts: 5,
+});
+export const PIP_SCOPES = Object.freeze(["hour", "minute"]);
+
+/**
+ * Töne des Zeitzeichens für die vollen Serversekunden nach afterSecond bis horizonMs voraus – gleiche Form wie
+ * kit.planTones ({ second, at, kind, freq, dur }). scope "hour": nur vor der vollen Stunde, "minute": vor jeder Minute.
+ * offsetMs: Abstand der angezeigten Zeitzone zu UTC (volle Stunde in Indien liegt auf :30 UTC).
+ */
+export function planPips(clock, { scope = "hour", afterSecond = -Infinity, horizonMs = 1500, offsetMs = 0 } = {}) {
+  const out = [];
+  if (!clock || !Number.isFinite(clock.server) || !Number.isFinite(clock.audio) || !PIP_SCOPES.includes(scope)) return out;
+  const off = Number.isFinite(offsetMs) ? Math.round(offsetMs / 1000) : 0;
+  const first = Math.max(Math.floor(clock.server / 1000) + 1, afterSecond + 1);
+  const last = Math.floor((clock.server + horizonMs) / 1000);
+  for (let second = first; second <= last; second += 1) {
+    const local = second + off;
+    const inMinute = ((local % 60) + 60) % 60;
+    const minuteOfHour = ((Math.floor(local / 60) % 60) + 60) % 60;
+    let kind = null;
+    if (inMinute >= 60 - PIPS.shorts && (scope === "minute" || minuteOfHour === 59)) kind = "short";
+    else if (inMinute === 0 && (scope === "minute" || minuteOfHour === 0)) kind = "long";
+    if (!kind) continue;
+    out.push({ second, at: clock.audio + (second * 1000 - clock.server) / 1000, kind, ...PIPS[kind] });
+  }
+  return out;
+}
+
+/**
+ * Zeitumstellung am Tag von ms in `zone` (null: Zone dieses Geräts): Minuten, um die die Uhr an diesem Tag vor- (positiv)
+ * oder zurückgestellt (negativ) wird, sonst 0.
+ */
+export function dstShiftOfDay(ms, zone = null) {
+  if (!Number.isFinite(ms)) return 0;
+  const p = cd.zoneParts(ms, zone);
+  const start = cd.zonedTime({ y: p.y, mo: p.mo, d: p.d }, zone);
+  const end = cd.zonedTime({ y: p.y, mo: p.mo, d: p.d + 1 }, zone);
+  return Math.round((cd.zoneOffset(end, zone) - cd.zoneOffset(start, zone)) / MIN);
+}
+
+/**
+ * Ostereier als Tabelle, in dieser Reihenfolge geprüft (das erste passende gewinnt). when bekommt die angezeigte Zeit
+ * { h, m, s, mo, d } (24 h, Monat 1–12) und die Lage { leap: kit.leapEgg(…), dst: dstShiftOfDay(…) }. confetti: dazu
+ * Konfetti (nur CSS; bei „weniger Bewegung“ nur der Text). Der Konami-Code steht nicht hier: Er hängt an Tasten, nicht
+ * an der Zeit (konamiStep).
+ */
+export const EGGS = Object.freeze([
+  Object.freeze({ kind: "newyear", confetti: true, when: (t) => t.mo === 1 && t.d === 1 && t.h === 0 && t.m < 10 }),
+  Object.freeze({ kind: "straight", confetti: false, when: (t) => t.h === 12 && t.m === 34 && t.s >= 56 }),
+  Object.freeze({ kind: "leet", confetti: false, when: (t) => t.h === 13 && t.m === 37 }),
+  Object.freeze({ kind: "leap", confetti: false, when: (t, at) => Boolean(at.leap) }),
+  Object.freeze({ kind: "dst", confetti: false, when: (t, at) => at.dst !== 0 }),
+]);
+
+/**
+ * Welches Osterei gilt jetzt? { kind, text (Schlüssel unter clock.egg_…), confetti } oder null. Ohne Erlaubnis
+ * (eggsAllowed) nie eins.
+ */
+export function eggFor(time, { leap = null, dst = 0, allowed = true } = {}) {
+  if (!allowed || !time) return null;
+  for (const egg of EGGS) {
+    if (!egg.when(time, { leap, dst: Number.isFinite(dst) ? dst : 0 })) continue;
+    let text = egg.kind;
+    if (egg.kind === "leap") text = leap;
+    else if (egg.kind === "dst") text = dst > 0 ? "dst_forward" : "dst_back";
+    return { kind: egg.kind, text, confetti: egg.confetti };
+  }
+  return null;
+}
+
+/** Konfetti zeigen? "css" (fallende Schnipsel nur per CSS), "text" (bei „weniger Bewegung“: nur der Text), "none". */
+export function confettiMode({ allowed = true, wanted = false, reduced = false } = {}) {
+  if (!allowed || !wanted) return "none";
+  return reduced ? "text" : "css";
+}
+
+/** Konami-Code: ↑ ↑ ↓ ↓ ← → ← → B A (KeyboardEvent.key, Buchstaben ohne Groß/Klein). */
+export const KONAMI = Object.freeze(["ArrowUp", "ArrowUp", "ArrowDown", "ArrowDown", "ArrowLeft", "ArrowRight",
+  "ArrowLeft", "ArrowRight", "b", "a"]);
+
+/**
+ * Nächster Schritt im Konami-Code: { pos, done }. pos: so viele Tasten passen schon; done: gerade vollständig (pos
+ * beginnt dann wieder bei 0). Eine falsche Taste setzt zurück – ein weiteres ↑ zählt dabei als Anfang.
+ */
+export function konamiStep(pos, key) {
+  const at = Number.isInteger(pos) && pos >= 0 && pos < KONAMI.length ? pos : 0;
+  const k = typeof key === "string" && key.length === 1 ? key.toLowerCase() : key;
+  if (k === KONAMI[at]) return at + 1 === KONAMI.length ? { pos: 0, done: true } : { pos: at + 1, done: false };
+  if (k === KONAMI[0]) return { pos: at === 2 ? 2 : 1, done: false };
+  return { pos: 0, done: false };
 }

@@ -83,6 +83,42 @@ body.is-kiosk .clock-egg { margin-top: max(10px, env(safe-area-inset-top)); }
 .clock-egg { margin: 0 auto; padding: 0.4em 1em; max-width: min(46em, calc(100% - 24px)); box-sizing: border-box; text-align: center;
   font-size: clamp(13px, 1vw + 8px, 20px); color: var(--ink); border: 1px dashed var(--accent); border-radius: 12px; }
 
+/* Konfetti (Ostereier, C3): nur CSS – 24 Schnipsel (JS legt leere <i> an, Lage und Farbe hier über nth-child), fallen
+   zweimal per transform/opacity und sind dann weg. Nie bei „weniger Bewegung“, im Kiosk, in Kachel, Streifen, E-Ink. */
+.clock-confetti { position: fixed; inset: 0; overflow: hidden; pointer-events: none; z-index: 30; contain: strict; }
+.clock-confetti i { position: absolute; top: -4vh; left: 50%; width: 10px; height: 16px; border-radius: 2px; opacity: 0;
+  background: var(--accent); will-change: transform, opacity; }
+.clock-confetti.is-on i { animation: clock-confetti-fall 3.2s cubic-bezier(0.25, 0.6, 0.5, 1) 2 both; }
+.clock-confetti i:nth-child(6n+1) { left: 6%; }
+.clock-confetti i:nth-child(6n+2) { left: 23%; }
+.clock-confetti i:nth-child(6n+3) { left: 41%; }
+.clock-confetti i:nth-child(6n+4) { left: 58%; }
+.clock-confetti i:nth-child(6n+5) { left: 76%; }
+.clock-confetti i:nth-child(6n+6) { left: 92%; }
+.clock-confetti i:nth-child(4n+1) { background: #e5534b; animation-delay: 0s; }
+.clock-confetti i:nth-child(4n+2) { background: #f2cc60; animation-delay: 0.45s; width: 8px; height: 12px; }
+.clock-confetti i:nth-child(4n+3) { background: #57ab5a; animation-delay: 0.9s; }
+.clock-confetti i:nth-child(4n+4) { background: #539bf5; animation-delay: 1.35s; width: 12px; height: 8px; }
+.clock-confetti i:nth-child(5n+1) { margin-left: -3vw; }
+.clock-confetti i:nth-child(5n+3) { margin-left: 2vw; }
+.clock-confetti i:nth-child(5n+4) { margin-left: 4vw; }
+@keyframes clock-confetti-fall {
+  0% { opacity: 0; transform: translate3d(0, 0, 0) rotate(0deg); }
+  8% { opacity: 1; }
+  85% { opacity: 1; }
+  100% { opacity: 0; transform: translate3d(6vw, 108vh, 0) rotate(540deg); }
+}
+.clock-confetti.is-on i:nth-child(even) { animation-name: clock-confetti-fall-left; }
+@keyframes clock-confetti-fall-left {
+  0% { opacity: 0; transform: translate3d(0, 0, 0) rotate(0deg); }
+  8% { opacity: 1; }
+  85% { opacity: 1; }
+  100% { opacity: 0; transform: translate3d(-7vw, 108vh, 0) rotate(-480deg); }
+}
+@media (prefers-reduced-motion: reduce) { .clock-confetti { display: none; } }
+body:is(.is-kiosk, .is-tile, .is-compact, .is-eink, .is-obs) .clock-confetti { display: none; }
+@media (max-height: 320px) { .clock-confetti { display: none; } }   /* wie die Zeile der Ostereier */
+
 /* Bahnhofsuhr: eigenes, schlichtes Zifferblatt (Striche, Balkenzeiger, Sekundenzeiger mit offenem Ring). */
 .face-bahnhof .bh { width: min(80vw, 44vh); height: auto; max-width: 100%; display: block; }
 .bh-face { fill: var(--surface); stroke: var(--border); stroke-width: 2; }
@@ -205,7 +241,7 @@ body.is-kiosk .clock-band { font-size: clamp(12px, 0.9vw + 6px, 20px); }
 @media (max-height: 320px) {
   .clock-time { font-size: min(19vw, 27vh); margin: 0 0 0.05em; }
   .clock-face { margin: 0; }
-  .clock-egg { display: none; }   /* Osterei (zwei Tage im Jahr) hat hier keinen Platz */
+  .clock-egg { display: none; }   /* Ostereier haben hier keinen Platz */
   .face-bahnhof .bh { width: min(80vw, 34vh); }
   .nixie-tube { font-size: min(14vw, 22vh); }
   .flip-card { font-size: min(13vw, 22vh); }
@@ -917,3 +953,12 @@ body.is-obs, body.is-obs * { cursor: none; }
   .clock-stage[data-layout="banner"] .clock-nerd-item:is([data-key="hex"], [data-key="roman"]) { display: none; }
   @container (max-height: 700px) { .clock-nerd-item:is([data-key="hex"], [data-key="roman"]) { display: none; } }
 }
+
+/* Studiouhr C3: Spiel „Tippe auf :00“ – großer Knopf, Ergebnis gut lesbar. */
+.clock-game-tap { display: block; width: 100%; min-height: 64px; margin: 8px 0; font-size: clamp(20px, 3vw, 32px); font-weight: 700;
+  color: var(--ink); touch-action: manipulation; user-select: none; -webkit-user-select: none; }
+.clock-game-result { margin: 6px 0; min-height: 1.4em; font-size: 1.15em; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--ink); }
+.clock-game .clock-timer-row { align-items: center; }
+/* Das Spiel braucht die Uhr groß im Blick: In Fenstern bis 320 px Höhe (Streifen, Banner, kleine Kachel) fehlt der Knopf,
+   sonst bräche die Leiste dort um und nähme der Zeit die Höhe. */
+@media (max-height: 320px) { #mode-game { display: none; } }

@@ -80,9 +80,10 @@ PARAMS: dict[str, tuple[str, dict]] = {
     "cd": ("enum", {"values": ("below", "main")}),
     "lock": ("flag", {}),
     "signal": ("flag", {}),
-    # Spielereien (Etappe C): Eieruhr/Pomodoro/Nachtmodus-Knopf an oder aus, eingebaute Countdowns, Pomodoro-Dauern,
-    # Nachtmodus nach Uhrzeit, Fortschrittsbalken (mit show=progress; bin gehört zum Design binary).
+    # Spielereien (Etappe C): Eieruhr/Pomodoro/Nachtmodus-Knopf/Spiel an oder aus, Ostereier (eggs), eingebaute
+    # Countdowns, Pomodoro-Dauern, Nachtmodus nach Uhrzeit, Fortschrittsbalken (mit show=progress; bin gehört zu binary).
     "fun": ("flag", {}),
+    "eggs": ("flag", {}),
     "goal": ("enum", {"values": GOALS}),
     "pomo": ("duration", {}),
     "pause": ("duration", {}),

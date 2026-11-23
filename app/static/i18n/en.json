@@ -887,12 +887,13 @@
         "goal": "Built-in countdown",
         "pomo": "Pomodoro: work",
         "pause": "Pomodoro: break",
-        "fun": "Extras (timer, night)",
+        "fun": "Extras (timer, night, game)",
         "dim": "Night mode from–to (hours)",
         "dimlevel": "Brightness at night (%)",
         "dimred": "Night mode in red",
         "bin": "Binary clock: style",
-        "bars": "Progress bars (with “Progress bars” under elements)"
+        "bars": "Progress bars (with “Progress bars” under elements)",
+        "eggs": "Easter eggs (13:37, New Year, Konami code)"
       },
       "test_value": {
         "sync": "Second flash with click"
@@ -954,6 +955,49 @@
       "week": "The week is {pct}% over.",
       "month": "The month is {pct}% over.",
       "year": "This year is {pct}% over."
-    }
+    },
+    "game": "Game",
+    "game_title": "Tap on :00",
+    "game_line": "Tap “Now!” exactly when the clock reaches the full second or minute.",
+    "game_group": "Target",
+    "game_unit_second": "full second",
+    "game_unit_minute": "full minute",
+    "game_tap": "Now!",
+    "game_wait": "Not matched with the server yet – starting in a moment.",
+    "game_early": "{ms} early",
+    "game_late": "{ms} late",
+    "game_exact": "spot on",
+    "game_level": {
+      "perfect": "Incredible!",
+      "great": "Very good!",
+      "good": "Good.",
+      "ok": "Close.",
+      "off": "Missed – again?"
+    },
+    "game_within": "That is within the measuring accuracy.",
+    "game_detail": "Measuring accuracy: match {device} (half round trip) · server {server} · frame {frame}",
+    "game_best": "Best ({unit}): {ms}",
+    "game_best_none": "No best yet.",
+    "game_record": "New best!",
+    "game_unsaved": "New best – the browser does not allow storing it, it only lasts until you reload.",
+    "game_reset": "Clear best",
+    "game_reset_done": "Best values cleared.",
+    "game_note": "The best value stays in this browser only.",
+    "game_info_title": "Game “Tap on :00”",
+    "game_info": "The moment of your tap (mouse, finger or key) is taken from the browser's monotonic clock and converted to this clock's server time – the same time shown in large digits. The deviation counts to the nearest full second or minute: negative early, positive late. The game cannot be more exact than the measurement: match with the server (half the round trip), accuracy of the server clock and one frame until the new digit is visible. Touch screens and wireless mice add their own delay. The best value is kept in this browser's storage only, nothing is sent.",
+    "tone_pips_hour": "Time signal on the hour",
+    "tone_pips_minute": "Time signal every minute",
+    "tone_pips_line": "Time signal like on the radio: five short pips, the long one is the full hour or minute. Just for fun, not a reference: browser and speakers delay the sound by a few to well over 100 ms.",
+    "tone_pips_running": "Time signal running ({scope}). Browser audio and speakers delay the sound – not a reference.",
+    "tone_pips_scope": {
+      "hour": "on the hour",
+      "minute": "every minute"
+    },
+    "egg_newyear": "Happy New Year!",
+    "egg_straight": "12:34:56 – all digits in a row.",
+    "egg_leet": "13:37 – leet.",
+    "egg_dst_forward": "Today the clock goes forward by {min} minutes – less sleep.",
+    "egg_dst_back": "Today the clock goes back by {min} minutes – time for free.",
+    "egg_konami": "↑ ↑ ↓ ↓ ← → ← → B A – binary clock unlocked until you reload."
   }
 }

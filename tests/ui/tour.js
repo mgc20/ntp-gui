@@ -37,6 +37,7 @@
 // neun Flächen, Farbstufen mit Symbol und Text, Zone des Servers, Timer, Stoppuhr, Tastenkürzel, lock=1, Ansagen.
 // Studiouhr C1 (clockTimerChecks, TOUR_TIMER_ONLY=1): Eieruhr, Pomodoro, eigene Countdowns, Nachtmodus, Bedienung.
 // Studiouhr C2 (clockExtrasChecks, TOUR_EXTRAS_ONLY=1): Design binary, Mondphase, Nerd-Zeile, Fortschrittsbalken.
+// Studiouhr C3 (clockFunChecks, TOUR_FUN_ONLY=1): Spiel „Tippe auf :00“, Zeitzeichen, Ostereier mit Konfetti und Konami-Code.
 // Studiouhr A6 (clockLinkChecks, TOUR_LINK_ONLY=1): Profil (?p=) auf neun Flächen mit gemocktem Profil und /api/v1/time,
 // Neuladen bei geändertem profiles_rev, Panel „Anpassen“ (Übernehmen ohne Parameter), Reiter „Anzeigen“ im Dashboard.
 // Studiouhr B1 (clockTimecodeChecks, TOUR_TC_ONLY=1): Design tc auf neun Flächen – Kopfzeile „nicht genlocked“, Zehntel als
@@ -1948,6 +1949,182 @@ async function clockExtrasChecks(browser) {
     await ctx.close();
     note("/clock C2 Leistung", [got.long.length ? `Long Tasks ${got.long.map(Math.round)}` : "",
       got.raf - rafStart > 2 ? `Bildschleife (${got.raf - rafStart} Bilder)` : ""].filter(Boolean));
+  }
+  return { found, lines };
+}
+
+// Studiouhr C3 (clockFunChecks, TOUR_FUN_ONLY=1): Spiel „Tippe auf :00“, Zeitzeichen und Ostereier. Mit angehaltener
+// Playwright-Uhr: Osterei 13:37 auf den neun Flächen (im Bild, in Kachel und Streifen nie, keine Scrollbalken), Neujahr
+// mit CSS-Konfetti (bei „weniger Bewegung“ nur Text), Konami-Code (Konfetti, Binäruhr bis zum Neuladen, nicht gemerkt).
+// Nie ein Ei oder Konfetti mit eggs=0, fun=0, in studio, tile, banner, im Kiosk (auch aus einem Profil), mit lock=1 und
+// in OBS. Panel „Spiel“ bei 390 und 1920 px (Tipp mit Maus und Taste, Ergebnis, Bestwert im localStorage, auch bei
+// gesperrtem Speicher ehrlich), Zeitzeichen-Knöpfe nur mit Spielereien. Echtzeit: keine Long Tasks, keine Bildschleife.
+function funState() {
+  const root = document.documentElement;
+  const visible = (id) => { const el = document.getElementById(id); if (!el) return false; const r = el.getBoundingClientRect();
+    return !el.hidden && getComputedStyle(el).display !== "none" && r.width > 0 && r.height > 0; };
+  const egg = document.getElementById("leap-egg");
+  const er = egg.getBoundingClientRect();
+  const confetti = document.getElementById("confetti");
+  const piece = confetti.querySelector("i");
+  return {
+    egg: visible("leap-egg"), eggText: egg.textContent, eggKind: egg.dataset.egg || "",
+    eggInside: er.left >= -1 && er.right <= innerWidth + 1 && er.top >= -1 && er.bottom <= innerHeight + 1,
+    confetti: visible("confetti"), pieces: confetti.childElementCount, anim: piece ? getComputedStyle(piece).animationName : "",
+    design: root.dataset.design, layout: document.getElementById("clock-stage").dataset.layout,
+    compact: document.body.classList.contains("is-compact"),
+    game: !document.getElementById("mode-game").hidden, pips: !document.getElementById("tone-pips-hour").hidden,
+    result: document.getElementById("game-result").textContent, detail: document.getElementById("game-detail").textContent,
+    best: document.getElementById("game-best").textContent,
+    vscroll: root.scrollHeight - root.clientHeight, hscroll: root.scrollWidth - root.clientWidth, csp: window.__csp || [],
+  };
+}
+
+async function clockFunChecks(browser) {
+  const found = [];
+  const lines = [];
+  const note = (label, problems) => {
+    lines.push(`${label}: ${problems.length ? problems.join("; ") : "ok"}`);
+    if (problems.length) found.push(`${label}: ${problems.join("; ")}`);
+  };
+  const errors = (got, msgs) => (got.csp.length || msgs.length ? [`Fehler ${JSON.stringify([...got.csp, ...msgs])}`] : []);
+  const shot = async (page, name) => { if (SHOTS) await page.screenshot({ path: `${SHOTS}/clock-c3-${name}.png` }); };
+  const LEET = Date.parse("2026-11-23T12:37:10.500Z");      // 13:37:10 in Berlin
+  const NEWYEAR = Date.parse("2026-12-31T23:00:03.500Z");   // 1.1.2027 00:00:03 in Berlin
+  const KONAMI = ["ArrowUp", "ArrowUp", "ArrowDown", "ArrowDown", "ArrowLeft", "ArrowRight", "ArrowLeft", "ArrowRight", "b", "a"];
+  // 1) 13:37 auf den neun Flächen.
+  for (const [width, height] of STUDIO_VIEWPORTS) {
+    const { ctx, page, msgs } = await openPausedClock(browser, { width, height, at: LEET });
+    const got = await page.evaluate(funState);
+    if ([390, 1920, 3840].includes(width)) await shot(page, `leet-${width}x${height}`);
+    await ctx.close();
+    // Kachel, Streifen, Bühnen ohne Kopfzeile (is-compact) und Fenster bis 320 px Höhe (clock.css): nur die Zeit, kein Ei.
+    const small = ["tile", "strip"].includes(got.layout) || got.compact || height <= 320;
+    note(`/clock 13:37 ${width}×${height} (${got.layout})`, [
+      small && got.egg ? "Ei in Kachel/Streifen" : "", !small && !got.egg ? "Ei fehlt" : "",
+      !small && got.eggText !== "13:37 – leet." ? `Text „${got.eggText}“` : "", got.egg && !got.eggInside ? "Ei außerhalb" : "",
+      got.confetti ? "Konfetti ohne Anlass" : "", got.vscroll > 0 || got.hscroll > 0 ? `Scrollbalken (${got.hscroll}/${got.vscroll} px)` : "",
+      ...errors(got, msgs)].filter(Boolean));
+  }
+  // 2) Neujahr: Konfetti per CSS, bei „weniger Bewegung“ nur Text.
+  for (const [width, height, reduced] of [[1920, 1080, false], [390, 844, false], [1920, 1080, true]]) {
+    const { ctx, page, msgs } = await openPausedClock(browser, { width, height, at: NEWYEAR, reduced });
+    await page.waitForTimeout(900);
+    const got = await page.evaluate(funState);
+    await shot(page, `neujahr-${width}x${height}${reduced ? "-reduced" : ""}`);
+    await ctx.close();
+    note(`/clock Neujahr ${width}×${height}${reduced ? " weniger Bewegung" : ""}`, [
+      got.eggText === "Frohes neues Jahr!" ? "" : `Text „${got.eggText}“`,
+      reduced ? (got.confetti || got.pieces ? "Konfetti trotz weniger Bewegung" : "")
+        : (got.confetti && got.pieces === 24 && /clock-confetti-fall/.test(got.anim) ? "" : `Konfetti ${JSON.stringify([got.confetti, got.pieces, got.anim])}`),
+      got.vscroll > 0 || got.hscroll > 0 ? `Scrollbalken (${got.hscroll}/${got.vscroll} px)` : "", ...errors(got, msgs)].filter(Boolean));
+  }
+  // 3) Konami-Code: Konfetti und Binäruhr, nicht gemerkt; danach (10 s) wieder ohne Ei.
+  {
+    const { ctx, page, msgs, clock } = await openPausedClock(browser, { width: 1920, height: 1080 });
+    for (const key of KONAMI) await page.keyboard.press(key);
+    await page.waitForTimeout(400);
+    const got = await page.evaluate(funState);
+    const said = await page.evaluate(() => document.getElementById("clock-live").textContent);
+    const stored = await page.evaluate(() => localStorage.getItem("ntp-gui-clock-design"));
+    await shot(page, "konami");
+    await clock.run(11000);
+    const later = await page.evaluate(funState);
+    await ctx.close();
+    note("/clock Konami-Code", [got.eggKind === "konami" ? "" : `Ei ${got.eggKind} „${got.eggText}“`,
+      got.design === "binary" ? "" : `Design ${got.design}`, got.confetti ? "" : "kein Konfetti",
+      said ? `A hat angesagt: ${said}` : "", stored ? `Design gemerkt: ${stored}` : "",
+      later.egg && later.eggKind === "konami" ? "Konami-Ei bleibt stehen" : "", ...errors(got, msgs)].filter(Boolean));
+  }
+  // 4) Nie ein Ei oder Konfetti: eggs=0, fun=0, Voreinstellungen, Kiosk (auch aus dem Profil), lock=1, OBS.
+  for (const [name, query, init] of [["eggs0", "?eggs=0"], ["fun0", "?fun=0"], ["studio", "?p=studio"], ["tile", "?p=tile"],
+    ["banner", "?p=banner"], ["kiosk", "?kiosk=1"], ["kiosk-profil", "?p=nerd&kiosk=1"], ["lock", "?lock=1"],
+    ["obs", "", () => { window.obsstudio = { pluginVersion: "30.0.0" }; }], ["studio-eggs1", "?p=studio&eggs=1&fun=1"]]) {
+    for (const at of [LEET, NEWYEAR]) {
+      const { ctx, page, msgs } = await openPausedClock(browser, { width: 1920, height: 1080, query, at, init });
+      for (const key of KONAMI) await page.keyboard.press(key);
+      await page.waitForTimeout(400);
+      const got = await page.evaluate(funState);
+      await ctx.close();
+      note(`/clock kein Ei ${name} ${at === LEET ? "13:37" : "Neujahr"}`, [got.egg ? `Ei „${got.eggText}“` : "",
+        got.confetti || got.pieces ? "Konfetti" : "", got.design === "binary" && !query.includes("binary") ? "Konami wirkt" : "",
+        // eggs=0 schaltet nur die Ostereier ab – Spiel und Zeitzeichen bleiben dort.
+        got.game && name !== "eggs0" ? "Knopf Spiel" : "", got.pips && name !== "eggs0" ? "Zeitzeichen-Knöpfe" : "",
+        name === "eggs0" && !(got.game && got.pips) ? "eggs=0 nimmt Spiel oder Zeitzeichen weg" : "", ...errors(got, msgs)].filter(Boolean));
+    }
+  }
+  // 5) Panel „Spiel“: Tipp mit Maus und Taste, Bestwert im localStorage; Zeitzeichen-Knöpfe im Panel Ton.
+  for (const [width, height] of [[390, 844], [1920, 1080], [768, 1024]]) {
+    const { ctx, page, msgs, clock } = await openPausedClock(browser, { width, height });
+    const before = await page.evaluate(funState);
+    await page.click("#mode-game");
+    await clock.run(500);
+    await page.click("#game-tap");
+    await clock.run(300);
+    const first = await page.evaluate(funState);
+    await page.click("#game-minute");
+    await page.focus("#game-tap");
+    await page.keyboard.press("Enter");
+    await clock.run(300);
+    const second = await page.evaluate(funState);
+    const stored = await page.evaluate(() => localStorage.getItem("ntp-gui-clock-tap"));
+    const sizes = await page.evaluate(() => [...document.querySelectorAll("#game-panel button:not(.info)")].filter((b) => b.offsetParent)
+      .map((b) => { const r = b.getBoundingClientRect(); return Math.min(r.width, r.height); }));
+    await shot(page, `spiel-${width}x${height}`);
+    await page.click("#mode-game");
+    await page.click("#mode-tone");
+    await clock.run(300);
+    await shot(page, `ton-${width}x${height}`);
+    const tone = await page.evaluate(() => ({ pips: !document.getElementById("tone-pips-hour").hidden,
+      line: document.getElementById("tone-pips-line").textContent }));
+    await ctx.close();
+    const want = /^(genau drauf|[0-9.,]+ (ms|s|min [0-9]+ s) zu (früh|spät))\. /;
+    note(`/clock Spiel ${width}×${height}`, [before.game ? "" : "Knopf Spiel fehlt", want.test(first.result) ? "" : `Ergebnis „${first.result}“`,
+      /Messgenauigkeit: Abgleich ± .* · Server ± .* · Bild ± /.test(first.detail) ? "" : `Genauigkeit „${first.detail}“`,
+      want.test(second.result) ? "" : `Taste: „${second.result}“`, /^Bestwert \(volle Minute\): /.test(second.best) ? "" : `Bestwert „${second.best}“`,
+      stored && JSON.parse(stored).second >= 0 && JSON.parse(stored).minute >= 0 ? "" : `localStorage ${stored}`,
+      sizes.every((v) => v >= 24) ? "" : `Tippfläche ${Math.min(...sizes)} px`, tone.pips ? "" : "Zeitzeichen fehlen",
+      /keine Referenz/.test(tone.line) ? "" : "Hinweis Referenz fehlt",
+      second.hscroll > 0 ? `Überbreite ${second.hscroll} px` : "", ...errors(second, msgs)].filter(Boolean));
+  }
+  // 5b) Gesperrter Speicher: Bestwert gilt bis zum Neuladen, ehrlich gesagt; kein Fehler.
+  {
+    const init = () => { const deny = () => { throw new DOMException("gesperrt", "SecurityError"); };
+      Object.defineProperty(window, "localStorage", { get: deny, configurable: true }); };
+    const { ctx, page, msgs, clock } = await openPausedClock(browser, { width: 1440, height: 900, init });
+    await page.click("#mode-game");
+    await page.click("#game-tap");
+    await clock.run(300);
+    const got = await page.evaluate(funState);
+    await ctx.close();
+    note("/clock Spiel ohne Speicher", [/nur bis zum Neuladen/.test(got.result) ? "" : `Ergebnis „${got.result}“`,
+      ...errors(got, msgs)].filter(Boolean));
+  }
+  // 6) Echtzeit: Konami (Konfetti) und offenes Spiel ohne Long Tasks und ohne Bildschleife.
+  {
+    const ctx = await browser.newContext({ viewport: { width: 1920, height: 1080 } });
+    await ctx.addInitScript(() => {
+      window.__long = [];
+      window.__raf = 0;
+      const raf = window.requestAnimationFrame.bind(window);
+      window.requestAnimationFrame = (cb) => { window.__raf += 1; return raf(cb); };
+      try { new PerformanceObserver((list) => window.__long.push(...list.getEntries().map((e) => e.duration))).observe({ type: "longtask", buffered: true }); } catch (e) { /* egal */ }
+    });
+    const page = await ctx.newPage();
+    await page.goto(`${BASE}/clock`, { waitUntil: "load" });
+    await page.waitForTimeout(1500);
+    const rafStart = await page.evaluate(() => { window.__long = []; return window.__raf; });
+    for (const key of KONAMI) await page.keyboard.press(key);
+    await page.click("#mode-game");
+    await page.waitForTimeout(6000);
+    const got = await page.evaluate(() => ({ long: window.__long, raf: window.__raf,
+      confetti: document.getElementById("confetti").childElementCount }));
+    await page.waitForTimeout(3500);
+    const gone = await page.evaluate(() => document.getElementById("confetti").hidden && !document.getElementById("confetti").childElementCount);
+    await ctx.close();
+    note("/clock C3 Leistung", [got.long.length ? `Long Tasks ${got.long.map(Math.round)}` : "",
+      got.raf - rafStart > 3 ? `Bildschleife (${got.raf - rafStart} Bilder)` : "", got.confetti ? "" : "Konfetti fehlte",
+      gone ? "" : "Konfetti bleibt liegen"].filter(Boolean));
   }
   return { found, lines };
 }
@@ -4638,6 +4815,12 @@ async function setupChecks(browser) {
     }
     if (process.env.TOUR_EXTRAS_ONLY) {
       const result = await clockExtrasChecks(browser);
+      console.log(JSON.stringify(result, null, 1));
+      process.exitCode = result.found.length ? 1 : 0;
+      return;
+    }
+    if (process.env.TOUR_FUN_ONLY) {
+      const result = await clockFunChecks(browser);
       console.log(JSON.stringify(result, null, 1));
       process.exitCode = result.found.length ? 1 : 0;
       return;

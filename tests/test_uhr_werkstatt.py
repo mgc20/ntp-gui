@@ -42,7 +42,7 @@ DISPLAY_DEFAULTS = {"layout": "auto", "safe": None, "bg": None, "scale": 100, "s
                     # On-Air/REC-Signal (B4): zentrales Signal zeigen, Abfrage im Sekundentakt
                     "signal": False,
                     # Spielereien (C1): Bedienung an, eingebaute Countdowns, Pomodoro, Nachtmodus
-                    "fun": True, "goal": None, "pomo": None, "pause": None, "dim": None, "dimlevel": 40, "dimred": False,
+                    "fun": True, "eggs": True, "goal": None, "pomo": None, "pause": None, "dim": None, "dimlevel": 40, "dimred": False,
                     # Fortschrittsbalken (C2, mit show=progress)
                     "bars": None,
                     # Prüfbild (B5): nur aus der Adresse
@@ -462,7 +462,7 @@ class ParameterSchemaTest(unittest.TestCase):
                                  "seconds": "enum", "h12": "flag", "face": "enum", "colon": "enum", "lz": "flag",
                                  "date": "enum", "fps": "enum", "look": "enum", "accent": "color", "until": "time",
                                  "timer": "duration", "after": "enum", "warn": "intlist", "beep": "int", "label": "label",
-                                 "cd": "enum", "lock": "flag", "signal": "flag", "fun": "flag", "goal": "enum",
+                                 "cd": "enum", "lock": "flag", "signal": "flag", "fun": "flag", "eggs": "flag", "goal": "enum",
                                  "pomo": "duration", "pause": "duration", "dim": "hours", "dimlevel": "int",
                                  "dimred": "flag", "test": "enum", "bin": "enum", "bars": "list"})
         lead = next(e for e in out["schema"] if e["name"] == "lead")
@@ -706,7 +706,7 @@ class SeitenregelnTest(unittest.TestCase):
         keys = re.findall(r"store\(\s*([^,)]+)", self.js)
         self.assertTrue(keys)
         for key in keys:
-            self.assertRegex(key.strip(), r'^(DESIGN_KEY|"ntp-gui-clock-(theme|red)"|link\.STORE_KEY|fx\.OWN_KEY|SOUTH_KEY|key)$')
+            self.assertRegex(key.strip(), r'^(DESIGN_KEY|"ntp-gui-clock-(theme|red)"|link\.STORE_KEY|fx\.OWN_KEY|fx\.TAP_BEST_KEY|SOUTH_KEY|key)$')
         self.assertEqual(re.findall(r"fetch\(\s*[\"`]([^\"`?]+)", self.js), ["/api/v1/time", "/api/v1/clock/profile"])
         self.assertNotRegex(self.js, r"method:\s*\"POST\"|sendBeacon|WebSocket")
         self.assertNotIn("localStorage.setItem", self.js.replace("window.localStorage.setItem(key, value)", ""))

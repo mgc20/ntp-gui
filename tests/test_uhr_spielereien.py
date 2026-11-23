@@ -400,7 +400,7 @@ class SchemaUndServerTest(unittest.TestCase):
     def test_oeffentlich_nur_code(self):
         self.assertIn("/static/js/clockextras.js", server.CLOCK_PUBLIC_PATHS)
         text = (JS / "clockextras.js").read_text(encoding="utf-8")
-        self.assertEqual(re.findall(r'^import .* from "\./([\w]+\.js)";', text, re.M), ["clockkit.js", "clockcount.js"])
+        self.assertEqual(re.findall(r'^import .* from "\./([\w]+\.js)";', text, re.M), ["clockkit.js", "clockcount.js", "util.js"])
         self.assertNotRegex(text, r"fetch\(|XMLHttpRequest|sendBeacon|WebSocket|localStorage\.|document\.|window\.")
         self.assertNotRegex(text, r"setTimeout|setInterval|requestAnimationFrame")
 

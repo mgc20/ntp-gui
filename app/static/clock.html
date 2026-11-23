@@ -32,6 +32,7 @@
     <button type="button" class="clock-tool" id="mode-red" aria-pressed="false" title="Rotlicht: schont die Dunkeladaption der Augen (Sternwarte, Schlafzimmer, Serverraum bei Nacht)" data-i18n-title="clock.red_title" data-i18n="clock.red">Rotlicht</button>
     <button type="button" class="clock-tool" id="mode-tone" aria-expanded="false" aria-controls="tone-panel" data-i18n="clock.tone">Ton</button>
     <button type="button" class="clock-tool" id="mode-timer" aria-expanded="false" aria-controls="timer-panel" hidden data-i18n="clock.timer">Timer</button>
+    <button type="button" class="clock-tool" id="mode-game" aria-expanded="false" aria-controls="game-panel" hidden data-i18n="clock.game">Spiel</button>
     <button type="button" class="clock-tool" id="mode-night" aria-pressed="false" hidden title="Nachtmodus: gedimmt (mit dimred=1 in Rot); mit dim=22-6 in der Adresse auch nach Uhrzeit (Ortszeit dieses Geräts). Taste N" data-i18n-title="clock.night_title" data-i18n="clock.night">Nacht</button>
     <button type="button" class="clock-tool" id="mode-device" aria-expanded="false" aria-controls="device-panel" data-i18n="clock.device">Mein Gerät</button>
     <button type="button" class="clock-tool clock-tool-icon" id="mode-custom" aria-expanded="false" aria-controls="custom-panel" title="Anpassen" aria-label="Anpassen" data-i18n-title="clock.custom" data-i18n-aria-label="clock.custom"><span aria-hidden="true">⚙</span></button>
@@ -40,6 +41,8 @@
 </header>
 
 <p class="clock-egg" id="leap-egg" role="status" hidden></p>
+<!-- Konfetti (Ostereier, C3): Schnipsel fallen nur per CSS (clock.css, .clock-confetti); bei „weniger Bewegung“ nie. -->
+<div class="clock-confetti" id="confetti" aria-hidden="true" hidden></div>
 <!-- On-Air/REC-Signal: Balken mit Symbol und Text, dazu ein Rahmen um die Seite (body.has-signal in clock.css). -->
 <p class="clock-signal" id="signal" data-signal="off" hidden><span class="clock-signal-icon" aria-hidden="true"></span><span class="clock-signal-text" id="signal-text"></span><span class="clock-signal-note" id="signal-note"></span><span class="clock-signal-note clock-signal-note-short" id="signal-note-short"></span></p>
 
@@ -125,8 +128,11 @@
   <div class="clock-panel-actions" role="group" aria-label="Ton" data-i18n-aria-label="clock.tone">
     <button type="button" class="clock-tool" id="tone-seconds" aria-pressed="false" data-i18n="clock.tone_seconds">Sekundenpiep</button>
     <button type="button" class="clock-tool" id="tone-countdown" aria-pressed="false" data-i18n="clock.tone_countdown">Uhr stellen</button>
+    <button type="button" class="clock-tool" id="tone-pips-hour" aria-pressed="false" hidden data-i18n="clock.tone_pips_hour">Zeitzeichen zur Stunde</button>
+    <button type="button" class="clock-tool" id="tone-pips-minute" aria-pressed="false" hidden data-i18n="clock.tone_pips_minute">Zeitzeichen jede Minute</button>
     <button type="button" class="clock-tool" id="tone-off" data-i18n="clock.tone_off">Aus</button>
   </div>
+  <p class="clock-panel-note" id="tone-pips-line" hidden data-i18n="clock.tone_pips_line">Zeitzeichen wie im Radio: fünf kurze Töne, der lange Ton ist die volle Stunde bzw. Minute. Zum Spaß, keine Referenz: Browser und Lautsprecher verzögern den Ton um einige bis weit über 100 ms.</p>
   <p class="clock-countdown" id="tone-count" aria-live="off" hidden></p>
   <p class="clock-panel-note" id="tone-status" aria-live="polite"></p>
 </section>
@@ -162,6 +168,24 @@
   <h3 class="clock-timer-head" data-i18n="clock.goal_title">Eingebaut</h3>
   <ul class="clock-timer-list clock-timer-goals" id="goal-list"></ul>
   <p class="clock-panel-note" id="timer-status" aria-live="polite"></p>
+</section>
+
+<!-- Spiel „Tippe auf :00“ (C3): Abweichung zur vollen Sekunde bzw. Minute der Serverzeit; Bestwert nur im localStorage. -->
+<section class="clock-panel clock-game" id="game-panel" hidden aria-labelledby="game-title">
+  <h2 class="clock-panel-title" id="game-title"><span data-i18n="clock.game_title">Tippe auf :00</span> <span id="game-info"></span></h2>
+  <p class="clock-panel-line" data-i18n="clock.game_line">Tippe auf „Jetzt!“, genau wenn die Uhr auf die volle Sekunde bzw. Minute springt.</p>
+  <div class="clock-panel-actions" role="group" aria-label="Ziel" data-i18n-aria-label="clock.game_group">
+    <button type="button" class="clock-tool" id="game-second" aria-pressed="true" data-i18n="clock.game_unit_second">volle Sekunde</button>
+    <button type="button" class="clock-tool" id="game-minute" aria-pressed="false" data-i18n="clock.game_unit_minute">volle Minute</button>
+  </div>
+  <button type="button" class="clock-tool clock-game-tap" id="game-tap" data-i18n="clock.game_tap">Jetzt!</button>
+  <p class="clock-game-result" id="game-result" aria-live="polite"></p>
+  <p class="clock-panel-note" id="game-detail"></p>
+  <div class="clock-timer-row">
+    <span class="clock-panel-note" id="game-best"></span>
+    <button type="button" class="clock-tool" id="game-reset" data-i18n="clock.game_reset">Bestwert löschen</button>
+  </div>
+  <p class="clock-panel-note" data-i18n="clock.game_note">Der Bestwert bleibt nur in diesem Browser.</p>
 </section>
 
 <section class="clock-panel" id="device-panel" hidden aria-labelledby="device-title">

@@ -143,9 +143,9 @@ Die Auswahl folgt der Faustformel. Jede Spielerei ist eine reine Funktion in `cl
 | Nerd-Zeile | Unix s/ms, Tag des Jahres, MJD, GPS-Woche/-Sekunde, TAI (aus `leap.py`), hex, römisch. Eine gemeinsame Quelle mit den 1.6.2-Kuriositäten. Umgesetzt in 1.10: hex und römisch nur auf Bühnen ab 700 px Höhe, Unix-ms bewusst nicht (die Zeile zeichnet je Sekunde) | 1 PT |
 | Mondphase | rein rechnerisch, kleines SVG, ±1 Tag laut ⓘ, Schalter „Südhalbkugel“ nur lokal | 0,5 PT |
 | Fortschrittsbalken | Tag, Woche, Jahr („dieses Jahr zu 87 % vorbei“) | 0,25 PT |
-| Spiel „Tippe genau auf :00“ | deine Abweichung neben Gerät (RTT/2) und Server (accuracy). Bestwert nur im `localStorage` | 0,5 PT |
-| Zeitzeichen zur vollen Stunde | 5 kurze und ein langer Piep, opt-in über die vorhandene Ton-Logik | 0,25 PT |
-| Ostereier | eine Tabelle `eggs[]`: 13:37, 12:34:56, Konami-Code (schaltet `binary` als „verstecktes“ Design frei), Konfetti zu Silvester nur in CSS, Zeitumstellung, Schaltsekunde (vorhanden). Abschalten mit `eggs=0` | 0,5 PT |
+| Spiel „Tippe genau auf :00“ | deine Abweichung neben Gerät (RTT/2) und Server (accuracy). Bestwert nur im `localStorage`. Umgesetzt in 1.10: Ziel volle Sekunde oder Minute, dazu eine Bildauffrischung als dritter Teil der Messgenauigkeit | 0,5 PT |
+| Zeitzeichen zur vollen Stunde | 5 kurze und ein langer Piep, opt-in über die vorhandene Ton-Logik. Umgesetzt in 1.10: wahlweise auch jede Minute, mit Hinweis, dass Browser-Audio keine Referenz ist | 0,25 PT |
+| Ostereier | eine Tabelle `eggs[]`: 13:37, 12:34:56, Konami-Code (schaltet `binary` als „verstecktes“ Design frei), Konfetti zu Silvester nur in CSS, Zeitumstellung, Schaltsekunde (vorhanden). Abschalten mit `eggs=0`. Umgesetzt in 1.10: `binary` ist seit C2 ein reguläres Design, der Konami-Code bringt Konfetti und schaltet bis zum Neuladen darauf um; Konfetti zu Neujahr in den ersten zehn Minuten | 0,5 PT |
 | Prüfbild `test=sync` | Blitz und Piep zur vollen Sekunde mit Millisekundenskala, um Ketten- und Lippensync-Verzögerung zu messen. Höchstens 1 Hz, Warnhinweis, nie bei `prefers-reduced-motion` (eher Profi-Werkzeug, Spaß für Streamer) | 0,5 PT |
 
 **Später nur bei Nachfrage:** Lernuhr für Kinder (`face=learn` auf dem Bahnhof-Design), Lichtkilometer zur Fehlerschranke.

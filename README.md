@@ -1243,6 +1243,21 @@ Die Seite **Uhrqualität** zeigt, was die Uhr deines Servers langfristig beeinfl
   oder Weltzeit-Leiste nur, wenn er mindestens 360 px hoch ist. Den Mond umschalten kannst du nur, wo es auch die
   Knöpfe Timer und Nacht gibt. `/api/v1/time` meldet
   dafür zusätzlich `tai_utc` (eine Zahl aus der öffentlichen Schaltsekunden-Liste); sonst geht nichts an den Server.
+- **Spiel, Zeitzeichen und Ostereier (ab 1.10, Studiouhr):** Der Knopf **Spiel** öffnet **„Tippe auf :00“**: Tippe auf
+  „Jetzt!“, genau wenn die Uhr auf die volle Sekunde (oder wahlweise die volle Minute) springt. Die Uhr nimmt den
+  Zeitstempel deines Tippens, rechnet ihn auf ihre Serverzeit um und zeigt die Abweichung in ms („12 ms zu spät“) samt
+  Wertung, daneben die Messgenauigkeit (Abgleich ± halbe Laufzeit, Genauigkeit der Serveruhr, eine Bildauffrischung).
+  Den Bestwert merkt sich nur dieser Browser; lässt er kein Speichern zu, gilt er bis zum Neuladen. Im Panel **Ton**
+  gibt es dazu das **Zeitzeichen** wie im Radio: fünf kurze Töne und ein langer auf der vollen Stunde (oder jede
+  Minute), auf die volle Stunde deiner Ortszeit. Es startet nur nach deinem Klick und ist ausdrücklich keine Referenz:
+  Browser-Audio und Lautsprecher verzögern den Ton um einige bis weit über 100 ms (Bluetooth mehr). **Ostereier**
+  zeigt die Uhr als Zeile über der Bühne: um 13:37, um 12:34:56, in den ersten zehn Minuten des neuen Jahres (mit
+  **Konfetti**), am Tag einer möglichen oder angekündigten Schaltsekunde und am Tag der Zeitumstellung. Der
+  **Konami-Code** (↑ ↑ ↓ ↓ ← → ← → B A) bringt Konfetti und schaltet bis zum Neuladen auf die Binäruhr. Konfetti fällt
+  nur per CSS (zwei Durchläufe, dann ist es weg); wünscht dein System weniger Bewegung, bleibt es beim Text.
+  `?eggs=0` schaltet alle Ostereier ab (auch die Schaltsekunden-Zeile; die Ankündigung im Band bleibt). Spiel und
+  Zeitzeichen gibt es nur, wo auch Timer und Nacht erscheinen: nie mit `?fun=0` (Voreinstellungen `studio`, `tile`,
+  `banner`), im Kiosk, mit `?lock=1`, in der Kachel und in OBS – dort gibt es auch keine Ostereier und kein Konfetti.
 - **Timecode-Anzeige (Studiouhr, Design `tc`):** `/clock?design=tc` zeigt die Tageszeit des Servers als Timecode
   `HH:MM:SS` mit einer Feinstelle, gerechnet in der Zeitzone des Servers; weicht sie von der deines Geräts ab, gehören
   auch Datum und Woche darunter zur Zone des Servers, und nach Taste U steht dessen Zeit mit Zonenname in der

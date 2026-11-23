@@ -56,6 +56,13 @@ Der Rundgang öffnet jede Route bei 1440 und 390 px, hell und dunkel, und meldet
   GPS aus `tai_utc` des Mocks bzw. „–“ ohne den Wert, Balken für Tag, Jahr und Eieruhr, Klick auf den Mond (Südhalbkugel,
   nur localStorage); keine Zusätze in `studio`, `tile`, `banner`, mit `fun=0` und ohne `show`; im Ruhebetrieb keine
   Long Tasks und keine Bildschleife,
+- Spiel, Zeitzeichen und Ostereier der Studiouhr C3 (`clockFunChecks`, einzeln mit `TOUR_FUN_ONLY=1`): Osterei 13:37 auf
+  den neun Flächen (im Bild; in Kachel, Streifen und Fenstern bis 320 px Höhe nie), Neujahr mit CSS-Konfetti (bei
+  „weniger Bewegung“ nur Text), Konami-Code (Konfetti, Binäruhr nicht gemerkt, das abschließende A sagt nichts an); nie
+  ein Ei oder Konfetti mit `eggs=0`, `fun=0`, in `studio`, `tile`, `banner`, mit `kiosk=1` (auch `p=nerd&kiosk=1`),
+  `lock=1` und in OBS; Panel „Spiel“ bei 390, 768 und 1920 px (Tipp mit Maus und Enter, Ergebnis, Messgenauigkeit,
+  Bestwert im localStorage, Tippflächen ≥ 24 px, gesperrter Speicher ehrlich), Zeitzeichen-Knöpfe im Panel Ton; dazu ein
+  Lauf in Echtzeit ohne Long Tasks und ohne Bildschleife, Konfetti danach wieder weg,
 - die „Heute“-Zeitleiste der Übersicht mit einem erfundenen Tag (Holdover 03:00–04:30, drei Ereignisse) bei 390 und
   1440 px: genau drei Marker an der richtigen Stelle, Holdover-Abschnitt im Band, Marker im Diagramm, Tagesbericht-Satz,
   Tippflächen ≥ 24 px; per Tastatur Band → Pos1 → Enter öffnet „So sah es um … aus“ (ohne Satellitenwinkel), Esc gibt den
@@ -90,6 +97,7 @@ TOUR_WORDS_ONLY=1 tests/ui/rundgang.sh        # nur die Wortzahl je Seite messen
 TOUR_PAGES_ONLY=1 tests/ui/rundgang.sh        # nur Clients mit Messwert und Rohdaten der Ereignisse (erfundene Antworten)
 TOUR_TIMER_ONLY=1 tests/ui/rundgang.sh        # nur Studiouhr C1: Eieruhr, Pomodoro, eigene Countdowns, Nachtmodus, keine Knöpfe in Studio/Kachel/Kiosk/OBS
 TOUR_EXTRAS_ONLY=1 tests/ui/rundgang.sh       # nur Studiouhr C2: Binäruhr, Mondphase, Nerd-Zeile, Fortschrittsbalken
+TOUR_FUN_ONLY=1 tests/ui/rundgang.sh          # nur Studiouhr C3: Spiel „Tippe auf :00“, Zeitzeichen, Ostereier, Konfetti
 TOUR_CLOCK_ONLY=1 tests/ui/rundgang.sh        # nur die Uhr-Werkstatt /clock (Designs, Kiosk, E-Ink, Ruhe zwischen den Minuten, Leiste bei offenem Panel)
 TOUR_TIMELINE_ONLY=1 tests/ui/rundgang.sh     # nur „Heute“-Zeitleiste: Band, Marker, Tagesbericht, Tastatur (erfundener Tag)
 TOUR_HERO_ONLY=1 tests/ui/rundgang.sh         # nur das Statusband der Übersicht (TOUR_HERO_SHOTS=<Ordner> für Fotos)

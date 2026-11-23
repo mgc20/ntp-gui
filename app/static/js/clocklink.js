@@ -36,7 +36,7 @@ export const FORM_GROUPS = Object.freeze([
   { key: "zone", names: ["tz", "tzl", "lead", "maxerr"] },
   { key: "countdown", names: ["until", "goal", "label", "timer", "pomo", "pause", "after", "warn", "beep", "cd"] },
   { key: "night", names: ["dim", "dimlevel", "dimred"] },
-  { key: "mode", names: ["kiosk", "eink", "lock", "fun", "signal", "test"] },
+  { key: "mode", names: ["kiosk", "eink", "lock", "fun", "eggs", "signal", "test"] },
 ]);
 
 /** Feste Fenstergrößen der Vorschau (window.open im neuen Tab, kein iframe: frame-ancestors bleibt 'none'). */

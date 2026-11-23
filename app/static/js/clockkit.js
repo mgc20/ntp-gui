@@ -140,6 +140,9 @@ export const PARAM_SCHEMA = Object.freeze([
   // Spielereien (Etappe C): fun=0 blendet Eieruhr, Pomodoro, eigene Countdowns und den Nachtmodus-Knopf aus – in den
   // Voreinstellungen studio, tile und banner gesetzt. Kiosk, lock=1, die Kachel und OBS-Browserquellen zeigen sie ohnehin nie.
   { name: "fun", type: "flag", default: true },
+  // Ostereier (C3): 13:37, 12:34:56, Neujahr mit Konfetti, Schaltsekunde, Zeitumstellung, Konami-Code. eggs=0 schaltet sie
+  // ab; ohne Spielereien (fun=0, Kiosk, lock=1, Kachel, OBS, E-Ink) gibt es sie ohnehin nie (clockextras.eggsAllowed).
+  { name: "eggs", type: "flag", default: true },
   // Eingebauter Countdown (Neujahr, nächste Zeitumstellung, Unixzeit 2 000 000 000, NTP-Ära 2036); ?until= geht vor.
   { name: "goal", type: "enum", values: GOALS, default: null },
   // Pomodoro: Dauer der Arbeitsphase (startet den Pomodoro-Timer statt ?timer=) und der Pause (ohne Angabe 5 min).
