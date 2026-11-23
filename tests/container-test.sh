@@ -33,7 +33,7 @@ cleanup() {
     "${PREFIX}-g" "${PREFIX}-h" "${PREFIX}-i" "${PREFIX}-j" >/dev/null 2>&1
   docker rm -f "${PREFIX}-k" "${PREFIX}-l" "${PREFIX}-m" "${PREFIX}-n" "${PREFIX}-o" >/dev/null 2>&1
   docker rm -f "${PREFIX}-p" "${PREFIX}-q" "${PREFIX}-r" "${PREFIX}-s" "${PREFIX}-t" >/dev/null 2>&1
-  docker rm -f "${PREFIX}-u" "${PREFIX}-w" "${PREFIX}-x" "${PREFIX}-pw" "${PREFIX}-cm" >/dev/null 2>&1
+  docker rm -f "${PREFIX}-u" "${PREFIX}-w" "${PREFIX}-x" "${PREFIX}-pw" "${PREFIX}-cm" "${PREFIX}-ntp" >/dev/null 2>&1
   docker network rm "${PREFIX}-net" "${PREFIX}-net2" >/dev/null 2>&1
   docker volume rm "${PREFIX}-data" "${PREFIX}-hist" >/dev/null 2>&1
   if [[ -n "${VPS_DIR:-}" ]]; then
@@ -80,7 +80,7 @@ echo "Image: $IMAGE"
 echo
 echo "1) Start ohne CAP_SYS_TIME"
 docker run -d --name "${PREFIX}-a" -p 18080:8080 \
-  -e NTP_PORT=10123 -e NTP_POOLS="" -e NTP_SERVERS="" -e ALLOW_NETWORKS="0.0.0.0/0" -e SERVE_UNSYNCED=true \
+  -e NTP_PORT=10123 -e NTP_POOLS="" -e NTP_SERVERS="" -e ALLOW_NETWORKS="0.0.0.0/0" \
   -e OUTBOUND_TARGETS=loopback \
   "$IMAGE" >/dev/null
 if wait_for_health http://127.0.0.1:18080/healthz 90; then ok "healthz wird gesund"; else bad "healthz bleibt ungesund"; fi
@@ -384,7 +384,13 @@ check "clock_public aus: /clock über fremden Namen 403" 403 "$(http -H 'Host: w
 
 echo
 echo "2) NTP-Dienst im Netz"
-IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "${PREFIX}-a")
+# Container a antwortet öffentlichen Adressen und liefert ohne Quelle deshalb keine Zeit aus
+# (SERVE_UNSYNCED ist dann aus). Für die Abfrage dient ein Container mit den privaten Netzen
+# ab Werk, der ohne Quelle im Inselbetrieb antwortet.
+docker run -d --name "${PREFIX}-ntp" -p 18189:8080 -e NTP_PORT=10123 -e NTP_POOLS="" -e NTP_SERVERS="" \
+  -e OUTBOUND_TARGETS=loopback "$IMAGE" >/dev/null
+wait_for_health http://127.0.0.1:18189/healthz 90 || true
+IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "${PREFIX}-ntp")
 if command -v chronyd >/dev/null 2>&1; then
   QUERY=$(timeout 25 chronyd -Q -t 15 "server $IP port 10123 iburst maxsamples 1" 2>&1)
   contains "Container beantwortet NTP-Anfragen" "$QUERY" "System clock wrong by"
@@ -394,6 +400,7 @@ else
     "server $IP port 10123 iburst maxsamples 1" 2>&1)
   contains "Container beantwortet NTP-Anfragen" "$QUERY" "System clock wrong by"
 fi
+docker rm -f "${PREFIX}-ntp" >/dev/null 2>&1
 
 echo
 echo "3) Gemountete Konfiguration und Basic-Auth"
