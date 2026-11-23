@@ -60,6 +60,7 @@ import re
 import secrets
 import socket
 import ssl
+import sys
 import threading
 import time
 import urllib.error
@@ -217,11 +218,10 @@ def _origin(url: str) -> tuple[str, str, int | None]:
 def local_host(host: str) -> bool:
     """IP im eigenen Netz (privat, Loopback, link-local) oder ein Name, der nur lokal auflöst."""
     host = (host or "").strip("[]").lower().rstrip(".")
-    try:
-        ip = ipaddress.ip_address(host)
-    except ValueError:
+    ip = netguard.literal(host)
+    if ip is None:
         return bool(host) and ("." not in host or host.endswith(LOCAL_SUFFIXES) or host == "localhost")
-    return ip.is_private or ip.is_loopback or ip.is_link_local
+    return netguard.local_address(ip) or ip.is_link_local
 
 
 def url_hidden(url: str) -> bool:
@@ -242,21 +242,51 @@ def display_url(url: str) -> str:
     return f"{parts.scheme}://{parts.netloc}/…"
 
 
-def _blocked_literal(url: str) -> str | None:
-    """Steht schon in der Adresse ein gesperrtes Ziel (IP-Adresse oder localhost)? Dann gleich beim
-    Speichern sagen, warum. Namen prüft erst die Zustellung – nach der Auflösung (netguard)."""
+LOOPBACK_HINT = ("Für einen Dienst auf demselben Rechner (z. B. Apprise bei network_mode: host) "
+                 "OUTBOUND_TARGETS=loopback in der Compose-Datei setzen.")
+
+
+def _blocked_literal(url: str, env: dict | None = None) -> str | None:
+    """Steht schon in der Adresse ein gesperrtes Ziel (IP-Adresse in jeder Schreibweise oder localhost)?
+    Dann beim Speichern, beim Start und bei der Zustellung sagen, warum. Namen prüft erst die Zustellung –
+    nach der Auflösung (netguard). Die Meldung nennt nur, was ohnehin in der Adresse steht."""
     _scheme, host, _port = _origin(url)
-    target = netguard.parse(host)
+    target = netguard.literal(host)
     if target is None and (host == "localhost" or host.endswith(".localhost")):
         target = ipaddress.ip_address("127.0.0.1")
     if target is None:
         return None
-    why = netguard.reason(target, "notify")
+    why = netguard.reason(target, "notify", env)
     if why is None:
         return None
-    hint = (" Für einen Dienst auf demselben Rechner (z. B. Apprise bei network_mode: host) "
-            "OUTBOUND_TARGETS=loopback in der Compose-Datei setzen." if netguard.unwrap(target).is_loopback else "")
+    hint = f" {LOOPBACK_HINT}" if netguard.unwrap(target).is_loopback else ""
     return f"Dieses Ziel ist gesperrt ({why}).{hint}"
+
+
+def blocked_channels(env: dict | None = None) -> list[tuple[dict, str]]:
+    """Eingeschaltete gespeicherte Kanäle, deren Adresse ein gesperrtes Ziel nennt – z. B. Apprise unter
+    http://127.0.0.1:8000 aus einer Einrichtung vor 1.9, in der Loopback noch erlaubt war."""
+    try:
+        rows = _load_all()
+    except Exception:
+        return []
+    out = []
+    for channel in rows:
+        why = _blocked_literal(channel["url"], env) if channel["enabled"] else None
+        if why:
+            out.append((channel, why))
+    return out
+
+
+def warn_blocked_channels(env: dict | None = None) -> int:
+    """Beim Start: je betroffenem Kanal eine Warnung ins Container-Log und ins Ereignisprotokoll (nur
+    Kennung und Art, nie die Adresse). Sonst fiele ein solcher Kanal nach dem Update ohne Hinweis aus."""
+    found = blocked_channels(env)
+    for channel, why in found:
+        text = f"Benachrichtigungskanal {_label(channel)}: {why}"
+        print(f"[notify] WARNUNG: {text}", file=sys.stderr, flush=True)
+        events.emit("notify", "warn", text, {"channel": channel["id"], "reason": "blocked"})
+    return len(found)
 
 
 def validate(data: dict, existing: dict | None = None) -> dict:
@@ -816,7 +846,7 @@ class _Deadline:
     die TLS-Hülle) und der blockierte Aufruf kehrt sofort zurück."""
 
     def __init__(self, seconds: float, local_only: bool = False) -> None:
-        # local_only: Token über http:// – nur an eine private Adresse oder Loopback (nach der Auflösung).
+        # local_only: Token über http:// – nur an eine Adresse im eigenen Netz (nach der Auflösung).
         self.local_only = local_only
         self.end = time.monotonic() + seconds
         self.fired = False
@@ -902,7 +932,7 @@ class _Deadline:
                 error = exc
         if refused_plain and (error is None or isinstance(error, TargetBlocked)):
             raise DeliveryError("Token über http:// geht nur an Adressen im eigenen Netz – dieser Name zeigt "
-                                "ins Internet. Bitte https:// verwenden.")
+                                "nicht ins eigene Netz. Bitte https:// verwenden.")
         raise error or OSError("keine Adresse")
 
 
@@ -1034,6 +1064,11 @@ def deliver(channel: dict, clean: dict, version: str = "") -> None:
     url, body, headers = build_request(channel, clean, version)
     if not settings.http_url_ok(url, max_len=400):
         raise DeliveryError("Adresse ungültig")
+    blocked = _blocked_literal(url)
+    if blocked:
+        # Steht das gesperrte Ziel schon in der Adresse, den Grund nennen (mit Hinweis auf
+        # OUTBOUND_TARGETS) – das verrät nichts, was nicht ohnehin in der Kanal-Einstellung steht.
+        raise DeliveryError(blocked)
     request = urllib.request.Request(url, data=body, headers=headers, method="POST")
     # Ein Token (nicht nur seine Signatur) geht im Klartext mit: dann nur an Adressen im eigenen Netz.
     carries_token = (any(h in headers for h in ("Authorization", "X-Gotify-Key"))
@@ -1322,6 +1357,7 @@ NOTIFIER = Notifier()
 
 def start(version: str = "") -> None:
     NOTIFIER.start(version)
+    warn_blocked_channels()
 
 
 def flush() -> None:

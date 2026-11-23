@@ -3116,6 +3116,15 @@ class Handler(BaseHTTPRequestHandler):
         result["trusted_proxies"] = settings.values().get("trusted_proxies")
         self._send_json(result)
 
+    @staticmethod
+    def _chrony_accepts(changes: dict, defaults=None) -> None:
+        """Vor dem Speichern: Lehnte chronyd die Konfiguration mit diesen Werten ab, wird nichts gespeichert
+        (sonst stünde der Wert in settings.json und gälte beim nächsten Start)."""
+        problem = confgen.check_changes(changes, defaults)
+        if problem:
+            raise settings.ValidationError(f"chronyd würde diese Konfiguration ablehnen ({problem}) – nichts "
+                                           "gespeichert, die bisherige Einstellung bleibt.")
+
     def _route_post(self, path: str, data: dict, ident: dict | None = None) -> None:
         ident = ident or {"kind": "open"}
         if path in {"/api/settings", "/api/settings/preview"}:
@@ -3132,6 +3141,7 @@ class Handler(BaseHTTPRequestHandler):
                 # Kein Pfad aus der Anfrage: verglichen wird mit den Dateien, die confgen selbst schreibt.
                 self._send_json(confgen.preview(changes, defaults))
                 return
+            self._chrony_accepts(changes, defaults)
             result = settings.save(changes, defaults)
             self._settings_event("Einstellungen geändert", result, ident)
             self._send_json(self._after_change(result))
@@ -3152,6 +3162,8 @@ class Handler(BaseHTTPRequestHandler):
                       if not (isinstance(masked, list) and k in masked)}
             # Auch Sicherungen älterer Versionen: erst auf das aktuelle Schema bringen.
             values, notes = settings.migrate_import({"schema": data.get("schema", 1), "values": values})
+            if values:
+                self._chrony_accepts(values)
             result = settings.save(values) if values else {"changed": [], "restart": False}
             self._settings_event("Einstellungen importiert", result, ident)
             result = self._after_change(result)

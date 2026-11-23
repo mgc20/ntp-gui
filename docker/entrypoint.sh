@@ -311,7 +311,8 @@ device_id() {  # Inode + Major/Minor des Knotens (folgt by-id-Links), leer wenn 
 
 # --- Konfiguration erzeugen ---------------------------------------------------
 # apply_config [--start]: --start erlaubt confgen, bei einer von chronyd abgelehnten gespeicherten
-# Einstellung ohne die Dashboard-Werte zu starten (statt dass jeder Start scheitert).
+# Einstellung ohne diesen Wert zu starten (statt dass jeder Start scheitert) – nie ohne schützende
+# Einstellungen wie erlaubte/gesperrte Netze oder Ratelimit (dann kein Start).
 CONFIG_ERROR=""   # Grund der letzten Ablehnung (confgen schreibt ihn nach RUN_DIR/config-error)
 apply_config() {
   local out
@@ -800,8 +801,8 @@ set_state web running
 NTPGUI_VERSION="${NTPGUI_VERSION:-$(sed -n 's/^VERSION = os\.environ\.get("NTPGUI_VERSION", "\([^"]*\)").*/\1/p' "${APP_DIR}/server.py" 2>/dev/null)}"
 "$EMIT_EVENT" startup info "ntp-gui gestartet" version="${NTPGUI_VERSION:-}"
 if [[ -n "$START_CONFIG_ERROR" ]]; then
-  write_status error "Gespeicherte Einstellungen von chronyd abgelehnt (${START_CONFIG_ERROR}) – Start ohne sie"
-  "$EMIT_EVENT" reload warn "Gespeicherte Einstellungen von chronyd abgelehnt – gestartet mit Umgebung und Standardwerten (chronyd: ${START_CONFIG_ERROR})" result=error
+  write_status error "Gespeicherte Einstellung von chronyd abgelehnt (${START_CONFIG_ERROR}) – Start ohne sie"
+  "$EMIT_EVENT" reload warn "Gespeicherte Einstellung von chronyd abgelehnt – gestartet ohne diesen Wert, Details im Container-Log (chronyd: ${START_CONFIG_ERROR})" result=error
 fi
 
 # --- Watchdog ------------------------------------------------------------------

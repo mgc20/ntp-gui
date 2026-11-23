@@ -1664,15 +1664,26 @@ def _stored_after(stored: dict[str, Any], clean: dict[str, Any], defaults: list[
     return out
 
 
+def saved_values() -> dict[str, Any]:
+    """Im Dashboard gespeicherte Werte (Inhalt von settings.json, ungeprüft)."""
+    with _LOCK:
+        return dict(_load_file().get("values", {}))
+
+
+def saved_after(changes: dict[str, Any], defaults: Any = None,
+                env: dict[str, str] | None = None) -> dict[str, Any]:
+    """Gespeicherte Werte, wie sie nach save(changes, defaults) stünden – ohne etwas zu schreiben.
+    Prüft genauso streng wie save() (ValidationError mit Feldbezug)."""
+    clean = validate(changes)
+    keys = validate_defaults(defaults)
+    return _stored_after(saved_values(), clean, keys, env)
+
+
 def preview_values(changes: dict[str, Any], defaults: Any = None,
                    env: dict[str, str] | None = None) -> dict[str, Any]:
     """Effektive Werte, wie sie nach save(changes, defaults) gälten – ohne etwas zu schreiben.
     Prüft genauso streng wie save() (ValidationError mit Feldbezug)."""
-    clean = validate(changes)
-    keys = validate_defaults(defaults)
-    with _LOCK:
-        stored = dict(_load_file().get("values", {}))
-    after = _stored_after(stored, clean, keys, env)
+    after = saved_after(changes, defaults, env)
     return {key: entry["value"] for key, entry in effective(env, after).items()}
 
 

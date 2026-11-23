@@ -158,9 +158,34 @@ class ExpertenVariablenTest(unittest.TestCase):
         self.assertIn("log measurements statistics tracking\n", text)
         self.assertIn("maxupdateskew 50.5\n", text)
         self.assertIn("clientloglimit 200000\n", text)
-        values, notes = confgen.chrony_env_values({"PHC_REFCLOCK_OPTIONS": "poll 0 dpoll -2 offset 0 stratum 1 nocrossts"})
-        self.assertEqual(values["phc_options"], "poll 0 dpoll -2 offset 0 stratum 1 nocrossts")
+        values, notes = confgen.chrony_env_values({"PHC_REFCLOCK_OPTIONS": "poll 0 dpoll -2 offset 0 stratum 1 tai local"})
+        self.assertEqual(values["phc_options"], "poll 0 dpoll -2 offset 0 stratum 1 tai local")
         self.assertEqual(notes, [])
+
+    def test_phc_option_local_bleibt_mit_tai_und_offset(self):
+        for raw in ("tai local", "offset -37 local", "local"):
+            with self.subTest(raw=raw):
+                values, notes = confgen.chrony_env_values({"PHC_REFCLOCK_OPTIONS": raw})
+                self.assertEqual(values["phc_options"], raw)
+                self.assertEqual(notes, [])
+
+    def test_phc_treiberoptionen_als_wort_werden_abgelehnt(self):
+        for raw in ("extpps", "nocrossts", "poll 0 pin 1", "clear"):
+            with self.subTest(raw=raw):
+                values, notes = confgen.chrony_env_values({"PHC_REFCLOCK_OPTIONS": raw})
+                self.assertIsNotNone(values["phc_error"])
+                self.assertIn("PHC_REFCLOCK_OPTIONS", " ".join(notes))
+
+    def test_ungueltige_phc_optionen_fallen_nicht_still_auf_den_standard(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, True)
+        phc = os.path.join(tmp, "ptp0")
+        Path(phc).write_text("", encoding="utf-8")
+        cfg = dict(settings.values({}), phc_refclock=phc)
+        text = confgen.render_chrony(cfg, {"PHC_REFCLOCK_OPTIONS": "tai local"}, **QUIET)
+        self.assertIn(f"refclock PHC {phc} tai local\n", text)
+        with self.assertRaises(confgen.InvalidEnvValue):
+            confgen.render_chrony(cfg, {"PHC_REFCLOCK_OPTIONS": "tai extpps"}, **QUIET)
 
     def test_shm_einheit_als_text_bricht_nicht_ab(self):
         tmp = tempfile.mkdtemp()
@@ -263,7 +288,59 @@ class ChronydPruefungTest(unittest.TestCase):
         with mock.patch.object(confgen, "_log", lambda _tag, text: lines.append(text)), \
                 self.assertRaises(confgen.ConfigRejected):
             confgen.apply(dict(self.env, EXTRA_CHRONY_CONF="ABLEHNEN"), fallback=True)
-        self.assertFalse(any("Start ohne die im Dashboard" in line for line in lines), lines)
+        self.assertFalse(any("Start ohne" in line for line in lines), lines)
+
+    def test_rueckfall_behaelt_schuetzende_einstellungen(self):
+        settings.save({"makestep": "9 9", "deny_networks": ["198.51.100.0/24"], "ntp_ratelimit": True,
+                       "bind_address": "192.0.2.5"})
+        with mock.patch.object(confgen, "check_chrony",
+                               side_effect=lambda text, binary=None: "abgelehnt" if "makestep 9 9" in text else None):
+            confgen.apply(self.env, fallback=True)
+        conf = self.conf()
+        self.assertNotIn("makestep 9 9", conf)
+        for line in ("deny 198.51.100.0/24", "ratelimit interval 1 burst 16 leak 2", "bindaddress 192.0.2.5"):
+            self.assertIn(line, conf)
+
+    def test_kein_start_wenn_die_ablehnung_eine_schuetzende_einstellung_betrifft(self):
+        confgen.apply(self.env)
+        good = self.conf()
+        settings.save({"makestep": "2 3", "ntp_ratelimit": True})
+        with mock.patch.object(confgen, "check_chrony",
+                               side_effect=lambda text, binary=None: "abgelehnt" if "ratelimit" in text else None), \
+                self.assertRaises(confgen.ConfigRejected):
+            confgen.apply(self.env, fallback=True)
+        self.assertEqual(self.conf(), good, "ohne Ratelimit wird nicht gestartet")
+
+    def test_ursache_extra_chrony_conf_wird_beim_start_benannt(self):
+        settings.save({"deny_networks": ["198.51.100.0/24"], "ntp_ratelimit": True})
+        lines = []
+        with mock.patch.object(confgen, "_log", lambda _tag, text: lines.append(text)), \
+                self.assertRaises(confgen.ConfigRejected):
+            confgen.apply(dict(self.env, EXTRA_CHRONY_CONF="ABLEHNEN"), fallback=True)
+        joined = "\n".join(lines)
+        self.assertIn("Ursache liegt in EXTRA_CHRONY_CONF", joined)
+        self.assertNotIn("im Dashboard und speichere", joined)
+
+    def test_abgelehnte_aenderung_wird_nicht_gespeichert(self):
+        import server
+        settings.save({"makestep": "2 3"})
+        before = Path(settings.SETTINGS_FILE).read_bytes()
+        handler = server.Handler.__new__(server.Handler)
+        handler._send_json = mock.Mock()
+        handler._settings_event = mock.Mock()
+        with mock.patch.object(confgen, "check_chrony",
+                               side_effect=lambda text, binary=None: "abgelehnt" if "makestep 9 9" in text else None), \
+                self.assertRaisesRegex(settings.ValidationError, "chronyd würde"):
+            handler._route_post("/api/settings", {"changes": {"makestep": "9 9"}})
+        self.assertEqual(Path(settings.SETTINGS_FILE).read_bytes(), before)
+        handler._send_json.assert_not_called()
+
+    def test_ablehnung_aus_der_umgebung_sperrt_das_speichern_nicht(self):
+        with mock.patch.dict(os.environ, {"EXTRA_CHRONY_CONF": "ABLEHNEN"}):
+            self.assertIsNone(confgen.check_changes({"makestep": "2 3"}))
+        with mock.patch.object(confgen, "check_chrony",
+                               side_effect=lambda text, binary=None: "abgelehnt" if "makestep 9 9" in text else None):
+            self.assertEqual(confgen.check_changes({"makestep": "9 9"}, None, self.env), "abgelehnt")
 
 
 class NetguardTest(unittest.TestCase):
@@ -334,22 +411,101 @@ class NotifyZieleTest(unittest.TestCase):
         self.assertEqual(str(caught.exception), notify.UNREACHABLE_TEXT)
 
     def test_gesperrt_und_geschlossen_sind_nicht_zu_unterscheiden(self):
+        port = closed_tcp_port(self)
         with mock.patch.dict(os.environ, {"OUTBOUND_TARGETS": "loopback"}), \
+                mock.patch.object(notify.socket, "getaddrinfo", self.fake_resolve("127.0.0.1")), \
                 self.assertRaises(notify.DeliveryError) as closed:
-            self.deliver(self.channel(f"http://127.0.0.1:{closed_tcp_port(self)}/"))
-        with self.assertRaises(notify.DeliveryError) as blocked:
-            self.deliver(self.channel(f"http://127.0.0.1:{closed_tcp_port(self)}/"))
+            self.deliver(self.channel(f"http://dienst.example.org:{port}/"))
+        with mock.patch.object(notify.socket, "getaddrinfo", self.fake_resolve("127.0.0.1")), \
+                self.assertRaises(notify.DeliveryError) as blocked:
+            self.deliver(self.channel(f"http://dienst.example.org:{port}/"))
         self.assertEqual(str(closed.exception), str(blocked.exception))
         self.assertEqual(str(blocked.exception), notify.UNREACHABLE_TEXT)
+
+    def test_loopback_kurzformen_werden_beim_speichern_abgelehnt(self):
+        for url in ("http://127.1:8080/", "http://2130706433/x", "http://0x7f.1:8000/", "http://0x7f000001/"):
+            with self.subTest(url=url), self.assertRaisesRegex(notify.NotifyError, "OUTBOUND_TARGETS=loopback"):
+                notify.validate({"name": "x", "type": "webhook", "url": url})
+
+    def test_gesperrtes_literal_nennt_bei_der_zustellung_den_grund(self):
+        connects = []
+        with mock.patch.object(notify.socket.socket, "connect", lambda s, a: connects.append(a)), \
+                self.assertRaisesRegex(notify.DeliveryError, "OUTBOUND_TARGETS=loopback"):
+            self.deliver(self.channel("http://127.0.0.1:8000/"))
+        self.assertEqual(connects, [])
+
+    def test_token_ueber_http_an_cgnat_adresse_geht(self):
+        self.assertTrue(netguard.local_address(ipaddress.ip_address("100.101.102.103")))
+        self.assertFalse(netguard.local_address(ipaddress.ip_address("100.100.100.200")))
+        self.assertTrue(notify.local_host("100.101.102.103"))
+        deadline = notify._Deadline(3, local_only=True)
+        self.addCleanup(deadline.close)
+        connects = []
+
+        def connect(sock, address):
+            connects.append(address)
+            raise ConnectionRefusedError()
+
+        with mock.patch.object(notify.socket, "getaddrinfo", self.fake_resolve("100.101.102.103")), \
+                mock.patch.object(notify.socket.socket, "connect", connect), \
+                self.assertRaises(OSError):
+            deadline.connect(("ntfy", 80))
+        self.assertEqual(connects, [("100.101.102.103", 80)])
 
     def test_token_ueber_http_nur_an_aufgeloeste_lokale_adresse(self):
         channel = {"type": "ntfy", "url": "http://ntfy.home", "topic": "t", "secret": "tk_geheim"}
         connects = []
         with mock.patch.object(notify.socket, "getaddrinfo", self.fake_resolve("9.9.9.9")), \
                 mock.patch.object(notify.socket.socket, "connect", lambda s, a: connects.append(a)), \
-                self.assertRaisesRegex(notify.DeliveryError, "https://"):
+                self.assertRaisesRegex(notify.DeliveryError, "nicht ins eigene Netz.*https://"):
             self.deliver(channel)
         self.assertEqual(connects, [])
+
+
+class GespeicherteKanaeleTest(unittest.TestCase):
+    """Kanäle aus einer Einrichtung vor 1.9 (Loopback war erlaubt) fallen nicht ohne Hinweis aus."""
+
+    def setUp(self):
+        import events
+        import store
+        self.events, self.store = events, store
+        self.tmp = tempfile.mkdtemp()
+        patches = [mock.patch.object(settings, "DATA_DIR", self.tmp),
+                   mock.patch.object(settings, "SETTINGS_FILE", os.path.join(self.tmp, "settings.json"))]
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+        notify._reset_for_tests()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.addCleanup(store.close_all)
+        self.addCleanup(notify._reset_for_tests)
+        notify._ensure()
+        now = time.time()
+        for cid, url, enabled in (("aaaaaaaa01", "http://127.0.0.1:8000", 1), ("aaaaaaaa02", "http://192.168.1.5/", 1),
+                                  ("aaaaaaaa03", "http://localhost:8000", 0)):
+            store.execute("INSERT INTO notify_channels(id, name, type, enabled, url, topic, secret, min_level, kinds, "
+                          "debounce_min, rate_per_hour, resolved, created, updated) VALUES "
+                          "(?, 'x', 'apprise', ?, ?, 'ntp', '', 'warn', '[]', 15, 30, 1, ?, ?)",
+                          (cid, enabled, url, now, now))
+
+    def test_gespeicherter_kanal_auf_loopback_erzeugt_eine_warnung(self):
+        emitted = []
+        with mock.patch.object(self.events, "emit", lambda *a, **k: emitted.append(a)), \
+                mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("OUTBOUND_TARGETS", None)
+            with mock.patch("sys.stderr") as err:
+                self.assertEqual(notify.warn_blocked_channels(), 1)
+        self.assertEqual(len(emitted), 1)
+        self.assertIn("aaaaaaaa01", emitted[0][2])
+        self.assertIn("OUTBOUND_TARGETS=loopback", emitted[0][2])
+        self.assertNotIn("127.0.0.1", emitted[0][2], "keine Adresse im Ereignisprotokoll")
+        self.assertIn("OUTBOUND_TARGETS=loopback", "".join(c.args[0] for c in err.write.call_args_list))
+
+    def test_mit_freigabe_keine_warnung(self):
+        with mock.patch.object(self.events, "emit") as emit, \
+                mock.patch.dict(os.environ, {"OUTBOUND_TARGETS": "loopback"}):
+            self.assertEqual(notify.warn_blocked_channels(), 0)
+        emit.assert_not_called()
 
 
 class TestKnopfBremseTest(unittest.TestCase):

@@ -227,6 +227,14 @@ services:
       #  LOCAL_ORPHAN: "true"
       #  NTP_PEERS: "192.168.1.11"
 
+      # [OPTION Apprise auf diesem Rechner] Mit network_mode: host erreicht
+      # ntp-gui einen Apprise-Container nur über http://127.0.0.1:8000
+      # (Apprise mit ports: ["127.0.0.1:8000:8000"]). Ziele auf dem Rechner
+      # selbst (Loopback) sind für Benachrichtigungen ab 1.9 gesperrt, bis du
+      # sie hier freigibst – ein so eingetragener Kanal meldet sonst
+      # „Dieses Ziel ist gesperrt“, das Start-Log warnt.
+      #  OUTBOUND_TARGETS: "loopback"
+
       # [OPTION Dashboard absichern] Ohne Passwort kann jeder im LAN die
       # Einstellungen ändern. Alternativ das Passwort im Dashboard setzen.
       #  WEB_USER: "admin"

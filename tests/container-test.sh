@@ -33,7 +33,7 @@ cleanup() {
     "${PREFIX}-g" "${PREFIX}-h" "${PREFIX}-i" "${PREFIX}-j" >/dev/null 2>&1
   docker rm -f "${PREFIX}-k" "${PREFIX}-l" "${PREFIX}-m" "${PREFIX}-n" "${PREFIX}-o" >/dev/null 2>&1
   docker rm -f "${PREFIX}-p" "${PREFIX}-q" "${PREFIX}-r" "${PREFIX}-s" "${PREFIX}-t" >/dev/null 2>&1
-  docker rm -f "${PREFIX}-u" >/dev/null 2>&1
+  docker rm -f "${PREFIX}-u" "${PREFIX}-w" >/dev/null 2>&1
   docker network rm "${PREFIX}-net" "${PREFIX}-net2" >/dev/null 2>&1
   docker volume rm "${PREFIX}-data" "${PREFIX}-hist" >/dev/null 2>&1
   rm -rf "$CFG_DIR" "$NTS_DIR" "$DIAG_DIR"
@@ -474,8 +474,27 @@ check "Exit-Code signalisiert Fehler" 1 "$(docker inspect -f '{{.State.ExitCode}
 LOGS_D=$(docker logs "${PREFIX}-d" 2>&1)
 contains "chronyd prüft die Konfiguration vor dem Start" "$LOGS_D" "chronyd lehnt die neue Konfiguration ab"
 contains "Log nennt den Grund ohne Pfad der Prüfdatei" "$LOGS_D" "Invalid directive"
+contains "Log nennt EXTRA_CHRONY_CONF als Ursache" "$LOGS_D" "Ursache liegt in EXTRA_CHRONY_CONF"
 check "Kein Start von chronyd mit abgelehnter Konfiguration" 0 "$(grep -c 'chronyd.*unerwartet beendet' <<<"$LOGS_D" || true)"
 docker rm -f "${PREFIX}-d" >/dev/null 2>&1
+
+echo
+echo "5b) Dienst stirbt direkt nach dem Start (wait -n hätte das übersehen)"
+# Die Zeile besteht die Prüfung (chronyd -p liest nur), chronyd endet aber beim Öffnen des Geräts.
+docker run -d --name "${PREFIX}-w" \
+  -e EXTRA_CHRONY_CONF="refclock PHC /dev/ptp-fehlt poll 0" \
+  -e NTP_PORT=10196 -e NTP_POOLS="" "$IMAGE" >/dev/null
+DEAD=0
+for _ in $(seq 1 30); do
+  if [[ "$(docker inspect -f '{{.State.Status}}' "${PREFIX}-w")" == "exited" ]]; then DEAD=1; break; fi
+  sleep 1
+done
+if [[ "$DEAD" == 1 ]]; then ok "Container beendet sich, statt mit totem chronyd weiterzulaufen"; else bad "Container läuft trotz totem chronyd weiter"; fi
+check "Exit-Code signalisiert Fehler (Watchdog)" 1 "$(docker inspect -f '{{.State.ExitCode}}' "${PREFIX}-w")"
+LOGS_W=$(docker logs "${PREFIX}-w" 2>&1)
+contains "Watchdog meldet den toten Dienst" "$LOGS_W" "Dienst 'chronyd'"
+contains "… als unerwartet beendet" "$LOGS_W" "unerwartet beendet"
+docker rm -f "${PREFIX}-w" >/dev/null 2>&1
 
 echo
 echo "6) Einstellungen über das Dashboard"
@@ -1018,6 +1037,7 @@ check "Exit-Code bei SIGTERM" 0 "$(docker inspect -f '{{.State.ExitCode}}' "${PR
 docker exec "${PREFIX}-a" pkill -x chronyd >/dev/null 2>&1
 sleep 5
 check "Exit-Code, wenn ein Dienst stirbt" 1 "$(docker inspect -f '{{.State.ExitCode}}' "${PREFIX}-a")"
+contains "Watchdog meldet den per Signal beendeten chronyd" "$(docker logs "${PREFIX}-a" 2>&1)" "Dienst 'chronyd' (PID"
 
 echo
 echo "------------------------------------------------------------"

@@ -57,6 +57,11 @@ services:
       # (PTP→NTP-Brücke):
       # PHC_REFCLOCK: "/dev/ptp0"
 
+      # Apprise auf demselben Rechner (http://127.0.0.1:8000, bei network_mode:
+      # host der einzige Weg): Loopback-Ziele ab 1.9 erst nach Freigabe – sonst
+      # meldet der Kanal „Dieses Ziel ist gesperrt“, das Start-Log warnt.
+      # OUTBOUND_TARGETS: "loopback"
+
     volumes:
       - chrony-data:/var/lib/chrony
 

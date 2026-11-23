@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import ipaddress
 import os
+import re
+import socket
 
 MODES = ("lan", "loopback", "public")
 DEFAULT_MODE = "lan"
@@ -97,11 +99,28 @@ def reason(ip, purpose: str = "notify", env: dict | None = None) -> str | None:
             return "Loopback (der Server selbst)"
         return None
     if current == "public" and not ip.is_global:
-        return "private Adresse (OUTBOUND_TARGETS=public erlaubt nur öffentliche Ziele)"
+        return "keine öffentliche Adresse (OUTBOUND_TARGETS=public erlaubt nur öffentliche Ziele)"
     return None
 
 
 def local_address(ip) -> bool:
-    """Privat oder Loopback – dorthin darf ein Token auch über http:// gehen."""
+    """Nicht öffentlich und nicht gesperrt – dorthin darf ein Token auch über http:// gehen: privat,
+    Loopback und auch Shared Address Space (100.64.0.0/10: Carrier-NAT, VPNs wie Tailscale), der weder
+    als privat noch als öffentlich gilt."""
     ip = unwrap(ip)
-    return ip.is_loopback or (ip.is_private and not blocked_always(ip))
+    return ip.is_loopback or (not ip.is_global and not blocked_always(ip))
+
+
+def literal(host: str):
+    """IP-Adresse aus einem Host-Teil einer URL – auch IPv4-Kurzformen, die die Namensauflösung genauso
+    versteht (127.1, 2130706433, 0x7f.1). None, wenn es ein Name ist."""
+    ip = parse(host)
+    if ip is not None:
+        return ip
+    text = str(host or "").strip()
+    if re.fullmatch(r"[0-9][0-9A-Fa-fXx.]{0,40}", text):
+        try:
+            return ipaddress.IPv4Address(socket.inet_aton(text))
+        except (OSError, ValueError):
+            return None
+    return None

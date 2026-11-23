@@ -316,10 +316,13 @@ wirkt erst mit „Speichern“. Die Speicherleiste unten zählt die Änderungen,
 Zeitdienste nötig ist, und zeigt mit **Vorschau** als Diff, welche Zeilen sich in `chrony.conf` und
 `ptp4l.conf` ändern würden, ohne etwas zu schreiben. Nach dem Speichern startet der
 Container die Zeitdienste bei Bedarf mit der neuen Konfiguration neu (wenige Sekunden, chrony behält
-dabei seine Messwerte). Vorher prüft chronyd die neue `chrony.conf`: Lehnt er sie ab, bleibt die bisherige
-aktiv, und Vorschau, Übersicht und Ereignisprotokoll nennen den Grund. Ist eine gespeicherte Einstellung
-beim Start des Containers ungültig, startet ntp-gui ohne die im Dashboard gespeicherten Werte (nur
-Umgebung und Standard) und meldet das, statt gar nicht zu starten. Werte, die in `chrony.conf` oder
+dabei seine Messwerte). Vorher prüft chronyd die neue `chrony.conf`: Würde er sie ablehnen, speichert
+ntp-gui die Änderung nicht und nennt den Grund (auch schon in der Vorschau); lehnt er eine Datei beim
+Neuladen ab, bleibt die bisherige aktiv, und Übersicht und Ereignisprotokoll nennen den Grund. Ist eine
+gespeicherte Einstellung beim Start des Containers ungültig, startet ntp-gui ohne genau diesen Wert und
+meldet das, statt gar nicht zu starten. Schützende Einstellungen (Bind-Adresse, erlaubte und gesperrte
+Netze, Ratelimit) lässt es dabei nie weg – betrifft die Ablehnung eine davon, startet der Container nicht.
+Liegt die Ursache in der Compose-Datei (z. B. `EXTRA_CHRONY_CONF`), sagt das Start-Log das. Werte, die in `chrony.conf` oder
 `ptp4l.conf` landen, dürfen keine Steuerzeichen enthalten; IPv6-Adressen und Netze nehmen keine
 Scope-ID (`%eth0`) an.
 
@@ -1295,7 +1298,7 @@ Apprise im LAN oder im Docker-Netz) gehen weiter. Den Rahmen setzt `OUTBOUND_TAR
 `network_mode: host`) oder `public` (nur öffentliche Ziele, für einen VPS). Fehler nennen nur „Ziel nicht
 erreichbar oder nicht erlaubt“, ohne zu unterscheiden, ob gesperrt, abgelehnt oder kein HTTP-Dienst; der
 Test-Knopf geht höchstens fünfmal je Minute und je Kanal alle 5 s. Tokens gehen nur über `https://`
-hinaus oder über `http://` an Adressen im eigenen Netz (private IP, `*.lan`, `*.local`,
+hinaus oder über `http://` an Adressen im eigenen Netz (private IP, auch `100.64.0.0/10` wie bei Tailscale, `*.lan`, `*.local`,
 `*.home.arpa`, Name ohne Punkt wie `apprise`) – entscheidend ist die aufgelöste Adresse: Zeigt der Name
 ins Internet, geht über `http://` nichts hinaus. Änderst du Ziel oder Art eines Kanals, musst du
 das Token neu eingeben. Tokens liegen in der Datenbank im Volume, werden im Dashboard und in der
@@ -1339,7 +1342,9 @@ In der Apprise-Oberfläche unter einem Schlüssel wie `ntp` die Ziele speichern 
 E-Mail-Passwörter nur bei Apprise. Läuft ntp-gui mit `network_mode: host`, erreicht es den
 Apprise-Container nicht über den Dienstnamen – dann Apprise einen Port geben
 (`ports: ["127.0.0.1:8000:8000"]`), `OUTBOUND_TARGETS=loopback` setzen und `http://127.0.0.1:8000`
-eintragen.
+eintragen. **Nach dem Update von 1.8:** Ein so eingerichteter Kanal braucht die Freigabe
+`OUTBOUND_TARGETS=loopback` neu. Bis dahin meldet er bei jeder Zustellung „Dieses Ziel ist gesperrt
+(Loopback …)“, und das Start-Log sowie das Ereignisprotokoll warnen je betroffenem Kanal.
 
 Trägst du statt eines Schlüssels Apprise-URLs direkt ein, sendet der Apprise-Container selbst an diese
 Ziele – die Sperren oben gelten dann nur für den Weg zu Apprise. Die Apprise-API also nie öffentlich
@@ -1594,7 +1599,7 @@ docker compose -f docker-compose.ptp.yml up -d
 | `PHC2SYS_ENABLE` | `false` | Systemuhr und PTP-Hardwareuhr koppeln |
 | `PHC2SYS_OPTIONS` | automatisch | Leer = passend zur Rolle: Grandmaster `-a -rr -m`, sonst `-a -r -m`. Der alte Standard `-a -r -m` (bis 1.1.0) gilt als Grandmaster ebenfalls als „automatisch“ und wird zu `-a -rr -m` (HINWEIS im Log). Andere eigene Optionen, mit denen phc2sys als Grandmaster die Systemuhr stellen würde, laufen wie angegeben, erzeugen aber eine WARNUNG im Log und im Dashboard |
 | `PHC_REFCLOCK` | – | PTP-Uhr als chrony-Referenz, z. B. `/dev/ptp0` (PTP→NTP-Brücke). **Nur als PTP-Slave** (`PTP_MODE` `slave` oder `auto`), nicht mit `master`: Dort stellt phc2sys die PTP-Uhr nach der Systemuhr, chrony bekäme seine eigene Zeit zurück. ntp-gui lässt die Refclock-Zeile dann weg und schreibt eine WARNUNG ins Log |
-| `PHC_REFCLOCK_OPTIONS` | `poll 0 dpoll -2 offset 0 stratum 1` | Optionen der PHC-Refclock-Zeile |
+| `PHC_REFCLOCK_OPTIONS` | `poll 0 dpoll -2 offset 0 stratum 1` | Optionen der PHC-Refclock-Zeile (Refclock-Optionen von chrony, z. B. `tai`, `local`, `offset -37`). Ein ungültiger Wert verhindert bei aktivem PHC-Refclock den Start (mit Meldung im Log), statt still auf den Standard zu fallen |
 | `EXTRA_PTP4L_CONF` | – | Zusätzliche Zeilen im `[global]`-Abschnitt |
 | `CUSTOM_PTP4L_CONF` | `/config/ptp4l.conf` | Pfad einer eigenen ptp4l.conf, die – falls vorhanden – die erzeugte ersetzt |
 | `PTP_UTC_OFFSET` | `37` | Expertenwert, nur per Umgebung: TAI−UTC in Sekunden (0–100), den ein Grandmaster als `currentUtcOffset` ankündigt; weicht er von 37 ab, steht er auch als `utc_offset` in der ptp4l.conf. Erst nach einer neuen Schaltsekunde ändern |
@@ -1696,7 +1701,8 @@ Nur per Umgebung (sie betreffen den Start selbst oder sind Expertenwerte): `WEB_
 `PHC_REFCLOCK_OPTIONS`, `PTP_UTC_OFFSET`, `PTP_HOLDOVER_SECONDS`, `PTP_TX_TIMESTAMP_TIMEOUT`,
 `PTP_UDS_ADDRESS`. Expertenwerte, die in `chrony.conf` landen (`GPS_SHM_UNIT`, `GPS_PPS_SHM_UNIT`,
 `MAXUPDATESKEW`, `CLIENTLOGLIMIT`, `CHRONY_LOG`, `PHC_REFCLOCK_OPTIONS`), werden geprüft; ein ungültiger
-Wert fällt mit Warnung im Start-Log auf den Standard zurück. Nur `EXTRA_CHRONY_CONF` bleibt bewusst frei.
+Wert fällt mit Warnung im Start-Log auf den Standard zurück – außer `PHC_REFCLOCK_OPTIONS`: Ohne `tai` oder
+`offset` wäre die übernommene Zeit falsch, deshalb startet ntp-gui dann mit klarer Meldung nicht. Nur `EXTRA_CHRONY_CONF` bleibt bewusst frei.
 
 ### Clients, Diagnose und Entwicklung
 

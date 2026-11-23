@@ -110,11 +110,14 @@ def leap_directive(cfg: dict, warn=_log, exists=os.path.exists) -> str | None:
 # Experten-Variablen, die als Wert in chrony.conf landen (ohne Dashboard-Feld). Jede wird geprüft;
 # ein ungültiger Wert fällt mit Warnung (expert_env_warnings) auf den Standard zurück – so kann auch ein
 # Tippfehler oder ein Zeilenumbruch in der Compose-Datei keine weitere Direktive erzeugen.
+# Ausnahme PHC_REFCLOCK_OPTIONS: Dort stehen Werte wie „tai“ oder „offset -37“, ohne die die PHC-Zeit
+# falsch übernommen würde – ein ungültiger Wert verhindert den Start statt still zu entfallen.
 CHRONY_LOG_WORDS = ("measurements", "statistics", "tracking", "rtc", "refclocks", "tempcomp",
                     "rawmeasurements", "selection")
 PHC_REFCLOCK_DEFAULT = "poll 0 dpoll -2 offset 0 stratum 1"
-# Zusätzlich zu den Refclock-Optionen des Dashboards: Optionen, die es nur beim PHC-Treiber gibt.
-PHC_EXTRA_OPTIONS = {"nocrossts": 0, "extpps": 0, "clear": 0, "pin": 1, "channel": 1}
+# Zusätzlich zu den Refclock-Optionen des Dashboards: „local“ (chrony.conf(5), refclock). Treiberoptionen
+# des PHC-Treibers (nocrossts, extpps, pin …) gehören an den Gerätepfad, nicht in die Optionen.
+PHC_EXTRA_OPTIONS = {"local": 0}
 
 
 def _env_int(env: dict, name: str, default: int, low: int, high: int, notes: list[str]) -> int:
@@ -151,13 +154,17 @@ def chrony_env_values(env: dict) -> tuple[dict, list[str]]:
     out["chrony_log"] = " ".join(dict.fromkeys(w for w in words if w in CHRONY_LOG_WORDS))
     raw = env.get("PHC_REFCLOCK_OPTIONS")
     out["phc_options"] = PHC_REFCLOCK_DEFAULT
+    out["phc_error"] = None
     if raw is not None:
         try:
             out["phc_options"] = settings._check_options(
                 raw, {**settings.REFCLOCK_OPTIONS, **PHC_EXTRA_OPTIONS}, "PHC-Refclock",
-                settings.REFCLOCK_INTEGER_OPTIONS | {"pin", "channel"})
+                settings.REFCLOCK_INTEGER_OPTIONS)
         except settings.ValidationError as exc:
-            notes.append(f"WARNUNG PHC_REFCLOCK_OPTIONS: {exc} – verwende „{PHC_REFCLOCK_DEFAULT}“")
+            out["phc_options"] = None
+            out["phc_error"] = (f"PHC_REFCLOCK_OPTIONS: {exc} – bitte in der Compose-Datei korrigieren; "
+                                "ohne gültigen Wert startet der PHC-Refclock nicht")
+            notes.append(f"FEHLER {out['phc_error']}")
     return out, notes
 
 
@@ -168,6 +175,11 @@ _LINE_BREAKERS = re.compile("[\x00-\x08\x0a-\x1f\x7f\x85\u2028\u2029]")
 
 class UnsafeConfig(ValueError):
     """Eine erzeugte Konfigurationszeile enthält ein Steuerzeichen – es wird nichts geschrieben."""
+
+
+class InvalidEnvValue(UnsafeConfig):
+    """Ein Wert aus der Umgebung, ohne den chrony.conf nicht korrekt wäre, ist ungültig – es wird nichts
+    geschrieben (z. B. PHC_REFCLOCK_OPTIONS)."""
 
 
 def _guard_lines(lines: list[str], what: str) -> None:
@@ -253,6 +265,9 @@ def render_chrony(cfg: dict, env: dict | None = None, warn=_log,
                     "Zeit zurück. PHC_REFCLOCK nur als PTP-Slave verwenden.")
     elif phc:
         if os.path.exists(phc):
+            if env_values["phc_error"]:
+                # Kein stiller Rückfall auf den Standard: ohne „tai“/„offset“ käme eine falsche Zeit heraus.
+                raise InvalidEnvValue(env_values["phc_error"])
             options = env_values["phc_options"]
             lines.append(f"refclock PHC {phc} {options}".rstrip())
         else:
@@ -956,12 +971,81 @@ def _rejected(files: list[tuple[str, str]]) -> str | None:
     return check_chrony(content) if content is not None else None
 
 
+def _quiet(*_args, **_kwargs) -> None:
+    return None
+
+
+def _problem(cfg: dict, env: dict) -> str | None:
+    """Wie apply prüfen, aber still und ohne etwas zu kopieren: None, wenn chronyd annimmt."""
+    try:
+        nts = prepare_nts_files(cfg, warn=_quiet, ids=None, dry_run=True) or ()
+        return _rejected(planned_files(cfg, env, nts_files=nts, log=_quiet))
+    except UnsafeConfig as exc:
+        return str(exc)
+
+
+def check_saved(saved: dict, env: dict | None = None) -> str | None:
+    """Würde chronyd die Konfiguration mit diesen gespeicherten Werten ablehnen? Dann der Grund – aber nur,
+    wenn es an diesen Werten liegt: Lehnt chronyd schon die bisherige Konfiguration ab (Ursache in der
+    Umgebung, z. B. EXTRA_CHRONY_CONF), ist das kein Grund, eine Änderung im Dashboard abzuweisen."""
+    env = dict(os.environ if env is None else env)
+    if os.path.isfile(CUSTOM_CHRONY) or not (os.path.isfile(CHRONYD_BIN) and os.access(CHRONYD_BIN, os.X_OK)):
+        return None
+    cfg = {key: entry["value"] for key, entry in settings.effective(env, saved=saved).items()}
+    problem = _problem(cfg, env)
+    if problem is None or _problem(settings.values(env), env) is not None:
+        return None
+    return problem
+
+
+def check_changes(changes: dict, defaults=None, env: dict | None = None) -> str | None:
+    """check_saved für ungespeicherte Änderungen aus dem Dashboard (vor settings.save)."""
+    env = dict(os.environ if env is None else env)
+    return check_saved(settings.saved_after(changes, defaults, env), env)
+
+
+# Gespeicherte Einstellungen, die den Zeitserver einschränken. Ein Start ohne sie liefe weniger geschützt
+# als eingestellt – lieber gar nicht starten (siehe _start_fallback).
+PROTECTIVE_SETTINGS = ("bind_address", "allow_networks", "deny_networks", "ntp_ratelimit")
+
+
+def _start_fallback(env: dict, problem: str) -> dict:
+    """Beim Start lehnt chronyd die Konfiguration ab. Ursache finden und nur dann ohne den schuldigen
+    gespeicherten Wert starten, wenn dabei keine schützende Einstellung wegfällt. Sonst ConfigRejected."""
+    defaults_only = {key: entry["value"] for key, entry in settings.effective(env, saved={}).items()}
+    if _problem(defaults_only, env) is not None:
+        # Auch ohne Dashboard-Werte abgelehnt: Die Ursache steht in der Umgebung (Compose-Datei).
+        cause = "der Compose-Datei (Umgebungsvariablen)"
+        if env.get("EXTRA_CHRONY_CONF") and _problem(
+                settings.values(env), {k: v for k, v in env.items() if k != "EXTRA_CHRONY_CONF"}) is None:
+            cause = "EXTRA_CHRONY_CONF"
+        _log("chrony", f"FEHLER: Die Ursache liegt in {cause}, nicht im Dashboard – bitte dort korrigieren.")
+        raise ConfigRejected(problem)
+    saved = settings.saved_values()
+    droppable = [key for key in saved if key not in PROTECTIVE_SETTINGS]
+    # Erst einen einzelnen schuldigen Wert suchen, dann alle nicht schützenden zusammen weglassen.
+    attempts = [[key] for key in droppable] + ([droppable] if len(droppable) > 1 else [])
+    for dropped in attempts:
+        rest = {key: value for key, value in saved.items() if key not in dropped}
+        cfg = {key: entry["value"] for key, entry in settings.effective(env, saved=rest).items()}
+        if _problem(cfg, env) is None:
+            names = ", ".join(settings.FIELDS.get(key, {}).get("label", key) for key in dropped)
+            _log("chrony", f"WARNUNG: Start ohne die gespeicherte Einstellung „{names}“ (dort gilt Umgebung bzw. "
+                           "Standard). Korrigiere sie im Dashboard und speichere erneut.")
+            return cfg
+    _log("chrony", "FEHLER: Die Ablehnung betrifft schützende Einstellungen (Bind-Adresse, erlaubte bzw. "
+                   "gesperrte Netze, Ratelimit). Ohne sie liefe der Zeitserver weniger geschützt als eingestellt "
+                   "– kein Start. Korrigiere den Wert in settings.json im Datenverzeichnis.")
+    raise ConfigRejected(problem)
+
+
 def apply(env: dict | None = None, fallback: bool = False) -> dict:
     """Schreibt die Konfiguration und liefert die Werte für den Supervisor.
 
     Lehnt chronyd die neue chrony.conf ab, wirft apply ConfigRejected und ersetzt nichts. fallback (beim
-    Start des Containers): dann stattdessen ohne die im Dashboard gespeicherten Werte (Umgebung und
-    Standard) erzeugen – ein gespeicherter Fehler soll nicht jeden weiteren Start verhindern."""
+    Start des Containers): dann ohne den schuldigen im Dashboard gespeicherten Wert erzeugen – ein
+    gespeicherter Fehler soll nicht jeden weiteren Start verhindern; schützende Einstellungen fallen dabei
+    nie weg (_start_fallback)."""
     env = dict(os.environ if env is None else env)
     cfg = settings.values(env)
     for key, entry in settings.effective(env).items():
@@ -990,16 +1074,13 @@ def apply(env: dict | None = None, fallback: bool = False) -> dict:
     if problem:
         _log("chrony", f"FEHLER: chronyd lehnt die neue Konfiguration ab: {problem}")
         _note_config_error(env, problem)
-        # Ohne im Dashboard gespeicherte Werte gäbe der Rückfall dasselbe Ergebnis – dann gleich abbrechen.
-        if not fallback or not any(e["source"] == "gui" for e in settings.effective(env).values()):
+        if not fallback:
             raise ConfigRejected(problem)
-        _log("chrony", "WARNUNG: Start ohne die im Dashboard gespeicherten Einstellungen (nur Umgebung und "
-                       "Standard). Korrigiere die Einstellung im Dashboard und speichere erneut.")
-        cfg = {key: entry["value"] for key, entry in settings.effective(env, saved={}).items()}
+        cfg = _start_fallback(env, problem)
         files = planned_files(cfg, env, nts_files=prepare_nts_files(cfg) or ())
         second = _rejected(files)
         if second:
-            _log("chrony", f"FEHLER: auch ohne gespeicherte Einstellungen abgelehnt: {second}")
+            _log("chrony", f"FEHLER: auch ohne den gespeicherten Wert abgelehnt: {second}")
             raise ConfigRejected(second)
     else:
         _note_config_error(env, None)
