@@ -929,11 +929,13 @@
     "moon_info": "Calculated right here in the browser, without a location and without fetching anything. The phase is the same everywhere on Earth; new and full moon are correct to about ±1 day (usually much better). In the southern hemisphere the picture is mirrored – click the moon to flip it. Only this browser remembers that.",
     "nerd": {
       "unix": "Unix",
+      "hex": "Hex",
       "tai": "TAI",
       "gps": "GPS",
       "mjd": "MJD",
       "doy": "Day",
-      "iso": "ISO"
+      "iso": "ISO",
+      "roman": "Roman"
     },
     "nerd_gps": "week {week} · {sow} s",
     "bar": {

@@ -918,8 +918,8 @@
     },
     "moon_text": "{name} · {pct} %",
     "moon_title": "Mondphase: {name}, {pct} % beleuchtet.",
-    "moon_next_full": "Nächster Vollmond: {date}.",
-    "moon_next_new": "Nächster Neumond: {date}.",
+    "moon_next_full": "Nächster Vollmond: {date}",
+    "moon_next_new": "Nächster Neumond: {date}",
     "moon_date": "{d}.{m}.",
     "moon_click_south": "Klick: so, wie man ihn auf der Südhalbkugel sieht.",
     "moon_click_north": "Klick: so, wie man ihn auf der Nordhalbkugel sieht.",
@@ -929,11 +929,13 @@
     "moon_info": "Rein rechnerisch hier im Browser, ohne Standort und ohne Abruf aus dem Netz. Die Phase ist überall auf der Erde gleich; Neu- und Vollmond stimmen auf etwa ±1 Tag (meist viel genauer). Auf der Südhalbkugel steht das Bild seitenverkehrt – ein Klick auf den Mond spiegelt es. Das merkt sich nur dieser Browser.",
     "nerd": {
       "unix": "Unix",
+      "hex": "Hex",
       "tai": "TAI",
       "gps": "GPS",
       "mjd": "MJD",
       "doy": "Tag",
-      "iso": "ISO"
+      "iso": "ISO",
+      "roman": "Römisch"
     },
     "nerd_gps": "Woche {week} · {sow} s",
     "bar": {

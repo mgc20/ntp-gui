@@ -90,9 +90,10 @@
 // Timer-Stände bleiben im Browser; es gibt keinen neuen Weg zum Server.
 //
 // Studiouhr C2: Design binary (Lämpchen, ?bin=bcd|plain) und Zusätze unter der Uhr, alle Standard aus und nur mit ?show=
-// (moon, nerd, progress; fx.splitShow trennt sie von den Grundelementen): Mondphase (rein rechnerisch, Klick spiegelt sie
+// (moon, nerd, progress; fx.mergeShow trennt sie von den Grundelementen): Mondphase (rein rechnerisch, Klick spiegelt sie
 // für die Südhalbkugel, nur localStorage), Nerd-Zeile (Unix, TAI und GPS mit tai_utc aus /api/v1/time, MJD, Tag im Jahr,
-// ISO-Woche) und Fortschrittsbalken (?bars=). Nie mit fun=0, in Kachel und Streifen (fx.extrasShown). Mond und Kalender-
+// ISO-Woche, hex, römisch) und Fortschrittsbalken (?bars=). Nie mit fun=0, im Kiosk, in Kachel und Streifen
+// (fx.extrasShown); im Banner ohne Platz fallen sie weg (checkExtrasRoom). Mond und Kalender-
 // Balken ändern sich einmal je Minute, Nerd-Zeile und Eieruhr-Balken im Sekundentakt – ohne eigenen Zeitgeber.
 //
 // Bewusst ohne app.js/ui.js: Die Seite muss auch ohne Anmeldung (clock_public) laufen und
@@ -173,6 +174,7 @@ const state = {
   profile: null,       // geladenes Profil (?p=) { name, title, params, profiles_rev }
   profileKey: "",      // Inhalt des Profils beim Laden (Vergleich nach einer Änderung von profiles_rev)
   profileRev: null,    // zuletzt gesehenes profiles_rev
+  profileShow: null,   // ?show= des Profils allein (fx.mergeShow)
   profileBusy: false,
   profileError: "",
   profileTries: 0,     // gescheiterte Abrufe in Folge (Abstand des nächsten Versuchs)
@@ -207,6 +209,9 @@ const state = {
   extraWish: [],       // Zusätze aus ?show= (moon, nerd, progress), fx.splitShow
   extrasKey: "",       // sichtbare Zusätze und Balken beim letzten Zeichnen (Wechsel: neu einpassen)
   extrasHeight: 0,     // Höhe der Zusätze beim letzten Einpassen der Zeit
+  extrasNoRoom: false, // Zusätze passten nicht in die Bühne (checkExtrasRoom) – bis zur nächsten Größenänderung aus
+  extrasAt: null,      // Tag, Zone und Stunde der Anzeige beim letzten Zeichnen der Zusätze (renderExtras)
+  extrasRefit: { second: -1, count: 0 },   // Neu-Einpassen durch watchExtras in dieser Sekunde
   moonKey: "",         // Minute, Halbkugel und Sprache der letzten Mond-Zeichnung
   barsKey: "",         // Minute und Sprache der letzten Zeichnung der Kalender-Balken
   bars: [],            // [{ kind, node, fill, value }] der Fortschrittsbalken
@@ -623,7 +628,10 @@ function render(now) {
   setText($("iso-week"), t("clock.week", { week }));
   const redrawn = renderWorld(now.getTime());
   renderFace(now, h, m, s);
-  renderExtras(now.getTime());
+  // Zusätze im selben Tag wie Datum und KW (Design tc mit Zone des Servers: dort), römisch die Stunde der Anzeige.
+  const shown = zoned ? new Date(now.getTime() + foreign) : null;
+  renderExtras(now.getTime(), { day, offset: zoned ? foreign : null,
+    h: shown ? shown.getUTCHours() : h, m: shown ? shown.getUTCMinutes() : m });
   renderShift(now.getTime());
   renderEgg(now.getTime());
   const minuteKey = `${h}:${m}|${language()}|${foreign}`;
@@ -2213,20 +2221,29 @@ function toggleNight() {
 }
 
 // --- Zusätze C2: Mondphase, Nerd-Zeile, Fortschrittsbalken (?show=moon,nerd,progress) ----------------------------
-// Standard aus; nie mit fun=0, in Kachel und Streifen (fx.extrasShown). Gerechnet wird alles hier im Browser
+// Standard aus; nie mit fun=0, im Kiosk, in Kachel und Streifen (fx.extrasShown). Gerechnet wird alles hier im Browser
 // (clockextras.js). Der Mond und die Kalender-Balken ändern sich einmal je Minute, die Nerd-Zeile und der Balken einer
 // Eieruhr im Sekundentakt – nur Text, Attribute und eine CSSOM-Variable je Balken, kein eigener Zeitgeber.
 const SOUTH_KEY = "ntp-gui-clock-south";
-const NERD_KEYS = ["unix", "tai", "gps", "mjd", "doy", "iso"];
+// hex und roman nur auf Bühnen ab 700 px Höhe und nicht im Banner (clock.css, @container): Dort bräche die Zeile zu oft um.
+const NERD_KEYS = ["unix", "hex", "tai", "gps", "mjd", "doy", "iso", "roman"];
 
 /** Hat die Uhr eine Eieruhr bzw. Pomodoro-Phase mit Dauer (für den Balken „timer“)? */
 function timerBarAvailable() {
   return COUNT_MODE === "timer" && Boolean(state.timer) && state.timer.duration !== null;
 }
 
-function renderExtras(nowMs) {
-  const shown = fx.extrasShown({ extras: state.extraWish, fun: params.fun, layout: state.layout, eink: params.eink,
-    height: state.stage.height });
+/**
+ * Zusätze zeichnen. at: { day (Datum der Anzeige als Date, Tag im Jahr und ISO-Woche), offset (ms: Abstand der Zone des
+ * angezeigten Datums zu UTC, null: Ortszeit des Geräts – für die Kalender-Balken), h, m (angezeigte Stunde und Minute) }.
+ * Ohne at: wie beim letzten Zeichnen.
+ */
+function renderExtras(nowMs, at = state.extrasAt) {
+  state.extrasAt = at;
+  // Im Banner mit Countdown unter der Uhr oder Leiste der Weltzeit nur auf höheren Bühnen (fx.extrasShown, crowded).
+  const crowded = (countdownActive() && params.cd === "below") || Boolean(state.world && state.world.mode === "bar");
+  const shown = state.extrasNoRoom ? [] : fx.extrasShown({ extras: state.extraWish, fun: params.fun, kiosk: params.kiosk,
+    layout: state.layout, eink: params.eink, height: state.stage.height, crowded });
   const bars = shown.includes("progress") ? fx.barsFor(params.bars, timerBarAvailable()) : [];
   const key = `${shown.join(",")}|${bars.join(",")}`;
   if (key !== state.extrasKey) {
@@ -2252,12 +2269,36 @@ function renderExtras(nowMs) {
   const moonDrawn = renderMoon(nowMs);
   renderNerd(nowMs);
   const barsDrawn = renderBars(nowMs);
-  // Einmal je Minute (neuer Mondtext, neue Balken, nach dem Sprachwechsel): Wird die Zeile höher oder niedriger, die Zeit
-  // neu einpassen. Im Sekundentakt wird nichts gemessen.
-  if ((moonDrawn || barsDrawn) && state.face) {
+  // Ändert sich die Höhe der Zusätze (TAI kommt mit der ersten Antwort des Servers, neuer Mondtext, Sprachwechsel), passt
+  // watchExtras die Zeit neu ein. Ohne ResizeObserver (alte Engines) wird hier einmal je Minute verglichen.
+  if (!EXTRAS_OBSERVED && (moonDrawn || barsDrawn) && state.face) {
     const height = $("extras").offsetHeight;
     if (height !== state.extrasHeight) fitTime();
   }
+}
+
+/** Höchstens so oft je Sekunde passt watchExtras neu ein (Schutz gegen ein Hin und Her von Umbruch und Einpassen). */
+const EXTRAS_REFITS = 3;
+const EXTRAS_OBSERVED = typeof window.ResizeObserver === "function";
+
+/**
+ * Höhe der Zusätze beobachten: Wird die Zeile höher oder niedriger als beim letzten Einpassen (etwa weil die Nerd-Zeile
+ * mit TAI und GPS umbricht, sobald tai_utc da ist), die Zeit sofort neu einpassen – nicht erst zur nächsten Minute.
+ */
+function watchExtras() {
+  if (!EXTRAS_OBSERVED) return;
+  const observer = new window.ResizeObserver(() => {
+    if ($("extras").hidden || !state.face || !state.layout) return;
+    const height = $("extras").offsetHeight;
+    const second = Math.floor(performance.now() / 1000);
+    if (state.extrasRefit.second !== second) state.extrasRefit = { second, count: 0 };
+    if (height === state.extrasHeight || state.extrasRefit.count >= EXTRAS_REFITS) { checkExtrasRoom(); return; }
+    state.extrasRefit.count += 1;
+    fitTime();
+  });
+  // Im Banner teilen sich Countdown, Datum, Zeile mit Zustand, Weltzeit-Leiste und Zusätze die rechte Spalte: Wächst
+  // eins davon oder ändert sich die Bühne (nach observeStage angelegt, also nach applyLayout gemeldet), neu prüfen.
+  for (const node of [$("clock-stage"), ...$("clock-main").children]) observer.observe(node);
 }
 
 /** Mond zeichnen, wenn eine neue Minute, die andere Halbkugel oder eine andere Sprache gilt; true, wenn neu gezeichnet. */
@@ -2282,11 +2323,12 @@ function renderMoon(nowMs) {
   setAttr($("moon"), "title", title);
   setAttr($("moon"), "aria-label", title);
   setAttr($("moon"), "aria-pressed", state.south ? "true" : "false");
-  $("moon").disabled = !CONTROLS.actions;
+  $("moon").disabled = !CONTROLS.fun;   // wie Timer und Nacht: nicht mit lock=1, im Kiosk, in OBS und auf E-Ink
   return true;
 }
 
 function toggleSouth() {
+  if (!CONTROLS.fun) return;
   state.south = !state.south;
   store(SOUTH_KEY, state.south ? "1" : "0");
   renderMoon(serverMs());
@@ -2306,6 +2348,7 @@ function buildNerd(on) {
     const label = document.createElement("span");
     label.className = "clock-nerd-label";
     label.dataset.key = key;
+    item.dataset.key = key;
     label.textContent = t(`clock.nerd.${key}`);
     const value = document.createElement("span");
     value.className = "clock-nerd-value";
@@ -2320,17 +2363,20 @@ function renderNerd(nowMs) {
   const status = state.status || {};
   const v = fx.nerdValues(nowMs, status.tai_utc);
   if (!v) return;
+  const at = state.extrasAt || {};
+  const day = at.day instanceof Date ? at.day : new Date(nowMs);   // derselbe Tag wie Datum und KW der Anzeige
   const dec = language() === "en" ? "." : ",";
-  const now = new Date(nowMs);
-  const iso = isoWeek(now);
-  const weekday = now.getDay() || 7;
+  const iso = isoWeek(day);
+  const weekday = day.getDay() || 7;
   const offset = fx.taiUtc(status.tai_utc);
   setText(state.nerd.unix, String(v.unix));
+  setText(state.nerd.hex, v.hex || "–");
   setText(state.nerd.tai, v.taiMs === null ? "–" : `${fx.hmsOf(v.taiMs)} (+${offset} s)`);
   setText(state.nerd.gps, v.gps === null ? "–" : t("clock.nerd_gps", { week: v.gps.week, sow: v.gps.sow }));
   setText(state.nerd.mjd, v.mjd.toFixed(3).replace(".", dec));
-  setText(state.nerd.doy, String(fx.dayOfYear(now.getFullYear(), now.getMonth() + 1, now.getDate())));
+  setText(state.nerd.doy, String(fx.dayOfYear(day.getFullYear(), day.getMonth() + 1, day.getDate())));
   setText(state.nerd.iso, `${iso.year}-W${pad(iso.week)}-${weekday}`);
+  setText(state.nerd.roman, fx.romanTime(at.h, at.m) || "–");
 }
 
 /** Fortschrittsbalken aufbauen: role=progressbar mit Wert und Text, Füllung über die CSSOM-Variable --bar. */
@@ -2369,7 +2415,7 @@ function renderBars(nowMs) {
   for (const bar of state.bars) {
     if (bar.kind !== "timer" && !calendar) continue;
     const fraction = bar.kind === "timer" ? fx.timerProgress(state.timer, performance.now())
-      : (fx.periodProgress(bar.kind, nowMs) || {}).fraction;
+      : (fx.periodProgress(bar.kind, nowMs, (state.extrasAt || {}).offset ?? null) || {}).fraction;
     const pct = fx.percentOf(fraction);
     const name = bar.kind === "timer" && state.pomo ? t(`clock.bar.pomo_${state.pomo.phase}`) : t(`clock.bar.${bar.kind}`);
     setText(bar.label, name);
@@ -2756,6 +2802,7 @@ function applyDisplayParams() {
  * die die Bühne mit beiden hätte, damit das Layout nicht hin- und herspringt.
  */
 function applyLayout(width, height) {
+  if (!state.stage || state.stage.width !== width || state.stage.height !== height) state.extrasNoRoom = false;
   state.stage = { width, height };
   const stage = $("clock-stage");
   const body = document.body;
@@ -2848,6 +2895,27 @@ function timeBox() {
  * Zeit nur den Rest – sonst drückte eine große Zeit (?scale=200) die Spalte auf wenige Pixel zusammen.
  */
 function fitTime() {
+  fitTimeOnly();
+  checkExtrasRoom();
+}
+
+/**
+ * Ragen die Zusätze nach dem Einpassen aus der Bühne (die rechte Spalte im Banner wächst nicht mit der Zeit: Countdown,
+ * Datum, Zeile, Weltzeit-Leiste und Zusätze untereinander), fallen sie weg, bis sich die Größe der Bühne ändert.
+ */
+function checkExtrasRoom() {
+  const box = $("extras");
+  // Nur im Banner: In den anderen Layouts bekommt die Zeit den Rest der Höhe (restHeight), die Zusätze passen immer.
+  if (state.extrasNoRoom || box.hidden || !state.face || state.layout !== "banner") return;
+  const stage = $("clock-stage").getBoundingClientRect();
+  const rect = box.getBoundingClientRect();
+  if (!rect.height || (rect.bottom <= stage.bottom + 1 && rect.top >= stage.top - 1 && rect.right <= stage.right + 1
+    && rect.left >= stage.left - 1)) return;
+  state.extrasNoRoom = true;
+  renderExtras(serverMs());   // blendet aus und passt die Zeit neu ein
+}
+
+function fitTimeOnly() {
   const main = $("clock-main");
   // Vor dem ersten Layout (Start: setDesign vor observeStage) nicht messen – observeStage passt gleich danach ein.
   if (!main || !state.face || !state.layout) return;
@@ -3116,13 +3184,16 @@ async function loadProfile() {
   state.profileRev = typeof profile.profiles_rev === "string" ? profile.profiles_rev : null;
   Object.assign(params, kit.parseParams(link.effectiveQuery({ search: window.location.search, profile: profile.params,
     zones: ZONES }), ZONES));
+  // Grundauswahl des Profils allein: Nennt die Adresse nur Zusätze (show=moon), bleibt sie (fx.mergeShow).
+  state.profileShow = kit.parseParams(link.effectiveQuery({ profile: profile.params, zones: ZONES }), ZONES).show;
 }
 
 async function start() {
   const i18nReady = initI18n();
   await loadProfile();
-  // Zusätze (Mond, Nerd-Zeile, Balken) gehören nicht zu data-show: Nennt ?show= nur sie, bleibt die Uhr wie sonst.
-  const split = fx.splitShow(params.show);
+  // Zusätze (Mond, Nerd-Zeile, Balken) gehören nicht zu data-show: Nennt ?show= nur sie, bleibt die Uhr wie sonst –
+  // mit Profil wie im Profil.
+  const split = fx.mergeShow(params.show, state.profileShow);
   params.show = split.base;
   state.extraWish = split.extras;
   state.south = store(SOUTH_KEY) === "1";
@@ -3152,6 +3223,7 @@ async function start() {
   applyModes();
   setDesign(params.design || store(DESIGN_KEY), false);
   observeStage();
+  watchExtras();
   wake();
   countdownAudio(false);
   tick();

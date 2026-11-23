@@ -290,8 +290,8 @@ export const EXTRA_ITEMS = Object.freeze(kit.SHOW_ITEMS.slice(kit.SHOW_ITEMS.ind
 
 /**
  * ?show= aufteilen: die Grundelemente (Zeit, Datum, …) und die Zusätze (Mond, Nerd-Zeile, Balken). Nennt die Liste nur
- * Zusätze („show=moon“), bleiben die Grundelemente auf Standard (base: null) – so schaltet man einen Zusatz dazu, ohne
- * alle anderen aufzuzählen. show null: { base: null, extras: [] }.
+ * Zusätze („show=moon“), bleiben die Grundelemente, wie sie sonst wären (base: null) – so schaltet man einen Zusatz dazu,
+ * ohne alle anderen aufzuzählen. show null: { base: null, extras: [] }.
  */
 export function splitShow(show) {
   if (!Array.isArray(show)) return { base: null, extras: [] };
@@ -300,18 +300,33 @@ export function splitShow(show) {
   return { base: base.length ? base : null, extras };
 }
 
+/**
+ * ?show= nach Profil und Adresse (Rangfolge Profil < Adresse): show ist der zusammengeführte Wert, profileShow der des
+ * Profils allein. Nennt show nur Zusätze, gilt für die Grundelemente die Auswahl des Profils (etwa night: nur die Zeit) –
+ * die Adresse ändert nur, was sie nennt. Ergebnis wie splitShow.
+ */
+export function mergeShow(show, profileShow = null) {
+  const split = splitShow(show);
+  if (split.base === null && split.extras.length) return { base: splitShow(profileShow).base, extras: split.extras };
+  return split;
+}
+
 /** Unter dieser Bühnenhöhe (px) fehlen die Zusätze außer im Banner (dort stehen sie neben der Zeit): kein Platz. */
 export const EXTRAS_MIN_HEIGHT = 360;
 
 /**
- * Welche Zusätze erscheinen? Nur die mit ?show= gewählten – nie mit fun=0 (Voreinstellungen studio, tile, banner), nie in
- * der Multiviewer-Kachel und im Streifen (layout tile/strip) und auf Bühnen unter EXTRAS_MIN_HEIGHT außer im Banner (dort
- * ist kein Platz), auf E-Ink ohne die Nerd-Zeile (sie zählt Sekunden, E-Ink zeichnet nur einmal je Minute).
+ * Welche Zusätze erscheinen? Nur die mit ?show= gewählten – nie mit fun=0 (Voreinstellungen studio, tile, banner), nie im
+ * Kiosk (wie die Knöpfe der Spielereien, funControls), nie in der Multiviewer-Kachel und im Streifen (layout tile/strip)
+ * und auf Bühnen unter EXTRAS_MIN_HEIGHT außer im Banner (dort stehen sie neben der Zeit); im Banner aber nicht, wenn dort
+ * schon der Countdown oder die Leiste der Weltzeit steht (crowded) und die Bühne niedriger ist – dann ist kein Platz.
+ * Auf E-Ink ohne die Nerd-Zeile (sie zählt Sekunden, E-Ink zeichnet nur einmal je Minute).
  * height: Höhe der Bühne in px (null: unbekannt, zählt nicht).
  */
-export function extrasShown({ extras = [], fun = true, layout = "normal", eink = false, height = null } = {}) {
-  if (fun !== true || layout === "tile" || layout === "strip" || !Array.isArray(extras)) return [];
-  if (layout !== "banner" && Number.isFinite(height) && height > 0 && height < EXTRAS_MIN_HEIGHT) return [];
+export function extrasShown({ extras = [], fun = true, kiosk = false, layout = "normal", eink = false, height = null,
+  crowded = false } = {}) {
+  if (fun !== true || kiosk === true || layout === "tile" || layout === "strip" || !Array.isArray(extras)) return [];
+  const low = Number.isFinite(height) && height > 0 && height < EXTRAS_MIN_HEIGHT;
+  if (low && (layout !== "banner" || crowded === true)) return [];
   return EXTRA_ITEMS.filter((item) => extras.includes(item) && !(eink && item === "nerd"));
 }
 
@@ -362,7 +377,8 @@ export function dayOfYear(y, mo, d) {
 }
 
 /**
- * Werte der Nerd-Zeile zum Zeitpunkt ms (UTC-Millisekunden der angezeigten Zeit): Unixzeit (s, ganzzahlig), MJD,
+ * Werte der Nerd-Zeile zum Zeitpunkt ms (UTC-Millisekunden der angezeigten Zeit): Unixzeit (s, ganzzahlig, dazu
+ * hexadezimal), MJD,
  * und mit TAI−UTC (tai, Sekunden) auch TAI als Uhrzeit sowie GPS-Woche und -Sekunde der Woche. Ohne gültiges tai sind
  * taiMs und gps null. Kein Wert hängt von der Zeitzone ab.
  */
@@ -370,13 +386,39 @@ export function nerdValues(ms, tai = null) {
   if (!Number.isFinite(ms)) return null;
   const unix = Math.floor(ms / 1000);
   const offset = taiUtc(tai);
-  const out = { unix, mjd: ms / 86_400_000 + MJD_UNIX, taiMs: null, gps: null, gpsUtc: null };
+  const out = { unix, hex: unixHex(unix), mjd: ms / 86_400_000 + MJD_UNIX, taiMs: null, gps: null, gpsUtc: null };
   if (offset === null) return out;
   out.taiMs = ms + offset * 1000;
   out.gpsUtc = offset - TAI_GPS_S;
   const gpsS = Math.floor((ms - GPS_EPOCH_MS) / 1000) + out.gpsUtc;
   if (gpsS >= 0) out.gps = { week: Math.floor(gpsS / WEEK_S), sow: gpsS % WEEK_S };
   return out;
+}
+
+/** Unixzeit (s) hexadezimal, Großbuchstaben mit „0x“; negativ oder ungültig: null. */
+export function unixHex(unix) {
+  return Number.isSafeInteger(unix) && unix >= 0 ? `0x${unix.toString(16).toUpperCase()}` : null;
+}
+
+const ROMAN = [[1000, "M"], [900, "CM"], [500, "D"], [400, "CD"], [100, "C"], [90, "XC"], [50, "L"], [40, "XL"], [10, "X"],
+  [9, "IX"], [5, "V"], [4, "IV"], [1, "I"]];
+
+/** Ganze Zahl 0 … 3999 als römische Zahl; die Null als „N“ (nulla, wie in mittelalterlichen Tafeln). Sonst null. */
+export function roman(n) {
+  if (!Number.isInteger(n) || n < 0 || n > 3999) return null;
+  if (n === 0) return "N";
+  let rest = n;
+  let out = "";
+  for (const [value, sign] of ROMAN) {
+    while (rest >= value) { out += sign; rest -= value; }
+  }
+  return out;
+}
+
+/** Stunde und Minute der angezeigten Uhrzeit römisch („XVIII:XLIV“, Mitternacht „N:N“). Ungültig: null. */
+export function romanTime(h, m) {
+  if (!Number.isInteger(h) || h < 0 || h > 23 || !Number.isInteger(m) || m < 0 || m > 59) return null;
+  return `${roman(h)}:${roman(m)}`;
 }
 
 /** Uhrzeit HH:MM:SS (UTC-Zählung) eines Zeitpunkts – für TAI. */
@@ -472,7 +514,8 @@ export function moonPath(angle, { cx = 50, cy = 50, r = 50, south = false } = {}
 }
 
 // --- Fortschrittsbalken ----------------------------------------------------------------------------------------------
-/** Balken (?bars=): Tag, Woche (ab Montag), Monat, Jahr in der Ortszeit dieses Geräts, timer: Eieruhr bzw. Pomodoro-Phase. */
+/** Balken (?bars=): Tag, Woche (ab Montag), Monat, Jahr im angezeigten Datum (sonst Ortszeit dieses Geräts), timer:
+ *  Eieruhr bzw. Pomodoro-Phase. */
 export const BARS = Object.freeze([...kit.BARS]);
 
 /**
@@ -485,26 +528,30 @@ export function barsFor(bars, hasTimer = false) {
 }
 
 /**
- * Anteil des laufenden Zeitraums kind ("day", "week", "month", "year") zum Zeitpunkt ms in der Ortszeit dieses Geräts:
- * { start, end, fraction (0 … 1) }. Grenzen über Date in Ortszeit – Tage mit Zeitumstellung sind 23 bzw. 25 h lang.
+ * Anteil des laufenden Zeitraums kind ("day", "week", "month", "year") zum Zeitpunkt ms: { start, end, fraction (0 … 1) }.
+ * Ohne offset in der Ortszeit dieses Geräts (Grenzen über Date – Tage mit Zeitumstellung sind 23 bzw. 25 h lang); mit
+ * offset (ms, fester Abstand einer Zone zu UTC – Design tc mit der Zone des Servers) in dieser Zone, damit die Balken zum
+ * angezeigten Datum passen.
  */
-export function periodProgress(kind, ms) {
+export function periodProgress(kind, ms, offset = null) {
   if (!Number.isFinite(ms)) return null;
-  const now = new Date(ms);
-  const y = now.getFullYear();
-  const mo = now.getMonth();
-  const d = now.getDate();
+  const fixed = Number.isFinite(offset);
+  const local = fixed ? new Date(ms + offset) : new Date(ms);
+  const y = fixed ? local.getUTCFullYear() : local.getFullYear();
+  const mo = fixed ? local.getUTCMonth() : local.getMonth();
+  const d = fixed ? local.getUTCDate() : local.getDate();
+  const wd = fixed ? local.getUTCDay() : local.getDay();
+  const at = fixed ? (yy, mm, dd) => Date.UTC(yy, mm, dd) - offset : (yy, mm, dd) => new Date(yy, mm, dd).getTime();
   let start;
   let end;
-  if (kind === "day") { start = new Date(y, mo, d); end = new Date(y, mo, d + 1); }
+  if (kind === "day") { start = at(y, mo, d); end = at(y, mo, d + 1); }
   else if (kind === "week") {
-    const back = (now.getDay() + 6) % 7;   // Montag = 0
-    start = new Date(y, mo, d - back); end = new Date(y, mo, d - back + 7);
-  } else if (kind === "month") { start = new Date(y, mo, 1); end = new Date(y, mo + 1, 1); }
-  else if (kind === "year") { start = new Date(y, 0, 1); end = new Date(y + 1, 0, 1); }
+    const back = (wd + 6) % 7;   // Montag = 0
+    start = at(y, mo, d - back); end = at(y, mo, d - back + 7);
+  } else if (kind === "month") { start = at(y, mo, 1); end = at(y, mo + 1, 1); }
+  else if (kind === "year") { start = at(y, 0, 1); end = at(y + 1, 0, 1); }
   else return null;
-  const span = end.getTime() - start.getTime();
-  return { start: start.getTime(), end: end.getTime(), fraction: Math.min(1, Math.max(0, (ms - start.getTime()) / span)) };
+  return { start, end, fraction: Math.min(1, Math.max(0, (ms - start) / (end - start))) };
 }
 
 /** Anteil einer Eieruhr bzw. Pomodoro-Phase zum Zeitpunkt now (performance.now()): verstrichen / Dauer, 0 … 1; Stoppuhr

@@ -143,6 +143,35 @@ class NerdZeileTest(unittest.TestCase):
         self.assertEqual(out["mjd0"], 0)
         self.assertEqual(out["doy"], [366, 60, 1, 60])
 
+    def test_hex_und_roemisch(self):
+        samples = [0, 1, 4, 9, 14, 40, 49, 90, 99, 400, 1994, 2026, 3999]
+        out = run_fx(f"""
+          const s = {json.dumps(samples)};
+          console.log(JSON.stringify({{ roman: s.map(x.roman), bad: [-1, 4000, 1.5, "7", null].map(x.roman),
+            times: [[0, 0], [18, 44], [23, 59], [12, 5]].map(([h, m]) => x.romanTime(h, m)),
+            badTimes: [[24, 0], [0, 60], [null, 1], [1.5, 2]].map(([h, m]) => x.romanTime(h, m)),
+            hex: [0, 255, 2000000000, -1, 1.5, NaN].map(x.unixHex), nerdHex: x.nerdValues(Date.UTC(2033, 4, 18, 3, 33, 20), null).hex }}));
+        """)
+
+        def py_roman(n):
+            if n == 0:
+                return "N"
+            table = [(1000, "M"), (900, "CM"), (500, "D"), (400, "CD"), (100, "C"), (90, "XC"), (50, "L"), (40, "XL"),
+                     (10, "X"), (9, "IX"), (5, "V"), (4, "IV"), (1, "I")]
+            out = ""
+            for value, sign in table:
+                while n >= value:
+                    out += sign
+                    n -= value
+            return out
+        self.assertEqual(out["roman"], [py_roman(n) for n in samples])
+        self.assertEqual(out["roman"][10:12], ["MCMXCIV", "MMXXVI"])
+        self.assertEqual(out["bad"], [None] * 5)
+        self.assertEqual(out["times"], ["N:N", "XVIII:XLIV", "XXIII:LIX", "XII:V"])
+        self.assertEqual(out["badTimes"], [None] * 4)
+        self.assertEqual(out["hex"], ["0x0", "0xFF", f"0x{2_000_000_000:X}", None, None, None])
+        self.assertEqual(out["nerdHex"], "0x77359400", "Unixzeit 2 000 000 000")
+
     def test_kein_fester_schaltsekunden_wert_im_code(self):
         text = (JS / "clockextras.js").read_text(encoding="utf-8")
         nerd = text[text.index("// --- Nerd-Zeile"):text.index("// --- Mondphase")]
@@ -272,6 +301,23 @@ class FortschrittTest(unittest.TestCase):
         self.assertEqual(out["bad"], [None, None])
         self.assertEqual(out["pct"], [0, 0, 50, 99, 100, 100, 0, None, None])
 
+    def test_zeitraeume_in_der_zone_der_anzeige(self):
+        # Gerät in Kiritimati (UTC+14), angezeigtes Datum in UTC (Design tc mit Zone des Servers): Die Balken folgen der
+        # Zone der Anzeige, nicht der des Geräts.
+        out = run_fx("""
+          const t = Date.UTC(2026, 10, 23, 12);
+          const f = (kind, off) => x.periodProgress(kind, t, off);
+          console.log(JSON.stringify({ dayUtc: f("day", 0), dayDev: f("day", null), weekUtc: f("week", 0).fraction,
+            yearUtc: f("year", 0), dayPlus2: f("day", 2 * 3600_000).fraction, monthUtc: f("month", 0).fraction }));
+        """, tz="Pacific/Kiritimati")
+        self.assertEqual(out["dayUtc"]["start"], ms("2026-11-23T00:00:00Z"))
+        self.assertAlmostEqual(out["dayUtc"]["fraction"], 0.5)
+        self.assertAlmostEqual(out["dayDev"]["fraction"], 2 / 24, msg="Gerätezeit: schon 02:00 am 24.11.")
+        self.assertAlmostEqual(out["weekUtc"], 0.5 / 7, msg="Montag, 23.11., 12:00 UTC")
+        self.assertEqual(out["yearUtc"]["start"], ms("2026-01-01T00:00:00Z"))
+        self.assertAlmostEqual(out["dayPlus2"], 14 / 24)
+        self.assertAlmostEqual(out["monthUtc"], (22 * 24 + 12) / (30 * 24))
+
     def test_balken_auswahl_und_timer(self):
         out = run_fx("""
           const timer = { duration: 600000, state: "running", start: 1000, acc: 0 };
@@ -300,13 +346,18 @@ class StandardAusTest(unittest.TestCase):
         out = run_fx(f"""
           const presets = {json.dumps(presets)};
           const shown = (q, layout = "normal") => {{ const p = k.parseParams(q); const s = x.splitShow(p.show);
-            return {{ base: s.base, extras: x.extrasShown({{ extras: s.extras, fun: p.fun, layout, eink: p.eink }}) }}; }};
+            return {{ base: s.base, extras: x.extrasShown({{ extras: s.extras, fun: p.fun, kiosk: p.kiosk, layout, eink: p.eink }}) }}; }};
           const all = "&show=moon,nerd,progress";
           const res = {{}};
           for (const [name, params] of Object.entries(presets)) res[name] = shown("?" + new URLSearchParams(params).toString() + all);
           console.log(JSON.stringify({{ presets: res, plain: shown(""), only: shown("?show=moon"), mixed: shown("?show=time,nerd"),
             fun0: shown("?fun=0" + all), tile: shown(all, "tile"), strip: shown(all, "strip"), eink: shown("?eink=1" + all),
-            kiosk: shown("?kiosk=1" + all), low: x.extrasShown({{ extras: ["moon"], height: 359 }}),
+            kiosk: shown("?kiosk=1" + all), kioskDirect: x.extrasShown({{ extras: ["moon"], kiosk: true }}),
+            crowdedLow: x.extrasShown({{ extras: ["moon"], height: 171, layout: "banner", crowded: true }}),
+            crowdedHigh: x.extrasShown({{ extras: ["moon"], height: 640, layout: "banner", crowded: true }}),
+            merged: [x.mergeShow(["moon"], ["time"]), x.mergeShow(["moon"], null), x.mergeShow(["date", "nerd"], ["time"]),
+              x.mergeShow(["time"], ["time"]), x.mergeShow(null, ["time"]), x.mergeShow(["moon"], ["time", "nerd"])],
+            low: x.extrasShown({{ extras: ["moon"], height: 359 }}),
             lowBanner: x.extrasShown({{ extras: ["moon"], height: 150, layout: "banner" }}),
             high: x.extrasShown({{ extras: ["moon"], height: 360 }}), nerdPreset: shown("?" + new URLSearchParams(presets.nerd).toString()),
             none: x.splitShow(null), items: x.EXTRA_ITEMS, show: k.SHOW_ITEMS }}));
@@ -320,7 +371,14 @@ class StandardAusTest(unittest.TestCase):
         self.assertEqual(out["tile"]["extras"], [])
         self.assertEqual(out["strip"]["extras"], [])
         self.assertEqual(out["eink"]["extras"], ["moon", "progress"], "E-Ink: ohne Sekunden-Zeile")
-        self.assertEqual(out["kiosk"]["extras"], ["moon", "nerd", "progress"], "ausdrücklich gewählt auch im Kiosk")
+        self.assertEqual(out["kiosk"]["extras"], [], "Kiosk: keine Spielereien (Konzept, Abschnitt 4)")
+        self.assertEqual(out["kioskDirect"], [])
+        self.assertEqual(out["crowdedLow"], [], "niedriger Banner mit Countdown oder Weltzeit-Leiste: kein Platz")
+        self.assertEqual(out["crowdedHigh"], ["moon"])
+        self.assertEqual(out["merged"], [
+            {"base": ["time"], "extras": ["moon"]}, {"base": None, "extras": ["moon"]},
+            {"base": ["date"], "extras": ["nerd"]}, {"base": ["time"], "extras": []}, {"base": None, "extras": []},
+            {"base": ["time"], "extras": ["moon"]}], "nennt die Adresse nur Zusätze, bleibt die Auswahl des Profils; show ist schon zusammengeführt")
         self.assertEqual(out["low"], [], "zu niedrige Bühne: kein Platz")
         self.assertEqual(out["lowBanner"], ["moon"], "im Banner neben der Zeit")
         self.assertEqual(out["high"], ["moon"])
@@ -382,7 +440,7 @@ class SeitenregelnTest(unittest.TestCase):
                 self.assertTrue(data["design"]["binary"])
                 self.assertEqual(sorted(data["moon"]), sorted(["new", "waxing_crescent", "first_quarter", "waxing_gibbous",
                                                                "full", "waning_gibbous", "last_quarter", "waning_crescent"]))
-                self.assertEqual(sorted(data["nerd"]), sorted(["unix", "tai", "gps", "mjd", "doy", "iso"]))
+                self.assertEqual(sorted(data["nerd"]), sorted(["unix", "hex", "tai", "gps", "mjd", "doy", "iso", "roman"]))
                 self.assertEqual(sorted(data["bar_say"]), ["day", "month", "week", "year"])
                 self.assertEqual(sorted(data["link"]["bars_item"]), sorted(["day", "week", "month", "year", "timer"]))
                 for key in ("day", "week", "month", "year", "timer", "pomo_work", "pomo_break", "pomo_long"):
@@ -397,23 +455,27 @@ class SeitenregelnTest(unittest.TestCase):
         self.assertNotRegex(extras, r"setTimeout|setInterval|requestAnimationFrame|fetch\(|innerHTML")
         binary = self.js[self.js.index("// --- Design binary"):self.js.index("// --- Design tc")]
         self.assertNotRegex(binary, r"setTimeout|setInterval|requestAnimationFrame|innerHTML|\.style\b")
-        self.assertIn("renderExtras(now.getTime());", self.body("function render("))
+        self.assertIn("renderExtras(now.getTime(), { day, offset: zoned ? foreign : null,", self.body("function render("))
         public = [p for p in server.CLOCK_PUBLIC_PATHS if p.endswith(".js")]
         self.assertEqual(len(public), 11, "keine neue öffentliche Datei")
 
     def test_show_aufgeteilt_nach_dem_profil(self):
         start = self.body("async function start()")
-        self.assertLess(start.index("await loadProfile()"), start.index("fx.splitShow(params.show)"))
-        self.assertLess(start.index("fx.splitShow(params.show)"), start.index("applyDisplayParams()"))
+        call = "fx.mergeShow(params.show, state.profileShow)"
+        self.assertLess(start.index("await loadProfile()"), start.index(call))
+        self.assertLess(start.index(call), start.index("applyDisplayParams()"))
         self.assertIn("params.show = split.base;", start)
-        self.assertIn("fx.extrasShown({ extras: state.extraWish, fun: params.fun, layout: state.layout, eink: params.eink,\n"
-                      "    height: state.stage.height })", self.body("function renderExtras("))
+        self.assertIn("state.profileShow = kit.parseParams(link.effectiveQuery({ profile: profile.params, zones: ZONES }), ZONES).show;",
+                      self.body("async function loadProfile("))
+        self.assertIn("fx.extrasShown({ extras: state.extraWish, fun: params.fun, kiosk: params.kiosk,\n"
+                      "    layout: state.layout, eink: params.eink, height: state.stage.height, crowded })", self.body("function renderExtras("))
 
     def test_suedhalbkugel_nur_lokal(self):
         self.assertIn('const SOUTH_KEY = "ntp-gui-clock-south";', self.js)
         self.assertIn('store(SOUTH_KEY, state.south ? "1" : "0");', self.body("function toggleSouth("))
         self.assertNotIn("south", json.dumps(clockprofiles.PARAMS), "kein Parameter, kein Profilfeld")
-        self.assertIn("$(\"moon\").disabled = !CONTROLS.actions;", self.body("function renderMoon("))
+        self.assertIn("$(\"moon\").disabled = !CONTROLS.fun;", self.body("function renderMoon("))
+        self.assertIn("if (!CONTROLS.fun) return;", self.body("function toggleSouth("))
 
     def test_balken_nur_per_transform_und_cssom(self):
         self.assertIn("transform: scaleX(var(--bar, 0));", self.css)
@@ -421,6 +483,49 @@ class SeitenregelnTest(unittest.TestCase):
         self.assertIn('node.setAttribute("role", "progressbar");', self.body("function buildBars("))
         self.assertIn('.clock-stage:is([data-layout="strip"], [data-layout="tile"]) .clock-extras { display: none; }', self.css)
         self.assertNotRegex(self.css[self.css.index("Studiouhr C2"):], r"animation|transition|filter:")
+
+    def test_hoehe_der_zusaetze_beobachtet(self):
+        watch = self.body("function watchExtras(")
+        self.assertIn("new window.ResizeObserver(", watch)
+        self.assertIn("if (height === state.extrasHeight", watch)
+        self.assertIn('for (const node of [$("clock-stage"), ...$("clock-main").children]) observer.observe(node);', watch)
+        self.assertIn("EXTRAS_REFITS", watch, "begrenzt: kein Hin und Her")
+        self.assertIn("watchExtras();", self.body("async function start()"))
+        self.assertIn('state.extrasHeight = $("extras").offsetHeight;', self.body("function fitTimeOnly("))
+
+    def test_zusaetze_ohne_platz_fallen_weg(self):
+        self.assertIn("checkExtrasRoom();", self.body("function fitTime("))
+        room = self.body("function checkExtrasRoom(")
+        self.assertIn("state.extrasNoRoom = true;", room)
+        self.assertIn('if (state.extrasNoRoom || box.hidden || !state.face || state.layout !== "banner") return;', room,
+                      "keine Schleife, nur im Banner")
+        self.assertIn("state.extrasNoRoom ? [] : fx.extrasShown(", self.body("function renderExtras("))
+        self.assertIn("state.extrasNoRoom = false;", self.body("function applyLayout("), "neue Größe: neuer Versuch")
+
+    def test_banner_raster_mit_countdown_und_weltzeit(self):
+        for areas in ('"time date" "time sub" "time extras"', '"time cd" "time date" "time sub" "time extras"',
+                      '"time date" "time sub" "time world" "time extras"',
+                      '"time cd" "time date" "time sub" "time world" "time extras"'):
+            self.assertIn(f"grid-template-areas: {areas};", self.css)
+        c2 = self.css[self.css.index("Studiouhr C2"):]
+        self.assertIn(':root[data-cd="below"] .clock-stage[data-layout="banner"][data-world="bar"] .clock-main', c2,
+                      "spätere Regel mit mindestens gleicher Spezifität")
+
+    def test_mondtitel_ohne_doppelpunkt(self):
+        for lang in ("de", "en"):
+            data = json.loads((STATIC / "i18n" / f"{lang}.json").read_text(encoding="utf-8"))["clock"]
+            date = data["moon_date"].replace("{d}", "24").replace("{m}", "11")
+            for key in ("moon_next_full", "moon_next_new"):
+                with self.subTest(lang=lang, key=key):
+                    self.assertNotIn("..", data[key].replace("{date}", date))
+
+    def test_nerd_im_tag_der_anzeige(self):
+        nerd = self.body("function renderNerd(")
+        self.assertIn("const day = at.day instanceof Date ? at.day : new Date(nowMs);", nerd)
+        self.assertIn("isoWeek(day)", nerd)
+        self.assertNotIn("isoWeek(now)", nerd)
+        self.assertIn("fx.romanTime(at.h, at.m)", nerd)
+        self.assertIn("(state.extrasAt || {}).offset", self.body("function renderBars("))
 
     def test_tai_aus_dem_server(self):
         nerd = self.body("function renderNerd(")

@@ -140,7 +140,7 @@ Die Auswahl folgt der Faustformel. Jede Spielerei ist eine reine Funktion in `cl
 | Eigene Countdowns | bis zu 5 im `localStorage`. Eingebaut: Silvester, nächste Zeitumstellung, Unixzeit 2 000 000 000, NTP-Ära 2036 | 0,5 PT |
 | Nachtmodus | `dim=22-6`, `dimlevel=20..80`, optional automatisch Rotlicht, auf Serverzeit | 0,5 PT |
 | Design `binary` (BCD-Lämpchen) | offen aus 1.6.2 | 0,5 PT |
-| Nerd-Zeile | Unix s/ms, Tag des Jahres, MJD, GPS-Woche/-Sekunde, TAI (aus `leap.py`), hex, römisch. Eine gemeinsame Quelle mit den 1.6.2-Kuriositäten | 1 PT |
+| Nerd-Zeile | Unix s/ms, Tag des Jahres, MJD, GPS-Woche/-Sekunde, TAI (aus `leap.py`), hex, römisch. Eine gemeinsame Quelle mit den 1.6.2-Kuriositäten. Umgesetzt in 1.10: hex und römisch nur auf Bühnen ab 700 px Höhe, Unix-ms bewusst nicht (die Zeile zeichnet je Sekunde) | 1 PT |
 | Mondphase | rein rechnerisch, kleines SVG, ±1 Tag laut ⓘ, Schalter „Südhalbkugel“ nur lokal | 0,5 PT |
 | Fortschrittsbalken | Tag, Woche, Jahr („dieses Jahr zu 87 % vorbei“) | 0,25 PT |
 | Spiel „Tippe genau auf :00“ | deine Abweichung neben Gerät (RTT/2) und Server (accuracy). Bestwert nur im `localStorage` | 0,5 PT |

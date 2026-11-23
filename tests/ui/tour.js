@@ -1792,8 +1792,8 @@ async function clockExtrasChecks(browser) {
   // GPS 1782807342 − 315964800 + 18 = 1466842560 s → Woche 2425, Sekunde 216960 (Dienstag 12:16:00 GPS-Zeit).
   const unix = Math.floor(CLOCK_SERVER / 1000);
   const gps = unix - 315964800 + 18;
-  const wantNerd = [`Unix ${unix}`, "TAI 08:16:19 (+37 s)", `GPS Woche ${Math.floor(gps / 604800)} · ${gps % 604800} s`,
-    `MJD ${(CLOCK_SERVER / 86400000 + 40587).toFixed(3).replace(".", ",")}`, "Tag 181", "ISO 2026-W27-2"];
+  const wantNerd = [`Unix ${unix}`, `Hex 0x${unix.toString(16).toUpperCase()}`, "TAI 08:16:19 (+37 s)", `GPS Woche ${Math.floor(gps / 604800)} · ${gps % 604800} s`,
+    `MJD ${(CLOCK_SERVER / 86400000 + 40587).toFixed(3).replace(".", ",")}`, "Tag 181", "ISO 2026-W27-2", "Römisch X:XV"];
   // 1) Alle Zusätze auf den neun Flächen.
   for (const [width, height] of STUDIO_VIEWPORTS) {
     const { ctx, page, msgs, clock } = await openPausedClock(browser, { width, height, query: "?show=moon,nerd,progress", reply: withTai(37) });
@@ -1842,7 +1842,7 @@ async function clockExtrasChecks(browser) {
     const stored = await page.evaluate(() => localStorage.getItem("ntp-gui-clock-south"));
     await shot(page, "sichel-sued");
     await ctx.close();
-    note("/clock Mond und Nerd ohne tai_utc", [before.nerdText[1] === "TAI –" && before.nerdText[2] === "GPS –" ? "" : `ohne TAI: ${before.nerdText}`,
+    note("/clock Mond und Nerd ohne tai_utc", [before.nerdText[2] === "TAI –" && before.nerdText[3] === "GPS –" ? "" : `ohne TAI: ${before.nerdText}`,
       /^Zunehmende Sichel/.test(before.moonText) ? "" : `Mond „${before.moonText}“`,
       / 0 1 50 /.test(before.moonPath) ? "" : `Nord nicht rechts: ${before.moonPath}`,
       after.moonPressed === "true" && / 0 0 50 /.test(after.moonPath) ? "" : `Süd: ${after.moonPressed} ${after.moonPath}`,
@@ -1851,12 +1851,71 @@ async function clockExtrasChecks(browser) {
   // 4) Nie Zusätze in Studio-, Kachel- und Banner-Voreinstellung, mit fun=0, im Streifen; Standard ohne show keine.
   for (const [name, query] of [["studio", "?p=studio&show=moon,nerd,progress"], ["tile", "?p=tile&show=moon,nerd,progress"],
     ["banner", "?p=banner&show=moon,nerd,progress"], ["fun0", "?fun=0&show=moon,nerd,progress"],
-    ["strip", "?layout=strip&show=moon,nerd,progress"], ["standard", ""]]) {
+    ["strip", "?layout=strip&show=moon,nerd,progress"], ["kiosk", "?kiosk=1&show=moon,nerd,progress"],
+    ["kiosk-profil", "?p=nerd&kiosk=1"], ["standard", ""]]) {
     const { ctx, page, msgs, clock } = await openPausedClock(browser, { width: 1920, height: 1080, query, reply: withTai(37) });
     await clock.run(1500);
     const got = await page.evaluate(extrasState);
     await ctx.close();
     note(`/clock keine Zusätze ${name}`, [got.extras ? "Zusätze sichtbar" : "", ...errors(got, msgs)].filter(Boolean));
+  }
+  // 4b) Profil mit eigener Auswahl (night: nur die Zeit) und show=moon: Die Auswahl des Profils bleibt, der Mond kommt dazu.
+  {
+    const { ctx, page, msgs } = await openPausedClock(browser, { width: 1920, height: 1080, query: "?p=night&show=moon" });
+    const got = await page.evaluate(() => ({ show: document.documentElement.dataset.show || null,
+      date: getComputedStyle(document.getElementById("local-date")).display, csp: window.__csp || [] }));
+    const ex = await page.evaluate(extrasState);
+    await ctx.close();
+    note("/clock Profil night mit show=moon", [got.show === "time" ? "" : `data-show ${got.show}`,
+      got.date === "none" ? "" : "Datum sichtbar", ex.moon ? "" : "Mond fehlt", ...errors(ex, msgs)].filter(Boolean));
+  }
+  // 4c) Quadratische Zifferblätter: TAI kommt erst mit der zweiten Antwort (die Nerd-Zeile bricht dann um) – die Zeit
+  // wird sofort neu eingepasst, die Zusätze bleiben über dem Band (nicht erst zur nächsten Minute).
+  for (const design of ["binary", "studio", "bahnhof"]) {
+    for (const [width, height] of [[1920, 1080], [1280, 720]]) {
+      let answers = 0;
+      const late = (ms) => withTai(answers++ ? 37 : null)(ms);
+      const { ctx, page, msgs, clock } = await openPausedClock(browser, { width, height, reply: late,
+        query: `?design=${design}&show=moon,nerd,progress` });
+      await clock.run(6000);
+      const got = await page.evaluate(extrasState);
+      if (width === 1920) await shot(page, `${design}-zusaetze-${width}x${height}`);
+      await ctx.close();
+      note(`/clock ${design} mit Zusätzen ${width}×${height}`, [got.extras ? "" : "Zusätze fehlen",
+        got.inside ? "" : "Zusätze unter dem Band", got.timeInside ? "" : "Zeit außerhalb der Bühne",
+        /\(\+37 s\)/.test(got.nerdText.join(" ")) ? "" : `ohne TAI ${got.nerdText}`, ...errors(got, msgs)].filter(Boolean));
+    }
+  }
+  // 4d) Banner mit Countdown unter der Uhr und Leiste der Weltzeit: niedrig (1920×200) ohne Zusätze, höher (2560×720)
+  // mit Zusätzen in der rechten Spalte – kein Rasterfeld ohne Namen, alles in der Bühne. Mit Countdown und Weltzeit
+  // zusammen reicht die Höhe dort nicht: Dann fallen die Zusätze weg (checkExtrasRoom), statt unter das Band zu ragen.
+  for (const query of ["&until=2026-12-31T23:00", "&tz=Asia/Tokyo,America/New_York", "&until=2026-12-31T23:00&tz=Asia/Tokyo"]) {
+    for (const [width, height] of [[1920, 200], [2560, 720]]) {
+      const { ctx, page, msgs, clock } = await openPausedClock(browser, { width, height, reply: withTai(37),
+        query: `?layout=banner&show=moon,nerd,progress${query}` });
+      await clock.run(1500);
+      const got = await page.evaluate(extrasState);
+      const cols = await page.evaluate(() => getComputedStyle(document.getElementById("clock-main")).gridTemplateColumns.split(" ").length);
+      if (width === 2560) await shot(page, `banner${query.replace(/[^a-z]+/g, "-")}${width}x${height}`);
+      await ctx.close();
+      note(`/clock Banner Zusätze${query} ${width}×${height}`, [height < 360 && got.extras ? "Zusätze trotz Platzmangel" : "",
+        height >= 360 && !got.extras && !(query.includes("until=") && query.includes("tz=")) ? "Zusätze fehlen" : "", got.extras && !got.inside ? "Zusätze außerhalb der Bühne" : "",
+        got.timeInside ? "" : "Zeit außerhalb der Bühne", cols === 2 ? "" : `${cols} Rasterspalten`, ...errors(got, msgs)].filter(Boolean));
+    }
+  }
+  // 4e) Design tc mit Zone des Servers (UTC) auf einem Gerät in Kiritimati (UTC+14): Am 23.11. um 12:30 UTC ist dort schon
+  // der 24.11. – Tag im Jahr, ISO-Datum und Tagesbalken folgen dem angezeigten Datum (Montag, 23.11.).
+  {
+    const at = Date.parse("2026-11-23T12:30:00.500Z");
+    const reply = (ms) => ({ ...withTai(37)(ms), zone: "Etc/UTC" });
+    const { ctx, page, msgs } = await openPausedClock(browser, { width: 1920, height: 1080, zone: "Pacific/Kiritimati", at, reply,
+      query: "?design=tc&show=nerd,progress&bars=day" });
+    const got = await page.evaluate(extrasState);
+    const date = await page.evaluate(() => document.getElementById("local-date").textContent);
+    await ctx.close();
+    note("/clock tc Zusätze in der Zone der Anzeige", [/23\. November/.test(date) ? "" : `Datum ${date}`,
+      got.nerdText.includes("Tag 327") ? "" : `Tag ${got.nerdText}`, got.nerdText.includes("ISO 2026-W48-1") ? "" : `ISO ${got.nerdText}`,
+      got.barTexts.join("|") === "Tag52 %" ? "" : `Balken ${got.barTexts}`, ...errors(got, msgs)].filter(Boolean));
   }
   // 5) Eieruhr-Balken: 10 min, nach 2,5 min 25 %.
   {

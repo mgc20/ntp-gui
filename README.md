@@ -1228,14 +1228,20 @@ Die Seite **Uhrqualität** zeigt, was die Uhr deines Servers langfristig beeinfl
   als Lämpchen – je Ziffer eine Spalte mit 8-4-2-1 (BCD, Standard) oder mit `?bin=plain` Stunde, Minute und Sekunde je
   als Dualzahl (32 … 1); die Dezimalwerte stehen zum Ablesen daneben. Unter der Uhr gibt es drei Zusätze, alle
   standardmäßig aus und einzeln per `?show=` einzuschalten (nennt `show` nur Zusätze, bleibt der Rest der Uhr, wie er
-  ist): `moon` zeigt die **Mondphase** mit Name und beleuchtetem Anteil, rein rechnerisch im Browser ohne Standort
+  ist; mit Profil bleibt dessen Auswahl): `moon` zeigt die **Mondphase** mit Name und beleuchtetem Anteil, rein rechnerisch im Browser ohne Standort
   (Neu- und Vollmond auf etwa ±1 Tag, meist viel genauer); ein Klick auf den Mond zeigt ihn wie auf der Südhalbkugel,
   das merkt sich nur dieser Browser. `nerd` zeigt die **Nerd-Zeile**: Unixzeit, TAI (mit dem Abstand TAI−UTC, den der
   Server aus seiner leap-seconds.list kennt – ohne lesbare Liste steht dort „–“), GPS-Woche und -Sekunde, MJD, Tag im
-  Jahr und ISO-Datum mit Woche (`2026-W48-1`). `progress` zeigt **Fortschrittsbalken** für Tag und Jahr („dieses Jahr
-  ist zu 89 % vorbei“), mit laufender Eieruhr oder Pomodoro deren Balken und den Tag; `?bars=day,week,month,year,timer`
-  wählt selbst. Die Voreinstellung `nerd` bringt alle drei mit. Mit `?fun=0` (Voreinstellungen `studio`, `tile`,
-  `banner`), in der Kachel und im Streifen gibt es keine Zusätze, auf E-Ink keine Nerd-Zeile. `/api/v1/time` meldet
+  Jahr und ISO-Datum mit Woche (`2026-W48-1`); wo Höhe frei ist (Bühne ab 700 px, nicht im Banner), dazu die Unixzeit
+  hexadezimal und Stunde:Minute römisch (Mitternacht „N:N“). Unix-Millisekunden zeigt die Zeile bewusst nicht: Sie
+  wird einmal je Sekunde gezeichnet, die Millisekunden stünden also fast still. `progress` zeigt
+  **Fortschrittsbalken** für Tag und Jahr („dieses Jahr ist zu 89 % vorbei“), mit laufender Eieruhr oder Pomodoro
+  deren Balken und den Tag; `?bars=day,week,month,year,timer` wählt selbst. Tag im Jahr, ISO-Datum und Balken gelten
+  für das angezeigte Datum – sonst die Ortszeit deines Geräts, im Design `tc` mit abweichender Zone des Servers dessen
+  Zone. Die Voreinstellung `nerd` bringt alle drei mit. Mit `?fun=0` (Voreinstellungen `studio`, `tile`, `banner`), im
+  Kiosk, in der Kachel und im Streifen gibt es keine Zusätze, auf E-Ink keine Nerd-Zeile; im Banner neben Countdown
+  oder Weltzeit-Leiste nur, wenn er mindestens 360 px hoch ist. Den Mond umschalten kannst du nur, wo es auch die
+  Knöpfe Timer und Nacht gibt. `/api/v1/time` meldet
   dafür zusätzlich `tai_utc` (eine Zahl aus der öffentlichen Schaltsekunden-Liste); sonst geht nichts an den Server.
 - **Timecode-Anzeige (Studiouhr, Design `tc`):** `/clock?design=tc` zeigt die Tageszeit des Servers als Timecode
   `HH:MM:SS` mit einer Feinstelle, gerechnet in der Zeitzone des Servers; weicht sie von der deines Geräts ab, gehören

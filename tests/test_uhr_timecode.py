@@ -480,7 +480,7 @@ class TexteUndSeiteTest(unittest.TestCase):
         self.assertIn("[state.face.row]", self.js[start:self.js.index("\n}\n", start)])
         start = self.js.index("function fitOnce(main)")
         self.assertIn("tcFixed()", self.js[start:self.js.index("\n}\n", start)])
-        start = self.js.index("function fitTime()")
+        start = self.js.index("function fitTimeOnly()")
         self.assertIn("fitOnce(main)", self.js[start:self.js.index("\n}\n", start)])
 
     def test_datum_und_nebenzeile_in_der_zone_des_servers(self):

@@ -38,7 +38,7 @@ http://zeitserver.lan:8080/clock?layout=tile&bg=transparent&design=digital&face=
 | `lock=1` | keine Tastenkürzel, Design, Ton und Anpassen ausgeblendet (Vollbild, Hell/Dunkel, Rotlicht und „Mein Gerät“ bleiben) |
 | `lead=40` | Anzeige 40 ms vorlaufen lassen, wenn der Bildschirm das Bild verzögert |
 | `p=regie` | ein im Dashboard gespeichertes Profil laden (Parameter in der Adresse gehen vor) |
-| `fun=0` | keine Spielereien: Knöpfe „Timer“ (Eieruhr, Pomodoro) und „Nacht“ fehlen, ebenso Mondphase, Nerd-Zeile und Fortschrittsbalken (in `studio`, `tile` und `banner` gesetzt) |
+| `fun=0` | keine Spielereien: Knöpfe „Timer“ (Eieruhr, Pomodoro) und „Nacht“ fehlen, ebenso Mondphase, Nerd-Zeile und Fortschrittsbalken (in `studio`, `tile` und `banner` gesetzt; im Kiosk gilt dasselbe) |
 
 Fest eingebaute Profile: `studio`, `tile`, `banner`, `kitchen`, `workshop`, `night` und `nerd`,
 z. B. `/clock?p=tile`.

@@ -899,10 +899,21 @@ body.is-obs, body.is-obs * { cursor: none; }
     max-width: none; flex: none; }
   .clock-stage .clock-extras { font-size: var(--status); margin-top: 1cqh; }
   .clock-stage .clock-prog-track { width: clamp(60px, 14cqw, 320px); }
-  /* Banner: Zusätze in der rechten Spalte unter Datum und Zeile. */
+  /* Banner: Zusätze in der rechten Spalte unter Datum und Zeile – auch mit Countdown darüber und Leiste der Weltzeit
+     (gleiche oder höhere Spezifität als deren Raster weiter oben, sonst entstünden Spalten ohne Namen). Auf niedrigen
+     Bannern fehlen die Zusätze neben Countdown oder Leiste ganz (fx.extrasShown, crowded). */
   .clock-stage[data-layout="banner"] .clock-main { grid-template-areas: "time date" "time sub" "time extras"; }
+  :root[data-cd="below"] .clock-stage[data-layout="banner"] .clock-main {
+    grid-template-areas: "time cd" "time date" "time sub" "time extras"; }
+  .clock-stage[data-layout="banner"][data-world="bar"] .clock-main {
+    grid-template-areas: "time date" "time sub" "time world" "time extras"; }
+  :root[data-cd="below"] .clock-stage[data-layout="banner"][data-world="bar"] .clock-main {
+    grid-template-areas: "time cd" "time date" "time sub" "time world" "time extras"; }
   .clock-stage[data-layout="banner"] .clock-extras { grid-area: extras; justify-content: flex-start; margin: 0;
-    font-size: max(12px, min(1.4cqw, 11cqh)); }
+    font-size: max(12px, min(1.4cqw, 11cqh)); max-width: 60cqw; }
   .clock-stage[data-layout="banner"] :is(.clock-nerd, .clock-prog) { justify-content: flex-start; }
   .clock-stage:is([data-layout="strip"], [data-layout="tile"]) .clock-extras { display: none; }
+  /* Hex und römisch nur, wo Höhe frei ist: Die Zeile bricht mit ihnen auf zwei Zeilen um, die Zeit wird kleiner. */
+  .clock-stage[data-layout="banner"] .clock-nerd-item:is([data-key="hex"], [data-key="roman"]) { display: none; }
+  @container (max-height: 700px) { .clock-nerd-item:is([data-key="hex"], [data-key="roman"]) { display: none; } }
 }
