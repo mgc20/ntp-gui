@@ -8,6 +8,8 @@ Objekt prüfen und handeln.
 
   hold <datei>              gibt die ersten 16 Zeichen einer gewöhnlichen Datei aus (reload.hold);
                             Links, Pipes und andere Dateiarten ergeben eine leere Ausgabe.
+  list <datei>              gibt höchstens LIST_MAX Bytes einer gewöhnlichen Datei aus (noselect.list);
+                            sonst eine leere Ausgabe wie bei hold.
   chown <verzeichnis> <benutzer>
                             übergibt Verzeichnisse und Dateien mit genau einem Namen an den
                             Benutzer. Dateien mit weiteren Namen (Hardlinks) bleiben unverändert,
@@ -24,10 +26,11 @@ import stat
 import sys
 
 HOLD_MAX = 16
+LIST_MAX = 4096
 
 
-def read_hold(path: str) -> str:
-    """Inhalt (höchstens HOLD_MAX Zeichen) einer gewöhnlichen Datei, sonst ""."""
+def read_hold(path: str, limit: int = HOLD_MAX) -> str:
+    """Inhalt (höchstens limit Zeichen) einer gewöhnlichen Datei, sonst ""."""
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_NOCTTY | os.O_CLOEXEC)
     except OSError:
@@ -35,7 +38,7 @@ def read_hold(path: str) -> str:
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             return ""
-        return os.read(fd, HOLD_MAX).decode("ascii", "replace")
+        return os.read(fd, limit).decode("ascii", "replace")
     except OSError:
         return ""
     finally:
@@ -96,13 +99,16 @@ def main(argv: list[str]) -> int:
     if len(argv) == 2 and argv[0] == "hold":
         sys.stdout.write(read_hold(argv[1]))
         return 0
+    if len(argv) == 2 and argv[0] == "list":
+        sys.stdout.write(read_hold(argv[1], LIST_MAX))
+        return 0
     if len(argv) == 3 and argv[0] == "chown":
         import pwd
         entry = pwd.getpwnam(argv[2])
         for path in chown_tree(argv[1], entry.pw_uid, entry.pw_gid):
             print(path)
         return 0
-    print("Aufruf: rootsafe.py hold <datei> | chown <verzeichnis> <benutzer>", file=sys.stderr)
+    print("Aufruf: rootsafe.py hold <datei> | list <datei> | chown <verzeichnis> <benutzer>", file=sys.stderr)
     return 2
 
 

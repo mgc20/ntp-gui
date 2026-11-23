@@ -386,6 +386,29 @@ hold_active && echo aktiv
 """, "hold_active", timeout=10)
         self.assertEqual(out, ["fifo_ignoriert", "link_ignoriert", "aktiv"])
 
+    def test_noselect_list_read_without_following_links(self):
+        """noselect.list gehört dem Dashboard: Link, Pipe oder Verzeichnis an dieser Stelle dürfen den
+        Supervisor (set -e) weder beenden noch aufhalten; gelesen werden höchstens die ersten 4 KiB."""
+        data = os.path.join(self.tmp, "data")
+        os.makedirs(data)
+        target = os.path.join(self.tmp, "fremd")
+        Path(target).write_text("FREMD\n", encoding="utf-8")
+        lst = os.path.join(data, "noselect.list")
+        out = run_bash(f"""
+NTPGUI_DATA_DIR={data}; APP_DIR={ROOT / "app"}
+chronyc() {{ return 0; }}
+ln -s {target} {lst}; reapply_noselect; wait; echo link
+rm -f {lst}; ln -s {self.tmp}/fehlt {lst}; reapply_noselect; wait; echo kaputt
+rm -f {lst}; mkfifo {lst}; reapply_noselect; wait; echo fifo
+rm -f {lst}; mkdir {lst}; reapply_noselect; wait; echo verzeichnis
+rmdir {lst}; printf 'GPS\nkaputt name\nPPS' > {lst}; reapply_noselect; wait
+rm -f {lst}; {{ head -c 5000 /dev/zero | tr '\\0' x; printf '\nSPAET\n'; }} > {lst}; reapply_noselect; wait
+echo ende
+""", "reapply_noselect", timeout=20)
+        self.assertEqual([line.split(" nach dem")[0] for line in out if "WARNUNG" not in line],
+                         ["link", "kaputt", "fifo", "verzeichnis", "[chrony] GPS-Sperre: GPS",
+                          "[chrony] GPS-Sperre: PPS", "ende"])
+
     def test_dashboard_writes_requests_into_request_dir(self):
         Path(self.run_dir, "supervisor.pid").write_text("1\n", encoding="utf-8")
         with mock.patch.object(server, "RUN_DIR", self.run_dir), \

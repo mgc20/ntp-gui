@@ -52,6 +52,7 @@ Modus, damit die Diagnose es zeigen kann.
 
 from __future__ import annotations
 
+import copy
 import gzip
 import json
 import math
@@ -60,6 +61,7 @@ import threading
 import time
 from collections import deque
 from typing import Any
+from urllib.parse import quote
 
 try:
     import sqlite3
@@ -172,6 +174,7 @@ def _storable(sample: Any, now: float | None = None) -> bool:
     return _valid(sample) and sample["t"] <= _latest_allowed(now)
 
 
+_QUERY_GATE = threading.BoundedSemaphore(1)  # History.query(): höchstens eine Verdichtung gleichzeitig
 SNAPSHOT_CHUNK = 6 * 3600  # snapshot(): so viele Sekunden Verlauf je Griff nach dem Lock
 
 
@@ -430,11 +433,16 @@ class History:
         return out
 
     def query(self, seconds: float | None = None, points: int = 600) -> list[dict]:
-        """Ausschnitt der letzten `seconds` Sekunden, auf höchstens `points` verdichtet."""
+        """Ausschnitt der letzten `seconds` Sekunden, auf höchstens `points` verdichtet.
+
+        Die Verdichtung kann auf einem Pi rund eine Sekunde dauern. Sie läuft darum über eine eigene
+        Leseverbindung (WAL: Leser halten den Schreiber nicht auf) auf einer Kopie des Puffers – weder
+        self._lock noch die Sperre der gemeinsamen Verbindung bleiben so lange belegt, die Messschleife
+        wartet nicht. Höchstens eine Verdichtung läuft gleichzeitig (_QUERY_GATE)."""
         if self._sql:
-            with self._lock:
+            with _QUERY_GATE:
                 try:
-                    texts, result = self._query_sql(seconds, points)
+                    texts, result = self._query_sql_unlocked(seconds, points)
                 except Exception as exc:
                     self.error = f"Verlauf nicht lesbar: {exc}"
                     texts, result = None, None
@@ -447,6 +455,24 @@ class History:
             cutoff = data[-1]["t"] - seconds
             data = [s for s in data if s["t"] >= cutoff]
         return downsample(data, points)
+
+    def _query_sql_unlocked(self, seconds: float | None, points: int) -> tuple[list[str] | None, list[dict] | None]:
+        try:
+            conn = sqlite3.connect(f"file:{quote(os.path.abspath(self.db_path))}?mode=ro", uri=True,
+                                   timeout=10.0, check_same_thread=False)
+        except sqlite3.Error:
+            conn = None
+        if conn is None:  # ohne eigene Leseverbindung wie bisher unter den Sperren
+            with self._lock:
+                return self._query_sql(seconds, points)
+        try:
+            view = copy.copy(self)
+            with self._lock:
+                view._pending = list(self._pending)  # Kopie: ein _flush() danach ändert sie nicht
+            view._db = lambda sql, params=(): conn.execute(sql, params).fetchall()  # type: ignore[method-assign]
+            return view._query_sql(seconds, points)
+        finally:
+            conn.close()
 
     def _query_sql(self, seconds: float | None, points: int) -> tuple[list[str] | None, list[dict] | None]:
         """(Rohtexte zum Dekodieren außerhalb der Sperre, None) oder (None, fertige Punkte)."""

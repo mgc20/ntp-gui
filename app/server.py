@@ -1360,6 +1360,8 @@ SIGNAL_AUDIT_KEYS_MAX = 8    # so viele Schlüsselkennungen übersprungener Wech
 _SIGNAL_AUDIT: dict = {"t": None, "tokens": SIGNAL_AUDIT_BURST, "pending": None, "skipped": 0, "keys": []}
 _SIGNAL_AUDIT_LOCK = threading.Lock()
 events.set_quota("settings", SIGNAL_AUDIT_TITLE, SIGNAL_AUDIT_ROWS)
+for _title in statewatch.CLIENT_EVENT_TITLES:  # von außen auslösbar: verdrängt nie andere Ereignisse
+    events.set_quota("clients", _title, statewatch.CLIENT_EVENT_ROWS)
 _SIGNAL_TIMERS: dict = {"audit": None, "expiry": None}
 _SIGNAL_TIMERS_LOCK = threading.Lock()
 
@@ -1710,17 +1712,25 @@ class AuthCache:
     def __init__(self, clock=time.monotonic) -> None:
         self._ok: dict[str, float] = {}  # Schlüssel → gültig bis (monotonic: Uhrsprünge zählen nicht)
         self._lock = threading.Lock()
+        self._generation = 0  # erhöht bei jedem clear()
         self.clock = clock
+
+    def generation(self) -> int:
+        """Stand vor einer Prüfung – remember() merkt nur, wenn seitdem kein clear() lief."""
+        with self._lock:
+            return self._generation
 
     def known(self, header: str) -> bool:
         key = hashlib.sha256(header.encode()).hexdigest()
         with self._lock:
             return self._ok.get(key, 0) > self.clock()
 
-    def remember(self, header: str) -> None:
+    def remember(self, header: str, generation: int | None = None) -> None:
         key = hashlib.sha256(header.encode()).hexdigest()
         now = self.clock()
         with self._lock:
+            if generation is not None and generation != self._generation:
+                return  # Passwort inzwischen geändert: Prüfung mit dem alten Stand nicht merken
             self._ok = {k: v for k, v in self._ok.items() if v > now}
             self._ok[key] = now + 300
 
@@ -1740,6 +1750,7 @@ class AuthCache:
     def clear(self) -> None:
         with self._lock:
             self._ok.clear()
+            self._generation += 1
 
 
 AUTH_CACHE = AuthCache()
@@ -2478,9 +2489,10 @@ class Handler(BaseHTTPRequestHandler):
                     return False, 2.0  # zu viele Prüfungen gleichzeitig
                 if AUTH_CACHE.known(cache_key):
                     return True, 0.0  # inzwischen von einer anderen Anfrage geprüft
+                generation = AUTH_CACHE.generation()
                 ok = self._check_password(info, user, password)
             if ok:
-                AUTH_CACHE.remember(cache_key)
+                AUTH_CACHE.remember(cache_key, generation)
                 authguard.GUARD.success(key)
                 return True, 0.0
             self._auth_retry = 0.0
@@ -3365,6 +3377,10 @@ class Handler(BaseHTTPRequestHandler):
             AUTH_CACHE.forget(auth_cache_key(header, info))
             self._send_json({"ok": True, "probe": LOGOUT_PATH, "probe_user": LOGOUT_USER})
         elif path == "/api/apikeys/keep":
+            if ident.get("kind") != "basic":
+                # Behalten bestätigt die Prüfung beim ersten Passwort – das darf nur, wer es kennt.
+                self._error(HTTPStatus.FORBIDDEN, "Schlüssel behalten geht nur mit Anmeldung (Passwort)")
+                return
             if not apikeys.keep(str(data.get("id", ""))):
                 self._error(HTTPStatus.NOT_FOUND, "Diesen Schlüssel gibt es nicht (mehr)")
                 return

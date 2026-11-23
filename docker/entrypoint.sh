@@ -527,12 +527,15 @@ start_chronyd() {
 # GPS-Messung hat und das gesperrte GPS auswählen (oder die Uhr per makestep darauf stellen)
 # könnte. Kurz im Hintergrund, bis chronyd Befehle annimmt (höchstens ~10 s).
 reapply_noselect() {
-  local file="${NTPGUI_DATA_DIR:-/var/lib/chrony/ntp-gui}/noselect.list" name names=()
-  [[ -s "$file" ]] || return 0
-  while IFS= read -r name || [[ -n "$name" ]]; do
+  local file="${NTPGUI_DATA_DIR:-/var/lib/chrony/ntp-gui}/noselect.list" name names=() content=""
+  [[ -e "$file" || -L "$file" ]] || return 0
+  # Die Datei gehört dem Dashboard: über rootsafe.py lesen (keinem Link folgen, nicht blockieren,
+  # höchstens 4 KiB) – ein Link oder eine Pipe ergibt eine leere Liste statt eines Abbruchs.
+  content="$(python3 "${APP_DIR}/rootsafe.py" list "$file" 2>/dev/null)" || content=""
+  while IFS= read -r name; do
     # Nur Namen wie in selectctl.NAME_RE – nichts anderes landet auf der Kommandozeile.
     [[ "$name" =~ ^[A-Za-z0-9_.:%-]{1,64}$ ]] && names+=("$name")
-  done < "$file"
+  done <<< "$content"
   (( ${#names[@]} )) || return 0
   (
     local i

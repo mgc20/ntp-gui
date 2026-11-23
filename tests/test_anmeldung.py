@@ -515,6 +515,14 @@ class OpenModeKeysTest(_ServerBase):
         self.assertEqual(self.request("POST", "/api/apikeys/keep", {"id": created["id"]}, auth)[0], 200)
         self.assertEqual(apikeys.open_mode_keys(), [])
 
+    def test_keep_needs_password_login(self):
+        """Ohne Passwort darf niemand die Markierung entfernen – sonst fehlte der Schlüssel bei der Prüfung."""
+        status, created, _ = self.request("POST", "/api/apikeys", {"name": "irgendwer", "scope": "admin"})
+        self.assertEqual(status, 200)
+        self.assertEqual(self.request("POST", "/api/apikeys/keep", {"id": created["id"]})[0], 403)
+        status, payload, _ = self.request("POST", "/api/auth", {"user": "admin", "password": "lang-und-eigen-42"})
+        self.assertEqual([k["id"] for k in payload["open_keys"]], [created["id"]])
+
 
 class OpenModeMigrationTest(_ServerBase):
     """Update von einer Installation vor 1.9: vorhandene Schlüssel ohne Zugang gelten als offen angelegt."""

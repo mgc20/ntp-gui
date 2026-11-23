@@ -1999,14 +1999,42 @@ def discard_staged(staged: dict[str, Any]) -> None:
 
 
 # Werte, die keine Geheimnisse sind, aber Konto-Kennungen enthalten können (NextDNS-ID im
-# DoH-Pfad): API-Schlüssel mit Leserecht sehen sie nur gekürzt.
-MASKED_FOR_READ = ("dns_doh",)
+# DoH-Pfad oder als erster Teil des DoT-Namens): API-Schlüssel mit Leserecht sehen sie nur gekürzt.
+MASKED_FOR_READ = ("dns_doh", "dns_dot", "dns_pin")
 
 
-def _mask_value(key: str, value: Any) -> Any:
-    if key == "dns_doh" and isinstance(value, list):
+def _mask_host(host: str) -> str:
+    """Servername ohne vordere Teile (z. B. Konto-Kennung vor dns.nextdns.io): nur die letzten drei."""
+    labels = host.split(".")
+    return "…." + ".".join(labels[-3:]) if len(labels) > 3 and not _is_ip(host) else host
+
+
+def _is_ip(text: str) -> bool:
+    try:
+        _ip(text.strip("[]"))
+    except ValueError:
+        return False
+    return True
+
+
+def mask_value(key: str, value: Any) -> Any:
+    if not isinstance(value, list):
+        return value
+    if key == "dns_doh":
         import dnsfwd
         return [dnsfwd.doh_label(str(item)) for item in value]
+    if key == "dns_dot":
+        out = []
+        for item in map(str, value):
+            host, sep, port = item.rpartition(":") if item.count(":") == 1 else (item, "", "")
+            out.append(_mask_host(host) + sep + port)
+        return out
+    if key == "dns_pin":
+        out = []
+        for item in map(str, value):
+            name, sep, addr = item.partition("=")
+            out.append(_mask_host(name) + sep + addr)
+        return out
     return value
 
 
@@ -2018,8 +2046,8 @@ def public_schema(masked: bool = False) -> dict:
     for field in SCHEMA:
         entry = eff[field["key"]]
         if masked and field["key"] in MASKED_FOR_READ:
-            entry = dict(entry, value=_mask_value(field["key"], entry["value"]),
-                         env=_mask_value(field["key"], entry["env"]) if entry["env"] is not None else None,
+            entry = dict(entry, value=mask_value(field["key"], entry["value"]),
+                         env=mask_value(field["key"], entry["env"]) if entry["env"] is not None else None,
                          error="Wert ungültig (Einzelheiten nur mit Admin-Recht)" if entry["error"] else None)
         hint, more = help_parts(field)
         fields.append({
@@ -2183,7 +2211,7 @@ def export_values(masked: bool = False) -> dict:
     if masked:
         hidden = [key for key in MASKED_FOR_READ if key in values]
         for key in hidden:
-            values[key] = _mask_value(key, values[key])
+            values[key] = mask_value(key, values[key])
         if hidden:
             out["masked"] = hidden
     return out

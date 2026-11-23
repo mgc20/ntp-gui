@@ -311,6 +311,18 @@ class ChronydPruefungTest(unittest.TestCase):
             confgen.apply(self.env, fallback=True)
         self.assertEqual(self.conf(), good, "ohne Ratelimit wird nicht gestartet")
 
+    def test_ungueltiger_dns_wert_landet_nicht_wortgetreu_im_log(self):
+        """Die Warnung zu einer ungültigen Einstellung zitiert sonst den Wert – bei DNS-Servern mit
+        Konto-Kennung; das Log sehen auch Schlüssel mit Leserecht."""
+        lines = []
+        env = dict(self.env, DNS_DOH="http://dns.nextdns.io/abc123", DNS_DOT="abc123.dns.nextdns.io:0")
+        with mock.patch.object(confgen, "_log", lambda _tag, text: lines.append(text)):
+            confgen.apply(env)
+        joined = "\n".join(lines)
+        self.assertIn("WARNUNG dns_doh: Wert ungültig", joined)
+        self.assertIn("WARNUNG dns_dot: Wert ungültig", joined)
+        self.assertNotIn("abc123", joined)
+
     def test_ursache_extra_chrony_conf_wird_beim_start_benannt(self):
         settings.save({"deny_networks": ["198.51.100.0/24"], "ntp_ratelimit": True})
         lines = []

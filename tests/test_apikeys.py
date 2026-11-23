@@ -125,10 +125,29 @@ class ApiKeysTest(TempDir):
         forged = token[:13] + ("A" if token[13] != "A" else "B") + token[14:]
         self.assertIsNone(apikeys.verify(forged))
         self.assertEqual(store.query("SELECT hash FROM api_keys")[0][0], legacy)  # falscher → bleibt
+        apikeys._LEGACY_NEXT[0] = 0.0  # Pause nach dem Fehlschlag überspringen
         self.assertEqual(apikeys.verify(token)["id"], key_id)
         self.assertEqual(store.query("SELECT hash FROM api_keys")[0][0], apikeys.hash_token(token))
         apikeys.clear_cache()
         self.assertEqual(apikeys.verify(token)["id"], key_id)  # auch nach der Umstellung
+
+    def test_legacy_pbkdf2_checks_are_throttled(self):
+        """Altbestand (PBKDF2) wird vor der Anmeldung geprüft: Viele falsche Schlüssel dürfen nicht je eine
+        teure Prüfung auslösen. Eine gebremste Ablehnung wird nicht als ungültig gemerkt."""
+        key_id, token = apikeys.create("alt", "admin")
+        store.execute("UPDATE api_keys SET hash=? WHERE id=?", (settings.hash_password(token), key_id))
+        apikeys.clear_cache()
+        apikeys._LEGACY_NEXT[0] = 0.0
+        real = settings.verify_password
+        with mock.patch.object(settings, "verify_password", side_effect=real) as spy:
+            for i in range(10):
+                forged = token[:13] + f"{i:02d}" + token[15:]
+                if forged != token:
+                    self.assertIsNone(apikeys.verify(forged))
+            self.assertIsNone(apikeys.verify(token))  # gerade gebremst
+        self.assertEqual(spy.call_count, 1)
+        apikeys._LEGACY_NEXT[0] = 0.0
+        self.assertEqual(apikeys.verify(token)["id"], key_id)  # nicht als ungültig gemerkt
 
     def test_unknown_hash_scheme_rejected(self):
         key_id, token = apikeys.create("x", "read")

@@ -115,13 +115,36 @@ def hash_token(token: str) -> str:
     return f"{HASH_SCHEME}${hashlib.sha256(token.encode('utf-8')).hexdigest()}"
 
 
+# Altbestand (PBKDF2) wird vor jeder Anmeldung geprüft und kostet viel Rechenzeit: höchstens eine
+# solche Prüfung gleichzeitig, nach einem Fehlschlag LEGACY_PAUSE Sekunden keine weitere.
+LEGACY_PAUSE = 1.0
+_LEGACY_SLOT = threading.Lock()
+_LEGACY_NEXT = [0.0]
+
+
+class _LegacyBusy(Exception):
+    """Prüfung gerade gebremst – abgelehnt, aber nicht als ungültig gemerkt (verify() fängt sie)."""
+
+
+def _legacy_matches(token: str, encoded: str) -> bool:
+    if time.monotonic() < _LEGACY_NEXT[0] or not _LEGACY_SLOT.acquire(blocking=False):
+        raise _LegacyBusy
+    try:
+        ok = settings.verify_password(token, encoded)
+        if not ok:
+            _LEGACY_NEXT[0] = time.monotonic() + LEGACY_PAUSE
+        return ok
+    finally:
+        _LEGACY_SLOT.release()
+
+
 def _token_matches(token: str, encoded: str) -> tuple[bool, bool]:
     """(passt, sollte neu gehasht werden)."""
     encoded = str(encoded or "")
     if encoded.startswith(HASH_SCHEME + "$"):
         return hmac.compare_digest(hash_token(token).encode(), encoded.encode()), False
     if encoded.startswith("pbkdf2_sha256$"):
-        return settings.verify_password(token, encoded), True
+        return _legacy_matches(token, encoded), True
     return False, False
 
 

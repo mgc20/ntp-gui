@@ -202,6 +202,40 @@ class DecodeOutsideLockTest(TempDataDir):
         self.assertEqual(held, [False, False])
 
 
+class AggregateOutsideLockTest(TempDataDir):
+    """Die Verdichtung in query() hält weder self._lock noch die Sperre der gemeinsamen Verbindung –
+    sonst wartet die Messschleife bei jeder großen Verlaufsabfrage."""
+
+    def test_aggregate_without_locks(self):
+        h = self.make()
+        now = int(time.time())
+        for i in range(60):
+            h.add(sample(now - 600 + i * 10, offset=i * 1e-6))
+        h.save(force=True)
+        h.add(sample(now - 5, offset=99e-6))  # noch im Puffer: zählt trotzdem mit
+        free = []
+        real = history._aggregate
+
+        def spy(db, table, params):
+            def probe():
+                for lock in (h._lock, store.lock(h.db_path)):
+                    got = lock.acquire(timeout=1)
+                    free.append(got)
+                    if got:
+                        lock.release()
+            t = threading.Thread(target=probe)
+            t.start()
+            t.join()
+            return real(db, table, params)
+
+        with mock.patch.object(history, "_aggregate", spy):
+            points = h.query(None, 10)
+        self.assertEqual(free, [True, True])
+        self.assertLessEqual(len(points), 10)
+        self.assertEqual(points[-1]["t"], now - 5)
+        self.assertEqual(points, h._query_sql(None, 10)[1])  # gleiches Ergebnis wie unter den Sperren
+
+
 class GpsMeasuredTest(unittest.TestCase):
     """Review 2/2: ein GPS ohne Daten („?“, Reach 0) ist keine Messung."""
 

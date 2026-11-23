@@ -1140,7 +1140,12 @@ def apply(env: dict | None = None, fallback: bool = False) -> dict:
                        f"({', '.join(cfg['allow_networks']) or 'nicht gesetzt: keinem Client'}), "
                        "mit Ratelimit „streng“. Sonst gelten Umgebung und Standardwerte.")
     for key, entry in settings.effective(env).items():
-        if entry["error"]:
+        if entry["error"] and key in settings.MASKED_FOR_READ:
+            # Die Meldung zitiert den Wert (Konto-Kennung im DNS-Server) – das Log lesen auch Schlüssel mit
+            # Leserecht: nur den Namen der Einstellung und den gekürzten Ersatzwert nennen.
+            _log("config", f"WARNUNG {key}: Wert ungültig – verwende "
+                           f"{settings.mask_value(key, entry['value'])!r}")
+        elif entry["error"]:
             _log("config", f"WARNUNG {key}: {entry['error']} – verwende {entry['value']!r}")
 
     for note in expert_env_warnings(env):

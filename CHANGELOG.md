@@ -20,6 +20,26 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 - **NTS-Server:** Die Kopie des Zertifikats für chronyd (`server.crt`, für die Gruppe `_chrony`
   lesbar) enthält nur noch die Zertifikatsblöcke. Eine kombinierte PEM-Datei mit Zertifikat und
   privatem Schlüssel gab den Schlüssel bisher an diese Gruppe – und damit an das Dashboard – weiter.
+- **Passwortwechsel:** Eine Anmeldeprüfung, die beim Ändern des Passworts noch lief, landet nicht mehr
+  im Merker für geprüfte Zugänge. Das alte Passwort galt sonst bis zu 5 Minuten weiter.
+- **API-Schlüssel aus der Zeit ohne Passwort:** „Behalten“ (`POST /api/apikeys/keep`) geht nur noch mit
+  Anmeldung per Passwort. Ohne Passwort ließ sich die Markierung entfernen, und der Schlüssel fehlte bei
+  der Prüfung nach dem ersten Passwort.
+- **Alte API-Schlüssel (PBKDF2, Vorabversion 1.3):** Ihre Prüfung läuft höchstens einmal gleichzeitig und
+  nach einem Fehlschlag erst nach einer Sekunde wieder. Falsche Schlüssel konnten sonst ohne Anmeldung
+  beliebig viel Rechenzeit binden.
+- **Leserecht:** API-Schlüssel mit Leserecht sehen auch DoT-Server (`dns_dot`) und feste Adressen
+  (`dns_pin`) nur gekürzt – dort kann wie im DoH-Pfad eine Konto-Kennung stehen (z. B. NextDNS).
+- **Log:** Die Warnung zu einer ungültigen DNS-Einstellung (`DNS_DOH`, `DNS_DOT`, `DNS_PIN`) nennt den
+  Wert nicht mehr wörtlich, nur die Einstellung und den gekürzten Ersatzwert.
+- **Alarm für Client-Uhren:** Höchstens 10 solcher Alarme je Stunde gehen an die Benachrichtigungen,
+  weitere nur ins Ereignisprotokoll. Dort haben sie ein eigenes Kontingent und verdrängen keine anderen
+  Ereignisse mehr. Viele abweichende Absender verbrauchten sonst das Stundenkontingent der Kanäle.
+- **Verlauf:** Die Verdichtung für `/api/history` läuft über eine eigene Leseverbindung und hält die
+  Messschleife nicht mehr auf; höchstens eine läuft gleichzeitig.
+- **Supervisor:** `noselect.list` im Datenverzeichnis wird über `rootsafe.py` gelesen (keinem Link
+  folgen, nicht blockieren, höchstens 4 KiB). Ein Link oder eine Pipe an dieser Stelle konnte den Start
+  abbrechen oder aufhalten.
 
 ### Behoben
 - Diagnosepaket: Die Aufzeichnung verwarf jede Client-Liste (`chronyc -c clients`) als „Zeile entfernt“.
