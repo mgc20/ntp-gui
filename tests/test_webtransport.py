@@ -58,7 +58,7 @@ class ResolveTest(unittest.TestCase):
         self.assertEqual(info, {"client": "192.168.1.5", "peer": "192.168.1.5", "scheme": "http",
                                 "proxied": False, "untrusted_forward": False, "proto_missing": False,
                                 "peer_loopback": False, "peer_trusted": False, "forward_headers": (),
-                                "proto_value": ""})
+                                "proto_value": "", "forward_conflict": ()})
 
     def test_trusted_proxy_gives_browser_address_and_scheme(self):
         info = wt.resolve("127.0.0.1", headers(X_Forwarded_For="192.168.1.50", X_Forwarded_Proto="https"), TRUST_LOCAL)
@@ -162,6 +162,39 @@ class ResolveTest(unittest.TestCase):
                                               "X-Forwarded-Proto": "https"}), trusted)
         self.assertNotEqual(info["client"], "198.51.100.9")
         self.assertEqual(info["scheme"], "https")
+        self.assertEqual(info["forward_conflict"], ("203.0.113.5", "198.51.100.9"))
+
+    def test_conflicting_headers_get_own_counting_key_and_log_text(self):
+        # Widerspruch zwischen Kette und X-Real-IP: weder die Adresse des Proxys (auch der Weg per
+        # SSH-Tunnel) noch eine der beiden Angaben ist der Zählschlüssel der Anmeldebremse.
+        import authguard
+
+        class Stub:
+            client_address = ("127.0.0.1", 40000)
+
+            def __init__(self, values):
+                self.headers = hdrs(values)
+
+            def _transport(self):
+                return wt.resolve(self.client_address[0], self.headers, TRUST_LOCAL)
+
+        conflict = Stub({"X-Forwarded-For": "203.0.113.5", "X-Real-IP": "198.51.100.9",
+                         "X-Forwarded-Proto": "https"})
+        key = server.Handler._client_key(conflict)
+        self.assertNotIn(key, ("127.0.0.1", "203.0.113.5", "198.51.100.9"))
+        self.assertEqual(key, authguard.conflict_key("127.0.0.1"))
+        self.assertEqual(server.Handler._client_key(Stub({"X-Forwarded-For": "203.0.113.5"})), "203.0.113.5")
+        text = server.Handler._client_text(conflict)
+        self.assertFalse(text.startswith("127.0.0.1"))
+        self.assertIn("203.0.113.5", text)
+        self.assertIn("198.51.100.9", text)
+        # Eine gelungene Anmeldung macht diesen Schlüssel nie zur bewährten Quelle.
+        guard = authguard.Guard()
+        guard.success(key)
+        guard.success("127.0.0.1")
+        with guard._lock:
+            self.assertFalse(guard._good_locked(key))
+            self.assertTrue(guard._good_locked("127.0.0.1"))
 
     def test_trust_all_is_dropped(self):
         self.assertEqual(wt.parse_networks(["0.0.0.0/0", "::/0", "kaputt"]), [])

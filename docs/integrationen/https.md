@@ -182,8 +182,11 @@ diese `/32` eintragen.
 
 > **`X-Real-IP` zusammen mit `X-Forwarded-For`/`Forwarded`:** ntp-gui weiß nicht, welche Köpfe dein
 > Proxy selbst schreibt und welche er vom Browser durchreicht. Kommen beide, gilt die Kette nur, wenn
-> ihr rechter Eintrag mit `X-Real-IP` übereinstimmt (so schreiben es NPM, Traefik und Zoraxy) –
-> sonst die Adresse des Proxys. Neben `X-Real-IP` zählt fürs Protokoll nur `X-Forwarded-Proto`, nicht
+> ihr rechter Eintrag mit `X-Real-IP` übereinstimmt (so schreiben es NPM, Traefik und Zoraxy).
+> Widersprechen sich die beiden – etwa weil Caddy ein `X-Real-IP` des Browsers durchreicht –, gilt
+> keine der Angaben: Fehlversuche solcher Anfragen zählt die Anmeldebremse unter einem eigenen
+> Schlüssel (nicht unter der Adresse des Proxys und nicht unter `127.0.0.1` eines SSH-Tunnels), und
+> die Log-Zeile „Anmeldung fehlgeschlagen von unklarer Adresse (…)“ nennt beide Angaben. Neben `X-Real-IP` zählt fürs Protokoll nur `X-Forwarded-Proto`, nicht
 > `Forwarded: proto=`. Bei reinem nginx deshalb `proxy_set_header X-Forwarded-For
 > $proxy_add_x_forwarded_for;` und `proxy_set_header X-Forwarded-Proto $scheme;` mit eintragen.
 

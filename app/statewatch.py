@@ -30,8 +30,9 @@ import numfmt
 CONFIRM = 2  # so oft hintereinander muss ein neuer Zustand gemessen werden
 CLIENT_RESTORE_GRACE = 3600.0  # s – übernommene Client-Alarme warten so lange auf die Client-Liste
 # Client-Uhren lassen sich von außen auslösen (jede Absenderadresse ein eigenes Gerät): Höchstens so viele
-# Alarme je Stunde gehen an die Benachrichtigungen, weitere nur ins Protokoll – sonst verbrauchten sie das
-# Stundenkontingent der Kanäle, und spätere wichtige Meldungen fielen weg.
+# Meldungen je Stunde – Alarme und „wieder im Rahmen“ zusammen – gehen an die Benachrichtigungen, weitere
+# nur ins Protokoll (ein still gemeldetes Ende schließt den Betreff im Router ohne Nachricht). Sonst
+# verbrauchten sie das Stundenkontingent der Kanäle, und spätere wichtige Meldungen fielen weg.
 CLIENT_NOTIFY_PER_HOUR = 10
 # Eigenes Kontingent im Ereignisprotokoll für diese Einträge (events.set_quota, in server.py gesetzt).
 CLIENT_EVENT_ROWS = 5_000
@@ -582,10 +583,12 @@ class StateWatcher:
                     state["streak"] = state["streak"] + 1 if back else 0
                     if state["streak"] >= CONFIRM:
                         state.update(alarm=False, streak=0)
+                        extra = _extra(data_for, ip)
+                        quiet = state.pop("quiet", False) or (extra.get("notify") is not False
+                                                              and not self._client_notify_ok(now))
                         self._send("clients", "info", f"Uhr von {ip} wieder im Rahmen ({fmt(value)})",
                                    {"address": ip, "offset": value, "threshold_ms": threshold * 1000,
-                                    **_extra(data_for, ip), **({"notify": False} if state.pop("quiet", False)
-                                                                 else {})})
+                                    **extra, **({"notify": False} if quiet else {})})
             if len(self._clients) > 5000:
                 for ip in list(self._clients)[:len(self._clients) - 5000]:
                     del self._clients[ip]

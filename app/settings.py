@@ -2005,16 +2005,8 @@ MASKED_FOR_READ = ("dns_doh", "dns_dot", "dns_pin")
 
 def _mask_host(host: str) -> str:
     """Servername ohne vordere Teile (z. B. Konto-Kennung vor dns.nextdns.io): nur die letzten drei."""
-    labels = host.split(".")
-    return "…." + ".".join(labels[-3:]) if len(labels) > 3 and not _is_ip(host) else host
-
-
-def _is_ip(text: str) -> bool:
-    try:
-        _ip(text.strip("[]"))
-    except ValueError:
-        return False
-    return True
+    import dnsfwd
+    return dnsfwd.mask_host(host)
 
 
 def mask_value(key: str, value: Any) -> Any:

@@ -7,7 +7,7 @@
 
 <p align="center">
   <a href="https://github.com/mgc20/ntp-gui/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/mgc20/ntp-gui/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="https://github.com/mgc20/ntp-gui/releases/latest"><img alt="Release" src="https://img.shields.io/badge/release-v1.8.0-0969da"></a>
+  <a href="https://github.com/mgc20/ntp-gui/releases/latest"><img alt="Release" src="https://img.shields.io/badge/release-v1.9.0-0969da"></a>
   <img alt="Plattformen" src="https://img.shields.io/badge/platform-amd64%20%7C%20arm64-1a7f37">
   <img alt="Image" src="https://img.shields.io/badge/image-ghcr.io-8250df">
   <a href="LICENSE"><img alt="Lizenz: MIT" src="https://img.shields.io/badge/license-MIT-59636e"></a>
@@ -1298,7 +1298,8 @@ Die Kachel **Dienste** der Übersicht zeigt, ob die Zustellung klappt.
   „Kritisch“ immer sofort. Offene Probleme, Sperrzeiten und offene Client-Alarme überstehen einen
   Neustart des Containers (in der Datenbank): Kein doppelter Alarm, und „behoben“ fehlt nicht.
 - **Wiederholung:** nach 30 s, 2 min und 10 min, danach verworfen (steht im Ereignisprotokoll).
-- **Limit:** standardmäßig höchstens 30 Nachrichten je Stunde und Kanal.
+- **Limit:** standardmäßig höchstens 30 Nachrichten je Stunde und Kanal. „Kritisch“ zählt nicht
+  mit, sondern hat einen eigenen Rahmen von 30 je Stunde – ein voller Kanal verschluckt keinen Ausfall.
 - **Link:** Mit `NOTIFY_DASHBOARD_URL=http://zeitserver.lan:8080/` enthält jede Nachricht einen
   Link auf die passende Seite.
 
@@ -2332,7 +2333,7 @@ Updates vor. Ein Release-Build läuft ohne Cache, zieht also immer aktuelle Debi
 **Herkunft prüfen** (GitHub-CLI, sobald das Repository öffentlich ist):
 
 ```bash
-gh attestation verify oci://ghcr.io/mgc20/ntp-gui:1.8.0 -R mgc20/ntp-gui
+gh attestation verify oci://ghcr.io/mgc20/ntp-gui:1.9.0 -R mgc20/ntp-gui
 ```
 
 Scheitert ein Schritt, entsteht kein halber Release. Bei einem privaten Repository

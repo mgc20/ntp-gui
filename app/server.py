@@ -97,7 +97,7 @@ PTP4L_CONF = os.environ.get("PTP4L_CONF", "/etc/linuxptp/ptp4l.conf")
 RUN_DIR = os.environ.get("NTPGUI_RUN_DIR", "/run/ntp-gui")
 START_MONO = time.monotonic()  # Laufzeit nach monotoner Uhr – ein Uhrsprung verfälscht sie nicht
 MAX_BODY = 64 * 1024
-VERSION = os.environ.get("NTPGUI_VERSION", "1.8.0")
+VERSION = os.environ.get("NTPGUI_VERSION", "1.9.0")
 EVENTS_INTERVAL = 5.0          # so oft liest der Server die Supervisor-Ereignisse ein
 CALIBRATION_DEFAULT_WINDOW = 86400.0  # /api/gps/calibration ohne window: letzte 24 h
 CALIBRATION_MAX_WINDOW = 7 * 86400.0  # … und höchstens 7 Tage (0 = „so viel wie möglich“ = 7 Tage)
@@ -2430,13 +2430,22 @@ class Handler(BaseHTTPRequestHandler):
     def _client_key(self) -> str:
         """Zählschlüssel für die Anmeldebremse: echte Adresse (Proxy-Köpfe nur von TRUSTED_PROXIES)."""
         try:
-            return authguard.source_key(self._transport()["client"])
+            info = self._transport()
+            if info.get("forward_conflict"):
+                return authguard.conflict_key(info["peer"])
+            return authguard.source_key(info["client"])
         except Exception:
             return authguard.source_key(self.client_address[0] if self.client_address else "")
 
     def _client_text(self) -> str:
         try:
-            return safe_host_for_log(self._transport()["client"])
+            info = self._transport()
+            conflict = info.get("forward_conflict")
+            if conflict:
+                # Welche Angabe vom Proxy stammt, ist unklar: beide nennen, keine als Absender.
+                return (f"unklarer Adresse (Proxy {safe_host_for_log(info['peer'])}: X-Forwarded-For "
+                        f"{safe_host_for_log(conflict[0])}, X-Real-IP {safe_host_for_log(conflict[1])})")
+            return safe_host_for_log(info["client"])
         except Exception:
             return "?"
 

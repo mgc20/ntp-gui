@@ -109,6 +109,7 @@ ROUTER_STATE_EVERY = 10.0             # s – Zustand höchstens so oft schreibe
 BACKLOG_SECONDS = 300.0            # nach einem Neustart: ältere, noch nicht verschickte Ereignisse verwerfen
 DEFAULT_DEBOUNCE_MIN = 15
 DEFAULT_RATE_PER_HOUR = 30
+CRIT_RATE_PER_HOUR = 30  # crit-Meldungen je Kanal und Stunde – zusätzlich zu rate_per_hour, nicht darin
 KNOWN_NAMES_TTL = 600.0
 
 SERVER_EXAMPLES = {"ntfy": "https://ntfy.sh", "gotify": "http://gotify.lan", "apprise": "http://apprise:8000"}
@@ -1191,6 +1192,7 @@ class _Sender:
         self.queue: deque = deque()
         self.cond = threading.Condition()
         self.sent_times: deque = deque()
+        self.crit_times: deque = deque()  # eigener Rahmen für crit (CRIT_RATE_PER_HOUR)
         self.stopped = False
         self.limit_noted: float | None = None  # nicht 0.0: monotonic() zählt ab Systemstart
         self.thread = threading.Thread(target=self._run, daemon=True, name=f"notify-{channel['id']}")
@@ -1224,11 +1226,19 @@ class _Sender:
                 self.cond.wait(timeout=max(0.05, min(wait, 60)))
             return None
 
-    def _rate_ok(self) -> bool:
+    def _times(self, msg: dict) -> tuple[deque, int]:
+        """Zeitstempel und Stundengrenze für diese Meldung: crit hat einen eigenen Rahmen – viele
+        warn/info-Meldungen (manche lassen sich von außen auslösen) verdrängen so nie einen Ausfall."""
+        if msg.get("level") == "crit" and not msg.get("resolved"):
+            return self.crit_times, CRIT_RATE_PER_HOUR
+        return self.sent_times, int(self.channel.get("rate_per_hour") or DEFAULT_RATE_PER_HOUR)
+
+    def _rate_ok(self, msg: dict | None = None) -> bool:
+        times, limit = self._times(msg or {})
         now = time.monotonic()
-        while self.sent_times and now - self.sent_times[0] > 3600:
-            self.sent_times.popleft()
-        return len(self.sent_times) < int(self.channel.get("rate_per_hour") or DEFAULT_RATE_PER_HOUR)
+        while times and now - times[0] > 3600:
+            times.popleft()
+        return len(times) < limit
 
     def _run(self) -> None:
         while True:
@@ -1236,7 +1246,7 @@ class _Sender:
             if msg is None:
                 return
             channel = self.channel
-            if not msg.get("attempt") and not self._rate_ok():
+            if not msg.get("attempt") and not self._rate_ok(msg):
                 _record(channel["id"], True, dropped=1, attempt=False)
                 if self.limit_noted is None or time.monotonic() - self.limit_noted > 3600:
                     self.limit_noted = time.monotonic()
@@ -1252,7 +1262,7 @@ class _Sender:
                             {"channel": channel["id"], "reason": "filter"})
                 continue
             if not msg.get("attempt"):
-                self.sent_times.append(time.monotonic())
+                self._times(msg)[0].append(time.monotonic())
             try:
                 self.notifier.deliver(channel, clean)
             except DeliveryError as exc:

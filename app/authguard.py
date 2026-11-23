@@ -54,6 +54,16 @@ EVENT_EVERY = 60.0
 MAX_SOURCES = 4096
 
 
+# Zählschlüssel für Anfragen, deren Proxy-Köpfe sich widersprechen (webtransport: forward_conflict).
+# Er teilt sich nichts mit einer echten Adresse – auch nicht mit der des Proxys – und wird nie als
+# bewährte Quelle gemerkt, ist also nie von der Gesamtbremse ausgenommen.
+CONFLICT_PREFIX = "widerspruch:"
+
+
+def conflict_key(peer: str) -> str:
+    return CONFLICT_PREFIX + source_key(peer)
+
+
 def source_key(address: str) -> str:
     """Zählschlüssel einer Adresse: IPv4 einzeln, IPv6 je /64 (ein Anschluss hat meist ein ganzes /64)."""
     text = str(address or "").strip()
@@ -200,6 +210,8 @@ class Guard:
         wall = self.wall()
         with self._lock:
             self._sources.pop(key, None)
+            if key.startswith(CONFLICT_PREFIX):
+                return  # widersprüchliche Proxy-Köpfe: nie eine bewährte Quelle
             mark = self._mark(key)
             fresh = self._known_good.get(mark, 0.0) - wall < KNOWN_GOOD_SECONDS - KNOWN_GOOD_REFRESH
             self._known_good[mark] = wall + KNOWN_GOOD_SECONDS

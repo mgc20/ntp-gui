@@ -130,14 +130,15 @@ def resolve(peer: str, headers: Any, networks: list) -> dict[str, Any]:
     brauchbares X-Forwarded-Proto/Forwarded proto=), untrusted_forward (Proxy-Köpfe von einer
     Gegenstelle, der niemand traut – sie wurden ignoriert), peer_loopback, peer_trusted (Gegenstelle
     steht in TRUSTED_PROXIES), forward_headers (welche Proxy-Köpfe kamen), proto_value (unbekannter
-    Proto-Wert, gekürzt; sonst "").
+    Proto-Wert, gekürzt; sonst ""), forward_conflict (X-Forwarded-For/Forwarded und X-Real-IP eines
+    vertrauenswürdigen Proxys widersprechen sich: (Kette rechts, X-Real-IP); sonst ()).
     """
     peer_ip = parse_ip(peer)
     peer_text = str(peer_ip) if peer_ip is not None else str(peer or "")
     info = {"client": peer_text, "peer": peer_text, "scheme": "http", "proxied": False,
             "untrusted_forward": False, "proto_missing": False,
             "peer_loopback": bool(peer_ip is not None and peer_ip.is_loopback),
-            "peer_trusted": False, "forward_headers": (), "proto_value": ""}
+            "peer_trusted": False, "forward_headers": (), "proto_value": "", "forward_conflict": ()}
     sent = tuple(name for name in FORWARD_HEADERS if headers is not None and headers.get(name))
     info["forward_headers"] = sent
     if not _trusted(peer_ip, networks):
@@ -161,11 +162,16 @@ def resolve(peer: str, headers: Any, networks: list) -> dict[str, Any]:
         # er X-Forwarded-For/Forwarded des Browsers unverändert durch; setzt er nur X-Forwarded-*,
         # stammt ein X-Real-IP vom Browser. Proxys, die beides schreiben (NPM, Traefik, Zoraxy),
         # tragen rechts in der Kette dieselbe Adresse ein wie in X-Real-IP. Widersprechen sich die
-        # beiden, ist einer davon vom Browser – dann gilt keiner, Adresse bleibt die Gegenstelle.
-        # Forwarded proto= zählt neben X-Real-IP nicht: Es könnte ebenso vom Browser stammen.
+        # beiden, ist einer davon vom Browser – dann gilt keiner. „client“ bleibt die Gegenstelle,
+        # forward_conflict nennt beide Angaben: Anmeldebremse und Log behandeln solche Anfragen
+        # gesondert, damit sie nicht unter der Adresse des Proxys (oft 127.0.0.1, auch der Weg per
+        # SSH-Tunnel) zählen. Forwarded proto= zählt neben X-Real-IP nicht: Es könnte ebenso vom
+        # Browser stammen.
         if not chain:
             chain = real_ip
         elif parse_ip(chain[-1]) is None or parse_ip(chain[-1]) != parse_ip(real_ip[0]):
+            info["forward_conflict"] = tuple(str(a) if a is not None else "?"
+                                             for a in (parse_ip(chain[-1]), parse_ip(real_ip[0])))
             chain = []
     elif not protos:
         protos = [e["proto"].lower() for e in elements[-1:] if e.get("proto")]
