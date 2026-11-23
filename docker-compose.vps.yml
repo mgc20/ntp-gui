@@ -39,8 +39,9 @@ services:
     # die Uhr mit dem Host – auf einem VPS also mit allem, was dort läuft.
     # Alles andere ist für den Start und die Rechteabgabe nötig: Nur der
     # Supervisor bleibt root, das Dashboard läuft als Benutzer ntpgui ohne
-    # Capabilities, chronyd als _chrony nur mit SYS_TIME. Kein NET_RAW: Die
-    # Messung der Client-Uhren ist hier aus (CLIENTMON unten).
+    # Capabilities, chronyd als _chrony nur mit SYS_TIME (und NET_BIND_SERVICE
+    # für den NTP-Port). Kein NET_RAW: Die Messung der Client-Uhren ist hier
+    # aus (CLIENTMON unten).
     security_opt:
       - no-new-privileges:true
     cap_drop:

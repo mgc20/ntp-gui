@@ -23,8 +23,8 @@
 #
 # Rechte (1.9): Nur der Supervisor läuft als root. Dashboard und DNS-Weiterleiter laufen als
 # eigener Benutzer ntpgui (setpriv, ohne Capabilities außer den unten genannten, no-new-privs),
-# chronyd gibt seine Rechte selbst an _chrony ab (behält nur SYS_TIME), gpsd an gpsd. ptp4l
-# und phc2sys bleiben root (Hardware-Zeitstempel, PHC). Das Dashboard schreibt nur in sein
+# chronyd gibt seine Rechte selbst an _chrony ab (behält nur SYS_TIME und NET_BIND_SERVICE
+# für den NTP-Port), gpsd an gpsd. ptp4l und phc2sys bleiben root (Hardware-Zeitstempel, PHC). Das Dashboard schreibt nur in sein
 # Datenverzeichnis und in ${REQUEST_DIR}; ${RUN_DIR} selbst gehört dem Supervisor. Neustarts
 # fordert es ausschließlich über die festen Dateien reload.request und reload-chronyd.request an.
 set -euo pipefail
@@ -674,9 +674,28 @@ start_services() {
   NEXT_HOTPLUG=$(( $(mono) + HOTPLUG_EVERY ))
 }
 
-# Gibt 1 zurück, wenn ein Dienst nicht zu beenden war (fehlt CAP_KILL?) – dann darf er nicht doppelt starten.
+# stop_services [shutdown] -> beendet die Zeitdienste; 1 = ein Dienst ließ sich nicht beenden (fehlt
+# CAP_KILL?), dann darf er nicht doppelt starten. Beim Neuladen (ohne „shutdown“) prüft „kill -0“
+# vorher, ob jeder laufende Dienst ein Signal annimmt. Verweigert einer, bleibt alles, wie es ist:
+# Nichts wird beendet, nichts blockiert den Watchdog. Scheitert das Beenden trotzdem, starten die
+# schon beendeten Dienste sofort wieder. resolv.conf kommt nur zurück, wenn dnsfwd wirklich beendet ist.
 stop_services() {
-  local name entry rc=0
+  local mode="${1:-reload}" name entry rc=0 refused="" stopped=" "
+  if [[ "$mode" != shutdown ]]; then
+    for name in phc2sys ptp4l gpsd chronyd dnsfwd; do
+      entry="${SVC_ENTRY[$name]:-}"
+      if [[ -n "$entry" ]] && service_alive "$entry" && ! kill -0 "${entry%%=*}" 2>/dev/null; then
+        refused+=" ${name}"
+      fi
+    done
+    if [[ -n "$refused" ]]; then
+      log main "FEHLER: Signal an${refused} verweigert – fehlt dem Container CAP_KILL (cap_drop: ALL ohne" \
+               "cap_add: KILL)? Alle Dienste laufen unverändert weiter."
+      "${EMIT_EVENT:-:}" service crit "Dienste lassen sich nicht beenden (${refused# }) – fehlt CAP_KILL?" \
+        service="${refused# }"
+      return 1
+    fi
+  fi
   for name in phc2sys ptp4l gpsd chronyd dnsfwd; do
     entry="${SVC_ENTRY[$name]:-}"
     if [[ -n "$entry" ]] && service_alive "$entry"; then kill "${entry%%=*}" 2>/dev/null || true; fi
@@ -684,11 +703,19 @@ stop_services() {
   for name in phc2sys ptp4l gpsd chronyd dnsfwd; do
     entry="${SVC_ENTRY[$name]:-}"
     if [[ -n "$entry" ]] && ! stop_pid "$entry" "$name"; then rc=1; continue; fi
+    [[ -z "$entry" ]] || stopped+="${name} "
     SVC_ENTRY[$name]=""
     SVC_STATE[$name]=stopped
   done
   # dnsfwd schreibt resolv.conf beim Beenden selbst zurück; nach einem SIGKILL nicht.
-  dns_restore
+  if [[ -z "${SVC_ENTRY[dnsfwd]:-}" ]]; then dns_restore; fi
+  if (( rc )) && [[ "$mode" != shutdown ]]; then
+    for name in dnsfwd chronyd gpsd ptp4l phc2sys; do
+      [[ "$stopped" == *" ${name} "* ]] || continue
+      log main "Starte '${name}' wieder – der Neustart der übrigen Dienste ist gescheitert."
+      "start_${name}" || true
+    done
+  fi
   write_services
   return "$rc"
 }
@@ -736,6 +763,12 @@ reload_chronyd() {
     return 0
   fi
   entry="${SVC_ENTRY[chronyd]:-}"
+  # Signal verweigert (kill -0 prüft nur): gar nicht erst versuchen, statt STOP_GRACE s zu warten.
+  if [[ -n "$entry" ]] && service_alive "$entry" && ! kill -0 "${entry%%=*}" 2>/dev/null; then
+    log main "FEHLER: Signal an chronyd verweigert – fehlt dem Container CAP_KILL? chronyd läuft unverändert weiter."
+    write_status error "chronyd lässt sich nicht neu starten – fehlt dem Container CAP_KILL?"
+    return 0
+  fi
   if [[ -n "$entry" ]] && ! stop_pid "$entry" chronyd; then
     # Der alte chronyd läuft weiter (Signal verweigert) – ein zweiter fände seine Ports belegt.
     write_status error "chronyd lässt sich nicht neu starten – fehlt dem Container CAP_KILL?"
@@ -793,7 +826,7 @@ shutdown() {
     "${EMIT_EVENT:-:}" service crit "Container wird wegen eines ausgefallenen Pflichtdienstes beendet" exit="$code"
   fi
   local stopped=0 jobs_left
-  stop_services || stopped=1
+  stop_services shutdown || stopped=1
   if [[ -n "$WEB_PID" ]]; then stop_pid "$WEB_PID" web || stopped=1; fi
   # Nur auf die eigenen Hintergrundjobs warten: Ein 'wait' ohne Argument wartet in
   # bash 5.2 auch auf die Prozess-Substitution des Log-Tees – und die endet erst
@@ -856,14 +889,15 @@ restart_service() {  # restart_service <dienst>
   fi
 }
 
-# hold_active -> 0 = RUN_DIR/reload.hold nennt eine Zeit in der Zukunft (Holdover-Test läuft).
+# hold_active -> 0 = REQUEST_DIR/reload.hold nennt eine Zeit in der Zukunft (Holdover-Test läuft).
+# Das Verzeichnis gehört dem Dashboard: rootsafe.py öffnet ohne Links zu folgen und ohne zu blockieren
+# und liest nur aus einer gewöhnlichen Datei (eine Pipe an dieser Stelle hält den Watchdog nicht auf).
 hold_active() {
   local hold_until="" file="${REQUEST_DIR:-$RUN_DIR}/reload.hold"
-  # Nur eine gewöhnliche Datei (kein Link, keine Pipe): Das Verzeichnis gehört dem Dashboard.
-  if [[ -f "$file" && ! -L "$file" ]]; then
-    read -r -n 16 hold_until < "$file" 2>/dev/null || hold_until=""
-  fi
-  [[ "$hold_until" =~ ^[0-9]{1,12}$ ]] && (( hold_until >= $(now) ))
+  [[ -e "$file" || -L "$file" ]] || return 1
+  hold_until="$(python3 "${APP_DIR}/rootsafe.py" hold "$file" 2>/dev/null)" || hold_until=""
+  hold_until="${hold_until%%$'\n'*}"
+  [[ "$hold_until" =~ ^[0-9]{1,12}$ ]] && (( 10#$hold_until >= $(now) ))
 }
 
 # reload_held <grund> [stufe] [hinweis] -> 0 = automatischen Neustart zurückstellen (Holdover-Test
@@ -941,16 +975,84 @@ use_run_when_readonly() {
 }
 
 # Datenverzeichnis dem Benutzer APP_USER übergeben: einmalig nach dem Update von 1.8 (bisher gehörte
-# es root), danach nur, falls root (confgen) etwas angelegt hat. -P/-h: Links selbst, nie ihr Ziel.
+# es root), danach nur, falls root (confgen) etwas angelegt hat. Das Verzeichnis gehört dem Dashboard,
+# darum übernimmt rootsafe.py nur Verzeichnisse und Dateien mit genau einem Namen, über den geöffneten
+# Deskriptor und ohne Links zu folgen. Dateien mit weiteren Namen (Hardlinks) bleiben unverändert.
 data_dir_to_app() {  # data_dir_to_app [announce]
-  [[ -d "$DATA_DIR" ]] || return 0
+  local skipped
+  [[ -d "$DATA_DIR" && ! -L "$DATA_DIR" ]] || return 0
   chown -h "${APP_USER}:${APP_USER}" "$DATA_DIR" 2>/dev/null || true
   chmod 0700 "$DATA_DIR" 2>/dev/null || true
-  [[ -n "$(find "$DATA_DIR" -mindepth 1 ! -user "$APP_USER" -print -quit 2>/dev/null)" ]] || return 0
+  [[ -n "$(find "$DATA_DIR" -mindepth 1 ! -user "$APP_USER" \( -type d -o -type f \) -print -quit 2>/dev/null)" ]] \
+    || return 0
   [[ "${1:-}" == announce ]] && log main "Datenverzeichnis ${DATA_DIR} wird dem Benutzer ${APP_USER} übergeben …"
-  chown -R -P -h "${APP_USER}:${APP_USER}" "$DATA_DIR" \
-    || log main "WARNUNG: Datenverzeichnis nicht vollständig übernommen – Speichern kann scheitern."
+  if ! skipped="$(python3 "${APP_DIR}/rootsafe.py" chown "$DATA_DIR" "$APP_USER")"; then
+    log main "WARNUNG: Datenverzeichnis nicht vollständig übernommen – Speichern kann scheitern."
+  elif [[ -n "$skipped" ]]; then
+    log main "WARNUNG: Dateien mit mehreren Namen (Hardlinks) im Datenverzeichnis bleiben unverändert:" \
+             "${skipped//$'\n'/, }"
+  fi
   return 0
+}
+
+# REQUEST_DIR beim Start vorbereiten: Nur die festen Anforderungen von vor dem Start (und
+# angefangene *.tmp, alte pmc-Sockets) entfernen – Aufzeichnungen der Datenquellen und der Zustand
+# des DNS-Weiterleiters bleiben über einen Neustart des Containers erhalten. Ist der Pfad ein Link
+# oder kein Verzeichnis, wird er ersetzt. prepare_request_dir [benutzer]
+prepare_request_dir() {
+  local owner="${1:-}"
+  if [[ -L "$REQUEST_DIR" ]] || [[ -e "$REQUEST_DIR" && ! -d "$REQUEST_DIR" ]]; then
+    rm -f "$REQUEST_DIR"
+  fi
+  mkdir -p "$REQUEST_DIR"
+  rm -f "${REQUEST_DIR}/reload.request" "${REQUEST_DIR}/reload-chronyd.request" "${REQUEST_DIR}/reload.hold" \
+        "${REQUEST_DIR}"/*.tmp "${REQUEST_DIR}"/pmc-* 2>/dev/null || true
+  if [[ -n "$owner" ]]; then
+    chown -h "${owner}:${owner}" "$REQUEST_DIR"
+    # Reste eines Laufs als root: Das Dashboard könnte sie nicht ersetzen. Entfernen statt
+    # übernehmen – das Verzeichnis gehört dem Dashboard.
+    find "$REQUEST_DIR" -mindepth 1 -maxdepth 1 ! -user "$owner" ! -type d -delete 2>/dev/null || true
+  fi
+  chmod 0750 "$REQUEST_DIR"
+}
+
+# Passwortdatei (WEB_PASSWORD_FILE) für das Dashboard bereitstellen: Ein Docker-Secret gehört oft root
+# bzw. dem Benutzer auf dem Host und ist für ntpgui nicht lesbar – Kopie unter RUN_DIR, nur für die
+# Gruppe ntpgui lesbar. Der Watchdog erneuert die Kopie, wenn sich das Original ändert
+# (refresh_web_password), damit ein Passwortwechsel ohne Neustart des Containers wirkt.
+WEB_PASSWORD_FILE_APP=""
+WEB_PASSWORD_SIG=""
+copy_web_password() {  # copy_web_password [leer] -> 0 = Kopie geschrieben („leer“: Dashboard gesperrt)
+  local dir="${RUN_DIR}/secrets" tmp
+  if [[ "${1:-}" != leer ]]; then
+    [[ -n "${WEB_PASSWORD_FILE:-}" && -f "$WEB_PASSWORD_FILE" && -r "$WEB_PASSWORD_FILE" ]] || return 1
+  fi
+  mkdir -p "$dir"
+  chmod 0750 "$dir"
+  chgrp "$APP_USER" "$dir"
+  tmp="${dir}/web_password.tmp"
+  WEB_PASSWORD_SIG="$(file_signature "$WEB_PASSWORD_FILE")"
+  if [[ "${1:-}" == leer ]]; then : > "$tmp"; else head -c 8192 -- "$WEB_PASSWORD_FILE" > "$tmp"; fi \
+     && chgrp "$APP_USER" "$tmp" && chmod 0440 "$tmp" && mv -f "$tmp" "${dir}/web_password" \
+     && { WEB_PASSWORD_FILE_APP="${dir}/web_password"; return 0; }
+  rm -f "$tmp" 2>/dev/null || true
+  return 1
+}
+
+# Original der Passwortdatei geändert? Dann die Kopie erneuern. Ist das Original nicht mehr lesbar,
+# wird die Kopie leer – wie bei einer unlesbaren WEB_PASSWORD_FILE ist das Dashboard dann gesperrt.
+refresh_web_password() {
+  [[ -n "$WEB_PASSWORD_FILE_APP" ]] || return 0
+  [[ "$(file_signature "$WEB_PASSWORD_FILE")" != "$WEB_PASSWORD_SIG" ]] || return 0
+  if copy_web_password; then
+    log main "Passwortdatei geändert – das Dashboard nutzt jetzt das neue Passwort."
+    "${EMIT_EVENT:-:}" access info "Passwortdatei geändert – neues Passwort aktiv" reason=password_file
+  elif copy_web_password leer; then
+    log main "WARNUNG: Passwortdatei ${WEB_PASSWORD_FILE} nicht mehr lesbar – Dashboard gesperrt."
+    "${EMIT_EVENT:-:}" access warn "Passwortdatei nicht mehr lesbar – Dashboard gesperrt" reason=password_file
+  else
+    log main "WARNUNG: Kopie der Passwortdatei nicht zu erneuern."
+  fi
 }
 
 # Benutzer für Dashboard und DNS-Weiterleiter vorbereiten: Verzeichnisse, Übernahme des
@@ -966,32 +1068,23 @@ prepare_app_user() {
   elif ! cap_has 7 || ! cap_has 6; then
     APP_DROP_OFF="CAP_SETUID/CAP_SETGID fehlen (cap_add: [SETUID, SETGID])"
   fi
-  rm -rf "$REQUEST_DIR" 2>/dev/null || true
-  mkdir -p "$REQUEST_DIR" "$DATA_DIR"
-  chmod 0750 "$REQUEST_DIR"
+  if ! mkdir -p "$DATA_DIR" 2>/dev/null; then
+    log main "FEHLER: Datenverzeichnis ${DATA_DIR} nicht erreichbar. Fehlt dem Container CAP_DAC_OVERRIDE" \
+             "(cap_drop: ALL ohne cap_add: DAC_OVERRIDE)? Ohne sie kann der Supervisor die Verzeichnisse" \
+             "von chronyd und Dashboard nicht öffnen."
+    exit 1
+  fi
   if [[ -n "$APP_DROP_OFF" ]]; then
+    prepare_request_dir
     if (( EUID == 0 )); then
       log main "WARNUNG: Dashboard und DNS-Weiterleiter laufen als root, weil ${APP_DROP_OFF}."
       "${EMIT_EVENT:-:}" service warn "Dashboard läuft als root – ${APP_DROP_OFF}" reason=privileges
     fi
     return 0
   fi
-  chown "${APP_USER}:${APP_USER}" "$REQUEST_DIR"
+  prepare_request_dir "$APP_USER"
   data_dir_to_app announce
-  # Docker-Secret (WEB_PASSWORD_FILE) gehört oft root bzw. dem Benutzer auf dem Host und ist für
-  # ntpgui nicht lesbar: Kopie unter RUN_DIR, nur für die Gruppe ntpgui lesbar.
-  WEB_PASSWORD_FILE_APP=""
-  if [[ -n "${WEB_PASSWORD_FILE:-}" && -f "$WEB_PASSWORD_FILE" && -r "$WEB_PASSWORD_FILE" ]]; then
-    local dir="${RUN_DIR}/secrets"
-    mkdir -p "$dir"
-    chmod 0750 "$dir"
-    chgrp "$APP_USER" "$dir"
-    if head -c 8192 -- "$WEB_PASSWORD_FILE" > "${dir}/web_password.tmp" \
-       && chgrp "$APP_USER" "${dir}/web_password.tmp" && chmod 0440 "${dir}/web_password.tmp" \
-       && mv -f "${dir}/web_password.tmp" "${dir}/web_password"; then
-      WEB_PASSWORD_FILE_APP="${dir}/web_password"
-    fi
-  fi
+  copy_web_password || true
 }
 
 start_logtee
@@ -1000,7 +1093,11 @@ use_run_when_readonly
 mkdir -p /var/log/chrony /etc/linuxptp 2>/dev/null || true
 echo "$$" > "${RUN_DIR}/supervisor.pid"
 write_status idle "bereit"
-prepare_app_user   # legt REQUEST_DIR neu an – Anforderungen von vor dem Start sind erledigt
+if (( EUID == 0 )) && ! cap_has 1; then
+  log main "WARNUNG: CAP_DAC_OVERRIDE fehlt – der Supervisor erreicht die Verzeichnisse von chronyd und"
+  log main "         Dashboard nicht. Bei cap_drop: [ALL] gehört DAC_OVERRIDE zu cap_add."
+fi
+prepare_app_user   # entfernt Anforderungen von vor dem Start
 if ! cap_has 5; then
   log main "WARNUNG: CAP_KILL fehlt – der Supervisor kann chronyd und das Dashboard nicht beenden."
   log main "         Speichern mit Neustart der Dienste scheitert dann. Bei cap_drop: [ALL] gehört KILL zu cap_add."
@@ -1078,6 +1175,7 @@ while true; do
   if (( MONO >= NEXT_HOTPLUG )); then
     NEXT_HOTPLUG=$(( MONO + HOTPLUG_EVERY ))
     check_hotplug
+    refresh_web_password
     # ptp4l schreibt sein Log unbegrenzt; ab 5 MB auf die letzten 256 KB kürzen (stat ist ein eigener
     # Prozess – darum nur alle HOTPLUG_EVERY Sekunden, nicht in jeder Runde).
     # In-place (cat >), damit der O_APPEND-Deskriptor von ptp4l gültig bleibt.

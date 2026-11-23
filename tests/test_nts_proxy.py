@@ -383,7 +383,8 @@ BACKOFF=(5 15 60 300); STABLE_AFTER=600
 """
 
     def run_bash(self, body, timeout=20):
-        script = self.STUBS + _entrypoint_functions(*self.FUNCS) + "\n" + body
+        script = (self.STUBS + f"APP_DIR={ROOT / 'app'}\n" + _entrypoint_functions(*self.FUNCS)
+                  + "\n" + body)
         return subprocess.run(["bash", "-c", script], capture_output=True, text=True,
                               timeout=timeout, check=True).stdout.split()
 

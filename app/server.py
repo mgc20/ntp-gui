@@ -1705,6 +1705,20 @@ class AuthCache:
 AUTH_CACHE = AuthCache()
 
 
+def auth_cache_key(header: str, info: dict) -> str:
+    """Schlüssel für AUTH_CACHE. Bei WEB_PASSWORD_FILE gehört der Stand der Datei dazu: Ändert sich das
+    Passwort in der Datei, gilt ein gemerkter Zugang mit dem alten nicht weiter."""
+    key = header + "|" + str(info.get("source"))
+    path = os.environ.get("WEB_PASSWORD_FILE", "").strip()
+    if info.get("source") == "env" and path:
+        try:
+            st = os.stat(path)
+            key += f"|{st.st_ino}:{st.st_size}:{st.st_mtime_ns}"
+        except OSError:
+            key += "|-"
+    return key
+
+
 class SingleFlight:
     """Gleiche Prüfungen bündeln: Kommt derselbe Anmeldekopf mehrmals gleichzeitig (Seite mit mehreren
     Abrufen), prüft nur die erste Anfrage; die übrigen warten auf deren Ergebnis statt selbst zu prüfen."""
@@ -2389,7 +2403,7 @@ class Handler(BaseHTTPRequestHandler):
         user, _, password = decoded.partition(":")
         if user == LOGOUT_USER and info.get("user") != LOGOUT_USER:
             return False  # abgemeldeter Browser: nur erneut fragen, kein Fehlversuch
-        cache_key = header + "|" + str(info["source"])
+        cache_key = auth_cache_key(header, info)
         if AUTH_CACHE.known(cache_key):
             return True  # schon geprüft und gültig: nie gebremst
         key = self._client_key()
@@ -3301,7 +3315,7 @@ class Handler(BaseHTTPRequestHandler):
             # geändert wird.
             header = self.headers.get("Authorization", "")
             info = auth_info()
-            AUTH_CACHE.forget(header + "|" + str(info.get("source")))
+            AUTH_CACHE.forget(auth_cache_key(header, info))
             self._send_json({"ok": True, "probe": LOGOUT_PATH, "probe_user": LOGOUT_USER})
         elif path == "/api/apikeys/keep":
             if not apikeys.keep(str(data.get("id", ""))):

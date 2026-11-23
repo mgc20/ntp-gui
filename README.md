@@ -1733,7 +1733,7 @@ PHC-Refclock dient ihm als Referenz für Stratum und Statistik.
 | `WEB_PORT` / `WEB_BIND` | `8080` / `0.0.0.0` | Adresse des Dashboards. IPv6 geht auch: `::` nimmt IPv4 und IPv6 an; mit `::1` oder einer anderen einzelnen Adresse erreicht der Docker-Healthcheck (fragt `127.0.0.1`) das Dashboard nicht. |
 | `WEB_TITLE` | `NTP / PTP Time Server` | Überschrift |
 | `WEB_USER` / `WEB_PASSWORD` | – | HTTP Basic Auth (alternativ Passwort im Dashboard setzen). Nur `WEB_PASSWORD` ⇒ Benutzer `admin`; nur `WEB_USER` ⇒ Dashboard gesperrt, bis auch das Passwort gesetzt ist. Siehe [Anmeldung und Zugang](#anmeldung-und-zugang) |
-| `WEB_PASSWORD_FILE` | – | Passwort aus einer Datei statt aus der Umgebung (z. B. Docker Secret `/run/secrets/…`); hat Vorrang vor `WEB_PASSWORD`. Unlesbar oder leer ⇒ Dashboard gesperrt |
+| `WEB_PASSWORD_FILE` | – | Passwort aus einer Datei statt aus der Umgebung (z. B. Docker Secret `/run/secrets/…`); hat Vorrang vor `WEB_PASSWORD`. Unlesbar oder leer ⇒ Dashboard gesperrt. Im Container gilt ein geänderter Inhalt nach spätestens etwa 30 s (ohne Neustart) |
 | `WEB_REQUIRE_AUTH` | `false` | `true` = ohne Zugang (Passwort) bleibt das Dashboard gesperrt: Nur `/healthz` und eine Einrichtungs-Meldung antworten. Für Server, die aus dem Internet erreichbar sind (VPS) |
 | `WEB_ALLOWED_HOSTS` | – | Weitere Namen, unter denen das Dashboard **ohne Passwort** antworten darf, kommagetrennt; `*.example.org` für alle Unternamen, `*` schaltet die Prüfung ab. Gilt zusätzlich zu „Erlaubte Namen“ im Dashboard (Einstellungen → Dashboard & Zugang). Siehe [Schutz vor DNS-Rebinding](#schutz-vor-dns-rebinding) |
 | `WEB_READONLY` | `false` | Einstellungen im Dashboard sperren |
@@ -1931,7 +1931,7 @@ Namen. Alle anderen Seiten und die übrige API bleiben geprüft.
 | Prozess | Benutzer | Rechte |
 |---|---|---|
 | Supervisor (`entrypoint.sh`) | root | startet und überwacht die Dienste, erzeugt die Konfiguration |
-| `chronyd` | `_chrony` | legt die Rechte nach dem Start selbst ab, behält nur `SYS_TIME` |
+| `chronyd` | `_chrony` | legt die Rechte nach dem Start selbst ab, behält nur `SYS_TIME` (und `NET_BIND_SERVICE` für den NTP-Port) |
 | `gpsd` | `gpsd` | legt die Rechte nach dem Öffnen des Geräts selbst ab |
 | `ptp4l` / `phc2sys` | root | brauchen `NET_ADMIN`/`SYS_TIME` für Hardware-Zeitstempel und die PTP-Uhr |
 | Dashboard (`python3 server.py`) | `ntpgui` (ab 1.9) | keine Capabilities außer `NET_RAW` für die Client-Messung (nur wenn sie beim Start an ist) und `NET_BIND_SERVICE` nur bei `WEB_PORT` unter 1024; `no-new-privs` |
@@ -1960,8 +1960,8 @@ Capabilities und geben nur die nötigen zurück, begrenzen Prozesse, Speicher un
 |---|---|
 | `SYS_TIME` | chronyd stellt die Uhr (ohne: `-x`, nur Ausliefern) |
 | `SETUID`, `SETGID` | Rechte abgeben (chronyd, gpsd, Dashboard) |
-| `CHOWN`, `FOWNER`, `DAC_OVERRIDE` | Verzeichnisse beim Start vorbereiten, Dateien der Dienste lesen |
-| `KILL` | Dienste beim Speichern neu starten. **Ohne KILL** kann der Supervisor chronyd (anderer Benutzer) nicht beenden: Er warnt beim Start und meldet einen gescheiterten Neustart, statt zu hängen. |
+| `CHOWN`, `FOWNER`, `DAC_OVERRIDE` | Verzeichnisse beim Start vorbereiten, Dateien der Dienste lesen. **Ohne DAC_OVERRIDE** erreicht der Supervisor die Verzeichnisse von chronyd und Dashboard nicht und bricht den Start mit einer Meldung im Log ab. |
+| `KILL` | Dienste beim Speichern neu starten. **Ohne KILL** kann der Supervisor chronyd (anderer Benutzer) nicht beenden: Er warnt beim Start, lässt beim Speichern alle Dienste unverändert weiterlaufen und meldet den gescheiterten Neustart. |
 | `NET_BIND_SERVICE` | Port 123 (und 53 für den DNS-Weiterleiter) mit `network_mode: host` |
 | `NET_RAW` | Messung der Client-Uhren; PTP über Ethernet |
 | `NET_ADMIN` | nur PTP: Hardware-Zeitstempel |

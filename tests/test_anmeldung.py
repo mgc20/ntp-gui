@@ -261,6 +261,21 @@ class FailClosedTest(_ServerBase):
             ok = {"Authorization": basic("admin", "ein-langes-geheimnis")}
             self.assertEqual(self.request("GET", "/api/v1/instance", headers=ok)[0], 200)
 
+    def test_changed_password_file_ends_remembered_login(self):
+        secret = os.path.join(self.tmp.name, "pw-wechsel")
+        with open(secret, "w", encoding="utf-8") as handle:
+            handle.write("altes-passwort-123\n")
+        old = {"Authorization": basic("admin", "altes-passwort-123")}
+        new = {"Authorization": basic("admin", "neues-passwort-456")}
+        with mock.patch.dict(os.environ, {"WEB_USER": "admin", "WEB_PASSWORD_FILE": secret}):
+            self.assertEqual(self.request("GET", "/api/v1/instance", headers=old)[0], 200)
+            replacement = secret + ".tmp"
+            with open(replacement, "w", encoding="utf-8") as handle:
+                handle.write("neues-passwort-456\n")
+            os.replace(replacement, secret)   # so erneuert der Supervisor seine Kopie
+            self.assertEqual(self.request("GET", "/api/v1/instance", headers=old)[0], 401)
+            self.assertEqual(self.request("GET", "/api/v1/instance", headers=new)[0], 200)
+
     def test_only_user_set_locks_dashboard(self):
         with mock.patch.dict(os.environ, {"WEB_USER": "admin"}):
             status, payload, _ = self.request("GET", "/api/v1/instance")

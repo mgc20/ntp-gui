@@ -572,10 +572,17 @@ check "WEB_READONLY sperrt Änderungen" 403 "$(post -H 'Content-Type: applicatio
 docker rm -f "${PREFIX}-f" >/dev/null 2>&1
 
 echo
-echo "6b) Ohne CAP_KILL: Warnung beim Start, Speichern hängt nicht (1.9)"
-docker run -d --name "${PREFIX}-x" -p 18098:8080 --cap-drop KILL -e NTP_PORT=10141 -e NTP_POOLS="" "$IMAGE" >/dev/null
+echo "6b) Ohne CAP_KILL: Warnung beim Start, Speichern hängt nicht, nichts wird halb gestoppt (1.9)"
+# Mit PTP (Software-Zeitstempel): ptp4l läuft als root und nähme das Signal an – er darf trotzdem
+# nicht gestoppt werden, wenn sich chronyd nicht beenden lässt.
+docker run -d --name "${PREFIX}-x" -p 18098:8080 --cap-drop KILL --cap-add NET_ADMIN --cap-add NET_RAW \
+  -e PTP_ENABLE=true -e PTP_INTERFACE=eth0 -e PTP_MODE=master -e PTP_TIME_STAMPING=software \
+  -e NTP_PORT=10141 -e NTP_POOLS="" "$IMAGE" >/dev/null
 wait_for_health http://127.0.0.1:18098/healthz 90 || true
 contains "Start-Log warnt vor fehlendem CAP_KILL" "$(docker logs "${PREFIX}-x" 2>&1)" "CAP_KILL fehlt"
+if wait_svc "${PREFIX}-x" ptp4l state running 30; then ok "ptp4l läuft (Software-Zeitstempel)"; else bad "ptp4l läuft nicht (state: $(svc "${PREFIX}-x" ptp4l state))"; fi
+XPTP=$(svc "${PREFIX}-x" ptp4l pid)
+XT0=$(date +%s)
 curl -s -o /dev/null --max-time 10 -X POST -H 'Content-Type: application/json' -H 'X-NTP-GUI: 1' \
   -d '{"changes":{"local_stratum":9}}' http://127.0.0.1:18098/api/settings
 XSTATE=""
@@ -585,9 +592,39 @@ for _ in $(seq 1 60); do
   sleep 1
 done
 check "Gescheiterter Neustart wird gemeldet statt zu hängen" error "$XSTATE"
+XDUR=$(( $(date +%s) - XT0 ))
+check "Fehler kommt ohne Wartezeit (unter 10 s, gemessen: ${XDUR} s)" True "$( (( XDUR < 10 )) && echo True || echo False )"
 check "chronyd läuft weiter" True \
   "$(curl -s --max-time 10 http://127.0.0.1:18098/api/status | python3 -c "import json,sys; print(json.load(sys.stdin)['chrony_running'])" 2>/dev/null)"
+check "ptp4l läuft unverändert weiter (gleiche PID)" "running ${XPTP}" \
+  "$(svc "${PREFIX}-x" ptp4l state) $(svc "${PREFIX}-x" ptp4l pid)"
+check "ptp4l-Prozess besteht" 0 "$(docker exec "${PREFIX}-x" sh -c "kill -0 ${XPTP:-0} 2>/dev/null; echo \$?")"
 docker rm -f "${PREFIX}-x" >/dev/null 2>&1
+
+echo
+echo "6c) Ohne DAC_OVERRIDE: klare Meldung statt unverständlichem Abbruch (1.9)"
+docker run -d --name "${PREFIX}-y" --cap-drop ALL \
+  --cap-add SYS_TIME --cap-add CHOWN --cap-add SETUID --cap-add SETGID --cap-add KILL \
+  --cap-add NET_BIND_SERVICE --cap-add NET_RAW -e NTP_PORT=10142 -e NTP_POOLS="" "$IMAGE" >/dev/null
+for _ in $(seq 1 20); do
+  [[ "$(docker inspect -f '{{.State.Running}}' "${PREFIX}-y" 2>/dev/null)" == false ]] && break
+  sleep 1
+done
+contains "Start-Log nennt DAC_OVERRIDE" "$(docker logs "${PREFIX}-y" 2>&1)" "DAC_OVERRIDE"
+docker rm -f "${PREFIX}-y" >/dev/null 2>&1
+
+echo
+echo "6d) Neustart des Containers: Aufzeichnungen bleiben, alte Anforderungen nicht (1.9)"
+docker run -d --name "${PREFIX}-z" -p 18099:8080 -e NTP_PORT=10143 -e NTP_POOLS="" "$IMAGE" >/dev/null
+wait_for_health http://127.0.0.1:18099/healthz 90 || true
+docker exec -u ntpgui "${PREFIX}-z" sh -c 'echo "{}" > /run/ntp-gui/web/recording-20260101-000000.jsonl; echo 9999999999 > /run/ntp-gui/web/reload.hold'
+docker restart -t 15 "${PREFIX}-z" >/dev/null 2>&1
+wait_for_health http://127.0.0.1:18099/healthz 90 || true
+check "Aufzeichnung überlebt den Neustart" 0 \
+  "$(docker exec "${PREFIX}-z" sh -c 'test -f /run/ntp-gui/web/recording-20260101-000000.jsonl; echo $?')"
+check "Alte Holdover-Sperre ist entfernt" 1 "$(docker exec "${PREFIX}-z" sh -c 'test -e /run/ntp-gui/web/reload.hold; echo $?')"
+check "Anforderungsverzeichnis gehört ntpgui" "ntpgui 750" "$(docker exec "${PREFIX}-z" stat -c '%U %a' /run/ntp-gui/web)"
+docker rm -f "${PREFIX}-z" >/dev/null 2>&1
 
 echo
 echo "8) Optionaler Dienst stirbt – Container läuft weiter"
@@ -1144,6 +1181,17 @@ elif "${VPSC[@]}" up -d --no-build >/dev/null 2>&1 && wait_for_health http://127
     sleep 1
   done
   check "VPS: Speichern startet die Dienste neu" done "$VSTATE"
+  # Passwortwechsel ohne Neustart: Inhalt der Secret-Datei ersetzen (gleiche Datei, Bind-Mount).
+  printf 'Vps-Neu-%s\n' "$$" > "$VPS_DIR/web_password.txt"
+  VNEW=""
+  for _ in $(seq 1 45); do
+    VNEW=$(http -u "admin:Vps-Neu-$$" http://127.0.0.1:18187/api/status)
+    [[ "$VNEW" == 200 ]] && break
+    sleep 1
+  done
+  check "VPS: neues Passwort gilt ohne Neustart" 200 "$VNEW"
+  check "VPS: altes Passwort gilt nicht mehr" 401 "$(http -u "$VPW" http://127.0.0.1:18187/api/status)"
+  VPW="admin:Vps-Neu-$$"
   docker restart "${PREFIX}-vps" >/dev/null 2>&1
   if wait_for_health http://127.0.0.1:18187/healthz 90; then ok "VPS: Neustart des Containers"; else bad "VPS: nach Neustart ungesund"; fi
   contains "VPS: Einstellung überlebt den Neustart" "$(curl -s --max-time 10 -u "$VPW" http://127.0.0.1:18187/api/settings)" "VPS-Uhr"

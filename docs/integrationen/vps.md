@@ -80,6 +80,10 @@ Das Passwort liegt nur in `web_password.txt`; der Container liest es als Docker-
 Benutzer heißt `admin` (`WEB_USER`). Ohne gültige Passwortdatei bleibt das Dashboard gesperrt und
 zeigt nur einen Einrichtungshinweis – NTP läuft trotzdem.
 
+Passwort ändern: Neues Passwort in `web_password.txt` schreiben. Der Container übernimmt die
+Änderung innerhalb von etwa 30 Sekunden ohne Neustart, das alte Passwort gilt dann nicht mehr
+(im Log steht „Passwortdatei geändert“). Wird die Datei unlesbar, sperrt sich das Dashboard.
+
 Ein erster Blick ohne Proxy geht per SSH-Tunnel:
 
 ```sh

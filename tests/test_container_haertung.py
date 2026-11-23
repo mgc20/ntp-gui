@@ -107,6 +107,186 @@ reload_services
 
 
 @unittest.skipUnless(shutil.which("bash"), "bash fehlt")
+class StopServicesWithoutKillTest(unittest.TestCase):
+    """Neuladen ohne CAP_KILL: Entweder alle Dienste lassen sich beenden, oder keiner wird angefasst."""
+
+    FUNCS = ("wait_exec", "service_alive", "proc_ended", "stop_services")
+    SETUP = """
+STOP_GRACE=1
+dns_restore() { echo DNS_RESTORE; }
+start_ptp4l() { echo START_ptp4l; SVC_STATE[ptp4l]=running; }
+start_phc2sys() { echo START_phc2sys; SVC_STATE[phc2sys]=running; }
+start_chronyd() { echo FALSCH_start_chronyd; }
+start_dnsfwd() { echo FALSCH_start_dnsfwd; }
+start_gpsd() { echo FALSCH_start_gpsd; }
+sleep 60 >/dev/null 2>&1 & ptp=$!; SVC_ENTRY[ptp4l]="$ptp=sleep"; SVC_STATE[ptp4l]=running
+sleep 60 >/dev/null 2>&1 & chr=$!; SVC_ENTRY[chronyd]="$chr=sleep"; SVC_STATE[chronyd]=running
+sleep 60 >/dev/null 2>&1 & dns=$!; SVC_ENTRY[dnsfwd]="$dns=sleep"; SVC_STATE[dnsfwd]=running
+wait_exec "$ptp" sleep; wait_exec "$chr" sleep; wait_exec "$dns" sleep
+"""
+
+    def test_refused_signal_leaves_all_services_untouched(self):
+        out = run_bash(self.SETUP + """
+kill() { if [[ "$1" == -0 && ( "${2:-}" == "$chr" || "${2:-}" == "$dns" ) ]]; then return 1; fi; builtin kill "$@"; }
+SECONDS=0
+stop_services && echo FALSCH_erfolg || echo verweigert
+(( SECONDS < 3 )) && echo ohne_wartezeit
+[[ -d /proc/$ptp ]] && echo ptp4l_lebt
+echo "ptp4l:${SVC_STATE[ptp4l]}:${SVC_ENTRY[ptp4l]%%=*}" | sed "s/$ptp/PID/"
+builtin kill "$ptp" "$chr" "$dns"
+""", *self.FUNCS, timeout=20)
+        self.assertIn("verweigert", out)
+        self.assertIn("ohne_wartezeit", out)
+        self.assertIn("ptp4l_lebt", out)
+        self.assertIn("ptp4l:running:PID", out)
+        self.assertNotIn("DNS_RESTORE", out)
+        self.assertTrue(any("chronyd dnsfwd" in line and "CAP_KILL" in line for line in out), out)
+
+    def test_failed_stop_restarts_services_already_stopped(self):
+        out = run_bash(self.SETUP + """
+stop_pid() {
+  if [[ "$2" == chronyd || "$2" == dnsfwd ]]; then return 1; fi
+  builtin kill "${1%%=*}" 2>/dev/null; wait "${1%%=*}" 2>/dev/null; return 0
+}
+kill() { if [[ "$1" != -0 && ( "$1" == "$chr" || "$1" == "$dns" ) ]]; then return 1; fi; builtin kill "$@"; }
+stop_services && echo FALSCH_erfolg || echo gescheitert
+echo "ptp4l:${SVC_STATE[ptp4l]}"
+echo "chronyd:${SVC_STATE[chronyd]}:${SVC_ENTRY[chronyd]:+eintrag}"
+builtin kill "$chr" "$dns"
+""", *self.FUNCS, timeout=20)
+        self.assertIn("gescheitert", out)
+        self.assertIn("START_ptp4l", out)
+        self.assertIn("ptp4l:running", out)
+        self.assertIn("chronyd:running:eintrag", out)
+        self.assertNotIn("DNS_RESTORE", out)   # dnsfwd läuft noch: resolv.conf bleibt
+        self.assertFalse(any(line.startswith("FALSCH") for line in out), out)
+
+    def test_shutdown_stops_what_it_can(self):
+        out = run_bash(self.SETUP + """
+kill() { if [[ "$1" == -0 || "$1" == "$chr" || "$1" == "$dns" || "${2:-}" == "$chr" || "${2:-}" == "$dns" ]]; then return 1; fi; builtin kill "$@"; }
+stop_services shutdown && echo FALSCH_erfolg || echo gescheitert
+[[ -d /proc/$ptp ]] && echo FALSCH_ptp4l_lebt || echo ptp4l_beendet
+builtin kill "$chr" "$dns"
+""", *self.FUNCS, "stop_pid", timeout=30)
+        self.assertIn("gescheitert", out)
+        self.assertIn("ptp4l_beendet", out)
+        self.assertNotIn("START_ptp4l", out)
+
+
+@unittest.skipUnless(shutil.which("bash"), "bash fehlt")
+class StartPreparationTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def test_request_dir_keeps_recordings_and_drops_requests(self):
+        req = os.path.join(self.tmp, "web")
+        os.makedirs(req)
+        for name in ("recording-20260101-000000.jsonl", "dns.json", "reload.request",
+                     "reload-chronyd.request", "reload.hold", "events.jsonl.tmp"):
+            Path(req, name).write_text("1\n", encoding="utf-8")
+        run_bash(f"REQUEST_DIR={req}\nprepare_request_dir\n", "prepare_request_dir")
+        self.assertEqual(sorted(os.listdir(req)), ["dns.json", "recording-20260101-000000.jsonl"])
+        self.assertEqual(stat.S_IMODE(os.stat(req).st_mode), 0o750)
+
+    def test_request_dir_link_is_replaced(self):
+        target = os.path.join(self.tmp, "fremd")
+        os.makedirs(target)
+        Path(target, "reload.hold").write_text("1\n", encoding="utf-8")
+        req = os.path.join(self.tmp, "web")
+        os.symlink(target, req)
+        run_bash(f"REQUEST_DIR={req}\nprepare_request_dir\n", "prepare_request_dir")
+        self.assertFalse(os.path.islink(req))
+        self.assertTrue(os.path.isdir(req))
+        self.assertTrue(os.path.exists(os.path.join(target, "reload.hold")))   # Ziel unberührt
+
+    def test_unreachable_data_dir_names_dac_override(self):
+        blocker = os.path.join(self.tmp, "datei")
+        Path(blocker).write_text("x", encoding="utf-8")
+        script = STUBS + _functions("cap_has", "prepare_request_dir", "prepare_app_user") + f"""
+CAP_STATUS_FILE=/dev/null
+DATA_DIR={blocker}/ntp-gui; REQUEST_DIR={self.tmp}/web
+prepare_app_user
+echo FALSCH_weiter
+"""
+        proc = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30)
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("DAC_OVERRIDE", proc.stdout)
+        self.assertNotIn("FALSCH_weiter", proc.stdout)
+
+    def test_password_copy_follows_changes(self):
+        src = os.path.join(self.tmp, "web_password.txt")
+        Path(src).write_text("alt\n", encoding="utf-8")
+        run_dir = os.path.join(self.tmp, "run")
+        copy = os.path.join(run_dir, "secrets", "web_password")
+        out = run_bash(f"""
+RUN_DIR={run_dir}; WEB_PASSWORD_FILE={src}
+chgrp() {{ :; }}
+copy_web_password && echo kopiert
+refresh_web_password; echo "unverändert:$(cat {copy})"
+sleep 1.1; printf 'neu\n' > {src}
+refresh_web_password; echo "neu:$(cat {copy})"
+rm -f {src}
+refresh_web_password; echo "fehlt:[$(cat {copy})]"
+""", "file_signature", "copy_web_password", "refresh_web_password")
+        self.assertIn("kopiert", out)
+        self.assertIn("unverändert:alt", out)
+        self.assertIn("neu:neu", out)
+        self.assertIn("fehlt:[]", out)   # leer = Dashboard gesperrt, nie offen
+        self.assertTrue(any("Passwortdatei geändert" in line for line in out), out)
+
+
+class RootSafeTest(unittest.TestCase):
+    """rootsafe.py: Zugriffe von root in Verzeichnissen, die dem Dashboard gehören."""
+
+    def setUp(self):
+        import rootsafe
+        self.rootsafe = rootsafe
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def test_fifo_as_hold_file_does_not_block(self):
+        hold = os.path.join(self.tmp, "reload.hold")
+        os.mkfifo(hold)
+        proc = subprocess.run([sys.executable, str(ROOT / "app" / "rootsafe.py"), "hold", hold],
+                              capture_output=True, text=True, timeout=10)
+        self.assertEqual((proc.returncode, proc.stdout), (0, ""))
+
+    def test_hold_reads_regular_file_but_not_link(self):
+        target = os.path.join(self.tmp, "ziel")
+        Path(target).write_text("9999999999\n", encoding="utf-8")
+        link = os.path.join(self.tmp, "reload.hold")
+        os.symlink(target, link)
+        self.assertEqual(self.rootsafe.read_hold(link), "")
+        self.assertEqual(self.rootsafe.read_hold(target), "9999999999\n")
+
+    def test_file_with_second_name_keeps_owner(self):
+        data = os.path.join(self.tmp, "ntp-gui")
+        os.makedirs(os.path.join(data, "sub"))
+        outside = os.path.join(self.tmp, "nur-root")
+        Path(outside).write_text("x", encoding="utf-8")
+        os.link(outside, os.path.join(data, "link.test"))
+        Path(data, "settings.json").write_text("{}", encoding="utf-8")
+        Path(data, "sub", "a").write_text("1", encoding="utf-8")
+        os.symlink(outside, os.path.join(data, "symlink.test"))
+        changed = []
+
+        def fake_chown(path, uid, gid):
+            changed.append(os.path.realpath(path))
+        uid = os.getuid() + 12345
+        skipped = self.rootsafe.chown_tree(data, uid, uid, chown=fake_chown)
+        self.assertEqual(skipped, [os.path.join(data, "link.test")])
+        self.assertNotIn(os.path.realpath(outside), changed)
+        for name in ("settings.json", "sub", os.path.join("sub", "a")):
+            self.assertIn(os.path.realpath(os.path.join(data, name)), changed)
+
+    def test_data_dir_handover_uses_rootsafe(self):
+        body = _functions("data_dir_to_app")
+        self.assertIn("rootsafe.py\" chown", body)
+        self.assertNotIn("chown -R", body)
+
+
+@unittest.skipUnless(shutil.which("bash"), "bash fehlt")
 class PrivilegeDropTest(unittest.TestCase):
     def _status(self, eff: str, prm: str) -> str:
         tmp = tempfile.mkdtemp()
@@ -197,7 +377,7 @@ touch "$REQUEST_DIR/reload-chronyd.request"; process_reload_requests
         hold = os.path.join(self.req, "reload.hold")
         os.mkfifo(hold)
         out = run_bash(f"""
-REQUEST_DIR={self.req}
+REQUEST_DIR={self.req}; APP_DIR={ROOT / "app"}
 hold_active && echo FALSCH || echo fifo_ignoriert
 rm -f {hold}; printf '9999999999\\n' > {self.tmp}/ziel; ln -s {self.tmp}/ziel {hold}
 hold_active && echo FALSCH || echo link_ignoriert
@@ -317,6 +497,13 @@ class ImageAndComposeTest(unittest.TestCase):
                 self.assertRegex(text, r"\n    mem_limit: \d+[mg]\n")
                 self.assertRegex(text, r'\n    logging:\n      driver: json-file\n      options:\n'
                                        r'        max-size: "10m"\n        max-file: "3"\n')
+
+    def test_docs_name_chronyd_caps(self):
+        for path in (ROOT / "SECURITY.md", ROOT / "README.md", ROOT / "docker-compose.vps.yml", ENTRYPOINT):
+            text = " ".join(path.read_text(encoding="utf-8").split()).replace("# ", "")
+            with self.subTest(path.name):
+                self.assertNotRegex(text, r"(chronyd behält nur|behält nur|_chrony nur mit) `?SYS_TIME`?[.,|)]")
+                self.assertRegex(text, r"SYS_TIME`? (\(und|und) `?NET_BIND_SERVICE`? für den NTP-Port")
 
     def test_ptp_templates_keep_ptp_caps(self):
         text = (ROOT / "docker-compose.ptp.yml").read_text(encoding="utf-8")

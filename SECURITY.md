@@ -46,7 +46,8 @@ dort noch besteht.
   Lücken, die in dieser Betriebsart ausnutzbar sind, nehmen wir mit hoher Priorität an.
 
 Im Container läuft ab 1.9 nur der Supervisor als root; Dashboard und DNS-Weiterleiter laufen als
-eigener Benutzer ohne Capabilities, chronyd behält nur `SYS_TIME`. Wer die Vorlagen ändert und dem
+eigener Benutzer ohne Capabilities, chronyd behält nur `SYS_TIME` (und
+`NET_BIND_SERVICE` für den NTP-Port). Wer die Vorlagen ändert und dem
 Container mehr Rechte gibt (z. B. `privileged: true`), betreibt ihn außerhalb dieser Annahmen.
 
 ## Abgrenzung
