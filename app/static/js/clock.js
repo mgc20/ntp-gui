@@ -223,12 +223,17 @@ function setHidden(node, hidden) {
   if (node.hidden !== hidden) node.hidden = hidden;
 }
 
+/**
+ * Lesen (ohne value): gespeicherter Text oder null. Schreiben: true, wenn der Wert danach wirklich im Speicher steht –
+ * false bei gesperrtem Speicher (privates Fenster, gesperrte Website-Daten, volles Kontingent). Wirft nie.
+ */
 function store(key, value) {
   try {
     if (value === undefined) return window.localStorage.getItem(key);
     window.localStorage.setItem(key, value);
+    return window.localStorage.getItem(key) === value;
   } catch (error) { /* privates Fenster – dann eben ohne Merken */ }
-  return null;
+  return value === undefined ? null : false;
 }
 
 // --- Messung -------------------------------------------------------------------
@@ -1634,6 +1639,8 @@ document.addEventListener("visibilitychange", () => {
     if (state.design === "tc" && state.face && state.face.tc) { measureGrain(); tcLoop(); }
     burst();   // nach dem Aufwachen (Tablet im Standby) sofort neu abgleichen
   }
+  // Im Hintergrund drosselt der Browser die Zeitgeber: Töne eines laufenden Countdowns jetzt bis zum Ziel vorausplanen.
+  if (document.hidden && state.cdTone) renderCountdown();
 });
 
 // --- Countdown, Count-up, Timer (Studiouhr A5) -------------------------------------------------
@@ -1825,7 +1832,8 @@ function countdownTones(target) {
   else if (!Number.isFinite(tone.target) || Math.abs(tone.target - target) > 1500) stopCountdownTones();   // neues Ziel
   tone.target = target;
   const clock = kit.audioClock(tone.ctx, perf, trueMs(perf), 0);
-  for (const planned of cd.planCountdownTones(clock, target, beepCount(), { lastK: tone.lastK })) {
+  const horizonMs = cd.toneHorizonMs(document.hidden);
+  for (const planned of cd.planCountdownTones(clock, target, beepCount(), { lastK: tone.lastK, horizonMs })) {
     tone.lastK = planned.k;
     if (planned.at > tone.ctx.currentTime + 0.005) {
       const osc = kit.scheduleTone(tone.ctx, planned);
@@ -2045,12 +2053,15 @@ function renderOwn() {
   }));
 }
 
+/** Liste übernehmen und merken. false: Der Browser lässt kein Speichern zu – die Liste gilt nur bis zum Neuladen. */
 function saveOwn(list) {
   state.own = list;
   const text = fx.ownText(list);
-  if (text) store(fx.OWN_KEY, text);
+  let saved = true;
+  if (text) saved = store(fx.OWN_KEY, text);
   else removeStored(fx.OWN_KEY);
   renderOwn();
+  return saved;
 }
 
 function addOwn() {
@@ -2059,8 +2070,7 @@ function addOwn() {
   if (!result.ok) { timerStatus(t("clock.own_bad")); return; }
   $("own-label").value = "";
   $("own-until").value = "";
-  saveOwn(result.list);
-  timerStatus(t("clock.own_saved"));
+  timerStatus(t(saveOwn(result.list) ? "clock.own_saved" : "clock.own_unsaved"));
 }
 
 function openTimerPanel() {
@@ -2068,9 +2078,13 @@ function openTimerPanel() {
 }
 
 // --- Nachtmodus (C1): gedimmt bzw. Rotlicht, nach Uhrzeit (?dim=) und von Hand -------------------------------------
-/** Zustand jetzt: Zeitplan nach der vollen Stunde der angezeigten Zeit, von Hand umgeschaltet bis zum nächsten Wechsel. */
+/**
+ * Zustand jetzt: Zeitplan nach der vollen Stunde in der Ortszeit dieses Geräts (nach der Serverzeit gestellt), von Hand
+ * umgeschaltet bis zum nächsten Wechsel. Bewusst nicht die groß angezeigte Zone (UTC groß, Design tc in der Zone des
+ * Servers): Der Nachtmodus richtet sich nach dem Raum, in dem der Bildschirm steht.
+ */
 function nightNow() {
-  const scheduled = fx.nightScheduled(params.dim, new Date(serverMs()).getHours());
+  const scheduled = fx.nightScheduled(params.dim, fx.nightHour(serverMs()));
   state.nightOverride = fx.nightOverride({ scheduled, prev: state.nightPrev, override: state.nightOverride });
   state.nightPrev = scheduled;
   return fx.nightView({ scheduled, override: state.nightOverride, red: params.dimred, level: params.dimlevel, eink: params.eink });
@@ -2826,6 +2840,9 @@ async function start() {
   if (OBS) document.body.classList.add("is-obs");
   $("mode-timer").hidden = !CONTROLS.fun;
   $("mode-night").hidden = !CONTROLS.fun;
+  // Ohne Spielereien tut N nichts (Nachtmodus dann nur nach Zeitplan): auch nicht in der Kürzel-Übersicht nennen.
+  $("keys-n-key").hidden = !CONTROLS.fun;
+  $("keys-n").hidden = !CONTROLS.fun;
   state.own = fx.ownList(store(fx.OWN_KEY) || "");
   $("timer-info").append(infoButton("clock.timer_info_title", "clock.timer_info"));
   if (params.kiosk) document.body.classList.add("is-kiosk");

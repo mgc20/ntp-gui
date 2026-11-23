@@ -71,7 +71,7 @@ export function timerEnded(read) {
 // --- Pomodoro --------------------------------------------------------------------------------------------------------
 export const POMO_WORK_MS = 25 * MIN;
 export const POMO_BREAK_MS = 5 * MIN;
-/** Jede vierte Pause ist lang (dreimal so lang wie die kurze, höchstens 30 min). */
+/** Jede vierte Pause ist lang: dreimal so lang wie die kurze, höchstens 30 min – aber nie kürzer als die kurze Pause. */
 export const POMO_LONG_EVERY = 4;
 export const POMO_LONG_MAX_MS = 30 * MIN;
 
@@ -244,6 +244,15 @@ export function ownText(list) {
 }
 
 // --- Nachtmodus -----------------------------------------------------------------------------------------------------
+/**
+ * Stunde für den Zeitplan (?dim=): volle Stunde in der Ortszeit dieses Geräts zum Zeitpunkt ms (Serverzeit). Nicht die
+ * groß angezeigte Zone – auch mit „UTC groß“ oder im Design tc (Zone des Servers) dimmt die Uhr nach der Uhrzeit des
+ * Raums, in dem sie steht. null bei ungültigem ms.
+ */
+export function nightHour(ms) {
+  return Number.isFinite(ms) ? new Date(ms).getHours() : null;
+}
+
 /** Liegt die volle Stunde hour im Bereich range ({ from, to } aus ?dim=, über Mitternacht erlaubt)? Ohne Bereich: null. */
 export function nightScheduled(range, hour) {
   if (!range || !Number.isInteger(hour)) return null;

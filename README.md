@@ -1205,19 +1205,24 @@ Die Seite **Uhrqualität** zeigt, was die Uhr deines Servers langfristig beeinfl
   (Screenreader), ? Übersicht. `?lock=1` schaltet die Tasten ab und blendet Design, Ton und Anpassen aus; Vollbild,
   Hell/Dunkel, Rotlicht und „Mein Gerät“ bleiben (Rotlicht und Hell/Dunkel gelten je Gerät und haben keinen Parameter).
 - **Eieruhr, Pomodoro, eigene Countdowns und Nachtmodus (ab 1.10, Studiouhr):** Der Knopf **Timer** öffnet ein Panel
-  mit einer **Eieruhr** (1, 3, 5, 10, 15 oder 30 min oder eine eigene Dauer wie `7`, `7:30` oder `1h30m`), am Countdown
-  dann Start/Anhalten, **+1 min** und Zurücksetzen. Ist die Zeit um, steht „Zeit ist um!“ mit Rahmen da und die Uhr
-  zählt die Überzeit hoch – ohne Blinken. **Pomodoro** wechselt von selbst zwischen Arbeit und Pause (jede vierte Pause
-  ist lang, dreimal so lang, höchstens 30 min) und zählt die geschafften Runden; Dauern per Adresse mit
-  `?pomo=50m&pause=10m`. „Ton am Ende“ piept dreimal kurz und einmal lang, aber erst nach deinem Klick und nur, solange
-  die Seite offen ist – ein Wecker ist das nicht. **Eigene Countdowns** (bis zu fünf, Beschriftung und Ziel wie
-  `?label=` und `?until=`) merkt sich nur dieser Browser; ein Klick öffnet `/clock?until=…&label=…`. Eingebaut sind
-  `?goal=newyear` (Neujahr), `?goal=dst` (nächste Zeitumstellung), `?goal=unix` (Unixzeit 2 000 000 000) und
-  `?goal=ntp` (Ende der NTP-Ära 2036), gerechnet wie `?until=` in der Zeitzone des Servers. Der **Nachtmodus** dimmt
-  die Uhr (Knopf **Nacht** oder Taste N); mit `?dim=22-6` schaltet er nach Uhrzeit, `?dimlevel=20..80` setzt die
-  Helligkeit in % (Standard 40), `?dimred=1` macht ihn rot. Von Hand umgeschaltet gilt bis zum nächsten Wechsel des
-  Zeitplans. Timer, Pomodoro und eigene Countdowns laufen nur im Browser, nichts geht an den Server. Mit `?fun=0`
-  (in den Voreinstellungen `studio`, `tile` und `banner`), im Kiosk, mit `?lock=1`, in der Kachel und in einer
+  mit einer **Eieruhr** (1, 3, 5, 10, 15 oder 30 min oder eine eigene Dauer wie `7`, `7:30` oder `1h30m`), am
+  Countdown dann Start/Anhalten, **+1 min** und Zurücksetzen. Ist die Zeit um, steht „Zeit ist um!“ mit Rahmen da und
+  die Uhr zählt die Überzeit hoch – ohne Blinken. **Pomodoro** wechselt von selbst zwischen Arbeit und Pause (jede
+  vierte Pause ist lang, dreimal so lang, höchstens 30 min, aber nie kürzer als die normale Pause) und zählt die
+  geschafften Runden; Dauern per Adresse mit `?pomo=50m&pause=10m`. „Ton am Ende“ piept dreimal kurz und einmal lang,
+  aber erst nach deinem Klick und nur, solange die Seite offen ist – ein Wecker ist das nicht. Wechselst du in einen
+  anderen Tab, plant die Uhr die Töne bis zum Ende voraus (Browser drosseln Hintergrund-Tabs); beendet der Browser den
+  Tab oder schläft das Gerät, bleibt der Ton aus. Lässt der Browser kein Speichern zu (privates Fenster), sagt das
+  Panel das beim Merken. **Eigene Countdowns** (bis zu fünf, Beschriftung und Ziel wie `?label=` und `?until=`) merkt
+  sich nur dieser Browser; ein Klick öffnet `/clock?until=…&label=…`. Eingebaut sind `?goal=newyear` (Neujahr),
+  `?goal=dst` (nächste Zeitumstellung), `?goal=unix` (Unixzeit 2 000 000 000) und `?goal=ntp` (Ende der NTP-Ära 2036),
+  gerechnet wie `?until=` in der Zeitzone des Servers. Der **Nachtmodus** dimmt die Uhr (Knopf **Nacht** oder Taste
+  N); mit `?dim=22-6` schaltet er nach Uhrzeit (volle Stunden in der Ortszeit des Geräts, auch wenn groß UTC oder die
+  Zone des Servers steht), `?dimlevel=20..80` setzt die Helligkeit in % (Standard 40), `?dimred=1` macht ihn rot.
+  Gedimmt sinkt der Kontrast bewusst (bei 40 % etwa 2,6:1); wünscht das System mehr Kontrast (`prefers-contrast:
+  more`), bleibt die Uhr mindestens zu 60 % hell. Von Hand umgeschaltet gilt bis zum nächsten Wechsel des Zeitplans.
+  Timer, Pomodoro und eigene Countdowns laufen nur im Browser, nichts geht an den Server. Mit `?fun=0` (in den
+  Voreinstellungen `studio`, `tile` und `banner`), im Kiosk, mit `?lock=1`, in der Kachel und in einer
   OBS-Browserquelle gibt es diese Knöpfe nicht; in OBS fehlen auch Leiste und Knöpfe am Countdown.
 - **Timecode-Anzeige (Studiouhr, Design `tc`):** `/clock?design=tc` zeigt die Tageszeit des Servers als Timecode
   `HH:MM:SS` mit einer Feinstelle, gerechnet in der Zeitzone des Servers; weicht sie von der deines Geräts ab, gehören

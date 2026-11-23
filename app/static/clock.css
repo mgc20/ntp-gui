@@ -534,6 +534,9 @@ body:is(.is-kiosk, .is-tile, .is-compact) .tc-head .info { display: none; }
     flex-wrap: nowrap; align-items: baseline; gap: 0.6em; }
   :root[data-cd="main"] .clock-stage[data-layout="banner"] .clock-cd-now { display: inline; white-space: nowrap; }
   .clock-stage:is([data-layout="strip"], [data-layout="tile"]) :is(.clock-cd-label, .clock-cd-state, .clock-cd-actions, .clock-cd-now) { display: none; }
+  /* Ausnahme: Ist die Eieruhr um, steht „Zeit ist um!“ auch in Streifen und Kachel – klein, aber als Text, nicht nur Rahmen. */
+  :root[data-cd-end] .clock-stage:is([data-layout="strip"], [data-layout="tile"]) .clock-cd-state { display: inline;
+    white-space: nowrap; font-size: max(0.6em, 12px); }
   .clock-stage[data-layout="strip"] .clock-cd { margin: 0; flex-wrap: nowrap; }
 }
 body:is(.is-kiosk, .is-tile, .is-compact, .is-eink) .clock-cd-actions { display: none; }
@@ -804,6 +807,8 @@ body.has-signal .clock-hint { top: auto; bottom: max(12px, env(safe-area-inset-b
 .clock-timer-field input { font: inherit; font-size: 1em; min-height: 32px; box-sizing: border-box; padding: 0.3em 0.6em;
   border-radius: 9px; border: 1px solid var(--border); background: var(--bg); color: var(--ink); width: 15em; max-width: 100%; }
 .clock-timer-field input[aria-invalid="true"] { border-color: var(--crit-ink); }
+/* Das Ziel braucht Platz für den ganzen Platzhalter „20:15 oder 2026-12-31T23:59“ – sonst fehlt gerade das ISO-Format. */
+.clock-timer-field #own-until { width: 19em; }
 .clock-timer-check { display: inline-flex; align-items: center; gap: 8px; min-height: 32px; margin: 6px 0; cursor: pointer; }
 .clock-timer-check input { width: 18px; height: 18px; margin: 0; accent-color: var(--accent); }
 .clock-timer-list { margin: 4px 0; padding: 0; list-style: none; display: grid; gap: 4px; }
@@ -826,7 +831,14 @@ body.is-obs, body.is-obs * { cursor: none; }
   color-scheme: dark;
 }
 /* Die Leiste nicht: Sie blendet sich im Leerlauf über ihre Deckkraft aus (is-idle), dunkel ist sie über die Farben. */
+/* Kontrast: Die Farbtabelle oben hat auf Schwarz mindestens 4,5:1. Gedimmt sinkt er bewusst – bei 40 % liegen die
+   Ziffern bei etwa 2,6:1, bei 20 % bei etwa 1,4:1. Wünscht das System mehr Kontrast, bleibt mindestens 60 % (Ziffern ≈ 4,7:1). */
 :root[data-night] :is(.clock-stage, .clock-band, .clock-signal, .clock-egg) { opacity: var(--night, 0.4); }
-/* Sehr flache Fenster (Streifen, kleine Kachel mit Leiste): Timer und Nacht bleiben über Taste N bzw. einen größeren
-   Bildschirm erreichbar – zwei Knöpfe mehr ließen die Leiste umbrechen und nähmen der Zeit eine Zeile. */
-@media (max-height: 320px) { #mode-timer, #mode-night { display: none; } }
+@media (prefers-contrast: more) {
+  :root[data-night] :is(.clock-stage, .clock-band, .clock-signal, .clock-egg) { opacity: max(var(--night, 0.4), 0.6); }
+}
+/* Nur in sehr kleinen, flachen Fenstern (kleine Kachel mit Leiste, bis 600 × 320 px) fehlen Timer und Nacht: Dort
+   bräche die Leiste in zwei weitere Zeilen um und nähme der Zeit ein Drittel der Höhe. Handys im Querformat (ab etwa
+   640 px Breite) behalten beide Knöpfe – die Leiste bricht dort höchstens einmal um, und für den Timer gibt es auf
+   Touch-Geräten keinen anderen Weg. */
+@media (max-height: 320px) and (max-width: 600px) { #mode-timer, #mode-night { display: none; } }

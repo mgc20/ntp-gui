@@ -32,11 +32,15 @@ UTC = datetime.timezone.utc
 MIN = 60_000
 
 
-def run_fx(code: str):
+def run_fx(code: str, tz: str | None = None):
     mods = {name: json.dumps((JS / f"{name}.js").as_uri()) for name in ("clockextras", "clockkit", "clockcount")}
     script = (f"import * as x from {mods['clockextras']};\nimport * as k from {mods['clockkit']};\n"
               f"import * as c from {mods['clockcount']};\n{code}")
-    out = subprocess.run(["node", "--input-type=module", "-e", script], capture_output=True, text=True, timeout=60)
+    env = None
+    if tz:
+        import os
+        env = {**os.environ, "TZ": tz}
+    out = subprocess.run(["node", "--input-type=module", "-e", script], capture_output=True, text=True, timeout=60, env=env)
     if out.returncode != 0:
         raise AssertionError(out.stderr)
     return json.loads(out.stdout)
@@ -127,6 +131,15 @@ class PomodoroTest(unittest.TestCase):
         self.assertEqual(out["longCap"], 30 * MIN, "lange Pause höchstens 30 min")
         self.assertEqual((out["bad"]["work"], out["bad"]["brk"]), (W, B))
         self.assertEqual((out["reset"]["phase"], out["reset"]["round"], out["reset"]["done"]), ("work", 1, 0))
+
+    def test_lange_pause_nie_kuerzer_als_die_kurze(self):
+        out = run_fx("console.log(JSON.stringify([5, 10, 12, 30, 40, 90].map((m) => x.pomoNew(null, m * 60000).long / 60000)));")
+        self.assertEqual(out, [15, 30, 30, 30, 40, 90], "dreimal so lang, höchstens 30 min, aber nie kürzer als die Pause")
+        for lang in ("de", "en"):
+            text = json.loads((STATIC / "i18n" / f"{lang}.json").read_text(encoding="utf-8"))["clock"]["timer_info"]
+            with self.subTest(lang=lang):
+                self.assertRegex(text, r"nie kürzer als die normale Pause|never shorter than the normal break")
+        self.assertIn("nie kürzer als die normale Pause", (ROOT / "README.md").read_text(encoding="utf-8"))
 
     def test_naechste_phase_genau_am_ende(self):
         out = run_fx("""
@@ -298,6 +311,22 @@ class NachtmodusTest(unittest.TestCase):
             {"on": False, "mode": None, "level": 0.4}, {"on": True, "mode": "night", "level": 0.2},
             {"on": True, "mode": "night", "level": 0.8}])
 
+    def test_stunde_in_der_ortszeit_des_geraets(self):
+        # 2026-07-01 20:30 UTC: in Berlin 22 Uhr (Sommerzeit), in New York 16 Uhr, in UTC 20 Uhr – unabhängig davon,
+        # welche Zone groß angezeigt wird (UTC groß, Design tc in der Zone des Servers).
+        at = ms(datetime.datetime(2026, 7, 1, 20, 30, tzinfo=UTC))
+        want = {"Europe/Berlin": [22, True], "America/New_York": [16, False], "UTC": [20, False]}
+        for zone, expected in want.items():
+            with self.subTest(zone=zone):
+                out = run_fx(f"const h = x.nightHour({at}); console.log(JSON.stringify([h, x.nightScheduled({{ from: 22, to: 6 }}, h)]));",
+                             tz=zone)
+                self.assertEqual(out, expected)
+        self.assertEqual(run_fx("console.log(JSON.stringify([x.nightHour(NaN), x.nightHour(null)]));"), [None, None])
+        js = (JS / "clock.js").read_text(encoding="utf-8")
+        self.assertIn("fx.nightScheduled(params.dim, fx.nightHour(serverMs()))", js)
+        self.assertIn("volle Stunden der Ortszeit dieses Geräts", (JS / "clockkit.js").read_text(encoding="utf-8"))
+        self.assertNotIn("angezeigten Zeit", (JS / "clockkit.js").read_text(encoding="utf-8"))
+
     def test_parameter_dim(self):
         values = ["22-6", "6-22", "0-23", "7-7", "24-1", "22:30-6", "22-6 ", "-1-2", "22-", "22", "22-6-1", "022-6",
                   "٢٢-٦", "1-2"]
@@ -407,6 +436,47 @@ class SeitenregelnTest(unittest.TestCase):
         self.assertIn("countdownAudio(true)", self.body("function toggleEndTone()"))
         self.assertNotIn("endTone", self.body("function store("))
 
+    def test_ton_im_hintergrund_vorausgeplant(self):
+        out = run_fx("""
+          const clock = { audio: 10, server: 1_000_000 }, target = 1_000_000 + 25 * 60000;
+          const plan = (hidden) => c.planCountdownTones(clock, target, 3, { horizonMs: c.toneHorizonMs(hidden) })
+            .map((t) => [t.k, Math.round(t.at * 1000) / 1000, t.kind]);
+          console.log(JSON.stringify({ visible: plan(false), hidden: plan(true), h: [c.toneHorizonMs(false), c.toneHorizonMs(true)],
+            again: c.planCountdownTones(clock, target, 3, { horizonMs: Infinity, lastK: 0 }) }));
+        """)
+        self.assertEqual(out["visible"], [], "sichtbar: nur 1,5 s voraus")
+        self.assertEqual(out["hidden"], [[3, 1507.0, "count"], [2, 1508.0, "count"], [1, 1509.0, "count"], [0, 1510.0, "long"]],
+                         "im Hintergrund alle Töne bis zum Ziel, in Audiozeit")
+        self.assertEqual(out["h"][0], 1500)
+        self.assertIsNone(out["h"][1], "Infinity (JSON null)")
+        self.assertEqual(out["again"], [], "schon geplante Töne nicht doppelt")
+        self.assertIn("cd.toneHorizonMs(document.hidden)", self.body("function countdownTones("))
+        vis = self.js[self.js.index('document.addEventListener("visibilitychange"'):]
+        self.assertIn("if (document.hidden && state.cdTone) renderCountdown();", vis[:vis.index("\n});")])
+
+    def test_speicher_gesperrt_ehrliche_meldung(self):
+        body = self.body("function store(")
+        self.assertIn("return window.localStorage.getItem(key) === value;", body)
+        self.assertIn("return value === undefined ? null : false;", body)
+        self.assertIn("return saved;", self.body("function saveOwn("))
+        self.assertIn('timerStatus(t(saveOwn(result.list) ? "clock.own_saved" : "clock.own_unsaved"));', self.body("function addOwn("))
+        for lang in ("de", "en"):
+            data = json.loads((STATIC / "i18n" / f"{lang}.json").read_text(encoding="utf-8"))["clock"]
+            self.assertTrue(data["own_unsaved"], lang)
+
+    def test_kuerzel_n_nur_mit_spielereien(self):
+        self.assertRegex(self.html, r'<dt id="keys-n-key"><kbd>N</kbd></dt><dd id="keys-n" ')
+        start = self.body("async function start()")
+        self.assertIn('$("keys-n-key").hidden = !CONTROLS.fun;', start)
+        self.assertIn('$("keys-n").hidden = !CONTROLS.fun;', start)
+
+    def test_ende_in_streifen_und_kachel_und_knoepfe_im_querformat(self):
+        self.assertIn(':root[data-cd-end] .clock-stage:is([data-layout="strip"], [data-layout="tile"]) .clock-cd-state { display: inline;',
+                      self.css)
+        self.assertIn("@media (max-height: 320px) and (max-width: 600px) { #mode-timer, #mode-night { display: none; } }", self.css)
+        self.assertNotIn("@media (max-height: 320px) { #mode-timer", self.css, "Handys im Querformat behalten Timer und Nacht")
+        self.assertIn(".clock-timer-field #own-until { width: 19em; }", self.css)
+
     def test_ende_deutlich_ohne_blinken(self):
         block = self.css[self.css.index("/* --- Studiouhr C1"):]
         self.assertNotRegex(block, r"animation|transition|@keyframes|blink|filter:|url\(")
@@ -429,6 +499,23 @@ class SeitenregelnTest(unittest.TestCase):
             self.assertGreaterEqual(ink, 4.5)
             self.assertGreaterEqual(ink2, 4.5)
             self.assertGreaterEqual(unsure, 3.0)
+        self.assertIn("@media (prefers-contrast: more) {\n  :root[data-night] :is(.clock-stage, .clock-band, .clock-signal, "
+                      ".clock-egg) { opacity: max(var(--night, 0.4), 0.6); }", self.css)
+        if shutil.which("node"):
+            # Tatsächlicher Kontrast gedimmt (Deckkraft über Schwarz): bewusst dokumentiert, nicht verschleiert.
+            def dim(color, level):
+                return "#" + "".join(f"{round(int(color[i:i + 2], 16) * level):02x}" for i in (1, 3, 5))
+            pairs = [[dim(var["ink"], lv), "#000000"] for lv in (0.4, 0.2, 0.6)] + [[dim(var["ink-2"], 0.4), "#000000"]]
+            res = subprocess.run(["node", "--input-type=module", "-e",
+                                  f"import * as k from {mods}; console.log(JSON.stringify({json.dumps(pairs)}.map(([a, b]) => k.contrastRatio(a, b))));"],
+                                 capture_output=True, text=True, timeout=60)
+            at40, at20, at60, ink2_40 = json.loads(res.stdout)
+            self.assertAlmostEqual(at40, 2.6, delta=0.1)
+            self.assertAlmostEqual(at20, 1.4, delta=0.1)
+            self.assertAlmostEqual(ink2_40, 2.1, delta=0.15)
+            self.assertGreaterEqual(at60, 4.5, "prefers-contrast: more – mindestens 60 % reichen für 4,5:1")
+            self.assertIn("etwa 2,6:1", self.css)
+            self.assertIn("etwa 2,6:1", (ROOT / "README.md").read_text(encoding="utf-8"))
         body = self.body("function applyModes()")
         self.assertLess(body.index('if (params.eink) root.dataset.mode = "eink";'), body.index("else if (night.on)"))
         self.assertLess(body.index("else if (night.on)"), body.index('else if (red) root.dataset.mode = "red";'))

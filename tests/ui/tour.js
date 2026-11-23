@@ -724,9 +724,9 @@ const CLOCK_STEP_MS = 250;
 // zurück, um den Zustand vor der ersten Antwort zu prüfen. zone: Zeitzone des Browsers. at: Serverzeit nach dem
 // Einschwingen (ms), Standard CLOCK_SERVER. reduced: Das System wünscht weniger Bewegung (prefers-reduced-motion).
 async function openPausedClock(browser, { width, height = 900, query = "", red = false, reply, hold = null, settle = true,
-  zone = "Europe/Berlin", profile = null, storage = null, at = CLOCK_SERVER, reduced = false, init = null } = {}) {
+  zone = "Europe/Berlin", profile = null, storage = null, at = CLOCK_SERVER, reduced = false, init = null, touch = false } = {}) {
   const ctx = await browser.newContext({ viewport: { width, height }, timezoneId: zone,
-    ...(reduced ? { reducedMotion: "reduce" } : {}) });
+    ...(reduced ? { reducedMotion: "reduce" } : {}), ...(touch ? { isMobile: true, hasTouch: true } : {}) });
   if (init) await ctx.addInitScript(init);   // z. B. window.obsstudio wie in einer OBS-Browserquelle
   await ctx.addInitScript(([isRed, extra]) => {
     window.__csp = [];
@@ -1487,12 +1487,14 @@ async function clockCountdownChecks(browser) {
 }
 
 // Studiouhr C1 (clockTimerChecks, TOUR_TIMER_ONLY=1): Eieruhr, Pomodoro, eigene Countdowns, Nachtmodus und die Regel
-// für Bedienelemente. Auf allen neun Flächen: Eieruhr (?timer=3s, Leertaste) läuft ab – „Zeit ist um!“ mit Rahmen, Überzeit,
-// im Bild, ohne Umbruch und Scrollbalken. Bei 390 und 1440 px das Panel „Timer“: sechs Schnellwahlen, 3 min ohne gelbe
+// für Bedienelemente. Auf allen neun Flächen und fest als Streifen (1920×100) bzw. Kachel (480×270): Eieruhr (?timer=3s,
+// Leertaste) läuft ab – „Zeit ist um!“ als Text mit Rahmen, Überzeit, im Bild, ohne Umbruch und Scrollbalken. Gesperrter
+// Speicher: Merken meldet „nur bis zum Neuladen“. Handy quer (Touch 740×300, 667×320): Timer und Nacht in der Leiste. Bei 390 und 1440 px das Panel „Timer“: sechs Schnellwahlen, 3 min ohne gelbe
 // Stufe, „+1 min“, eigene Dauer, Pomodoro-Start, eigener Countdown merken und wieder entfernen (nur localStorage), Tippflächen
 // ≥ 24 px, keine Überbreite. Pomodoro (?pomo=1m&pause=1m) wechselt nach einer Minute in die Pause und zählt. Nachtmodus
 // nach Uhrzeit (grau bzw. rot, Deckkraft aus dimlevel), Taste N schaltet von Hand. Keine Knöpfe in den Voreinstellungen
-// studio, tile, banner, mit kiosk=1, lock=1, fun=0 und in OBS (window.obsstudio); Taste N wirkt dort nicht. Dazu ein Lauf
+// studio, tile, banner, mit kiosk=1, lock=1, fun=0 und in OBS (window.obsstudio); Taste N wirkt dort nicht und fehlt in
+// der Kürzel-Übersicht. Dazu ein Lauf
 // in Echtzeit: keine Long Tasks (> 50 ms) und keine Bildschleife bei laufendem Pomodoro. Fotos mit TOUR_SHOTS.
 function timerState() {
   const root = document.documentElement;
@@ -1516,6 +1518,7 @@ function timerState() {
     opacity: getComputedStyle(document.getElementById("clock-stage")).opacity,
     timerBtn: visible("mode-timer"), nightBtn: visible("mode-night"), actions: visible("cd-actions"), plus: visible("cd-plus"),
     bar: visible("clock-back"), nightPressed: document.getElementById("mode-night").getAttribute("aria-pressed"),
+    stateShown: visible("cd-state"), keysN: !document.getElementById("keys-n").hidden && !document.getElementById("keys-n-key").hidden,
     csp: window.__csp || [],
   };
 }
@@ -1534,6 +1537,13 @@ function timerPanelState() {
     stored: localStorage.getItem("ntp-gui-clock-countdowns"), status: document.getElementById("timer-status").textContent,
     small, hscroll: document.documentElement.scrollWidth - document.documentElement.clientWidth,
     pomo: document.getElementById("pomo-line").textContent,
+    untilFits: (() => {   // Platzhalter des Ziel-Felds ganz zu sehen (Breite des Texts in der Schrift des Felds)
+      const input = document.getElementById("own-until");
+      const style = getComputedStyle(input);
+      const ctx = document.createElement("canvas").getContext("2d");
+      ctx.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+      return ctx.measureText(input.placeholder).width <= input.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+    })(),
   };
 }
 
@@ -1547,19 +1557,20 @@ async function clockTimerChecks(browser) {
   const M = "−";
   const errors = (got, msgs) => (got.csp.length || msgs.length ? [`Fehler ${JSON.stringify([...got.csp, ...msgs])}`] : []);
   const shot = async (page, name) => { if (SHOTS) await page.screenshot({ path: `${SHOTS}/clock-c1-${name}.png` }); };
-  // 1) Eieruhr läuft ab, auf allen neun Flächen.
-  for (const [width, height] of STUDIO_VIEWPORTS) {
-    const { ctx, page, msgs, clock } = await openPausedClock(browser, { width, height, query: "?timer=3s" });
+  // 1) Eieruhr läuft ab, auf allen neun Flächen und fest im Streifen bzw. in der Kachel (dort steht „Zeit ist um!“ klein).
+  for (const [width, height, layout] of [...STUDIO_VIEWPORTS, [1920, 100, "strip"], [480, 270, "tile"]]) {
+    const query = layout ? `?layout=${layout}&timer=3s` : "?timer=3s";
+    const { ctx, page, msgs, clock } = await openPausedClock(browser, { width, height, query });
     await page.keyboard.press("Space");
     await clock.run(4500);   // die Anzeige wechselt 2 ms nach der vollen Sekunde
     const got = await page.evaluate(timerState);
-    await shot(page, `ende-${width}x${height}`);
+    await shot(page, `ende-${width}x${height}${layout ? `-${layout}` : ""}`);
     await ctx.close();
     const problems = [];
     if (got.end !== "1") problems.push("kein data-cd-end");
     if (got.text !== "+00:00:01") problems.push(`zeigt ${got.text}`);
-    const small = ["strip", "tile"].includes(got.layout);
-    if (!small && got.state !== "Zeit ist um!") problems.push(`Text „${got.state}“`);
+    if (got.state !== "Zeit ist um!" || !got.stateShown) problems.push(`Text „${got.state}“ ${got.stateShown ? "" : "(ausgeblendet)"}`);
+    if (layout && got.layout !== layout) problems.push(`Layout ${got.layout}`);
     if (got.outline !== "solid") problems.push(`kein Rahmen (${got.outline})`);
     const b = got.box;
     const z = got.safeBox;
@@ -1570,7 +1581,7 @@ async function clockTimerChecks(browser) {
     if (got.wrapped) problems.push("Umbruch");
     if (got.vscroll > 0 || got.hscroll > 0) problems.push(`Scrollbalken (${got.hscroll}/${got.vscroll} px)`);
     problems.push(...errors(got, msgs));
-    note(`/clock Eieruhr-Ende ${width}×${height}`, problems);
+    note(`/clock Eieruhr-Ende ${width}×${height}${layout ? ` ${layout}` : ""}`, problems);
   }
   // 2) Panel „Timer“ bei 390 und 1440 px.
   for (const width of [390, 1440]) {
@@ -1610,6 +1621,7 @@ async function clockTimerChecks(browser) {
     if (panel.goals.join(" ") !== "/clock?goal=newyear /clock?goal=dst /clock?goal=unix /clock?goal=ntp") problems.push(`Ziele ${panel.goals}`);
     if (panel.small.length) problems.push(`Tippflächen < 24 px: ${panel.small.join(", ")}`);
     if (panel.hscroll > 0) problems.push(`Überbreite ${panel.hscroll} px`);
+    if (!panel.untilFits) problems.push("Platzhalter im Feld „Ziel“ abgeschnitten");
     if (egg.text !== `${M}02:59` || egg.level !== "none" || egg.label !== "Timer 03:00") problems.push(`3 min: ${egg.text} ${egg.level} „${egg.label}“`);
     if (!egg.plus) problems.push("+1 min fehlt");
     if (plus.text !== `${M}03:59`) problems.push(`+1 min: ${plus.text}`);
@@ -1621,6 +1633,33 @@ async function clockTimerChecks(browser) {
     if (pomo.label !== "Pomodoro 1 · Arbeit" || pomo.text !== `${M}24:59` || pomo.plus) problems.push(`Pomodoro: ${pomo.text} „${pomo.label}“`);
     problems.push(...errors(pomo, msgs));
     note(`/clock Panel Timer ${width}`, problems);
+  }
+  // 2b) Gesperrter Speicher (privates Fenster): Merken sagt ehrlich, dass nur bis zum Neuladen gemerkt ist.
+  {
+    const blocked = () => { Object.defineProperty(window, "localStorage", { get() { throw new DOMException("gesperrt", "SecurityError"); } }); };
+    const { ctx, page, msgs, clock } = await openPausedClock(browser, { width: 1440, height: 900, init: blocked });
+    await page.click("#mode-timer");
+    await page.fill("#own-label", "Test");
+    await page.fill("#own-until", "20:15");
+    await page.click("#own-save");
+    await clock.run(250);
+    const got = await page.evaluate(() => ({ status: document.getElementById("timer-status").textContent,
+      own: [...document.querySelectorAll("#own-list a")].map((a) => a.textContent), csp: window.__csp || [] }));
+    await ctx.close();
+    note("/clock eigener Countdown, Speicher gesperrt", [/Neuladen/.test(got.status) ? "" : `Meldung „${got.status}“`,
+      got.own.join() === "Test (20:15)" ? "" : `Liste ${got.own}`, ...errors(got, msgs)].filter(Boolean));
+  }
+  // 2c) Handy im Querformat (Touch, ohne Tastatur): Timer und Nacht bleiben in der Leiste; nur sehr kleine flache Fenster
+  // verzichten darauf.
+  for (const [width, height, want] of [[740, 300, true], [667, 320, true], [568, 300, false]]) {
+    const { ctx, page, msgs, clock } = await openPausedClock(browser, { width, height, touch: true });
+    await clock.run(250);
+    const got = await page.evaluate(timerState);
+    await shot(page, `quer-${width}x${height}`);
+    await ctx.close();
+    note(`/clock Querformat ${width}×${height} Touch`, [got.timerBtn === want && got.nightBtn === want ? ""
+      : `Timer/Nacht ${got.timerBtn}/${got.nightBtn}, erwartet ${want}`, got.hscroll > 0 ? `Überbreite ${got.hscroll} px` : "",
+      ...errors(got, msgs)].filter(Boolean));
   }
   // 3) Pomodoro wechselt nach der Arbeitsphase in die Pause und zählt.
   {
@@ -1660,6 +1699,7 @@ async function clockTimerChecks(browser) {
     const after = await page.evaluate(timerState);
     await ctx.close();
     note("/clock Nachtmodus von Hand", [before.night ? "außerhalb des Zeitplans an" : "", after.mode === "night" ? "" : `nach Klick ${after.mode}`,
+      before.keysN ? "" : "Kürzel-Übersicht ohne N",
       ...errors(after, msgs)].filter(Boolean));
   }
   // 5) Keine Bedienung in Studio-, Kachel- und Kiosk-Voreinstellungen, mit lock=1, fun=0 und in OBS.
@@ -1676,7 +1716,7 @@ async function clockTimerChecks(browser) {
     await ctx.close();
     note(`/clock Bedienung ${name}`, [got.timerBtn || got.nightBtn ? "Knöpfe Timer/Nacht sichtbar" : "",
       got.actions !== actions ? `Knöpfe am Countdown ${got.actions ? "sichtbar" : "fehlen"}` : "",
-      got.night ? "Taste N wirkt" : "", name === "obs" && got.bar ? "Leiste in OBS sichtbar" : "",
+      got.night ? "Taste N wirkt" : "", got.keysN ? "Kürzel-Übersicht nennt N" : "", name === "obs" && got.bar ? "Leiste in OBS sichtbar" : "",
       name === "obs" && /Start/.test(got.state) ? `verspricht Start-Knopf „${got.state}“` : "", ...errors(got, msgs)].filter(Boolean));
   }
   // 6) Echtzeit: laufender Pomodoro ohne Long Tasks und ohne Bildschleife.

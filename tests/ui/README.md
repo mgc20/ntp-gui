@@ -43,10 +43,12 @@ Der Rundgang öffnet jede Route bei 1440 und 390 px, hell und dunkel, und meldet
   `after=stop`, abweichende Zone des Servers, E-Ink, Timer (Leertaste, R), Stoppuhr mit Zehnteln (T), die Tasten D, L,
   U, +, ?, A, `lock=1` und die Ansage beim Unterschreiten von 1 min,
 - die Spielereien der Studiouhr C1 (`clockTimerChecks`, einzeln mit `TOUR_TIMER_ONLY=1`): eine Eieruhr läuft auf den
-  neun Flächen ab („Zeit ist um!“ mit Rahmen, Überzeit, im Bild, ohne Umbruch und Scrollbalken), das Panel „Timer“ bei
+  neun Flächen und fest als Streifen bzw. Kachel ab („Zeit ist um!“ als Text mit Rahmen, Überzeit, im Bild, ohne Umbruch
+  und Scrollbalken), Merken bei gesperrtem Speicher (ehrliche Meldung), Timer und Nacht auf Handys im Querformat (Touch), das Panel „Timer“ bei
   390 und 1440 px (Schnellwahl, „+1 min“, eigene Dauer, Pomodoro, eigener Countdown merken und entfernen, Tippflächen
   ≥ 24 px), der Phasenwechsel des Pomodoro, der Nachtmodus nach Uhrzeit und per Taste N, keine Knöpfe in den
-  Voreinstellungen `studio`, `tile`, `banner`, mit `kiosk=1`, `lock=1`, `fun=0` und in OBS (`window.obsstudio`), dazu
+  Voreinstellungen `studio`, `tile`, `banner`, mit `kiosk=1`, `lock=1`, `fun=0` und in OBS (`window.obsstudio`), dort
+  auch kein N in der Kürzel-Übersicht, dazu
   ein Lauf in Echtzeit ohne Long Tasks und ohne Bildschleife,
 - die „Heute“-Zeitleiste der Übersicht mit einem erfundenen Tag (Holdover 03:00–04:30, drei Ereignisse) bei 390 und
   1440 px: genau drei Marker an der richtigen Stelle, Holdover-Abschnitt im Band, Marker im Diagramm, Tagesbericht-Satz,

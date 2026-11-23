@@ -135,7 +135,7 @@ export const PARAM_SCHEMA = Object.freeze([
   // Pomodoro: Dauer der Arbeitsphase (startet den Pomodoro-Timer statt ?timer=) und der Pause (ohne Angabe 5 min).
   { name: "pomo", type: "duration", default: null },
   { name: "pause", type: "duration", default: null },
-  // Nachtmodus: von – bis (volle Stunden der angezeigten Zeit), Helligkeit in %, Rotlicht statt Grau.
+  // Nachtmodus: von – bis (volle Stunden der Ortszeit dieses Geräts), Helligkeit in %, Rotlicht statt Grau.
   { name: "dim", type: "hours", default: null },
   { name: "dimlevel", type: "int", min: 20, max: 80, default: 40 },
   { name: "dimred", type: "flag", default: false },

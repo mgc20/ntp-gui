@@ -259,6 +259,16 @@ export function einkDelay(nowMs, remainingMs = NaN) {
  * dem Ziel) kleiner ist als lastK – so plant jeder Takt nur Neues. clock: kit.audioClock(). Ergebnis wie
  * kit.planTones: [{ k, at (Audiozeit s), kind, freq, dur }], k absteigend.
  */
+/**
+ * Wie weit countdownTones() vorausplant (ms). Sichtbar 1,5 s – jeder Takt plant nach, Anhalten verwirft wenig. Im
+ * Hintergrund-Tab drosselt der Browser die Zeitgeber (bis auf einmal je Minute), ein Takt fiele dann kaum in das
+ * kurze Fenster vor dem Ziel: Dort werden alle Töne bis zum Ziel sofort geplant. Die Audiouhr läuft ungedrosselt
+ * weiter; Anhalten, +1 min und Zurücksetzen verwerfen die geplanten Töne wie sonst auch.
+ */
+export function toneHorizonMs(hidden) {
+  return hidden ? Infinity : 1500;
+}
+
 export function planCountdownTones(clock, targetMs, beep, { lastK = Infinity, horizonMs = 1500 } = {}) {
   const out = [];
   if (!clock || !Number.isFinite(targetMs) || !Number.isFinite(clock.server) || !(beep > 0)) return out;
