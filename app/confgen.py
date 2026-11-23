@@ -11,6 +11,7 @@ gehen auf stderr und landen so im Container-Log.
 
 from __future__ import annotations
 
+import contextlib
 import difflib
 import os
 import re
@@ -78,10 +79,21 @@ def gps_device_ok(cfg: dict) -> bool:
 ZONEINFO = "/usr/share/zoneinfo"
 
 
+def _zone_inside(tz: str) -> bool:
+    """Liegt die Zeitzone wirklich unter ZONEINFO (kein absoluter Pfad, kein „..“)?"""
+    if not tz or tz.startswith("/") or any(part in {"", ".", ".."} for part in tz.split("/")):
+        return False
+    return os.path.normpath(os.path.join(ZONEINFO, tz)).startswith(ZONEINFO + "/")
+
+
 def leap_directive(cfg: dict, warn=_log, exists=os.path.exists) -> str | None:
     """Woher chrony Schaltsekunden kennt. Eine gesetzte, vorhandene Zeitzone hat
     Vorrang (eigene Images); sonst die Liste aus tzdata (Debian trixie)."""
     tz = cfg.get("leapsectz") or ""
+    if tz and not _zone_inside(tz):
+        warn("ntp", "WARNUNG: LEAPSECTZ ist kein Name einer Zeitzone unter /usr/share/zoneinfo – "
+                    "wird ignoriert, Schaltsekunden kommen aus der Liste.")
+        tz = ""
     if tz:
         if exists(os.path.join(ZONEINFO, tz)):
             return f"leapsectz {tz}"
@@ -95,11 +107,81 @@ def leap_directive(cfg: dict, warn=_log, exists=os.path.exists) -> str | None:
     return None
 
 
+# Experten-Variablen, die als Wert in chrony.conf landen (ohne Dashboard-Feld). Jede wird geprüft;
+# ein ungültiger Wert fällt mit Warnung (expert_env_warnings) auf den Standard zurück – so kann auch ein
+# Tippfehler oder ein Zeilenumbruch in der Compose-Datei keine weitere Direktive erzeugen.
+CHRONY_LOG_WORDS = ("measurements", "statistics", "tracking", "rtc", "refclocks", "tempcomp",
+                    "rawmeasurements", "selection")
+PHC_REFCLOCK_DEFAULT = "poll 0 dpoll -2 offset 0 stratum 1"
+# Zusätzlich zu den Refclock-Optionen des Dashboards: Optionen, die es nur beim PHC-Treiber gibt.
+PHC_EXTRA_OPTIONS = {"nocrossts": 0, "extpps": 0, "clear": 0, "pin": 1, "channel": 1}
+
+
+def _env_int(env: dict, name: str, default: int, low: int, high: int, notes: list[str]) -> int:
+    raw = str(env.get(name) or "").strip()
+    if raw and (not re.fullmatch(r"[0-9]{1,10}", raw) or not low <= int(raw) <= high):
+        notes.append(f"WARNUNG {name}: {raw[:40]!r} ist ungültig (erlaubt {low}–{high}, ganze Zahl) "
+                     f"– verwende {default}")
+        return default
+    return int(raw) if raw else default
+
+
+def chrony_env_values(env: dict) -> tuple[dict, list[str]]:
+    """Geprüfte Werte von GPS_SHM_UNIT, GPS_PPS_SHM_UNIT, MAXUPDATESKEW, CLIENTLOGLIMIT, CHRONY_LOG und
+    PHC_REFCLOCK_OPTIONS – plus Warnungen für alles, was durch den Standard ersetzt wurde."""
+    notes: list[str] = []
+    out = {
+        "gps_shm_unit": _env_int(env, "GPS_SHM_UNIT", 0, 0, 255, notes),
+        "gps_pps_shm_unit": _env_int(env, "GPS_PPS_SHM_UNIT", 1, 0, 255, notes),
+        "clientloglimit": str(_env_int(env, "CLIENTLOGLIMIT", 10000000, 0, 2 ** 31 - 1, notes)),
+    }
+    raw = str(env.get("MAXUPDATESKEW") or "").strip()
+    out["maxupdateskew"] = "100.0"
+    if raw:
+        if re.fullmatch(r"[0-9]{1,7}(\.[0-9]{1,6})?", raw) and 0 < float(raw) <= 1000000:
+            out["maxupdateskew"] = raw
+        else:
+            notes.append(f"WARNUNG MAXUPDATESKEW: {raw[:40]!r} ist ungültig (Zahl über 0 bis 1000000) "
+                         "– verwende 100.0")
+    words = str(env.get("CHRONY_LOG") or "").split()
+    unknown = [w for w in words if w not in CHRONY_LOG_WORDS]
+    if unknown:
+        notes.append(f"WARNUNG CHRONY_LOG: {' '.join(unknown)[:60]!r} kennt chrony nicht (erlaubt: "
+                     f"{', '.join(CHRONY_LOG_WORDS)}) – unbekannte Wörter entfallen")
+    out["chrony_log"] = " ".join(dict.fromkeys(w for w in words if w in CHRONY_LOG_WORDS))
+    raw = env.get("PHC_REFCLOCK_OPTIONS")
+    out["phc_options"] = PHC_REFCLOCK_DEFAULT
+    if raw is not None:
+        try:
+            out["phc_options"] = settings._check_options(
+                raw, {**settings.REFCLOCK_OPTIONS, **PHC_EXTRA_OPTIONS}, "PHC-Refclock",
+                settings.REFCLOCK_INTEGER_OPTIONS | {"pin", "channel"})
+        except settings.ValidationError as exc:
+            notes.append(f"WARNUNG PHC_REFCLOCK_OPTIONS: {exc} – verwende „{PHC_REFCLOCK_DEFAULT}“")
+    return out, notes
+
+
+# Zeichen, die in einer erzeugten Zeile nie vorkommen dürfen: Steuerzeichen (außer Tab) und alles, was
+# ein Leser als Zeilenende verstehen könnte. Jede Zeile wird vor dem Schreiben geprüft (_guard_lines).
+_LINE_BREAKERS = re.compile("[\x00-\x08\x0a-\x1f\x7f\x85\u2028\u2029]")
+
+
+class UnsafeConfig(ValueError):
+    """Eine erzeugte Konfigurationszeile enthält ein Steuerzeichen – es wird nichts geschrieben."""
+
+
+def _guard_lines(lines: list[str], what: str) -> None:
+    for line in lines:
+        if _LINE_BREAKERS.search(line):
+            raise UnsafeConfig(f"{what}: Steuerzeichen in einer erzeugten Zeile – Konfiguration abgelehnt")
+
+
 def render_chrony(cfg: dict, env: dict | None = None, warn=_log,
                   nts_files: tuple[str, str] | None = None) -> str:
     """chrony.conf als Text. nts_files: (Zertifikat, Schlüssel), die chronyd lesen
     soll – Standard sind die konfigurierten Pfade (apply() übergibt die Kopien)."""
     env = os.environ if env is None else env
+    env_values, _notes = chrony_env_values(env)  # Warnungen meldet expert_env_warnings
     lines = [
         "# Generiert von ntp-gui – Änderungen gehen beim nächsten Speichern verloren.",
         "# Einstellen im Dashboard oder per Umgebungsvariable; für eine komplett",
@@ -136,7 +218,7 @@ def render_chrony(cfg: dict, env: dict | None = None, warn=_log,
             lines.append(f"# GPS ohne PPS: Rückfallebene, Fehlerschranke ± {numfmt.number(clock['delay'] / 2 * 1000)} ms "
                          + ("(gemessen)" if clock["source"] == "measured" else "(Standard, noch nicht gemessen)"))
         parts = [
-            f"refclock SHM {int(env.get('GPS_SHM_UNIT', '0') or 0)} refid {cfg['gps_refid']}",
+            f"refclock SHM {env_values['gps_shm_unit']} refid {cfg['gps_refid']}",
             f"offset {_num(float(cfg['gps_offset']))} delay {_num(float(clock['delay']))}",
             f"precision {_num(float(clock['precision']))} poll {cfg['gps_poll']}",
             f"filter {cfg['gps_filter']}",
@@ -157,7 +239,7 @@ def render_chrony(cfg: dict, env: dict | None = None, warn=_log,
             # einer Schleife neu - lieber ohne PPS starten und warnen.
             warn("gps", f"WARNUNG: {pps} existiert nicht – PPS-Refclock wird übersprungen.")
         elif cfg["gps_pps_shm"]:
-            unit = env.get("GPS_PPS_SHM_UNIT", "1") or "1"
+            unit = env_values["gps_pps_shm_unit"]
             lines.append(f"refclock SHM {unit} refid PPS precision 1e-7 lock {cfg['gps_refid']} "
                          f"poll {pps_poll}" + (f" {pps_extra}" if pps_extra else ""))
 
@@ -171,7 +253,7 @@ def render_chrony(cfg: dict, env: dict | None = None, warn=_log,
                     "Zeit zurück. PHC_REFCLOCK nur als PTP-Slave verwenden.")
     elif phc:
         if os.path.exists(phc):
-            options = env.get("PHC_REFCLOCK_OPTIONS", "poll 0 dpoll -2 offset 0 stratum 1")
+            options = env_values["phc_options"]
             lines.append(f"refclock PHC {phc} {options}".rstrip())
         else:
             warn("ptp", f"WARNUNG: {phc} existiert nicht – PHC-Refclock wird übersprungen.")
@@ -182,17 +264,17 @@ def render_chrony(cfg: dict, env: dict | None = None, warn=_log,
         # Messhistorie über Neustarts retten (chronyd -r lädt sie wieder).
         "dumpdir /var/lib/chrony",
         f"makestep {cfg['makestep']}",
-        f"maxupdateskew {env.get('MAXUPDATESKEW', '100.0') or '100.0'}",
+        f"maxupdateskew {env_values['maxupdateskew']}",
         f"minsources {cfg['ntp_minsources']}",
         "logdir /var/log/chrony",
     ]
-    if env.get("CHRONY_LOG"):
-        lines.append(f"log {env['CHRONY_LOG']}")
+    if env_values["chrony_log"]:
+        lines.append(f"log {env_values['chrony_log']}")
     leap = leap_directive(cfg, warn)
     if leap:
         lines.append(leap)
     lines += [
-        f"clientloglimit {env.get('CLIENTLOGLIMIT', '10000000') or '10000000'}",
+        f"clientloglimit {env_values['clientloglimit']}",
         "bindcmdaddress /var/run/chrony/chronyd.sock",
         "cmdport 0",
         f"port {cfg['ntp_port']}",
@@ -247,6 +329,8 @@ def render_chrony(cfg: dict, env: dict | None = None, warn=_log,
         warn("chrony", "HINWEIS: Orphan-Modus ist eingeschaltet, wirkt aber nur zusammen mit "
                        "„Auch ohne Quelle Zeit ausliefern“ (SERVE_UNSYNCED) – bleibt aus.")
 
+    # Jede erzeugte Zeile ist genau eine Zeile – erst danach kommt der bewusst freie EXTRA_CHRONY_CONF.
+    _guard_lines(lines, "chrony.conf")
     extra = env.get("EXTRA_CHRONY_CONF", "")
     if extra:
         lines += ["", "# EXTRA_CHRONY_CONF", _unescape_extra(extra)]
@@ -296,6 +380,9 @@ uds_address             {settings.ptp_uds_address(env)}
         body += f"utc_offset              {utc_offset}\n"
     for key, value in profile_extra.items():
         body += f"{key:<23} {value}\n"
+    # Die Werte oben kommen aus geprüften Einstellungen; trotzdem darf keiner eine Zeile umbrechen.
+    _guard_lines([str(v) for k, v in cfg.items() if k.startswith("ptp_")]
+                 + [f"{k} {v}" for k, v in profile_extra.items()] + [settings.ptp_uds_address(env)], "ptp4l.conf")
     if extra:
         body += _unescape_extra(extra) + "\n"
     body += f"\n[{cfg['ptp_interface'] or 'eth0'}]\n"
@@ -624,6 +711,11 @@ def expert_env_warnings(env: dict) -> list[str]:
         if raw and settings.env_number(name, None, low, high, env, integer=integer) is None:
             notes.append(f"WARNUNG {name}: {raw!r} ist ungültig (erlaubt {low}–{high}"
                          f"{', ganze Zahl' if integer else ''}) – verwende {default}")
+    notes += chrony_env_values(env)[1]
+    import netguard
+    outbound = netguard.mode_warning(env)
+    if outbound:
+        notes.append(f"WARNUNG {outbound}")
     raw = (env.get("PTP_UDS_ADDRESS") or "").strip()
     if raw and settings.ptp_uds_address(env) != raw:
         notes.append(f"WARNUNG PTP_UDS_ADDRESS: {raw!r} ist kein gültiger absoluter Pfad – "
@@ -764,7 +856,15 @@ def preview_files(changes: dict, defaults=None, env: dict | None = None) -> tupl
 
 def preview(changes: dict, defaults=None, env: dict | None = None) -> dict:
     """Vorschau fürs Dashboard: je Datei Zustand und Zeilen-Diff (geschwärzt, siehe redact_config)."""
-    planned, notes = preview_files(changes, defaults, env)
+    try:
+        planned, notes = preview_files(changes, defaults, env)
+    except UnsafeConfig as exc:
+        return {"files": [], "notes": [str(exc)]}
+    if CHRONY_CONF in planned and not os.path.isfile(CUSTOM_CHRONY):
+        problem = check_chrony(planned[CHRONY_CONF])
+        if problem:
+            notes.insert(0, f"FEHLER: chronyd würde diese Konfiguration ablehnen ({problem}) – beim Speichern "
+                            "bliebe die bisherige aktiv.")
     out = []
     for path, name, custom in ((CHRONY_CONF, "chrony.conf", CUSTOM_CHRONY), (PTP4L_CONF, "ptp4l.conf", CUSTOM_PTP4L)):
         entry: dict = {"name": name, "diff": [], "truncated": False}
@@ -783,8 +883,85 @@ def preview(changes: dict, defaults=None, env: dict | None = None) -> dict:
     return {"files": out, "notes": notes[:20]}
 
 
-def apply(env: dict | None = None) -> dict:
-    """Schreibt die Konfiguration und liefert die Werte für den Supervisor."""
+# --- chronyd prüft die neue chrony.conf, bevor sie die alte ersetzt ---------------------------------------
+# „chronyd -p“ liest die Konfiguration, gibt sie aus und endet; eine Zeile, die chronyd nicht versteht,
+# endet dort mit „Fatal error“ und Exit-Code 1 – genau wie beim echten Start. So bleibt bei einer
+# abgelehnten Einstellung die bisherige Datei stehen, statt dass chronyd beim Neustart abbricht und den
+# Container mitnimmt. Ohne chronyd (Tests, Entwicklung) entfällt die Prüfung.
+CHRONYD_BIN = os.environ.get("NTPGUI_CHRONYD", "/usr/sbin/chronyd")
+CHECK_TIMEOUT = 20
+CONFIG_ERROR_FILE = "config-error"   # im RUN_DIR des Supervisors: Grund der letzten Ablehnung
+
+
+class ConfigRejected(RuntimeError):
+    """chronyd lehnt die erzeugte Konfiguration ab – es wurde nichts ersetzt."""
+
+
+def _one_line(text: str, limit: int = 200) -> str:
+    text = " ".join(str(text).split())
+    text = "".join(c if c.isprintable() and c not in '"\\$`' else "'" for c in text)
+    return text[:limit]
+
+
+def check_chrony(content: str, binary: str | None = None) -> str | None:
+    """None, wenn chronyd die Konfiguration annimmt (oder nicht prüfen kann); sonst der Grund."""
+    binary = binary or CHRONYD_BIN
+    if not (os.path.isfile(binary) and os.access(binary, os.X_OK)):
+        return None
+    fd, tmp = tempfile.mkstemp(prefix="ntpgui-pruefung-", suffix=".conf")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+        try:
+            proc = subprocess.run([binary, "-p", "-f", tmp], capture_output=True, timeout=CHECK_TIMEOUT,
+                                  check=False)
+        except subprocess.TimeoutExpired:
+            _log("chrony", "HINWEIS: Prüfung der Konfiguration dauerte zu lange – ohne Prüfung weiter.")
+            return None
+        except OSError as exc:
+            _log("chrony", f"HINWEIS: Konfiguration nicht prüfbar ({exc}) – ohne Prüfung weiter.")
+            return None
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+    if proc.returncode == 0:
+        return None
+    err = proc.stderr.decode("utf-8", "replace")
+    match = re.search(r"Fatal error\s*:\s*(.+)", err)
+    reason = match.group(1) if match else (err.strip().splitlines() or [f"Exit-Code {proc.returncode}"])[-1]
+    reason = reason.replace(f" in file {tmp}", "").replace(tmp, "chrony.conf")
+    return _one_line(reason) or f"Exit-Code {proc.returncode}"
+
+
+def _config_error_path(env: dict) -> str | None:
+    run_dir = env.get("NTPGUI_RUN_DIR")
+    return os.path.join(run_dir, CONFIG_ERROR_FILE) if run_dir else None
+
+
+def _note_config_error(env: dict, reason: str | None) -> None:
+    """Grund der Ablehnung für den Supervisor (Status/Ereignis) ablegen – oder entfernen."""
+    path = _config_error_path(env)
+    if not path:
+        return
+    with contextlib.suppress(OSError):
+        if reason:
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(_one_line(reason) + "\n")
+        else:
+            os.unlink(path)
+
+
+def _rejected(files: list[tuple[str, str]]) -> str | None:
+    content = dict(files).get(CHRONY_CONF)
+    return check_chrony(content) if content is not None else None
+
+
+def apply(env: dict | None = None, fallback: bool = False) -> dict:
+    """Schreibt die Konfiguration und liefert die Werte für den Supervisor.
+
+    Lehnt chronyd die neue chrony.conf ab, wirft apply ConfigRejected und ersetzt nichts. fallback (beim
+    Start des Containers): dann stattdessen ohne die im Dashboard gespeicherten Werte (Umgebung und
+    Standard) erzeugen – ein gespeicherter Fehler soll nicht jeden weiteren Start verhindern."""
     env = dict(os.environ if env is None else env)
     cfg = settings.values(env)
     for key, entry in settings.effective(env).items():
@@ -805,7 +982,27 @@ def apply(env: dict | None = None) -> dict:
 
     # Erst beide Dateien vollständig erzeugen, dann gemeinsam ersetzen: Scheitert ptp4l.conf,
     # darf chrony.conf nicht schon neu sein (der Supervisor meldet dann „bisherige Einstellungen aktiv“).
-    files = planned_files(cfg, env, nts_files=prepare_nts_files(cfg) or ())
+    try:
+        files = planned_files(cfg, env, nts_files=prepare_nts_files(cfg) or ())
+        problem = _rejected(files)
+    except UnsafeConfig as exc:
+        files, problem = [], str(exc)
+    if problem:
+        _log("chrony", f"FEHLER: chronyd lehnt die neue Konfiguration ab: {problem}")
+        _note_config_error(env, problem)
+        # Ohne im Dashboard gespeicherte Werte gäbe der Rückfall dasselbe Ergebnis – dann gleich abbrechen.
+        if not fallback or not any(e["source"] == "gui" for e in settings.effective(env).values()):
+            raise ConfigRejected(problem)
+        _log("chrony", "WARNUNG: Start ohne die im Dashboard gespeicherten Einstellungen (nur Umgebung und "
+                       "Standard). Korrigiere die Einstellung im Dashboard und speichere erneut.")
+        cfg = {key: entry["value"] for key, entry in settings.effective(env, saved={}).items()}
+        files = planned_files(cfg, env, nts_files=prepare_nts_files(cfg) or ())
+        second = _rejected(files)
+        if second:
+            _log("chrony", f"FEHLER: auch ohne gespeicherte Einstellungen abgelehnt: {second}")
+            raise ConfigRejected(second)
+    else:
+        _note_config_error(env, None)
     ptp_on = bool(cfg["ptp_enable"]) and bool(cfg["ptp_interface"])
     # Erst ALLES berechnen, was noch werfen kann (phc2sys-Plan, DNS-Modus, Pfade, Warnungen),
     # und erst danach die Dateien ersetzen. Wirft ein Schritt, bleiben chrony.conf/ptp4l.conf
@@ -850,13 +1047,17 @@ def apply(env: dict | None = None) -> dict:
 def main(argv: list[str]) -> int:
     command = argv[1] if len(argv) > 1 else "apply"
     if command == "apply":
-        for key, value in apply().items():
+        try:
+            values = apply(fallback="--start" in argv[2:])
+        except (ConfigRejected, UnsafeConfig):
+            return 1  # Grund steht schon im Log und in RUN_DIR/config-error
+        for key, value in values.items():
             print(f"{key}={shlex.quote(value)}")
         return 0
     if command == "print":
         print(render_chrony(settings.values()), end="")
         return 0
-    print("Aufruf: confgen.py apply|print", file=sys.stderr)
+    print("Aufruf: confgen.py apply [--start]|print", file=sys.stderr)
     return 2
 
 

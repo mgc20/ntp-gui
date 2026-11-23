@@ -296,17 +296,32 @@ set_state() {  # set_state <dienst> <zustand> [meldung]
   write_services
 }
 
+read_config_error() {  # ohne Subshell; fehlt die Datei, bleibt CONFIG_ERROR leer
+  CONFIG_ERROR=""
+  if [[ -f "${RUN_DIR}/config-error" ]]; then
+    IFS= read -r CONFIG_ERROR < "${RUN_DIR}/config-error" || true
+    CONFIG_ERROR="${CONFIG_ERROR//[\"\\]/\'}"
+    CONFIG_ERROR="${CONFIG_ERROR:0:200}"
+  fi
+}
+
 device_id() {  # Inode + Major/Minor des Knotens (folgt by-id-Links), leer wenn weg
   stat -L -c '%i:%t:%T' "$1" 2>/dev/null || true
 }
 
 # --- Konfiguration erzeugen ---------------------------------------------------
+# apply_config [--start]: --start erlaubt confgen, bei einer von chronyd abgelehnten gespeicherten
+# Einstellung ohne die Dashboard-Werte zu starten (statt dass jeder Start scheitert).
+CONFIG_ERROR=""   # Grund der letzten Ablehnung (confgen schreibt ihn nach RUN_DIR/config-error)
 apply_config() {
   local out
-  if ! out=$(python3 "${APP_DIR}/confgen.py" apply); then
+  CONFIG_ERROR=""
+  if ! out=$(python3 "${APP_DIR}/confgen.py" apply "$@"); then
+    read_config_error
     log config "FEHLER: Konfiguration konnte nicht erzeugt werden – bisherige bleibt aktiv."
     return 1
   fi
+  read_config_error
   eval "$out"
   HOTPLUG_PATHS="${NTPGUI_HOTPLUG_PATHS:-}"
   NTS_WATCH="${NTPGUI_NTS_WATCH:-}"
@@ -539,8 +554,8 @@ reload_services() {
   # Erst die neue Konfiguration erzeugen (confgen ersetzt die Dateien nur, wenn alle gelingen).
   # Scheitert das, laufen die Dienste ohne Neustart mit den bisherigen Einstellungen weiter.
   if ! apply_config; then
-    write_status error "Konfiguration fehlerhaft – bisherige Einstellungen weiter aktiv"
-    "${EMIT_EVENT:-:}" reload warn "Konfiguration fehlerhaft – bisherige Einstellungen bleiben aktiv" result=error
+    write_status error "Konfiguration fehlerhaft – bisherige Einstellungen weiter aktiv${CONFIG_ERROR:+ (chronyd: ${CONFIG_ERROR})}"
+    "${EMIT_EVENT:-:}" reload warn "Konfiguration fehlerhaft – bisherige Einstellungen bleiben aktiv${CONFIG_ERROR:+ (chronyd: ${CONFIG_ERROR})}" result=error
     return 0
   fi
   stop_services
@@ -562,8 +577,8 @@ reload_chronyd() {
   write_status running "chronyd wird neu gestartet"
   if ! apply_config; then
     if [[ "$why" == settings ]]; then
-      write_status error "Konfiguration fehlerhaft – bisherige Einstellungen weiter aktiv"
-      "${EMIT_EVENT:-:}" reload warn "Konfiguration fehlerhaft – bisherige Einstellungen bleiben aktiv" result=error
+      write_status error "Konfiguration fehlerhaft – bisherige Einstellungen weiter aktiv${CONFIG_ERROR:+ (chronyd: ${CONFIG_ERROR})}"
+      "${EMIT_EVENT:-:}" reload warn "Konfiguration fehlerhaft – bisherige Einstellungen bleiben aktiv${CONFIG_ERROR:+ (chronyd: ${CONFIG_ERROR})}" result=error
     else
       write_status error "Konfiguration fehlerhaft – chronyd läuft mit dem bisherigen Zertifikat weiter"
       "${EMIT_EVENT:-:}" cert warn "Zertifikat erneuert, aber Konfiguration fehlerhaft – chronyd behält das alte" result=error
@@ -772,7 +787,9 @@ if [[ -n "$CHRONY_USER" ]]; then
 fi
 chmod 750 /var/run/chrony
 
-apply_config || { log main "Ohne gültige Konfiguration kein Start."; exit 1; }
+rm -f "${RUN_DIR}/config-error"
+apply_config --start || { log main "Ohne gültige Konfiguration kein Start."; exit 1; }
+START_CONFIG_ERROR="$CONFIG_ERROR"   # gesetzt: gespeicherte Einstellungen abgelehnt, Start ohne sie
 start_services
 
 spawn web python3 "${APP_DIR}/server.py"
@@ -782,6 +799,10 @@ set_state web running
 # Version steht an einer Stelle: als Standard in server.py (der Release-Workflow prüft, dass sie zur Release-Version passt).
 NTPGUI_VERSION="${NTPGUI_VERSION:-$(sed -n 's/^VERSION = os\.environ\.get("NTPGUI_VERSION", "\([^"]*\)").*/\1/p' "${APP_DIR}/server.py" 2>/dev/null)}"
 "$EMIT_EVENT" startup info "ntp-gui gestartet" version="${NTPGUI_VERSION:-}"
+if [[ -n "$START_CONFIG_ERROR" ]]; then
+  write_status error "Gespeicherte Einstellungen von chronyd abgelehnt (${START_CONFIG_ERROR}) – Start ohne sie"
+  "$EMIT_EVENT" reload warn "Gespeicherte Einstellungen von chronyd abgelehnt – gestartet mit Umgebung und Standardwerten (chronyd: ${START_CONFIG_ERROR})" result=error
+fi
 
 # --- Watchdog ------------------------------------------------------------------
 open_pause

@@ -77,6 +77,7 @@ echo
 echo "1) Start ohne CAP_SYS_TIME"
 docker run -d --name "${PREFIX}-a" -p 18080:8080 \
   -e NTP_PORT=10123 -e NTP_POOLS="" -e NTP_SERVERS="" -e ALLOW_NETWORKS="0.0.0.0/0" \
+  -e OUTBOUND_TARGETS=loopback \
   "$IMAGE" >/dev/null
 if wait_for_health http://127.0.0.1:18080/healthz 90; then ok "healthz wird gesund"; else bad "healthz bleibt ungesund"; fi
 LOGS=$(docker logs "${PREFIX}-a" 2>&1)
@@ -88,6 +89,13 @@ CONF_A=$(docker exec "${PREFIX}-a" cat /etc/chrony/chrony.conf)
 contains "chrony.conf nutzt leapseclist" "$CONF_A" "leapseclist /usr/share/zoneinfo/leap-seconds.list"
 check "Schaltsekunden-Liste im Image" 0 "$(docker exec "${PREFIX}-a" sh -c 'grep -q "^[0-9]" /usr/share/zoneinfo/leap-seconds.list; echo $?')"
 check "chronyd akzeptiert die Konfiguration" 0 "$(docker exec "${PREFIX}-a" sh -c 'chronyd -p -f /etc/chrony/chrony.conf >/dev/null 2>&1; echo $?')"
+CHK=$(docker exec "${PREFIX}-a" python3 -c '
+import sys; sys.path.insert(0, "/app"); import confgen
+good = open("/etc/chrony/chrony.conf").read()
+print(confgen.check_chrony(good), "|", confgen.check_chrony(good + "allow fe80::1%eth0/128\n"))' 2>&1)
+contains "Prüfung mit chronyd: gültige Konfiguration angenommen" "$CHK" "None |"
+if [[ "$CHK" == "None | None" || "$CHK" != "None |"* ]]; then bad "Prüfung mit chronyd: ungültige Zeile wird erkannt ($CHK)"
+else ok "Prüfung mit chronyd: ungültige Zeile wird erkannt"; fi
 check "Dashboard antwortet"        200 "$(http http://127.0.0.1:18080/)"
 check "Stylesheet wird geliefert"  200 "$(http http://127.0.0.1:18080/static/app.css)"
 check "API antwortet"              200 "$(http http://127.0.0.1:18080/api/status)"
@@ -294,6 +302,9 @@ contains "Benachrichtigung: Testnachricht zugestellt" "$NTEST" '"ok": true'
 contains "Benachrichtigung: Ziel hat die Nachricht" "$(docker exec "${PREFIX}-a" cat /tmp/notify-sink.log 2>/dev/null)" '"test":true'
 check "Benachrichtigung: Token nie in der API" 0 "$(curl -s http://127.0.0.1:18080/api/notify | grep -c CtGeheim42)"
 check "Benachrichtigung: Status per /api/v1" 200 "$(http http://127.0.0.1:18080/api/v1/notify/status)"
+check "Benachrichtigung: Metadaten-Adresse als Ziel abgelehnt" 422 "$(http "${J[@]}" -d '{"name":"x","type":"webhook","url":"http://169.254.169.254/latest"}' http://127.0.0.1:18080/api/notify/channels)"
+check "Benachrichtigung: Test-Knopf gebremst" 429 "$(http "${J[@]}" -d "{\"id\":\"$NID\"}" http://127.0.0.1:18080/api/notify/test)"
+sleep 6   # Bremse je Kanal: 5 s
 curl -s --max-time 10 "${J[@]}" -d "{\"id\":\"$NID\",\"url\":\"http://127.0.0.1:18999/umleitung\"}" http://127.0.0.1:18080/api/notify/channels >/dev/null
 contains "Benachrichtigung: Weiterleitung wird nicht befolgt" \
   "$(curl -s --max-time 15 "${J[@]}" -d "{\"id\":\"$NID\"}" http://127.0.0.1:18080/api/notify/test)" 'Weiterleitung abgelehnt'
@@ -449,7 +460,7 @@ REFCLOCKS=$(docker exec "${PREFIX}-c" sh -c 'grep -c refclock /etc/chrony/chrony
 check "Keine tote Refclock-Zeile" 0 "$REFCLOCKS"
 
 echo
-echo "5) Dienst stirbt beim Start (wait -n hätte das übersehen)"
+echo "5) Konfiguration, die chronyd ablehnt: kein Start mit kaputtem chronyd"
 docker run -d --name "${PREFIX}-d" \
   -e EXTRA_CHRONY_CONF="diese zeile versteht chronyd nicht" \
   -e NTP_PORT=10126 -e NTP_POOLS="" "$IMAGE" >/dev/null
@@ -458,9 +469,12 @@ for _ in $(seq 1 30); do
   if [[ "$(docker inspect -f '{{.State.Status}}' "${PREFIX}-d")" == "exited" ]]; then DEAD=1; break; fi
   sleep 1
 done
-if [[ "$DEAD" == 1 ]]; then ok "Container beendet sich, statt kaputt weiterzulaufen"; else bad "Container läuft trotz totem chronyd weiter"; fi
+if [[ "$DEAD" == 1 ]]; then ok "Container beendet sich, statt kaputt weiterzulaufen"; else bad "Container läuft trotz ungültiger Konfiguration weiter"; fi
 check "Exit-Code signalisiert Fehler" 1 "$(docker inspect -f '{{.State.ExitCode}}' "${PREFIX}-d")"
-contains "Watchdog meldet den toten Dienst" "$(docker logs "${PREFIX}-d" 2>&1)" "unerwartet beendet"
+LOGS_D=$(docker logs "${PREFIX}-d" 2>&1)
+contains "chronyd prüft die Konfiguration vor dem Start" "$LOGS_D" "chronyd lehnt die neue Konfiguration ab"
+contains "Log nennt den Grund ohne Pfad der Prüfdatei" "$LOGS_D" "Invalid directive"
+check "Kein Start von chronyd mit abgelehnter Konfiguration" 0 "$(grep -c 'chronyd.*unerwartet beendet' <<<"$LOGS_D" || true)"
 docker rm -f "${PREFIX}-d" >/dev/null 2>&1
 
 echo

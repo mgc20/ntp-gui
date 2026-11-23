@@ -316,7 +316,12 @@ wirkt erst mit „Speichern“. Die Speicherleiste unten zählt die Änderungen,
 Zeitdienste nötig ist, und zeigt mit **Vorschau** als Diff, welche Zeilen sich in `chrony.conf` und
 `ptp4l.conf` ändern würden, ohne etwas zu schreiben. Nach dem Speichern startet der
 Container die Zeitdienste bei Bedarf mit der neuen Konfiguration neu (wenige Sekunden, chrony behält
-dabei seine Messwerte).
+dabei seine Messwerte). Vorher prüft chronyd die neue `chrony.conf`: Lehnt er sie ab, bleibt die bisherige
+aktiv, und Vorschau, Übersicht und Ereignisprotokoll nennen den Grund. Ist eine gespeicherte Einstellung
+beim Start des Containers ungültig, startet ntp-gui ohne die im Dashboard gespeicherten Werte (nur
+Umgebung und Standard) und meldet das, statt gar nicht zu starten. Werte, die in `chrony.conf` oder
+`ptp4l.conf` landen, dürfen keine Steuerzeichen enthalten; IPv6-Adressen und Netze nehmen keine
+Scope-ID (`%eth0`) an.
 
 - Gespeichert wird in `/var/lib/chrony/ntp-gui/settings.json` (Rechte `0600`). Damit das eine
   Neuerstellung des Containers übersteht, muss `/var/lib/chrony` auf einem **Volume** liegen –
@@ -482,6 +487,10 @@ Fällt einer deiner eigenen DNS-Server aus oder antwortet wieder, steht das je S
 Ereignisprotokoll. ntp-gui prüft alle eigenen Server 20 s nach dem Start und dann alle 15 min;
 die Einstellungen zeigen „Letzte erfolgreiche Auflösung“ und „Erreichbar“. NTS-Quellen brauchen
 ihren Namen – mit nur einem eigenen DNS-Server rät ntp-gui zu einem zweiten, unabhängigen.
+
+Link-local-Adressen (`169.254.0.0/16`, `fe80::/10`) und bekannte Metadaten-Adressen nimmt ntp-gui
+nie als DNS-Server, DoT-/DoH-Server oder feste Adresse an. Ein Resolver auf Loopback (anderer Port
+als 53) bleibt im LAN möglich; mit `OUTBOUND_TARGETS=public` sind nur öffentliche Adressen erlaubt.
 
 ### Schleifen erkennen (DNS-Umschreibung / NAT-Umleitung)
 
@@ -1277,9 +1286,18 @@ Für ntfy, Gotify und Apprise nur die Server-Adresse eintragen (ohne `?…`).
 API-Schlüssel „lesen und verwalten“). Damit kann nur ein Admin den Server Anfragen an beliebige
 Adressen schicken lassen (SSRF) – und Admins können die Zeitversorgung ohnehin umstellen.
 Erlaubt sind nur `http`/`https`. Weiterleitungen werden nicht befolgt, Proxys aus der Umgebung
-nicht benutzt, Gesamtfrist 10 s, Antwort höchstens 64 KiB. Tokens gehen nur über `https://`
+nicht benutzt, Gesamtfrist 10 s, Antwort höchstens 64 KiB. **Gesperrte Ziele:** link-local
+(`169.254.0.0/16`, `fe80::/10` – dort antworten bei Cloud-Anbietern die Metadaten-Dienste), bekannte
+Metadaten-Adressen, Multicast, reservierte Bereiche und standardmäßig auch Loopback (der Server selbst).
+Geprüft wird die Adresse nach der Namensauflösung, auch in IPv6-Hüllen. Ziele im Heimnetz (ntfy, Gotify,
+Apprise im LAN oder im Docker-Netz) gehen weiter. Den Rahmen setzt `OUTBOUND_TARGETS` (nur per Umgebung):
+`lan` (Standard), `loopback` (zusätzlich Dienste auf demselben Rechner, z. B. Apprise bei
+`network_mode: host`) oder `public` (nur öffentliche Ziele, für einen VPS). Fehler nennen nur „Ziel nicht
+erreichbar oder nicht erlaubt“, ohne zu unterscheiden, ob gesperrt, abgelehnt oder kein HTTP-Dienst; der
+Test-Knopf geht höchstens fünfmal je Minute und je Kanal alle 5 s. Tokens gehen nur über `https://`
 hinaus oder über `http://` an Adressen im eigenen Netz (private IP, `*.lan`, `*.local`,
-`*.home.arpa`, Name ohne Punkt wie `apprise`). Änderst du Ziel oder Art eines Kanals, musst du
+`*.home.arpa`, Name ohne Punkt wie `apprise`) – entscheidend ist die aufgelöste Adresse: Zeigt der Name
+ins Internet, geht über `http://` nichts hinaus. Änderst du Ziel oder Art eines Kanals, musst du
 das Token neu eingeben. Tokens liegen in der Datenbank im Volume, werden im Dashboard und in der
 API nie wieder angezeigt und landen nie im Diagnosepaket; Adressen mit Pfad zeigen Dashboard
 und API nur gekürzt. Jede Nachricht läuft durch den Datenschutzfilter: keine Koordinaten, keine
@@ -1320,7 +1338,20 @@ In der Apprise-Oberfläche unter einem Schlüssel wie `ntp` die Ziele speichern 
 „Apprise-API“ mit Adresse `http://apprise:8000` und Schlüssel `ntp` anlegen. So liegen
 E-Mail-Passwörter nur bei Apprise. Läuft ntp-gui mit `network_mode: host`, erreicht es den
 Apprise-Container nicht über den Dienstnamen – dann Apprise einen Port geben
-(`ports: ["127.0.0.1:8000:8000"]`) und `http://127.0.0.1:8000` eintragen.
+(`ports: ["127.0.0.1:8000:8000"]`), `OUTBOUND_TARGETS=loopback` setzen und `http://127.0.0.1:8000`
+eintragen.
+
+Trägst du statt eines Schlüssels Apprise-URLs direkt ein, sendet der Apprise-Container selbst an diese
+Ziele – die Sperren oben gelten dann nur für den Weg zu Apprise. Die Apprise-API also nie öffentlich
+erreichbar betreiben und Ziele lieber als gespeicherte Konfiguration unter einem Schlüssel ablegen.
+
+**Auf einem VPS** zusätzlich den ausgehenden Verkehr des Containers am Host begrenzen. ntp-gui nutzt
+bewusst keinen Proxy aus der Umgebung; eine Firewall-Regel sperrt die Metadaten-Dienste für alle
+Programme im Container, z. B. mit iptables:
+
+```bash
+iptables -I DOCKER-USER -d 169.254.0.0/16 -j DROP
+```
 
 Zustand für Monitoring (Lese-Schlüssel genügt): `GET /api/v1/notify/status` – je Kanal nur
 Kennung, Art und Zustellstand.
@@ -1433,8 +1464,11 @@ landet eine Sicherung im Datenverzeichnis unter `/var/lib/chrony/ntp-gui/sicheru
 Datenträger wie die Daten – gegen einen Kartendefekt hilft nur eine heruntergeladene Kopie.
 
 **Wiederherstellen in zwei Schritten:** „Wiederherstellen …“ → Datei wählen; ntp-gui prüft sie und zeigt
-eine Vorschau (Zeitraum, Geräte, Regeln, Kanäle, sicherheitsrelevante Einstellungen mit altem und neuem
-Wert, was verworfen wird), ohne etwas zu ändern. Erst „Übernehmen“ schreibt – vorher sichert ntp-gui den
+eine Vorschau (Zeitraum, Geräte, Regeln, Kanäle, sicherheitsrelevante Einstellungen – Zugang,
+Erreichbarkeit, ausgehende Verbindungen und die ausgelieferte Zeit wie Port, Stratum und Quellen-Optionen –
+und darunter alle weiteren geänderten Einstellungen, jeweils mit altem und neuem Wert, was verworfen
+wird), ohne etwas zu ändern. Es wird immer nur eine Sicherung gleichzeitig hochgeladen und erstellt; vor
+dem Hochladen prüft ntp-gui, ob genug Platz frei bleibt. Erst „Übernehmen“ schreibt – vorher sichert ntp-gui den
 jetzigen Stand automatisch in denselben Ordner. Kanäle, die es hier noch nicht gibt, kommen
 ausgeschaltet an, bis du Ziel und Token geprüft hast.
 
@@ -1466,7 +1500,7 @@ dem Speichern eine `chrony.conf`, die unter `/api/config` einsehbar ist.
 | `LOCAL_ORPHAN` | `false` | Orphan-Modus: zwei ntp-gui-Server, die sich gegenseitig als Quelle haben, einigen sich ohne Internet auf **eine** Inselzeit (der mit der kleinsten Referenz-ID gibt sie vor). Wirkt nur mit `SERVE_UNSYNCED` |
 | `NTP_RATELIMIT` | `false` | Anfragen je Client begrenzen (`ratelimit`) |
 | `LEAPSECLIST` | `/usr/share/zoneinfo/leap-seconds.list` | Schaltsekunden-Liste der IERS aus tzdata (`leapseclist`); eigene Liste unter `/config/` möglich, leer schaltet die Ankündigung ab |
-| `LEAPSECTZ` | – | Nur für eigene Images mit `right/`-Zeitzonen (`leapsectz`). Bis 1.3.0 Standard `right/UTC`; fehlt die Zone, gilt die Liste |
+| `LEAPSECTZ` | – | Nur für eigene Images mit `right/`-Zeitzonen (`leapsectz`). Nur ein Zonenname unter `/usr/share/zoneinfo` (z. B. `right/UTC`), kein Pfad. Bis 1.3.0 Standard `right/UTC`; fehlt die Zone, gilt die Liste |
 | `NTS_NOCERTTIMECHECK` | `true` | Zertifikatszeit beim ersten NTS-Abgleich nicht prüfen |
 | `NTS_SERVER` | `false` | Selbst NTS-Server sein, siehe [NTS-Server für das LAN](#nts-server-für-das-lan) |
 | `NTS_SERVER_CERT` / `NTS_SERVER_KEY` | `/config/nts.crt` / `/config/nts.key` | Zertifikat (PEM, am besten fullchain) und Schlüssel. Nur Pfade unter `/config`, `/certs` oder `/etc/letsencrypt` |
@@ -1480,7 +1514,7 @@ dem Speichern eine `chrony.conf`, die unter `/api/config` einsehbar ist.
 | `MAKESTEP` | `1.0 3` | `makestep`-Parameter |
 | `MAXUPDATESKEW` | `100.0` | `maxupdateskew` in ppm |
 | `EXTRA_CHRONY_CONF` | – | Beliebige zusätzliche Zeilen (`\n` als Trenner) |
-| `CHRONY_LOG` | – | Inhalt einer `log`-Zeile, z. B. `measurements statistics tracking` (Logs unter `/var/log/chrony`) |
+| `CHRONY_LOG` | – | Inhalt einer `log`-Zeile, z. B. `measurements statistics tracking` (Logs unter `/var/log/chrony`); erlaubt sind `measurements`, `statistics`, `tracking`, `rtc`, `refclocks`, `tempcomp`, `rawmeasurements`, `selection` |
 | `CLIENTLOGLIMIT` | `10000000` | Speicher (Bytes) für die Client-Liste von chronyd |
 | `CUSTOM_CHRONY_CONF` | `/config/chrony.conf` | Pfad einer eigenen chrony.conf, die – falls vorhanden – die erzeugte ersetzt |
 
@@ -1651,15 +1685,18 @@ PHC-Refclock dient ihm als Referenz für Stratum und Statistik.
 | `TEMP_SENSOR` | `auto` | Temperatursensor für die Seite [Uhrqualität](#uhrqualität-temperatur-schaltsekunden-vollbild-uhr) (`auto`, `off` oder Kennung aus dem Hardware-Check) |
 | `CLOCK_PUBLIC` | `false` | `true` = `/clock` und `/api/v1/time` ohne Anmeldung und über jeden Host-Namen (nur Zeit und Status; alle anderen Seiten bleiben gegen DNS-Rebinding geprüft). Nicht einschalten, wenn das Dashboard aus dem Internet erreichbar ist |
 | `UPDATE_CHECK` | `false` | Einmal am Tag bei GitHub nach einer neuen Version fragen, siehe [Update-Hinweis](#update-hinweis-opt-in) |
+| `OUTBOUND_TARGETS` | `lan` | Erlaubte Ziele für Benachrichtigungen und den DNS-Weiterleiter: `lan` (öffentliche und private Adressen, kein Loopback), `loopback` (zusätzlich der Rechner selbst), `public` (nur öffentliche Adressen, für einen VPS). Link-local und Metadaten-Dienste sind immer gesperrt, siehe [Benachrichtigungen](#benachrichtigungen) |
 
 Nur per Umgebung (sie betreffen den Start selbst oder sind Expertenwerte): `WEB_PORT`,
-`WEB_BIND`, `WEB_READONLY`, `WEB_USER`/`WEB_PASSWORD`/`WEB_PASSWORD_FILE`, `WEB_REQUIRE_AUTH`, `WEB_ALLOWED_HOSTS`, `WEB_ACCESS_LOG`, `WEB_MAX_CONNECTIONS`, `HISTORY_SIZE`,
+`WEB_BIND`, `WEB_READONLY`, `WEB_USER`/`WEB_PASSWORD`/`WEB_PASSWORD_FILE`, `WEB_REQUIRE_AUTH`, `WEB_ALLOWED_HOSTS`, `WEB_ACCESS_LOG`, `WEB_MAX_CONNECTIONS`, `OUTBOUND_TARGETS`, `HISTORY_SIZE`,
 `HISTORY_DAYS`, `NTPGUI_LOGTEE`, `NTPGUI_REPLAY`/`NTPGUI_REPLAY_SPEED`,
 `DISABLE_CLOCK_CONTROL`, `EXTRA_CHRONY_CONF`, `EXTRA_PTP4L_CONF`, `CHRONY_LOG`,
 `CLIENTLOGLIMIT`, `MAXUPDATESKEW`, `CUSTOM_CHRONY_CONF`, `CUSTOM_PTP4L_CONF`, `GPS_OPTIONS`,
 `GPS_SHM_UNIT`, `GPS_PPS_SHM_UNIT`, `GPS_WAIT_SECONDS`, `GPSD_HOST`/`GPSD_PORT`,
 `PHC_REFCLOCK_OPTIONS`, `PTP_UTC_OFFSET`, `PTP_HOLDOVER_SECONDS`, `PTP_TX_TIMESTAMP_TIMEOUT`,
-`PTP_UDS_ADDRESS`.
+`PTP_UDS_ADDRESS`. Expertenwerte, die in `chrony.conf` landen (`GPS_SHM_UNIT`, `GPS_PPS_SHM_UNIT`,
+`MAXUPDATESKEW`, `CLIENTLOGLIMIT`, `CHRONY_LOG`, `PHC_REFCLOCK_OPTIONS`), werden geprüft; ein ungültiger
+Wert fällt mit Warnung im Start-Log auf den Standard zurück. Nur `EXTRA_CHRONY_CONF` bleibt bewusst frei.
 
 ### Clients, Diagnose und Entwicklung
 

@@ -325,6 +325,7 @@ function backupPreview(ctx, preview) {
   const removed = channels.removed || [];
   const replaced = channels.replaced || [];
   const security = setts.security || [];
+  const changes = setts.changes || [];
   const dropped = cal.dropped || [];
   const channelText = (item) => {
     if (item.dropped) return `${item.type} → ${item.host}: wird nicht übernommen (${item.dropped})`;
@@ -367,6 +368,9 @@ function backupPreview(ctx, preview) {
     security.length ? el("div", { class: "backup-reenter" },
       el("p", { class: "field-help" }, el("strong", { text: "Diese sicherheitsrelevanten Einstellungen ändern sich: " }), infoButton("backup_security", "Sicherheitsrelevante Einstellungen")),
       el("ul", {}, security.map((item) => el("li", { text: `${item.label}: ${item.before} → ${item.after}` })))) : null,
+    changes.length ? el("div", { class: "backup-reenter" },
+      el("p", { class: "field-help" }, el("strong", { text: `Weitere Einstellungen, die sich ändern (${fmtNumber(changes.length)}): ` }), infoButton("backup_changes", "Weitere Änderungen")),
+      el("ul", {}, changes.map((item) => el("li", { text: `${item.label}: ${item.before} → ${item.after}` })))) : null,
     dropped.length ? el("div", { class: "backup-reenter" },
       el("p", { class: "field-help" }, el("strong", { text: "Kalibrierung – verworfen, weil ungültig: " }), infoButton("backup_calibration", "Kalibrierung")),
       el("ul", {}, dropped.map((text) => el("li", { text })))) : null,

@@ -27,6 +27,18 @@ import notify  # noqa: E402
 import settings  # noqa: E402
 import store  # noqa: E402
 
+# Die Testziele laufen auf 127.0.0.1 – Loopback ist als Ziel standardmäßig gesperrt (netguard) und wird
+# hier bewusst erlaubt, wie mit OUTBOUND_TARGETS=loopback in der Compose-Datei.
+_OUTBOUND = mock.patch.dict(os.environ, {"OUTBOUND_TARGETS": "loopback"})
+
+
+def setUpModule():  # noqa: N802
+    _OUTBOUND.start()
+
+
+def tearDownModule():  # noqa: N802
+    _OUTBOUND.stop()
+
 
 # --------------------------------------------------------------------------- Testziel
 class Target:
@@ -597,6 +609,7 @@ class EndToEndTest(TempData):
         self.assertEqual(result["status"]["state"], "ok")
         self.target.status = 302
         self.target.location = "http://example.org/"
+        notify._TEST_LAST.clear()  # Bremse des Test-Knopfs (eigener Test) hier nicht abwarten
         result = notify.send_test(cid)
         self.assertFalse(result["ok"])
         self.assertIn("Weiterleitung", result["error"])

@@ -1298,6 +1298,7 @@ def _clock_zone() -> str | None:
 # Studiouhr B4: On-Air/REC-Signal. Nur im Speicher (clocksignal.py) – nach einem Neustart „off“, nie in der Sicherung.
 CLOCK_SIGNAL = clocksignal.Signal()
 CLOCK_SIGNAL_RATE = clocksignal.RateLimit()
+BACKUP_DOWNLOAD_SLOT = threading.BoundedSemaphore(1)   # GET /api/backup: eine neue Sicherung gleichzeitig
 SIGNAL_TITLES = {"off": "aus", "on_air": "ON AIR", "rec": "REC"}
 SIGNAL_AUDIT_TITLE = "On-Air-Signal der Uhr:"
 # Einträge ins Ereignisprotokoll: Die ersten SIGNAL_AUDIT_BURST stehen sofort da (ein Abend mit vielen Wechseln), danach
@@ -2874,16 +2875,25 @@ class Handler(BaseHTTPRequestHandler):
             headers["Content-Disposition"] = f'attachment; filename="ntp-gui-{name}"'
             self._send_file(path, "application/gzip", headers)
             return
-        dest = backup.download_path()
+        # Nur eine neue Sicherung gleichzeitig: Jede legt bis zur Auslieferung eine volle Kopie im
+        # Datenverzeichnis ab – viele langsam gelesene Downloads füllten sonst den Speicher.
+        if not BACKUP_DOWNLOAD_SLOT.acquire(blocking=False):
+            self._error(HTTPStatus.TOO_MANY_REQUESTS,
+                        "Es wird gerade schon eine Sicherung erstellt oder heruntergeladen – bitte warten.")
+            return
         try:
-            manifest = backup.create(dest, VERSION)
-            headers["Content-Disposition"] = f'attachment; filename="{backup.file_name(manifest["created"])}"'
-            self._send_file(dest, "application/gzip", headers)
-        finally:
+            dest = backup.download_path()
             try:
-                os.unlink(dest)
-            except OSError:
-                pass
+                manifest = backup.create(dest, VERSION)
+                headers["Content-Disposition"] = f'attachment; filename="{backup.file_name(manifest["created"])}"'
+                self._send_file(dest, "application/gzip", headers)
+            finally:
+                try:
+                    os.unlink(dest)
+                except OSError:
+                    pass
+        finally:
+            BACKUP_DOWNLOAD_SLOT.release()
 
     def _csrf_upload_ok(self, ident: dict | None) -> bool:
         """Wie _csrf_ok, aber für den Upload einer Sicherung (Body ist die .tar.gz, kein JSON).
@@ -2917,7 +2927,9 @@ class Handler(BaseHTTPRequestHandler):
             result = backup.stage_upload(self.rfile, length)
         except backup.RestoreError as exc:
             if not REAPER.disarm(self.connection):  # Frist abgelaufen: Verbindung ist schon zu
-                self._error(HTTPStatus.UNPROCESSABLE_ENTITY, str(exc), written=False)
+                status = (HTTPStatus.CONFLICT if isinstance(exc, backup.RestoreBusy)
+                          else HTTPStatus.UNPROCESSABLE_ENTITY)
+                self._error(status, str(exc), written=False)
             return
         if REAPER.disarm(self.connection):
             backup.discard(result["token"])
@@ -3241,6 +3253,8 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/notify/test":
             try:
                 self._send_json(notify.send_test(str(data.get("id", ""))))
+            except notify.TestRateLimited as exc:
+                self._error(HTTPStatus.TOO_MANY_REQUESTS, str(exc))
             except notify.NotifyError as exc:
                 self._error(HTTPStatus.NOT_FOUND, str(exc))
         elif path == "/api/v1/clock/signal":

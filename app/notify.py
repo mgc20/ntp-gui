@@ -70,6 +70,7 @@ from typing import Any, Callable
 
 import egress
 import events
+import netguard
 import numfmt
 import settings
 import store
@@ -241,6 +242,23 @@ def display_url(url: str) -> str:
     return f"{parts.scheme}://{parts.netloc}/…"
 
 
+def _blocked_literal(url: str) -> str | None:
+    """Steht schon in der Adresse ein gesperrtes Ziel (IP-Adresse oder localhost)? Dann gleich beim
+    Speichern sagen, warum. Namen prüft erst die Zustellung – nach der Auflösung (netguard)."""
+    _scheme, host, _port = _origin(url)
+    target = netguard.parse(host)
+    if target is None and (host == "localhost" or host.endswith(".localhost")):
+        target = ipaddress.ip_address("127.0.0.1")
+    if target is None:
+        return None
+    why = netguard.reason(target, "notify")
+    if why is None:
+        return None
+    hint = (" Für einen Dienst auf demselben Rechner (z. B. Apprise bei network_mode: host) "
+            "OUTBOUND_TARGETS=loopback in der Compose-Datei setzen." if netguard.unwrap(target).is_loopback else "")
+    return f"Dieses Ziel ist gesperrt ({why}).{hint}"
+
+
 def validate(data: dict, existing: dict | None = None) -> dict:
     """Eingabe aus dem Dashboard → gespeicherte Felder. Positivliste je Feld, wirft NotifyError.
 
@@ -263,6 +281,9 @@ def validate(data: dict, existing: dict | None = None) -> dict:
     if not settings.http_url_ok(url):
         raise NotifyError("Adresse: http:// oder https:// mit Hostname bzw. IP, ohne Leerzeichen und ohne "
                           "Benutzer/Passwort in der Adresse (dafür gibt es das Token-Feld)")
+    blocked = _blocked_literal(url)
+    if blocked:
+        raise NotifyError(f"Adresse: {blocked}")
     topic = str(data.get("topic", base.get("topic", "")) or "").strip()
     if kind in ("ntfy", "gotify", "apprise"):
         parts = urllib.parse.urlsplit(url)
@@ -771,6 +792,15 @@ class DeliveryError(Exception):
     """Zustellung gescheitert – Text ist kurz, deutsch und enthält weder Adresse noch Token."""
 
 
+class TargetBlocked(OSError):
+    """Die aufgelöste Adresse ist als Ziel gesperrt (netguard) – nach außen wie „nicht erreichbar“."""
+
+
+# Eine Meldung für gesperrt, abgelehnt, nicht erreichbar und „kein HTTP“: Sonst ließe sich über den
+# Test-Knopf herausfinden, welche Adressen und Ports im Netz des Servers offen sind.
+UNREACHABLE_TEXT = "Ziel nicht erreichbar oder nicht erlaubt – Adresse und Port prüfen"
+
+
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     """Weiterleitungen nie folgen: urllib würde sonst still an ein anderes Ziel senden."""
 
@@ -785,7 +815,9 @@ class _Deadline:
     schaltet ein Timer die Verbindung ab (shutdown über ein Duplikat des Sockets – wirkt auch auf
     die TLS-Hülle) und der blockierte Aufruf kehrt sofort zurück."""
 
-    def __init__(self, seconds: float) -> None:
+    def __init__(self, seconds: float, local_only: bool = False) -> None:
+        # local_only: Token über http:// – nur an eine private Adresse oder Loopback (nach der Auflösung).
+        self.local_only = local_only
         self.end = time.monotonic() + seconds
         self.fired = False
         self._lock = threading.Lock()
@@ -840,7 +872,21 @@ class _Deadline:
         """Ersatz für socket.create_connection (http.client._create_connection)."""
         host, port = address[0], address[1]
         error: BaseException | None = None
+        refused_plain = False
         for family, kind, proto, _name, sockaddr in self._resolve(host, port):
+            # Erst die tatsächlich aufgelöste Adresse prüfen (netguard): so zählt jede Schreibweise
+            # (Name, Dezimalzahl, IPv6-Hülle) und auch ein Name, der später woandershin zeigt.
+            try:
+                target = ipaddress.ip_address(str(sockaddr[0]).split("%", 1)[0])
+            except ValueError:
+                error = TargetBlocked()
+                continue
+            if netguard.reason(target, "notify") is not None:
+                error = error or TargetBlocked()
+                continue
+            if self.local_only and not netguard.local_address(target):
+                refused_plain = True
+                continue
             left = self.remaining()
             if left <= 0 or self.fired:
                 raise TimeoutError("Frist")
@@ -854,6 +900,9 @@ class _Deadline:
             except OSError as exc:
                 sock.close()
                 error = exc
+        if refused_plain and (error is None or isinstance(error, TargetBlocked)):
+            raise DeliveryError("Token über http:// geht nur an Adressen im eigenen Netz – dieser Name zeigt "
+                                "ins Internet. Bitte https:// verwenden.")
         raise error or OSError("keine Adresse")
 
 
@@ -969,14 +1018,10 @@ def _describe(exc: BaseException) -> str:
         return _timeout_text()
     if isinstance(reason, ssl.SSLError) or isinstance(exc, ssl.SSLError):
         return "TLS-Fehler (Zertifikat ungültig oder nicht vertrauenswürdig)"
-    if isinstance(reason, ConnectionRefusedError):
-        return "Verbindung abgelehnt – läuft der Dienst, stimmt der Port?"
     if isinstance(reason, socket.gaierror):
         return "Name nicht auflösbar – Adresse prüfen"
-    if isinstance(reason, OSError):
-        return "Netzwerkfehler – Ziel nicht erreichbar"
-    if isinstance(exc, http.client.HTTPException):
-        return "Ungültige Antwort vom Ziel"
+    if isinstance(reason, OSError) or isinstance(exc, (OSError, http.client.HTTPException)):
+        return UNREACHABLE_TEXT  # abgelehnt, gesperrt, Netzwerkfehler, keine gültige HTTP-Antwort
     return "Zustellung fehlgeschlagen"
 
 
@@ -990,7 +1035,11 @@ def deliver(channel: dict, clean: dict, version: str = "") -> None:
     if not settings.http_url_ok(url, max_len=400):
         raise DeliveryError("Adresse ungültig")
     request = urllib.request.Request(url, data=body, headers=headers, method="POST")
-    deadline = _Deadline(TIMEOUT)
+    # Ein Token (nicht nur seine Signatur) geht im Klartext mit: dann nur an Adressen im eigenen Netz.
+    carries_token = (any(h in headers for h in ("Authorization", "X-Gotify-Key"))
+                     or (channel.get("type") == "apprise" and not channel.get("topic") and bool(channel.get("secret"))))
+    plain_token = carries_token and urllib.parse.urlsplit(url).scheme.lower() == "http"
+    deadline = _Deadline(TIMEOUT, local_only=plain_token)
     try:
         with _opener(deadline).open(request, timeout=TIMEOUT) as response:
             code = getattr(response, "status", 200)
@@ -1280,11 +1329,41 @@ def flush() -> None:
     NOTIFIER.flush()
 
 
+class TestRateLimited(NotifyError):
+    """Zu viele Testnachrichten in kurzer Zeit (Text nennt die Wartezeit)."""
+
+
+TEST_PER_MINUTE = 5          # Testnachrichten insgesamt je Minute
+TEST_CHANNEL_GAP = 5.0       # Sekunden zwischen zwei Tests desselben Kanals
+_TEST_LOCK = threading.Lock()
+_TEST_TIMES: deque = deque()
+_TEST_LAST: dict[str, float] = {}
+
+
+def _test_allowed(channel_id: str, now: float | None = None) -> None:
+    """Bremse für den Test-Knopf: höchstens TEST_PER_MINUTE je Minute, je Kanal alle TEST_CHANNEL_GAP s."""
+    now = time.monotonic() if now is None else now
+    with _TEST_LOCK:
+        while _TEST_TIMES and now - _TEST_TIMES[0] >= 60.0:
+            _TEST_TIMES.popleft()
+        last = _TEST_LAST.get(channel_id)
+        if last is not None and now - last < TEST_CHANNEL_GAP:
+            raise TestRateLimited(f"Bitte {numfmt.number(TEST_CHANNEL_GAP, 0)} s warten, bevor du diesen Kanal "
+                                  "erneut testest.")
+        if len(_TEST_TIMES) >= TEST_PER_MINUTE:
+            raise TestRateLimited(f"Höchstens {TEST_PER_MINUTE} Testnachrichten je Minute – bitte kurz warten.")
+        _TEST_TIMES.append(now)
+        _TEST_LAST[channel_id] = now
+        for key in [k for k, t in _TEST_LAST.items() if now - t >= 60.0]:
+            del _TEST_LAST[key]
+
+
 def send_test(channel_id: str) -> dict:
     """Testnachricht sofort und ohne Wiederholung senden (Knopf im Dashboard)."""
     channel = get_channel(str(channel_id or ""))
     if channel is None:
         raise NotifyError("Diesen Kanal gibt es nicht (mehr)")
+    _test_allowed(channel["id"])
     msg = {"title": "Testnachricht von ntp-gui", "level": "info", "kind": "notify", "time": time.time(),
            "test": True}
     try:
@@ -1336,5 +1415,8 @@ def _reset_for_tests() -> None:
     NOTIFIER.stop()
     events._LISTENERS[:] = [cb for cb in events._LISTENERS if cb != NOTIFIER.wake]
     NOTIFIER = Notifier()
+    with _TEST_LOCK:
+        _TEST_TIMES.clear()
+        _TEST_LAST.clear()
     _READY["db"] = None
     _KNOWN.update(t=0.0, ok=False, names=[], values={})

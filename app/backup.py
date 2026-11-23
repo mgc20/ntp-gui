@@ -153,11 +153,17 @@ _STORED_RE = re.compile(r"^(?:vor-wiederherstellung|nacht)-\d{8}(?:-\d{6})?\.tar
 # der jetzige Wert stehen; fehlt er, nennt die Vorschau ihn unter „neu eingeben“.
 SECRET_SETTINGS = frozenset(settings.MASKED_FOR_READ) | {"dns_dot", "dns_pin"}
 
-# Einstellungen, deren Änderung Zugang, Erreichbarkeit oder ausgehende Verbindungen betrifft – die
-# Vorschau nennt sie einzeln mit altem und neuem Wert (ein präpariertes Archiv soll nichts still ändern).
+# Einstellungen, deren Änderung Zugang, Erreichbarkeit, ausgehende Verbindungen oder die ausgelieferte
+# Zeit betrifft – die Vorschau nennt sie zuerst und einzeln mit altem und neuem Wert (ein präpariertes
+# Archiv soll nichts still ändern). Alle übrigen Änderungen stehen darunter („changes“).
 SECURITY_SETTINGS = ("bind_address", "allow_networks", "deny_networks", "trusted_proxies", "web_allowed_hosts",
                      "clock_public", "notify_lan_addresses", "notify_dashboard_url", "update_check",
-                     "clients_rdns", "nts_server_enable", "ntp_sources", "dns_mode", "dns_servers")
+                     "clients_rdns", "nts_server_enable", "ntp_sources", "dns_mode", "dns_servers",
+                     "ntp_port", "nts_server_port", "nts_server_cert", "nts_server_key", "serve_unsynced",
+                     "local_stratum", "local_orphan", "ntp_ratelimit", "makestep", "ntp_minsources",
+                     "ntp_source_options", "gps_refclock_options", "gps_pps_options")
+# Versionsangabe im Manifest (nicht signiert): nur in dieser Form anzeigen, sonst „unbekannt“.
+_VERSION_RE = re.compile(r"[0-9]{1,4}(\.[0-9]{1,4}){1,3}([-+][0-9A-Za-z.]{1,20})?")
 MAX_META_HEADERS = 32                    # PAX-/Langname-Köpfe je Archiv (sonst Rekursion in tarfile)
 # Zeitpunkt der Sicherung (manifest.created, nicht signiert): höchstens so weit in der Zukunft, sonst
 # abgelehnt. Messpunkte übernimmt das Einspielen nur bis created und bis jetzt + FUTURE_TOL – Messpunkte
@@ -1048,9 +1054,9 @@ def check_manifest_head(manifest: Any) -> tuple[int, int, int, dict[str, dict]]:
     except (TypeError, ValueError, AttributeError):
         raise RestoreError("manifest.json ist unvollständig (Versionen fehlen) – abgelehnt.") from None
     if fmt > FORMAT_VERSION or dump_schema > DUMP_SCHEMA or settings_schema > settings.SCHEMA_VERSION:
-        origin = manifest.get("ntp_gui_version")
+        origin = manifest_version(manifest.get("ntp_gui_version"))
         raise RestoreError("Die Sicherung stammt aus einer neueren Version von ntp-gui"
-                           + (f" ({_show(origin)})" if origin else "")
+                           + (f" ({origin})" if origin and origin != "unbekannt" else "")
                            + " – bitte zuerst ntp-gui aktualisieren, dann wiederherstellen.")
     if fmt < 1 or dump_schema < 1 or settings_schema < 1:
         raise RestoreError("manifest.json nennt ungültige Versionen – abgelehnt.")
@@ -1086,7 +1092,15 @@ def check_manifest(manifest: Any, hashes: dict[str, str], workdir: str) -> dict:
         raise RestoreError("manifest.json nennt einen Zeitpunkt in der Zukunft – abgelehnt (stimmt die Uhrzeit "
                            "dieses Geräts?).")
     return {"format_version": fmt, "dump": dump_schema, "settings": settings_schema, "created": created,
-            "version": str(manifest.get("ntp_gui_version") or "")[:40]}
+            "version": manifest_version(manifest.get("ntp_gui_version"))}
+
+
+def manifest_version(value: Any) -> str:
+    """ntp_gui_version aus dem Manifest: leer, eine Versionsnummer wie 1.8.2 – oder „unbekannt“."""
+    if value is None or value == "":
+        return ""
+    text = str(value)
+    return text if _VERSION_RE.fullmatch(text) else "unbekannt"
 
 
 def _open_dump(path: str, readonly: bool = True) -> sqlite3.Connection:
@@ -1200,7 +1214,8 @@ def _settings_plan(data: Any) -> dict:
     restart = any(settings.FIELDS[k]["restart"] == settings.RESTART_SERVICES and clean.get(k) != current.get(k)
                   for k in set(clean) | {k for k in current if k not in SECRET_SETTINGS})
     return {"values": clean, "skipped": skipped, "reenter": reenter, "kept": kept, "restart": restart,
-            "notes": [str(n)[:500] for n in notes], "security": _security_changes(clean, current)}
+            "notes": [str(n)[:500] for n in notes], "security": _security_changes(clean, current),
+            "changes": _setting_changes(clean, current)}
 
 
 def _fmt_setting(value: Any) -> str:
@@ -1221,12 +1236,23 @@ def _fmt_setting(value: Any) -> str:
 
 def _security_changes(clean: dict, current: dict) -> list[dict]:
     """Sicherheitsrelevante Einstellungen, die sich beim Übernehmen ändern (alt → neu)."""
+    return _changes(SECURITY_SETTINGS, clean, current)
+
+
+def _setting_changes(clean: dict, current: dict) -> list[dict]:
+    """Alle übrigen Einstellungen, die sich ändern (alt → neu) – ohne die sicherheitsrelevanten (stehen
+    schon oben) und ohne Geheimnisse (die werden nie übernommen)."""
+    keys = [k for k in settings.FIELDS if k not in SECURITY_SETTINGS and k not in SECRET_SETTINGS]
+    return _changes(keys, clean, current)
+
+
+def _changes(keys, clean: dict, current: dict) -> list[dict]:
     try:
         effective = settings.values()
     except Exception:
         effective = {}
     out = []
-    for key in SECURITY_SETTINGS:
+    for key in keys:
         if key not in settings.FIELDS or (key not in clean and key not in current):
             continue
         before = current.get(key, effective.get(key))
@@ -1543,22 +1569,55 @@ def _summary(workdir: str, info: dict, settings_plan: dict, autocal_plan: dict) 
         "settings": {"count": len(settings_plan["values"]), "skipped": settings_plan["skipped"],
                      "reenter": settings_plan["reenter"], "kept": settings_plan["kept"],
                      "restart": settings_plan["restart"], "notes": settings_plan["notes"],
-                     "security": settings_plan["security"]},
+                     "security": settings_plan["security"], "changes": settings_plan["changes"]},
     }
 
 
+class RestoreBusy(RestoreError):
+    """Es läuft schon ein Upload – nur einer gleichzeitig."""
+
+
+_UPLOAD_SLOT = threading.BoundedSemaphore(1)
+
+
+def _check_upload_space(root: str, length: int, reserve: int = DISK_RESERVE) -> None:
+    """Vor dem Schreiben: Passt der Upload, und bleibt danach reserve frei? (Verlauf, settings.json und
+    SQLite liegen im selben Dateisystem.)"""
+    try:
+        free = shutil.disk_usage(root).free
+    except OSError:
+        return
+    if free < length + reserve:
+        raise RestoreError(f"Zu wenig freier Speicher im Datenverzeichnis für den Upload: Er braucht "
+                           f"{_size_text(length)}, frei sind {_size_text(free, up=False)}, und "
+                           f"{reserve // MIB} MiB müssen für den laufenden Betrieb frei bleiben. Bitte erst "
+                           "Platz schaffen.")
+
+
 def stage_upload(stream, length: int) -> dict:
-    """Upload lesen (genau length Bytes), prüfen, Vorschau liefern. Bei Fehler: nichts bleibt liegen."""
+    """Upload lesen (genau length Bytes), prüfen, Vorschau liefern. Bei Fehler: nichts bleibt liegen.
+    Nur ein Upload gleichzeitig (RestoreBusy); vor dem Schreiben wird der freie Platz geprüft."""
     if length <= 0:
         raise RestoreError("Keine Datei hochgeladen.")
     if length > MAX_UPLOAD:
         raise RestoreError(f"Die Datei ist zu groß (höchstens {MAX_UPLOAD // (1024 * 1024)} MiB).")
+    if not _UPLOAD_SLOT.acquire(blocking=False):
+        raise RestoreBusy("Es wird gerade schon eine Sicherung hochgeladen oder geprüft – bitte warten, "
+                          "bis sie fertig ist.")
+    try:
+        return _stage_upload(stream, length)
+    finally:
+        _UPLOAD_SLOT.release()
+
+
+def _stage_upload(stream, length: int) -> dict:
     cleanup_staging()
     discard()  # immer nur ein offener Upload – älterer verfällt
     root = staging_root()
     os.makedirs(root, mode=0o700, exist_ok=True)
     with contextlib.suppress(OSError):
         os.chmod(root, 0o700)
+    _check_upload_space(root, length)
     with _PENDING_LOCK:
         workdir = tempfile.mkdtemp(prefix="upload-", dir=root)
         _ACTIVE.add(os.path.basename(workdir))

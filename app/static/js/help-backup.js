@@ -110,10 +110,17 @@ export const HELP_BACKUP = {
   },
   backup_security: {
     title: "Sicherheitsrelevante Einstellungen",
-    text: "Einstellungen, die Zugang und Erreichbarkeit betreffen oder Daten hinausschicken: Lausch-Adresse, erlaubte "
-      + "Netze, vertrauenswürdige Proxys, erlaubte Namen, Vollbild-Uhr ohne Anmeldung, LAN-Adressen in Nachrichten, "
-      + "Update-Hinweis, Zeit- und DNS-Server. Ändert die Sicherung eine davon, steht sie hier mit altem und neuem "
-      + "Wert. Stammt die Datei nicht sicher von dir, übernimm sie nicht.",
+    text: "Einstellungen, die Zugang und Erreichbarkeit betreffen, Daten hinausschicken oder die ausgelieferte Zeit "
+      + "bestimmen: Lausch-Adresse, erlaubte Netze, vertrauenswürdige Proxys, erlaubte Namen, Vollbild-Uhr ohne "
+      + "Anmeldung, LAN-Adressen in Nachrichten, Update-Hinweis, Zeit- und DNS-Server, NTP- und NTS-Port, "
+      + "NTS-Zertifikat, Inselbetrieb mit Stratum, Ratenbegrenzung, Uhr-Sprünge (makestep), Mindestzahl der "
+      + "Quellen und Optionen von Quellen und GPS. Ändert die Sicherung eine davon, steht sie hier mit altem und "
+      + "neuem Wert. Stammt die Datei nicht sicher von dir, übernimm sie nicht.",
+  },
+  backup_changes: {
+    title: "Weitere Änderungen",
+    text: "Alle übrigen Einstellungen, die sich beim Übernehmen ändern, jeweils mit jetzigem und neuem Wert. "
+      + "Geheimnisse (Tokens, DNS-over-HTTPS-Adressen) stehen nicht in der Sicherung und erscheinen hier nie.",
   },
   backup_busy: {
     title: "Während der Übernahme",
@@ -140,5 +147,5 @@ export const HELP_GROUP_BACKUP = {
   title: "Sichern und wiederherstellen",
   keys: ["backup", "backup_privacy", "backup_contents", "backup_excluded", "backup_restore", "backup_created",
     "backup_history", "backup_devices", "backup_groups", "backup_events", "backup_calibration", "backup_channels",
-    "backup_settings", "backup_security", "backup_reenter", "backup_busy", "backup_stored", "backup_nightly"],
+    "backup_settings", "backup_security", "backup_changes", "backup_reenter", "backup_busy", "backup_stored", "backup_nightly"],
 };

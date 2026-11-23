@@ -2248,6 +2248,16 @@ def _bs_float_pairs(line: str) -> list[str]:
 
 
 _BS_ECEF_GAP = re.compile(r"(?i)\s*(?:c?m\b)?\s*[,;/ ]\s*(?:[\"']?(?:ecef[_-]?)?[yz][\"']?\s*[:=]\s*)?")
+_BS_ECEF_GAP_MAX = 40    # länger (nach dem Zusammenfassen) ist keine Lücke zwischen zwei Koordinaten
+_BS_SPACE_RUN = re.compile(r"\s+")
+
+
+def _bs_ecef_gap(line: str, start: int, end: int) -> bool:
+    """Passt die Lücke zwischen zwei Zahlen? Leerraum wird vorher zu je einem Leerzeichen zusammengefasst:
+    Die Leerzeichen-Teile des Musters überlappen sich, und auf langen Leerraum-Folgen bräuchte fullmatch
+    sonst kubische Zeit. Mit einzelnen Leerzeichen bleibt es linear, das Ergebnis ist dasselbe."""
+    gap = _BS_SPACE_RUN.sub(" ", line[start:end])
+    return len(gap) <= _BS_ECEF_GAP_MAX and _BS_ECEF_GAP.fullmatch(gap) is not None
 
 
 def _bs_ecef(line: str) -> list[str]:
@@ -2257,7 +2267,7 @@ def _bs_ecef(line: str) -> list[str]:
     big = [m for m in re.finditer(r"(?<![\d.])[-+]?\d{4,10}(?:\.\d+)?(?![\d.])", line)]
     hits = []
     for a, b, c in zip(big, big[1:], big[2:]):
-        if not (_BS_ECEF_GAP.fullmatch(line, a.end(), b.start()) and _BS_ECEF_GAP.fullmatch(line, b.end(), c.start())):
+        if not (_bs_ecef_gap(line, a.end(), b.start()) and _bs_ecef_gap(line, b.end(), c.start())):
             continue
         try:
             r = (float(a.group(0)) ** 2 + float(b.group(0)) ** 2 + float(c.group(0)) ** 2) ** 0.5

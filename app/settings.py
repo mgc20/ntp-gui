@@ -70,6 +70,8 @@ _SAFE_TEXT_RE = re.compile(r"^[^\x00-\x1f\x7f]{0,120}$")
 _REFID_RE = re.compile(r"^[A-Za-z0-9]{1,4}$")
 _NUMBER_RE = re.compile(r"^-?[0-9]+(\.[0-9]+)?([eE]-?[0-9]+)?$")
 _INTEGER_RE = re.compile(r"^-?[0-9]+$")
+_IP_CHARS_RE = re.compile(r"[0-9A-Fa-f:.]{2,45}")
+_NET_CHARS_RE = re.compile(r"[0-9A-Fa-f:.]{2,45}(/[0-9.]{1,15})?")
 
 # chrony-Optionen für server/pool/peer, die im Dashboard erlaubt sind.
 # Wert = Anzahl erwarteter Zahlenargumente.
@@ -104,6 +106,27 @@ PHC2SYS_FLAGS = {
     "-O": 1, "-n": 1, "-N": 1, "-R": 1, "-L": 1, "-u": 1, "-w": 0, "-t": 1,
     "-E": 1, "-P": 1, "-I": 1, "-S": 1, "-F": 1, "-M": 1, "-C": 1, "-l": 1,
 }
+
+
+def _ip(text: str, version: int | None = None):
+    """Wie ipaddress.ip_address, aber ohne IPv6-Scope-ID („fe80::1%eth0“): Python nimmt nach dem „%“
+    fast jedes Zeichen an, auch Zeilenumbrüche – und chrony versteht Scope-IDs ohnehin nicht. Wirft
+    ValueError wie ip_address."""
+    text = str(text)
+    if not _IP_CHARS_RE.fullmatch(text):
+        raise ValueError("keine IP-Adresse ohne Zusätze")
+    address = ipaddress.ip_address(text)
+    if version is not None and address.version != version:
+        raise ValueError("falsche IP-Version")
+    return address
+
+
+def _net(text: str):
+    """ip_network(strict=False) ohne Scope-ID und ohne fremde Zeichen (siehe _ip)."""
+    text = str(text)
+    if not _NET_CHARS_RE.fullmatch(text):
+        raise ValueError("kein Netz ohne Zusätze")
+    return ipaddress.ip_network(text, strict=False)
 
 
 def _as_bool(value: Any) -> bool:
@@ -189,7 +212,7 @@ def _as_interface(value: Any) -> str:
 def _as_host(value: Any) -> str:
     text = str(value).strip()
     try:
-        ipaddress.ip_address(text)
+        _ip(text)
         return text
     except ValueError:
         pass
@@ -249,6 +272,8 @@ def http_url_ok(text: str, max_len: int = 300) -> bool:
     """
     if not isinstance(text, str) or not text or len(text) > max_len:
         return False
+    if any(ord(c) <= 0x20 or 0x7f <= ord(c) <= 0x9f or c in "\u2028\u2029" for c in text):
+        return False  # Leer- und Steuerzeichen, auch ein Zeilenumbruch am Ende
     match = re.match(r"^(https?)://([^/?#]+)([^?#]*)(\?[^#]*)?(#.*)?$", text)
     if not match:
         return False
@@ -260,7 +285,7 @@ def http_url_ok(text: str, max_len: int = 300) -> bool:
         host, _, rest = netloc[1:].partition("]")
         port = rest[1:] if rest.startswith(":") else ("" if not rest else None)
         try:
-            ipaddress.IPv6Address(host)
+            _ip(host, 6)
         except ValueError:
             return False
     else:
@@ -411,6 +436,15 @@ def _dns_port(text: str) -> int:
     return int(text)
 
 
+def _dns_target_ok(item: str, addr) -> None:
+    """Ziele des DNS-Weiterleiters: nie link-local oder ein Metadaten-Dienst; Loopback nur, solange
+    OUTBOUND_TARGETS nicht „public“ ist (siehe netguard)."""
+    import netguard
+    why = netguard.reason(addr, "dns")
+    if why:
+        raise ValidationError(f"„{item}“: als DNS-Server gesperrt ({why})")
+
+
 def _as_dns_servers(value: Any) -> list[str]:
     """DNS-Server als IP-Adresse, optional mit Port: 9.9.9.9, 9.9.9.9:5353, [2620:fe::fe]:53."""
     out: list[str] = []
@@ -425,7 +459,7 @@ def _as_dns_servers(value: Any) -> list[str]:
             text, _, raw_port = item.partition(":")
             port = _dns_port(raw_port)
         try:
-            addr = ipaddress.ip_address(text)
+            addr = _ip(text)
         except ValueError:
             raise ValidationError(f"„{item}“ ist keine IP-Adresse – hier nur Adressen, z. B. 9.9.9.9 "
                                   "(Namen bräuchten selbst wieder DNS)") from None
@@ -436,6 +470,7 @@ def _as_dns_servers(value: Any) -> list[str]:
         if addr.is_loopback and port == 53:
             raise ValidationError(f"„{item}“ zeigt auf den Weiterleiter von ntp-gui selbst (Loopback, Port 53) "
                                   "– das wäre eine Schleife")
+        _dns_target_ok(item, addr)
         norm = str(addr) if port == 53 else (f"[{addr}]:{port}" if addr.version == 6 else f"{addr}:{port}")
         if norm not in out:
             out.append(norm)
@@ -456,12 +491,13 @@ def _as_dot_servers(value: Any) -> list[str]:
             host, _, raw_port = host.partition(":")
             port = _dns_port(raw_port)
         try:
-            addr = ipaddress.ip_address(host)
+            addr = _ip(host)
         except ValueError:
             if not _HOST_RE.match(host) or "." not in host:
                 raise ValidationError(f"„{item}“ ist kein gültiger Servername, z. B. dns.quad9.net") from None
             norm = host
         else:
+            _dns_target_ok(item, addr)
             norm = f"[{addr}]" if addr.version == 6 else str(addr)
         if port and port != 853:
             norm = f"{norm}:{port}"
@@ -482,6 +518,13 @@ def _as_doh_urls(value: Any) -> list[str]:
                                   "z. B. https://dns.quad9.net/dns-query")
         if "#" in text:
             raise ValidationError(f"„{item}“: kein #-Anteil erlaubt")
+        host = re.match(r"https://(\[[^\]]*\]|[^/:?#]*)", text, re.I).group(1).strip("[]")
+        try:
+            literal = _ip(host)
+        except ValueError:
+            literal = None
+        if literal is not None:
+            _dns_target_ok(item, literal)
         if text not in out:
             out.append(text)
     if len(out) > MAX_DNS_SERVERS:
@@ -498,11 +541,12 @@ def _as_dns_pins(value: Any) -> list[str]:
         if not sep or not _HOST_RE.match(name) or "." not in name:
             raise ValidationError(f"„{item}“: Format Name=IP, z. B. dns.quad9.net=9.9.9.9")
         try:
-            addr = ipaddress.ip_address(ip.strip().strip("[]"))
+            addr = _ip(ip.strip().strip("[]"))
         except ValueError:
             raise ValidationError(f"„{item}“: „{ip}“ ist keine IP-Adresse") from None
         if addr.is_unspecified or addr.is_multicast or addr.is_loopback:
             raise ValidationError(f"„{item}“: keine brauchbare Adresse")
+        _dns_target_ok(item, addr)
         norm = f"{name}={addr}"
         if norm not in out:
             out.append(norm)
@@ -522,7 +566,7 @@ def _as_network_list(value: Any) -> list[str]:
             networks.append("all")
             continue
         try:
-            networks.append(str(ipaddress.ip_network(item, strict=False)))
+            networks.append(str(_net(item)))
         except ValueError:
             raise ValidationError(f"„{item}“ ist kein Netz, z. B. 192.168.0.0/16") from None
     return networks
@@ -539,7 +583,7 @@ def _as_proxy_list(value: Any) -> list[str]:
             raise ValidationError("„all“ geht hier nicht – dann könnte jeder seine Adresse fälschen. "
                                   "Nur die Adresse des Proxys eintragen, z. B. 127.0.0.1/32")
         try:
-            net = ipaddress.ip_network(item, strict=False)
+            net = _net(item)
         except ValueError:
             raise ValidationError(f"„{item}“ ist keine Adresse und kein Netz, z. B. 127.0.0.1/32") from None
         if net.prefixlen == 0:
@@ -624,9 +668,11 @@ def _as_makestep(value: Any) -> str:
 
 
 def _as_timezone(value: Any) -> str:
+    """Name einer Zeitzone unter /usr/share/zoneinfo (z. B. right/UTC) – relativ, ohne „..“."""
     text = str(value or "").strip()
-    if text and not re.match(r"^[A-Za-z0-9_+/-]{1,64}$", text):
-        raise ValidationError("Ungültige Zeitzone")
+    if text and (not re.fullmatch(r"[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+)*", text) or len(text) > 64
+                 or any(part in {".", ".."} for part in text.split("/"))):
+        raise ValidationError("Ungültige Zeitzone – Name wie Europe/Berlin oder right/UTC, kein Pfad")
     return text
 
 
@@ -1435,6 +1481,7 @@ ENV_ONLY = [
     ("CLIENTLOGLIMIT", "Speicher für die Client-Liste"),
     ("WEB_READONLY", "Einstellungen im Dashboard sperren"),
     ("WEB_REQUIRE_AUTH", "Anmeldung erzwingen (ohne Zugang gesperrt)"),
+    ("OUTBOUND_TARGETS", "Erlaubte Ziele ausgehender Verbindungen"),
 ]
 
 
