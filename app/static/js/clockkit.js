@@ -6,7 +6,9 @@
 import { fmtNumber } from "./util.js";
 
 /** Designs in der Reihenfolge der Auswahl. Schlüssel = Wert von ?design= und im Browser gemerkt. */
-export const DESIGNS = ["digital", "studio", "bahnhof", "nixie", "flip", "wort", "tc"];
+// Höchstens acht Designs (docs/konzept/studiouhr.md, Abschnitt 7) – mit binary (Etappe C) ist die Grenze erreicht.
+export const DESIGNS = ["digital", "studio", "bahnhof", "nixie", "flip", "wort", "tc", "binary"];
+export const MAX_DESIGNS = 8;
 export const DEFAULT_DESIGN = "digital";
 
 // --- Adressparameter (Schema-Tabelle) -------------------------------------------------
@@ -41,8 +43,14 @@ const ISO_TIME = /^([0-9]{4})-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9
 // --- Darstellung: Layouts, Elemente, Farben (Studiouhr A3/A4) ---------------------------------
 /** Layouts: auto wählt per resolveLayout() aus der Größe der Bühne, die anderen setzen es fest. */
 export const LAYOUTS = ["auto", "normal", "banner", "column", "strip", "tile", "world"];
-/** Elemente, die sich mit ?show= einzeln zeigen lassen (Allowlist; was fehlt, wird ausgeblendet). */
-export const SHOW_ITEMS = ["time", "seconds", "date", "weekday", "week", "utc", "tz", "status", "countdown"];
+/** Elemente, die sich mit ?show= einzeln zeigen lassen (Allowlist; was fehlt, wird ausgeblendet). Die letzten drei sind
+ *  Zusätze der Etappe C (Mondphase, Nerd-Zeile, Fortschrittsbalken): Standard aus, nur wenn ?show= sie nennt. */
+export const SHOW_ITEMS = ["time", "seconds", "date", "weekday", "week", "utc", "tz", "status", "countdown", "moon", "nerd",
+  "progress"];
+/** Binäruhr (?bin=): bcd je Dezimalziffer eine Spalte, plain Stunde/Minute/Sekunde als Dualzahl (clockextras.js). */
+export const BIN_MODES = ["bcd", "plain"];
+/** Fortschrittsbalken (?bars=): Tag, Woche, Monat, Jahr (Ortszeit des Geräts) und die laufende Eieruhr bzw. Pomodoro-Phase. */
+export const BARS = ["day", "week", "month", "year", "timer"];
 /** Themen (data-look in clock.css, höchstens sechs). bg: Hintergrund für die Kontrastprüfung der Akzentfarbe. */
 export const LOOKS = Object.freeze({
   studio: { bg: "#000000", scheme: "dark" },
@@ -109,6 +117,8 @@ export const PARAM_SCHEMA = Object.freeze([
   { name: "date", type: "enum", values: ["long", "short", "iso", "off"], default: "long" },
   // Design tc (B1): Bildrate der Timecode-Anzeige. Die Feinstelle (Zehntel, Frames, aus) wählt ?sub=.
   { name: "fps", type: "enum", values: TC_FPS, default: "25" },
+  // Design binary (C2): BCD-Spalten oder Dualzahl je Stunde, Minute, Sekunde.
+  { name: "bin", type: "enum", values: BIN_MODES, default: "bcd" },
   // Thema und Akzentfarbe (A4): gesetzt per CSSOM, nach Kontrastprüfung gegen den Hintergrund.
   { name: "look", type: "enum", values: Object.keys(LOOKS), default: null },
   { name: "accent", type: "color", default: null },
@@ -139,6 +149,8 @@ export const PARAM_SCHEMA = Object.freeze([
   { name: "dim", type: "hours", default: null },
   { name: "dimlevel", type: "int", min: 20, max: 80, default: 40 },
   { name: "dimred", type: "flag", default: false },
+  // Fortschrittsbalken (C2, mit ?show=progress): welche Zeiträume; ohne Angabe Tag und Jahr bzw. Timer und Tag.
+  { name: "bars", type: "list", values: BARS, default: null },
   // Prüfbild (B5): test=sync lässt eine Fläche zur vollen Sekunde wechseln und klickt dazu (Einmessen von ?lead=).
   // Wirkt nur aus der Adresse (ADDRESS_ONLY, testMode) – nie aus einem Profil oder dem gemerkten Stand.
   { name: "test", type: "enum", values: ["sync"], default: null },

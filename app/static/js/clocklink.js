@@ -31,8 +31,8 @@ export const PROFILE_RETRY_MAX_MS = 60_000;
 
 /** Gruppen des Formulars; jeder Schema-Parameter steht in genau einer. */
 export const FORM_GROUPS = Object.freeze([
-  { key: "look", names: ["design", "layout", "look", "accent", "scale", "weight", "show", "bg", "safe", "shift"] },
-  { key: "digits", names: ["color", "sub", "seconds", "h12", "face", "colon", "lz", "date", "fps"] },
+  { key: "look", names: ["design", "layout", "look", "accent", "scale", "weight", "show", "bars", "bg", "safe", "shift"] },
+  { key: "digits", names: ["color", "sub", "seconds", "h12", "face", "colon", "lz", "date", "fps", "bin"] },
   { key: "zone", names: ["tz", "tzl", "lead", "maxerr"] },
   { key: "countdown", names: ["until", "goal", "label", "timer", "pomo", "pause", "after", "warn", "beep", "cd"] },
   { key: "night", names: ["dim", "dimlevel", "dimred"] },
@@ -333,7 +333,8 @@ export function buildForm({ values = {}, onChange = () => {}, prefix = "cl", dis
             set(name, picked.join(","), null);
           });
           control.append(node("label", { class: "link-check", for: `${id}-${value}` }, box2,
-            node("span", { text: t(`clock.link.show_item.${value}`) }), node("code", { class: "link-param", text: value })));
+            node("span", { text: t(name === "show" ? `clock.link.show_item.${value}` : `clock.link.${name}_item.${value}`) }),
+            node("code", { class: "link-param", text: value })));
         }
         label.removeAttribute("for");
       } else {

@@ -89,6 +89,12 @@
 // (fx.funControls): nicht mit fun=0, lock=1, im Kiosk, in der Kachel und in einer OBS-Browserquelle (window.obsstudio).
 // Timer-Stände bleiben im Browser; es gibt keinen neuen Weg zum Server.
 //
+// Studiouhr C2: Design binary (Lämpchen, ?bin=bcd|plain) und Zusätze unter der Uhr, alle Standard aus und nur mit ?show=
+// (moon, nerd, progress; fx.splitShow trennt sie von den Grundelementen): Mondphase (rein rechnerisch, Klick spiegelt sie
+// für die Südhalbkugel, nur localStorage), Nerd-Zeile (Unix, TAI und GPS mit tai_utc aus /api/v1/time, MJD, Tag im Jahr,
+// ISO-Woche) und Fortschrittsbalken (?bars=). Nie mit fun=0, in Kachel und Streifen (fx.extrasShown). Mond und Kalender-
+// Balken ändern sich einmal je Minute, Nerd-Zeile und Eieruhr-Balken im Sekundentakt – ohne eigenen Zeitgeber.
+//
 // Bewusst ohne app.js/ui.js: Die Seite muss auch ohne Anmeldung (clock_public) laufen und
 // lädt deshalb nur Dateien, die keine Inhalte aus Konfiguration oder Status enthalten
 // (clocksync.js, clockkit.js, clocktc.js, clockworld.js, util.js, i18n.js und die Sprachkataloge).
@@ -198,6 +204,14 @@ const state = {
   nightPrev: null,     // Zeitplan beim letzten Takt (true/false, null: kein ?dim=)
   nightKey: "",        // zuletzt angewandter Nachtmodus
   own: [],             // eigene Countdowns (fx.ownList aus dem localStorage)
+  extraWish: [],       // Zusätze aus ?show= (moon, nerd, progress), fx.splitShow
+  extrasKey: "",       // sichtbare Zusätze und Balken beim letzten Zeichnen (Wechsel: neu einpassen)
+  extrasHeight: 0,     // Höhe der Zusätze beim letzten Einpassen der Zeit
+  moonKey: "",         // Minute, Halbkugel und Sprache der letzten Mond-Zeichnung
+  barsKey: "",         // Minute und Sprache der letzten Zeichnung der Kalender-Balken
+  bars: [],            // [{ kind, node, fill, value }] der Fortschrittsbalken
+  nerd: null,          // { [key]: Wertknoten } der Nerd-Zeile
+  south: false,        // Mond wie auf der Südhalbkugel (nur dieser Browser, localStorage)
 };
 /** Bedienung: Start/Anhalten am Countdown (actions) und die Spielereien (fun) – nach dem Profil neu bestimmt. */
 let CONTROLS = { actions: true, fun: true };
@@ -609,6 +623,7 @@ function render(now) {
   setText($("iso-week"), t("clock.week", { week }));
   const redrawn = renderWorld(now.getTime());
   renderFace(now, h, m, s);
+  renderExtras(now.getTime());
   renderShift(now.getTime());
   renderEgg(now.getTime());
   const minuteKey = `${h}:${m}|${language()}|${foreign}`;
@@ -646,6 +661,7 @@ function buildFace() {
   else if (state.design === "flip") buildFlip(face);
   else if (state.design === "wort") buildWort(face);
   else if (state.design === "tc") buildTc(face);
+  else if (state.design === "binary") buildBinary(face);
 }
 
 // Ohne Sekunden (E-Ink, ?show= ohne „seconds“) nur HH:MM.
@@ -822,7 +838,7 @@ function renderFace(now, h, m, s) {
   else if (state.design === "wort" && face.text.dataset.key !== minuteKey) {
     face.text.dataset.key = minuteKey;
     renderWort(h, m);
-  }
+  } else if (state.design === "binary") renderBinary(h, m, s);
   setAttr($("face"), "data-time", params.eink ? `${pad(h)}:${pad(m)}` : `${pad(h)}:${pad(m)}:${pad(s)}`);
 }
 
@@ -860,6 +876,98 @@ function renderStudio(now, h, m, s) {
   else if (line === "tz2") sub = `${world.worldEntries(params.tz, params.tzl)[0].label} ${zoneTime(now)}`;
   else if (line === "date") sub = dateText(now, "short");
   setText(face.sub, sub);
+}
+
+// --- Design binary (Studiouhr C2) ---------------------------------------------------------------------------------
+// Lämpchen als SVG (Kreise mit Klasse on), darunter bzw. daneben die Dezimalwerte zum Ablesen. ?bin=bcd: je Ziffer eine
+// Spalte mit den Gewichten 8-4-2-1 von oben; ?bin=plain: Stunde, Minute und Sekunde je als Zeile mit 32 … 1 von links.
+// Je Sekunde wechseln nur Klassen der Lämpchen, deren Zustand sich ändert – keine Animation, kein Zeitgeber.
+const BIN_STEP = 22;   // Abstand der Lämpchen (viewBox-Einheiten)
+const BIN_R = 8;
+
+function buildBinary(face) {
+  const seconds = digitCount() === 6;
+  const plain = params.bin === "plain";
+  const sample = fx.binaryLamps(0, 0, 0, { mode: params.bin, seconds });
+  const text = (x, y, value, cls, anchor = "middle") => {
+    const node = svgEl("text", { x, y, class: cls, "text-anchor": anchor });
+    node.textContent = value;
+    return node;
+  };
+  const lamps = [];
+  const values = [];
+  let svg;
+  if (plain) {
+    // Zeilen: links die Einheit (h, min, s), oben die Gewichte, rechts der Wert.
+    const left = 34;
+    const width = left + 6 * BIN_STEP + 40;
+    const height = 18 + sample.groups.length * BIN_STEP + 4;
+    svg = svgEl("svg", { viewBox: `0 0 ${width} ${height}`, class: "bin bin-plain", "aria-hidden": "true", focusable: "false",
+      preserveAspectRatio: "xMidYMid meet" });
+    [32, 16, 8, 4, 2, 1].forEach((w, i) => svg.append(text(left + i * BIN_STEP + BIN_STEP / 2, 12, String(w), "bin-weight")));
+    sample.groups.forEach((group, row) => {
+      const cy = 18 + row * BIN_STEP + BIN_STEP / 2;
+      const sec = row === 2;
+      svg.append(text(left - 8, cy + 4, ["h", "min", "s"][row], "bin-unit", "end"));
+      const offset = 6 - group.bits.length;
+      lamps.push(group.bits.map((bit, i) => {
+        const lamp = svgEl("circle", { cx: left + (offset + i) * BIN_STEP + BIN_STEP / 2, cy, r: BIN_R,
+          class: sec ? "bin-lamp is-sec" : "bin-lamp" });
+        svg.append(lamp);
+        return lamp;
+      }));
+      const value = text(width - 4, cy + 5, "", sec ? "bin-value is-sec" : "bin-value", "end");
+      svg.append(value);
+      values.push(value);
+    });
+  } else {
+    // Spalten: links die Gewichte, unter jeder Spalte ihre Ziffer; zwischen Stunde, Minute und Sekunde etwas Abstand.
+    const left = 18;
+    const gap = 10;
+    const cols = sample.groups.length;
+    const colX = (i) => left + i * BIN_STEP + Math.floor(i / 2) * gap + BIN_STEP / 2;
+    const width = colX(cols - 1) + BIN_STEP / 2 + 2;
+    const height = 4 * BIN_STEP + 22;
+    svg = svgEl("svg", { viewBox: `0 0 ${width} ${height}`, class: `bin bin-bcd bin-cols-${cols}`, "aria-hidden": "true",
+      focusable: "false", preserveAspectRatio: "xMidYMid meet" });
+    [8, 4, 2, 1].forEach((w, row) => svg.append(text(8, row * BIN_STEP + BIN_STEP / 2 + 4, String(w), "bin-weight")));
+    sample.groups.forEach((group, i) => {
+      const sec = i >= 4;
+      const offset = 4 - group.bits.length;
+      lamps.push(group.bits.map((bit, row) => {
+        const lamp = svgEl("circle", { cx: colX(i), cy: (offset + row) * BIN_STEP + BIN_STEP / 2, r: BIN_R,
+          class: sec ? "bin-lamp is-sec" : "bin-lamp" });
+        svg.append(lamp);
+        return lamp;
+      }));
+      const value = text(colX(i), 4 * BIN_STEP + 17, "", sec ? "bin-value is-sec" : "bin-value");
+      svg.append(value);
+      values.push(value);
+    });
+  }
+  let ampm = null;
+  if (params.h12) {
+    // AM/PM in der freien Ecke: bei plain oben links (über den Einheiten), bei bcd unten links (neben den Ziffern).
+    ampm = svgEl("text", { x: 1, y: plain ? 12 : 4 * BIN_STEP + 17, class: "bin-ampm" });
+    svg.append(ampm);
+  }
+  face.append(svg);
+  Object.assign(state.face, { svg, lamps, values, ampm, seconds });
+}
+
+function renderBinary(h, m, s) {
+  const face = state.face;
+  const hour = kit.hourText(h, { h12: params.h12, lz: true });
+  const lit = fx.binaryLamps(params.h12 ? Number(hour.text) : h, m, s, { mode: params.bin, seconds: face.seconds });
+  if (!lit) return;
+  lit.groups.forEach((group, i) => {
+    group.bits.forEach((bit, row) => {
+      const lamp = face.lamps[i][row];
+      if (lamp.classList.contains("on") !== bit.on) lamp.classList.toggle("on", bit.on);
+    });
+    setText(face.values[i], params.bin === "plain" ? pad(group.value) : String(group.value));
+  });
+  if (face.ampm) setText(face.ampm, hour.ampm);
 }
 
 // --- Design tc: Timecode-Anzeige (Studiouhr B1) ------------------------------------------------
@@ -2104,6 +2212,179 @@ function toggleNight() {
   hint(t(state.nightOverride ? "clock.hint_night_on" : "clock.hint_night_off"));
 }
 
+// --- Zusätze C2: Mondphase, Nerd-Zeile, Fortschrittsbalken (?show=moon,nerd,progress) ----------------------------
+// Standard aus; nie mit fun=0, in Kachel und Streifen (fx.extrasShown). Gerechnet wird alles hier im Browser
+// (clockextras.js). Der Mond und die Kalender-Balken ändern sich einmal je Minute, die Nerd-Zeile und der Balken einer
+// Eieruhr im Sekundentakt – nur Text, Attribute und eine CSSOM-Variable je Balken, kein eigener Zeitgeber.
+const SOUTH_KEY = "ntp-gui-clock-south";
+const NERD_KEYS = ["unix", "tai", "gps", "mjd", "doy", "iso"];
+
+/** Hat die Uhr eine Eieruhr bzw. Pomodoro-Phase mit Dauer (für den Balken „timer“)? */
+function timerBarAvailable() {
+  return COUNT_MODE === "timer" && Boolean(state.timer) && state.timer.duration !== null;
+}
+
+function renderExtras(nowMs) {
+  const shown = fx.extrasShown({ extras: state.extraWish, fun: params.fun, layout: state.layout, eink: params.eink,
+    height: state.stage.height });
+  const bars = shown.includes("progress") ? fx.barsFor(params.bars, timerBarAvailable()) : [];
+  const key = `${shown.join(",")}|${bars.join(",")}`;
+  if (key !== state.extrasKey) {
+    state.extrasKey = key;
+    setHidden($("extras"), !shown.length);
+    setHidden($("moon-box"), !shown.includes("moon"));
+    setHidden($("nerd"), !shown.includes("nerd"));
+    setHidden($("bars"), !bars.length);
+    buildNerd(shown.includes("nerd"));
+    buildBars(bars);
+    state.moonKey = "";
+    state.barsKey = "";
+    if (shown.length) {
+      renderMoon(nowMs);
+      renderNerd(nowMs);
+      renderBars(nowMs);
+    }
+    // Die Zeit bekommt den Rest der Höhe (restHeight). Vor dem ersten Layout nicht: observeStage passt ohnehin ein.
+    if (state.face && state.layout) fitTime();
+    return;
+  }
+  if (!shown.length) return;
+  const moonDrawn = renderMoon(nowMs);
+  renderNerd(nowMs);
+  const barsDrawn = renderBars(nowMs);
+  // Einmal je Minute (neuer Mondtext, neue Balken, nach dem Sprachwechsel): Wird die Zeile höher oder niedriger, die Zeit
+  // neu einpassen. Im Sekundentakt wird nichts gemessen.
+  if ((moonDrawn || barsDrawn) && state.face) {
+    const height = $("extras").offsetHeight;
+    if (height !== state.extrasHeight) fitTime();
+  }
+}
+
+/** Mond zeichnen, wenn eine neue Minute, die andere Halbkugel oder eine andere Sprache gilt; true, wenn neu gezeichnet. */
+function renderMoon(nowMs) {
+  if ($("moon-box").hidden) return false;
+  const minute = Math.floor(nowMs / 60_000);
+  const key = `${minute}|${state.south}|${language()}`;
+  if (key === state.moonKey) return false;
+  state.moonKey = key;
+  const phase = fx.moonPhase(nowMs);
+  if (!phase) return false;
+  setAttr($("moon-lit"), "d", fx.moonPath(phase.angle, { r: 49, south: state.south }));
+  const name = t(`clock.moon.${phase.key}`);
+  const pct = Math.round(phase.illum * 100);
+  setText($("moon-text"), t("clock.moon_text", { name, pct }));
+  const full = fx.nextMoonPhase(nowMs, 180);
+  const fresh = fx.nextMoonPhase(nowMs, 0);
+  // Tag und Monat als Zahlen (kein eigener Intl-Formatierer nur für den Titel).
+  const day = (ms) => { const d = new Date(ms); return t("clock.moon_date", { d: d.getDate(), m: d.getMonth() + 1 }); };
+  const next = full < fresh ? t("clock.moon_next_full", { date: day(full) }) : t("clock.moon_next_new", { date: day(fresh) });
+  const title = `${t("clock.moon_title", { name, pct })} ${next} ${t(state.south ? "clock.moon_click_north" : "clock.moon_click_south")}`;
+  setAttr($("moon"), "title", title);
+  setAttr($("moon"), "aria-label", title);
+  setAttr($("moon"), "aria-pressed", state.south ? "true" : "false");
+  $("moon").disabled = !CONTROLS.actions;
+  return true;
+}
+
+function toggleSouth() {
+  state.south = !state.south;
+  store(SOUTH_KEY, state.south ? "1" : "0");
+  renderMoon(serverMs());
+  hint(t(state.south ? "clock.hint_moon_south" : "clock.hint_moon_north"));
+}
+
+/** Nerd-Zeile aufbauen: je Angabe eine Beschriftung und ein Wert (nur textContent). */
+function buildNerd(on) {
+  const line = $("nerd");
+  line.replaceChildren();
+  state.nerd = null;
+  if (!on) return;
+  state.nerd = {};
+  for (const key of NERD_KEYS) {
+    const item = document.createElement("span");
+    item.className = "clock-nerd-item";
+    const label = document.createElement("span");
+    label.className = "clock-nerd-label";
+    label.dataset.key = key;
+    label.textContent = t(`clock.nerd.${key}`);
+    const value = document.createElement("span");
+    value.className = "clock-nerd-value";
+    item.append(label, " ", value);
+    line.append(item);
+    state.nerd[key] = value;
+  }
+}
+
+function renderNerd(nowMs) {
+  if (!state.nerd) return;
+  const status = state.status || {};
+  const v = fx.nerdValues(nowMs, status.tai_utc);
+  if (!v) return;
+  const dec = language() === "en" ? "." : ",";
+  const now = new Date(nowMs);
+  const iso = isoWeek(now);
+  const weekday = now.getDay() || 7;
+  const offset = fx.taiUtc(status.tai_utc);
+  setText(state.nerd.unix, String(v.unix));
+  setText(state.nerd.tai, v.taiMs === null ? "–" : `${fx.hmsOf(v.taiMs)} (+${offset} s)`);
+  setText(state.nerd.gps, v.gps === null ? "–" : t("clock.nerd_gps", { week: v.gps.week, sow: v.gps.sow }));
+  setText(state.nerd.mjd, v.mjd.toFixed(3).replace(".", dec));
+  setText(state.nerd.doy, String(fx.dayOfYear(now.getFullYear(), now.getMonth() + 1, now.getDate())));
+  setText(state.nerd.iso, `${iso.year}-W${pad(iso.week)}-${weekday}`);
+}
+
+/** Fortschrittsbalken aufbauen: role=progressbar mit Wert und Text, Füllung über die CSSOM-Variable --bar. */
+function buildBars(kinds) {
+  const box = $("bars");
+  box.replaceChildren();
+  state.bars = kinds.map((kind) => {
+    const node = document.createElement("div");
+    node.className = "clock-prog-item";
+    node.dataset.kind = kind;
+    node.setAttribute("role", "progressbar");
+    node.setAttribute("aria-valuemin", "0");
+    node.setAttribute("aria-valuemax", "100");
+    const label = document.createElement("span");
+    label.className = "clock-prog-label";
+    const track = document.createElement("span");
+    track.className = "clock-prog-track";
+    track.setAttribute("aria-hidden", "true");
+    const fill = document.createElement("span");
+    fill.className = "clock-prog-fill";
+    track.append(fill);
+    const value = document.createElement("span");
+    value.className = "clock-prog-value";
+    node.append(label, track, value);
+    box.append(node);
+    return { kind, node, label, fill, value, pct: null };
+  });
+}
+
+/** Balken stellen: Kalender einmal je Minute, die Eieruhr im Takt. true, wenn die Kalender-Balken neu gezeichnet wurden. */
+function renderBars(nowMs) {
+  if (!state.bars.length) return false;
+  const minute = `${Math.floor(nowMs / 60_000)}|${language()}`;
+  const calendar = minute !== state.barsKey;
+  state.barsKey = minute;
+  for (const bar of state.bars) {
+    if (bar.kind !== "timer" && !calendar) continue;
+    const fraction = bar.kind === "timer" ? fx.timerProgress(state.timer, performance.now())
+      : (fx.periodProgress(bar.kind, nowMs) || {}).fraction;
+    const pct = fx.percentOf(fraction);
+    const name = bar.kind === "timer" && state.pomo ? t(`clock.bar.pomo_${state.pomo.phase}`) : t(`clock.bar.${bar.kind}`);
+    setText(bar.label, name);
+    if (pct === bar.pct && !calendar) continue;
+    bar.pct = pct;
+    const text = pct === null ? "–" : t("clock.bar_value", { pct });
+    setText(bar.value, text);
+    setAttr(bar.node, "aria-valuenow", String(pct ?? 0));
+    setAttr(bar.node, "aria-valuetext", bar.kind === "timer" ? `${name}: ${text}` : t(`clock.bar_say.${bar.kind}`, { pct: pct ?? 0 }));
+    setAttr(bar.node, "title", bar.kind === "timer" ? `${name}: ${text}` : t(`clock.bar_say.${bar.kind}`, { pct: pct ?? 0 }));
+    bar.fill.style.setProperty("--bar", String(Math.round((fraction ?? 0) * 1000) / 1000));
+  }
+  return calendar;
+}
+
 // --- Prüfbild ?test=sync (Studiouhr B5) --------------------------------------------------------
 /** Prüfbild starten, wenn die Adresse es ausdrücklich nennt. Bei „weniger Bewegung“ und auf E-Ink nur der Hinweistext. */
 function startTest() {
@@ -2568,7 +2849,9 @@ function timeBox() {
  */
 function fitTime() {
   const main = $("clock-main");
-  if (!main || !state.face) return;
+  // Vor dem ersten Layout (Start: setDesign vor observeStage) nicht messen – observeStage passt gleich danach ein.
+  if (!main || !state.face || !state.layout) return;
+  state.extrasHeight = $("extras").offsetHeight;   // Zusätze (C2): bei geänderter Höhe passt renderExtras neu ein
   const w = state.world;
   if (w && w.mode === "grid") {
     stageLayout("world");
@@ -2763,6 +3046,7 @@ $("cd-reset").addEventListener("click", () => resetTimer());
 $("cd-plus").addEventListener("click", plusMinute);
 $("mode-timer").addEventListener("click", openTimerPanel);
 $("mode-night").addEventListener("click", toggleNight);
+$("moon").addEventListener("click", toggleSouth);
 $("egg-start").addEventListener("click", startEggInput);
 $("egg-input").addEventListener("keydown", (event) => { if (event.key === "Enter") startEggInput(); });
 $("pomo-start").addEventListener("click", startPomo);
@@ -2798,11 +3082,15 @@ for (const type of ["pointerdown", "keydown"]) document.addEventListener(type, (
 function relabel() {
   applyModes();
   if (params.lock) $("mode-full").title = t("clock.full_title_locked");
-  for (const button of document.querySelectorAll(".clock-panel button.info, .tc-head button.info")) button.relabel?.();
+  for (const button of document.querySelectorAll(".clock-panel button.info, .tc-head button.info, #moon-info button.info")) button.relabel?.();
+  for (const label of document.querySelectorAll(".clock-nerd-label")) label.textContent = t(`clock.nerd.${label.dataset.key}`);
   if (state.face) state.face.key = "";
   if (state.face && state.face.text) state.face.text.dataset.key = "";
   state.minuteKey = "";
   state.worldKey = "";
+  state.moonKey = "";   // Mond und Balken neu beschriften (Texte kamen vor dem Sprachkatalog)
+  state.barsKey = "";
+  for (const bar of state.bars) bar.pct = null;
   render(new Date(serverMs()));
   state.syncKey = "";
   renderSync();
@@ -2833,6 +3121,11 @@ async function loadProfile() {
 async function start() {
   const i18nReady = initI18n();
   await loadProfile();
+  // Zusätze (Mond, Nerd-Zeile, Balken) gehören nicht zu data-show: Nennt ?show= nur sie, bleibt die Uhr wie sonst.
+  const split = fx.splitShow(params.show);
+  params.show = split.base;
+  state.extraWish = split.extras;
+  state.south = store(SOUTH_KEY) === "1";
   initCountMode();
   // Bedienung erst nach dem Profil festlegen: fun=0, lock=1, Kiosk und Kachel können von dort kommen.
   CONTROLS = fx.funControls({ fun: params.fun, kiosk: params.kiosk, lock: params.lock, layout: params.layout, obs: OBS,
@@ -2854,6 +3147,7 @@ async function start() {
   if (params.lock) $("mode-full").dataset.i18nTitle = "clock.full_title_locked";
   $("tone-info").append(infoButton("clock.tone_info_title", "clock.tone_info"));
   $("device-info").append(infoButton("clock.device_info_title", "clock.device_info"));
+  if (CONTROLS.actions) $("moon-info").append(infoButton("clock.moon_info_title", "clock.moon_info"));
   applyDisplayParams();
   applyModes();
   setDesign(params.design || store(DESIGN_KEY), false);

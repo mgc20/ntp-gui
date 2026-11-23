@@ -28,9 +28,11 @@ MAX_PROFILES = 20
 TITLE_MAX = 40
 MAX_LEN = 64          # wie MAX_LEN in clockkit.js: längere Werte verwirft die Uhr
 
-DESIGNS = ("digital", "studio", "bahnhof", "nixie", "flip", "wort", "tc")
+DESIGNS = ("digital", "studio", "bahnhof", "nixie", "flip", "wort", "tc", "binary")   # höchstens acht
 LAYOUTS = ("auto", "normal", "banner", "column", "strip", "tile", "world")
-SHOW_ITEMS = ("time", "seconds", "date", "weekday", "week", "utc", "tz", "status", "countdown")
+SHOW_ITEMS = ("time", "seconds", "date", "weekday", "week", "utc", "tz", "status", "countdown", "moon", "nerd", "progress")
+BIN_MODES = ("bcd", "plain")                              # Design binary (BIN_MODES in clockkit.js)
+BARS = ("day", "week", "month", "year", "timer")          # Fortschrittsbalken (BARS in clockkit.js)
 LOOKS = ("studio", "contrast", "warm", "terminal", "paper", "pastel")
 PALETTE = ("amber", "red", "green", "cyan", "white", "ice", "yellow", "orange", "blue", "violet", "pink", "lime")
 STUDIO_COLORS = ("amber", "red", "green", "cyan", "white", "ice")
@@ -66,6 +68,7 @@ PARAMS: dict[str, tuple[str, dict]] = {
     "lz": ("flag", {}),
     "date": ("enum", {"values": ("long", "short", "iso", "off")}),
     "fps": ("enum", {"values": TC_FPS}),
+    "bin": ("enum", {"values": BIN_MODES}),
     "look": ("enum", {"values": LOOKS}),
     "accent": ("color", {}),
     "until": ("time", {}),
@@ -78,7 +81,7 @@ PARAMS: dict[str, tuple[str, dict]] = {
     "lock": ("flag", {}),
     "signal": ("flag", {}),
     # Spielereien (Etappe C): Eieruhr/Pomodoro/Nachtmodus-Knopf an oder aus, eingebaute Countdowns, Pomodoro-Dauern,
-    # Nachtmodus nach Uhrzeit.
+    # Nachtmodus nach Uhrzeit, Fortschrittsbalken (mit show=progress; bin gehört zum Design binary).
     "fun": ("flag", {}),
     "goal": ("enum", {"values": GOALS}),
     "pomo": ("duration", {}),
@@ -86,6 +89,7 @@ PARAMS: dict[str, tuple[str, dict]] = {
     "dim": ("hours", {}),
     "dimlevel": ("int", {"min": 20, "max": 80}),
     "dimred": ("flag", {}),
+    "bars": ("list", {"values": BARS}),
     "test": ("enum", {"values": ("sync",)}),
 }
 
@@ -112,7 +116,8 @@ PRESETS: dict[str, dict[str, Any]] = {
                                            "show": "time", "scale": "80", "shift": "2",
                                            "dim": "22-7"}},
     "nerd": {"title": "Nerd", "params": {"design": "digital", "face": "mono", "look": "terminal",
-                                         "date": "iso", "show": "time,seconds,date,week,utc,status"}},
+                                         "date": "iso",
+                                         "show": "time,seconds,date,week,utc,status,moon,nerd,progress"}},
 }
 
 _FLAGS = {"1", "0", "true", "false"}

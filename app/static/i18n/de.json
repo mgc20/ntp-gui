@@ -537,7 +537,8 @@
       "nixie": "Nixie",
       "flip": "Klappzahlen",
       "wort": "Wortuhr",
-      "tc": "Timecode"
+      "tc": "Timecode",
+      "binary": "Binär"
     },
     "theme_title": "Hell oder dunkel",
     "theme_light": "Hell",
@@ -832,7 +833,10 @@
         "utc": "UTC",
         "tz": "Zeitzonen (Weltzeit)",
         "status": "Statuszeile",
-        "countdown": "Countdown"
+        "countdown": "Countdown",
+        "moon": "Mondphase",
+        "nerd": "Nerd-Zeile",
+        "progress": "Fortschrittsbalken"
       },
       "on": "an",
       "off": "aus",
@@ -886,11 +890,68 @@
         "fun": "Spielereien (Timer, Nacht)",
         "dim": "Nachtmodus von–bis (Stunden)",
         "dimlevel": "Helligkeit nachts (%)",
-        "dimred": "Nachtmodus in Rot"
+        "dimred": "Nachtmodus in Rot",
+        "bin": "Binäruhr: Darstellung",
+        "bars": "Fortschrittsbalken (mit „Fortschritt“ unter Elemente)"
       },
       "test_value": {
         "sync": "Sekundenblitz mit Klick"
+      },
+      "bars_item": {
+        "day": "Tag",
+        "week": "Woche",
+        "month": "Monat",
+        "year": "Jahr",
+        "timer": "Eieruhr bzw. Pomodoro"
       }
+    },
+    "bars_label": "Fortschritt",
+    "moon": {
+      "new": "Neumond",
+      "waxing_crescent": "Zunehmende Sichel",
+      "first_quarter": "Erstes Viertel",
+      "waxing_gibbous": "Zunehmender Mond",
+      "full": "Vollmond",
+      "waning_gibbous": "Abnehmender Mond",
+      "last_quarter": "Letztes Viertel",
+      "waning_crescent": "Abnehmende Sichel"
+    },
+    "moon_text": "{name} · {pct} %",
+    "moon_title": "Mondphase: {name}, {pct} % beleuchtet.",
+    "moon_next_full": "Nächster Vollmond: {date}.",
+    "moon_next_new": "Nächster Neumond: {date}.",
+    "moon_date": "{d}.{m}.",
+    "moon_click_south": "Klick: so, wie man ihn auf der Südhalbkugel sieht.",
+    "moon_click_north": "Klick: so, wie man ihn auf der Nordhalbkugel sieht.",
+    "hint_moon_south": "Mond wie auf der Südhalbkugel",
+    "hint_moon_north": "Mond wie auf der Nordhalbkugel",
+    "moon_info_title": "Mondphase",
+    "moon_info": "Rein rechnerisch hier im Browser, ohne Standort und ohne Abruf aus dem Netz. Die Phase ist überall auf der Erde gleich; Neu- und Vollmond stimmen auf etwa ±1 Tag (meist viel genauer). Auf der Südhalbkugel steht das Bild seitenverkehrt – ein Klick auf den Mond spiegelt es. Das merkt sich nur dieser Browser.",
+    "nerd": {
+      "unix": "Unix",
+      "tai": "TAI",
+      "gps": "GPS",
+      "mjd": "MJD",
+      "doy": "Tag",
+      "iso": "ISO"
+    },
+    "nerd_gps": "Woche {week} · {sow} s",
+    "bar": {
+      "day": "Tag",
+      "week": "Woche",
+      "month": "Monat",
+      "year": "Jahr",
+      "timer": "Timer",
+      "pomo_work": "Arbeit",
+      "pomo_break": "Pause",
+      "pomo_long": "Lange Pause"
+    },
+    "bar_value": "{pct} %",
+    "bar_say": {
+      "day": "Der Tag ist zu {pct} % vorbei.",
+      "week": "Die Woche ist zu {pct} % vorbei.",
+      "month": "Der Monat ist zu {pct} % vorbei.",
+      "year": "Dieses Jahr ist zu {pct} % vorbei."
     }
   }
 }

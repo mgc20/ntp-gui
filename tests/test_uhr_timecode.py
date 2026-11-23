@@ -320,7 +320,7 @@ class ParameterTest(unittest.TestCase):
         self.assertEqual(out["fps"], {"name": "fps", "type": "enum", "values": self.FPS, "default": "25"})
         self.assertEqual(out["sub"]["values"], ["utc", "tz2", "date", "off", "tenths", "frames"])
         self.assertEqual(out["sub"]["default"], "utc", "Standard bleibt; das Design tc zeigt damit Zehntel")
-        self.assertEqual(out["designs"][-1], "tc")
+        self.assertIn("tc", out["designs"])
         self.assertLessEqual(len(out["designs"]), 8, "höchstens acht Designs")
         self.assertEqual(sorted(out["rates"]), sorted(self.FPS))
         self.assertEqual(out["list"], self.FPS)

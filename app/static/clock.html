@@ -25,6 +25,7 @@
         <option value="flip" data-i18n="clock.design.flip">Klappzahlen</option>
         <option value="wort" data-i18n="clock.design.wort">Wortuhr</option>
         <option value="tc" data-i18n="clock.design.tc">Timecode</option>
+        <option value="binary" data-i18n="clock.design.binary">Binär</option>
       </select>
     </label>
     <button type="button" class="clock-tool" id="mode-theme" title="Hell oder dunkel" data-i18n-title="clock.theme_title">Hell</button>
@@ -66,6 +67,16 @@
       <span class="clock-week" id="iso-week">KW –</span>
       <span class="clock-hold" id="clock-hold" hidden><span class="clock-hold-icon" aria-hidden="true">H</span><span class="sr-only" id="clock-hold-text"></span></span>
       <span class="clock-sync" id="clock-sync" data-sync="none"><span class="clock-sync-icon" id="clock-sync-icon" aria-hidden="true">–</span> <span id="clock-sync-text">Gerätezeit, nicht abgeglichen</span></span>
+    </div>
+    <!-- Zusätze (Etappe C, mit ?show=moon,nerd,progress): Mondphase (Klick: Ansicht Südhalbkugel, nur in diesem Browser
+         gemerkt), Nerd-Zeile und Fortschrittsbalken. Gefüllt nur über textContent, Attribute und CSSOM-Variablen. -->
+    <div class="clock-extras" id="extras" hidden>
+      <span class="clock-moon-box" id="moon-box" hidden>
+        <button type="button" class="clock-moon" id="moon" aria-pressed="false"><svg class="clock-moon-svg" viewBox="0 0 100 100" aria-hidden="true" focusable="false"><circle class="moon-disc" cx="50" cy="50" r="49"></circle><path class="moon-lit" id="moon-lit" d=""></path></svg><span class="clock-moon-text" id="moon-text"></span></button>
+        <span id="moon-info"></span>
+      </span>
+      <p class="clock-nerd" id="nerd" hidden></p>
+      <div class="clock-prog" id="bars" role="group" aria-label="Fortschritt" data-i18n-aria-label="clock.bars_label" hidden></div>
     </div>
     <div class="clock-world" id="world" role="list" aria-label="Weltzeit" data-i18n-aria-label="clock.world_label" hidden></div>
   </main>

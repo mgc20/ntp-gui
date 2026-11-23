@@ -362,9 +362,10 @@ apiv1.endpoint("GET", "/time", None, "read",
                "unknown) – nie Grandmaster-Kennung oder Schnittstelle. holdover: Die Serveruhr läuft ohne "
                "Referenz weiter (true/false, null = unbekannt), holdover_seconds: seit wie vielen Sekunden. "
                "signal ist das On-Air/REC-Signal (off, on_air, rec – gesetzt über POST /api/v1/clock/signal), "
-               "signal_rev ändert sich mit jedem Wechsel.",
-               ["t1", "t2", "synchronised", "level", "accuracy", "stratum", "leap", "leap_next", "source_kind",
-                "source", "public", "zone", "profiles_rev", "ptp_state", "holdover", "holdover_seconds",
+               "signal_rev ändert sich mit jedem Wechsel. tai_utc ist der heute gültige Abstand TAI−UTC in "
+               "Sekunden (öffentlich aus der leap-seconds.list, null ohne lesbare Liste) – für die Nerd-Zeile.",
+               ["t1", "t2", "synchronised", "level", "accuracy", "stratum", "leap", "leap_next", "tai_utc",
+                "source_kind", "source", "public", "zone", "profiles_rev", "ptp_state", "holdover", "holdover_seconds",
                 "signal", "signal_rev"])
 apiv1.endpoint("GET", "/clock/profile", None, "read",
                "Ein Profil der Vollbild-Uhr (/clock?p=name): feste Voreinstellung oder im Dashboard gespeichert. "
@@ -1315,18 +1316,38 @@ def _healthz_tracking() -> dict:
         return tracking
 
 
-def _clock_leap_next(cfg: dict) -> str | None:
-    """Datum der nächsten angekündigten Schaltsekunde (Beginn des neuen TAI−UTC, „2017-01-01“) für /clock.
+def _clock_leap(cfg: dict) -> dict:
+    """Schaltsekunden-Angaben für /clock: {"leap_next", "tai_utc"} – öffentliche Information aus der
+    leap-seconds.list (IERS Bulletin C), kein Pfad, keine Einstellung. Nie ein Fehler: im Zweifel None.
 
-    Öffentliche Information aus der leap-seconds.list (IERS Bulletin C) – kein Pfad, keine Einstellung.
-    Die Uhr zeigt damit am 30.6./31.12. ein kleines Banner. Nie ein Fehler: im Zweifel None.
+    leap_next: Datum der nächsten angekündigten Schaltsekunde (Beginn des neuen TAI−UTC, „2017-01-01“) – die Uhr
+    zeigt damit am 30.6./31.12. ein kleines Banner. tai_utc: der heute gültige Abstand TAI−UTC in ganzen Sekunden
+    (10 … 100) – die Nerd-Zeile rechnet damit TAI und GPS-Zeit, statt ihn fest einzubauen.
     """
+    out = {"leap_next": None, "tai_utc": None}
     try:
         info = leap.status(cfg)
     except Exception:
-        return None
-    value = info.get("next_leap_date") if info.get("available") else None
-    return value if isinstance(value, str) and len(value) == 10 else None
+        return out
+    if not info.get("available"):
+        return out
+    value = info.get("next_leap_date")
+    if isinstance(value, str) and len(value) == 10:
+        out["leap_next"] = value
+    tai = info.get("tai_utc")
+    if isinstance(tai, int) and not isinstance(tai, bool) and 10 <= tai <= 100:
+        out["tai_utc"] = tai
+    return out
+
+
+def _clock_leap_next(cfg: dict) -> str | None:
+    """Datum der nächsten angekündigten Schaltsekunde für /clock (siehe _clock_leap)."""
+    return _clock_leap(cfg)["leap_next"]
+
+
+def _clock_tai_utc(cfg: dict) -> int | None:
+    """TAI−UTC in Sekunden für /clock (siehe _clock_leap)."""
+    return _clock_leap(cfg)["tai_utc"]
 
 
 _CLOCK_ZONE: dict = {"t": None, "zone": None}
@@ -1474,7 +1495,7 @@ def time_payload(received: float, public: bool) -> dict:
     except Exception:
         cfg = {}
     out = clock_status(tracking, cfg, clock_extra(interval=cfg.get("history_interval")))
-    out["leap_next"] = _clock_leap_next(cfg)
+    out.update(_clock_leap(cfg))   # leap_next und tai_utc
     out["zone"] = _clock_zone()
     out["profiles_rev"] = clockprofiles.revision(cfg.get("clock_profiles"))
     out.update(clock_signal())

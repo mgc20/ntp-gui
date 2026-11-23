@@ -842,3 +842,67 @@ body.is-obs, body.is-obs * { cursor: none; }
    640 px Breite) behalten beide Knöpfe – die Leiste bricht dort höchstens einmal um, und für den Timer gibt es auf
    Touch-Geräten keinen anderen Weg. */
 @media (max-height: 320px) and (max-width: 600px) { #mode-timer, #mode-night { display: none; } }
+
+/* --- Studiouhr C2: Design binary, Mondphase, Nerd-Zeile, Fortschrittsbalken ---------------------------------------
+   Binäruhr: Lämpchen als SVG-Kreise; aus bleiben sie als Ring mit schwacher Füllung sichtbar, an voll gefüllt (Klasse on,
+   ein Klassenwechsel je geänderter Stelle). Die Zusätze unter der Uhr (?show=moon,nerd,progress) sind Text, ein kleines
+   SVG und Balken, deren Füllung allein über transform: scaleX(--bar) läuft (CSSOM-Variable, kein style-Attribut). */
+.face-binary { color: var(--accent); }
+.face-binary .bin { display: block; height: auto; max-width: 100%; }
+.face-binary .bin-bcd { width: min(86vw, 52vh * 1.56); }
+.face-binary .bin-bcd.bin-cols-4 { width: min(86vw, 52vh * 1.07); }
+.face-binary .bin-plain { width: min(90vw, 40vh * 2.34); }
+.bin-lamp { fill: currentColor; fill-opacity: 0.12; stroke: currentColor; stroke-opacity: 0.45; stroke-width: 1.4; }
+.bin-lamp.on { fill-opacity: 1; stroke-opacity: 1; }
+.bin-weight, .bin-unit { fill: var(--ink-muted); font-size: 8px; font-variant-numeric: tabular-nums; }
+.bin-value { fill: var(--ink); font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.bin-ampm { fill: var(--ink-muted); font-size: 8px; letter-spacing: 0.08em; }
+:root[data-seconds="unsure"] .face-binary .is-sec { opacity: 0.45; }
+:root[data-mode="eink"] .bin-lamp { fill-opacity: 0; stroke-opacity: 1; }
+:root[data-mode="eink"] .bin-lamp.on { fill-opacity: 1; }
+
+.clock-extras { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 0.5em 1.6em;
+  margin-top: clamp(6px, 1.4vh, 24px); font-size: clamp(13px, 1.6vw, 3vh); color: var(--ink-2, var(--ink));
+  font-variant-numeric: tabular-nums; }
+.clock-moon-box { display: inline-flex; align-items: center; gap: 0.3em; }
+.clock-moon { display: inline-flex; align-items: center; gap: 0.5em; font: inherit; color: inherit; background: transparent;
+  border: 0; padding: 0.1em 0.2em; min-height: 24px; border-radius: 6px; cursor: pointer; }
+.clock-moon:disabled { cursor: default; opacity: 1; }
+.clock-moon:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.clock-moon-svg { width: 1.4em; height: 1.4em; flex: none; display: block; }
+.moon-disc { fill: var(--ink-muted); fill-opacity: 0.22; stroke: var(--ink-muted); stroke-width: 1.5; }
+.moon-lit { fill: var(--ink); }
+.clock-nerd { margin: 0; display: flex; flex-wrap: wrap; justify-content: center; gap: 0.2em 1.2em; font-size: 0.9em;
+  font-family: ui-monospace, "DejaVu Sans Mono", Menlo, Consolas, monospace; }
+.clock-nerd-item { white-space: nowrap; }
+.clock-nerd-label { color: var(--ink-muted); }
+.clock-prog { display: flex; flex-wrap: wrap; justify-content: center; gap: 0.4em 1.6em; }
+.clock-prog-item { display: inline-flex; align-items: center; gap: 0.5em; white-space: nowrap; }
+.clock-prog-label { color: var(--ink-muted); min-width: 3.2em; text-align: right; }
+.clock-prog-track { position: relative; display: block; width: clamp(80px, 12vw, 260px); height: 0.5em; overflow: hidden;
+  border-radius: 0.25em; background: var(--border); }
+.clock-prog-fill { position: absolute; inset: 0; background: var(--accent); transform-origin: left center;
+  transform: scaleX(var(--bar, 0)); }
+.clock-prog-value { min-width: 3.2em; }
+:root[data-mode="eink"] .clock-prog-track { background: transparent; outline: 1px solid #000000; }
+@media (prefers-contrast: more) {
+  .bin-lamp { fill-opacity: 0; stroke-opacity: 1; }
+  .clock-prog-track { outline: 1px solid var(--ink); }
+}
+
+@supports (container-type: size) {
+  .clock-stage .face-binary .bin-bcd { width: calc(min(var(--face-w), var(--face-h) * 1.56) * var(--clock-scale) * var(--fit));
+    max-width: none; flex: none; }
+  .clock-stage .face-binary .bin-bcd.bin-cols-4 {
+    width: calc(min(var(--face-w), var(--face-h) * 1.07) * var(--clock-scale) * var(--fit)); }
+  .clock-stage .face-binary .bin-plain { width: calc(min(var(--face-w), var(--face-h) * 2.34) * var(--clock-scale) * var(--fit));
+    max-width: none; flex: none; }
+  .clock-stage .clock-extras { font-size: var(--status); margin-top: 1cqh; }
+  .clock-stage .clock-prog-track { width: clamp(60px, 14cqw, 320px); }
+  /* Banner: Zusätze in der rechten Spalte unter Datum und Zeile. */
+  .clock-stage[data-layout="banner"] .clock-main { grid-template-areas: "time date" "time sub" "time extras"; }
+  .clock-stage[data-layout="banner"] .clock-extras { grid-area: extras; justify-content: flex-start; margin: 0;
+    font-size: max(12px, min(1.4cqw, 11cqh)); }
+  .clock-stage[data-layout="banner"] :is(.clock-nerd, .clock-prog) { justify-content: flex-start; }
+  .clock-stage:is([data-layout="strip"], [data-layout="tile"]) .clock-extras { display: none; }
+}

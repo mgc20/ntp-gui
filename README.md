@@ -1224,6 +1224,19 @@ Die Seite **Uhrqualität** zeigt, was die Uhr deines Servers langfristig beeinfl
   Timer, Pomodoro und eigene Countdowns laufen nur im Browser, nichts geht an den Server. Mit `?fun=0` (in den
   Voreinstellungen `studio`, `tile` und `banner`), im Kiosk, mit `?lock=1`, in der Kachel und in einer
   OBS-Browserquelle gibt es diese Knöpfe nicht; in OBS fehlen auch Leiste und Knöpfe am Countdown.
+- **Binäruhr, Mondphase, Nerd-Zeile und Fortschrittsbalken (ab 1.10, Studiouhr):** `?design=binary` zeigt die Zeit
+  als Lämpchen – je Ziffer eine Spalte mit 8-4-2-1 (BCD, Standard) oder mit `?bin=plain` Stunde, Minute und Sekunde je
+  als Dualzahl (32 … 1); die Dezimalwerte stehen zum Ablesen daneben. Unter der Uhr gibt es drei Zusätze, alle
+  standardmäßig aus und einzeln per `?show=` einzuschalten (nennt `show` nur Zusätze, bleibt der Rest der Uhr, wie er
+  ist): `moon` zeigt die **Mondphase** mit Name und beleuchtetem Anteil, rein rechnerisch im Browser ohne Standort
+  (Neu- und Vollmond auf etwa ±1 Tag, meist viel genauer); ein Klick auf den Mond zeigt ihn wie auf der Südhalbkugel,
+  das merkt sich nur dieser Browser. `nerd` zeigt die **Nerd-Zeile**: Unixzeit, TAI (mit dem Abstand TAI−UTC, den der
+  Server aus seiner leap-seconds.list kennt – ohne lesbare Liste steht dort „–“), GPS-Woche und -Sekunde, MJD, Tag im
+  Jahr und ISO-Datum mit Woche (`2026-W48-1`). `progress` zeigt **Fortschrittsbalken** für Tag und Jahr („dieses Jahr
+  ist zu 89 % vorbei“), mit laufender Eieruhr oder Pomodoro deren Balken und den Tag; `?bars=day,week,month,year,timer`
+  wählt selbst. Die Voreinstellung `nerd` bringt alle drei mit. Mit `?fun=0` (Voreinstellungen `studio`, `tile`,
+  `banner`), in der Kachel und im Streifen gibt es keine Zusätze, auf E-Ink keine Nerd-Zeile. `/api/v1/time` meldet
+  dafür zusätzlich `tai_utc` (eine Zahl aus der öffentlichen Schaltsekunden-Liste); sonst geht nichts an den Server.
 - **Timecode-Anzeige (Studiouhr, Design `tc`):** `/clock?design=tc` zeigt die Tageszeit des Servers als Timecode
   `HH:MM:SS` mit einer Feinstelle, gerechnet in der Zeitzone des Servers; weicht sie von der deines Geräts ab, gehören
   auch Datum und Woche darunter zur Zone des Servers, und nach Taste U steht dessen Zeit mit Zonenname in der

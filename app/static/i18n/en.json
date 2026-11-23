@@ -537,7 +537,8 @@
       "nixie": "Nixie",
       "flip": "Flip clock",
       "wort": "Word clock",
-      "tc": "Timecode"
+      "tc": "Timecode",
+      "binary": "Binary"
     },
     "theme_title": "Light or dark",
     "theme_light": "Light",
@@ -832,7 +833,10 @@
         "utc": "UTC",
         "tz": "Time zones (world time)",
         "status": "Status line",
-        "countdown": "Countdown"
+        "countdown": "Countdown",
+        "moon": "Moon phase",
+        "nerd": "Nerd line",
+        "progress": "Progress bars"
       },
       "on": "on",
       "off": "off",
@@ -886,11 +890,68 @@
         "fun": "Extras (timer, night)",
         "dim": "Night mode from–to (hours)",
         "dimlevel": "Brightness at night (%)",
-        "dimred": "Night mode in red"
+        "dimred": "Night mode in red",
+        "bin": "Binary clock: style",
+        "bars": "Progress bars (with “Progress bars” under elements)"
       },
       "test_value": {
         "sync": "Second flash with click"
+      },
+      "bars_item": {
+        "day": "Day",
+        "week": "Week",
+        "month": "Month",
+        "year": "Year",
+        "timer": "Egg timer or Pomodoro"
       }
+    },
+    "bars_label": "Progress",
+    "moon": {
+      "new": "New moon",
+      "waxing_crescent": "Waxing crescent",
+      "first_quarter": "First quarter",
+      "waxing_gibbous": "Waxing gibbous",
+      "full": "Full moon",
+      "waning_gibbous": "Waning gibbous",
+      "last_quarter": "Last quarter",
+      "waning_crescent": "Waning crescent"
+    },
+    "moon_text": "{name} · {pct}%",
+    "moon_title": "Moon phase: {name}, {pct}% illuminated.",
+    "moon_next_full": "Next full moon: {date}.",
+    "moon_next_new": "Next new moon: {date}.",
+    "moon_date": "{d}/{m}",
+    "moon_click_south": "Click: show it as seen from the southern hemisphere.",
+    "moon_click_north": "Click: show it as seen from the northern hemisphere.",
+    "hint_moon_south": "Moon as seen from the southern hemisphere",
+    "hint_moon_north": "Moon as seen from the northern hemisphere",
+    "moon_info_title": "Moon phase",
+    "moon_info": "Calculated right here in the browser, without a location and without fetching anything. The phase is the same everywhere on Earth; new and full moon are correct to about ±1 day (usually much better). In the southern hemisphere the picture is mirrored – click the moon to flip it. Only this browser remembers that.",
+    "nerd": {
+      "unix": "Unix",
+      "tai": "TAI",
+      "gps": "GPS",
+      "mjd": "MJD",
+      "doy": "Day",
+      "iso": "ISO"
+    },
+    "nerd_gps": "week {week} · {sow} s",
+    "bar": {
+      "day": "Day",
+      "week": "Week",
+      "month": "Month",
+      "year": "Year",
+      "timer": "Timer",
+      "pomo_work": "Work",
+      "pomo_break": "Break",
+      "pomo_long": "Long break"
+    },
+    "bar_value": "{pct}%",
+    "bar_say": {
+      "day": "The day is {pct}% over.",
+      "week": "The week is {pct}% over.",
+      "month": "The month is {pct}% over.",
+      "year": "This year is {pct}% over."
     }
   }
 }

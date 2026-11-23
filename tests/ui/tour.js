@@ -36,6 +36,7 @@
 // Studiouhr A5 (clockCountdownChecks, TOUR_COUNTDOWN_ONLY=1): Countdown, Überzeit und Countdown als Hauptanzeige auf
 // neun Flächen, Farbstufen mit Symbol und Text, Zone des Servers, Timer, Stoppuhr, Tastenkürzel, lock=1, Ansagen.
 // Studiouhr C1 (clockTimerChecks, TOUR_TIMER_ONLY=1): Eieruhr, Pomodoro, eigene Countdowns, Nachtmodus, Bedienung.
+// Studiouhr C2 (clockExtrasChecks, TOUR_EXTRAS_ONLY=1): Design binary, Mondphase, Nerd-Zeile, Fortschrittsbalken.
 // Studiouhr A6 (clockLinkChecks, TOUR_LINK_ONLY=1): Profil (?p=) auf neun Flächen mit gemocktem Profil und /api/v1/time,
 // Neuladen bei geändertem profiles_rev, Panel „Anpassen“ (Übernehmen ohne Parameter), Reiter „Anzeigen“ im Dashboard.
 // Studiouhr B1 (clockTimecodeChecks, TOUR_TC_ONLY=1): Design tc auf neun Flächen – Kopfzeile „nicht genlocked“, Zehntel als
@@ -1060,7 +1061,8 @@ async function clockStudioChecks(browser) {
 // Uhr die Ziffern von studio und face=seg (10:15:42, Kranz bis Sekunde 42), die Akzentfarbe per CSSOM (wirksam,
 // ≥ 4,5:1) und die Pixel-Shift-Klasse.
 const LAYOUT_DESIGNS = ["?design=digital", "?design=digital&face=seg", "?design=studio", "?design=bahnhof", "?design=nixie",
-  "?design=flip", "?design=wort", "?design=tc"];
+  "?design=flip", "?design=wort", "?design=tc", "?design=binary", "?design=binary&bin=plain&h12=1",
+  "?design=binary&show=moon,nerd,progress"];
 const LAYOUT_PARAMS = ["?layout=tile&safe=10&design=studio", "?layout=tile&design=digital", "?scale=200",
   "?scale=50&design=digital&face=seg", "?shift=2&safe=3&design=digital", "?layout=strip&design=nixie",
   "?layout=banner&design=flip", "?layout=column&design=wort", "?show=time,status&design=digital",
@@ -1738,6 +1740,154 @@ async function clockTimerChecks(browser) {
     const got = await page.evaluate(() => ({ long: window.__long, raf: window.__raf }));
     await ctx.close();
     note("/clock C1 Leistung", [got.long.length ? `Long Tasks ${got.long.map(Math.round)}` : "",
+      got.raf - rafStart > 2 ? `Bildschleife (${got.raf - rafStart} Bilder)` : ""].filter(Boolean));
+  }
+  return { found, lines };
+}
+
+// Studiouhr C2 (clockExtrasChecks, TOUR_EXTRAS_ONLY=1): Design binary und die Zusätze Mondphase, Nerd-Zeile und
+// Fortschrittsbalken (?show=moon,nerd,progress). Auf den neun Flächen: Zusätze im Bild (in Kachel und Streifen nie),
+// keine Scrollbalken, Zeit ohne Umbruch, Nerd-Zeile mit TAI und GPS aus tai_utc des (gemockten) Servers, ohne tai_utc „–“.
+// Binäruhr (bcd und plain) zeigt die gemockte Serverzeit 10:15:42 als Lämpchen. Nie Zusätze in den Voreinstellungen
+// studio, tile, banner und mit fun=0; Standard ohne ?show= ohne Zusätze. Klick auf den Mond spiegelt ihn (Südhalbkugel,
+// nur localStorage). Echtzeit: keine Long Tasks, keine Bildschleife. Fotos mit TOUR_SHOTS.
+function extrasState() {
+  const root = document.documentElement;
+  const stage = document.getElementById("clock-stage").getBoundingClientRect();
+  const visible = (id) => { const el = document.getElementById(id); const r = el.getBoundingClientRect();
+    return !el.hidden && getComputedStyle(el).display !== "none" && r.width > 0 && r.height > 0; };
+  const extras = document.getElementById("extras").getBoundingClientRect();
+  const time = document.getElementById(document.getElementById("local-time").hidden ? "face" : "local-time");
+  const tb = time.getBoundingClientRect();
+  const size = parseFloat(getComputedStyle(time).fontSize);
+  const lamps = [...document.querySelectorAll("#face .bin-lamp")].map((l) => (l.classList.contains("on") ? "1" : "0")).join("");
+  return {
+    layout: document.getElementById("clock-stage").dataset.layout, stageH: stage.height, extras: visible("extras"), moon: visible("moon-box"),
+    nerd: visible("nerd"), bars: visible("bars"), inside: extras.bottom <= stage.bottom + 1 && extras.top >= stage.top - 1
+      && extras.right <= stage.right + 1 && extras.left >= stage.left - 1,
+    timeInside: tb.bottom <= stage.bottom + 1 && tb.top >= stage.top - 1,
+    wrapped: !document.getElementById("local-time").hidden && tb.height > size * 1.6,
+    nerdText: [...document.querySelectorAll(".clock-nerd-item")].map((n) => n.textContent),
+    moonText: document.getElementById("moon-text").textContent, moonPath: document.getElementById("moon-lit").getAttribute("d"),
+    moonPressed: document.getElementById("moon").getAttribute("aria-pressed"),
+    barTexts: [...document.querySelectorAll(".clock-prog-item")].map((n) => n.textContent),
+    barNow: [...document.querySelectorAll(".clock-prog-item")].map((n) => n.getAttribute("aria-valuenow")),
+    lamps, values: [...document.querySelectorAll("#face .bin-value")].map((n) => n.textContent),
+    vscroll: root.scrollHeight - root.clientHeight, hscroll: root.scrollWidth - root.clientWidth, csp: window.__csp || [],
+  };
+}
+
+async function clockExtrasChecks(browser) {
+  const found = [];
+  const lines = [];
+  const note = (label, problems) => {
+    lines.push(`${label}: ${problems.length ? problems.join("; ") : "ok"}`);
+    if (problems.length) found.push(`${label}: ${problems.join("; ")}`);
+  };
+  const errors = (got, msgs) => (got.csp.length || msgs.length ? [`Fehler ${JSON.stringify([...got.csp, ...msgs])}`] : []);
+  const shot = async (page, name) => { if (SHOTS) await page.screenshot({ path: `${SHOTS}/clock-c2-${name}.png` }); };
+  const withTai = (tai) => (ms) => ({ t1: ms / 1000, t2: ms / 1000, synchronised: true, running: true, level: "good",
+    accuracy: 0.0004, stratum: 1, leap: "Normal", leap_next: null, tai_utc: tai, source_kind: "GPS", source: null, public: true });
+  // Serverzeit CLOCK_SERVER = 2026-06-30 08:15:42,5 UTC (10:15:42 in Berlin): Unix 1782807342, TAI 08:16:19,
+  // GPS 1782807342 − 315964800 + 18 = 1466842560 s → Woche 2425, Sekunde 216960 (Dienstag 12:16:00 GPS-Zeit).
+  const unix = Math.floor(CLOCK_SERVER / 1000);
+  const gps = unix - 315964800 + 18;
+  const wantNerd = [`Unix ${unix}`, "TAI 08:16:19 (+37 s)", `GPS Woche ${Math.floor(gps / 604800)} · ${gps % 604800} s`,
+    `MJD ${(CLOCK_SERVER / 86400000 + 40587).toFixed(3).replace(".", ",")}`, "Tag 181", "ISO 2026-W27-2"];
+  // 1) Alle Zusätze auf den neun Flächen.
+  for (const [width, height] of STUDIO_VIEWPORTS) {
+    const { ctx, page, msgs, clock } = await openPausedClock(browser, { width, height, query: "?show=moon,nerd,progress", reply: withTai(37) });
+    const got = await page.evaluate(extrasState);
+    await shot(page, `zusaetze-${width}x${height}`);
+    await ctx.close();
+    const small = ["tile", "strip"].includes(got.layout) || (got.layout !== "banner" && got.stageH < 360);
+    const problems = [];
+    if (small && got.extras) problems.push(`Zusätze im Layout ${got.layout}`);
+    if (!small) {
+      if (!(got.extras && got.moon && got.nerd && got.bars)) problems.push(`nicht alle Zusätze sichtbar ${JSON.stringify([got.moon, got.nerd, got.bars])}`);
+      if (!got.inside) problems.push("Zusätze außerhalb der Bühne");
+      if (JSON.stringify(got.nerdText) !== JSON.stringify(wantNerd)) problems.push(`Nerd-Zeile ${JSON.stringify(got.nerdText)}`);
+      if (got.barTexts.join("|") !== "Tag42 %|Jahr49 %") problems.push(`Balken ${got.barTexts.join("|")}`);
+      if (!/^Vollmond · (9\d|100) %$/.test(got.moonText)) problems.push(`Mond „${got.moonText}“`);
+    }
+    if (!got.timeInside) problems.push("Zeit außerhalb der Bühne");
+    if (got.wrapped) problems.push("Umbruch");
+    if (got.vscroll > 0 || got.hscroll > 0) problems.push(`Scrollbalken (${got.hscroll}/${got.vscroll} px)`);
+    problems.push(...errors(got, msgs));
+    note(`/clock Zusätze ${width}×${height} (${got.layout})`, problems);
+  }
+  // 2) Binäruhr: 10:15:42 als BCD (1|0|1|5|4|2) und als Dualzahl (01010|001111|101010).
+  const bcd = "01" + "0000" + "001" + "0101" + "100" + "0010";
+  for (const [query, lamps, values] of [["?design=binary", bcd, "1,0,1,5,4,2"],
+    ["?design=binary&bin=plain", "01010" + "001111" + "101010", "10,15,42"]]) {
+    for (const [width, height] of STUDIO_VIEWPORTS) {
+      const { ctx, page, msgs, clock } = await openPausedClock(browser, { width, height, query });
+      const got = await page.evaluate(extrasState);
+      if ([390, 1920, 3840].includes(width) && height !== 200) await shot(page, `${query.includes("plain") ? "dual" : "bcd"}-${width}x${height}`);
+      await ctx.close();
+      note(`/clock ${query} ${width}×${height}`, [got.lamps === lamps ? "" : `Lämpchen ${got.lamps}`,
+        got.values.join(",") === values ? "" : `Werte ${got.values}`, got.timeInside ? "" : "außerhalb der Bühne",
+        got.vscroll > 0 || got.hscroll > 0 ? `Scrollbalken (${got.hscroll}/${got.vscroll} px)` : "", ...errors(got, msgs)].filter(Boolean));
+    }
+  }
+  // 3) Ohne tai_utc: TAI und GPS „–“, nichts geraten. Zunehmende Sichel (16.8.2026) und Klick: Südhalbkugel.
+  {
+    const at = Date.parse("2026-08-16T10:00:00.500Z");
+    const { ctx, page, msgs, clock } = await openPausedClock(browser, { width: 1440, height: 900, query: "?show=moon,nerd", at });
+    const before = await page.evaluate(extrasState);
+    await shot(page, "sichel-nord");
+    await page.click("#moon");
+    await clock.run(250);
+    const after = await page.evaluate(extrasState);
+    const stored = await page.evaluate(() => localStorage.getItem("ntp-gui-clock-south"));
+    await shot(page, "sichel-sued");
+    await ctx.close();
+    note("/clock Mond und Nerd ohne tai_utc", [before.nerdText[1] === "TAI –" && before.nerdText[2] === "GPS –" ? "" : `ohne TAI: ${before.nerdText}`,
+      /^Zunehmende Sichel/.test(before.moonText) ? "" : `Mond „${before.moonText}“`,
+      / 0 1 50 /.test(before.moonPath) ? "" : `Nord nicht rechts: ${before.moonPath}`,
+      after.moonPressed === "true" && / 0 0 50 /.test(after.moonPath) ? "" : `Süd: ${after.moonPressed} ${after.moonPath}`,
+      stored === "1" ? "" : `localStorage ${stored}`, ...errors(after, msgs)].filter(Boolean));
+  }
+  // 4) Nie Zusätze in Studio-, Kachel- und Banner-Voreinstellung, mit fun=0, im Streifen; Standard ohne show keine.
+  for (const [name, query] of [["studio", "?p=studio&show=moon,nerd,progress"], ["tile", "?p=tile&show=moon,nerd,progress"],
+    ["banner", "?p=banner&show=moon,nerd,progress"], ["fun0", "?fun=0&show=moon,nerd,progress"],
+    ["strip", "?layout=strip&show=moon,nerd,progress"], ["standard", ""]]) {
+    const { ctx, page, msgs, clock } = await openPausedClock(browser, { width: 1920, height: 1080, query, reply: withTai(37) });
+    await clock.run(1500);
+    const got = await page.evaluate(extrasState);
+    await ctx.close();
+    note(`/clock keine Zusätze ${name}`, [got.extras ? "Zusätze sichtbar" : "", ...errors(got, msgs)].filter(Boolean));
+  }
+  // 5) Eieruhr-Balken: 10 min, nach 2,5 min 25 %.
+  {
+    const { ctx, page, msgs, clock } = await openPausedClock(browser, { width: 1440, height: 900, query: "?timer=10m&show=progress" });
+    await page.keyboard.press("Space");
+    await clock.run(151000);
+    const got = await page.evaluate(extrasState);
+    await shot(page, "timer-balken");
+    await ctx.close();
+    note("/clock Balken der Eieruhr", [got.barTexts.join("|") === "Tag42 %|Timer25 %" ? "" : `Balken ${got.barTexts.join("|")}`,
+      ...errors(got, msgs)].filter(Boolean));
+  }
+  // 6) Echtzeit: Binäruhr mit allen Zusätzen ohne Long Tasks und ohne Bildschleife.
+  {
+    const ctx = await browser.newContext({ viewport: { width: 1920, height: 1080 } });
+    await ctx.addInitScript(() => {
+      window.__long = [];
+      window.__raf = 0;
+      const raf = window.requestAnimationFrame.bind(window);
+      window.requestAnimationFrame = (cb) => { window.__raf += 1; return raf(cb); };
+      try { new PerformanceObserver((list) => window.__long.push(...list.getEntries().map((e) => e.duration))).observe({ type: "longtask", buffered: true }); } catch (e) { /* egal */ }
+    });
+    const page = await ctx.newPage();
+    await page.goto(`${BASE}/clock?design=binary&show=moon,nerd,progress`, { waitUntil: "load" });
+    await page.waitForTimeout(1500);
+    // Ruhebetrieb (Konzept, Akzeptanz A): gezählt wird nach dem Start, nicht das erste Laden der Seite.
+    const rafStart = await page.evaluate(() => { window.__long = []; return window.__raf; });
+    await page.waitForTimeout(6000);
+    const got = await page.evaluate(() => ({ long: window.__long, raf: window.__raf }));
+    await ctx.close();
+    note("/clock C2 Leistung", [got.long.length ? `Long Tasks ${got.long.map(Math.round)}` : "",
       got.raf - rafStart > 2 ? `Bildschleife (${got.raf - rafStart} Bilder)` : ""].filter(Boolean));
   }
   return { found, lines };
@@ -4423,6 +4573,12 @@ async function setupChecks(browser) {
     }
     if (process.env.TOUR_TIMER_ONLY) {
       const result = await clockTimerChecks(browser);
+      console.log(JSON.stringify(result, null, 1));
+      process.exitCode = result.found.length ? 1 : 0;
+      return;
+    }
+    if (process.env.TOUR_EXTRAS_ONLY) {
+      const result = await clockExtrasChecks(browser);
       console.log(JSON.stringify(result, null, 1));
       process.exitCode = result.found.length ? 1 : 0;
       return;
