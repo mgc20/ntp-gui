@@ -46,8 +46,9 @@ services:
       # NTP für jede Adresse. Nur so lassen, wenn der Server bewusst öffentlich
       # ist – sonst die eigenen Netze eintragen (z. B. das WireGuard-Netz).
       ALLOW_NETWORKS: "all"
-      # Beides gilt bei öffentlichen Adressen ohnehin als Standard; hier
-      # ausdrücklich, damit ein Dashboard-Wert es nicht unbemerkt ändert.
+      # Beides gilt bei öffentlichen Adressen ohnehin als Standard; hier steht es
+      # zur Klarheit ausdrücklich. Ein im Dashboard gespeicherter Wert hat aber
+      # Vorrang vor diesen Zeilen – weicht er ab, meldet die Übersicht das.
       NTP_RATELIMIT: "streng"
       SERVE_UNSYNCED: "false"
 

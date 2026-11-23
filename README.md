@@ -1539,7 +1539,10 @@ Provider-Netz), gilt:
   je Adresse (Stöße bis 16) und ein NTS-Schlüsselaustausch alle 8 s (Stöße bis 8). Gebremste
   Anfragen beantwortet chrony nur noch zum Teil (jede vierte). Ohne öffentliche Adressen gilt
   „schonend“: Erst im Mittel mehr als 4 Anfragen je Sekunde (Stöße bis 32) werden gebremst – das
-  stört im LAN niemanden, auch nicht viele Geräte hinter einer gemeinsamen Adresse.
+  stört einzelne Geräte im LAN nicht. Teilen sich Geräte eine Absenderadresse (NAT, Docker-Gateway),
+  gilt die Grenze für alle zusammen: im Dauerbetrieb reicht sie für etwa 250 Geräte (Abfrage alle
+  64 s); starten mehr als etwa ein Dutzend gleichzeitig neu (z. B. nach einem Stromausfall), bremst
+  chrony sie kurz. Dann „aus“ wählen oder `network_mode: host` nutzen.
 * **Kein Inselbetrieb** (sofern nicht ausdrücklich gesetzt): Im Inselbetrieb liefert chrony die
   eigene, frei laufende Uhr als gültige Zeit (Stratum 10, ohne Hinweis „nicht synchron“). Im LAN
   hält das alle Geräte beisammen; Clients aus dem Internet sollen bei einem Ausfall der Quellen
@@ -1553,7 +1556,10 @@ der Docker-Daemon IPv6 nicht per ip6tables weiterleitet. chrony sieht dann als A
 Gateway des Docker-Netzes (z. B. `172.17.0.1`). Diese Adresse liegt in `172.16.0.0/12` – die
 Standardliste lässt damit **alle** so weitergereichten Anfragen durch, auch aus dem Internet. Alle
 diese Clients teilen sich außerdem ein Ratelimit und erscheinen auf der Clients-Seite als ein
-Gerät. Die Übersicht meldet den Fall („Clients erscheinen als Docker-Gateway“). Abhilfe:
+Gerät. Die Übersicht meldet den Fall („Clients erscheinen als Docker-Gateway“): als Warnung, wenn
+alle Anfragen vom Gateway kommen, sonst als Information – fragt der Docker-Host selbst über die
+Portfreigabe, erscheint auch er als Gateway, und in einem macvlan-/ipvlan-Netz ist das Gateway dein
+Router. Abhilfe:
 `network_mode: host` (wie in der VPS-Vorlage) oder im Docker-Daemon IPv6 mit ip6tables bzw.
 `"userland-proxy": false`; danach `ALLOW_NETWORKS` bewusst setzen.
 

@@ -13,6 +13,7 @@ import re
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -114,6 +115,43 @@ class OeffentlicheNetzeTest(unittest.TestCase):
         self.assertTrue(cfg["serve_unsynced"])
         self.assertEqual(cfg["ntp_ratelimit"], "aus")
 
+    def test_gemeldeter_standard_ist_der_wirksame(self):
+        for env in ({"ALLOW_NETWORKS": "all"},
+                    {"ALLOW_NETWORKS": "all", "NTP_RATELIMIT": "streng", "SERVE_UNSYNCED": "false"}):
+            with self.subTest(env=env), mock.patch.dict(os.environ, env):
+                fields = {f["key"]: f for f in settings.public_schema()["fields"]}
+                self.assertEqual(fields["ntp_ratelimit"]["default"], "streng")
+                self.assertIs(fields["serve_unsynced"]["default"], False)
+                for key in ("ntp_ratelimit", "serve_unsynced"):
+                    self.assertEqual(fields[key]["value"], fields[key]["default"], "nicht als geändert anzeigen")
+        fields = {f["key"]: f for f in settings.public_schema()["fields"]}
+        self.assertEqual(fields["ntp_ratelimit"]["default"], "schonend")
+        self.assertIs(fields["serve_unsynced"]["default"], True)
+
+    def test_zuruecksetzen_ergibt_den_oeffentlichen_standard(self):
+        keys = ["ntp_ratelimit", "serve_unsynced"]
+        saved = {"ntp_ratelimit": "aus", "serve_unsynced": True}
+        for env in ({"ALLOW_NETWORKS": "all"},
+                    {"ALLOW_NETWORKS": "all", "NTP_RATELIMIT": "streng", "SERVE_UNSYNCED": "false"},
+                    {"ALLOW_NETWORKS": "all", "NTP_RATELIMIT": "schonend", "SERVE_UNSYNCED": "true"}):
+            with self.subTest(env=env):
+                after = settings._stored_after(saved, {}, keys, env)
+                eff = settings.effective(env, after)
+                self.assertEqual(eff["ntp_ratelimit"]["value"], "streng")
+                self.assertIs(eff["serve_unsynced"]["value"], False)
+                for key in keys:
+                    self.assertEqual(eff[key]["value"], eff[key]["default"])
+        # Ohne abweichende Umgebung wird nichts ausdrücklich gespeichert.
+        self.assertEqual(settings._stored_after(saved, {}, keys, {"ALLOW_NETWORKS": "all"}), {})
+        # Im selben Schritt auf öffentliche Netze umgestellt: der neue Standard zählt.
+        after = settings._stored_after(saved, {"allow_networks": ["all"]}, keys, {"SERVE_UNSYNCED": "true"})
+        self.assertEqual(settings.effective({"SERVE_UNSYNCED": "true"}, after)["serve_unsynced"]["value"], False)
+
+    def test_zuruecksetzen_im_lan_wie_bisher(self):
+        after = settings._stored_after({"ntp_ratelimit": "aus"}, {}, ["ntp_ratelimit"], {"NTP_RATELIMIT": "streng"})
+        self.assertEqual(after, {"ntp_ratelimit": "schonend"})
+        self.assertEqual(settings._stored_after({"ntp_ratelimit": "aus"}, {}, ["ntp_ratelimit"], {}), {})
+
     def test_dashboard_wert_fuer_erlaubte_netze_zaehlt(self):
         cfg = cfg_for(saved={"allow_networks": ["all"]})
         self.assertEqual(cfg["ntp_ratelimit"], "streng")
@@ -147,14 +185,39 @@ class HinweiseTest(unittest.TestCase):
         self.assertEqual(found["allow_public"]["level"], "warn")
         self.assertIn("SERVE_UNSYNCED=false", found["allow_public"]["text"])
 
-    def test_docker_gateway_wird_erkannt(self):
+    def test_nur_gateway_clients_geben_warnung(self):
+        clients = [{"address": "::ffff:172.17.0.1"}, {"address": "172.17.0.1"}]
+        for level in ("aus", "schonend", "streng"):
+            with self.subTest(level=level):
+                found = self.keys(insights.exposure_insights(cfg_for({"NTP_RATELIMIT": level}), clients,
+                                                             "172.17.0.1", "bridge"))
+                self.assertEqual(found["docker_gateway"]["level"], "warn")
+                self.assertIn("172.17.0.1", found["docker_gateway"]["text"])
+
+    def test_gateway_neben_echten_adressen_ist_nur_info(self):
+        # Fragt der Docker-Host selbst (oder im macvlan-Netz der Router), ist das Gateway ein echter Client.
         clients = [{"address": "::ffff:172.17.0.1"}, {"address": "192.168.1.20"}]
-        found = self.keys(insights.exposure_insights(cfg_for(), clients, "172.17.0.1", "bridge"))
+        for level in ("aus", "schonend", "streng"):
+            with self.subTest(level=level):
+                found = self.keys(insights.exposure_insights(cfg_for({"NTP_RATELIMIT": level}), clients,
+                                                             "172.17.0.1", "bridge"))
+                self.assertEqual(found["docker_gateway"]["level"], "info")
+                self.assertIn("Docker-Host", found["docker_gateway"]["text"])
+        found = self.keys(insights.exposure_insights(cfg_for(), [{"address": "192.168.1.1"},
+                                                                 {"address": "192.168.1.30"}],
+                                                     "192.168.1.1", "bridge"))
         self.assertEqual(found["docker_gateway"]["level"], "info")
-        self.assertIn("172.17.0.1", found["docker_gateway"]["text"])
-        found = self.keys(insights.exposure_insights(cfg_for({"NTP_RATELIMIT": "streng"}), clients,
-                                                     "172.17.0.1", "bridge"))
-        self.assertEqual(found["docker_gateway"]["level"], "warn")
+        self.assertIn("Router", found["docker_gateway"]["text"])
+
+    def test_gateway_hinweis_nennt_gemeinsames_ratelimit_ausser_bei_aus(self):
+        clients = [{"address": "172.17.0.1"}]
+        for level in ("schonend", "streng"):
+            with self.subTest(level=level):
+                text = insights.exposure_insights(cfg_for({"NTP_RATELIMIT": level}), clients,
+                                                  "172.17.0.1", "bridge")[0]["text"]
+                self.assertIn(f"Ratelimit („{level}“)", text)
+        text = insights.exposure_insights(cfg_for({"NTP_RATELIMIT": "aus"}), clients, "172.17.0.1", "bridge")[0]["text"]
+        self.assertNotIn("Ratelimit (", text)
 
     def test_kein_gateway_hinweis_im_host_netz_oder_ohne_gateway_client(self):
         cfg = cfg_for()
@@ -184,6 +247,27 @@ class DokuTest(unittest.TestCase):
         self.assertIn("**Keine Authentifizierung.**", readme)
         self.assertIn("| `CLIENTLOGLIMIT` | `2097152` |", readme)
         self.assertIn("| `NTP_RATELIMIT` | `schonend`", readme)
+
+    def test_hilfe_verspricht_bei_gemeinsamer_adresse_nichts_falsches(self):
+        texts = {"settings": settings.FIELDS["ntp_ratelimit"]["help"],
+                 "help.js": (ROOT / "app" / "static" / "js" / "help.js").read_text(encoding="utf-8"),
+                 "README": (ROOT / "README.md").read_text(encoding="utf-8")}
+        for name, text in texts.items():
+            with self.subTest(name=name):
+                flat = re.sub(r"\s+|\"\s*\+\s*\"", " ", text)
+                self.assertNotIn("auch nicht viele Geräte hinter einer gemeinsamen Adresse", flat)
+                self.assertNotIn("auch viele Geräte hinter einer gemeinsamen Adresse", flat)
+                self.assertIn("etwa 250 Geräte", flat)
+
+    def test_vps_vorlage_beschreibt_den_vorrang_richtig(self):
+        text = (ROOT / "docker-compose.vps.yml").read_text(encoding="utf-8")
+        self.assertNotIn("damit ein Dashboard-Wert es nicht unbemerkt ändert", text)
+        self.assertIn("Vorrang", text)
+        env = {"ALLOW_NETWORKS": "all", "NTP_RATELIMIT": "streng", "SERVE_UNSYNCED": "false"}
+        eff = settings.effective(env, saved={"ntp_ratelimit": "aus"})
+        self.assertEqual((eff["ntp_ratelimit"]["value"], eff["ntp_ratelimit"]["source"]), ("aus", "gui"))
+        found = {i["key"]: i for i in insights.exposure_insights(cfg_for(env, {"ntp_ratelimit": "aus"}))}
+        self.assertEqual(found["allow_public"]["level"], "warn")
 
     def test_vps_vorlage(self):
         text = (ROOT / "docker-compose.vps.yml").read_text(encoding="utf-8")

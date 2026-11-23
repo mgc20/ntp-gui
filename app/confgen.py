@@ -174,7 +174,8 @@ CLIENTLOGLIMIT_DEFAULT = 2097152
 
 # Ratelimit je Stufe (settings.RATELIMIT_LEVELS), chrony.conf(5): interval = log2 des mittleren
 # Mindestabstands in Sekunden, burst = erlaubter Stoß, leak 2 = jede vierte gebremste Anfrage wird
-# trotzdem beantwortet. „schonend“ bremst nur Überflutung, auch bei vielen Geräten hinter einer Adresse.
+# trotzdem beantwortet. „schonend“ bremst nur Überflutung; Geräte hinter einer gemeinsamen Adresse
+# teilen sich die Grenze (Dauerbetrieb etwa 250 Geräte bei 64 s, gleichzeitiger Neustart deutlich weniger).
 RATELIMIT_LINES = {
     "schonend": ("ratelimit interval -2 burst 32 leak 2", "ntsratelimit interval 0 burst 16 leak 2"),
     "streng": ("ratelimit interval 1 burst 16 leak 2", "ntsratelimit interval 3 burst 8 leak 2"),

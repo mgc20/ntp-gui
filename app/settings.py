@@ -949,7 +949,10 @@ SCHEMA: list[dict] = [
            hint="Begrenzt, wie oft eine einzelne Adresse fragen darf (NTP und NTS-Schlüsselaustausch).",
            help="Begrenzt, wie oft eine einzelne Adresse fragen darf (NTP und NTS-Schlüsselaustausch). "
                 "„schonend“ bremst nur Überflutung (im Mittel mehr als 4 Anfragen je Sekunde, Stöße bis 32) "
-                "und stört normale Clients nicht – auch nicht viele Geräte hinter einer gemeinsamen Adresse. "
+                "und stört normale Clients nicht. Teilen sich Geräte eine Absenderadresse (NAT, Docker-Gateway), "
+                "gilt die Grenze für alle zusammen: im Dauerbetrieb reicht sie für etwa 250 Geräte (Abfrage "
+                "alle 64 s), starten aber mehr als etwa ein Dutzend gleichzeitig neu, bremst chrony kurz – "
+                "dann „aus“ wählen. "
                 "„streng“ erlaubt im Mittel eine Anfrage alle 2 s (Stöße bis 16) und einen "
                 "Schlüsselaustausch alle 8 s (Stöße bis 8) – passend, wenn Fremde den Server erreichen. "
                 "Gebremste Anfragen beantwortet chrony nur noch zum Teil (jede vierte), damit echte Clients "
@@ -1647,7 +1650,8 @@ def effective(env: dict[str, str] | None = None, saved: dict[str, Any] | None = 
     result = {}
     for field in SCHEMA:
         key = field["key"]
-        entry = {"value": field["default"], "source": "default", "error": None, "env": None}
+        entry = {"value": field["default"], "source": "default", "error": None, "env": None,
+                 "default": field["default"]}
         try:
             env_value = _env_value(field, env)
         except ValidationError as exc:
@@ -1669,14 +1673,17 @@ def _public_defaults(result: dict[str, dict]) -> None:
     """Antwortet der Zeitserver auch öffentlichen Adressen, gelten sicherere Standards: Ratelimit
     „streng“ und kein Inselbetrieb (Clients aus dem Internet sollen bei einem Ausfall der Quellen
     auf andere Server ausweichen statt eine frei laufende Uhr zu übernehmen). Ausdrücklich gesetzte
-    Werte (Umgebung, Dashboard) bleiben unberührt."""
+    Werte (Umgebung, Dashboard) bleiben unberührt. entry["default"] ist danach der wirksame Standard –
+    den zeigt das Dashboard an und darauf setzt „zurücksetzen“ zurück."""
     allow = result.get("allow_networks")
     if not allow or not public_networks(allow["value"]):
         return
     for key, value in (("ntp_ratelimit", "streng"), ("serve_unsynced", False)):
         entry = result.get(key)
-        if entry and entry["source"] == "default":
-            entry["value"] = value
+        if entry:
+            entry["default"] = value
+            if entry["source"] == "default":
+                entry["value"] = value
 
 
 def values(env: dict[str, str] | None = None) -> dict[str, Any]:
@@ -1722,23 +1729,23 @@ def _stored_after(stored: dict[str, Any], clean: dict[str, Any], defaults: list[
                   env: dict[str, str] | None = None) -> dict[str, Any]:
     """Gespeicherte Werte nach dem Speichern: clean übernommen, defaults auf den Standard.
 
-    „Auf den Standard“ heißt: den Dashboard-Wert entfernen – setzt aber die Umgebung einen anderen
-    Wert, wird der Standard ausdrücklich gespeichert (sonst gälte wieder der Wert aus der Compose-Datei).
+    „Auf den Standard“ heißt: den Dashboard-Wert entfernen – gilt danach aber ein anderer Wert als
+    der wirksame Standard (die Umgebung setzt etwas anderes), wird der Standard ausdrücklich
+    gespeichert. Wirksamer Standard: bei öffentlichen Adressen unter „Erlaubte Netze“ die sichereren
+    Werte aus _public_defaults, sonst der Schema-Standard.
     """
     env = dict(os.environ if env is None else env)
     out = dict(stored)
     out.update(clean)
-    for key in defaults:
-        if key in clean:
-            continue  # ausdrücklich gesetzter Wert gewinnt
+    keys = [key for key in defaults if key not in clean]  # ausdrücklich gesetzter Wert gewinnt
+    for key in keys:
         out.pop(key, None)
-        field = FIELDS[key]
-        try:
-            env_value = _env_value(field, env)
-        except ValidationError:
-            env_value = None
-        if env_value is not None and env_value != field["default"]:
-            out[key] = field["default"]
+    if keys:
+        eff = effective(env, out)
+        for key in keys:
+            entry = eff[key]
+            if entry["value"] != entry["default"]:
+                out[key] = entry["default"]
     return out
 
 
@@ -1884,7 +1891,7 @@ def public_schema(masked: bool = False) -> dict:
             "restart": field["restart"], "unit": field["unit"],
             "placeholder": field["placeholder"], "env": field["env"],
             "options": [{"value": v, "label": l} for v, l in (field["options"] or [])],
-            "default": field["default"], "value": entry["value"], "source": entry["source"],
+            "default": entry["default"], "value": entry["value"], "source": entry["source"],
             "env_value": entry["env"], "error": entry["error"],
             **({"env_extra": {"name": "WEB_ALLOWED_HOSTS", "values": env_allowed_hosts()}}
                if field["key"] == "web_allowed_hosts" else {}),

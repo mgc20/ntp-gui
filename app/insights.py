@@ -166,16 +166,32 @@ def exposure_insights(cfg: dict[str, Any], clients: list[dict] | None = None, ga
         out.append({"level": "warn" if missing else "info", "title": "Zeitserver für alle Adressen offen",
                     "text": text, "action": "settings", "key": "allow_public"})
     gw = _plain_ip(gateway) if gateway else ""
-    if gw and network == "bridge" and any(_plain_ip(c.get("address")) == gw for c in clients or []):
-        text = (f"Anfragen kommen vom Gateway des Docker-Netzes ({gw}). Docker reicht sie dann über den "
-                "userland-proxy weiter (Portfreigabe auf 127.0.0.1, oft auch bei IPv6), und chrony sieht statt "
-                "der echten Absender nur diese private Adresse. Folgen: „Erlaubte Netze“ lässt alle diese "
-                "Anfragen durch – auf einem Server im Internet also jeden –, alle teilen sich ein Ratelimit, "
-                "und die Clients-Seite zeigt sie als ein Gerät. Abhilfe: network_mode: host, oder im "
-                "Docker-Daemon IPv6 mit ip6tables bzw. „userland-proxy“: false einstellen.")
-        if level == "streng":
-            text += " Mit Ratelimit „streng“ bremst chrony sonst alle diese Clients gemeinsam."
-        out.append({"level": "warn" if level == "streng" else "info",
+    addresses = {_plain_ip(c.get("address")) for c in clients or []} - {""}
+    if gw and network == "bridge" and gw in addresses:
+        # Wie clientmon.nat_hint: Nur wenn ausschließlich das Gateway fragt, ist die Umschreibung durch
+        # Docker wahrscheinlich. Neben echten Adressen ist das Gateway oft ein legitimer Absender – der
+        # Docker-Host selbst über die Portfreigabe, im macvlan-/ipvlan-Netz der Router –, dann nur „info“.
+        only = addresses == {gw}
+        if only:
+            text = (f"Alle Anfragen kommen vom Gateway des Docker-Netzes ({gw}). Vermutlich reicht Docker sie über "
+                    "den userland-proxy weiter (Portfreigabe auf 127.0.0.1, oft auch bei IPv6), und chrony sieht "
+                    "statt der echten Absender nur diese private Adresse.")
+        else:
+            text = (f"Mindestens ein Client erscheint als Gateway des Docker-Netzes ({gw}). Das kann der Docker-Host "
+                    "selbst sein (Abfrage über die Portfreigabe) oder – im macvlan-/ipvlan-Netz – dein Router; dann "
+                    "ist alles in Ordnung. Reicht Docker dagegen Anfragen über den userland-proxy weiter "
+                    "(Portfreigabe auf 127.0.0.1, oft auch bei IPv6), sieht chrony statt der echten Absender nur "
+                    "diese private Adresse.")
+        text += (" Folgen dann: „Erlaubte Netze“ lässt alle so weitergereichten Anfragen durch – auf einem Server im "
+                 "Internet also jeden –, und die Clients-Seite zeigt sie als ein Gerät.")
+        if level != "aus":
+            text += (f" Außerdem teilen sie sich ein Ratelimit („{level}“): Starten viele gleichzeitig neu, bremst "
+                     "chrony sie gemeinsam.")
+        if only and cfg.get("serve_unsynced"):
+            text += " Fallen die Quellen aus, bekommen sie die frei laufende Uhr (Inselbetrieb)."
+        text += (" Abhilfe: network_mode: host, oder im Docker-Daemon IPv6 mit ip6tables bzw. „userland-proxy“: "
+                 "false einstellen.")
+        out.append({"level": "warn" if only else "info",
                     "title": "Clients erscheinen als Docker-Gateway", "text": text, "action": "clients",
                     "key": "docker_gateway"})
     return out
