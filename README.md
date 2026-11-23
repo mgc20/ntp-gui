@@ -1498,12 +1498,12 @@ dem Speichern eine `chrony.conf`, die unter `/api/config` einsehbar ist.
 | `NTP_MINSOURCES` | `1` | So viele Quellen müssen übereinstimmen, bevor die Uhr gestellt wird |
 | `NTP_SERVER_OPTIONS` | `iburst` | Optionen hinter jedem Server/Pool (z. B. `iburst minpoll 4`) |
 | `NTP_POOL_MAXSOURCES` | `4` | Quellen je Pool |
-| `ALLOW_NETWORKS` | alle privaten Netze | Wer die Zeit abfragen darf |
+| `ALLOW_NETWORKS` | alle privaten Netze | Wer die Zeit abfragen darf. Stehen hier öffentliche Adressen (`all`, `0.0.0.0/0`, ein Provider-Netz), gelten strengere Standards für `NTP_RATELIMIT` und `SERVE_UNSYNCED`, siehe [Öffentlich erreichbarer Zeitserver](#öffentlich-erreichbarer-zeitserver) |
 | `DENY_NETWORKS` | – | Ausnahmen dazu |
-| `SERVE_UNSYNCED` | `true` | Zeit auch ohne Uplink ausliefern (Inselbetrieb) |
+| `SERVE_UNSYNCED` | `true` (`false` bei öffentlichen Adressen in `ALLOW_NETWORKS`) | Zeit auch ohne Uplink ausliefern (Inselbetrieb). Die Antworten gelten dann als gültig – ein Client, der nur diesen Server kennt, übernimmt die frei laufende Uhr |
 | `LOCAL_STRATUM` | `10` | Stratum im Inselbetrieb |
 | `LOCAL_ORPHAN` | `false` | Orphan-Modus: zwei ntp-gui-Server, die sich gegenseitig als Quelle haben, einigen sich ohne Internet auf **eine** Inselzeit (der mit der kleinsten Referenz-ID gibt sie vor). Wirkt nur mit `SERVE_UNSYNCED` |
-| `NTP_RATELIMIT` | `false` | Anfragen je Client begrenzen (`ratelimit`) |
+| `NTP_RATELIMIT` | `schonend` (`streng` bei öffentlichen Adressen in `ALLOW_NETWORKS`) | Anfragen je Adresse begrenzen, für NTP (`ratelimit`) und den NTS-Schlüsselaustausch (`ntsratelimit`): `schonend` bremst nur Überflutung, `streng` passt für einen öffentlich erreichbaren Server, `aus` beantwortet alles. `true` entspricht `streng`, `false` `aus` (wie bis 1.8) |
 | `LEAPSECLIST` | `/usr/share/zoneinfo/leap-seconds.list` | Schaltsekunden-Liste der IERS aus tzdata (`leapseclist`); eigene Liste unter `/config/` möglich, leer schaltet die Ankündigung ab |
 | `LEAPSECTZ` | – | Nur für eigene Images mit `right/`-Zeitzonen (`leapsectz`). Nur ein Zonenname unter `/usr/share/zoneinfo` (z. B. `right/UTC`), kein Pfad. Bis 1.3.0 Standard `right/UTC`; fehlt die Zone, gilt die Liste |
 | `NTS_NOCERTTIMECHECK` | `true` | Zertifikatszeit beim ersten NTS-Abgleich nicht prüfen |
@@ -1520,11 +1520,52 @@ dem Speichern eine `chrony.conf`, die unter `/api/config` einsehbar ist.
 | `MAXUPDATESKEW` | `100.0` | `maxupdateskew` in ppm |
 | `EXTRA_CHRONY_CONF` | – | Beliebige zusätzliche Zeilen (`\n` als Trenner) |
 | `CHRONY_LOG` | – | Inhalt einer `log`-Zeile, z. B. `measurements statistics tracking` (Logs unter `/var/log/chrony`); erlaubt sind `measurements`, `statistics`, `tracking`, `rtc`, `refclocks`, `tempcomp`, `rawmeasurements`, `selection` |
-| `CLIENTLOGLIMIT` | `10000000` | Speicher (Bytes) für die Client-Liste von chronyd |
+| `CLIENTLOGLIMIT` | `2097152` | Speicher (Bytes) für die Client-Liste von chronyd, auch Grundlage des Ratelimits. 2 MiB reichen für etwa 16 000 gleichzeitig bekannte Adressen (bis 1.8: 10 MB) |
 | `CUSTOM_CHRONY_CONF` | `/config/chrony.conf` | Pfad einer eigenen chrony.conf, die – falls vorhanden – die erzeugte ersetzt |
 
 Reicht das nicht, mountet man eine eigene Datei nach `/config/chrony.conf` – die wird dann
 unverändert übernommen und alle NTP-Variablen ignoriert.
+
+### Öffentlich erreichbarer Zeitserver
+
+Standardmäßig antwortet der Zeitserver nur privaten Netzen. Auf einem Server im Internet (VPS)
+bekommen fremde Clients also keine Antwort, bis du `ALLOW_NETWORKS` bewusst öffnest. Eine Vorlage
+mit passenden Werten ist [`docker-compose.vps.yml`](docker-compose.vps.yml).
+
+Stehen unter `ALLOW_NETWORKS` öffentliche Adressen (`all`, `0.0.0.0/0`, `::/0` oder ein
+Provider-Netz), gilt:
+
+* **Ratelimit „streng“** (sofern nicht ausdrücklich gesetzt): im Mittel eine NTP-Anfrage alle 2 s
+  je Adresse (Stöße bis 16) und ein NTS-Schlüsselaustausch alle 8 s (Stöße bis 8). Gebremste
+  Anfragen beantwortet chrony nur noch zum Teil (jede vierte). Ohne öffentliche Adressen gilt
+  „schonend“: Erst im Mittel mehr als 4 Anfragen je Sekunde (Stöße bis 32) werden gebremst – das
+  stört im LAN niemanden, auch nicht viele Geräte hinter einer gemeinsamen Adresse.
+* **Kein Inselbetrieb** (sofern nicht ausdrücklich gesetzt): Im Inselbetrieb liefert chrony die
+  eigene, frei laufende Uhr als gültige Zeit (Stratum 10, ohne Hinweis „nicht synchron“). Im LAN
+  hält das alle Geräte beisammen; Clients aus dem Internet sollen bei einem Ausfall der Quellen
+  dagegen auf andere Server ausweichen.
+* **Hinweis in Übersicht und Container-Log:** „Zeitserver für alle Adressen offen“, mit dem, was
+  noch fehlt.
+
+**Docker-Gateway statt echter Adressen.** Bei einer Portfreigabe im Bridge-Netz reicht Docker
+manche Anfragen über den userland-proxy weiter: Freigaben auf `127.0.0.1` und oft IPv6, wenn
+der Docker-Daemon IPv6 nicht per ip6tables weiterleitet. chrony sieht dann als Absender nur das
+Gateway des Docker-Netzes (z. B. `172.17.0.1`). Diese Adresse liegt in `172.16.0.0/12` – die
+Standardliste lässt damit **alle** so weitergereichten Anfragen durch, auch aus dem Internet. Alle
+diese Clients teilen sich außerdem ein Ratelimit und erscheinen auf der Clients-Seite als ein
+Gerät. Die Übersicht meldet den Fall („Clients erscheinen als Docker-Gateway“). Abhilfe:
+`network_mode: host` (wie in der VPS-Vorlage) oder im Docker-Daemon IPv6 mit ip6tables bzw.
+`"userland-proxy": false`; danach `ALLOW_NETWORKS` bewusst setzen.
+
+**NTS-Schlüsselaustausch (TCP 4460).** Das Ratelimit begrenzt, wie oft eine Adresse einen
+Schlüsselaustausch bekommt, nicht wie viele Verbindungen sie gleichzeitig offen hält. Ist 4460
+aus dem Internet erreichbar, begrenze die gleichzeitigen Verbindungen je Adresse zusätzlich in
+der Firewall (z. B. nftables `ct count`) oder im Reverse Proxy, siehe
+[NTS hinter einem Reverse Proxy](#nts-hinter-einem-reverse-proxy).
+
+**Client-Log.** chronyd merkt sich je Adresse Zähler für Ratelimit und Client-Liste, begrenzt
+durch `CLIENTLOGLIMIT` (Standard 2 MiB, etwa 16 000 Adressen). Ist der Speicher voll, ersetzt
+chronyd die ältesten Einträge.
 
 ### GPS
 
@@ -1567,6 +1608,13 @@ PTP lohnt sich nur, wenn alle Voraussetzungen erfüllt sind – sonst ist NTP ge
 | **`NET_ADMIN`, `NET_RAW`** und `/dev/ptp0` | um Hardware-Zeitstempel einzuschalten und die PTP-Uhr der Karte zu lesen. |
 | **Netzwerk** | Jeder einfache Switch kostet Mikrosekunden. Für Nanosekunden: PTP-fähige Switches (Transparent/Boundary Clock) oder direkte Verbindung. |
 | **Clients, die PTP sprechen** | Linux (linuxptp), viele Audio-/Video- und Netzwerkgeräte. Windows nur eingeschränkt, macOS nicht – die bleiben bei NTP. |
+
+**Keine Authentifizierung.** PTP (IEEE 1588 in dem Profil, das linuxptp hier nutzt) prüft nicht,
+wer einen Takt ankündigt. Jedes Gerät im selben Netzsegment kann sich als besserer Grandmaster
+ausgeben; Teilnehmer mit der Rolle „automatisch“ oder „Slave“ folgen ihm. Betreibe PTP deshalb
+nur in einem Netz, dem du vertraust (eigenes VLAN, keine Gäste), und gib einem Server mit GPS die
+Rolle **Grandmaster** (`PTP_MODE=master`): Dann folgt er keinem fremden Takt. Clients im selben
+Segment schützt das nicht – das kann nur die Trennung des Netzes.
 
 Die Seite **PTP** im Dashboard prüft das live: Host-Netzwerk, Interface, Hardware-Zeitstempel
 (`ethtool -T`) und PTP-Uhr je Netzwerkkarte. Von Hand:
@@ -2147,6 +2195,8 @@ CSV-Zeile, „nie gehört“ ist `4294967295` und `pmc` antwortet nur, wenn die 
 * Englisch umfasst bisher Navigation, Kopfzeile, Statusband und Einstellungs-Abschnitte;
   alles andere ist noch deutsch.
 * PTP braucht das Host-Netzwerk; über eine Docker-Bridge funktioniert es nicht.
+* PTP hat keine Authentifizierung: Ein Gerät im selben Netzsegment kann sich als Grandmaster
+  ausgeben. PTP gehört in ein vertrauenswürdiges Netz (siehe [PTP](#ptp)).
 * `ts2phc` (PPS direkt in die PTP-Uhr der Netzwerkkarte) wird nicht unterstützt; der
   Grandmaster-Betrieb geht immer über die Systemuhr (chrony → phc2sys).
 * Hotplug und `device_cgroup_rules` gibt es nur auf Linux-Hosts, nicht mit Docker Desktop.

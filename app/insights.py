@@ -128,6 +128,59 @@ def ptp_role_insights(cfg: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
+def _plain_ip(text: Any) -> str:
+    """„::ffff:172.17.0.1“ → „172.17.0.1“ (chrony meldet IPv4 über IPv6-Sockets so)."""
+    import ipaddress
+    try:
+        addr = ipaddress.ip_address(str(text or "").strip())
+    except ValueError:
+        return str(text or "")
+    if addr.version == 6 and addr.ipv4_mapped:
+        return str(addr.ipv4_mapped)
+    return str(addr)
+
+
+def exposure_insights(cfg: dict[str, Any], clients: list[dict] | None = None, gateway: str | None = None,
+                      network: str = "unknown") -> list[dict[str, Any]]:
+    """Erreichbarkeit des Zeitservers: öffentliche Adressen unter „Erlaubte Netze“ und Anfragen, die über
+    das Gateway des Docker-Netzes kommen (Portfreigabe mit userland-proxy) – dann sieht chrony nicht die
+    echte Adresse, und „Erlaubte Netze“ sowie das Ratelimit wirken auf alle Clients zusammen."""
+    import settings  # spät importieren: insights bleibt leicht testbar
+    out: list[dict[str, Any]] = []
+    public = settings.public_networks(cfg.get("allow_networks"))
+    level = cfg.get("ntp_ratelimit")
+    if public:
+        missing = []
+        if level != "streng":
+            missing.append("„Anfragen begrenzen“ auf „streng“ stellen (NTP_RATELIMIT=streng)")
+        if cfg.get("serve_unsynced"):
+            missing.append("„Auch ohne Quelle Zeit ausliefern“ ausschalten (SERVE_UNSYNCED=false), damit Clients "
+                           "aus dem Internet bei einem Ausfall nicht die frei laufende Uhr übernehmen")
+        text = (f"Unter „Erlaubte Netze“ steht {', '.join(public)[:60]}: Der Zeitserver antwortet damit jedem, der "
+                "ihn erreicht. Richtig ist das nur mit einer Firewall davor oder für einen bewusst öffentlichen "
+                "Zeitserver.")
+        if missing:
+            text += " Dann außerdem: " + "; ".join(missing) + "."
+        else:
+            text += " Ratelimit „streng“ und kein Inselbetrieb sind eingestellt."
+        out.append({"level": "warn" if missing else "info", "title": "Zeitserver für alle Adressen offen",
+                    "text": text, "action": "settings", "key": "allow_public"})
+    gw = _plain_ip(gateway) if gateway else ""
+    if gw and network == "bridge" and any(_plain_ip(c.get("address")) == gw for c in clients or []):
+        text = (f"Anfragen kommen vom Gateway des Docker-Netzes ({gw}). Docker reicht sie dann über den "
+                "userland-proxy weiter (Portfreigabe auf 127.0.0.1, oft auch bei IPv6), und chrony sieht statt "
+                "der echten Absender nur diese private Adresse. Folgen: „Erlaubte Netze“ lässt alle diese "
+                "Anfragen durch – auf einem Server im Internet also jeden –, alle teilen sich ein Ratelimit, "
+                "und die Clients-Seite zeigt sie als ein Gerät. Abhilfe: network_mode: host, oder im "
+                "Docker-Daemon IPv6 mit ip6tables bzw. „userland-proxy“: false einstellen.")
+        if level == "streng":
+            text += " Mit Ratelimit „streng“ bremst chrony sonst alle diese Clients gemeinsam."
+        out.append({"level": "warn" if level == "streng" else "info",
+                    "title": "Clients erscheinen als Docker-Gateway", "text": text, "action": "clients",
+                    "key": "docker_gateway"})
+    return out
+
+
 DNS_MODE_HINT = ("Stell unter System → Einstellungen → Quellen → „DNS für ntp-gui“ eigene Server ein – "
                  "am robustesten "
                  "DNS-over-TLS oder DNS-over-HTTPS, weil die auch eine Umleitung von Port 53 nicht "

@@ -44,3 +44,9 @@ dort noch besteht.
   Verwaltungspasswort im LAN lesbar und änderbar ist, ist so gewollt und keine Lücke. Für Server,
   die aus dem Internet erreichbar sind, gibt es `WEB_REQUIRE_AUTH=true` (ohne Zugang gesperrt), siehe
   README → „Anmeldung und Zugang“.
+- **NTP für alle Adressen** (`ALLOW_NETWORKS=all`) ist eine bewusste Entscheidung des Betreibers.
+  ntp-gui setzt dann strengere Standards (Ratelimit, kein Inselbetrieb) und weist darauf hin; eine
+  Firewall davor ersetzt das nicht. Siehe README → „Öffentlich erreichbarer Zeitserver“.
+- **PTP hat keine Authentifizierung** (Eigenschaft von IEEE 1588, nicht von ntp-gui). Wer im
+  selben Netzsegment Pakete senden kann, kann sich als Grandmaster ausgeben. PTP gehört deshalb in
+  ein vertrauenswürdiges Netz; das ist keine meldepflichtige Lücke.

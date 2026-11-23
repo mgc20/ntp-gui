@@ -1,0 +1,92 @@
+# Zeitserver auf einem Server im Internet (VPS): NTP für alle, Dashboard nur
+# über einen Reverse Proxy oder einen SSH-Tunnel.
+#
+#   docker compose -f docker-compose.vps.yml up -d
+#
+# Was hier anders ist als in docker-compose.yml (Erklärung im README unter
+# „Öffentlich erreichbarer Zeitserver“ und „Anmeldung und Zugang“):
+#   - Host-Netzwerk: chrony sieht die echten Absender. Im Bridge-Netz sieht es
+#     je nach Docker-Setup (IPv6 ohne ip6tables, userland-proxy) nur das
+#     Gateway des Docker-Netzes – dann greifen „Erlaubte Netze“ und das
+#     Ratelimit nicht je Client.
+#   - NTP antwortet jeder Adresse, mit strengem Ratelimit und ohne
+#     Inselbetrieb (Clients weichen bei einem Ausfall auf andere Server aus).
+#   - Das Dashboard lauscht nur auf 127.0.0.1 und verlangt eine Anmeldung.
+#
+# Belegt auf dem Host: 123/udp (NTP), 127.0.0.1:8080 (Dashboard) und – nur
+# mit NTS-Server – 4460/tcp.
+services:
+  ntp-gui:
+    build: .
+    # Version festhalten statt „:latest“: „:1.5“ bleibt auf 1.5.x (nur
+    # Fehlerbehebungen), „:1.5.1“ bleibt fest auf genau dieser Version.
+    # Gilt für das geladene Image – mit „build: .“ (docker compose build bzw.
+    # up --build) baust du stattdessen den lokalen Stand unter diesem Namen.
+    # Umgezogen: Früher hieß das Image ghcr.io/congp20/ntp-gui – dort kommen
+    # keine neuen Versionen mehr, bitte auf ghcr.io/mgc20/ntp-gui umstellen.
+    image: ghcr.io/mgc20/ntp-gui:latest
+    container_name: ntp-gui
+    restart: unless-stopped
+    network_mode: host
+
+    # SYS_TIME erlaubt chronyd, die Uhr zu stellen. Der Container teilt sich
+    # die Uhr mit dem Host – auf einem VPS also mit allem, was dort läuft.
+    cap_add:
+      - SYS_TIME
+
+    environment:
+      TZ: "Etc/UTC"
+      WEB_TITLE: "Zeitserver"
+
+      # Quellen: mehrere unabhängige, am besten mit NTS.
+      NTP_POOLS: "pool.ntp.org"
+      # NTP_NTS_SERVERS: "ptbtime1.ptb.de,ptbtime2.ptb.de"
+      NTP_MINSOURCES: "2"
+
+      # NTP für jede Adresse. Nur so lassen, wenn der Server bewusst öffentlich
+      # ist – sonst die eigenen Netze eintragen (z. B. das WireGuard-Netz).
+      ALLOW_NETWORKS: "all"
+      # Beides gilt bei öffentlichen Adressen ohnehin als Standard; hier
+      # ausdrücklich, damit ein Dashboard-Wert es nicht unbemerkt ändert.
+      NTP_RATELIMIT: "streng"
+      SERVE_UNSYNCED: "false"
+
+      # Dashboard: nur lokal (Reverse Proxy mit HTTPS oder ssh -L 8080:127.0.0.1:8080)
+      # und ohne Zugang gesperrt. Passwort aus einer Datei statt im Klartext.
+      WEB_BIND: "127.0.0.1"
+      WEB_REQUIRE_AUTH: "true"
+      WEB_USER: "admin"
+      WEB_PASSWORD_FILE: "/run/secrets/web_password"
+      # Mit Reverse Proxy auf diesem Rechner (Anleitung: docs/integrationen/https.md):
+      # TRUSTED_PROXIES: "127.0.0.1/32,::1/128"
+
+      # Benachrichtigungen und DNS-Weiterleiter nur zu öffentlichen Zielen.
+      OUTBOUND_TARGETS: "public"
+
+      # [OPTION NTS-Server] Zertifikat nach /config legen (siehe README
+      # „NTS-Server für das LAN“) und Port 4460/tcp in der Firewall öffnen –
+      # dort auch die gleichzeitigen Verbindungen je Adresse begrenzen.
+      # NTS_SERVER: "true"
+      # NTS_SERVER_NAME: "zeit.example.com"
+
+    secrets:
+      - web_password
+
+    volumes:
+      - chrony-data:/var/lib/chrony   # Drift, Messwerte, Dashboard-Einstellungen und Verlauf
+      # - ./config:/config:ro         # NTS-Zertifikat, eigene chrony.conf
+
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import os,urllib.request;urllib.request.urlopen('http://127.0.0.1:'+os.environ.get('WEB_PORT','8080')+'/healthz',timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+# Passwort einmal anlegen, z. B.: umask 077; openssl rand -base64 18 > web_password.txt
+secrets:
+  web_password:
+    file: ./web_password.txt
+
+volumes:
+  chrony-data:

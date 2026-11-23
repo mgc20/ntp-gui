@@ -136,7 +136,7 @@ def chrony_env_values(env: dict) -> tuple[dict, list[str]]:
     out = {
         "gps_shm_unit": _env_int(env, "GPS_SHM_UNIT", 0, 0, 255, notes),
         "gps_pps_shm_unit": _env_int(env, "GPS_PPS_SHM_UNIT", 1, 0, 255, notes),
-        "clientloglimit": str(_env_int(env, "CLIENTLOGLIMIT", 10000000, 0, 2 ** 31 - 1, notes)),
+        "clientloglimit": str(_env_int(env, "CLIENTLOGLIMIT", CLIENTLOGLIMIT_DEFAULT, 0, 2 ** 31 - 1, notes)),
     }
     raw = str(env.get("MAXUPDATESKEW") or "").strip()
     out["maxupdateskew"] = "100.0"
@@ -166,6 +166,40 @@ def chrony_env_values(env: dict) -> tuple[dict, list[str]]:
                                 "ohne gültigen Wert startet der PHC-Refclock nicht")
             notes.append(f"FEHLER {out['phc_error']}")
     return out, notes
+
+
+# Speicher für das Client-Log von chronyd (Ratelimit, Client-Liste): 2 MiB reichen für etwa 16 000
+# gleichzeitig bekannte Adressen. Mehr kostet auf einem öffentlich erreichbaren Server nur Speicher.
+CLIENTLOGLIMIT_DEFAULT = 2097152
+
+# Ratelimit je Stufe (settings.RATELIMIT_LEVELS), chrony.conf(5): interval = log2 des mittleren
+# Mindestabstands in Sekunden, burst = erlaubter Stoß, leak 2 = jede vierte gebremste Anfrage wird
+# trotzdem beantwortet. „schonend“ bremst nur Überflutung, auch bei vielen Geräten hinter einer Adresse.
+RATELIMIT_LINES = {
+    "schonend": ("ratelimit interval -2 burst 32 leak 2", "ntsratelimit interval 0 burst 16 leak 2"),
+    "streng": ("ratelimit interval 1 burst 16 leak 2", "ntsratelimit interval 3 burst 8 leak 2"),
+}
+
+
+def exposure_warnings(cfg: dict) -> list[str]:
+    """Log-Hinweise, wenn der Zeitserver auch öffentlichen Adressen antwortet (ALLOW_NETWORKS)."""
+    public = settings.public_networks(cfg.get("allow_networks"))
+    if not public:
+        return []
+    notes = [f"WARNUNG: Der Zeitserver antwortet auch öffentlichen Adressen ({', '.join(public)[:80]}). "
+             "Das ist nur richtig, wenn eine Firewall davor sitzt oder der Server bewusst öffentlich ist."]
+    level = cfg.get("ntp_ratelimit")
+    if level == "aus":
+        notes.append("WARNUNG: Ratelimit ist aus – jede Adresse bekommt beliebig viele Antworten. "
+                     "Für einen öffentlich erreichbaren Server NTP_RATELIMIT=streng setzen.")
+    elif level == "schonend":
+        notes.append("HINWEIS: Ratelimit steht auf „schonend“ (nur Überflutung). Für einen öffentlich erreichbaren "
+                     "Server ist „streng“ besser.")
+    if cfg.get("serve_unsynced"):
+        notes.append("WARNUNG: Inselbetrieb ist an – fallen alle Quellen aus, bekommen auch Clients aus dem "
+                     "Internet die frei laufende Uhr als gültige Zeit. Für einen öffentlichen Server "
+                     "SERVE_UNSYNCED=false setzen.")
+    return notes
 
 
 # Zeichen, die in einer erzeugten Zeile nie vorkommen dürfen: Steuerzeichen (außer Tab) und alles, was
@@ -298,8 +332,9 @@ def render_chrony(cfg: dict, env: dict | None = None, warn=_log,
         lines.append(f"bindaddress {cfg['bind_address']}")
     if cfg["ntp_hw_timestamp"]:
         lines.append(f"hwtimestamp {cfg['ntp_hw_timestamp_interface'] or '*'}")
-    if cfg["ntp_ratelimit"]:
-        lines.append("ratelimit interval 1 burst 16 leak 2")
+    limits = RATELIMIT_LINES.get(cfg["ntp_ratelimit"])
+    if limits:
+        lines.append(limits[0])
 
     if uses_nts or cfg["nts_server_enable"]:
         lines += ["", f"ntsdumpdir {NTS_DUMPDIR}"]
@@ -318,6 +353,9 @@ def render_chrony(cfg: dict, env: dict | None = None, warn=_log,
             # chrony.conf(5) 4.3, ntsport: TCP-Port des NTS-KE-Dienstes, Standard 4460.
             if int(cfg.get("nts_server_port") or NTS_DEFAULT_PORT) != NTS_DEFAULT_PORT:
                 lines.append(f"ntsport {int(cfg['nts_server_port'])}")
+            # Schlüsselaustausch (TLS) je Adresse begrenzen – dieselbe Stufe wie das NTP-Ratelimit.
+            if limits:
+                lines.append(limits[1])
             # chrony.conf(5) 4.3, ntsntpserver: Name/Adresse des NTP-Servers, den der
             # NTS-KE-Server den Clients nennt. Ohne ihn schicken Clients NTP an die
             # Adresse der NTS-KE-Verbindung – hinter einem TCP-Proxy also an den Proxy.
@@ -1054,6 +1092,8 @@ def apply(env: dict | None = None, fallback: bool = False) -> dict:
 
     for note in expert_env_warnings(env):
         _log("config", note)
+    for note in exposure_warnings(cfg):
+        _log("chrony", note)
 
     try:
         wait = int(env.get("GPS_WAIT_SECONDS", "10") or 10)

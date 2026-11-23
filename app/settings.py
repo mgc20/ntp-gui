@@ -160,6 +160,49 @@ def _as_number(kind: type, minimum=None, maximum=None) -> Callable[[Any], Any]:
     return convert
 
 
+# Ratelimit für NTP und NTS-KE (Stufen, chrony-Zeilen in confgen.RATELIMIT_LINES). Ja/Nein aus älteren
+# Versionen und aus NTP_RATELIMIT=true/false gilt weiter: „ja“ war die heutige Stufe „streng“.
+RATELIMIT_LEVELS = ("aus", "schonend", "streng")
+
+
+def _as_ratelimit(value: Any) -> str:
+    text = str(value).strip().lower() if not isinstance(value, bool) else ""
+    if text in RATELIMIT_LEVELS:
+        return text
+    try:
+        return "streng" if _as_bool(value) else "aus"
+    except ValidationError:
+        raise ValidationError(f"Erlaubt: {', '.join(RATELIMIT_LEVELS)} (oder true/false)") from None
+
+
+# Netze, die nicht öffentlich erreichbar sind: privat, CGNAT, Loopback, Link-Local, ULA, Dokumentation.
+_NON_PUBLIC = [ipaddress.ip_network(net) for net in (
+    "0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16", "172.16.0.0/12",
+    "192.0.0.0/24", "192.0.2.0/24", "192.168.0.0/16", "198.18.0.0/15", "198.51.100.0/24", "203.0.113.0/24",
+    "::1/128", "::/128", "fc00::/7", "fe80::/10", "2001:db8::/32")]
+
+
+def public_networks(networks: Any) -> list[str]:
+    """Einträge aus „Erlaubte Netze“, die öffentliche Adressen einschließen („all“, 0.0.0.0/0, ::/0,
+    ein Netz eines Providers …). Leer heißt: Der Zeitserver antwortet nur privaten Netzen."""
+    out = []
+    for item in networks or []:
+        text = str(item).strip()
+        if text.lower() == "all":
+            out.append(text)
+            continue
+        try:
+            net = ipaddress.ip_network(text, strict=False)
+        except ValueError:
+            continue
+        if net.version == 6 and net.prefixlen >= 96 and net.network_address.ipv4_mapped:
+            mapped = ipaddress.ip_network(f"{net.network_address.ipv4_mapped}/{net.prefixlen - 96}", strict=False)
+            net = mapped
+        if not any(net.version == other.version and net.subnet_of(other) for other in _NON_PUBLIC):
+            out.append(text)
+    return out
+
+
 def _as_choice(*choices: str) -> Callable[[Any], str]:
     def convert(value: Any) -> str:
         text = str(value).strip()
@@ -865,7 +908,12 @@ SCHEMA: list[dict] = [
            _as_network_list, env="ALLOW_NETWORKS",
            help="Nur Geräte aus diesen Netzen bekommen eine Antwort. Standard: alle privaten "
                 "Netze (10.x, 172.16–31.x, 192.168.x, IPv6 ULA und Link-Local). „all“ erlaubt "
-                "jedem – nur sinnvoll, wenn eine Firewall davor sitzt."),
+                "jedem – nur mit einer Firewall davor oder für einen bewusst öffentlichen Zeitserver. "
+                "Enthält die Liste öffentliche Adressen, gelten strengere Standards: Ratelimit „streng“ "
+                "und kein Inselbetrieb (beides lässt sich ausdrücklich anders einstellen); Dashboard und "
+                "Container-Log weisen darauf hin. Kommen die Anfragen über das Gateway des Docker-Netzes "
+                "(Portfreigabe mit userland-proxy, oft bei IPv6), sieht chrony nur diese private Adresse – "
+                "dann greift die Liste nicht nach der echten Adresse; die Übersicht meldet das."),
     _field("deny_networks", "lan", "Ausgenommene Netze", "networks", [], _as_network_list,
            env="DENY_NETWORKS", advanced=True,
            help="Netze innerhalb der erlaubten, die trotzdem keine Antwort bekommen, z. B. ein "
@@ -875,11 +923,16 @@ SCHEMA: list[dict] = [
            hint="Inselbetrieb: Ist keine Quelle erreichbar, liefert der Server trotzdem seine eigene Uhrzeit aus – mit hohem Stratum.",
            help="Inselbetrieb: Ist keine Quelle erreichbar, liefert der Server trotzdem die "
                 "eigene Uhrzeit aus (mit hohem Stratum, damit Clients sie als zweite Wahl "
-                "erkennen). Hält das LAN einheitlich, auch wenn das Internet ausfällt."),
+                "erkennen). Hält das LAN einheitlich, auch wenn das Internet ausfällt. Die Antworten "
+                "gelten dabei als gültig (kein Hinweis „nicht synchron“): Clients mit nur diesem Server "
+                "übernehmen die frei laufende Uhr. Standard: an – außer „Erlaubte Netze“ enthält "
+                "öffentliche Adressen, dann aus, damit Clients aus dem Internet bei einem Ausfall auf "
+                "andere Server ausweichen. Für einen öffentlichen Zeitserver aus lassen."),
     _field("local_stratum", "lan", "Stratum im Inselbetrieb", "int", 10,
            _as_number(int, 1, 15), env="LOCAL_STRATUM", advanced=True,
            help="Wie „weit weg“ von einer echten Referenz sich der Server im Inselbetrieb "
-                "ausgibt. 10 ist üblich und sorgt dafür, dass echte Server Vorrang behalten."),
+                "ausgibt. 10 ist üblich und sorgt dafür, dass echte Server Vorrang behalten. Ein Client, "
+                "der nur diesen Server kennt, übernimmt die Inselzeit trotzdem."),
     _field("local_orphan", "lan", "Orphan-Modus (zwei Server im Verbund)", "bool", False, _as_bool,
            env="LOCAL_ORPHAN", advanced=True,
            help="Für zwei (oder mehr) ntp-gui-Server, die sich gegenseitig als Quelle eingetragen "
@@ -888,10 +941,20 @@ SCHEMA: list[dict] = [
                 "der Server mit der kleinsten Referenz-ID, der andere folgt ihm. Hängt „orphan“ an "
                 "die Zeile „local stratum …“ an und wirkt deshalb nur zusammen mit „Auch ohne "
                 "Quelle Zeit ausliefern“. Beide Server brauchen dasselbe Stratum im Inselbetrieb."),
-    _field("ntp_ratelimit", "lan", "Anfragen begrenzen", "bool", False, _as_bool,
+    _field("ntp_ratelimit", "lan", "Anfragen begrenzen", "select", "schonend", _as_ratelimit,
            env="NTP_RATELIMIT", advanced=True,
-           help="Begrenzt, wie oft ein einzelner Client fragen darf. Schützt vor fehlerhaften "
-                "Geräten, die im Sekundentakt fragen. Im Heimnetz meist unnötig."),
+           options=[("schonend", "schonend – nur Überflutung bremsen"),
+                    ("streng", "streng – öffentlicher Server"),
+                    ("aus", "aus – alles beantworten")],
+           hint="Begrenzt, wie oft eine einzelne Adresse fragen darf (NTP und NTS-Schlüsselaustausch).",
+           help="Begrenzt, wie oft eine einzelne Adresse fragen darf (NTP und NTS-Schlüsselaustausch). "
+                "„schonend“ bremst nur Überflutung (im Mittel mehr als 4 Anfragen je Sekunde, Stöße bis 32) "
+                "und stört normale Clients nicht – auch nicht viele Geräte hinter einer gemeinsamen Adresse. "
+                "„streng“ erlaubt im Mittel eine Anfrage alle 2 s (Stöße bis 16) und einen "
+                "Schlüsselaustausch alle 8 s (Stöße bis 8) – passend, wenn Fremde den Server erreichen. "
+                "Gebremste Anfragen beantwortet chrony nur noch zum Teil (jede vierte), damit echte Clients "
+                "nicht ganz abreißen. Standard: „schonend“, bei öffentlichen Adressen unter „Erlaubte Netze“ "
+                "„streng“. NTP_RATELIMIT=true entspricht „streng“, false „aus“."),
     _field("ntp_port", "lan", "NTP-Port", "int", 123, _as_number(int, 1, 65535),
            env="NTP_PORT", advanced=True,
            help="Standard ist 123. Nur ändern, wenn Clients einen anderen Port erwarten."),
@@ -1598,7 +1661,22 @@ def effective(env: dict[str, str] | None = None, saved: dict[str, Any] | None = 
             except ValidationError as exc:
                 entry["error"] = f"Gespeicherter Wert ungültig: {exc}"
         result[key] = entry
+    _public_defaults(result)
     return result
+
+
+def _public_defaults(result: dict[str, dict]) -> None:
+    """Antwortet der Zeitserver auch öffentlichen Adressen, gelten sicherere Standards: Ratelimit
+    „streng“ und kein Inselbetrieb (Clients aus dem Internet sollen bei einem Ausfall der Quellen
+    auf andere Server ausweichen statt eine frei laufende Uhr zu übernehmen). Ausdrücklich gesetzte
+    Werte (Umgebung, Dashboard) bleiben unberührt."""
+    allow = result.get("allow_networks")
+    if not allow or not public_networks(allow["value"]):
+        return
+    for key, value in (("ntp_ratelimit", "streng"), ("serve_unsynced", False)):
+        entry = result.get(key)
+        if entry and entry["source"] == "default":
+            entry["value"] = value
 
 
 def values(env: dict[str, str] | None = None) -> dict[str, Any]:

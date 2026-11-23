@@ -146,7 +146,7 @@ class ExpertenVariablenTest(unittest.TestCase):
         for bad in ("cmdallow", "allow all"):
             self.assertNotIn(bad, text)
         self.assertIn("maxupdateskew 100.0\n", text)
-        self.assertIn("clientloglimit 10000000\n", text)
+        self.assertIn("clientloglimit 2097152\n", text)
         self.assertIn("log tracking\n", text)
         notes = " ".join(confgen.expert_env_warnings(env))
         for name in ("CHRONY_LOG", "MAXUPDATESKEW", "CLIENTLOGLIMIT", "PHC_REFCLOCK_OPTIONS"):

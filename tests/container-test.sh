@@ -87,6 +87,11 @@ contains "chronyd läuft mit -x" "$CMDLINE" "-x"
 # 1.3.1 (Debian trixie): Schaltsekunden aus leap-seconds.list, nicht aus right/UTC.
 CONF_A=$(docker exec "${PREFIX}-a" cat /etc/chrony/chrony.conf)
 contains "chrony.conf nutzt leapseclist" "$CONF_A" "leapseclist /usr/share/zoneinfo/leap-seconds.list"
+# 1.9: Öffentliche Adressen unter ALLOW_NETWORKS – strenges Ratelimit, kein Inselbetrieb, Hinweis im Log.
+contains "Öffentlich: strenges Ratelimit" "$CONF_A" "ratelimit interval 1 burst 16 leak 2"
+if grep -q "^local stratum" <<<"$CONF_A"; then bad "Öffentlich: Inselbetrieb ist noch an"
+else ok "Öffentlich: kein Inselbetrieb"; fi
+contains "Öffentlich: Hinweis im Log" "$LOGS" "antwortet auch öffentlichen Adressen"
 check "Schaltsekunden-Liste im Image" 0 "$(docker exec "${PREFIX}-a" sh -c 'grep -q "^[0-9]" /usr/share/zoneinfo/leap-seconds.list; echo $?')"
 check "chronyd akzeptiert die Konfiguration" 0 "$(docker exec "${PREFIX}-a" sh -c 'chronyd -p -f /etc/chrony/chrony.conf >/dev/null 2>&1; echo $?')"
 CHK=$(docker exec "${PREFIX}-a" python3 -c '
@@ -667,6 +672,8 @@ if make_cert 0x1001; then
   wait_for_health http://127.0.0.1:18089/healthz 90 || true
   CONF=$(docker exec "${PREFIX}-j" cat /etc/chrony/chrony.conf)
   contains "chrony.conf nennt den Servernamen" "$CONF" "ntsntpserver ${NTS_NAME}"
+  contains "chrony.conf begrenzt den Schlüsselaustausch" "$CONF" "ntsratelimit interval 0 burst 16 leak 2"
+  contains "chrony.conf: schonendes Ratelimit im LAN" "$CONF" "ratelimit interval -2 burst 32 leak 2"
   contains "chrony.conf nutzt die lesbare Kopie" "$CONF" "ntsservercert /var/lib/chrony/nts-certs/server.crt"
   check "chronyd akzeptiert die Konfiguration" 0 "$(docker exec "${PREFIX}-j" sh -c 'chronyd -p -f /etc/chrony/chrony.conf >/dev/null 2>&1; echo $?')"
   check "Kopie für _chrony nur lesbar (root:_chrony 640)" "root:_chrony 640" "$(docker exec "${PREFIX}-j" stat -c '%U:%G %a' /var/lib/chrony/nts-certs/server.key)"
@@ -966,6 +973,9 @@ if docker compose version >/dev/null 2>&1; then
   if docker compose -f "$REPO_ROOT/docker-compose.all-in-one.yml" config -q 2>/dev/null; then
     ok "Vorlage wie ausgeliefert ist gültiges Compose"
   else bad "Vorlage wie ausgeliefert ist kein gültiges Compose"; fi
+  if docker compose -f "$REPO_ROOT/docker-compose.vps.yml" config -q 2>/dev/null; then
+    ok "VPS-Vorlage ist gültiges Compose"
+  else bad "VPS-Vorlage ist kein gültiges Compose"; fi
   if TPL_CFG=$(docker compose -f "$TPL_DIR/docker-compose.yml" config 2>&1); then
     ok "Vorlage mit allen Optionen ist gültiges Compose"
     contains "TRUSTED_PROXIES in der Vorlage" "$TPL_CFG" "TRUSTED_PROXIES: 127.0.0.1/32,::1/128"

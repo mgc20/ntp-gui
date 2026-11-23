@@ -996,6 +996,8 @@ def build_status() -> dict:
         status["holdover_active"] = False
     status["notify"] = _notify_summary()
     status["insights"] = combine_insights(insights.build(status, cfg),
+                                          insights.exposure_insights(cfg, clients, clientmon.default_gateway(),
+                                                                     devices.network_mode()),
                                           loopguard.insights(LOOP_GUARD.loops()),
                                           insights.dns_insights(status["dns"], cfg, status["sources"],
                                                                 status["system"].get("addresses") or [],

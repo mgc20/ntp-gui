@@ -28,7 +28,7 @@ export function withPreset(items, entries) {
 // Die sichtbare Zeile unter jedem Feld („hint“) und der Rest im ⓘ („more“) kommen vom Server (Schema).
 export const FIELD_HELP = {
   ntp_sources: "source_type", ntp_minsources: "minsources", leapsectz: "leap_source", leapseclist: "leap_source",
-  serve_unsynced: "island", local_stratum: "island", local_orphan: "local_orphan",
+  serve_unsynced: "island", local_stratum: "island", local_orphan: "local_orphan", ntp_ratelimit: "ratelimit",
   ntp_hw_timestamp: "timestamping",
   nts_nocerttimecheck: "nocerttimecheck", nts_server_enable: "nts_server",
   nts_server_cert: "nts_server_files", nts_server_key: "nts_server_files",
