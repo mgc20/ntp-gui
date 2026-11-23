@@ -525,7 +525,9 @@ Voraussetzungen:
 
 - **`CAP_NET_RAW`** – der Container liest NTP-Pakete über einen Paket-Socket mit; ein Filter
   im Kernel lässt nur UDP an den NTP-Port durch. In Docker ist `NET_RAW` Standard; wer
-  Capabilities mit `cap_drop: [ALL]` entfernt, ergänzt `cap_add: [NET_RAW]`.
+  Capabilities mit `cap_drop: [ALL]` entfernt, ergänzt `cap_add: [NET_RAW]` (die Vorlagen tun das).
+  Das Dashboard bekommt `NET_RAW` nur, wenn die Messung beim Start des Containers an ist – nach dem
+  Einschalten also einmal neu starten.
 - **Host-Netzwerk** (`network_mode: host`, wie in der All-in-one-Datei) – nur ohne NAT sieht
   der Container die echten Client-Adressen. Hinter der Docker-Bridge erscheinen alle Geräte
   unter einer Adresse.
@@ -637,8 +639,9 @@ Geräte bleibt es bei normalem NTP.
    muss im Zertifikat stehen (ohne Reverse Proxy ist das derselbe Name wie für NTS-KE).
 
 Beim Start prüft ntp-gui das Paar (PEM-Format, höchstens 1 MB, Schlüssel passt zum
-Zertifikat) und legt Kopien für chronyd an (`root:_chrony`, `0640` – chronyd darf lesen, aber
-nicht schreiben). Passt das Paar nicht – typisch mitten in einer Erneuerung –, bleiben die
+Zertifikat) und legt Kopien für chronyd an (Zertifikat `root:_chrony` `0640`, Schlüssel
+`_chrony` `0400` – chronyd darf lesen, aber nicht schreiben; das Dashboard kann den Schlüssel nicht
+lesen). Passt das Paar nicht – typisch mitten in einer Erneuerung –, bleiben die
 letzten gültigen Kopien aktiv; gibt es keine, bleibt der NTS-Server aus, statt chronyd am
 Start zu hindern. Die Seite **Zeitquellen** zeigt Name, Aussteller, Restlaufzeit und ob der
 Name im Zertifikat steht.
@@ -1530,7 +1533,9 @@ unverändert übernommen und alle NTP-Variablen ignoriert.
 
 Standardmäßig antwortet der Zeitserver nur privaten Netzen. Auf einem Server im Internet (VPS)
 bekommen fremde Clients also keine Antwort, bis du `ALLOW_NETWORKS` bewusst öffnest. Eine Vorlage
-mit passenden Werten ist [`docker-compose.vps.yml`](docker-compose.vps.yml).
+mit passenden Werten ist [`docker-compose.vps.yml`](docker-compose.vps.yml), die Anleitung dazu (Firewall,
+Caddy mit Let's Encrypt, Cloudflare Tunnel, NTS, Updates, Sicherung) steht in
+[docs/integrationen/vps.md](docs/integrationen/vps.md).
 
 Stehen unter `ALLOW_NETWORKS` öffentliche Adressen (`all`, `0.0.0.0/0`, `::/0` oder ein
 Provider-Netz), gilt:
@@ -1923,20 +1928,49 @@ Namen. Alle anderen Seiten und die übrige API bleiben geprüft.
 
 ### Was im Container unter welchem Benutzer läuft
 
-| Prozess | Benutzer | Warum |
+| Prozess | Benutzer | Rechte |
 |---|---|---|
-| `chronyd` | `_chrony` | legt Privilegien nach dem Start selbst ab |
-| `gpsd` | `gpsd` | ebenso |
-| `ptp4l` / `phc2sys` | root | brauchen `CAP_NET_ADMIN` für Hardware-Zeitstempel |
-| Dashboard (`python3`) | root | ruft `chronyc` und `pmc` auf, deren Sockets root bzw. `_chrony` gehören |
+| Supervisor (`entrypoint.sh`) | root | startet und überwacht die Dienste, erzeugt die Konfiguration |
+| `chronyd` | `_chrony` | legt die Rechte nach dem Start selbst ab, behält nur `SYS_TIME` |
+| `gpsd` | `gpsd` | legt die Rechte nach dem Öffnen des Geräts selbst ab |
+| `ptp4l` / `phc2sys` | root | brauchen `NET_ADMIN`/`SYS_TIME` für Hardware-Zeitstempel und die PTP-Uhr |
+| Dashboard (`python3 server.py`) | `ntpgui` (ab 1.9) | keine Capabilities außer `NET_RAW` für die Client-Messung (nur wenn sie beim Start an ist) und `NET_BIND_SERVICE` nur bei `WEB_PORT` unter 1024; `no-new-privs` |
+| DNS-Weiterleiter (`dnsfwd.py`) | `ntpgui` (ab 1.9) | nur `NET_BIND_SERVICE` für Port 53 |
 
-Das Dashboard schreibt nur nach `/var/lib/chrony/ntp-gui` (Einstellungen, die Datenbank
-`ntp-gui.db` mit Verlauf, Ereignissen, Client-Messwerten und API-Schlüssel-Hashes,
-`autocal.json`, `instance-id`) und nach `/run/ntp-gui` (Log, Aufzeichnungen), führt keine Shell-Kommandos aus (alle Aufrufe nutzen feste
-Argumentlisten) und prüft jeden Wert gegen eine Positivliste, bevor er in eine
-Konfigurationsdatei gelangt. Trotzdem gilt: der Container ist für das eigene
-LAN gedacht, nicht für das offene Internet. Wer ihn exponiert, gehört hinter einen Reverse
-Proxy mit TLS und Authentifizierung.
+Das Dashboard schreibt nur in sein Datenverzeichnis `/var/lib/chrony/ntp-gui` (Einstellungen, die
+Datenbank `ntp-gui.db` mit Verlauf, Ereignissen, Client-Messwerten und API-Schlüssel-Hashes,
+`autocal.json`, `instance-id`) und nach `/run/ntp-gui/web` (Aufzeichnungen, Anforderungen an den
+Supervisor). `/run/ntp-gui` selbst (Log, Zustand der Dienste) gehört dem Supervisor. Neustarts der
+Zeitdienste fordert das Dashboard nur über zwei feste Dateien an (`reload.request` für alle Dienste,
+`reload-chronyd.request` nur für chronyd); was dann geschieht, entscheidet der Supervisor. Den
+Kommando-Socket von chronyd erreicht das Dashboard über die Gruppe `_chrony`; die Kopie des
+NTS-Schlüssels kann es nicht lesen. Es führt keine Shell-Kommandos aus (alle Aufrufe nutzen feste
+Argumentlisten) und prüft jeden Wert gegen eine Positivliste, bevor er in eine Konfigurationsdatei
+gelangt. Das Image enthält keine SUID-Programme.
+
+Beim ersten Start nach dem Update übergibt der Supervisor das Datenverzeichnis an den Benutzer
+`ntpgui` (UID/GID 990); das steht einmal im Container-Log. Fehlt dem Container `SETUID`/`SETGID`
+(oder läuft er nicht als root), laufen Dashboard und Weiterleiter wie bis 1.8 als root – mit
+deutlicher Warnung im Log.
+
+**Container-Härtung.** Alle Compose-Vorlagen setzen `no-new-privileges`, entfernen alle
+Capabilities und geben nur die nötigen zurück, begrenzen Prozesse, Speicher und Log:
+
+| Capability | wofür |
+|---|---|
+| `SYS_TIME` | chronyd stellt die Uhr (ohne: `-x`, nur Ausliefern) |
+| `SETUID`, `SETGID` | Rechte abgeben (chronyd, gpsd, Dashboard) |
+| `CHOWN`, `FOWNER`, `DAC_OVERRIDE` | Verzeichnisse beim Start vorbereiten, Dateien der Dienste lesen |
+| `KILL` | Dienste beim Speichern neu starten. **Ohne KILL** kann der Supervisor chronyd (anderer Benutzer) nicht beenden: Er warnt beim Start und meldet einen gescheiterten Neustart, statt zu hängen. |
+| `NET_BIND_SERVICE` | Port 123 (und 53 für den DNS-Weiterleiter) mit `network_mode: host` |
+| `NET_RAW` | Messung der Client-Uhren; PTP über Ethernet |
+| `NET_ADMIN` | nur PTP: Hardware-Zeitstempel |
+
+**Schreibgeschütztes Root-Dateisystem.** Mit `read_only: true` legt der Container die erzeugte
+`chrony.conf`/`ptp4l.conf` selbst unter `/run/ntp-gui-conf` ab (sofern `CHRONY_CONF`/`PTP4L_CONF`
+nicht gesetzt sind). Nötig sind dann nur tmpfs für `/run`, `/tmp` und `/var/log` und das Volume
+für `/var/lib/chrony` – siehe [`docker-compose.vps.yml`](docker-compose.vps.yml). Die DNS-Modi des
+Dashboards können `/etc/resolv.conf` dann nicht umstellen; dafür `dns: [127.0.0.1]` setzen.
 
 `/healthz` ist **bewusst ohne Login** erreichbar, damit der Docker-Healthcheck funktioniert.
 Der Endpunkt verrät nur, ob chronyd antwortet.

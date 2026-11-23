@@ -651,21 +651,26 @@ def nts_pair_matches(cert: bytes, key: bytes) -> bool | None:
     return bool(cert_pub) and cert_pub == key_pub
 
 
-def _install_private(path: str, data: bytes, ids: tuple[int, int] | None) -> None:
+def _install_private(path: str, data: bytes, ids: tuple[int, int] | None, secret: bool = False) -> None:
+    """Zertifikat: root:_chrony 0640. Schlüssel (secret): _chrony:_chrony 0400 – das Dashboard ist für
+    den Kommando-Socket in der Gruppe _chrony und soll den Schlüssel nicht lesen können; chronyd
+    warnt bei einer für ihn beschreibbaren Schlüsseldatei."""
+    mode = 0o400 if secret else 0o640
+    owner = (ids[0] if secret else 0, ids[1]) if ids else None
     try:
         with open(path, "rb") as handle:
             if handle.read(NTS_MAX_FILE + 1) == data:
-                if ids and os.geteuid() == 0:
-                    os.chown(path, 0, ids[1])
-                os.chmod(path, 0o640)
+                if owner and os.geteuid() == 0:
+                    os.chown(path, *owner)
+                os.chmod(path, mode)
                 return
     except OSError:
         pass
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".ntpgui-")
     try:
-        os.fchmod(fd, 0o640)
-        if ids and os.geteuid() == 0:
-            os.fchown(fd, 0, ids[1])
+        os.fchmod(fd, mode)
+        if owner and os.geteuid() == 0:
+            os.fchown(fd, *owner)
         with os.fdopen(fd, "wb") as handle:
             handle.write(data)
         os.replace(tmp, path)
@@ -734,7 +739,7 @@ def prepare_nts_files(cfg: dict, target_dir: str | None = None, warn=_log,
         if ids and os.geteuid() == 0:
             os.chown(target_dir, 0, ids[1])
         _install_private(copy_cert, cert_data, ids or None)
-        _install_private(copy_key, key_data, ids or None)
+        _install_private(copy_key, key_data, ids or None, secret=True)
     except OSError as exc:
         warn("nts", f"WARNUNG: Kopie nach {target_dir} fehlgeschlagen ({exc}) – chronyd liest "
                     "die Originale und braucht dafür selbst Leserechte.")
@@ -1142,10 +1147,13 @@ def apply(env: dict | None = None, fallback: bool = False) -> dict:
         "NTPGUI_PTP_INTERFACE": cfg["ptp_interface"],
         "NTPGUI_PTP_MODE": cfg["ptp_mode"],
         "NTPGUI_PTP_DOMAIN": str(cfg["ptp_domain"]),
+        "NTPGUI_PTP_UDS": settings.ptp_uds_address(env),
         "NTPGUI_PHC2SYS_START": "1" if phc["start"] else "0",
         "NTPGUI_PHC2SYS_OPTIONS": phc["options"],
         "NTPGUI_CHRONY_NOCONTROL": "1" if phc["nocontrol"] else "0",
         "NTPGUI_NTS_WATCH": " ".join(nts_watch_paths(cfg)),
+        # Client-Messung beim Start an? Nur dann bekommt das Dashboard CAP_NET_RAW (Mitlesen).
+        "NTPGUI_CLIENTMON": "1" if cfg.get("clientmon_enable") else "0",
     }
 
     # Letzter Schritt vor dem return. Restfall (bewusst nicht gelöst): _write_all benennt zwei

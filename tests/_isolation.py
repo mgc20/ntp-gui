@@ -35,3 +35,5 @@ PATHS = {
 os.environ.update(PATHS)
 # Erlaubte Ziele ausgehender Verbindungen: immer der Standard, nicht ein Wert aus der Shell.
 os.environ.pop("OUTBOUND_TARGETS", None)
+# Verzeichnis für Anforderungen des Dashboards: wie ohne Supervisor gleich RUN_DIR.
+os.environ.pop("NTPGUI_REQUEST_DIR", None)

@@ -59,11 +59,14 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import textsafe  # noqa: E402 – reine Funktionen, ohne Seiteneffekte
 
-RUN_DIR = os.environ.get("NTPGUI_RUN_DIR", "/run/ntp-gui")
+# Zustand, Bereitmeldung und Ereignisse des Weiterleiters. Er läuft ohne root und schreibt deshalb in
+# das Verzeichnis des Benutzers ntpgui (NTPGUI_REQUEST_DIR); ohne die Variable in RUN_DIR.
+RUN_DIR = os.environ.get("NTPGUI_REQUEST_DIR") or os.environ.get("NTPGUI_RUN_DIR", "/run/ntp-gui")
 RESOLV_CONF = os.environ.get("NTPGUI_RESOLV_CONF", "/etc/resolv.conf")
 STATUS_NAME = "dns.json"
 READY_NAME = "dnsfwd.ready"
 EVENTS_NAME = "events.jsonl"
+EVENTS_MAX = 1_048_576  # ab 1 MB nach events.jsonl.1 verschieben
 MARKER = "# ntp-gui: dnsfwd"
 
 MODES = ("system", "servers", "dot", "doh")
@@ -1491,7 +1494,13 @@ def emit_event(level: str, title: str, data: dict | None = None, run_dir: str | 
                        "data": data or {}}, ensure_ascii=False) + "\n"
     try:
         os.makedirs(run_dir or RUN_DIR, exist_ok=True)
-        fd = os.open(os.path.join(run_dir or RUN_DIR, EVENTS_NAME), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+        path = os.path.join(run_dir or RUN_DIR, EVENTS_NAME)
+        try:
+            if os.path.getsize(path) > EVENTS_MAX:
+                os.replace(path, path + ".1")  # wie der Supervisor: das Dashboard liest den Rest aus .1
+        except OSError:
+            pass
+        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
         try:
             os.write(fd, line.encode("utf-8"))
         finally:

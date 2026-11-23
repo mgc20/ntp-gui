@@ -31,8 +31,30 @@ services:
       - "123:123/udp"
       - "8080:8080/tcp"
 
+    # Härtung (1.9): Nur der Supervisor läuft als root, Dashboard und DNS-Weiterleiter als
+    # Benutzer ntpgui, chronyd als _chrony. Alle Capabilities weg, nur die nötigen zurück.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     cap_add:
-      - SYS_TIME
+      - SYS_TIME          # chronyd stellt die Uhr
+      - CHOWN             # Start: Verzeichnisse für chronyd und das Dashboard
+      - DAC_OVERRIDE      # Supervisor liest Dateien von chronyd und Dashboard
+      - FOWNER            # Start: Dateirechte setzen
+      - SETUID            # Rechte abgeben: chronyd, gpsd, Dashboard
+      - SETGID
+      - KILL              # Dienste beim Speichern neu starten – ohne hängt das Neuladen
+      - NET_BIND_SERVICE  # Port 123 (und 53 für den DNS-Weiterleiter) mit Host-Netzwerk
+      - NET_RAW           # Messung der Client-Uhren (passives Mitlesen)
+    pids_limit: 512
+    mem_limit: 512m
+    # Logs begrenzen, damit die Platte nicht vollläuft.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
     devices:
       - /dev/ttyACM0:/dev/ttyACM0   # der GPS-Empfänger

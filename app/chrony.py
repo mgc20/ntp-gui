@@ -490,6 +490,20 @@ _CERT_CACHE: dict[tuple, tuple[float, dict[str, Any]]] = {}
 _CERT_TTL = 60.0
 
 
+def _file_state(path: str, copy: str) -> bool:
+    """Gibt es die Datei? Ist sie für das Dashboard nicht einmal sichtbar (Ordner ohne Rechte), zählt die
+    Kopie des Supervisors für chronyd."""
+    if not path:
+        return False
+    try:
+        os.stat(path)
+    except PermissionError:
+        return os.path.isfile(copy)
+    except OSError:
+        return False
+    return os.path.isfile(path)
+
+
 def _readable(path: str) -> bool:
     try:
         with open(path, "rb") as handle:
@@ -621,13 +635,25 @@ def nts_server_status(cfg: dict, stats: dict | None = None) -> dict:
                               "name": name, "port": port}
     if not enabled:
         return result
+    # Die Kopien des Supervisors für chronyd (siehe unten).
+    copy_dir = os.environ.get("NTPGUI_NTS_CERT_DIR", "/var/lib/chrony/nts-certs")
+    copy_cert, copy_key = os.path.join(copy_dir, "server.crt"), os.path.join(copy_dir, "server.key")
     result.update({
-        "cert_exists": bool(cert) and os.path.isfile(cert),
-        "key_exists": bool(key) and os.path.isfile(key),
+        "cert_exists": _file_state(cert, copy_cert),
+        "key_exists": _file_state(key, copy_key),
     })
     result["cert_readable"] = result["cert_exists"] and _readable(cert)
     result["key_readable"] = result["key_exists"] and _readable(key)
-    info = _cert_info(cert) if result["cert_readable"] else {}
+    cert_source = cert
+    # Das Dashboard läuft ohne root und darf die Originale (z. B. Zertifikat des Proxys, 0600, oder ein
+    # Ordner nur für root) oft nicht lesen. Der Supervisor legt für chronyd Kopien an: das Zertifikat ist
+    # für die Gruppe _chrony lesbar, der Schlüssel nur für chronyd – dass es ihn gibt, genügt hier.
+    if result["cert_exists"] and not result["cert_readable"] and _readable(copy_cert):
+        cert_source = copy_cert
+        result["cert_readable"] = True
+    if result["key_exists"] and not result["key_readable"] and os.path.isfile(copy_key):
+        result["key_readable"] = True
+    info = _cert_info(cert_source) if result["cert_readable"] else {}
     not_after = info.get("not_after")
     names = [n for n in [info.get("common_name"), *info.get("alt_names", [])] if n]
     result.update({

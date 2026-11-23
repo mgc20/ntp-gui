@@ -330,7 +330,7 @@ kill -0 "$gps" && [[ "${SVC_ENTRY[gpsd]%%=*}" == "$gps" ]] && echo gpsd_gleich
 kill -0 "$dns" && [[ "${SVC_ENTRY[dnsfwd]%%=*}" == "$dns" ]] && echo dnsfwd_gleich
 [[ "${SVC_ENTRY[chronyd]%%=*}" != "$old" ]] && echo chronyd_neu
 kill "$gps" "$dns" "${SVC_ENTRY[chronyd]%%=*}"
-""", "reload_chronyd")
+""", "proc_ended", "stop_pid", "reload_chronyd")
         self.assertEqual(out, ["apply", "EVENT:reload:info", "gpsd_gleich", "dnsfwd_gleich", "chronyd_neu"])
 
     def test_automatics_use_chronyd_reload(self):

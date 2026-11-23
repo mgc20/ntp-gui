@@ -33,9 +33,13 @@ cleanup() {
     "${PREFIX}-g" "${PREFIX}-h" "${PREFIX}-i" "${PREFIX}-j" >/dev/null 2>&1
   docker rm -f "${PREFIX}-k" "${PREFIX}-l" "${PREFIX}-m" "${PREFIX}-n" "${PREFIX}-o" >/dev/null 2>&1
   docker rm -f "${PREFIX}-p" "${PREFIX}-q" "${PREFIX}-r" "${PREFIX}-s" "${PREFIX}-t" >/dev/null 2>&1
-  docker rm -f "${PREFIX}-u" "${PREFIX}-w" >/dev/null 2>&1
+  docker rm -f "${PREFIX}-u" "${PREFIX}-w" "${PREFIX}-x" >/dev/null 2>&1
   docker network rm "${PREFIX}-net" "${PREFIX}-net2" >/dev/null 2>&1
   docker volume rm "${PREFIX}-data" "${PREFIX}-hist" >/dev/null 2>&1
+  if [[ -n "${VPS_DIR:-}" ]]; then
+    docker compose -p "${PREFIX}-vps" -f "${VPS_DIR}/vps.yml" -f "${VPS_DIR}/override.yml" down -v >/dev/null 2>&1
+    rm -rf "$VPS_DIR"
+  fi
   rm -rf "$CFG_DIR" "$NTS_DIR" "$DIAG_DIR"
 }
 trap cleanup EXIT
@@ -149,6 +153,23 @@ t = sys.stdin.read()
 up = dict(re.findall(r'^ntpgui_service_up\{service=\"([^\"]+)\"\} (\d)$', t, re.M))
 on = dict(re.findall(r'^ntpgui_service_enabled\{service=\"([^\"]+)\"\} (\d)$', t, re.M))
 print(sum(1 for n in up if up[n] == '0' and on.get(n) == '1'))" <<<"$METRICS_A")"
+
+echo
+echo "1a) Rechte im Container (1.9): Dashboard ohne root, keine SUID-Programme"
+WEBPID=$(docker exec "${PREFIX}-a" pgrep -f -o '^python3 /app/server.py')
+check "Dashboard läuft nicht als root (Benutzer ntpgui)" ntpgui "$(docker exec "${PREFIX}-a" ps -o user= -p "$WEBPID" | tr -d ' ')"
+WEBST=$(docker exec "${PREFIX}-a" cat "/proc/${WEBPID}/status")
+check "Dashboard: no-new-privs" 1 "$(awk '/^NoNewPrivs:/ {print $2}' <<<"$WEBST")"
+check "Dashboard: nur CAP_NET_RAW (Client-Messung)" 0000000000002000 "$(awk '/^CapEff:/ {print $2}' <<<"$WEBST")"
+check "Dashboard: kein SYS_TIME in der Begrenzungsmenge" 0000000000002000 "$(awk '/^CapBnd:/ {print $2}' <<<"$WEBST")"
+check "chronyd läuft als _chrony" _chrony "$(docker exec "${PREFIX}-a" ps -o user= -C chronyd | tr -d ' ')"
+check "Keine SUID-/SGID-Programme im Image" "" "$(docker exec "${PREFIX}-a" find / -xdev -type f -perm /6000 2>/dev/null)"
+check "Datenverzeichnis gehört ntpgui" "ntpgui 700" "$(docker exec "${PREFIX}-a" stat -c '%U %a' /var/lib/chrony/ntp-gui)"
+check "Kommando-Socket nur für _chrony (Gruppe)" "_chrony:_chrony 770" "$(docker exec "${PREFIX}-a" stat -c '%U:%G %a' /run/chrony)"
+check "Dashboard kann RUN_DIR des Supervisors nicht beschreiben" 1 \
+  "$(docker exec -u ntpgui "${PREFIX}-a" sh -c 'touch /run/ntp-gui/probe 2>/dev/null; echo $?')"
+check "Dashboard kann /etc/chrony nicht beschreiben" 1 \
+  "$(docker exec -u ntpgui "${PREFIX}-a" sh -c 'touch /etc/chrony/probe 2>/dev/null; echo $?')"
 
 echo
 echo "1b) Log, Ereignisse, Diagnosepaket, Client-Messung (1.3)"
@@ -533,15 +554,40 @@ for _ in $(seq 1 20); do
 done
 check "chronyd nutzt neuen Wert" 8 "$STRATUM"
 check "Container läuft nach Neustart" running "$(docker inspect -f '{{.State.Status}}' "${PREFIX}-e")"
-PERMS=$(docker exec "${PREFIX}-e" stat -c '%a' /var/lib/chrony/ntp-gui/settings.json)
-check "settings.json nur für root lesbar" 600 "$PERMS"
+PERMS=$(docker exec "${PREFIX}-e" stat -c '%U %a' /var/lib/chrony/ntp-gui/settings.json)
+check "settings.json nur für den Dashboard-Benutzer lesbar" "ntpgui 600" "$PERMS"
 docker rm -f "${PREFIX}-e" >/dev/null 2>&1
+# Wie nach einem Update von 1.8: Das Datenverzeichnis gehört root und muss übernommen werden.
+docker run --rm -v "${PREFIX}-data:/var/lib/chrony" --entrypoint chown "$IMAGE" -R root:root /var/lib/chrony/ntp-gui
 docker run -d --name "${PREFIX}-f" -p 18084:8080 -v "${PREFIX}-data:/var/lib/chrony" \
   -e NTP_PORT=10128 -e NTP_POOLS="" -e WEB_READONLY=true "$IMAGE" >/dev/null
 wait_for_health http://127.0.0.1:18084/healthz 90 || true
 contains "Einstellungen überleben Neuerstellung" "$(docker exec "${PREFIX}-f" cat /etc/chrony/chrony.conf)" "local stratum 8"
+contains "Übernahme des Datenverzeichnisses im Log" "$(docker logs "${PREFIX}-f" 2>&1)" "wird dem Benutzer ntpgui übergeben"
+check "Nach Übernahme gehört nichts mehr root" "" \
+  "$(docker exec "${PREFIX}-f" find /var/lib/chrony/ntp-gui ! -user ntpgui)"
+check "Übernommene Einstellungen bleiben lesbar" "IT-Uhr" \
+  "$(curl -s --max-time 10 http://127.0.0.1:18084/api/settings | python3 -c "import json,sys; d=json.load(sys.stdin); print(next(f['value'] for f in d['fields'] if f.get('key') == 'web_title'))" 2>/dev/null)"
 check "WEB_READONLY sperrt Änderungen" 403 "$(post -H 'Content-Type: application/json' -H 'X-NTP-GUI: 1' -d '{"changes":{"web_title":"x"}}' http://127.0.0.1:18084/api/settings)"
 docker rm -f "${PREFIX}-f" >/dev/null 2>&1
+
+echo
+echo "6b) Ohne CAP_KILL: Warnung beim Start, Speichern hängt nicht (1.9)"
+docker run -d --name "${PREFIX}-x" -p 18098:8080 --cap-drop KILL -e NTP_PORT=10141 -e NTP_POOLS="" "$IMAGE" >/dev/null
+wait_for_health http://127.0.0.1:18098/healthz 90 || true
+contains "Start-Log warnt vor fehlendem CAP_KILL" "$(docker logs "${PREFIX}-x" 2>&1)" "CAP_KILL fehlt"
+curl -s -o /dev/null --max-time 10 -X POST -H 'Content-Type: application/json' -H 'X-NTP-GUI: 1' \
+  -d '{"changes":{"local_stratum":9}}' http://127.0.0.1:18098/api/settings
+XSTATE=""
+for _ in $(seq 1 60); do
+  XSTATE=$(curl -s --max-time 5 http://127.0.0.1:18098/api/reload | python3 -c "import json,sys; print(json.load(sys.stdin).get('state'))" 2>/dev/null)
+  [[ "$XSTATE" == "done" || "$XSTATE" == "error" ]] && break
+  sleep 1
+done
+check "Gescheiterter Neustart wird gemeldet statt zu hängen" error "$XSTATE"
+check "chronyd läuft weiter" True \
+  "$(curl -s --max-time 10 http://127.0.0.1:18098/api/status | python3 -c "import json,sys; print(json.load(sys.stdin)['chrony_running'])" 2>/dev/null)"
+docker rm -f "${PREFIX}-x" >/dev/null 2>&1
 
 echo
 echo "8) Optionaler Dienst stirbt – Container läuft weiter"
@@ -598,7 +644,7 @@ import gpsquality
 gpsquality.save_state({'applied': {'delay': 0.117, 'precision': 0.006, 'bound': 0.058, 't': 1}})
 " >/dev/null 2>&1
 BEFORE=$(svc "${PREFIX}-h" chronyd restarts); BEFORE=${BEFORE:-0}
-docker exec "${PREFIX}-h" sh -c 'date +%s > /run/ntp-gui/reload.request'
+docker exec "${PREFIX}-h" sh -c 'date +%s > /run/ntp-gui/web/reload.request'
 MEASURED=0
 for _ in $(seq 1 60); do
   if docker exec "${PREFIX}-h" grep -q '^refclock SHM .*delay 0.117 precision 0.006' /etc/chrony/chrony.conf 2>/dev/null; then MEASURED=1; break; fi
@@ -676,7 +722,8 @@ if make_cert 0x1001; then
   contains "chrony.conf: schonendes Ratelimit im LAN" "$CONF" "ratelimit interval -2 burst 32 leak 2"
   contains "chrony.conf nutzt die lesbare Kopie" "$CONF" "ntsservercert /var/lib/chrony/nts-certs/server.crt"
   check "chronyd akzeptiert die Konfiguration" 0 "$(docker exec "${PREFIX}-j" sh -c 'chronyd -p -f /etc/chrony/chrony.conf >/dev/null 2>&1; echo $?')"
-  check "Kopie für _chrony nur lesbar (root:_chrony 640)" "root:_chrony 640" "$(docker exec "${PREFIX}-j" stat -c '%U:%G %a' /var/lib/chrony/nts-certs/server.key)"
+  check "Schlüsselkopie nur für _chrony lesbar (_chrony:_chrony 400)" "_chrony:_chrony 400" "$(docker exec "${PREFIX}-j" stat -c '%U:%G %a' /var/lib/chrony/nts-certs/server.key)"
+  check "Dashboard kann den NTS-Schlüssel nicht lesen" 1 "$(docker exec -u ntpgui "${PREFIX}-j" sh -c 'cat /var/lib/chrony/nts-certs/server.key >/dev/null 2>&1; echo $?')"
   if grep -qF "Having write access" <<<"$(docker logs "${PREFIX}-j" 2>&1)"; then bad "chronyd meldet Schreibzugriff auf Schlüssel"
   else ok "chronyd meldet keinen Schreibzugriff auf Schlüssel"; fi
   SERIAL=""
@@ -759,6 +806,8 @@ RESOLV=$(docker exec "${PREFIX}-l" cat /etc/resolv.conf)
 contains "resolv.conf zeigt auf 127.0.0.1" "$RESOLV" "nameserver 127.0.0.1"
 contains "resolv.conf trägt die ntp-gui-Markierung" "$RESOLV" "# ntp-gui: dnsfwd"
 check "dnsfwd läuft (services.json)" running "$(svc "${PREFIX}-l" dnsfwd state)"
+check "dnsfwd läuft nicht als root (Benutzer ntpgui)" ntpgui \
+  "$(docker exec "${PREFIX}-l" sh -c 'ps -o user= -p "$(pgrep -f -o "dnsfwd.py serve")"' | tr -d ' ')"
 check "Name wird über den Weiterleiter aufgelöst" 192.0.2.53 \
   "$(docker exec "${PREFIX}-l" getent ahostsv4 ntpgui-test.example 2>/dev/null | awk 'NR==1 {print $1}')"
 DNSJ=$(curl -s --max-time 10 http://127.0.0.1:18091/api/v1/dns)
@@ -1039,6 +1088,70 @@ else
   echo "  – Caddy-Image ($CADDY_IMAGE) nicht verfügbar, HTTPS-Start übersprungen"
 fi
 rm -rf "$TPL_DIR"
+
+echo
+echo "12h) VPS-Vorlage: schreibgeschützt, gehärtet, mit Anmeldung (1.9)"
+# docker-compose.vps.yml unverändert, nur Image, Ports und Passwortdatei per Override – Host-Netzwerk.
+VPS_DIR="$(mktemp -d)"
+cp "$REPO_ROOT/docker-compose.vps.yml" "$VPS_DIR/vps.yml"
+cp -r "$REPO_ROOT/app" "$REPO_ROOT/docker" "$REPO_ROOT/Dockerfile" "$VPS_DIR/" 2>/dev/null   # nur für „build: .“ in config
+printf 'Vps-Pruef-%s\n' "$$" > "$VPS_DIR/web_password.txt"
+chmod 600 "$VPS_DIR/web_password.txt"
+cat > "$VPS_DIR/override.yml" <<YAML
+services:
+  ntp-gui:
+    image: ${IMAGE}
+    pull_policy: never
+    container_name: ${PREFIX}-vps
+    environment:
+      WEB_PORT: "18187"
+      NTP_PORT: "10137"
+      NTP_POOLS: ""
+      NTP_SERVERS: ""
+secrets:
+  web_password:
+    file: ${VPS_DIR}/web_password.txt
+YAML
+VPSC=(docker compose -p "${PREFIX}-vps" -f "$VPS_DIR/vps.yml" -f "$VPS_DIR/override.yml")
+VPW="admin:Vps-Pruef-$$"
+if ! docker compose version >/dev/null 2>&1; then
+  echo "  – docker compose fehlt, VPS-Vorlage übersprungen"
+elif "${VPSC[@]}" up -d --no-build >/dev/null 2>&1 && wait_for_health http://127.0.0.1:18187/healthz 90; then
+  ok "VPS-Vorlage startet mit read_only"
+  check "Root-Dateisystem schreibgeschützt" true "$(docker inspect -f '{{.HostConfig.ReadonlyRootfs}}' "${PREFIX}-vps")"
+  contains "no-new-privileges gesetzt" "$(docker inspect -f '{{.HostConfig.SecurityOpt}}' "${PREFIX}-vps")" "no-new-privileges"
+  contains "Log-Rotation gesetzt" "$(docker inspect -f '{{.HostConfig.LogConfig.Config}}' "${PREFIX}-vps")" "max-size:10m"
+  check "Schreiben ins Image scheitert" 1 "$(docker exec "${PREFIX}-vps" sh -c 'touch /etc/probe 2>/dev/null; echo $?')"
+  VLOGS=$(docker logs "${PREFIX}-vps" 2>&1)
+  contains "chrony.conf liegt unter /run" "$VLOGS" "Dateisystem schreibgeschützt"
+  VCONF=$(docker exec "${PREFIX}-vps" cat /run/ntp-gui-conf/chrony.conf 2>/dev/null)
+  contains "Ratelimit streng" "$VCONF" "ratelimit interval 1 burst 16 leak 2"
+  VPID=$(docker exec "${PREFIX}-vps" pgrep -f -o '^python3 /app/server.py')
+  VST=$(docker exec "${PREFIX}-vps" cat "/proc/${VPID}/status")
+  check "VPS: Dashboard als ntpgui" 990 "$(awk '/^Uid:/ {print $2}' <<<"$VST")"
+  check "VPS: Dashboard ohne Capabilities" 0000000000000000 "$(awk '/^CapEff:/ {print $2}' <<<"$VST")"
+  check "VPS: ohne Anmeldung 401" 401 "$(http http://127.0.0.1:18187/api/status)"
+  check "VPS: mit Passwort aus dem Secret 200" 200 "$(http -u "$VPW" http://127.0.0.1:18187/api/status)"
+  check "VPS: chronyd antwortet dem Dashboard" True \
+    "$(curl -s --max-time 10 -u "$VPW" http://127.0.0.1:18187/api/status | python3 -c "import json,sys; print(json.load(sys.stdin)['chrony_running'])" 2>/dev/null)"
+  # Speichern mit Neustart der Dienste: braucht KILL (chronyd gehört _chrony).
+  curl -s -o /dev/null --max-time 10 -u "$VPW" -X POST -H 'Content-Type: application/json' -H 'X-NTP-GUI: 1' \
+    -d '{"changes":{"ntp_minsources":3,"web_title":"VPS-Uhr"}}' http://127.0.0.1:18187/api/settings
+  VSTATE=""
+  for _ in $(seq 1 40); do
+    VSTATE=$(curl -s --max-time 5 -u "$VPW" http://127.0.0.1:18187/api/reload | python3 -c "import json,sys; print(json.load(sys.stdin).get('state'))" 2>/dev/null)
+    [[ "$VSTATE" == "done" || "$VSTATE" == "error" ]] && break
+    sleep 1
+  done
+  check "VPS: Speichern startet die Dienste neu" done "$VSTATE"
+  docker restart "${PREFIX}-vps" >/dev/null 2>&1
+  if wait_for_health http://127.0.0.1:18187/healthz 90; then ok "VPS: Neustart des Containers"; else bad "VPS: nach Neustart ungesund"; fi
+  contains "VPS: Einstellung überlebt den Neustart" "$(curl -s --max-time 10 -u "$VPW" http://127.0.0.1:18187/api/settings)" "VPS-Uhr"
+else
+  bad "VPS-Vorlage startet nicht: $(docker logs "${PREFIX}-vps" 2>&1 | tail -n 5)"
+fi
+"${VPSC[@]}" down -v >/dev/null 2>&1
+rm -rf "$VPS_DIR"; VPS_DIR=""
 
 echo
 echo "13) Sauberes Stoppen"

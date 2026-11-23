@@ -20,14 +20,29 @@
 # ${RUN_DIR}/ntp-gui.log (Log-Seite, Diagnosepaket); `docker logs` zeigt weiter
 # alles. Wichtige Ereignisse (Neustarts, Neuladen, Zertifikat, Hotplug, Start)
 # hängt der Supervisor als JSON-Zeilen an ${RUN_DIR}/events.jsonl an.
+#
+# Rechte (1.9): Nur der Supervisor läuft als root. Dashboard und DNS-Weiterleiter laufen als
+# eigener Benutzer ntpgui (setpriv, ohne Capabilities außer den unten genannten, no-new-privs),
+# chronyd gibt seine Rechte selbst an _chrony ab (behält nur SYS_TIME), gpsd an gpsd. ptp4l
+# und phc2sys bleiben root (Hardware-Zeitstempel, PHC). Das Dashboard schreibt nur in sein
+# Datenverzeichnis und in ${REQUEST_DIR}; ${RUN_DIR} selbst gehört dem Supervisor. Neustarts
+# fordert es ausschließlich über die festen Dateien reload.request und reload-chronyd.request an.
 set -euo pipefail
 
+# Gesetzt = vom Benutzer vorgegeben; sonst weicht der Supervisor bei schreibgeschütztem Root auf /run aus.
+CHRONY_CONF_GIVEN="${CHRONY_CONF:+1}"
+PTP4L_CONF_GIVEN="${PTP4L_CONF:+1}"
+PTP_LOG_GIVEN="${PTP_LOG_FILE:+1}"
 CHRONY_CONF="${CHRONY_CONF:-/etc/chrony/chrony.conf}"
 PTP4L_CONF="${PTP4L_CONF:-/etc/linuxptp/ptp4l.conf}"
 PTP_LOG_FILE="${PTP_LOG_FILE:-/var/log/ptp4l.log}"
 APP_DIR="${APP_DIR:-/app}"
 RUN_DIR="${NTPGUI_RUN_DIR:-/run/ntp-gui}"
-export CHRONY_CONF PTP4L_CONF PTP_LOG_FILE NTPGUI_RUN_DIR="$RUN_DIR"
+# Anforderungen und Zustand von Dashboard und DNS-Weiterleiter (gehört dem Benutzer APP_USER).
+REQUEST_DIR="${NTPGUI_REQUEST_DIR:-${RUN_DIR}/web}"
+DATA_DIR="${NTPGUI_DATA_DIR:-/var/lib/chrony/ntp-gui}"
+APP_USER="ntpgui"
+export CHRONY_CONF PTP4L_CONF PTP_LOG_FILE NTPGUI_RUN_DIR="$RUN_DIR" NTPGUI_REQUEST_DIR="$REQUEST_DIR"
 
 WEB_PID=""        # Dashboard, "pid=comm"
 RELOAD_REQUESTED=0
@@ -113,19 +128,25 @@ is_true() {
   case "${1,,}" in 1|true|yes|on) return 0 ;; *) return 1 ;; esac
 }
 
-# CAP_SYS_TIME ist Bit 25 der effektiven Capabilities. Ohne darf chronyd die
-# Uhr nicht stellen und muss mit -x laufen.
-has_sys_time() {
-  local caps
-  caps=$(awk '/^CapEff:/ {print $2}' /proc/self/status 2>/dev/null || echo 0)
-  python3 -c "
-import sys
-try:
-    caps = int('${caps:-0}', 16)
-except ValueError:
-    sys.exit(1)
-sys.exit(0 if (caps >> 25) & 1 else 1)" 2>/dev/null
+# cap_has <bit> -> 0, wenn diese Shell die Capability hat (CapEff, bzw. CapPrm mit „prm“ als
+# zweitem Argument). Nur Bordmittel, ohne Unterprozess. Bits: CHOWN 0, DAC_OVERRIDE 1, FOWNER 3,
+# KILL 5, SETGID 6, SETUID 7, SETPCAP 8, NET_BIND_SERVICE 10, NET_RAW 13, SYS_TIME 25.
+CAP_STATUS_FILE="/proc/self/status"
+cap_has() {
+  local want="CapEff:" key value
+  [[ "${2:-}" == prm ]] && want="CapPrm:"
+  while read -r key value; do
+    if [[ "$key" == "$want" ]]; then
+      [[ "$value" =~ ^[0-9a-fA-F]{1,16}$ ]] || return 1
+      (( (16#$value >> $1) & 1 ))
+      return
+    fi
+  done < "$CAP_STATUS_FILE" 2>/dev/null
+  return 1
 }
+
+# CAP_SYS_TIME fehlt: chronyd darf die Uhr nicht stellen und muss mit -x laufen.
+has_sys_time() { cap_has 25; }
 
 # Einträge sind "pid=comm": der Watchdog prüft beides, damit ein recycelter PID
 # nicht als lebender Dienst durchgeht.
@@ -135,22 +156,106 @@ spawn() {  # spawn <name> <cmd...>  -> setzt SPAWNED
   log "$name" "starte: $*"
   "$@" &
   SPAWNED="$!=${comm:0:15}"
-  wait_exec "$!"
+  wait_exec "$!" "${comm:0:15}"
+}
+
+# Dashboard und DNS-Weiterleiter ohne root starten. app_drop <caps> setzt APP_DROP auf den
+# setpriv-Aufruf: Benutzer APP_USER (Gruppen samt _chrony für den Kommando-Socket von chronyd),
+# no-new-privs, keine Capabilities außer den genannten (z. B. "net_raw,net_bind_service"), die
+# der Container auch hat. Ohne SETUID/SETGID (oder ohne den Benutzer) bleibt APP_DROP leer – dann
+# laufen beide wie bis 1.8 als root, mit deutlicher Warnung beim Start (APP_DROP_OFF).
+APP_DROP=()
+APP_DROP_OFF=""   # Grund, warum nicht gewechselt wird (leer = Wechsel möglich)
+app_drop() {  # app_drop <cap,cap,...>
+  local cap bit list="" sep=""
+  APP_DROP=()
+  [[ -z "$APP_DROP_OFF" ]] || return 0
+  for cap in ${1//,/ }; do
+    case "$cap" in
+      net_raw) bit=13 ;;
+      net_bind_service) bit=10 ;;
+      *) continue ;;
+    esac
+    cap_has "$bit" prm || continue
+    list+="${sep}+${cap}"; sep=","
+  done
+  APP_DROP=(setpriv "--reuid=${APP_USER}" "--regid=${APP_USER}" --init-groups --no-new-privs
+            "--inh-caps=-all${list:+,$list}" "--ambient-caps=-all${list:+,$list}")
+  # Die Begrenzungsmenge verkleinern geht nur mit CAP_SETPCAP; ohne genügen no-new-privs und das
+  # Image ohne SUID-Programme.
+  if cap_has 8; then APP_DROP+=("--bounding-set=-all${list:+,$list}"); fi
+  APP_DROP+=(--)
+}
+
+# spawn_app <name> <caps> <cmd...> -> wie spawn, aber als APP_USER (siehe app_drop)
+spawn_app() {
+  local name="$1" comm; app_drop "$2"; shift 2
+  comm=$(basename "$1")
+  log "$name" "starte${APP_DROP[*]:+ als ${APP_USER}}: $*"
+  "${APP_DROP[@]}" "$@" &
+  SPAWNED="$!=${comm:0:15}"
+  wait_exec "$!" "${comm:0:15}"
 }
 
 # Direkt nach "cmd &" trägt das Kind bis zu seinem exec noch den Namen dieser Shell in
-# /proc/PID/comm. Ein service_alive in diesem Fenster hielte den eben gestarteten Dienst für
-# tot (reload_chronyd ließe den alten chronyd laufen, der Watchdog meldete „unerwartet
-# beendet“). wait_exec wartet höchstens ~1 s, bis das exec geschehen ist.
-wait_exec() {  # wait_exec <pid>
-  local pid="$1" own="" now="" i
+# /proc/PID/comm (bei spawn_app danach kurz „setpriv“). Ein service_alive in diesem Fenster
+# hielte den eben gestarteten Dienst für tot (reload_chronyd ließe den alten chronyd laufen,
+# der Watchdog meldete „unerwartet beendet“). wait_exec wartet höchstens ~1 s, bis das exec
+# geschehen ist – mit <comm> bis genau dieser Name erscheint.
+wait_exec() {  # wait_exec <pid> [comm]
+  local pid="$1" want="${2:-}" own="" now="" i
   { read -r own < "/proc/$$/comm"; } 2>/dev/null || return 0
   for (( i = 0; i < 100; i++ )); do
     now=""
     { read -r now < "/proc/${pid}/comm"; } 2>/dev/null || true
-    [[ "$now" != "$own" ]] && return 0
+    if [[ -n "$want" ]]; then
+      [[ "$now" == "$want" || ( "$now" != "$own" && "$now" != setpriv ) ]] && return 0
+    elif [[ "$now" != "$own" ]]; then
+      return 0
+    fi
     sleep 0.01 || true
   done
+  return 0
+}
+
+# proc_ended <pid> -> 0, wenn der Prozess beendet ist (Zombie oder verschwunden). Ohne Unterprozess.
+proc_ended() {
+  local stat="" st
+  { read -r stat < "/proc/$1/stat"; } 2>/dev/null || return 0
+  st="${stat##*) }"
+  [[ "${st:0:1}" == Z ]]
+}
+
+# stop_pid <eintrag> <name> -> beendet einen Dienst: SIGTERM, höchstens STOP_GRACE s warten, dann
+# SIGKILL. Kehrt immer zurück: Scheitert das Signal (ohne CAP_KILL darf root keine Prozesse anderer
+# Benutzer wie _chrony beenden), meldet es das laut und gibt 1 zurück, statt ewig zu warten.
+STOP_GRACE=10
+stop_pid() {
+  local entry="$1" name="$2" pid="${1%%=*}" i
+  [[ -n "$pid" ]] || return 0
+  if service_alive "$entry"; then
+    kill "$pid" 2>/dev/null || true
+    for (( i = 0; i < ${STOP_GRACE:-10} * 10; i++ )); do
+      proc_ended "$pid" && break
+      sleep 0.1 || true
+    done
+    if ! proc_ended "$pid"; then
+      log main "WARNUNG: ${name} (PID ${pid}) endet nicht auf SIGTERM – sende SIGKILL"
+      kill -KILL "$pid" 2>/dev/null || true
+      for (( i = 0; i < 30; i++ )); do
+        proc_ended "$pid" && break
+        sleep 0.1 || true
+      done
+    fi
+    if ! proc_ended "$pid"; then
+      log main "FEHLER: ${name} (PID ${pid}) lässt sich nicht beenden. Fehlt dem Container CAP_KILL" \
+               "(cap_drop: ALL ohne cap_add: KILL)? Dann ist kein Neustart der Dienste möglich."
+      "${EMIT_EVENT:-:}" service crit "Dienst ${name} lässt sich nicht beenden – fehlt CAP_KILL?" service="$name"
+      return 1
+    fi
+  fi
+  # Nur einen beendeten Prozess abräumen – ein fremder PID mit anderem Namen ließe 'wait' blockieren.
+  if proc_ended "$pid"; then wait "$pid" 2>/dev/null || true; fi
   return 0
 }
 
@@ -165,8 +270,8 @@ service_alive() {
     return 0  # Prozess besteht, nur das Lesen scheiterte: nicht als Ausfall werten
   fi
   { read -r own < "/proc/$$/comm"; } 2>/dev/null || true
-  if [[ "$actual" != "$comm" && -n "$own" && "$actual" == "$own" ]]; then
-    wait_exec "$pid"  # gerade erst gestartet: exec abwarten statt „tot“ zu melden
+  if [[ "$actual" != "$comm" && -n "$own" && ( "$actual" == "$own" || "$actual" == setpriv ) ]]; then
+    wait_exec "$pid" "$comm"  # gerade erst gestartet: exec abwarten statt „tot“ zu melden
     { read -r actual < "/proc/${pid}/comm"; } 2>/dev/null || return 1
   fi
   [[ "$actual" == "$comm" ]]
@@ -324,6 +429,8 @@ apply_config() {
   fi
   read_config_error
   eval "$out"
+  # confgen läuft als root und kann settings.json migrieren – das Dashboard muss sie weiter schreiben dürfen.
+  if [[ -z "$APP_DROP_OFF" && -n "${APP_USER:-}" ]] && (( EUID == 0 )); then data_dir_to_app; fi
   HOTPLUG_PATHS="${NTPGUI_HOTPLUG_PATHS:-}"
   NTS_WATCH="${NTPGUI_NTS_WATCH:-}"
   NTS_CERT_SIG="$(file_signature $NTS_WATCH)"
@@ -388,7 +495,11 @@ start_chronyd() {
     log chrony "PTP steuert die Systemuhr – chronyd läuft mit -x und liefert nur aus."
   fi
   rm -f /run/chrony/chronyd.pid /var/run/chrony/chronyd.pid
+  # umask 007: Den Kommando-Socket legt chronyd mit dieser Maske an – so kann ihn das Dashboard
+  # (Gruppe _chrony) nutzen; das Verzeichnis (0770) hält alle anderen fern.
+  umask 0007
   spawn chrony /usr/sbin/chronyd "${chronyd_args[@]}"
+  umask 0022
   SVC_ENTRY[chronyd]="$SPAWNED"
   set_state chronyd running
   reapply_noselect
@@ -451,6 +562,25 @@ start_ptp4l() {
   SVC_ENTRY[ptp4l]="$!=ptp4l"
   wait_exec "$!"
   set_state ptp4l running
+  ptp_socket_for_app
+}
+
+# Den Management-Socket von ptp4l (gehört root, 0660) für die Gruppe ntpgui öffnen: Das Dashboard
+# liest darüber den Zustand und meldet als Grandmaster die GPS-Güte. Kurz im Hintergrund, bis
+# ptp4l den Socket angelegt hat (höchstens ~10 s).
+ptp_socket_for_app() {
+  local uds="${NTPGUI_PTP_UDS:-/var/run/ptp4l}"
+  [[ -z "$APP_DROP_OFF" ]] || return 0
+  (
+    local i
+    for (( i = 0; i < 40; i++ )); do
+      if [[ -S "$uds" && ! -L "$uds" ]]; then
+        chgrp "$APP_USER" "$uds" 2>/dev/null && chmod 0660 "$uds" 2>/dev/null
+        exit 0
+      fi
+      sleep 0.25
+    done
+  ) &
 }
 
 start_phc2sys() {
@@ -465,12 +595,14 @@ start_phc2sys() {
 # über ihn auf.
 start_dnsfwd() {
   local i
-  rm -f "${RUN_DIR}/dnsfwd.ready"
-  spawn dns python3 "${APP_DIR}/dnsfwd.py" serve
+  rm -f "${REQUEST_DIR}/dnsfwd.ready"
+  resolv_for_app
+  # Port 53: im Docker-Netz ohne Capability, mit Host-Netzwerk braucht es NET_BIND_SERVICE.
+  spawn_app dns net_bind_service python3 "${APP_DIR}/dnsfwd.py" serve
   SVC_ENTRY[dnsfwd]="$SPAWNED"
   set_state dnsfwd running
   for (( i = 0; i < 30; i++ )); do
-    [[ -s "${RUN_DIR}/dnsfwd.ready" ]] && return 0
+    [[ -s "${REQUEST_DIR}/dnsfwd.ready" ]] && return 0
     service_alive "${SVC_ENTRY[dnsfwd]}" || return 0
     sleep 0.1
   done
@@ -481,7 +613,17 @@ start_dnsfwd() {
 # (Modus „system“, Absturz, Neustart des Containers ohne Neuerstellen).
 dns_restore() {
   grep -q '^# ntp-gui: dnsfwd' "$RESOLV_CONF" 2>/dev/null || return 0
-  python3 "${APP_DIR}/dnsfwd.py" restore || true
+  # Wie der Weiterleiter selbst ohne root: Die Sicherung liegt im Datenverzeichnis des Dashboards.
+  app_drop ""
+  "${APP_DROP[@]}" python3 "${APP_DIR}/dnsfwd.py" restore || true
+}
+
+# resolv.conf für den Weiterleiter (APP_USER) beschreibbar machen: Docker bindet sie als eigene
+# Datei je Container ein. Schreibgeschützt (read_only) bleibt sie, wie sie ist – dnsfwd fällt dann
+# sauber auf den System-DNS zurück und nennt die Abhilfe „dns: 127.0.0.1“.
+resolv_for_app() {
+  [[ -z "$APP_DROP_OFF" && -f "$RESOLV_CONF" && ! -L "$RESOLV_CONF" ]] || return 0
+  { chgrp "$APP_USER" "$RESOLV_CONF" && chmod 0664 "$RESOLV_CONF"; } 2>/dev/null || true
 }
 
 start_services() {
@@ -532,21 +674,23 @@ start_services() {
   NEXT_HOTPLUG=$(( $(mono) + HOTPLUG_EVERY ))
 }
 
+# Gibt 1 zurück, wenn ein Dienst nicht zu beenden war (fehlt CAP_KILL?) – dann darf er nicht doppelt starten.
 stop_services() {
-  local name entry
+  local name entry rc=0
   for name in phc2sys ptp4l gpsd chronyd dnsfwd; do
     entry="${SVC_ENTRY[$name]:-}"
     if [[ -n "$entry" ]] && service_alive "$entry"; then kill "${entry%%=*}" 2>/dev/null || true; fi
   done
   for name in phc2sys ptp4l gpsd chronyd dnsfwd; do
     entry="${SVC_ENTRY[$name]:-}"
-    if [[ -n "$entry" ]]; then wait "${entry%%=*}" 2>/dev/null || true; fi
+    if [[ -n "$entry" ]] && ! stop_pid "$entry" "$name"; then rc=1; continue; fi
     SVC_ENTRY[$name]=""
     SVC_STATE[$name]=stopped
   done
   # dnsfwd schreibt resolv.conf beim Beenden selbst zurück; nach einem SIGKILL nicht.
   dns_restore
   write_services
+  return "$rc"
 }
 
 reload_services() {
@@ -559,7 +703,12 @@ reload_services() {
     "${EMIT_EVENT:-:}" reload warn "Konfiguration fehlerhaft – bisherige Einstellungen bleiben aktiv${CONFIG_ERROR:+ (chronyd: ${CONFIG_ERROR})}" result=error
     return 0
   fi
-  stop_services
+  if ! stop_services; then
+    # Ein Dienst läuft noch (Signal verweigert): nicht doppelt starten. Der Watchdog behält die übrigen.
+    write_status error "Zeitdienste lassen sich nicht neu starten – fehlt dem Container CAP_KILL?"
+    "${EMIT_EVENT:-:}" reload crit "Neustart der Zeitdienste gescheitert – ein Dienst ließ sich nicht beenden (fehlt CAP_KILL?)" result=error
+    return 0
+  fi
   local name
   for name in gpsd ptp4l phc2sys dnsfwd; do SVC_RESTARTS[$name]=0; SVC_EXIT[$name]=""; done
   start_services
@@ -587,9 +736,10 @@ reload_chronyd() {
     return 0
   fi
   entry="${SVC_ENTRY[chronyd]:-}"
-  if [[ -n "$entry" ]] && service_alive "$entry"; then
-    kill "${entry%%=*}" 2>/dev/null || true
-    wait "${entry%%=*}" 2>/dev/null || true
+  if [[ -n "$entry" ]] && ! stop_pid "$entry" chronyd; then
+    # Der alte chronyd läuft weiter (Signal verweigert) – ein zweiter fände seine Ports belegt.
+    write_status error "chronyd lässt sich nicht neu starten – fehlt dem Container CAP_KILL?"
+    return 0
   fi
   SVC_ENTRY[chronyd]=""
   start_chronyd
@@ -606,19 +756,20 @@ reload_chronyd() {
 # Anforderungen des Dashboards abarbeiten (Hauptschleife, alle 2 s): reload.request startet alle
 # Zeitdienste neu, reload-chronyd.request nur chronyd. Liegen beide an, genügt der volle Neustart.
 process_reload_requests() {
+  local req="${REQUEST_DIR:-$RUN_DIR}"
   # Neuladen: Das Dashboard legt reload.request an (kein SIGHUP mehr – ein Signal mitten in einem
   # „$( … )“ brachte den bash-Parser durcheinander und beendete den Container). Datei zuerst
   # löschen: Kommt während des Neuladens eine neue Anforderung, folgt ein weiterer Durchgang.
-  if [[ -e "${RUN_DIR}/reload.request" ]]; then
+  if [[ -e "${req}/reload.request" || -L "${req}/reload.request" ]]; then
     # Zuerst „running“ vermerken, dann die Anforderung löschen: Ein Holdover-Test, der genau jetzt
     # startet, sieht so immer eins von beiden und wartet (holdover.reload_busy).
     write_status running "Neustart angefordert"
-    rm -f "${RUN_DIR}/reload.request"
+    rm -f "${req}/reload.request"
     RELOAD_REQUESTED=1
   fi
-  if [[ -e "${RUN_DIR}/reload-chronyd.request" ]]; then
+  if [[ -e "${req}/reload-chronyd.request" || -L "${req}/reload-chronyd.request" ]]; then
     write_status running "Neustart von chronyd angefordert"
-    rm -f "${RUN_DIR}/reload-chronyd.request"
+    rm -f "${req}/reload-chronyd.request"
     CHRONYD_RELOAD_REQUESTED=1
   fi
   if (( RELOAD_REQUESTED )); then
@@ -641,14 +792,14 @@ shutdown() {
   else
     "${EMIT_EVENT:-:}" service crit "Container wird wegen eines ausgefallenen Pflichtdienstes beendet" exit="$code"
   fi
-  stop_services
-  [[ -n "$WEB_PID" ]] && kill "${WEB_PID%%=*}" 2>/dev/null || true
+  local stopped=0 jobs_left
+  stop_services || stopped=1
+  if [[ -n "$WEB_PID" ]]; then stop_pid "$WEB_PID" web || stopped=1; fi
   # Nur auf die eigenen Hintergrundjobs warten: Ein 'wait' ohne Argument wartet in
   # bash 5.2 auch auf die Prozess-Substitution des Log-Tees – und die endet erst
-  # nach uns (Container hinge dann bis zum SIGKILL).
-  local jobs_left
+  # nach uns (Container hinge dann bis zum SIGKILL). Ließ sich ein Dienst nicht beenden, gar nicht warten.
   jobs_left=$(jobs -p)
-  if [[ -n "$jobs_left" ]]; then
+  if [[ -n "$jobs_left" ]] && (( ! stopped )); then
     # shellcheck disable=SC2086
     wait $jobs_left 2>/dev/null || true
   fi
@@ -707,9 +858,10 @@ restart_service() {  # restart_service <dienst>
 
 # hold_active -> 0 = RUN_DIR/reload.hold nennt eine Zeit in der Zukunft (Holdover-Test läuft).
 hold_active() {
-  local hold_until=""
-  if [[ -f "${RUN_DIR}/reload.hold" ]]; then
-    read -r hold_until < "${RUN_DIR}/reload.hold" 2>/dev/null || hold_until=""
+  local hold_until="" file="${REQUEST_DIR:-$RUN_DIR}/reload.hold"
+  # Nur eine gewöhnliche Datei (kein Link, keine Pipe): Das Verzeichnis gehört dem Dashboard.
+  if [[ -f "$file" && ! -L "$file" ]]; then
+    read -r -n 16 hold_until < "$file" 2>/dev/null || hold_until=""
   fi
   [[ "$hold_until" =~ ^[0-9]{1,12}$ ]] && (( hold_until >= $(now) ))
 }
@@ -767,33 +919,125 @@ check_hotplug() {
 }
 
 # --- Vorbereitung ------------------------------------------------------------
+# Schreibgeschütztes Root-Dateisystem (read_only: true): erzeugte Konfiguration und ptp4l-Log nach
+# /run (tmpfs), sofern der Pfad nicht ausdrücklich gesetzt ist. So startet der Container ohne
+# zusätzliche Variablen; nötig sind nur tmpfs für /run, /tmp und /var/log (siehe docker-compose.vps.yml).
+use_run_when_readonly() {
+  local conf_dir="/run/ntp-gui-conf" moved=""
+  if [[ -z "$CHRONY_CONF_GIVEN" && ! -w "${CHRONY_CONF%/*}" ]]; then
+    CHRONY_CONF="${conf_dir}/chrony.conf"; moved+=" chrony.conf"
+  fi
+  if [[ -z "$PTP4L_CONF_GIVEN" && ! -w "${PTP4L_CONF%/*}" ]]; then
+    PTP4L_CONF="${conf_dir}/ptp4l.conf"; moved+=" ptp4l.conf"
+  fi
+  if [[ -z "$PTP_LOG_GIVEN" && ! -w "${PTP_LOG_FILE%/*}" ]]; then
+    PTP_LOG_FILE="${conf_dir}/ptp4l.log"; moved+=" ptp4l.log"
+  fi
+  [[ -n "$moved" ]] || return 0
+  mkdir -p "$conf_dir"
+  chmod 0755 "$conf_dir"
+  export CHRONY_CONF PTP4L_CONF PTP_LOG_FILE
+  log main "Dateisystem schreibgeschützt – erzeugte Dateien liegen unter ${conf_dir}:${moved}"
+}
+
+# Datenverzeichnis dem Benutzer APP_USER übergeben: einmalig nach dem Update von 1.8 (bisher gehörte
+# es root), danach nur, falls root (confgen) etwas angelegt hat. -P/-h: Links selbst, nie ihr Ziel.
+data_dir_to_app() {  # data_dir_to_app [announce]
+  [[ -d "$DATA_DIR" ]] || return 0
+  chown -h "${APP_USER}:${APP_USER}" "$DATA_DIR" 2>/dev/null || true
+  chmod 0700 "$DATA_DIR" 2>/dev/null || true
+  [[ -n "$(find "$DATA_DIR" -mindepth 1 ! -user "$APP_USER" -print -quit 2>/dev/null)" ]] || return 0
+  [[ "${1:-}" == announce ]] && log main "Datenverzeichnis ${DATA_DIR} wird dem Benutzer ${APP_USER} übergeben …"
+  chown -R -P -h "${APP_USER}:${APP_USER}" "$DATA_DIR" \
+    || log main "WARNUNG: Datenverzeichnis nicht vollständig übernommen – Speichern kann scheitern."
+  return 0
+}
+
+# Benutzer für Dashboard und DNS-Weiterleiter vorbereiten: Verzeichnisse, Übernahme des
+# Datenverzeichnisses (bis 1.8 gehörte es root), Passwortdatei. Geht das nicht, bleibt alles wie
+# bisher (root) – mit deutlicher Warnung.
+prepare_app_user() {
+  if (( EUID != 0 )); then
+    APP_DROP_OFF="der Container läuft nicht als root"
+  elif ! id -u "$APP_USER" >/dev/null 2>&1; then
+    APP_DROP_OFF="Benutzer ${APP_USER} fehlt im Image"
+  elif ! command -v setpriv >/dev/null 2>&1; then
+    APP_DROP_OFF="setpriv fehlt im Image"
+  elif ! cap_has 7 || ! cap_has 6; then
+    APP_DROP_OFF="CAP_SETUID/CAP_SETGID fehlen (cap_add: [SETUID, SETGID])"
+  fi
+  rm -rf "$REQUEST_DIR" 2>/dev/null || true
+  mkdir -p "$REQUEST_DIR" "$DATA_DIR"
+  chmod 0750 "$REQUEST_DIR"
+  if [[ -n "$APP_DROP_OFF" ]]; then
+    if (( EUID == 0 )); then
+      log main "WARNUNG: Dashboard und DNS-Weiterleiter laufen als root, weil ${APP_DROP_OFF}."
+      "${EMIT_EVENT:-:}" service warn "Dashboard läuft als root – ${APP_DROP_OFF}" reason=privileges
+    fi
+    return 0
+  fi
+  chown "${APP_USER}:${APP_USER}" "$REQUEST_DIR"
+  data_dir_to_app announce
+  # Docker-Secret (WEB_PASSWORD_FILE) gehört oft root bzw. dem Benutzer auf dem Host und ist für
+  # ntpgui nicht lesbar: Kopie unter RUN_DIR, nur für die Gruppe ntpgui lesbar.
+  WEB_PASSWORD_FILE_APP=""
+  if [[ -n "${WEB_PASSWORD_FILE:-}" && -f "$WEB_PASSWORD_FILE" && -r "$WEB_PASSWORD_FILE" ]]; then
+    local dir="${RUN_DIR}/secrets"
+    mkdir -p "$dir"
+    chmod 0750 "$dir"
+    chgrp "$APP_USER" "$dir"
+    if head -c 8192 -- "$WEB_PASSWORD_FILE" > "${dir}/web_password.tmp" \
+       && chgrp "$APP_USER" "${dir}/web_password.tmp" && chmod 0440 "${dir}/web_password.tmp" \
+       && mv -f "${dir}/web_password.tmp" "${dir}/web_password"; then
+      WEB_PASSWORD_FILE_APP="${dir}/web_password"
+    fi
+  fi
+}
+
 start_logtee
-mkdir -p /var/run/chrony /var/lib/chrony /var/log/chrony /etc/linuxptp "$RUN_DIR"
+mkdir -p /var/run/chrony /var/lib/chrony "$RUN_DIR"
+use_run_when_readonly
+mkdir -p /var/log/chrony /etc/linuxptp 2>/dev/null || true
 echo "$$" > "${RUN_DIR}/supervisor.pid"
-rm -f "${RUN_DIR}/reload.request" "${RUN_DIR}/reload-chronyd.request"  # Anforderungen von vor dem Start sind erledigt
 write_status idle "bereit"
+prepare_app_user   # legt REQUEST_DIR neu an – Anforderungen von vor dem Start sind erledigt
+if ! cap_has 5; then
+  log main "WARNUNG: CAP_KILL fehlt – der Supervisor kann chronyd und das Dashboard nicht beenden."
+  log main "         Speichern mit Neustart der Dienste scheitert dann. Bei cap_drop: [ALL] gehört KILL zu cap_add."
+  "$EMIT_EVENT" service warn "CAP_KILL fehlt – Neustart der Zeitdienste nicht möglich" reason=capabilities
+fi
 
 # chronyd legt seine Rechte ab; gehören die Verzeichnisse root, schaltet er
 # still den Kommando-Socket ab und das Dashboard sieht nichts mehr. Das
-# Einstellungsverzeichnis des Dashboards bleibt root vorbehalten.
+# Datenverzeichnis des Dashboards gehört dem Benutzer ntpgui (prepare_app_user).
 CHRONY_USER=""
 for candidate in _chrony chrony; do
   if id -u "$candidate" >/dev/null 2>&1; then CHRONY_USER="$candidate"; break; fi
 done
 if [[ -n "$CHRONY_USER" ]]; then
-  chown -R "${CHRONY_USER}:${CHRONY_USER}" /var/run/chrony /var/log/chrony
+  chown -R "${CHRONY_USER}:${CHRONY_USER}" /var/run/chrony
+  chown -R "${CHRONY_USER}:${CHRONY_USER}" /var/log/chrony 2>/dev/null || true
   chown "${CHRONY_USER}:${CHRONY_USER}" /var/lib/chrony
   find /var/lib/chrony -mindepth 1 -maxdepth 1 ! -name ntp-gui \
     -exec chown -R "${CHRONY_USER}:${CHRONY_USER}" {} + 2>/dev/null || true
 fi
-chmod 750 /var/run/chrony
+# 0770: Das Dashboard (Gruppe _chrony) erreicht den Kommando-Socket, sonst niemand.
+chmod 770 /var/run/chrony
 
 rm -f "${RUN_DIR}/config-error"
 apply_config --start || { log main "Ohne gültige Konfiguration kein Start."; exit 1; }
 START_CONFIG_ERROR="$CONFIG_ERROR"   # gesetzt: gespeicherte Einstellungen abgelehnt, Start ohne sie
 start_services
 
-spawn web python3 "${APP_DIR}/server.py"
+# Dashboard ohne root. NET_RAW nur für die Client-Messung, NET_BIND_SERVICE nur für Ports unter 1024.
+WEB_CAPS=""
+[[ "${NTPGUI_CLIENTMON:-1}" == 1 ]] && WEB_CAPS+="net_raw,"
+[[ "${WEB_PORT:-8080}" =~ ^[0-9]+$ ]] && (( 10#${WEB_PORT:-8080} < 1024 )) && WEB_CAPS+="net_bind_service"
+if [[ -n "${WEB_PASSWORD_FILE_APP:-}" ]]; then
+  WEB_PASSWORD_FILE="$WEB_PASSWORD_FILE_APP" spawn_app web "$WEB_CAPS" python3 "${APP_DIR}/server.py"
+else
+  spawn_app web "$WEB_CAPS" python3 "${APP_DIR}/server.py"
+fi
 WEB_PID="$SPAWNED"
 SVC_ENTRY[web]="$WEB_PID"
 set_state web running

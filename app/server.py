@@ -599,14 +599,19 @@ def hardware_refresher(stop: threading.Event | None = None) -> None:
 
 
 def events_ingester(stop: threading.Event | None = None, interval: float = EVENTS_INTERVAL) -> None:
-    """Übernimmt die Ereignisse des Supervisors (RUN_DIR/events.jsonl) ins Protokoll."""
+    """Übernimmt die Ereignisse des Supervisors (RUN_DIR/events.jsonl) und des DNS-Weiterleiters
+    (events.jsonl in NTPGUI_REQUEST_DIR, wenn der ohne root läuft) ins Protokoll."""
     stop = stop or threading.Event()
-    path = os.path.join(RUN_DIR, "events.jsonl")
+    paths = [os.path.join(RUN_DIR, "events.jsonl")]
+    request_dir = os.environ.get("NTPGUI_REQUEST_DIR")
+    if request_dir and os.path.abspath(request_dir) != os.path.abspath(RUN_DIR):
+        paths.append(os.path.join(request_dir, "events.jsonl"))
     while True:
-        try:
-            events.ingest_supervisor(path)
-        except Exception as exc:  # nie den Thread verlieren
-            print(f"[web] Ereignisse des Supervisors nicht gelesen: {exc}", flush=True)
+        for path in paths:
+            try:
+                events.ingest_supervisor(path)
+            except Exception as exc:  # nie den Thread verlieren
+                print(f"[web] Ereignisse des Supervisors nicht gelesen: {exc}", flush=True)
         if stop.wait(interval):
             return
 
@@ -865,7 +870,8 @@ def _request_reload(name: str) -> bool:
     supervisor = os.path.join(RUN_DIR, "supervisor.pid")
     if not os.path.exists(supervisor):
         return False  # kein Supervisor (Entwicklung, Tests) – niemand würde die Datei lesen
-    path = os.path.join(RUN_DIR, name)
+    # Nur in das eigene Verzeichnis (NTPGUI_REQUEST_DIR): RUN_DIR gehört dem Supervisor (root).
+    path = os.path.join(os.environ.get("NTPGUI_REQUEST_DIR") or RUN_DIR, name)
     try:
         with open(path + ".tmp", "w", encoding="utf-8") as handle:
             handle.write(f"{time.time():.3f}\n")

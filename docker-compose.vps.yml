@@ -3,6 +3,9 @@
 #
 #   docker compose -f docker-compose.vps.yml up -d
 #
+# Schritt für Schritt (Firewall, Caddy mit Let's Encrypt, Cloudflare Tunnel,
+# NTS, Updates, Sicherung): docs/integrationen/vps.md
+#
 # Was hier anders ist als in docker-compose.yml (Erklärung im README unter
 # „Öffentlich erreichbarer Zeitserver“ und „Anmeldung und Zugang“):
 #   - Host-Netzwerk: chrony sieht die echten Absender. Im Bridge-Netz sieht es
@@ -12,6 +15,9 @@
 #   - NTP antwortet jeder Adresse, mit strengem Ratelimit und ohne
 #     Inselbetrieb (Clients weichen bei einem Ausfall auf andere Server aus).
 #   - Das Dashboard lauscht nur auf 127.0.0.1 und verlangt eine Anmeldung.
+#   - Container-Härtung komplett: schreibgeschütztes Root-Dateisystem, keine
+#     Capabilities außer den nötigen, no-new-privileges, Grenzen für Prozesse,
+#     Speicher und Log.
 #
 # Belegt auf dem Host: 123/udp (NTP), 127.0.0.1:8080 (Dashboard) und – nur
 # mit NTS-Server – 4460/tcp.
@@ -31,8 +37,42 @@ services:
 
     # SYS_TIME erlaubt chronyd, die Uhr zu stellen. Der Container teilt sich
     # die Uhr mit dem Host – auf einem VPS also mit allem, was dort läuft.
+    # Alles andere ist für den Start und die Rechteabgabe nötig: Nur der
+    # Supervisor bleibt root, das Dashboard läuft als Benutzer ntpgui ohne
+    # Capabilities, chronyd als _chrony nur mit SYS_TIME. Kein NET_RAW: Die
+    # Messung der Client-Uhren ist hier aus (CLIENTMON unten).
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     cap_add:
       - SYS_TIME
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETUID
+      - SETGID
+      - KILL              # ohne hängt das Neuladen nach dem Speichern
+      - NET_BIND_SERVICE  # Port 123 mit Host-Netzwerk
+    pids_limit: 512
+    mem_limit: 512m
+    cpus: 1.0
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    # Schreibgeschütztes Root-Dateisystem. Beschreibbar bleiben nur das Volume
+    # (/var/lib/chrony) und diese tmpfs. Die erzeugte chrony.conf landet dann
+    # automatisch unter /run/ntp-gui-conf. Für die DNS-Modi des Dashboards
+    # (eigene Server, DoT, DoH) zusätzlich „dns: [127.0.0.1]“ setzen – die
+    # resolv.conf lässt sich hier nicht umschreiben.
+    read_only: true
+    tmpfs:
+      - /run:rw,nosuid,nodev,noexec,mode=0755,size=64m
+      - /tmp:rw,nosuid,nodev,noexec,size=16m
+      - /var/log:rw,nosuid,nodev,noexec,mode=0755,size=32m
 
     environment:
       TZ: "Etc/UTC"
@@ -58,8 +98,12 @@ services:
       WEB_REQUIRE_AUTH: "true"
       WEB_USER: "admin"
       WEB_PASSWORD_FILE: "/run/secrets/web_password"
-      # Mit Reverse Proxy auf diesem Rechner (Anleitung: docs/integrationen/https.md):
-      # TRUSTED_PROXIES: "127.0.0.1/32,::1/128"
+      # Caddy (oder ein anderer Reverse Proxy) auf diesem Rechner reicht die
+      # Adresse des Browsers weiter (docs/integrationen/vps.md).
+      TRUSTED_PROXIES: "127.0.0.1/32,::1/128"
+
+      # Uhren der NTP-Clients nicht beobachten: Im Internet sind das fremde Geräte.
+      CLIENTMON: "false"
 
       # Benachrichtigungen und DNS-Weiterleiter nur zu öffentlichen Zielen.
       OUTBOUND_TARGETS: "public"
