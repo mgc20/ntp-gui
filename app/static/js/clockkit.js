@@ -37,7 +37,7 @@ export const ZONE_LABEL_LEN = 16;
 const HOURS_RANGE = /^([01]?[0-9]|2[0-3])-([01]?[0-9]|2[0-3])$/;
 /** Eingebaute Countdowns (?goal=, Etappe C): Neujahr und nächste Zeitumstellung in der Zone des Servers, dazu zwei feste
  *  Zeitpunkte – Unixzeit 2 000 000 000 und das Ende der NTP-Ära 0 (Rechnung in clockextras.js). */
-export const GOALS = ["newyear", "dst", "unix", "ntp"];
+export const GOALS = ["newyear", "dst", "unix", "ntp", "y2038"];
 const ISO_TIME = /^([0-9]{4})-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):([0-5][0-9])(?::([0-5][0-9]))?$/;
 
 // --- Darstellung: Layouts, Elemente, Farben (Studiouhr A3/A4) ---------------------------------
@@ -143,7 +143,7 @@ export const PARAM_SCHEMA = Object.freeze([
   // Ostereier (C3): 13:37, 12:34:56, Neujahr mit Konfetti, Schaltsekunde, Zeitumstellung, Konami-Code. eggs=0 schaltet sie
   // ab; ohne Spielereien (fun=0, Kiosk, lock=1, Kachel, OBS, E-Ink) gibt es sie ohnehin nie (clockextras.eggsAllowed).
   { name: "eggs", type: "flag", default: true },
-  // Eingebauter Countdown (Neujahr, nächste Zeitumstellung, Unixzeit 2 000 000 000, NTP-Ära 2036); ?until= geht vor.
+  // Eingebauter Countdown (Neujahr, nächste Zeitumstellung, Unixzeit 2 000 000 000, NTP-Ära 2036, Jahr 2038); ?until= geht vor.
   { name: "goal", type: "enum", values: GOALS, default: null },
   // Pomodoro: Dauer der Arbeitsphase (startet den Pomodoro-Timer statt ?timer=) und der Pause (ohne Angabe 5 min).
   { name: "pomo", type: "duration", default: null },

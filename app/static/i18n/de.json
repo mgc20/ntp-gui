@@ -804,13 +804,15 @@
       "newyear": "Neujahr",
       "dst": "nächste Zeitumstellung",
       "unix": "Unixzeit 2 000 000 000",
-      "ntp": "NTP-Ära 2036"
+      "ntp": "NTP-Ära 2036",
+      "y2038": "Jahr 2038 (Unixzeit 2³¹)"
     },
     "goal_label": {
       "newyear": "bis Neujahr",
       "dst": "bis zur Zeitumstellung",
       "unix": "bis Unixzeit 2 000 000 000",
-      "ntp": "bis zum Ende der NTP-Ära 0"
+      "ntp": "bis zum Ende der NTP-Ära 0",
+      "y2038": "bis zum Jahr-2038-Problem"
     },
     "goal_none": "keine Zeitumstellung in Sicht",
     "cd_plus": "+1 min",

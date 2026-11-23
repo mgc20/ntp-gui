@@ -37,7 +37,7 @@ LOOKS = ("studio", "contrast", "warm", "terminal", "paper", "pastel")
 PALETTE = ("amber", "red", "green", "cyan", "white", "ice", "yellow", "orange", "blue", "violet", "pink", "lime")
 STUDIO_COLORS = ("amber", "red", "green", "cyan", "white", "ice")
 TC_FPS = ("24", "25", "30", "50", "60", "29.97", "59.94")
-GOALS = ("newyear", "dst", "unix", "ntp")   # eingebaute Countdowns (GOALS in clockkit.js)
+GOALS = ("newyear", "dst", "unix", "ntp", "y2038")   # eingebaute Countdowns (GOALS in clockkit.js)
 
 MAX_ZONES = 6         # Weltzeit: höchstens so viele Zonen (tz) und Kurznamen (tzl)
 ZONE_LABEL_LEN = 16

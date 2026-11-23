@@ -137,7 +137,7 @@ Die Auswahl folgt der Faustformel. Jede Spielerei ist eine reine Funktion in `cl
 | Spielerei | Kurz | Aufwand |
 |---|---|---|
 | Timer-Engine: Eieruhr, Stoppuhr, Pomodoro | Zustandsautomat auf `performance.now()`, rechnet aus Differenzen. Große Tasten, „+1 min“. Das ⓘ sagt: „piept nur, solange die Seite offen ist“. | 1 PT (mit Countdown geteilt) |
-| Eigene Countdowns | bis zu 5 im `localStorage`. Eingebaut: Silvester, nächste Zeitumstellung, Unixzeit 2 000 000 000, NTP-Ära 2036 | 0,5 PT |
+| Eigene Countdowns | bis zu 5 im `localStorage`. Eingebaut: Silvester, nächste Zeitumstellung, Unixzeit 2 000 000 000, NTP-Ära 2036, Jahr 2038 (Unixzeit 2³¹) | 0,5 PT |
 | Nachtmodus | `dim=22-6`, `dimlevel=20..80`, optional automatisch Rotlicht, auf Serverzeit | 0,5 PT |
 | Design `binary` (BCD-Lämpchen) | offen aus 1.6.2 | 0,5 PT |
 | Nerd-Zeile | Unix s/ms, Tag des Jahres, MJD, GPS-Woche/-Sekunde, TAI (aus `leap.py`), hex, römisch. Eine gemeinsame Quelle mit den 1.6.2-Kuriositäten. Umgesetzt in 1.10: hex und römisch nur auf Bühnen ab 700 px Höhe, Unix-ms bewusst nicht (die Zeile zeichnet je Sekunde) | 1 PT |
@@ -305,7 +305,7 @@ Jede Etappe besteht aus mehreren kleinen PRs. Risiko für den Zeitdienst: A und 
 - **Screenshot-Matrix** aus A, erweitert um `tc`, `world` und On-Air.
 
 ### Etappe C – Spielereien (ca. 4–5 PT, einzeln verschiebbar)
-- **Inhalt:** Timer-Oberfläche (Eieruhr, Pomodoro) und eigene Countdowns, Nachtmodus, Design `binary`, Nerd-Zeile, Mondphase, Fortschrittsbalken, Spiel „Tippe auf :00“, Zeitzeichen und Ostereier mit Konami-Code. Damit sind die offenen 1.6.2-Punkte zu /clock erledigt.
+- **Inhalt:** Timer-Oberfläche (Eieruhr, Pomodoro) und eigene Countdowns, Nachtmodus, Design `binary`, Nerd-Zeile, Mondphase, Fortschrittsbalken, Spiel „Tippe auf :00“, Zeitzeichen und Ostereier mit Konami-Code. Damit sind die offenen 1.6.2-Punkte zu /clock erledigt: Designs Binär (`binary`) und 7-Segment (`face=seg`), Konami-Osterei und die Zeit-Kuriositäten – GPS-Woche und -Sekunde, TAI, MJD, Unixzeit in der Nerd-Zeile, Countdowns `?goal=unix`, `ntp`, `y2038` (Unixzeit 2³¹) und `dst`. Bewusst entfallen: das Julianische Datum (die Nerd-Zeile zeigt das MJD, JD = MJD + 2 400 000,5 – ein zweiter siebenstelliger Wert brächte keinen Nutzen, kostet aber Platz) und GPS−UTC als eigener Wert (steckt in TAI und GPS-Zeit: GPS−UTC = TAI−UTC − 19 s).
 - **Akzeptanz C:**
   - Jede Spielerei hat einen Node-Test mit Referenzwerten: Mondphase gegen Tabelle, TAI/GPS gegen `leap.py`.
   - Test: `eggs=0`, `fun=0` sowie die Studio-, Tile- und Kiosk-Profile zeigen nie ein Ei oder Konfetti.

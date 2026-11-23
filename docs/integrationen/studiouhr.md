@@ -39,7 +39,7 @@ http://zeitserver.lan:8080/clock?layout=tile&bg=transparent&design=digital&face=
 | `lead=40` | Anzeige 40 ms vorlaufen lassen, wenn der Bildschirm das Bild verzögert |
 | `p=regie` | ein im Dashboard gespeichertes Profil laden (Parameter in der Adresse gehen vor) |
 | `fun=0` | keine Spielereien: Knöpfe „Timer“ (Eieruhr, Pomodoro), „Nacht“ und „Spiel“ fehlen, ebenso Zeitzeichen, Mondphase, Nerd-Zeile, Fortschrittsbalken und Ostereier (in `studio`, `tile` und `banner` gesetzt; im Kiosk, mit `lock=1` und in OBS gilt dasselbe) |
-| `eggs=0` | keine Ostereier und kein Konfetti (13:37, Neujahr, Schaltsekunden-Tag, Zeitumstellung, Konami-Code), Timer und Spiel bleiben |
+| `eggs=0` | keine Ostereier und kein Konfetti (13:37, Neujahr, Schaltsekunden-Tag, Zeitumstellung, Konami-Code), Timer und Spiel bleiben. Ohne Ostereier – also auch mit `fun=0`, in `studio`, `tile`, `banner`, im Kiosk, mit `lock=1`, in OBS, auf E-Ink sowie in den Layouts Kachel und Streifen – fehlt auch die Schaltsekunden-Zeile über der Uhr („Heute Nacht gibt es eine Schaltsekunde …“); die Ankündigung im Band bleibt |
 
 Fest eingebaute Profile: `studio`, `tile`, `banner`, `kitchen`, `workshop`, `night` und `nerd`,
 z. B. `/clock?p=tile`.

@@ -79,7 +79,6 @@ body.is-stale .clock-time { color: var(--ink-unsure); }
 /* Mehr Inhalt als Höhe (Banner, Panels): oben anfangen statt nach oben aus dem Bild zu ragen. */
 body.clock-page { height: auto; }
 .clock-main { justify-content: safe center; }
-body.is-kiosk .clock-egg { margin-top: max(10px, env(safe-area-inset-top)); }
 .clock-egg { margin: 0 auto; padding: 0.4em 1em; max-width: min(46em, calc(100% - 24px)); box-sizing: border-box; text-align: center;
   font-size: clamp(13px, 1vw + 8px, 20px); color: var(--ink); border: 1px dashed var(--accent); border-radius: 12px; }
 

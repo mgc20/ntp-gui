@@ -1621,7 +1621,7 @@ async function clockTimerChecks(browser) {
     const problems = [];
     if (!panel.open) problems.push("Panel zu");
     if (panel.presets.join("|") !== "1 min|3 min|5 min|10 min|15 min|30 min") problems.push(`Schnellwahl ${panel.presets}`);
-    if (panel.goals.join(" ") !== "/clock?goal=newyear /clock?goal=dst /clock?goal=unix /clock?goal=ntp") problems.push(`Ziele ${panel.goals}`);
+    if (panel.goals.join(" ") !== "/clock?goal=newyear /clock?goal=dst /clock?goal=unix /clock?goal=ntp /clock?goal=y2038") problems.push(`Ziele ${panel.goals}`);
     if (panel.small.length) problems.push(`Tippflächen < 24 px: ${panel.small.join(", ")}`);
     if (panel.hscroll > 0) problems.push(`Überbreite ${panel.hscroll} px`);
     if (!panel.untilFits) problems.push("Platzhalter im Feld „Ziel“ abgeschnitten");
@@ -1954,11 +1954,13 @@ async function clockExtrasChecks(browser) {
 }
 
 // Studiouhr C3 (clockFunChecks, TOUR_FUN_ONLY=1): Spiel „Tippe auf :00“, Zeitzeichen und Ostereier. Mit angehaltener
-// Playwright-Uhr: Osterei 13:37 auf den neun Flächen (im Bild, in Kachel und Streifen nie, keine Scrollbalken), Neujahr
+// Playwright-Uhr: Osterei 13:37 auf den neun Flächen (im Bild, in Kachel und Streifen nie, keine Scrollbalken; Streifen
+// auch fest per ?layout=strip und per Taste L bei 1920×1080), Design tc mit Zone des Servers (Ei zu deren 13:37), Neujahr
 // mit CSS-Konfetti (bei „weniger Bewegung“ nur Text), Konami-Code (Konfetti, Binäruhr bis zum Neuladen, nicht gemerkt).
 // Nie ein Ei oder Konfetti mit eggs=0, fun=0, in studio, tile, banner, im Kiosk (auch aus einem Profil), mit lock=1 und
 // in OBS. Panel „Spiel“ bei 390 und 1920 px (Tipp mit Maus und Taste, Ergebnis, Bestwert im localStorage, auch bei
-// gesperrtem Speicher ehrlich), Zeitzeichen-Knöpfe nur mit Spielereien. Echtzeit: keine Long Tasks, keine Bildschleife.
+// gesperrtem Speicher ehrlich; langer Druck mit Maus und Finger ergibt genau eine Wertung), Zeitzeichen-Knöpfe nur mit
+// Spielereien. Echtzeit: keine Long Tasks, keine Bildschleife.
 function funState() {
   const root = document.documentElement;
   const visible = (id) => { const el = document.getElementById(id); if (!el) return false; const r = el.getBoundingClientRect();
@@ -2005,6 +2007,45 @@ async function clockFunChecks(browser) {
       !small && got.eggText !== "13:37 – leet." ? `Text „${got.eggText}“` : "", got.egg && !got.eggInside ? "Ei außerhalb" : "",
       got.confetti ? "Konfetti ohne Anlass" : "", got.vscroll > 0 || got.hscroll > 0 ? `Scrollbalken (${got.hscroll}/${got.vscroll} px)` : "",
       ...errors(got, msgs)].filter(Boolean));
+  }
+  // 1b) Streifen bei 1920×1080: fest (?layout=strip, auch nach dem Konami-Code) und per Taste L – nie ein Ei.
+  {
+    const { ctx, page, msgs } = await openPausedClock(browser, { width: 1920, height: 1080, query: "?layout=strip", at: LEET });
+    const fixed = await page.evaluate(funState);
+    for (const key of KONAMI) await page.keyboard.press(key);
+    await page.waitForTimeout(400);
+    const after = await page.evaluate(funState);
+    await shot(page, "strip-1920x1080");
+    await ctx.close();
+    note("/clock 13:37 ?layout=strip 1920×1080", [fixed.layout === "strip" ? "" : `Layout ${fixed.layout}`,
+      fixed.egg ? `Ei „${fixed.eggText}“` : "", after.egg ? `Ei nach Konami „${after.eggText}“` : "",
+      after.confetti || after.pieces ? "Konfetti" : "", ...errors(after, msgs)].filter(Boolean));
+  }
+  {
+    const { ctx, page, msgs, clock } = await openPausedClock(browser, { width: 1920, height: 1080, at: LEET });
+    const seen = [];
+    for (let i = 0; i < 6; i += 1) {
+      const got = await page.evaluate(funState);
+      seen.push([got.layout, got.egg]);
+      await page.keyboard.press("l");
+      await clock.run(200);
+    }
+    const last = await page.evaluate(funState);
+    await ctx.close();
+    const wrong = seen.filter(([layout, egg]) => egg === ["tile", "strip"].includes(layout));
+    note("/clock 13:37 Taste L", [seen.some(([layout]) => layout === "strip") ? "" : `kein Streifen ${JSON.stringify(seen)}`,
+      wrong.length ? `Ei falsch ${JSON.stringify(seen)}` : "", ...errors(last, msgs)].filter(Boolean));
+  }
+  // 1c) Design tc, Gerät in UTC, Server in Berlin: Das Ei kommt zu 13:37 der Anzeige (Berlin), nicht eine Stunde später.
+  {
+    const reply = (ms) => ({ t1: ms / 1000, t2: ms / 1000, synchronised: true, running: true, level: "good", accuracy: 0.0004,
+      stratum: 1, leap: "Normal", leap_next: null, source_kind: "GPS", source: null, public: true, zone: "Europe/Berlin" });
+    const { ctx, page, msgs } = await openPausedClock(browser, { width: 1920, height: 1080, query: "?design=tc", at: LEET,
+      zone: "UTC", reply });
+    const got = await page.evaluate(funState);
+    await ctx.close();
+    note("/clock 13:37 tc mit Zone des Servers", [got.design === "tc" ? "" : `Design ${got.design}`,
+      got.egg && got.eggText === "13:37 – leet." ? "" : `Ei „${got.egg ? got.eggText : ""}“`, ...errors(got, msgs)].filter(Boolean));
   }
   // 2) Neujahr: Konfetti per CSS, bei „weniger Bewegung“ nur Text.
   for (const [width, height, reduced] of [[1920, 1080, false], [390, 844, false], [1920, 1080, true]]) {
@@ -2086,6 +2127,45 @@ async function clockFunChecks(browser) {
       sizes.every((v) => v >= 24) ? "" : `Tippfläche ${Math.min(...sizes)} px`, tone.pips ? "" : "Zeitzeichen fehlen",
       /keine Referenz/.test(tone.line) ? "" : "Hinweis Referenz fehlt",
       second.hscroll > 0 ? `Überbreite ${second.hscroll} px` : "", ...errors(second, msgs)].filter(Boolean));
+  }
+  // 5a) Langer Druck (700 ms) mit Maus und Finger: genau eine Wertung – der click beim Loslassen zählt nicht noch einmal.
+  for (const how of ["mouse", "touch"]) {
+    const touch = how === "touch";
+    const { ctx, page, msgs, clock } = await openPausedClock(browser, touch ? { width: 390, height: 844, touch: true }
+      : { width: 1920, height: 1080 });
+    await page.click("#mode-game");
+    await clock.run(500);
+    await page.evaluate(() => {
+      window.__results = [];
+      new MutationObserver(() => window.__results.push(document.getElementById("game-result").textContent))
+        .observe(document.getElementById("game-result"), { childList: true, characterData: true, subtree: true });
+    });
+    await page.locator("#game-tap").scrollIntoViewIfNeeded();
+    const box = await page.locator("#game-tap").boundingBox();
+    const x = box.x + box.width / 2;
+    const y = box.y + box.height / 2;
+    let cdp = null;
+    if (touch) {
+      cdp = await ctx.newCDPSession(page);
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] });
+    } else {
+      await page.mouse.move(x, y);
+      await page.mouse.down();
+    }
+    await clock.run(700);
+    if (touch) await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    else await page.mouse.up();
+    await clock.run(300);
+    const results = await page.evaluate(() => window.__results.filter(Boolean));
+    // Ein click ohne Zeiger (Screenreader: element.click(), detail 0) zählt selbst – genau einmal.
+    await clock.run(1000);
+    await page.evaluate(() => document.getElementById("game-tap").click());
+    await clock.run(300);
+    const reader = await page.evaluate(() => window.__results.filter(Boolean).length);
+    const got = await page.evaluate(funState);
+    await ctx.close();
+    note(`/clock Spiel langer Druck ${how === "touch" ? "Finger" : "Maus"}`, [results.length === 1 ? "" : `${results.length} Wertungen ${JSON.stringify(results)}`,
+      reader === results.length + 1 ? "" : `Screenreader-Klick: ${reader - results.length} Wertungen`, ...errors(got, msgs)].filter(Boolean));
   }
   // 5b) Gesperrter Speicher: Bestwert gilt bis zum Neuladen, ehrlich gesagt; kein Fehler.
   {

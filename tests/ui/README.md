@@ -57,11 +57,15 @@ Der Rundgang öffnet jede Route bei 1440 und 390 px, hell und dunkel, und meldet
   nur localStorage); keine Zusätze in `studio`, `tile`, `banner`, mit `fun=0` und ohne `show`; im Ruhebetrieb keine
   Long Tasks und keine Bildschleife,
 - Spiel, Zeitzeichen und Ostereier der Studiouhr C3 (`clockFunChecks`, einzeln mit `TOUR_FUN_ONLY=1`): Osterei 13:37 auf
-  den neun Flächen (im Bild; in Kachel, Streifen und Fenstern bis 320 px Höhe nie), Neujahr mit CSS-Konfetti (bei
+  den neun Flächen (im Bild; in Kachel, Streifen und Fenstern bis 320 px Höhe nie, Streifen auch fest per
+  `?layout=strip` und per Taste L bei 1920×1080), Design `tc` mit Zone des Servers (Ei zu deren 13:37 bei Gerät in
+  UTC), Neujahr mit CSS-Konfetti (bei
   „weniger Bewegung“ nur Text), Konami-Code (Konfetti, Binäruhr nicht gemerkt, das abschließende A sagt nichts an); nie
   ein Ei oder Konfetti mit `eggs=0`, `fun=0`, in `studio`, `tile`, `banner`, mit `kiosk=1` (auch `p=nerd&kiosk=1`),
   `lock=1` und in OBS; Panel „Spiel“ bei 390, 768 und 1920 px (Tipp mit Maus und Enter, Ergebnis, Messgenauigkeit,
-  Bestwert im localStorage, Tippflächen ≥ 24 px, gesperrter Speicher ehrlich), Zeitzeichen-Knöpfe im Panel Ton; dazu ein
+  Bestwert im localStorage, Tippflächen ≥ 24 px, gesperrter Speicher ehrlich; langer Druck von 700 ms mit Maus und
+  Finger ergibt genau eine Wertung, ein Klick ohne Zeiger wie vom Screenreader genau eine), Zeitzeichen-Knöpfe im Panel
+  Ton; dazu ein
   Lauf in Echtzeit ohne Long Tasks und ohne Bildschleife, Konfetti danach wieder weg,
 - die „Heute“-Zeitleiste der Übersicht mit einem erfundenen Tag (Holdover 03:00–04:30, drei Ereignisse) bei 390 und
   1440 px: genau drei Marker an der richtigen Stelle, Holdover-Abschnitt im Band, Marker im Diagramm, Tagesbericht-Satz,

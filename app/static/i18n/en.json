@@ -804,13 +804,15 @@
       "newyear": "New Year",
       "dst": "next clock change",
       "unix": "Unix time 2,000,000,000",
-      "ntp": "NTP era 2036"
+      "ntp": "NTP era 2036",
+      "y2038": "Year 2038 (Unix time 2³¹)"
     },
     "goal_label": {
       "newyear": "to New Year",
       "dst": "to the clock change",
       "unix": "to Unix time 2,000,000,000",
-      "ntp": "to the end of NTP era 0"
+      "ntp": "to the end of NTP era 0",
+      "y2038": "to the year 2038 problem"
     },
     "goal_none": "no clock change ahead",
     "cd_plus": "+1 min",

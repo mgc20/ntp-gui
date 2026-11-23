@@ -170,15 +170,17 @@ class EingebauteCountdownsTest(unittest.TestCase):
         out = run_fx("""
           const now = Date.UTC(2026, 10, 23, 12);
           console.log(JSON.stringify({ unix: x.goalTarget("unix", now), ntp: x.goalTarget("ntp", now),
-            consts: [x.UNIX_2E9_MS, x.NTP_ERA_MS], bad: [x.goalTarget("nope", now), x.goalTarget("unix", NaN)], goals: k.GOALS }));
+            y2038: x.goalTarget("y2038", now), consts: [x.UNIX_2E9_MS, x.NTP_ERA_MS, x.Y2038_MS], bad: [x.goalTarget("nope", now), x.goalTarget("unix", NaN)], goals: k.GOALS }));
         """)
         unix = ms(datetime.datetime.fromtimestamp(2_000_000_000, UTC))
         ntp = ms(datetime.datetime(1900, 1, 1, tzinfo=UTC) + datetime.timedelta(seconds=2 ** 32))
-        self.assertEqual((out["unix"], out["ntp"]), (unix, ntp))
-        self.assertEqual(out["consts"], [unix, ntp])
+        y2038 = ms(datetime.datetime.fromtimestamp(2 ** 31, UTC))
+        self.assertEqual((out["unix"], out["ntp"], out["y2038"]), (unix, ntp, y2038))
+        self.assertEqual(out["consts"], [unix, ntp, y2038])
+        self.assertEqual(y2038, ms(datetime.datetime(2038, 1, 19, 3, 14, 8, tzinfo=UTC)), "Jahr-2038-Problem")
         self.assertEqual(ntp, ms(datetime.datetime(2036, 2, 7, 6, 28, 16, tzinfo=UTC)))
         self.assertEqual(out["bad"], [None, None], "NaN wird in JSON zu null")
-        self.assertEqual(out["goals"], ["newyear", "dst", "unix", "ntp"])
+        self.assertEqual(out["goals"], ["newyear", "dst", "unix", "ntp", "y2038"])
 
     def test_neujahr_in_der_zone_des_servers(self):
         import zoneinfo
@@ -381,7 +383,7 @@ class BedienungTest(unittest.TestCase):
 class SchemaUndServerTest(unittest.TestCase):
     def test_server_allowlist_neue_parameter(self):
         self.assertEqual(clockprofiles.PARAMS["fun"], ("flag", {}))
-        self.assertEqual(clockprofiles.PARAMS["goal"], ("enum", {"values": ("newyear", "dst", "unix", "ntp")}))
+        self.assertEqual(clockprofiles.PARAMS["goal"], ("enum", {"values": ("newyear", "dst", "unix", "ntp", "y2038")}))
         self.assertEqual(clockprofiles.PARAMS["dimlevel"], ("int", {"min": 20, "max": 80}))
         self.assertEqual(list(clockprofiles.PARAMS)[-1], "test")
         clean = clockprofiles.clean_profile({"title": "Küche", "params": {
@@ -538,7 +540,7 @@ class SeitenregelnTest(unittest.TestCase):
             data = json.loads((STATIC / "i18n" / f"{lang}.json").read_text(encoding="utf-8"))["clock"]
             with self.subTest(lang=lang):
                 for key in ("goal_name", "goal_label"):
-                    self.assertEqual(sorted(data[key]), ["dst", "newyear", "ntp", "unix"])
+                    self.assertEqual(sorted(data[key]), ["dst", "newyear", "ntp", "unix", "y2038"])
                 for name in ("fun", "goal", "pomo", "pause", "dim", "dimlevel", "dimred"):
                     self.assertTrue(data["link"]["f"][name])
                 self.assertTrue(data["link"]["group"]["night"])

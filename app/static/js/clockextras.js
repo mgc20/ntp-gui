@@ -127,6 +127,8 @@ export function pomoReset(pomo) {
 export const UNIX_2E9_MS = 2_000_000_000_000;
 /** Ende der NTP-Ära 0 (2^32 s nach dem 1.1.1900): 07.02.2036 06:28:16 UTC. */
 export const NTP_ERA_MS = Date.UTC(2036, 1, 7, 6, 28, 16);
+/** Jahr-2038-Problem: 2^31 s Unixzeit (Überlauf vorzeichenbehafteter 32-Bit-Zähler), 19.01.2038 03:14:08 UTC. */
+export const Y2038_MS = 2 ** 31 * 1000;
 const DAY_MS = 86_400_000;
 const DST_HORIZON_DAYS = 400;
 const dstCache = new Map();   // Zone → { from, at }: nächste Umstellung ab from (at = NaN: keine in Sicht)
@@ -176,12 +178,14 @@ export function recentOffsetChange(nowMs, zone = null, spanMs = cd.DAILY_HOLD_MS
  *   newyear: 1. Januar 00:00 in der Zone – eine Stunde lang (holdMs) bleibt das gerade erreichte Neujahr stehen
  *            (Überzeit „+00:12:00“), danach zählt es auf das nächste;
  *   dst:     nächste Zeitumstellung in der Zone (eine Stunde lang die gerade erfolgte); keine in Sicht: NaN;
- *   unix:    Unixzeit 2 000 000 000; ntp: Ende der NTP-Ära 0 – feste Zeitpunkte, danach Überzeit wie bei ?until=.
+ *   unix:    Unixzeit 2 000 000 000; ntp: Ende der NTP-Ära 0; y2038: Unixzeit 2^31 (Jahr-2038-Problem) – feste
+ *            Zeitpunkte, danach Überzeit wie bei ?until=.
  */
 export function goalTarget(goal, nowMs, zone = null, holdMs = cd.DAILY_HOLD_MS) {
   if (!Number.isFinite(nowMs)) return NaN;
   if (goal === "unix") return UNIX_2E9_MS;
   if (goal === "ntp") return NTP_ERA_MS;
+  if (goal === "y2038") return Y2038_MS;
   if (goal === "newyear") {
     const year = cd.zoneParts(nowMs, zone).y;
     const reached = cd.zonedTime({ y: year, mo: 1, d: 1 }, zone);
@@ -581,12 +585,28 @@ export function eggsAllowed({ eggs = true, fun = true, kiosk = false, lock = fal
   return eggs === true && funControls({ fun, kiosk, lock, layout, obs, eink }).fun;
 }
 
+/**
+ * Osterei (und Konfetti) in diesem Layout zeigen? Nur mit Erlaubnis (eggsAllowed) und nie in Kachel und Streifen – dort
+ * steht nur die Zeit, auch wenn das Layout erst zur Laufzeit (Taste L, flaches Fenster) dazu wird.
+ */
+export function eggShown({ allowed = false, layout = "normal" } = {}) {
+  return allowed === true && layout !== "tile" && layout !== "strip";
+}
+
 /** Ziel des Spiels: die volle Sekunde oder die volle Minute (Schrittweite in ms). */
 export const TAP_UNITS = Object.freeze({ second: 1000, minute: 60_000 });
 /** localStorage: Bestwerte des Spiels je Ziel ({"second": 12.3, "minute": 410}), nur dieser Browser. */
 export const TAP_BEST_KEY = "ntp-gui-clock-tap";
 /** Stufen der Wertung (Betrag der Abweichung in ms, aufsteigend); darüber „daneben“. */
 export const TAP_LEVELS = Object.freeze([["perfect", 10], ["great", 30], ["good", 100], ["ok", 300]]);
+
+/**
+ * Zählt ein click am Spielknopf als eigener Tipp? Nur ohne Zeiger dahinter (MouseEvent.detail 0: Screenreader oder
+ * Tastatur). Zu Maus und Finger gehört immer ein pointerdown, der schon gewertet hat – auch bei langem Druck.
+ */
+export function tapFromClick(detail) {
+  return detail === 0;
+}
 
 /**
  * Abweichung eines Tipps zur nächsten vollen Sekunde bzw. Minute (ms, Serverzeit): negativ zu früh, positiv zu spät.
@@ -688,6 +708,20 @@ export function planPips(clock, { scope = "hour", afterSecond = -Infinity, horiz
     out.push({ second, at: clock.audio + (second * 1000 - clock.server) / 1000, kind, ...PIPS[kind] });
   }
   return out;
+}
+
+/**
+ * Wie weit das Zeitzeichen vorausplanen (ms)? Sichtbar reicht horizonMs (der Sekundentakt plant laufend nach). Im
+ * versteckten Tab drosselt der Browser die Zeitgeber bis auf etwa einen Weckruf je Minute: dann bis einschließlich zum
+ * langen Ton der nächsten vollen Stunde bzw. Minute (offsetMs: Abstand der Zone zu UTC) – höchstens sechs Töne je Ziel.
+ */
+export function pipsHorizonMs(serverMs, { scope = "hour", hidden = false, horizonMs = 1500, offsetMs = 0 } = {}) {
+  if (!hidden || !Number.isFinite(serverMs) || !PIP_SCOPES.includes(scope)) return horizonMs;
+  const step = scope === "hour" ? 3_600_000 : 60_000;
+  const off = Number.isFinite(offsetMs) ? Math.round(offsetMs / 1000) * 1000 : 0;
+  const local = serverMs + off;
+  const next = (Math.floor(local / step) + 1) * step - off;   // nächste volle Stunde bzw. Minute (UTC-ms)
+  return Math.max(horizonMs, next - serverMs + 500);
 }
 
 /**

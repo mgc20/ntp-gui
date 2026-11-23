@@ -1215,7 +1215,8 @@ Die Seite **Uhrqualität** zeigt, was die Uhr deines Servers langfristig beeinfl
   Tab oder schläft das Gerät, bleibt der Ton aus. Lässt der Browser kein Speichern zu (privates Fenster), sagt das
   Panel das beim Merken. **Eigene Countdowns** (bis zu fünf, Beschriftung und Ziel wie `?label=` und `?until=`) merkt
   sich nur dieser Browser; ein Klick öffnet `/clock?until=…&label=…`. Eingebaut sind `?goal=newyear` (Neujahr),
-  `?goal=dst` (nächste Zeitumstellung), `?goal=unix` (Unixzeit 2 000 000 000) und `?goal=ntp` (Ende der NTP-Ära 2036),
+  `?goal=dst` (nächste Zeitumstellung), `?goal=unix` (Unixzeit 2 000 000 000), `?goal=ntp` (Ende der NTP-Ära 2036) und `?goal=y2038`
+  (Jahr-2038-Problem: Unixzeit 2³¹ am 19.01.2038 03:14:08 UTC),
   gerechnet wie `?until=` in der Zeitzone des Servers. Der **Nachtmodus** dimmt die Uhr (Knopf **Nacht** oder Taste
   N); mit `?dim=22-6` schaltet er nach Uhrzeit (volle Stunden in der Ortszeit des Geräts, auch wenn groß UTC oder die
   Zone des Servers steht), `?dimlevel=20..80` setzt die Helligkeit in % (Standard 40), `?dimred=1` macht ihn rot.
@@ -1250,14 +1251,19 @@ Die Seite **Uhrqualität** zeigt, was die Uhr deines Servers langfristig beeinfl
   Den Bestwert merkt sich nur dieser Browser; lässt er kein Speichern zu, gilt er bis zum Neuladen. Im Panel **Ton**
   gibt es dazu das **Zeitzeichen** wie im Radio: fünf kurze Töne und ein langer auf der vollen Stunde (oder jede
   Minute), auf die volle Stunde deiner Ortszeit. Es startet nur nach deinem Klick und ist ausdrücklich keine Referenz:
-  Browser-Audio und Lautsprecher verzögern den Ton um einige bis weit über 100 ms (Bluetooth mehr). **Ostereier**
+  Browser-Audio und Lautsprecher verzögern den Ton um einige bis weit über 100 ms (Bluetooth mehr). Im Hintergrund-Tab
+  plant die Uhr die Töne bis zur nächsten vollen Stunde bzw. Minute voraus; schläft das Gerät oder beendet der Browser
+  den Tab, bleibt das Zeitzeichen aus. **Ostereier**
   zeigt die Uhr als Zeile über der Bühne: um 13:37, um 12:34:56, in den ersten zehn Minuten des neuen Jahres (mit
   **Konfetti**), am Tag einer möglichen oder angekündigten Schaltsekunde und am Tag der Zeitumstellung. Der
   **Konami-Code** (↑ ↑ ↓ ↓ ← → ← → B A) bringt Konfetti und schaltet bis zum Neuladen auf die Binäruhr. Konfetti fällt
   nur per CSS (zwei Durchläufe, dann ist es weg); wünscht dein System weniger Bewegung, bleibt es beim Text.
-  `?eggs=0` schaltet alle Ostereier ab (auch die Schaltsekunden-Zeile; die Ankündigung im Band bleibt). Spiel und
-  Zeitzeichen gibt es nur, wo auch Timer und Nacht erscheinen: nie mit `?fun=0` (Voreinstellungen `studio`, `tile`,
-  `banner`), im Kiosk, mit `?lock=1`, in der Kachel und in OBS – dort gibt es auch keine Ostereier und kein Konfetti.
+  Die Ostereier richten sich nach der großen Zeit (Taste U: UTC, dann ohne Zeitumstellung; Design `tc` mit Zone des
+  Servers: deren Zeit und Tag). `?eggs=0` schaltet alle Ostereier ab (auch die Schaltsekunden-Zeile; die Ankündigung
+  im Band bleibt). Spiel und Zeitzeichen gibt es nur, wo auch Timer und Nacht erscheinen: nie mit `?fun=0`
+  (Voreinstellungen `studio`, `tile`, `banner`), im Kiosk, mit `?lock=1`, in der Kachel und in OBS – dort gibt es auch
+  keine Ostereier (also auch keine Schaltsekunden-Zeile) und kein Konfetti. Im Layout Streifen (auch per Taste L) steht
+  nur die Zeit: kein Osterei, kein Konfetti.
 - **Timecode-Anzeige (Studiouhr, Design `tc`):** `/clock?design=tc` zeigt die Tageszeit des Servers als Timecode
   `HH:MM:SS` mit einer Feinstelle, gerechnet in der Zeitzone des Servers; weicht sie von der deines Geräts ab, gehören
   auch Datum und Woche darunter zur Zone des Servers, und nach Taste U steht dessen Zeit mit Zonenname in der

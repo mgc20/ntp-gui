@@ -90,6 +90,11 @@ class SpielTest(unittest.TestCase):
         self.assertEqual(out["neg"]["server"], None)
         self.assertEqual(out["text"], ["0 ms", "3,4 ms", "9,9 ms", "10 ms", "42 ms", "1,5 s"])
 
+    def test_click_zaehlt_nur_ohne_zeiger(self):
+        """Langer Druck mit Maus oder Finger: Der click nach dem Loslassen wertet nicht noch einmal (detail ≥ 1)."""
+        out = run_fx("console.log(JSON.stringify([0, 1, 2, 3, undefined, null, -1, NaN, '0'].map((d) => x.tapFromClick(d))));")
+        self.assertEqual(out, [True, False, False, False, False, False, False, False, False])
+
     def test_bestwert_aus_dem_speicher_auch_feindlich(self):
         out = run_fx("""
           const bad = ['', 'null', '[]', '[1,2]', '"x"', '{', '{"second":-1}', '{"second":"5"}', '{"second":501}',
@@ -164,6 +169,34 @@ class ZeitzeichenTest(unittest.TestCase):
         self.assertEqual(got[3][-1]["second"] * 1000, hour - 1_800_000, "Indien: volle Stunde um 10:30 UTC")
         self.assertEqual(got[4], [])
         self.assertEqual([t["kind"] for t in got[6]], ["short", "short", "long"])
+
+    def test_versteckter_tab_plant_bis_zum_naechsten_ziel(self):
+        """Sichtbar 1,5 s; versteckt bis einschließlich zum langen Ton der nächsten vollen Stunde bzw. Minute."""
+        hour = ms(datetime.datetime(2026, 11, 23, 11, 0, 0, tzinfo=UTC))
+        out = run_fx(f"""
+          const hour = {hour};
+          const plan = (server, scope, offsetMs = 0) => {{
+            const horizonMs = x.pipsHorizonMs(server, {{ scope, hidden: true, horizonMs: 1500, offsetMs }});
+            return {{ horizonMs, tones: x.planPips({{ audio: 0, server, exact: true }}, {{ scope, horizonMs, offsetMs }})
+              .map((t) => [t.second * 1000 - hour, t.kind]) }};
+          }};
+          console.log(JSON.stringify({{
+            visible: x.pipsHorizonMs(hour - 3_540_000, {{ scope: "hour", hidden: false }}),
+            hourFar: plan(hour - 3_540_000, "hour"),          // 10:01:00 – versteckt: bis 11:00:00
+            hourNear: plan(hour - 3_000, "hour"),             // 10:59:57
+            minute: plan(hour - 45_000, "minute"),            // 10:59:15
+            india: plan(hour - 3_540_000, "hour", 19_800_000),   // +5:30: volle Stunde auf :30 UTC
+            bad: [x.pipsHorizonMs(NaN, {{ hidden: true }}), x.pipsHorizonMs(hour, {{ scope: "day", hidden: true }})],
+          }}));
+        """)
+        self.assertEqual(out["visible"], 1500)
+        want = [[-5000, "short"], [-4000, "short"], [-3000, "short"], [-2000, "short"], [-1000, "short"], [0, "long"]]
+        self.assertEqual(out["hourFar"]["tones"], want)
+        self.assertEqual(out["hourFar"]["horizonMs"], 3_540_000 + 500)
+        self.assertEqual(out["hourNear"]["tones"], want[3:])
+        self.assertEqual(out["minute"]["tones"], want, "jede Minute: bis 11:00:00")
+        self.assertEqual(out["india"]["tones"], [[t - 1_800_000, k] for t, k in want], "Indien: 10:30 UTC")
+        self.assertEqual(out["bad"], [1500, 1500])
 
     def test_ungueltiges_ergibt_keine_toene(self):
         out = run_fx("""
@@ -311,6 +344,16 @@ class OstereierTest(unittest.TestCase):
             self.assertEqual(out[name]["egg"]["kind"], "newyear")
 
 
+    def test_nie_in_kachel_und_streifen(self):
+        """Ostereier und Konfetti auch zur Laufzeit (Taste L, flaches Fenster) nie in Kachel und Streifen."""
+        out = run_fx("""
+          const layouts = ["normal", "banner", "column", "world", "strip", "tile"];
+          console.log(JSON.stringify([layouts.map((layout) => x.eggShown({ allowed: true, layout })),
+            layouts.map((layout) => x.eggShown({ allowed: false, layout })), x.eggShown(), x.eggShown({ allowed: 1 })]));
+        """)
+        self.assertEqual(out, [[True, True, True, True, False, False], [False] * 6, False, False])
+
+
 class SchemaUndServerTest(unittest.TestCase):
     @unittest.skipUnless(shutil.which("node"), "node fehlt")
     def test_schema_und_link_baukasten(self):
@@ -372,9 +415,18 @@ class SeitenregelnTest(unittest.TestCase):
         self.assertIn("eggs: params.eggs, fun: params.fun, kiosk: params.kiosk, lock: params.lock", start)
         self.assertIn("obs: OBS, eink: params.eink", start)
         egg = self.body("function renderEgg(")
-        self.assertLess(egg.index("if (EGGS_ON)"), egg.index("kit.leapEgg("), "auch die Schaltsekunde nur mit Erlaubnis")
+        self.assertLess(egg.index("if (fx.eggShown({ allowed: EGGS_ON,"), egg.index("kit.leapEgg("),
+                        "auch die Schaltsekunde nur mit Erlaubnis")
         self.assertIn("setText(node, t(", egg)
         self.assertNotIn("innerHTML", egg)
+        self.assertIn("fx.eggShown({ allowed: EGGS_ON, layout: state.layout })", egg, "nie in Kachel und Streifen")
+        self.assertIn("fx.eggShown({ allowed: true, layout: state.layout })", self.body("function startConfetti()"))
+        # Die Eier richten sich nach der großen Zeit: tc mit Zone des Servers deren Zeit, Tag und Zeitumstellung.
+        render = self.body("function render(now)")
+        self.assertIn("mo: shown.getUTCMonth() + 1, d: shown.getUTCDate() }, tcZone());", render)
+        dst = self.body("function dstToday(")
+        self.assertLess(dst.index("if (state.utcBig) return 0;"), dst.index("fx.dstShiftOfDay(ms, zone)"), "UTC groß: keine Umstellung")
+        self.assertIn("${zone || \"\"}|", dst)
         key = self.body("function onKey(event)")
         self.assertIn("if (EGGS_ON) {", key)
         self.assertLess(key.index("fx.konamiStep("), key.index("const actions = {"), "das letzte A sagt nicht die Zeit an")
@@ -410,6 +462,9 @@ class SeitenregelnTest(unittest.TestCase):
         self.assertIn("} catch (error)", store)
         self.assertEqual(re.findall(r"fetch\(\s*[\"`]([^\"`?]+)", self.js), ["/api/v1/time", "/api/v1/clock/profile"])
         self.assertIn('$("game-tap").addEventListener("pointerdown"', self.js)
+        # Langer Druck zählt einmal: der click nur ohne Zeiger dahinter, kein Zeitfenster mehr.
+        self.assertIn("if (fx.tapFromClick(event.detail)) gameTap(event.timeStamp);", self.js)
+        self.assertNotIn("GAME_CLICK_GAP_MS", self.js)
         self.assertRegex(self.html, r'id="mode-game"[^>]* hidden')
         self.assertIn('$("mode-game").hidden = !CONTROLS.fun;', self.body("async function start()"))
         self.assertIn("@media (max-height: 320px) { #mode-game { display: none; } }", self.css, "flache Fenster: Leiste bricht nicht um")
@@ -418,7 +473,10 @@ class SeitenregelnTest(unittest.TestCase):
         self.assertIn('$("tone-pips-hour").addEventListener("click", () => startTone("pips-hour"));', self.js)
         self.assertIn('$("tone-pips-minute").addEventListener("click", () => startTone("pips-minute"));', self.js)
         self.assertEqual(len(re.findall(r'startTone\("pips-', self.js)), 2, "nur aus den Klicks")
-        self.assertIn("fx.planPips(clock,", self.body("function plannedTones("))
+        planned = self.body("function plannedTones(")
+        self.assertIn("fx.planPips(clock,", planned)
+        self.assertIn("fx.pipsHorizonMs(clock.server, { scope, hidden: document.hidden, horizonMs: 1500, offsetMs })", planned)
+        self.assertIn('if (document.hidden && state.tone && state.tone.mode.startsWith("pips-")) toneTick(trueMs());', self.js)
         for id_ in ("tone-pips-hour", "tone-pips-minute", "tone-pips-line"):
             self.assertRegex(self.html, rf'id="{id_}"[^>]* hidden')
         self.assertIn('for (const id of ["tone-pips-hour", "tone-pips-minute", "tone-pips-line"]) $(id).hidden = !CONTROLS.fun;',
@@ -449,6 +507,13 @@ class SeitenregelnTest(unittest.TestCase):
                 for needle in ("Tippe auf :00", "Zeitzeichen", "Konami", "eggs=0", "Konfetti", "keine Referenz"):
                     self.assertIn(needle, text)
         self.assertIn("eggs=0", doc)
+        self.assertIn("Schaltsekunden-Zeile", doc)
+        self.assertNotIn("body.is-kiosk .clock-egg", self.css, "Kiosk hat keine Ostereier")
+        for name, text in (("README", readme), ("help-uhr.js", help_text)):
+            with self.subTest(name=name):
+                self.assertIn("goal=y2038", text)
+                self.assertIn("Hintergrund-Tab", text)
+                self.assertRegex(text, r"Streifen")
 
 
 if __name__ == "__main__":

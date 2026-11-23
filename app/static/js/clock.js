@@ -83,7 +83,7 @@
 // Studiouhr C1: Spielereien (clockextras.js). Panel „Timer“ mit Eieruhr (Schnellwahl, eigene Dauer, „+1 min“ am
 // Countdown, deutliches Ende, Ton am Ende nur nach Klick), Pomodoro (?pomo=, ?pause=; Arbeit und Pause wechseln von selbst,
 // Zähler), eigene Countdowns (bis zu fünf im localStorage, öffnen als /clock?until=…&label=…) und eingebaute (?goal=:
-// Neujahr, Zeitumstellung, Unixzeit 2 000 000 000, NTP-Ära 2036 – auf der Serverzeit wie ?until=). Nachtmodus: gedimmt
+// Neujahr, Zeitumstellung, Unixzeit 2 000 000 000, NTP-Ära 2036, Jahr 2038 – auf der Serverzeit wie ?until=). Nachtmodus: gedimmt
 // (data-mode="night", --night per CSSOM) bzw. mit ?dimred=1 im Rotlicht, nach Uhrzeit (?dim=22-6) und von Hand (Knopf
 // „Nacht“, Taste N; gilt bis zum nächsten Wechsel des Zeitplans). Die Knöpfe gibt es nur, wo jemand davorsitzt
 // (fx.funControls): nicht mit fun=0, lock=1, im Kiosk, in der Kachel und in einer OBS-Browserquelle (window.obsstudio).
@@ -102,7 +102,8 @@
 // und Ostereier aus der Tabelle fx.EGGS (13:37, 12:34:56, Neujahr mit Konfetti, Schaltsekunde, Zeitumstellung) samt
 // Konami-Code (Konfetti, Binäruhr bis zum Neuladen). Konfetti fällt nur per CSS, bei „weniger Bewegung“ bleibt der Text.
 // Ostereier nur mit fx.eggsAllowed: nie mit eggs=0 oder fun=0 (studio, tile, banner), lock=1, im Kiosk, in der Kachel,
-// in OBS und auf E-Ink. Spiel und Zeitzeichen gibt es nur, wo auch Timer und Nacht erscheinen (CONTROLS.fun).
+// in OBS und auf E-Ink, dazu nie im Layout Kachel oder Streifen, auch zur Laufzeit (fx.eggShown). Spiel und Zeitzeichen
+// gibt es nur, wo auch Timer und Nacht erscheinen (CONTROLS.fun).
 //
 // Bewusst ohne app.js/ui.js: Die Seite muss auch ohne Anmeldung (clock_public) laufen und
 // lädt deshalb nur Dateien, die keine Inhalte aus Konfiguration oder Status enthalten
@@ -225,7 +226,7 @@ const state = {
   bars: [],            // [{ kind, node, fill, value }] der Fortschrittsbalken
   nerd: null,          // { [key]: Wertknoten } der Nerd-Zeile
   south: false,        // Mond wie auf der Südhalbkugel (nur dieser Browser, localStorage)
-  game: { unit: "second", best: {}, input: -Infinity },   // Spiel „Tippe auf :00“ (input: letzter pointerdown/keydown)
+  game: { unit: "second", best: {} },   // Spiel „Tippe auf :00“
   eggKey: "",          // zuletzt gezeigtes Osterei (Konfetti nur beim Wechsel)
   dst: { key: "", shift: 0 },   // Zeitumstellung am Tag der Anzeige (fx.dstShiftOfDay, je Tag einmal gerechnet)
   konami: 0,           // Fortschritt im Konami-Code
@@ -649,8 +650,14 @@ function render(now) {
   renderExtras(now.getTime(), { day, offset: zoned ? foreign : null,
     h: shown ? shown.getUTCHours() : h, m: shown ? shown.getUTCMinutes() : m });
   renderShift(now.getTime());
-  renderEgg(now.getTime(), { h, m, s, mo: utc ? now.getUTCMonth() + 1 : now.getMonth() + 1,
-    d: utc ? now.getUTCDate() : now.getDate() });
+  // Osterei zur großen Zeit: Design tc mit Zone des Servers deren Zeit und Tag (ohne Taste U), sonst wie oben.
+  if (shown && !utc) {
+    renderEgg(now.getTime(), { h: shown.getUTCHours(), m: shown.getUTCMinutes(), s: shown.getUTCSeconds(),
+      mo: shown.getUTCMonth() + 1, d: shown.getUTCDate() }, tcZone());
+  } else {
+    renderEgg(now.getTime(), { h, m, s, mo: utc ? now.getUTCMonth() + 1 : now.getMonth() + 1,
+      d: utc ? now.getUTCDate() : now.getDate() });
+  }
   const minuteKey = `${h}:${m}|${language()}|${foreign}`;
   if (minuteKey !== state.minuteKey || redrawn) {
     state.minuteKey = minuteKey;
@@ -1460,24 +1467,31 @@ const KONAMI_MS = 10_000;     // so lange steht das Konami-Osterei
 const CONFETTI_MS = 8_000;    // so lange liegen die Schnipsel im DOM (zwei Durchläufe der CSS-Animation samt Versatz)
 const CONFETTI_PIECES = 24;
 
-/** Zeitumstellung am Tag der Anzeige (Ortszeit dieses Geräts), je Tag einmal gerechnet. */
-function dstToday(ms) {
-  const day = new Date(ms);
-  const key = `${day.getFullYear()}-${day.getMonth()}-${day.getDate()}`;
-  if (state.dst.key !== key) state.dst = { key, shift: fx.dstShiftOfDay(ms) };
+/**
+ * Zeitumstellung am Tag der Anzeige in `zone` (null: Ortszeit dieses Geräts), je Tag und Zone einmal gerechnet. Steht
+ * groß UTC (Taste U), gibt es keine Umstellung.
+ */
+function dstToday(ms, zone = null) {
+  if (state.utcBig) return 0;
+  const p = cd.zoneParts(ms, zone);
+  const key = `${zone || ""}|${p.y}-${p.mo}-${p.d}`;
+  if (state.dst.key !== key) state.dst = { key, shift: fx.dstShiftOfDay(ms, zone) };
   return state.dst.shift;
 }
 
-/** Osterei zur angezeigten Zeit time = { h, m, s, mo, d } – nur mit EGGS_ON (sonst nie, auch nicht die Schaltsekunde). */
-function renderEgg(nowMs, time) {
+/**
+ * Osterei zur angezeigten Zeit time = { h, m, s, mo, d } (zone: deren Zeitzone, null: dieses Gerät) – nur mit EGGS_ON
+ * (sonst nie, auch nicht die Schaltsekunde) und nie in Kachel und Streifen: Dort steht nur die Zeit (wie beim Konfetti).
+ */
+function renderEgg(nowMs, time, zone = null) {
   const node = $("leap-egg");
   let egg = null;
-  if (EGGS_ON) {
+  if (fx.eggShown({ allowed: EGGS_ON, layout: state.layout })) {
     if (state.konamiUntil > performance.now()) egg = { kind: "konami", text: "konami", confetti: true };
     else {
       const status = state.status || {};
       const leap = state.status ? kit.leapEgg(nowMs, status.leap, status.leap_next) : null;
-      egg = fx.eggFor(time, { leap, dst: dstToday(nowMs) });
+      egg = fx.eggFor(time, { leap, dst: dstToday(nowMs, zone) });
     }
   }
   if (!egg) {
@@ -1495,7 +1509,7 @@ function renderEgg(nowMs, time) {
 /** Konfetti: fallende Schnipsel nur per CSS-Animation (transform, opacity), nach CONFETTI_MS wieder weg. */
 function startConfetti() {
   if (fx.confettiMode({ allowed: EGGS_ON, wanted: true, reduced: reducedMotion.matches }) !== "css") return;
-  if (state.layout === "tile" || state.layout === "strip") return;   // dort steht nur die Zeit
+  if (!fx.eggShown({ allowed: true, layout: state.layout })) return;   // Kachel und Streifen: dort steht nur die Zeit
   const box = $("confetti");
   if (!box.childElementCount) box.append(...Array.from({ length: CONFETTI_PIECES }, () => document.createElement("i")));
   box.classList.remove("is-on");
@@ -1767,8 +1781,11 @@ function pressTone(mode) {
  */
 function plannedTones(clock, tone) {
   if (!tone.mode.startsWith("pips-")) return kit.planTones(clock, { mode: tone.mode, afterSecond: tone.last, horizonMs: 1500 });
+  const scope = tone.mode.slice(5);
   const offsetMs = state.utcBig ? 0 : -new Date(clock.server + 1500).getTimezoneOffset() * 60_000;
-  return fx.planPips(clock, { scope: tone.mode.slice(5), afterSecond: tone.last, horizonMs: 1500, offsetMs });
+  // Versteckter Tab: bis zum nächsten Ziel vorausplanen (der Browser drosselt den Sekundentakt).
+  const horizonMs = fx.pipsHorizonMs(clock.server, { scope, hidden: document.hidden, horizonMs: 1500, offsetMs });
+  return fx.planPips(clock, { scope, afterSecond: tone.last, horizonMs, offsetMs });
 }
 
 function toneTick(nowMs) {
@@ -1801,7 +1818,6 @@ function toneTick(nowMs) {
 
 // --- Spiel „Tippe auf :00“ (C3) -------------------------------------------------------------------------------------
 const GAME_UNITS = Object.keys(fx.TAP_UNITS);
-const GAME_CLICK_GAP_MS = 400;   // ein click so kurz nach pointerdown/keydown gehört zu demselben Tipp
 
 function openGamePanel() {
   if (togglePanel("mode-game", "game-panel")) renderGame();
@@ -1907,8 +1923,10 @@ document.addEventListener("visibilitychange", () => {
     if (state.design === "tc" && state.face && state.face.tc) { measureGrain(); tcLoop(); }
     burst();   // nach dem Aufwachen (Tablet im Standby) sofort neu abgleichen
   }
-  // Im Hintergrund drosselt der Browser die Zeitgeber: Töne eines laufenden Countdowns jetzt bis zum Ziel vorausplanen.
+  // Im Hintergrund drosselt der Browser die Zeitgeber: Töne eines laufenden Countdowns und das Zeitzeichen jetzt bis
+  // zum Ziel vorausplanen.
   if (document.hidden && state.cdTone) renderCountdown();
+  if (document.hidden && state.tone && state.tone.mode.startsWith("pips-")) toneTick(trueMs());
 });
 
 // --- Countdown, Count-up, Timer (Studiouhr A5) -------------------------------------------------
@@ -3008,6 +3026,12 @@ function stageLayout(layout) {
   const stage = $("clock-stage");
   state.layout = layout;
   setAttr(stage, "data-layout", layout);
+  // Kachel und Streifen (auch per Taste L oder im flachen Fenster): Osterei und Konfetti sofort weg, nicht erst im Takt.
+  if (!fx.eggShown({ allowed: true, layout }) && !$("leap-egg").hidden) {
+    setHidden($("leap-egg"), true);
+    state.eggKey = "";
+    stopConfetti();
+  }
   if (kit.stackedTime(layout, state.stage.width, state.stage.height)) setAttr(stage, "data-stack", "1");
   else stage.removeAttribute("data-stack");
 }
@@ -3275,20 +3299,20 @@ $("tone-pips-hour").addEventListener("click", () => startTone("pips-hour"));
 $("tone-pips-minute").addEventListener("click", () => startTone("pips-minute"));
 $("mode-game").addEventListener("click", openGamePanel);
 for (const unit of GAME_UNITS) $(`game-${unit}`).addEventListener("click", () => gameUnit(unit));
-// Tipp: der früheste Zeitstempel (pointerdown bzw. Enter/Leertaste); ein click ohne beides (Screenreader) zählt selbst.
+// Tipp: der früheste Zeitstempel (pointerdown bzw. Enter/Leertaste; preventDefault unterdrückt dort den click). Ein
+// click zählt nur ohne Zeiger dahinter (event.detail 0: Screenreader) – zu Maus und Finger gehört immer ein pointerdown,
+// der schon gewertet hat, auch wenn der Druck lange dauert.
 $("game-tap").addEventListener("pointerdown", (event) => {
   if (event.button !== 0) return;
-  state.game.input = performance.now();
   gameTap(event.timeStamp);
 });
 $("game-tap").addEventListener("keydown", (event) => {
   if ((event.key !== "Enter" && event.key !== " ") || event.repeat) return;
   event.preventDefault();
-  state.game.input = performance.now();
   gameTap(event.timeStamp);
 });
 $("game-tap").addEventListener("click", (event) => {
-  if (performance.now() - state.game.input > GAME_CLICK_GAP_MS) gameTap(event.timeStamp);
+  if (fx.tapFromClick(event.detail)) gameTap(event.timeStamp);
 });
 $("game-reset").addEventListener("click", gameReset);
 $("cd-toggle").addEventListener("click", () => toggleTimer());
