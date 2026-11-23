@@ -6,6 +6,21 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 
 ## [Unveröffentlicht]
 
+### Sicherheit
+- **Reverse Proxy mit `X-Real-IP`:** Schickt ein eingetragener Proxy neben `X-Real-IP` auch
+  `X-Forwarded-For` oder `Forwarded`, zählt die Kette nur noch, wenn ihr rechter Eintrag mit
+  `X-Real-IP` übereinstimmt; sonst gilt die Adresse des Proxys. `Forwarded: proto=` zählt neben
+  `X-Real-IP` nicht mehr, nur `X-Forwarded-Proto`. Bisher konnten durchgereichte Köpfe des Browsers
+  Adresse (Anmeldebremse, Zugriffsprotokoll) und HTTPS-Erkennung bestimmen. Caddy, NPM, Zoraxy und
+  Traefik arbeiten unverändert.
+- **Einstellungen:** Muss `settings.json` auf ein neues Schema gehoben werden, speichert der
+  root-Teil (Konfiguration für chronyd) das Ergebnis nicht mehr selbst ins Datenverzeichnis des
+  Dashboards; die Migration gilt dort nur im Speicher, das Dashboard speichert sie. Die Rechte der
+  Zwischendatei werden außerdem am geöffneten Deskriptor gesetzt statt über ihren Namen.
+- **NTS-Server:** Die Kopie des Zertifikats für chronyd (`server.crt`, für die Gruppe `_chrony`
+  lesbar) enthält nur noch die Zertifikatsblöcke. Eine kombinierte PEM-Datei mit Zertifikat und
+  privatem Schlüssel gab den Schlüssel bisher an diese Gruppe – und damit an das Dashboard – weiter.
+
 ### Behoben
 - Diagnosepaket: Die Aufzeichnung verwarf jede Client-Liste (`chronyc -c clients`) als „Zeile entfernt“.
   chrony schreibt unbekannte Werte dort als 127; zwei Nachbarn wie `0,127,127,184` hielt die Schlussprüfung

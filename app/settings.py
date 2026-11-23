@@ -1676,8 +1676,11 @@ def _load_file() -> dict:
             _CACHE.update(error=None)
             data, notes = migrate_data(data)
             try:
-                _write_file(data)
-                stat = os.stat(SETTINGS_FILE)
+                # confgen.py (root) speichert die Migration nicht in ein Verzeichnis, das dem Dashboard
+                # gehört: Sie gilt dort nur im Speicher; das Dashboard speichert sie selbst.
+                if os.geteuid() != 0 or _dir_owned_by_us(DATA_DIR):
+                    _write_file(data)
+                    stat = os.stat(SETTINGS_FILE)
             except (OSError, ValidationError) as exc:
                 # Nur lesbares Volume: Migration gilt im Speicher, Hinweis bleibt sichtbar.
                 _log(f"Einstellungen migriert, aber nicht gespeichert: {exc}")
@@ -1686,6 +1689,19 @@ def _load_file() -> dict:
     _CACHE.update(mtime=stat.st_mtime_ns, data=data, error=None)
     _UNREADABLE_NOTED["error"] = None
     return data
+
+
+def _dir_owned_by_us(path: str) -> bool:
+    """Verzeichnis gehört dem eigenen Benutzer, ist kein Link und für niemanden sonst beschreibbar
+    (fehlt es, legt der eigene Prozess es an)."""
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    return (stat_mod.S_ISDIR(info.st_mode) and info.st_uid == os.geteuid()
+            and not info.st_mode & 0o022)
 
 
 def _broken(mtime: int | None, reason: str) -> dict:
@@ -1725,8 +1741,8 @@ def _write_tmp(data: dict) -> str:
             json.dump(data, handle, indent=2, ensure_ascii=False, sort_keys=True)
             handle.write("\n")
             handle.flush()
+            os.fchmod(handle.fileno(), 0o600)  # am Deskriptor, nicht über den Namen
             os.fsync(handle.fileno())
-        os.chmod(tmp, 0o600)
     except BaseException:
         if os.path.exists(tmp):
             os.unlink(tmp)

@@ -180,6 +180,13 @@ diese `/32` eintragen.
 3. Zoraxy setzt `X-Forwarded-For`, `X-Forwarded-Proto` und `X-Real-Ip`; ntp-gui wertet die ersten
    beiden aus. `TRUSTED_PROXIES` = Adresse des Zoraxy-Hosts.
 
+> **`X-Real-IP` zusammen mit `X-Forwarded-For`/`Forwarded`:** ntp-gui weiß nicht, welche Köpfe dein
+> Proxy selbst schreibt und welche er vom Browser durchreicht. Kommen beide, gilt die Kette nur, wenn
+> ihr rechter Eintrag mit `X-Real-IP` übereinstimmt (so schreiben es NPM, Traefik und Zoraxy) –
+> sonst die Adresse des Proxys. Neben `X-Real-IP` zählt fürs Protokoll nur `X-Forwarded-Proto`, nicht
+> `Forwarded: proto=`. Bei reinem nginx deshalb `proxy_set_header X-Forwarded-For
+> $proxy_add_x_forwarded_for;` und `proxy_set_header X-Forwarded-Proto $scheme;` mit eintragen.
+
 > **Strecke Proxy → ntp-gui ist unverschlüsselt.** Läuft der Proxy auf einem anderen Gerät, ist nur
 > der Weg Browser → Proxy HTTPS. Von dort gehen Passwort bzw. API-Schlüssel per einfachem HTTP durchs
 > LAN zu ntp-gui – jedes Gerät auf dieser Strecke kann mitlesen; die Firewall-Regel „Port 8080 nur

@@ -193,6 +193,20 @@ class PrepareFilesTest(unittest.TestCase):
         shutil.rmtree(self.target)
         self.assertIsNone(self.prepare(second[0], first[1]))
 
+    def test_combined_pem_copies_only_certificates(self):
+        # Zertifikat und Schlüssel in einer Datei: Die gruppenlesbare Kopie enthält nur Zertifikate.
+        pair = _openssl_pair(self.tmp, "eins")
+        if not pair:
+            self.skipTest("openssl kann kein Testzertifikat erzeugen")
+        combined = self.tmp / "kombiniert.pem"
+        combined.write_bytes(pair[1].read_bytes() + pair[0].read_bytes() + pair[0].read_bytes())
+        paths = self.prepare(combined, combined)
+        self.assertEqual(paths, (str(self.target / "server.crt"), str(self.target / "server.key")))
+        copy = Path(paths[0]).read_bytes()
+        self.assertNotIn(b"PRIVATE KEY", copy)
+        self.assertEqual(copy, pair[0].read_bytes() * 2)  # Kette bleibt vollständig
+        self.assertEqual(stat.S_IMODE(os.stat(paths[1]).st_mode), 0o400)
+
     def test_copy_failure_falls_back_to_originals(self):
         pair = _openssl_pair(self.tmp, "eins")
         if not pair:

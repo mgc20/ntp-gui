@@ -682,6 +682,9 @@ def _install_private(path: str, data: bytes, ids: tuple[int, int] | None, secret
         raise
 
 
+_PEM_CERT_BLOCK = re.compile(rb"-----BEGIN CERTIFICATE-----[A-Za-z0-9+/=\s]*?-----END CERTIFICATE-----")
+
+
 def _hidden_from_us(path: str) -> bool:
     """Gibt es die Datei, darf dieser Prozess sie aber nicht lesen (Verzeichnis oder Datei nur für root)?
     Eine fehlende Datei zählt nicht: Dann bleibt der NTS-Server auch beim Speichern aus."""
@@ -734,7 +737,11 @@ def prepare_nts_files(cfg: dict, target_dir: str | None = None, warn=_log,
     except (OSError, ValueError) as exc:
         warn("nts", f"WARNUNG: Zertifikat/Schlüssel nicht lesbar ({exc}) – NTS-Server bleibt aus.")
         return None
-    if b"-----BEGIN CERTIFICATE-----" not in cert_data:
+    # Nur die Zertifikatsblöcke kommen in die gruppenlesbare Kopie: Eine kombinierte PEM-Datei
+    # (Zertifikat + Schlüssel in einer Datei, z. B. für HAProxy) gäbe sonst den privaten Schlüssel an
+    # die Gruppe _chrony und damit an das Dashboard weiter.
+    cert_data = b"".join(block + b"\n" for block in _PEM_CERT_BLOCK.findall(cert_data))
+    if not cert_data:
         warn("nts", f"WARNUNG: {cert} ist kein PEM-Zertifikat – NTS-Server bleibt aus.")
         return None
     if b"PRIVATE KEY-----" not in key_data:

@@ -6,6 +6,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
@@ -117,6 +118,49 @@ class MigrationTest(_Base):
     def test_migrations_cover_every_version(self):
         for version in range(2, settings.SCHEMA_VERSION + 1):
             self.assertIn(version, settings.MIGRATIONS)
+
+
+class TempFileSwapTest(_Base):
+    """Die Zwischendatei liegt im Verzeichnis des Dashboards: Rechte nie über ihren Namen setzen."""
+
+    def _swap_on_fsync(self, sentinel):
+        real_fsync = os.fsync
+
+        def fsync(fd):
+            real_fsync(fd)
+            for name in os.listdir(settings.DATA_DIR):
+                if name.startswith(".settings-"):
+                    path = os.path.join(settings.DATA_DIR, name)
+                    os.unlink(path)
+                    os.symlink(sentinel, path)
+        return mock.patch.object(settings.os, "fsync", fsync)
+
+    def _sentinel(self):
+        sentinel = os.path.join(self.tmp, "fremd.txt")
+        Path(sentinel).write_text("x", encoding="utf-8")
+        os.chmod(sentinel, 0o644)
+        return sentinel
+
+    def test_write_sets_mode_on_descriptor(self):
+        sentinel = self._sentinel()
+        os.makedirs(settings.DATA_DIR, mode=0o700, exist_ok=True)
+        with self._swap_on_fsync(sentinel):
+            tmp = settings._write_tmp({"values": {}})
+        os.unlink(tmp)
+        self.assertEqual(os.stat(sentinel).st_mode & 0o777, 0o644)
+
+    def test_root_does_not_store_migration_in_foreign_directory(self):
+        sentinel = self._sentinel()
+        self.write({"schema": 1})
+        if os.geteuid() == 0:
+            os.chown(settings.DATA_DIR, 1000, 1000)
+            os.chmod(settings.DATA_DIR, 0o700)
+        with self._swap_on_fsync(sentinel), mock.patch.object(settings.os, "geteuid", return_value=0):
+            self.assertIsNone(settings.load_error())
+        self.assertEqual(os.stat(sentinel).st_mode & 0o777, 0o644)
+        self.assertFalse(os.path.islink(settings.SETTINGS_FILE))
+        self.assertEqual(self.stored(), {"schema": 1})  # Migration nur im Speicher
+        self.assertEqual([n for n in os.listdir(settings.DATA_DIR) if n.startswith(".settings-")], [])
 
 
 class NewFieldsTest(_Base):

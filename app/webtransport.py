@@ -150,13 +150,25 @@ def resolve(peer: str, headers: Any, networks: list) -> dict[str, Any]:
     xff = _header_values(headers, "X-Forwarded-For")
     xfp = [p.lower() for p in _header_values(headers, "X-Forwarded-Proto")]
     elements = _forwarded_elements(headers)
-    # Jede Angabe für sich: Adresse aus X-Forwarded-For, sonst Forwarded for=, sonst X-Real-IP;
-    # Protokoll aus X-Forwarded-Proto, sonst Forwarded proto= (z. B. HAProxy mit „option forwardfor“
-    # und „option forwarded“).
+    # Adresse aus X-Forwarded-For, sonst Forwarded for=, sonst X-Real-IP; Protokoll aus
+    # X-Forwarded-Proto, sonst Forwarded proto= (z. B. HAProxy mit „option forwardfor“ und
+    # „option forwarded“).
     chain = xff or [e["for"] for e in elements if e.get("for")]
-    if not chain:
-        chain = _header_values(headers, "X-Real-IP")[-1:]
-    protos = xfp or [e["proto"].lower() for e in elements[-1:] if e.get("proto")]
+    real_ip = _header_values(headers, "X-Real-IP")[-1:]
+    protos = xfp
+    if real_ip:
+        # Welche Köpfe der Proxy selbst schreibt, weiß ntp-gui nicht. Setzt er nur X-Real-IP, reicht
+        # er X-Forwarded-For/Forwarded des Browsers unverändert durch; setzt er nur X-Forwarded-*,
+        # stammt ein X-Real-IP vom Browser. Proxys, die beides schreiben (NPM, Traefik, Zoraxy),
+        # tragen rechts in der Kette dieselbe Adresse ein wie in X-Real-IP. Widersprechen sich die
+        # beiden, ist einer davon vom Browser – dann gilt keiner, Adresse bleibt die Gegenstelle.
+        # Forwarded proto= zählt neben X-Real-IP nicht: Es könnte ebenso vom Browser stammen.
+        if not chain:
+            chain = real_ip
+        elif parse_ip(chain[-1]) is None or parse_ip(chain[-1]) != parse_ip(real_ip[0]):
+            chain = []
+    elif not protos:
+        protos = [e["proto"].lower() for e in elements[-1:] if e.get("proto")]
     client = peer_ip
     # Von rechts lesen: Rechts steht, was der nächste (vertrauenswürdige) Proxy gesehen hat. Die
     # erste Adresse, die selbst kein vertrauenswürdiger Proxy ist, ist der Browser. Alles weiter
