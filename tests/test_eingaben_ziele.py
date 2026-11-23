@@ -289,7 +289,7 @@ class NetguardTest(unittest.TestCase):
                 self.assertIsNotNone(self.reason(text, "dns", "public"))
 
     def test_lan_ziele_gehen_im_standard(self):
-        for text in ("192.168.1.5", "10.0.0.2", "172.17.0.3", "fd12:3456::5", "100.64.1.1", "9.9.9.9"):
+        for text in ("192.168.1.5", "10.0.0.2", "172.17.0.3", "fd00::5", "100.64.1.1", "9.9.9.9"):
             with self.subTest(text=text):
                 self.assertIsNone(self.reason(text))
         self.assertIsNotNone(self.reason("192.168.1.5", mode="public"))
