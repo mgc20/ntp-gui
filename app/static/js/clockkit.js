@@ -31,6 +31,11 @@ export const ZONE_LABEL_CHARS = /^[\p{L}\p{N} .\-]+$/u;
 /** Weltzeit: höchstens so viele Zonen (?tz=) und Kurznamen (?tzl=), ein Kurzname höchstens so viele Zeichen. */
 export const MAX_ZONES = 6;
 export const ZONE_LABEL_LEN = 16;
+// Stundenbereich für den Nachtmodus (?dim=22-6): von – bis in vollen Stunden, über Mitternacht erlaubt, nie gleich.
+const HOURS_RANGE = /^([01]?[0-9]|2[0-3])-([01]?[0-9]|2[0-3])$/;
+/** Eingebaute Countdowns (?goal=, Etappe C): Neujahr und nächste Zeitumstellung in der Zone des Servers, dazu zwei feste
+ *  Zeitpunkte – Unixzeit 2 000 000 000 und das Ende der NTP-Ära 0 (Rechnung in clockextras.js). */
+export const GOALS = ["newyear", "dst", "unix", "ntp"];
 const ISO_TIME = /^([0-9]{4})-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):([0-5][0-9])(?::([0-5][0-9]))?$/;
 
 // --- Darstellung: Layouts, Elemente, Farben (Studiouhr A3/A4) ---------------------------------
@@ -67,7 +72,8 @@ export const TC_FPS = ["24", "25", "30", "50", "60", "29.97", "59.94"];
  * („90s“, „25m“, „1h30m“; in ms), intlist (kommagetrennte ganze Zahlen in min … max, höchstens maxItems), zonelist
  * (kommagetrennte Zeitzonen, höchstens maxItems, ohne Doppelte; der Parameter darf auch mehrfach in der Adresse stehen),
  * labellist (kommagetrennte Kurznamen zu den Zonen, je höchstens len Zeichen; leere Einträge erlaubt). default gilt,
- * wenn der Parameter fehlt oder ungültig ist. Standortangaben (lat/lon) kennt das Schema bewusst nicht.
+ * wenn der Parameter fehlt oder ungültig ist. hours („22-6“: von – bis in vollen Stunden, Nachtmodus). Standortangaben
+ * (lat/lon) kennt das Schema bewusst nicht.
  */
 export const PARAM_SCHEMA = Object.freeze([
   { name: "design", type: "enum", values: DESIGNS, default: null },
@@ -121,6 +127,18 @@ export const PARAM_SCHEMA = Object.freeze([
   // On-Air/REC-Signal (B4): Dieser Bildschirm zeigt das zentrale Signal aus /api/v1/time als Rahmen mit Text und fragt
   // dafür im Sekundentakt ab (sonst alle 5 s). Die Taste O schaltet unabhängig davon ein lokales „On Air“.
   { name: "signal", type: "flag", default: false },
+  // Spielereien (Etappe C): fun=0 blendet Eieruhr, Pomodoro, eigene Countdowns und den Nachtmodus-Knopf aus – in den
+  // Voreinstellungen studio, tile und banner gesetzt. Kiosk, lock=1, die Kachel und OBS-Browserquellen zeigen sie ohnehin nie.
+  { name: "fun", type: "flag", default: true },
+  // Eingebauter Countdown (Neujahr, nächste Zeitumstellung, Unixzeit 2 000 000 000, NTP-Ära 2036); ?until= geht vor.
+  { name: "goal", type: "enum", values: GOALS, default: null },
+  // Pomodoro: Dauer der Arbeitsphase (startet den Pomodoro-Timer statt ?timer=) und der Pause (ohne Angabe 5 min).
+  { name: "pomo", type: "duration", default: null },
+  { name: "pause", type: "duration", default: null },
+  // Nachtmodus: von – bis (volle Stunden der angezeigten Zeit), Helligkeit in %, Rotlicht statt Grau.
+  { name: "dim", type: "hours", default: null },
+  { name: "dimlevel", type: "int", min: 20, max: 80, default: 40 },
+  { name: "dimred", type: "flag", default: false },
   // Prüfbild (B5): test=sync lässt eine Fläche zur vollen Sekunde wechseln und klickt dazu (Einmessen von ?lead=).
   // Wirkt nur aus der Adresse (ADDRESS_ONLY, testMode) – nie aus einem Profil oder dem gemerkten Stand.
   { name: "test", type: "enum", values: ["sync"], default: null },
@@ -166,6 +184,16 @@ export function parseTimeValue(value) {
   const probe = new Date(Date.UTC(y, mo - 1, d));
   if (probe.getUTCMonth() !== mo - 1 || probe.getUTCDate() !== d) return null;   // 31.02. gibt es nicht
   return { kind: "iso", y, mo, d, h, m, s: Number(iso[6] || 0) };
+}
+
+/** „22-6“ → { from: 22, to: 6 }; gleiche Stunden, Minuten oder anderes: null. */
+export function parseHours(value) {
+  if (typeof value !== "string") return null;
+  const m = HOURS_RANGE.exec(value);
+  if (!m) return null;
+  const from = Number(m[1]);
+  const to = Number(m[2]);
+  return from === to ? null : { from, to };
 }
 
 /** „90s“ → 90 000, „25m“ → 1 500 000, „1h30m“ → 5 400 000 (ms); 0, über 24 h oder unlesbar: null. */
@@ -274,6 +302,10 @@ export function checkParam(entry, raw, zones = [], intl = globalThis.Intl) {
     case "duration": {
       const value = parseDuration(raw);
       return value ? { ok: true, value } : fail;
+    }
+    case "hours": {
+      const value = parseHours(raw);
+      return value ? { ok: true, value: Object.freeze(value) } : fail;
     }
     case "intlist": {
       // Kommagetrennte ganze Zahlen im Bereich, ohne Doppelte, höchstens maxItems; absteigend sortiert. Ein

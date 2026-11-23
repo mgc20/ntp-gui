@@ -80,6 +80,15 @@
 // das zentrale Signal geht vor. Antwortet der Server nicht mehr, bleibt der letzte Zustand stehen und ist als ungewiss
 // markiert. Es ist eine gespiegelte Anzeige mit bis zu etwa 1 s Verzögerung, kein Tally.
 //
+// Studiouhr C1: Spielereien (clockextras.js). Panel „Timer“ mit Eieruhr (Schnellwahl, eigene Dauer, „+1 min“ am
+// Countdown, deutliches Ende, Ton am Ende nur nach Klick), Pomodoro (?pomo=, ?pause=; Arbeit und Pause wechseln von selbst,
+// Zähler), eigene Countdowns (bis zu fünf im localStorage, öffnen als /clock?until=…&label=…) und eingebaute (?goal=:
+// Neujahr, Zeitumstellung, Unixzeit 2 000 000 000, NTP-Ära 2036 – auf der Serverzeit wie ?until=). Nachtmodus: gedimmt
+// (data-mode="night", --night per CSSOM) bzw. mit ?dimred=1 im Rotlicht, nach Uhrzeit (?dim=22-6) und von Hand (Knopf
+// „Nacht“, Taste N; gilt bis zum nächsten Wechsel des Zeitplans). Die Knöpfe gibt es nur, wo jemand davorsitzt
+// (fx.funControls): nicht mit fun=0, lock=1, im Kiosk, in der Kachel und in einer OBS-Browserquelle (window.obsstudio).
+// Timer-Stände bleiben im Browser; es gibt keinen neuen Weg zum Server.
+//
 // Bewusst ohne app.js/ui.js: Die Seite muss auch ohne Anmeldung (clock_public) laufen und
 // lädt deshalb nur Dateien, die keine Inhalte aus Konfiguration oder Status enthalten
 // (clocksync.js, clockkit.js, clocktc.js, clockworld.js, util.js, i18n.js und die Sprachkataloge).
@@ -92,6 +101,7 @@ import * as cd from "./clockcount.js";
 import * as link from "./clocklink.js";
 import * as tc from "./clocktc.js";
 import * as world from "./clockworld.js";
+import * as fx from "./clockextras.js";
 import { copyText } from "./util.js";
 
 const BURST = 5;
@@ -118,6 +128,8 @@ const PROFILE = link.profileFromSearch(window.location.search);
 // Startwerte aus der Adresse bzw. dem gemerkten Stand; ein Profil (?p=) kommt in start() dazu (Object.assign).
 const params = kit.parseParams(link.effectiveQuery({ search: window.location.search, stored: store(link.STORE_KEY) || "",
   zones: ZONES }), ZONES);
+// OBS Studio legt in seiner Browserquelle window.obsstudio an: Dort sieht niemand Knöpfe, also keine Bedienung.
+const OBS = typeof window.obsstudio === "object" && window.obsstudio !== null;
 const reducedMotion = window.matchMedia ? window.matchMedia("(prefers-reduced-motion: reduce)") : { matches: false };
 const state = {
   sync: null,          // beste Messung der letzten Runde {offset, rtt, accuracy, at, perf}
@@ -178,12 +190,24 @@ const state = {
   signalKey: "",       // Zustand des Signals beim letzten Zeichnen
   polling: false,      // eine Zustandsabfrage läuft noch (Sekundentakt: keine zweite daneben)
   headHeight: 0,       // Höhe der Kopfzeile, zuletzt ohne Signal gemessen (signalSpace)
+  pomo: null,          // Pomodoro (fx.pomoNew …) zum lokalen Timer, null: Eieruhr bzw. Stoppuhr
+  eggMs: null,         // Dauer der im Panel gewählten Eieruhr (null: ?timer= aus der Adresse)
+  endTone: false,      // „Ton am Ende“ (nur nach Klick, nicht gemerkt)
+  ended: false,        // Eieruhr abgelaufen: deutliches Ende (data-cd-end)
+  nightOverride: null, // Nachtmodus von Hand (Knopf, Taste N): true/false bis zum nächsten Wechsel des Zeitplans
+  nightPrev: null,     // Zeitplan beim letzten Takt (true/false, null: kein ?dim=)
+  nightKey: "",        // zuletzt angewandter Nachtmodus
+  own: [],             // eigene Countdowns (fx.ownList aus dem localStorage)
 };
+/** Bedienung: Start/Anhalten am Countdown (actions) und die Spielereien (fun) – nach dem Profil neu bestimmt. */
+let CONTROLS = { actions: true, fun: true };
 let COUNT_MODE = "watch";
 function initCountMode() {
-  COUNT_MODE = params.until ? "until" : (params.timer ? "timer" : "watch");
-  state.timer = COUNT_MODE === "timer" ? cd.timerNew(params.timer) : null;
-  if (params.until && params.timer) console.info("/clock: until und timer zugleich – es gilt until");
+  COUNT_MODE = params.until || params.goal ? "until" : (params.timer || params.pomo ? "timer" : "watch");
+  // ?pomo= geht ?timer= vor: Der Timer läuft dann die Phasen des Pomodoro ab.
+  state.pomo = COUNT_MODE === "timer" && params.pomo ? fx.pomoNew(params.pomo, params.pause) : null;
+  state.timer = COUNT_MODE === "timer" ? cd.timerNew(state.pomo ? fx.pomoPhaseMs(state.pomo) : params.timer) : null;
+  if ((params.until || params.goal) && (params.timer || params.pomo)) console.info("/clock: Ziel und timer/pomo zugleich – es gilt das Ziel");
   if (params.ignored.length) console.info(`/clock: unzulässige Werte ignoriert (${params.ignored.join(", ")})`);
 }
 
@@ -527,6 +551,7 @@ function tick() {
   const nowMs = serverMs();
   const now = new Date(nowMs);
   render(now);
+  renderNight();
   const remaining = renderCountdown(nowMs);
   const info = renderSync();
   // Zustandswechsel der Zeitbasis auch im Band (aria-live) ansagen – nicht nur in der Zeile unter der Uhr.
@@ -1444,7 +1469,7 @@ function togglePanel(buttonId, panelId, open) {
   panel.hidden = !show;
   $(buttonId).setAttribute("aria-expanded", show ? "true" : "false");
   // Mit offenem Panel bekommt die Bühne eine Mindesthöhe (sonst drückte das Panel sie auf null zusammen).
-  document.body.classList.toggle("has-panel", !$("tone-panel").hidden || !$("device-panel").hidden || !$("custom-panel").hidden);
+  document.body.classList.toggle("has-panel", ["tone-panel", "device-panel", "custom-panel", "timer-panel"].some((id) => !$(id).hidden));
   return show;
 }
 
@@ -1630,8 +1655,12 @@ function browserZone() {
   try { return new Intl.DateTimeFormat().resolvedOptions().timeZone; } catch (error) { return null; }
 }
 
-/** Beschriftung ohne ?label=: „bis 20:15“ (ISO: „bis 2026-12-31 23:59“), mit Zone, wenn sie von der des Browsers abweicht. */
+/**
+ * Beschriftung ohne ?label=: „bis 20:15“ (ISO: „bis 2026-12-31 23:59“), mit Zone, wenn sie von der des Browsers abweicht.
+ * Eingebaute Ziele (?goal=): „bis Neujahr“ usw.
+ */
 function untilLabel(zone) {
+  if (!params.until) return t(`clock.goal_label.${params.goal}`);
   const u = params.until;
   const clock = `${pad(u.h)}:${pad(u.m)}${u.s ? `:${pad(u.s)}` : ""}`;
   const time = u.kind === "iso" ? `${u.y}-${pad(u.mo)}-${pad(u.d)} ${clock}` : clock;
@@ -1671,7 +1700,10 @@ function renderCountdown(nowMs = serverMs()) {
   setHidden(node, !active);
   if (active) setAttr(root, "data-cd", params.cd);
   else root.removeAttribute("data-cd");
-  if (!active) return NaN;
+  if (!active) {
+    if (state.ended) { state.ended = false; delete root.dataset.cdEnd; }
+    return NaN;
+  }
   const opts = { after: params.after, warn: params.warn, dayUnit: t("clock.cd_day"), coarse: params.eink };
   const tenths = state.tenths && !params.eink;
   let view;
@@ -1692,34 +1724,52 @@ function renderCountdown(nowMs = serverMs()) {
       view = cd.countdownView(NaN, opts);   // „--:--“ ohne Stufe, bis die Zone des Servers bekannt ist
       label = params.label || untilLabel(null);
     } else {
-      const target = cd.untilTarget(params.until, nowMs, zone);
+      // ?until= geht vor; sonst ein eingebautes Ziel (?goal=, gleiche Rechenbasis). Ohne Zeitumstellung in Sicht: NaN.
+      const target = params.until ? cd.untilTarget(params.until, nowMs, zone) : fx.goalTarget(params.goal, nowMs, zone);
       remaining = target - nowMs;
       view = cd.countdownView(remaining, opts);
       label = params.label || untilLabel(zone);
-      toneTarget = target;   // absolute Serverzeit: der Ton fällt auf das Ziel, die Anzeige läuft um ?lead= vor
+      if (!Number.isFinite(target)) status = t("clock.goal_none");
+      else toneTarget = target;   // absolute Serverzeit: der Ton fällt auf das Ziel, die Anzeige läuft um ?lead= vor
     }
   } else {
     const perf = performance.now();
+    advancePomo(perf);
     const read = cd.timerRead(state.timer, perf);
     if (read.remaining === null) {
       view = { phase: "watch", level: "none", seconds: NaN,
         text: cd.stopwatchText(read.elapsed, { tenths, decimal: language() === "en" ? "." : ",", dayUnit: opts.dayUnit }) };
       label = params.label || t("clock.cd_stopwatch");
     } else {
-      view = cd.countdownView(read.remaining, opts);
+      // Eieruhr aus dem Panel und Pomodoro: nur Farbstufen, die unterwegs erreicht werden – eine 3-min-Eieruhr ist nicht
+      // von Anfang an „unter 5 min“ gelb.
+      const local = state.pomo || state.eggMs ? { ...opts, warn: localWarn(state.timer.duration) } : opts;
+      view = cd.countdownView(read.remaining, local);
       if (tenths) view = { ...view, text: withTenths(view, read.remaining) };
-      label = params.label || t("clock.cd_timer", { time: cd.fmtSpan(params.timer / 1000) });
+      label = params.label || timerLabel(read);
       if (read.state === "running") {
         toneTarget = trueMs(perf) + read.remaining;
         remaining = read.remaining;
       }
     }
     // Mit ?lock=1 fehlen Kürzel und Start-Knopf: dann nicht „Leertaste oder Start“ versprechen.
-    if (read.state === "idle") status = t(params.lock ? "clock.cd_locked" : "clock.cd_idle");
+    // Ohne Knöpfe (Kiosk, OBS) bleibt nur die Leertaste.
+    const keysOnly = !params.lock && (!CONTROLS.actions || params.kiosk);
+    if (read.state === "idle") status = keysOnly ? t("clock.cd_idle_keys") : t(params.lock ? "clock.cd_locked" : "clock.cd_idle");
     else if (read.state === "paused") status = t("clock.cd_paused");
+    else if (state.pomo && state.pomo.done) status = t("clock.pomo_done", { count: state.pomo.done });
+    // Eieruhr abgelaufen: deutlich (Rahmen, „Zeit ist um!“), ohne Blinken. Pomodoro wechselt stattdessen die Phase.
+    const ended = !state.pomo && fx.timerEnded(read);
+    if (ended) status = t("clock.cd_end");
+    if (ended !== state.ended) {
+      state.ended = ended;
+      if (ended) root.dataset.cdEnd = "1";
+      else delete root.dataset.cdEnd;
+    }
     const button = read.state === "running" ? "clock.cd_stop" : (read.state === "paused" ? "clock.cd_resume" : "clock.cd_start");
     setText($("cd-toggle"), t(button));
-    setHidden($("cd-actions"), Boolean(params.lock));
+    setHidden($("cd-actions"), Boolean(params.lock) || !CONTROLS.actions);
+    setHidden($("cd-plus"), read.remaining === null || Boolean(state.pomo));
   }
   const paused = state.timer && state.timer.state === "paused";
   setAttr(node, "data-level", view.level);
@@ -1745,7 +1795,7 @@ function renderCountdown(nowMs = serverMs()) {
 
 /** Audiouhr für ?beep= anlegen bzw. fortsetzen (gesture: bei einer Bedienung). Liefert den Zustand oder null. */
 function countdownAudio(gesture) {
-  if (!(params.beep > 0) || params.eink) return null;
+  if (!(beepCount() > 0) || params.eink) return null;
   const Ctx = window.AudioContext || window.webkitAudioContext;
   if (!Ctx) return null;
   if (!state.cdTone) {
@@ -1755,15 +1805,27 @@ function countdownAudio(gesture) {
   return state.cdTone;
 }
 
+/**
+ * Wie viele Sekunden vor dem Ziel gepiept wird: ?beep=, sonst bei „Ton am Ende“ (Panel Timer, nur lokale Timer)
+ * fx.END_BEEPS. 0: kein Ton.
+ */
+function beepCount() {
+  if (params.beep > 0) return params.beep;
+  return state.endTone && COUNT_MODE !== "until" ? fx.END_BEEPS : 0;
+}
+
 /** Piep in den letzten ?beep= Sekunden vor dem Ziel (Serverzeit), langer Ton auf dem Ziel. */
 function countdownTones(target) {
   const tone = countdownAudio(false);
   if (!tone || tone.ctx.state !== "running") return;
-  if (!Number.isFinite(tone.target) || Math.abs(tone.target - target) > 1500) stopCountdownTones();   // neues Ziel
-  tone.target = target;
   const perf = performance.now();
+  // Pomodoro: Die nächste Phase beginnt genau auf dem alten Ziel – dessen langer Ton darf ausklingen.
+  const passed = state.pomo && Number.isFinite(tone.target) && tone.target <= trueMs(perf) && target > tone.target;
+  if (passed) tone.lastK = Infinity;
+  else if (!Number.isFinite(tone.target) || Math.abs(tone.target - target) > 1500) stopCountdownTones();   // neues Ziel
+  tone.target = target;
   const clock = kit.audioClock(tone.ctx, perf, trueMs(perf), 0);
-  for (const planned of cd.planCountdownTones(clock, target, params.beep, { lastK: tone.lastK })) {
+  for (const planned of cd.planCountdownTones(clock, target, beepCount(), { lastK: tone.lastK })) {
     tone.lastK = planned.k;
     if (planned.at > tone.ctx.currentTime + 0.005) {
       const osc = kit.scheduleTone(tone.ctx, planned);
@@ -1789,6 +1851,34 @@ function scheduleTimer() {
   state.timerTimer = setTimeout(() => { renderCountdown(); scheduleTimer(); }, cd.timerDelay(read, state.tenths ? 100 : 1000));
 }
 
+/** Beschriftung eines lokalen Timers: Pomodoro mit Runde und Phase, sonst „Timer 05:00“ (Dauer der Eieruhr). */
+function timerLabel(read) {
+  if (state.pomo) return t(`clock.pomo_${state.pomo.phase}`, { round: state.pomo.round });
+  const duration = state.timer && state.timer.duration !== null ? state.timer.duration : params.timer;
+  return t("clock.cd_timer", { time: cd.fmtSpan(Math.round((state.eggMs || params.timer || duration || read.elapsed) / 1000)) });
+}
+
+/**
+ * Farbstufen (?warn=) für eine Eieruhr bzw. Pomodoro-Phase der Dauer duration: Schwellen ab der Dauer fallen weg (NaN,
+ * cd.countdownView überspringt sie), die übrigen behalten ihre Stufe.
+ */
+function localWarn(duration) {
+  return params.warn.map((limit) => (limit * 1000 < duration ? limit : NaN));
+}
+
+/** Pomodoro: Ist die Phase um, beginnt die nächste genau an ihrem Ende (fx.pomoAdvance) – mit Ansage und Hinweis. */
+function advancePomo(perf) {
+  if (!state.pomo) return;
+  const next = fx.pomoAdvance(state.pomo, state.timer, perf);
+  if (!next.steps) return;
+  state.pomo = next.pomo;
+  state.timer = next.timer;
+  state.cdPrev = NaN;   // neue Phase: keine Schwelle aus der alten ansagen
+  const text = t(`clock.pomo_say_${state.pomo.phase === "work" ? "work" : state.pomo.phase}`, { round: state.pomo.round });
+  say(text);
+  hint(text);
+}
+
 /** Leertaste/Start: lokalen Timer starten oder anhalten; ohne Ziel startet die Stoppuhr. ?until= lässt sich nicht anhalten. */
 function toggleTimer() {
   if (COUNT_MODE === "until") { hint(t("clock.hint_no_timer")); return; }
@@ -1804,7 +1894,10 @@ function toggleTimer() {
 /** R: zurücksetzen; die Stoppuhr verschwindet dann wieder. */
 function resetTimer() {
   if (COUNT_MODE === "until") { hint(t("clock.hint_no_timer")); return; }
-  state.timer = COUNT_MODE === "timer" ? cd.timerReset(state.timer) : null;
+  // Eieruhr aus dem Panel: zurück auf ihre gewählte Dauer (nicht auf die mit „+1 min“ verlängerte); Pomodoro: Runde 1.
+  if (state.pomo) state.pomo = fx.pomoReset(state.pomo);
+  if (COUNT_MODE !== "timer") state.timer = null;
+  else state.timer = cd.timerNew(state.pomo ? fx.pomoPhaseMs(state.pomo) : (state.eggMs || params.timer));
   state.cdPrev = NaN;
   stopCountdownTones();
   clearTimeout(state.timerTimer);
@@ -1818,6 +1911,183 @@ function einkRetick() {
   if (!params.eink) return;
   clearTimeout(state.tickTimer);
   tick();
+}
+
+// --- Spielereien C1: Eieruhr, Pomodoro, eigene Countdowns (Panel „Timer“) -----------------------------------------
+function timerStatus(text) {
+  setText($("timer-status"), text);
+}
+
+/** Lokalen Timer neu aufsetzen und gleich starten: Eieruhr (ms) oder Pomodoro (pomo). ?until=/?goal= bleiben unberührt. */
+function startLocal(duration, pomo = null) {
+  if (COUNT_MODE === "until") { hint(t("clock.hint_no_timer")); return false; }
+  COUNT_MODE = "timer";
+  state.pomo = pomo;
+  state.eggMs = pomo ? null : duration;
+  state.timer = cd.timerToggle(cd.timerNew(pomo ? fx.pomoPhaseMs(pomo) : duration), performance.now());
+  state.cdPrev = NaN;
+  state.cdShape = "";
+  stopCountdownTones();
+  countdownAudio(true);   // Klick: Ton am Ende darf jetzt starten
+  renderCountdown();
+  scheduleTimer();
+  fitTime();
+  einkRetick();
+  return true;
+}
+
+function startEgg(ms) {
+  if (startLocal(ms)) timerStatus(t("clock.egg_started", { time: cd.fmtSpan(ms / 1000) }));
+}
+
+function startEggInput() {
+  const ms = fx.parseEggInput($("egg-input").value);
+  if (ms === null) {
+    $("egg-input").setAttribute("aria-invalid", "true");
+    timerStatus(t("clock.egg_bad"));
+    return;
+  }
+  $("egg-input").setAttribute("aria-invalid", "false");
+  startEgg(ms);
+}
+
+function startPomo() {
+  const pomo = fx.pomoNew(params.pomo, params.pause);
+  if (startLocal(null, pomo)) timerStatus(t("clock.pomo_started", { work: cd.fmtLimit(pomo.work / 1000) }));
+}
+
+/** „+1 min“ an der Eieruhr: vor dem Ende eine Minute mehr, danach eine Minute ab jetzt. */
+function plusMinute() {
+  if (!state.timer || state.timer.duration === null || state.pomo) return;
+  state.timer = fx.timerAdd(state.timer, fx.EGG_PLUS_MS, performance.now());
+  state.cdPrev = NaN;
+  stopCountdownTones();
+  renderCountdown();
+  scheduleTimer();
+  einkRetick();
+  hint(t("clock.hint_plus"));
+}
+
+/** „Ton am Ende“: Der Klick ist die Bedienung, nach der der Browser die Audiouhr starten lässt. */
+function toggleEndTone() {
+  state.endTone = $("timer-tone").checked;
+  if (!state.endTone) {
+    stopCountdownTones();
+    timerStatus(t("clock.timer_tone_off"));
+    return;
+  }
+  const tone = countdownAudio(true);
+  timerStatus(t(tone ? "clock.timer_tone_on" : "clock.tone_unsupported"));
+  if (tone && tone.ctx.state !== "running") {
+    tone.ctx.resume().then(() => timerStatus(t("clock.timer_tone_on")), () => timerStatus(t("clock.timer_tone_blocked")));
+  }
+}
+
+/** Panel „Timer“: Schnellwahl, Pomodoro-Zeile, eigene und eingebaute Countdowns – Texte nur per textContent. */
+function renderTimerPanel() {
+  const blocked = COUNT_MODE === "until";
+  setHidden($("timer-blocked"), !blocked);
+  const presets = $("egg-presets");
+  presets.replaceChildren(...fx.EGG_PRESETS.map((minutes) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "clock-tool";
+    button.textContent = t("clock.egg_min", { n: minutes });
+    button.disabled = blocked;
+    button.addEventListener("click", () => startEgg(minutes * 60_000));
+    return button;
+  }));
+  for (const id of ["egg-start", "pomo-start", "egg-input", "timer-tone"]) $(id).disabled = blocked;
+  $("egg-input").placeholder = t("clock.egg_own_hint");
+  $("own-until").placeholder = t("clock.own_until_hint");
+  const pomo = fx.pomoNew(params.pomo, params.pause);
+  setText($("pomo-line"), t("clock.pomo_line", { work: cd.fmtLimit(pomo.work / 1000), brk: cd.fmtLimit(pomo.brk / 1000),
+    long: cd.fmtLimit(pomo.long / 1000) }));
+  $("timer-tone").checked = state.endTone;
+  renderOwn();
+  $("goal-list").replaceChildren(...kit.GOALS.map((goal) => {
+    const item = document.createElement("li");
+    const a = document.createElement("a");
+    a.href = link.clockHref(link.buildQuery({ goal }, ZONES));
+    a.textContent = t(`clock.goal_name.${goal}`);
+    item.append(a);
+    return item;
+  }));
+}
+
+/** Liste der eigenen Countdowns: Link /clock?until=…&label=… und „Entfernen“. */
+function renderOwn() {
+  const list = $("own-list");
+  if (!state.own.length) {
+    const empty = document.createElement("li");
+    empty.className = "clock-panel-note";
+    empty.textContent = t("clock.own_none");
+    list.replaceChildren(empty);
+    return;
+  }
+  list.replaceChildren(...state.own.map((own, index) => {
+    const item = document.createElement("li");
+    const a = document.createElement("a");
+    a.href = link.clockHref(link.buildQuery({ until: own.until, label: own.label }, ZONES));
+    a.textContent = t("clock.own_open", { label: own.label, until: own.until.replace("T", " ") });
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "clock-tool";
+    remove.textContent = t("clock.own_delete");
+    remove.setAttribute("aria-label", t("clock.own_delete_label", { label: own.label }));
+    remove.addEventListener("click", () => {
+      saveOwn(fx.ownRemove(state.own, index));
+      timerStatus(t("clock.own_removed"));
+      (list.querySelector("button") || $("own-label")).focus();
+    });
+    item.append(a, " ", remove);
+    return item;
+  }));
+}
+
+function saveOwn(list) {
+  state.own = list;
+  const text = fx.ownText(list);
+  if (text) store(fx.OWN_KEY, text);
+  else removeStored(fx.OWN_KEY);
+  renderOwn();
+}
+
+function addOwn() {
+  const result = fx.ownAdd(state.own, { label: $("own-label").value, until: $("own-until").value });
+  for (const id of ["own-label", "own-until"]) $(id).setAttribute("aria-invalid", result.ok ? "false" : "true");
+  if (!result.ok) { timerStatus(t("clock.own_bad")); return; }
+  $("own-label").value = "";
+  $("own-until").value = "";
+  saveOwn(result.list);
+  timerStatus(t("clock.own_saved"));
+}
+
+function openTimerPanel() {
+  if (togglePanel("mode-timer", "timer-panel")) renderTimerPanel();
+}
+
+// --- Nachtmodus (C1): gedimmt bzw. Rotlicht, nach Uhrzeit (?dim=) und von Hand -------------------------------------
+/** Zustand jetzt: Zeitplan nach der vollen Stunde der angezeigten Zeit, von Hand umgeschaltet bis zum nächsten Wechsel. */
+function nightNow() {
+  const scheduled = fx.nightScheduled(params.dim, new Date(serverMs()).getHours());
+  state.nightOverride = fx.nightOverride({ scheduled, prev: state.nightPrev, override: state.nightOverride });
+  state.nightPrev = scheduled;
+  return fx.nightView({ scheduled, override: state.nightOverride, red: params.dimred, level: params.dimlevel, eink: params.eink });
+}
+
+/** Je Takt: Nur wenn sich der Nachtmodus ändert, Farben und Helligkeit neu setzen. */
+function renderNight() {
+  const night = nightNow();
+  const key = night.on ? `${night.mode}|${night.level}` : "";
+  if (key !== state.nightKey) applyModes();
+}
+
+function toggleNight() {
+  if (!CONTROLS.fun) return;
+  state.nightOverride = !nightNow().on;
+  applyModes();
+  hint(t(state.nightOverride ? "clock.hint_night_on" : "clock.hint_night_off"));
 }
 
 // --- Prüfbild ?test=sync (Studiouhr B5) --------------------------------------------------------
@@ -2105,7 +2375,7 @@ function onKey(event) {
   }
   const actions = {
     f: toggleFullscreen, d: nextDesign, l: nextLayout, u: toggleUtc, t: toggleTenths, r: resetTimer, a: announceTime,
-    o: toggleSignal,
+    o: toggleSignal, n: toggleNight,
     "+": () => changeScale(10), "-": () => changeScale(-10), "−": () => changeScale(-10), "?": () => showKeys(),
   };
   const action = actions[key.length === 1 ? key.toLowerCase() : key];
@@ -2118,17 +2388,30 @@ function onKey(event) {
 // --- Darstellung: hell/dunkel, Rotlicht, E-Ink, Kiosk, Vollbild ------------------------------
 function applyModes() {
   const red = store("ntp-gui-clock-red") === "1";
+  const night = nightNow();
   // Ein Thema (?look=) bringt sein eigenes Hell/Dunkel mit, ?bg=black ist immer dunkel; Rotlicht und E-Ink übersteuern.
+  // Der Nachtmodus ist immer dunkel und geht dem Rotlicht-Knopf vor (mit ?dimred=1 ist er selbst Rotlicht).
   const scheme = kit.colorScheme({ eink: params.eink, look: params.look, bg: params.bg, stored: store("ntp-gui-clock-theme") });
-  root.dataset.theme = scheme.scheme;
+  root.dataset.theme = night.on ? "dark" : scheme.scheme;
   if (params.eink) root.dataset.mode = "eink";
+  else if (night.on) root.dataset.mode = night.mode;
   else if (red) root.dataset.mode = "red";
   else delete root.dataset.mode;
+  // Helligkeit des Nachtmodus (?dimlevel=, 0,2–0,8) per CSSOM: Deckkraft von Leiste, Bühne und Band.
+  if (night.on) {
+    root.dataset.night = "1";
+    root.style.setProperty("--night", String(night.level));
+  } else {
+    delete root.dataset.night;
+    root.style.removeProperty("--night");
+  }
+  state.nightKey = night.on ? `${night.mode}|${night.level}` : "";
   // Beschriftung = Aktion („Dunkel“ im hellen Modus), daher kein aria-pressed: „Dunkel, gedrückt“ wäre falsch.
   $("mode-theme").textContent = scheme.scheme === "light" ? t("clock.theme_dark") : t("clock.theme_light");
   $("mode-red").setAttribute("aria-pressed", red ? "true" : "false");
-  $("mode-theme").disabled = red || scheme.locked;
-  $("mode-red").disabled = params.eink;
+  $("mode-night").setAttribute("aria-pressed", night.on ? "true" : "false");
+  $("mode-theme").disabled = red || scheme.locked || night.on;
+  $("mode-red").disabled = params.eink || night.on;
   applyColors();
 }
 
@@ -2463,6 +2746,15 @@ $("tone-countdown").addEventListener("click", () => startTone("countdown"));
 $("tone-off").addEventListener("click", stopTone);
 $("cd-toggle").addEventListener("click", () => toggleTimer());
 $("cd-reset").addEventListener("click", () => resetTimer());
+$("cd-plus").addEventListener("click", plusMinute);
+$("mode-timer").addEventListener("click", openTimerPanel);
+$("mode-night").addEventListener("click", toggleNight);
+$("egg-start").addEventListener("click", startEggInput);
+$("egg-input").addEventListener("keydown", (event) => { if (event.key === "Enter") startEggInput(); });
+$("pomo-start").addEventListener("click", startPomo);
+$("timer-tone").addEventListener("change", toggleEndTone);
+$("own-save").addEventListener("click", addOwn);
+for (const id of ["own-label", "own-until"]) $(id).addEventListener("keydown", (event) => { if (event.key === "Enter") addOwn(); });
 $("keys-close").addEventListener("click", () => showKeys(false));
 $("keys").addEventListener("keydown", trapKeys);
 reducedMotion.addEventListener?.("change", () => {
@@ -2476,7 +2768,7 @@ function mayHide() {
   // Offene Panels bleiben bedienbar: dann nicht ausblenden. Erst beim Ablauf prüfen – wake() läuft bei
   // pointerdown/keydown, also bevor der Klick das Panel öffnet. Liegt der Tastaturfokus in der Leiste, bleibt
   // sie ebenfalls sichtbar (nach einem Mausklick nicht, sonst bliebe sie am Wandmonitor für immer stehen).
-  if (!$("tone-panel").hidden || !$("device-panel").hidden || !$("custom-panel").hidden || !$("keys").hidden) return false;
+  if (["tone-panel", "device-panel", "custom-panel", "timer-panel", "keys"].some((id) => !$(id).hidden)) return false;
   const focus = document.activeElement;
   return !(focus && focus.closest(".clock-bar") && focus.matches(":focus-visible"));
 }
@@ -2506,6 +2798,7 @@ function relabel() {
   renderCountdown();
   renderProfileTitle();
   renderTest();
+  if (!$("timer-panel").hidden) renderTimerPanel();
   state.signalKey = `${state.signalKey.split("|")[0]}|`;   // Texte neu, ohne den Zustand noch einmal anzusagen
   renderSignal();
 }
@@ -2527,6 +2820,14 @@ async function start() {
   const i18nReady = initI18n();
   await loadProfile();
   initCountMode();
+  // Bedienung erst nach dem Profil festlegen: fun=0, lock=1, Kiosk und Kachel können von dort kommen.
+  CONTROLS = fx.funControls({ fun: params.fun, kiosk: params.kiosk, lock: params.lock, layout: params.layout, obs: OBS,
+    eink: params.eink });
+  if (OBS) document.body.classList.add("is-obs");
+  $("mode-timer").hidden = !CONTROLS.fun;
+  $("mode-night").hidden = !CONTROLS.fun;
+  state.own = fx.ownList(store(fx.OWN_KEY) || "");
+  $("timer-info").append(infoButton("clock.timer_info_title", "clock.timer_info"));
   if (params.kiosk) document.body.classList.add("is-kiosk");
   if (params.eink) document.body.classList.add("is-eink");
   if (params.eink) $("mode-tone").hidden = true;   // E-Ink rechnet nur einmal je Minute

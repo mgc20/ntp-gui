@@ -35,6 +35,7 @@
 // Zeit im safe-Rand, kein Ziffernumbruch, kein Scrollbalken, CSS-Spiegel = resolveLayout, Ziffern, CSSOM-Farben, CSP.
 // Studiouhr A5 (clockCountdownChecks, TOUR_COUNTDOWN_ONLY=1): Countdown, Überzeit und Countdown als Hauptanzeige auf
 // neun Flächen, Farbstufen mit Symbol und Text, Zone des Servers, Timer, Stoppuhr, Tastenkürzel, lock=1, Ansagen.
+// Studiouhr C1 (clockTimerChecks, TOUR_TIMER_ONLY=1): Eieruhr, Pomodoro, eigene Countdowns, Nachtmodus, Bedienung.
 // Studiouhr A6 (clockLinkChecks, TOUR_LINK_ONLY=1): Profil (?p=) auf neun Flächen mit gemocktem Profil und /api/v1/time,
 // Neuladen bei geändertem profiles_rev, Panel „Anpassen“ (Übernehmen ohne Parameter), Reiter „Anzeigen“ im Dashboard.
 // Studiouhr B1 (clockTimecodeChecks, TOUR_TC_ONLY=1): Design tc auf neun Flächen – Kopfzeile „nicht genlocked“, Zehntel als
@@ -723,9 +724,10 @@ const CLOCK_STEP_MS = 250;
 // zurück, um den Zustand vor der ersten Antwort zu prüfen. zone: Zeitzone des Browsers. at: Serverzeit nach dem
 // Einschwingen (ms), Standard CLOCK_SERVER. reduced: Das System wünscht weniger Bewegung (prefers-reduced-motion).
 async function openPausedClock(browser, { width, height = 900, query = "", red = false, reply, hold = null, settle = true,
-  zone = "Europe/Berlin", profile = null, storage = null, at = CLOCK_SERVER, reduced = false } = {}) {
+  zone = "Europe/Berlin", profile = null, storage = null, at = CLOCK_SERVER, reduced = false, init = null } = {}) {
   const ctx = await browser.newContext({ viewport: { width, height }, timezoneId: zone,
     ...(reduced ? { reducedMotion: "reduce" } : {}) });
+  if (init) await ctx.addInitScript(init);   // z. B. window.obsstudio wie in einer OBS-Browserquelle
   await ctx.addInitScript(([isRed, extra]) => {
     window.__csp = [];
     document.addEventListener("securitypolicyviolation", (e) => window.__csp.push(`${e.violatedDirective} ${e.blockedURI}`));
@@ -1480,6 +1482,223 @@ async function clockCountdownChecks(browser) {
     });
     note("/clock Countdown-Ansage", [out.live === "" ? "" : `schon beim Laden „${out.live}“`,
       got.live === "Noch 1 min." ? "" : `Ansage „${got.live}“ (${got.text})`, ...errors(got, msgs)].filter(Boolean));
+  }
+  return { found, lines };
+}
+
+// Studiouhr C1 (clockTimerChecks, TOUR_TIMER_ONLY=1): Eieruhr, Pomodoro, eigene Countdowns, Nachtmodus und die Regel
+// für Bedienelemente. Auf allen neun Flächen: Eieruhr (?timer=3s, Leertaste) läuft ab – „Zeit ist um!“ mit Rahmen, Überzeit,
+// im Bild, ohne Umbruch und Scrollbalken. Bei 390 und 1440 px das Panel „Timer“: sechs Schnellwahlen, 3 min ohne gelbe
+// Stufe, „+1 min“, eigene Dauer, Pomodoro-Start, eigener Countdown merken und wieder entfernen (nur localStorage), Tippflächen
+// ≥ 24 px, keine Überbreite. Pomodoro (?pomo=1m&pause=1m) wechselt nach einer Minute in die Pause und zählt. Nachtmodus
+// nach Uhrzeit (grau bzw. rot, Deckkraft aus dimlevel), Taste N schaltet von Hand. Keine Knöpfe in den Voreinstellungen
+// studio, tile, banner, mit kiosk=1, lock=1, fun=0 und in OBS (window.obsstudio); Taste N wirkt dort nicht. Dazu ein Lauf
+// in Echtzeit: keine Long Tasks (> 50 ms) und keine Bildschleife bei laufendem Pomodoro. Fotos mit TOUR_SHOTS.
+function timerState() {
+  const root = document.documentElement;
+  const cd = document.getElementById("cd");
+  const time = document.getElementById("cd-time");
+  const stage = document.getElementById("clock-stage").getBoundingClientRect();
+  const safe = parseFloat(getComputedStyle(root).getPropertyValue("--safe")) || 0;
+  const box = cd.getBoundingClientRect();
+  const size = parseFloat(getComputedStyle(time).fontSize);
+  const visible = (id) => { const el = document.getElementById(id); const r = el.getBoundingClientRect();
+    return !el.hidden && getComputedStyle(el).display !== "none" && r.width > 0 && r.height > 0; };
+  return {
+    text: time.textContent, label: document.getElementById("cd-label").textContent, state: document.getElementById("cd-state").textContent,
+    level: cd.dataset.level, phase: cd.dataset.phase, end: root.dataset.cdEnd || "", outline: getComputedStyle(cd).outlineStyle,
+    wrapped: time.getBoundingClientRect().height > size * 1.6, layout: document.getElementById("clock-stage").dataset.layout,
+    box: { left: box.left, right: box.right, top: box.top, bottom: box.bottom, w: box.width, h: box.height },
+    safeBox: { left: stage.left + stage.width * safe / 100, right: stage.right - stage.width * safe / 100,
+      top: stage.top + stage.height * safe / 100, bottom: stage.bottom - stage.height * safe / 100 },
+    vscroll: root.scrollHeight - root.clientHeight, hscroll: root.scrollWidth - root.clientWidth,
+    mode: root.dataset.mode || "", night: root.dataset.night || "",
+    opacity: getComputedStyle(document.getElementById("clock-stage")).opacity,
+    timerBtn: visible("mode-timer"), nightBtn: visible("mode-night"), actions: visible("cd-actions"), plus: visible("cd-plus"),
+    bar: visible("clock-back"), nightPressed: document.getElementById("mode-night").getAttribute("aria-pressed"),
+    csp: window.__csp || [],
+  };
+}
+
+function timerPanelState() {
+  const panel = document.getElementById("timer-panel");
+  // ⓘ hat seine eigene 24-px-Prüfung (infoHitCheck); beim Kästchen zählt das Label drumherum.
+  const small = [...panel.querySelectorAll("button:not(.info), input:not([type=checkbox]), a, label.clock-timer-check")].filter((el) => {
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && (r.width < 24 || r.height < 24);
+  }).map((el) => el.id || el.textContent.trim().slice(0, 20));
+  return {
+    open: !panel.hidden, presets: [...document.querySelectorAll("#egg-presets button")].map((b) => b.textContent),
+    goals: [...document.querySelectorAll("#goal-list a")].map((a) => a.getAttribute("href")),
+    own: [...document.querySelectorAll("#own-list a")].map((a) => [a.textContent, a.getAttribute("href")]),
+    stored: localStorage.getItem("ntp-gui-clock-countdowns"), status: document.getElementById("timer-status").textContent,
+    small, hscroll: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    pomo: document.getElementById("pomo-line").textContent,
+  };
+}
+
+async function clockTimerChecks(browser) {
+  const found = [];
+  const lines = [];
+  const note = (label, problems) => {
+    lines.push(`${label}: ${problems.length ? problems.join("; ") : "ok"}`);
+    if (problems.length) found.push(`${label}: ${problems.join("; ")}`);
+  };
+  const M = "−";
+  const errors = (got, msgs) => (got.csp.length || msgs.length ? [`Fehler ${JSON.stringify([...got.csp, ...msgs])}`] : []);
+  const shot = async (page, name) => { if (SHOTS) await page.screenshot({ path: `${SHOTS}/clock-c1-${name}.png` }); };
+  // 1) Eieruhr läuft ab, auf allen neun Flächen.
+  for (const [width, height] of STUDIO_VIEWPORTS) {
+    const { ctx, page, msgs, clock } = await openPausedClock(browser, { width, height, query: "?timer=3s" });
+    await page.keyboard.press("Space");
+    await clock.run(4500);   // die Anzeige wechselt 2 ms nach der vollen Sekunde
+    const got = await page.evaluate(timerState);
+    await shot(page, `ende-${width}x${height}`);
+    await ctx.close();
+    const problems = [];
+    if (got.end !== "1") problems.push("kein data-cd-end");
+    if (got.text !== "+00:00:01") problems.push(`zeigt ${got.text}`);
+    const small = ["strip", "tile"].includes(got.layout);
+    if (!small && got.state !== "Zeit ist um!") problems.push(`Text „${got.state}“`);
+    if (got.outline !== "solid") problems.push(`kein Rahmen (${got.outline})`);
+    const b = got.box;
+    const z = got.safeBox;
+    if (!(b.w > 0 && b.h > 0)) problems.push("Countdown nicht sichtbar");
+    else if (b.left < z.left - 6 || b.right > z.right + 6 || b.top < z.top - 6 || b.bottom > z.bottom + 6) {
+      problems.push(`außerhalb der Bühne (${[b.left, b.top, b.right, b.bottom].map(Math.round)} in ${[z.left, z.top, z.right, z.bottom].map(Math.round)})`);
+    }
+    if (got.wrapped) problems.push("Umbruch");
+    if (got.vscroll > 0 || got.hscroll > 0) problems.push(`Scrollbalken (${got.hscroll}/${got.vscroll} px)`);
+    problems.push(...errors(got, msgs));
+    note(`/clock Eieruhr-Ende ${width}×${height}`, problems);
+  }
+  // 2) Panel „Timer“ bei 390 und 1440 px.
+  for (const width of [390, 1440]) {
+    const { ctx, page, msgs, clock } = await openPausedClock(browser, { width, height: 900, query: "" });
+    await page.click("#mode-timer");
+    await clock.run(250);
+    const panel = await page.evaluate(timerPanelState);
+    await shot(page, `panel-${width}`);
+    await page.click("#egg-presets button:nth-child(2)");   // 3 min
+    await clock.run(1500);
+    const egg = await page.evaluate(timerState);
+    await page.click("#cd-plus");
+    await clock.run(250);
+    const plus = await page.evaluate(timerState);
+    await page.fill("#egg-input", "7:30");
+    await page.click("#egg-start");
+    await clock.run(250);   // gerade gestartet: noch die volle Dauer
+    const own = await page.evaluate(timerState);
+    await page.fill("#egg-input", "abc");
+    await page.click("#egg-start");
+    const bad = await page.evaluate(() => [document.getElementById("egg-input").getAttribute("aria-invalid"),
+      document.getElementById("timer-status").textContent]);
+    await page.fill("#own-label", "Tagesschau");
+    await page.fill("#own-until", "20:15");
+    await page.click("#own-save");
+    const saved = await page.evaluate(timerPanelState);
+    await shot(page, `panel-gemerkt-${width}`);
+    await page.click("#own-list button");
+    const removed = await page.evaluate(timerPanelState);
+    await page.click("#pomo-start");
+    await clock.run(1500);
+    const pomo = await page.evaluate(timerState);
+    await ctx.close();
+    const problems = [];
+    if (!panel.open) problems.push("Panel zu");
+    if (panel.presets.join("|") !== "1 min|3 min|5 min|10 min|15 min|30 min") problems.push(`Schnellwahl ${panel.presets}`);
+    if (panel.goals.join(" ") !== "/clock?goal=newyear /clock?goal=dst /clock?goal=unix /clock?goal=ntp") problems.push(`Ziele ${panel.goals}`);
+    if (panel.small.length) problems.push(`Tippflächen < 24 px: ${panel.small.join(", ")}`);
+    if (panel.hscroll > 0) problems.push(`Überbreite ${panel.hscroll} px`);
+    if (egg.text !== `${M}02:59` || egg.level !== "none" || egg.label !== "Timer 03:00") problems.push(`3 min: ${egg.text} ${egg.level} „${egg.label}“`);
+    if (!egg.plus) problems.push("+1 min fehlt");
+    if (plus.text !== `${M}03:59`) problems.push(`+1 min: ${plus.text}`);
+    if (own.text !== `${M}07:30` || own.label !== "Timer 07:30") problems.push(`eigene Dauer: ${own.text} „${own.label}“`);
+    if (bad[0] !== "true" || !/verstehe/.test(bad[1])) problems.push(`falsche Dauer: ${bad}`);
+    if (JSON.stringify(saved.own) !== JSON.stringify([["Tagesschau (20:15)", "/clock?until=20:15&label=Tagesschau"]])) problems.push(`gemerkt ${JSON.stringify(saved.own)}`);
+    if (saved.stored !== JSON.stringify([{ until: "20:15", label: "Tagesschau" }])) problems.push(`localStorage ${saved.stored}`);
+    if (removed.own.length || removed.stored !== null) problems.push("Entfernen wirkt nicht");
+    if (pomo.label !== "Pomodoro 1 · Arbeit" || pomo.text !== `${M}24:59` || pomo.plus) problems.push(`Pomodoro: ${pomo.text} „${pomo.label}“`);
+    problems.push(...errors(pomo, msgs));
+    note(`/clock Panel Timer ${width}`, problems);
+  }
+  // 3) Pomodoro wechselt nach der Arbeitsphase in die Pause und zählt.
+  {
+    const { ctx, page, msgs, clock } = await openPausedClock(browser, { width: 1920, height: 1080, query: "?pomo=1m&pause=1m" });
+    await page.keyboard.press("Space");
+    await clock.run(500);
+    clock.advanced += 60000;
+    await page.clock.runFor(60000);
+    await clock.run(1500);
+    const got = await page.evaluate(timerState);
+    const live = await page.evaluate(() => document.getElementById("clock-live").textContent);
+    await shot(page, "pomodoro-pause");
+    await ctx.close();
+    note("/clock Pomodoro Phasenwechsel", [got.label === "Pomodoro 1 · Pause" ? "" : `„${got.label}“`,
+      got.state === "1 Pomodoro geschafft" ? "" : `„${got.state}“`, /^−00:5\d$/.test(got.text) ? "" : `zeigt ${got.text}`,
+      got.end ? "Eieruhr-Ende beim Pomodoro" : "", /Pause/.test(live) ? "" : `Ansage „${live}“`, ...errors(got, msgs)].filter(Boolean));
+  }
+  // 4) Nachtmodus nach Uhrzeit (10:15 liegt in 8-17) und Taste N.
+  for (const [query, mode, opacity] of [["?dim=8-17", "night", "0.4"], ["?dim=8-17&dimred=1&dimlevel=60", "red", "0.6"]]) {
+    const { ctx, page, msgs, clock } = await openPausedClock(browser, { width: 1440, height: 900, query });
+    const on = await page.evaluate(timerState);
+    await shot(page, `nacht-${mode}`);
+    await page.keyboard.press("n");
+    await clock.run(250);
+    const off = await page.evaluate(timerState);
+    await ctx.close();
+    note(`/clock Nachtmodus ${query}`, [on.mode === mode && on.night === "1" ? "" : `an: ${on.mode}/${on.night}`,
+      on.opacity === opacity ? "" : `Deckkraft ${on.opacity}`, on.nightPressed === "true" ? "" : "Knopf nicht gedrückt",
+      !off.night && off.mode === "" && off.opacity === "1" ? "" : `nach N: ${off.mode}/${off.night}/${off.opacity}`,
+      ...errors(off, msgs)].filter(Boolean));
+  }
+  {
+    const { ctx, page, msgs, clock } = await openPausedClock(browser, { width: 1440, height: 900, query: "?dim=20-6" });
+    const before = await page.evaluate(timerState);
+    await page.click("#mode-night");
+    await clock.run(250);
+    const after = await page.evaluate(timerState);
+    await ctx.close();
+    note("/clock Nachtmodus von Hand", [before.night ? "außerhalb des Zeitplans an" : "", after.mode === "night" ? "" : `nach Klick ${after.mode}`,
+      ...errors(after, msgs)].filter(Boolean));
+  }
+  // 5) Keine Bedienung in Studio-, Kachel- und Kiosk-Voreinstellungen, mit lock=1, fun=0 und in OBS.
+  const obs = () => { window.obsstudio = { pluginVersion: "30.0.0" }; };
+  for (const [name, query, init, actions] of [["studio", "?p=studio&timer=5m", null, false], ["tile", "?p=tile&timer=5m", null, false],
+    ["banner", "?p=banner&timer=5m", null, false], ["kiosk", "?kiosk=1&timer=5m", null, false], ["lock", "?lock=1&timer=5m", null, false],
+    ["fun0", "?fun=0&timer=5m", null, true], ["obs", "?timer=5m", obs, false]]) {
+    const { ctx, page, msgs, clock } = await openPausedClock(browser, { width: 1920, height: 1080, query, init });
+    await clock.run(1500);   // Profil geladen
+    await page.keyboard.press("n");
+    await clock.run(250);
+    const got = await page.evaluate(timerState);
+    if (name === "obs") await shot(page, "obs");
+    await ctx.close();
+    note(`/clock Bedienung ${name}`, [got.timerBtn || got.nightBtn ? "Knöpfe Timer/Nacht sichtbar" : "",
+      got.actions !== actions ? `Knöpfe am Countdown ${got.actions ? "sichtbar" : "fehlen"}` : "",
+      got.night ? "Taste N wirkt" : "", name === "obs" && got.bar ? "Leiste in OBS sichtbar" : "",
+      name === "obs" && /Start/.test(got.state) ? `verspricht Start-Knopf „${got.state}“` : "", ...errors(got, msgs)].filter(Boolean));
+  }
+  // 6) Echtzeit: laufender Pomodoro ohne Long Tasks und ohne Bildschleife.
+  {
+    const ctx = await browser.newContext({ viewport: { width: 1920, height: 1080 } });
+    await ctx.addInitScript(() => {
+      window.__long = [];
+      window.__raf = 0;
+      const raf = window.requestAnimationFrame.bind(window);
+      window.requestAnimationFrame = (cb) => { window.__raf += 1; return raf(cb); };
+      try { new PerformanceObserver((list) => window.__long.push(...list.getEntries().map((e) => e.duration))).observe({ type: "longtask", buffered: true }); } catch (e) { /* egal */ }
+    });
+    const page = await ctx.newPage();
+    await page.goto(`${BASE}/clock?pomo=25m&dim=0-23`, { waitUntil: "load" });
+    await page.waitForTimeout(1500);
+    await page.keyboard.press("Space");
+    const rafStart = await page.evaluate(() => window.__raf);
+    await page.waitForTimeout(6000);
+    const got = await page.evaluate(() => ({ long: window.__long, raf: window.__raf }));
+    await ctx.close();
+    note("/clock C1 Leistung", [got.long.length ? `Long Tasks ${got.long.map(Math.round)}` : "",
+      got.raf - rafStart > 2 ? `Bildschleife (${got.raf - rafStart} Bilder)` : ""].filter(Boolean));
   }
   return { found, lines };
 }
@@ -4158,6 +4377,12 @@ async function setupChecks(browser) {
     }
     if (process.env.TOUR_COUNTDOWN_ONLY) {
       const result = await clockCountdownChecks(browser);
+      console.log(JSON.stringify(result, null, 1));
+      process.exitCode = result.found.length ? 1 : 0;
+      return;
+    }
+    if (process.env.TOUR_TIMER_ONLY) {
+      const result = await clockTimerChecks(browser);
       console.log(JSON.stringify(result, null, 1));
       process.exitCode = result.found.length ? 1 : 0;
       return;

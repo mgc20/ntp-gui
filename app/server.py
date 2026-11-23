@@ -400,10 +400,12 @@ apiv1.endpoint("GET", "/update", "/api/update", "read",
 # alles feste Texte und Code, nichts aus Konfiguration oder Status.
 # Studiouhr A6: Profile lesen (/api/v1/clock/profile, nur Allowlist-Felder) und der Link-Baukasten (clocklink.js).
 # Studiouhr B1: Rechnungen der Timecode-Anzeige (clocktc.js) – nur Code.
+# Studiouhr C: Spielereien (clockextras.js: Eieruhr, Pomodoro, eingebaute Countdowns, Nachtmodus) – nur Code.
 CLOCK_PUBLIC_PATHS = {"/clock", "/api/v1/time", "/api/v1/clock/profile", "/static/app.css", "/static/clock.css",
                       "/static/js/clock.js", "/static/js/clocksync.js", "/static/js/clockkit.js",
                       "/static/js/clockfaces.js", "/static/js/clockcount.js", "/static/js/clocklink.js",
-                      "/static/js/clocktc.js", "/static/js/clockworld.js", "/static/js/util.js", "/static/js/i18n.js", "/static/i18n/de.json", "/static/i18n/en.json"}
+                      "/static/js/clocktc.js", "/static/js/clockworld.js", "/static/js/clockextras.js",
+                      "/static/js/util.js", "/static/js/i18n.js", "/static/i18n/de.json", "/static/i18n/en.json"}
 
 CONTENT_TYPES = {
     ".html": "text/html; charset=utf-8",

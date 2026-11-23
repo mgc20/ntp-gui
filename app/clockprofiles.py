@@ -35,12 +35,13 @@ LOOKS = ("studio", "contrast", "warm", "terminal", "paper", "pastel")
 PALETTE = ("amber", "red", "green", "cyan", "white", "ice", "yellow", "orange", "blue", "violet", "pink", "lime")
 STUDIO_COLORS = ("amber", "red", "green", "cyan", "white", "ice")
 TC_FPS = ("24", "25", "30", "50", "60", "29.97", "59.94")
+GOALS = ("newyear", "dst", "unix", "ntp")   # eingebaute Countdowns (GOALS in clockkit.js)
 
 MAX_ZONES = 6         # Weltzeit: höchstens so viele Zonen (tz) und Kurznamen (tzl)
 ZONE_LABEL_LEN = 16
 
 # name → (Typ, Angaben). Typen wie in clockkit.js: enum, flag, int, zonelist, labellist, label, time, duration, intlist,
-# list, color.
+# list, color, hours („22-6“).
 PARAMS: dict[str, tuple[str, dict]] = {
     "design": ("enum", {"values": DESIGNS}),
     "kiosk": ("flag", {}),
@@ -76,6 +77,15 @@ PARAMS: dict[str, tuple[str, dict]] = {
     "cd": ("enum", {"values": ("below", "main")}),
     "lock": ("flag", {}),
     "signal": ("flag", {}),
+    # Spielereien (Etappe C): Eieruhr/Pomodoro/Nachtmodus-Knopf an oder aus, eingebaute Countdowns, Pomodoro-Dauern,
+    # Nachtmodus nach Uhrzeit.
+    "fun": ("flag", {}),
+    "goal": ("enum", {"values": GOALS}),
+    "pomo": ("duration", {}),
+    "pause": ("duration", {}),
+    "dim": ("hours", {}),
+    "dimlevel": ("int", {"min": 20, "max": 80}),
+    "dimred": ("flag", {}),
     "test": ("enum", {"values": ("sync",)}),
 }
 
@@ -85,20 +95,22 @@ PARAMS: dict[str, tuple[str, dict]] = {
 ADDRESS_ONLY = ("test",)
 
 # Fest eingebaute Voreinstellungen (nicht editierbar, Namen reserviert). Im Studio-, Kachel- und Kiosk-Betrieb
-# ohne Spielereien; Pixel-Shift gegen Einbrennen bei Dauerbetrieb.
+# ohne Spielereien (fun=0); Pixel-Shift gegen Einbrennen bei Dauerbetrieb.
 PRESETS: dict[str, dict[str, Any]] = {
     "studio": {"title": "Studio", "params": {"design": "studio", "look": "studio", "color": "amber",
-                                             "seconds": "both", "sub": "utc", "shift": "1", "kiosk": "1"}},
+                                             "seconds": "both", "sub": "utc", "shift": "1", "kiosk": "1",
+                                             "fun": "0"}},
     "tile": {"title": "Multiviewer-Kachel", "params": {"layout": "tile", "design": "digital", "face": "seg",
-                                                       "bg": "black", "safe": "5", "lock": "1"}},
+                                                       "bg": "black", "safe": "5", "lock": "1", "fun": "0"}},
     "banner": {"title": "Banner", "params": {"layout": "banner", "design": "digital", "face": "seg",
-                                             "look": "studio", "kiosk": "1"}},
+                                             "look": "studio", "kiosk": "1", "fun": "0"}},
     "kitchen": {"title": "Küche", "params": {"design": "flip", "look": "warm", "timer": "10m",
                                              "date": "short"}},
     "workshop": {"title": "Werkstatt", "params": {"design": "digital", "face": "seg", "look": "contrast",
                                                   "weight": "bold", "scale": "120"}},
     "night": {"title": "Nacht", "params": {"design": "digital", "look": "warm", "weight": "thin",
-                                           "show": "time", "scale": "80", "shift": "2"}},
+                                           "show": "time", "scale": "80", "shift": "2",
+                                           "dim": "22-7"}},
     "nerd": {"title": "Nerd", "params": {"design": "digital", "face": "mono", "look": "terminal",
                                          "date": "iso", "show": "time,seconds,date,week,utc,status"}},
 }
@@ -110,6 +122,7 @@ _HEX6_RE = re.compile(r"^[0-9a-fA-F]{6}\Z")
 _DAILY_RE = re.compile(r"^([01][0-9]|2[0-3]):([0-5][0-9])(?::([0-5][0-9]))?\Z")
 _ISO_RE = re.compile(r"^([0-9]{4})-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):([0-5][0-9])"
                      r"(?::([0-5][0-9]))?\Z")
+_HOURS_RE = re.compile(r"^([01]?[0-9]|2[0-3])-([01]?[0-9]|2[0-3])\Z")
 _DURATION_RE = re.compile(r"^(?:([0-9]{1,2})h)?(?:([0-9]{1,4})m)?(?:([0-9]{1,5})s)?\Z")
 _LABEL_EXTRA = set(" .,:!?+-/()#&'")
 _ZONE_LABEL_EXTRA = set(" .-")   # Kurznamen der Weltzeit: strenger, das Komma trennt die Einträge
@@ -219,6 +232,9 @@ def check_value(name: str, raw: Any) -> str:
             ok = _time_ok(text)
         elif kind == "duration":
             ok = _duration_ok(text)
+        elif kind == "hours":
+            match = _HOURS_RE.match(text)
+            ok = bool(match) and int(match.group(1)) != int(match.group(2))
         elif kind == "intlist":
             items = text.split(",")
             ok = 0 < len(items) <= info["max_items"] and all(_INT_RE.match(i) for i in items)

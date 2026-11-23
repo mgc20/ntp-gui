@@ -34,8 +34,9 @@ export const FORM_GROUPS = Object.freeze([
   { key: "look", names: ["design", "layout", "look", "accent", "scale", "weight", "show", "bg", "safe", "shift"] },
   { key: "digits", names: ["color", "sub", "seconds", "h12", "face", "colon", "lz", "date", "fps"] },
   { key: "zone", names: ["tz", "tzl", "lead", "maxerr"] },
-  { key: "countdown", names: ["until", "timer", "after", "warn", "beep", "label", "cd"] },
-  { key: "mode", names: ["kiosk", "eink", "lock", "signal", "test"] },
+  { key: "countdown", names: ["until", "goal", "label", "timer", "pomo", "pause", "after", "warn", "beep", "cd"] },
+  { key: "night", names: ["dim", "dimlevel", "dimred"] },
+  { key: "mode", names: ["kiosk", "eink", "lock", "fun", "signal", "test"] },
 ]);
 
 /** Feste Fenstergrößen der Vorschau (window.open im neuen Tab, kein iframe: frame-ancestors bleibt 'none'). */
@@ -254,7 +255,7 @@ function node(tag, attrs = {}, ...children) {
   return item;
 }
 
-const EXAMPLES = { until: "20:15", timer: "25m", warn: "300,60,10", tz: "Europe/London,Asia/Tokyo", tzl: "LON,TYO",
+const EXAMPLES = { until: "20:15", timer: "25m", pomo: "25m", pause: "5m", dim: "22-6", warn: "300,60,10", tz: "Europe/London,Asia/Tokyo", tzl: "LON,TYO",
   accent: "amber, ff8800" };
 
 function example(name) {
@@ -282,6 +283,7 @@ function optionText(name, value) {
   if (name === "design") return t(`clock.design.${value}`);
   if (name === "layout") return t(`clock.layout_name.${value}`);
   if (name === "test") return t(`clock.link.test_value.${value}`);
+  if (name === "goal") return t(`clock.goal_name.${value}`);
   return value;
 }
 

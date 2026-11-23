@@ -791,3 +791,42 @@ body.has-signal .clock-hint { top: auto; bottom: max(12px, env(safe-area-inset-b
 @media (max-height: 240px) {
   body.has-signal .clock-bar { display: none; }
 }
+
+/* --- Studiouhr C1: Eieruhr, Pomodoro, eigene Countdowns, Nachtmodus -----------------------------------------------
+   Panel „Timer“ wie die übrigen Panels. Das Ende einer Eieruhr steht still und deutlich da: Rahmen um den Countdown,
+   „Zeit ist um!“ fett – nie nur Farbe, kein Blinken. Der Nachtmodus dimmt Leiste, Bühne und Band über ihre Deckkraft
+   (--night aus ?dimlevel=, per CSSOM) und färbt grau (data-mode="night") bzw. rot (?dimred=1: data-mode="red").
+   OBS-Browserquelle (body.is-obs): keine Leiste, keine Panels, keine Knöpfe am Countdown, kein Mauszeiger. */
+.clock-timer { width: min(44em, calc(100% - 24px)); }
+.clock-timer-head { margin: 12px 0 2px; font-size: 1em; font-weight: 650; }
+.clock-timer-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 6px 10px; margin: 6px 0; }
+.clock-timer-field { display: inline-flex; flex-direction: column; gap: 2px; font-size: 0.9em; color: var(--ink-2); }
+.clock-timer-field input { font: inherit; font-size: 1em; min-height: 32px; box-sizing: border-box; padding: 0.3em 0.6em;
+  border-radius: 9px; border: 1px solid var(--border); background: var(--bg); color: var(--ink); width: 15em; max-width: 100%; }
+.clock-timer-field input[aria-invalid="true"] { border-color: var(--crit-ink); }
+.clock-timer-check { display: inline-flex; align-items: center; gap: 8px; min-height: 32px; margin: 6px 0; cursor: pointer; }
+.clock-timer-check input { width: 18px; height: 18px; margin: 0; accent-color: var(--accent); }
+.clock-timer-list { margin: 4px 0; padding: 0; list-style: none; display: grid; gap: 4px; }
+.clock-timer-list li { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-height: 32px; }
+.clock-timer-list a { display: inline-flex; align-items: center; min-height: 32px; color: var(--accent); overflow-wrap: anywhere; }
+.clock-timer-goals { display: flex; flex-wrap: wrap; gap: 4px 16px; }
+:root[data-cd-end] .clock-cd { outline: max(3px, 0.08em) solid var(--crit-ink); outline-offset: 0.15em; border-radius: 0.2em; }
+:root[data-cd-end] .clock-cd-state { font-weight: 800; font-size: max(0.9em, 14px); color: var(--crit-ink); }
+:root[data-mode][data-cd-end] .clock-cd { outline-color: var(--ink); }
+:root[data-mode][data-cd-end] .clock-cd-state { color: var(--ink); }
+body.is-obs :is(.clock-bar, .clock-panel, .clock-cd-actions) { display: none; }
+body.is-obs, body.is-obs * { cursor: none; }
+:root[data-mode="night"] {
+  --bg: #000000; --surface: #0b0b0b; --surface-2: #121212; --border: #3a3a3a; --border-soft: #222222;
+  --ink: #c8c8c8; --ink-2: #a8a8a8; --ink-muted: #8a8a8a; --accent: #c8c8c8;
+  --good: #c8c8c8; --warn: #a8a8a8; --crit: #c8c8c8; --on-status: #000000;
+  --surface-3: #1a1a1a; --good-ink: #c8c8c8; --warn-ink: #c8c8c8; --crit-ink: #c8c8c8; --info-ink: #c8c8c8;
+  --good-soft: #1a1a1a; --warn-soft: #1a1a1a; --crit-soft: #1a1a1a; --info-soft: #1a1a1a;
+  --ink-unsure: #7a7a7a; --studio-ink: #c8c8c8; --signal: #c8c8c8; --signal-ink: #000000;
+  color-scheme: dark;
+}
+/* Die Leiste nicht: Sie blendet sich im Leerlauf über ihre Deckkraft aus (is-idle), dunkel ist sie über die Farben. */
+:root[data-night] :is(.clock-stage, .clock-band, .clock-signal, .clock-egg) { opacity: var(--night, 0.4); }
+/* Sehr flache Fenster (Streifen, kleine Kachel mit Leiste): Timer und Nacht bleiben über Taste N bzw. einen größeren
+   Bildschirm erreichbar – zwei Knöpfe mehr ließen die Leiste umbrechen und nähmen der Zeit eine Zeile. */
+@media (max-height: 320px) { #mode-timer, #mode-night { display: none; } }

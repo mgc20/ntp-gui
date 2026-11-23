@@ -38,6 +38,7 @@ http://zeitserver.lan:8080/clock?layout=tile&bg=transparent&design=digital&face=
 | `lock=1` | keine Tastenkürzel, Design, Ton und Anpassen ausgeblendet (Vollbild, Hell/Dunkel, Rotlicht und „Mein Gerät“ bleiben) |
 | `lead=40` | Anzeige 40 ms vorlaufen lassen, wenn der Bildschirm das Bild verzögert |
 | `p=regie` | ein im Dashboard gespeichertes Profil laden (Parameter in der Adresse gehen vor) |
+| `fun=0` | keine Spielereien: Knöpfe „Timer“ (Eieruhr, Pomodoro) und „Nacht“ fehlen (in `studio`, `tile` und `banner` gesetzt) |
 
 Fest eingebaute Profile: `studio`, `tile`, `banner`, `kitchen`, `workshop`, `night` und `nerd`,
 z. B. `/clock?p=tile`.
@@ -249,6 +250,10 @@ andere Ereignisse verdrängt es nicht.
 4. „Benutzerdefiniertes CSS“ leer lassen. Mit `bg=transparent` ist der Hintergrund schon durchsichtig.
 5. „Quelle herunterfahren, wenn nicht sichtbar“ aus lassen: Sonst gleicht sich die Uhr nach jedem
    Szenenwechsel neu ab.
+
+In einer OBS-Browserquelle erkennt die Uhr OBS selbst: Kopfzeile, Panels und die Knöpfe am Countdown (Start, +1 min,
+Zurücksetzen) fehlen dort immer, auch ohne `lock=1`. Ein Timer (`timer=5m`) startet über „Interagieren“ mit der
+Leertaste.
 
 ## vMix
 

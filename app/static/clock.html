@@ -30,6 +30,8 @@
     <button type="button" class="clock-tool" id="mode-theme" title="Hell oder dunkel" data-i18n-title="clock.theme_title">Hell</button>
     <button type="button" class="clock-tool" id="mode-red" aria-pressed="false" title="Rotlicht: schont die Dunkeladaption der Augen (Sternwarte, Schlafzimmer, Serverraum bei Nacht)" data-i18n-title="clock.red_title" data-i18n="clock.red">Rotlicht</button>
     <button type="button" class="clock-tool" id="mode-tone" aria-expanded="false" aria-controls="tone-panel" data-i18n="clock.tone">Ton</button>
+    <button type="button" class="clock-tool" id="mode-timer" aria-expanded="false" aria-controls="timer-panel" hidden data-i18n="clock.timer">Timer</button>
+    <button type="button" class="clock-tool" id="mode-night" aria-pressed="false" hidden title="Nachtmodus: gedimmt (mit dimred=1 in Rot); mit dim=22-6 in der Adresse auch nach Uhrzeit. Taste N" data-i18n-title="clock.night_title" data-i18n="clock.night">Nacht</button>
     <button type="button" class="clock-tool" id="mode-device" aria-expanded="false" aria-controls="device-panel" data-i18n="clock.device">Mein Gerät</button>
     <button type="button" class="clock-tool clock-tool-icon" id="mode-custom" aria-expanded="false" aria-controls="custom-panel" title="Anpassen" aria-label="Anpassen" data-i18n-title="clock.custom" data-i18n-aria-label="clock.custom"><span aria-hidden="true">⚙</span></button>
     <button type="button" class="clock-tool" id="mode-full" title="Vollbild ein oder aus (Taste F)" data-i18n-title="clock.full_title" data-i18n="clock.full">Vollbild</button>
@@ -53,6 +55,7 @@
       <span class="clock-cd-now" id="cd-now"></span>
       <span class="clock-cd-actions" id="cd-actions" hidden>
         <button type="button" class="clock-tool" id="cd-toggle" data-i18n="clock.cd_start">Start</button>
+        <button type="button" class="clock-tool" id="cd-plus" aria-label="eine Minute dazu" data-i18n-aria-label="clock.cd_plus_label" hidden data-i18n="clock.cd_plus">+1 min</button>
         <button type="button" class="clock-tool" id="cd-reset" data-i18n="clock.cd_reset">Zurücksetzen</button>
       </span>
     </div>
@@ -94,6 +97,7 @@
     <dt><kbd>U</kbd></dt><dd data-i18n="clock.keys.u">UTC groß oder Ortszeit groß</dd>
     <dt><kbd>T</kbd></dt><dd data-i18n="clock.keys.t">Zehntel bei Stoppuhr und Timer; im Design Timecode Zehntel oder Frames</dd>
     <dt><kbd>O</kbd></dt><dd data-i18n="clock.keys.o">On Air an oder aus – nur auf diesem Gerät</dd>
+    <dt><kbd>N</kbd></dt><dd data-i18n="clock.keys.n">Nachtmodus an oder aus</dd>
     <dt><kbd>Leertaste</kbd></dt><dd data-i18n="clock.keys.space">Timer oder Stoppuhr starten und anhalten</dd>
     <dt><kbd>R</kbd></dt><dd data-i18n="clock.keys.r">Timer oder Stoppuhr zurücksetzen</dd>
     <dt><kbd>+</kbd> <kbd>−</kbd></dt><dd data-i18n="clock.keys.size">größer oder kleiner</dd>
@@ -114,6 +118,39 @@
   </div>
   <p class="clock-countdown" id="tone-count" aria-live="off" hidden></p>
   <p class="clock-panel-note" id="tone-status" aria-live="polite"></p>
+</section>
+
+<!-- Spielereien (Etappe C): Eieruhr, Pomodoro, eigene und eingebaute Countdowns. Alles nur in diesem Browser. -->
+<section class="clock-panel clock-timer" id="timer-panel" hidden aria-labelledby="timer-title">
+  <h2 class="clock-panel-title" id="timer-title"><span data-i18n="clock.timer_title">Eieruhr, Pomodoro und Countdowns</span> <span id="timer-info"></span></h2>
+  <p class="clock-panel-line" data-i18n="clock.timer_line">Läuft nur in diesem Browser. Start, Anhalten und Zurücksetzen auch per Leertaste und R.</p>
+  <p class="clock-panel-note" id="timer-blocked" hidden data-i18n="clock.timer_blocked">Diese Uhr zählt auf ein festes Ziel aus der Adresse oder dem Profil. Für Eieruhr und Pomodoro öffne /clock ohne Ziel.</p>
+  <h3 class="clock-timer-head" data-i18n="clock.egg_title">Eieruhr</h3>
+  <div class="clock-panel-actions" id="egg-presets" role="group" aria-label="Eieruhr" data-i18n-aria-label="clock.egg_group"></div>
+  <div class="clock-timer-row">
+    <label class="clock-timer-field" for="egg-input"><span data-i18n="clock.egg_own">Eigene Dauer</span>
+      <input type="text" id="egg-input" maxlength="16" autocomplete="off" spellcheck="false" placeholder="z. B. 7, 7:30 oder 1h30m"></label>
+    <button type="button" class="clock-tool" id="egg-start" data-i18n="clock.egg_start">Starten</button>
+  </div>
+  <h3 class="clock-timer-head" data-i18n="clock.pomo_title">Pomodoro</h3>
+  <div class="clock-timer-row">
+    <button type="button" class="clock-tool" id="pomo-start" data-i18n="clock.pomo_start">Pomodoro starten</button>
+    <span class="clock-panel-note" id="pomo-line"></span>
+  </div>
+  <label class="clock-timer-check" for="timer-tone"><input type="checkbox" id="timer-tone"> <span data-i18n="clock.timer_tone">Ton am Ende</span></label>
+  <h3 class="clock-timer-head" data-i18n="clock.own_title">Eigene Countdowns</h3>
+  <p class="clock-panel-note" data-i18n="clock.own_line">Bis zu fünf, gemerkt nur in diesem Browser. Für viele Bildschirme gehört das Ziel in den Link oder ein Profil (Dashboard, Reiter „Anzeigen“).</p>
+  <ul class="clock-timer-list" id="own-list"></ul>
+  <div class="clock-timer-row">
+    <label class="clock-timer-field" for="own-label"><span data-i18n="clock.own_label">Beschriftung</span>
+      <input type="text" id="own-label" maxlength="24" autocomplete="off"></label>
+    <label class="clock-timer-field" for="own-until"><span data-i18n="clock.own_until">Ziel</span>
+      <input type="text" id="own-until" maxlength="19" autocomplete="off" spellcheck="false" placeholder="20:15 oder 2026-12-31T23:59"></label>
+    <button type="button" class="clock-tool" id="own-save" data-i18n="clock.own_save">Merken</button>
+  </div>
+  <h3 class="clock-timer-head" data-i18n="clock.goal_title">Eingebaut</h3>
+  <ul class="clock-timer-list clock-timer-goals" id="goal-list"></ul>
+  <p class="clock-panel-note" id="timer-status" aria-live="polite"></p>
 </section>
 
 <section class="clock-panel" id="device-panel" hidden aria-labelledby="device-title">

@@ -42,6 +42,12 @@ Der Rundgang öffnet jede Route bei 1440 und 390 px, hell und dunkel, und meldet
   Überzeit – gerechnet nach der gemockten Serverzeit samt Zeitzone des Servers, im Bild und ohne Umbruch; dazu
   `after=stop`, abweichende Zone des Servers, E-Ink, Timer (Leertaste, R), Stoppuhr mit Zehnteln (T), die Tasten D, L,
   U, +, ?, A, `lock=1` und die Ansage beim Unterschreiten von 1 min,
+- die Spielereien der Studiouhr C1 (`clockTimerChecks`, einzeln mit `TOUR_TIMER_ONLY=1`): eine Eieruhr läuft auf den
+  neun Flächen ab („Zeit ist um!“ mit Rahmen, Überzeit, im Bild, ohne Umbruch und Scrollbalken), das Panel „Timer“ bei
+  390 und 1440 px (Schnellwahl, „+1 min“, eigene Dauer, Pomodoro, eigener Countdown merken und entfernen, Tippflächen
+  ≥ 24 px), der Phasenwechsel des Pomodoro, der Nachtmodus nach Uhrzeit und per Taste N, keine Knöpfe in den
+  Voreinstellungen `studio`, `tile`, `banner`, mit `kiosk=1`, `lock=1`, `fun=0` und in OBS (`window.obsstudio`), dazu
+  ein Lauf in Echtzeit ohne Long Tasks und ohne Bildschleife,
 - die „Heute“-Zeitleiste der Übersicht mit einem erfundenen Tag (Holdover 03:00–04:30, drei Ereignisse) bei 390 und
   1440 px: genau drei Marker an der richtigen Stelle, Holdover-Abschnitt im Band, Marker im Diagramm, Tagesbericht-Satz,
   Tippflächen ≥ 24 px; per Tastatur Band → Pos1 → Enter öffnet „So sah es um … aus“ (ohne Satellitenwinkel), Esc gibt den
@@ -74,6 +80,7 @@ TOUR_SHOTS=/tmp/fotos tests/ui/rundgang.sh   # zusätzlich Bildschirmfotos (hell
 TOUR_NAV_ONLY=1 tests/ui/rundgang.sh          # nur die Navigationsprüfungen (Reiter, untere Leiste, „Mehr“, Speicherleiste)
 TOUR_WORDS_ONLY=1 tests/ui/rundgang.sh        # nur die Wortzahl je Seite messen
 TOUR_PAGES_ONLY=1 tests/ui/rundgang.sh        # nur Clients mit Messwert und Rohdaten der Ereignisse (erfundene Antworten)
+TOUR_TIMER_ONLY=1 tests/ui/rundgang.sh        # nur Studiouhr C1: Eieruhr, Pomodoro, eigene Countdowns, Nachtmodus, keine Knöpfe in Studio/Kachel/Kiosk/OBS
 TOUR_CLOCK_ONLY=1 tests/ui/rundgang.sh        # nur die Uhr-Werkstatt /clock (Designs, Kiosk, E-Ink, Ruhe zwischen den Minuten, Leiste bei offenem Panel)
 TOUR_TIMELINE_ONLY=1 tests/ui/rundgang.sh     # nur „Heute“-Zeitleiste: Band, Marker, Tagesbericht, Tastatur (erfundener Tag)
 TOUR_HERO_ONLY=1 tests/ui/rundgang.sh         # nur das Statusband der Übersicht (TOUR_HERO_SHOTS=<Ordner> für Fotos)
