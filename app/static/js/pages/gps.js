@@ -249,7 +249,8 @@ function calibrationCard(ctx, gpsSource) {
   const cfg = ctx.status.config || {};
   const windowSeconds = WINDOWS.some(([s]) => s === ctx.uiState.calWindow) ? ctx.uiState.calWindow : CAL_DEFAULT_WINDOW;
   // Lange Fenster seltener neu messen: 7 Tage ändern sich in 15 s nicht.
-  const cal = ctx.data("calibration", `/api/gps/calibration?window=${windowSeconds}`, windowSeconds > CAL_DEFAULT_WINDOW ? 120 : 15);
+  const calUrl = `/api/gps/calibration?window=${windowSeconds}`;
+  const cal = ctx.data("calibration", calUrl, windowSeconds > CAL_DEFAULT_WINDOW ? 120 : 15);
   // Für die Rückfrage beim Übernehmen: Meldet die Störungserkennung gerade etwas?
   const gnssNow = ctx.data("gnss", "/api/gnss", 10);
   const autoNow = ctx.data("autocal", "/api/gps/autocal", 60);
@@ -264,7 +265,7 @@ function calibrationCard(ctx, gpsSource) {
     })))));
 
   if (!cal) {
-    body.push(emptyState("Messung wird geladen …"));
+    body.push(loadingOr(ctx, "calibration", calUrl, "die Messung"));
     body.push(autocalSection(ctx));
     return card("GPS kalibrieren", { help: "gps_offset", id: "kalibrierung" }, body);
   }

@@ -540,8 +540,9 @@ def build(status: dict[str, Any], cfg: dict[str, Any]) -> list[dict[str, Any]]:
     if (ui.get("storage") or {}).get("error"):
         add("crit", "Einstellungen nicht lesbar – Speichern gesperrt",
             "settings.json im Datenverzeichnis ist vorhanden, aber nicht lesbar. Es gelten Umgebung und "
-            "Standardwerte; Speichern ist gesperrt, damit die Datei nicht überschrieben wird. Datei reparieren "
-            "oder ersetzen und den Container neu starten.", key="settings_unreadable")
+            "Standardwerte; der Zeitserver läuft im Notbetrieb (antwortet nur Netzen aus ALLOW_NETWORKS, "
+            "Ratelimit „streng“). Speichern ist gesperrt, damit die Datei nicht überschrieben wird. Datei "
+            "reparieren oder ersetzen und den Container neu starten.", key="settings_unreadable")
     if not (ui.get("storage") or {}).get("persistent", True):
         add("warn", "Einstellungen gehen beim Neuerstellen verloren",
             "/var/lib/chrony liegt nicht auf einem Volume. Im Dashboard gespeicherte "

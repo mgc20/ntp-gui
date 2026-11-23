@@ -1,5 +1,5 @@
 import { el, rich, apiPost, apiGet, apiUpload, logout, fmtNumber, fmtDate as fmtDateTime, fmtZoned, serverZone, isNum } from "../util.js";
-import { card, infoButton, badge, kv, emptyState, errorState, toast, copyButton, isPopoverOpen } from "../ui.js";
+import { card, infoButton, badge, kv, emptyState, errorState, loadingOr, toast, copyButton, isPopoverOpen } from "../ui.js";
 import { t, has, language, setLanguage, LANGUAGES } from "../i18n.js";
 import { HELP } from "../help.js";
 import { route } from "../routes.js";
@@ -250,8 +250,8 @@ function updateStatus(upd) {
     upd.error ? el("p", { class: "field-error", role: "alert", text: `Letzte Prüfung gescheitert: ${upd.error}` }) : null);
 }
 
-function dnsStatus(dns) {
-  if (dns === undefined) return emptyState("Zustand wird geladen …");
+function dnsStatus(ctx, dns) {
+  if (dns === undefined) return loadingOr(ctx, "dns", "/api/dns", "den Zustand");
   if (!dns) return emptyState("Zustand nicht verfügbar.");
   const [stateText, stateTone] = DNS_STATE[dns.state] || ["unklar", "warn"];
   const resolv = dns.resolv || {};
@@ -992,7 +992,7 @@ export function render(ctx) {
     const descKey = `settings.section.${section.key}.description`;
     return card(has(titleKey) ? t(titleKey) : section.label, { id: `s-${section.key}`, help: helpKey,
       sub: has(descKey) ? t(descKey) : section.description, actions: toggle },
-    !st.onlyChanged && section.key === "dns" ? dnsStatus(dns) : null,
+    !st.onlyChanged && section.key === "dns" ? dnsStatus(ctx, dns) : null,
     !st.onlyChanged && section.key === "web" ? updateStatus(update) : null,
     !st.onlyChanged && section.key === "web" ? languageRow() : null,
     el("div", { class: "fields" }, basic.map(fieldRow)),

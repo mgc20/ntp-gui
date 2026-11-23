@@ -329,6 +329,21 @@ Scope-ID (`%eth0`) an.
 - Gespeichert wird in `/var/lib/chrony/ntp-gui/settings.json` (Rechte `0600`). Damit das eine
   Neuerstellung des Containers übersteht, muss `/var/lib/chrony` auf einem **Volume** liegen –
   die mitgelieferten Compose-Dateien tun das; das Dashboard warnt, wenn nicht.
+- **Schutzmodus bei nicht lesbarer `settings.json`:** Ist die Datei vorhanden, aber beschädigt,
+  abgeschnitten oder nicht lesbar, läuft ntp-gui nicht still mit Standardwerten weiter (ein dort
+  gesetztes Passwort fiele sonst weg):
+  - Das Dashboard antwortet bis auf `/healthz` mit 503 „Einstellungen nicht lesbar“ – auch `/metrics`
+    und die API. Mit `WEB_USER`/`WEB_PASSWORD` aus der Umgebung kommst du nach der Anmeldung
+    trotzdem hinein; Speichern, Passwort ändern und das Wiederherstellen einer Sicherung bleiben
+    gesperrt, damit die Datei nicht überschrieben wird.
+  - Der Zeitserver läuft im Notbetrieb: Die gespeicherten schützenden Einstellungen sind unbekannt,
+    deshalb antwortet er nur Netzen aus `ALLOW_NETWORKS` (ohne die Variable keinem Client) und mit
+    Ratelimit „streng“. Sonst gelten Umgebung und Standardwerte.
+  - Repariere die Datei oder ersetze sie durch eine funktionierende Kopie (z. B. aus einer Sicherung
+    entpackt); danach entsperrt sich das Dashboard von selbst, für den Zeitserver starte den
+    Container neu. Löschst du sie stattdessen, beginnt alles mit Standardwerten – dann ist auch ein
+    im Dashboard gesetztes Passwort weg. Setze vorher `WEB_USER`/`WEB_PASSWORD` oder
+    `WEB_REQUIRE_AUTH=true`.
 - Ein **Passwort** fürs Dashboard lässt sich direkt dort setzen (gespeichert als PBKDF2-Hash).
   `WEB_USER`/`WEB_PASSWORD` aus der Umgebung haben Vorrang. Mehr dazu, auch zum Betrieb auf einem
   VPS, unter [Anmeldung und Zugang](#anmeldung-und-zugang).

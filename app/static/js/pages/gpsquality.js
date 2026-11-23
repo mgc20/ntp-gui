@@ -41,7 +41,7 @@ function stabilityRow(stability) {
 export function receptionCard(ctx) {
   const q = qualityData(ctx);
   const head = { help: "gpsq_assessment", sub: "Über die letzten 24 Stunden aus dem gespeicherten Verlauf." };
-  if (!q) return card("Empfang", head, emptyState("Bewertung wird geladen …"));
+  if (!q) return card("Empfang", head, loadingOr(ctx, "gpsquality", "/api/gps/quality", "die Bewertung"));
   if (!q.enabled || !q.assessment) return card("Empfang", head, emptyState(q.reason || "Nicht verfügbar."));
   const a = q.assessment;
   const [label, tone] = LEVEL[a.level] || LEVEL.unknown;

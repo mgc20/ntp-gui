@@ -1053,6 +1053,18 @@ def check_changes(changes: dict, defaults=None, env: dict | None = None) -> str 
 PROTECTIVE_SETTINGS = ("bind_address", "allow_networks", "deny_networks", "ntp_ratelimit")
 
 
+def emergency_values(cfg: dict, env: dict) -> dict:
+    """Werte für den Notbetrieb bei nicht lesbarer settings.json: Die dort gespeicherten schützenden
+    Einstellungen sind unbekannt, also nicht lockerer werden als eingestellt sein könnte. Erlaubte Netze nur
+    aus der Umgebung (sonst keinem Client antworten), Ratelimit „streng“; Bind-Adresse und gesperrte Netze
+    gelten wie in der Umgebung."""
+    cfg = dict(cfg)
+    cfg["ntp_ratelimit"] = "streng"
+    if "ALLOW_NETWORKS" not in env:
+        cfg["allow_networks"] = []
+    return cfg
+
+
 def _start_fallback(env: dict, problem: str) -> dict:
     """Beim Start lehnt chronyd die Konfiguration ab. Ursache finden und nur dann ohne den schuldigen
     gespeicherten Wert starten, wenn dabei keine schützende Einstellung wegfällt. Sonst ConfigRejected."""
@@ -1092,9 +1104,15 @@ def apply(env: dict | None = None, fallback: bool = False) -> dict:
     nie weg (_start_fallback)."""
     env = dict(os.environ if env is None else env)
     unreadable = settings.load_error()
-    if unreadable:
-        _log("config", f"WARNUNG: {unreadable}. Bis dahin gelten Umgebung und Standardwerte.")
     cfg = settings.values(env)
+    if unreadable:
+        cfg = emergency_values(cfg, env)
+        # Den Grund selbst meldet settings beim Lesen (einmal je Prozess).
+        _log("chrony", "WARNUNG: Notbetrieb, bis settings.json wieder lesbar ist – die dort gespeicherten "
+                       "schützenden Einstellungen (Bind-Adresse, erlaubte bzw. gesperrte Netze, Ratelimit) sind "
+                       "nicht bekannt. Der Zeitserver antwortet nur Netzen aus ALLOW_NETWORKS "
+                       f"({', '.join(cfg['allow_networks']) or 'nicht gesetzt: keinem Client'}), "
+                       "mit Ratelimit „streng“. Sonst gelten Umgebung und Standardwerte.")
     for key, entry in settings.effective(env).items():
         if entry["error"]:
             _log("config", f"WARNUNG {key}: {entry['error']} – verwende {entry['value']!r}")
@@ -1126,6 +1144,8 @@ def apply(env: dict | None = None, fallback: bool = False) -> dict:
         if not fallback:
             raise ConfigRejected(problem)
         cfg = _start_fallback(env, problem)
+        if unreadable:
+            cfg = emergency_values(cfg, env)
         files = planned_files(cfg, env, nts_files=prepare_nts_files(cfg) or ())
         second = _rejected(files)
         if second:
@@ -1181,7 +1201,10 @@ def main(argv: list[str]) -> int:
     command = argv[1] if len(argv) > 1 else "apply"
     if command == "apply":
         try:
-            values = apply(fallback="--start" in argv[2:])
+            # stdout trägt nur die Shell-Zuweisungen für den Entrypoint (eval); Meldungen aus den Modulen
+            # gehören ins Log.
+            with contextlib.redirect_stdout(sys.stderr):
+                values = apply(fallback="--start" in argv[2:])
         except (ConfigRejected, UnsafeConfig):
             return 1  # Grund steht schon im Log und in RUN_DIR/config-error
         for key, value in values.items():

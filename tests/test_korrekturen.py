@@ -4,6 +4,7 @@ Zustand der Benachrichtigungen und des Client-Alarms über einen Neustart, Ladez
 
 Jeder Test prüft das sichere bzw. richtige Verhalten und schlägt ohne die jeweilige Korrektur fehl."""
 
+import io
 import json
 import os
 import re
@@ -25,6 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _isolation  # noqa: E402,F401 – vor jedem App-Import: Host-Pfade umlenken
 
 import backup  # noqa: E402
+import confgen  # noqa: E402
 import events  # noqa: E402
 import history  # noqa: E402
 import notify  # noqa: E402
@@ -34,6 +36,7 @@ import statewatch  # noqa: E402
 import store  # noqa: E402
 import updatecheck  # noqa: E402
 from test_anmeldung import _ServerBase  # noqa: E402
+from test_eingaben_ziele import FAKE_CHRONYD  # noqa: E402
 from test_frontend_states import DOM, mod  # noqa: E402
 
 DAY = 86400
@@ -131,6 +134,96 @@ class UnreadableSettingsTest(_TempData):
         self.assertFalse(server.auth_info()["locked"])
 
 
+    def test_repaired_file_with_older_schema_unlocks_and_is_migrated(self):
+        for repaired in ({"schema": 1, "ntp_port": 123}, {"values": {"web_title": "Zeit"}}, {"schema": 3}):
+            with self.subTest(repaired=repaired):
+                self.write_raw("{")
+                self.assertIsNotNone(settings.load_error())
+                self.write_raw(json.dumps(repaired))
+                os.utime(settings.SETTINGS_FILE, ns=(time.time_ns(), time.time_ns() + 10 ** 9))
+                self.assertIsNone(settings.load_error())
+                self.assertIsInstance(settings.values(), dict)
+                self.assertFalse(server.auth_info().get("locked"))
+                stored = json.loads(Path(settings.SETTINGS_FILE).read_text(encoding="utf-8"))
+                self.assertEqual(stored["schema"], settings.SCHEMA_VERSION)
+
+    def test_messages_go_to_stderr_not_stdout(self):
+        self.write_raw('{"auth": ')
+        settings._UNREADABLE_NOTED["error"] = None   # einmal je Grund ins Log
+        with mock.patch("sys.stdout", new_callable=io.StringIO) as out, \
+                mock.patch("sys.stderr", new_callable=io.StringIO) as err:
+            self.assertIsNotNone(settings.load_error())
+        self.assertEqual(out.getvalue(), "")
+        self.assertIn("nicht lesbar", err.getvalue())
+
+    def test_message_warns_that_removing_the_file_drops_the_password(self):
+        self.write_raw("{")
+        error = settings.load_error()
+        self.assertIn("Passwort", error.split("Entfernst du sie")[1])
+        self.assertIn("WEB_REQUIRE_AUTH=true", error)
+
+
+class UnreadableSettingsConfgenTest(_TempData):
+    """confgen bei nicht lesbarer settings.json: stdout nur Zuweisungen, Zeitserver im Notbetrieb."""
+
+    def setUp(self):
+        super().setUp()
+        fake = os.path.join(self.tmp, "chronyd")
+        Path(fake).write_text(FAKE_CHRONYD, encoding="utf-8")
+        os.chmod(fake, 0o700)
+        run_dir = os.path.join(self.tmp, "run")
+        os.makedirs(run_dir)
+        patches = [
+            mock.patch.object(confgen, "CHRONYD_BIN", fake),
+            mock.patch.object(confgen, "CHRONY_CONF", os.path.join(self.tmp, "etc", "chrony.conf")),
+            mock.patch.object(confgen, "PTP4L_CONF", os.path.join(self.tmp, "etc", "ptp4l.conf")),
+            mock.patch.object(confgen, "CUSTOM_CHRONY", os.path.join(self.tmp, "config", "chrony.conf")),
+            mock.patch.object(confgen, "CUSTOM_PTP4L", os.path.join(self.tmp, "config", "ptp4l.conf")),
+        ]
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+        self.env = {"GPS_WAIT_SECONDS": "0", "NTPGUI_RUN_DIR": run_dir}
+
+    def save_then_break(self):
+        settings.save({"deny_networks": ["198.51.100.0/24"], "ntp_ratelimit": "streng"})
+        Path(settings.SETTINGS_FILE).write_text('{"schema": 4, "values": {"deny_', encoding="utf-8")
+        settings._CACHE.update(mtime=None, data=None, error=None)
+
+    def conf(self):
+        return Path(confgen.CHRONY_CONF).read_text(encoding="utf-8")
+
+    def test_stdout_holds_only_assignments(self):
+        self.save_then_break()
+        with mock.patch.dict(os.environ, dict(self.env, GPS_ENABLE="true", DNS_MODE="off"), clear=True), \
+                mock.patch("sys.stdout", new_callable=io.StringIO) as out, \
+                mock.patch("sys.stderr", new_callable=io.StringIO):
+            self.assertEqual(confgen.main(["confgen.py", "apply", "--start"]), 0)
+        lines = [line for line in out.getvalue().splitlines() if line]
+        self.assertTrue(lines)
+        for line in lines:
+            self.assertRegex(line, r"^[A-Z_][A-Z0-9_]*=", line)
+        self.assertIn("NTPGUI_GPS_ENABLE=1", lines)
+
+    def test_time_server_runs_restricted_without_readable_settings(self):
+        self.save_then_break()
+        with mock.patch("sys.stderr", new_callable=io.StringIO):
+            confgen.apply(self.env, fallback=True)
+        conf = self.conf()
+        self.assertNotRegex(conf, r"(?m)^allow ")
+        self.assertIn(confgen.RATELIMIT_LINES["streng"][0], conf)
+        with mock.patch("sys.stderr", new_callable=io.StringIO):
+            confgen.apply(dict(self.env, ALLOW_NETWORKS="10.0.0.0/8", NTP_RATELIMIT="aus"), fallback=True)
+        conf = self.conf()
+        self.assertEqual(re.findall(r"(?m)^allow (.*)$", conf), ["10.0.0.0/8"])
+        self.assertIn(confgen.RATELIMIT_LINES["streng"][0], conf)
+
+    def test_readable_settings_are_not_restricted(self):
+        with mock.patch("sys.stderr", new_callable=io.StringIO):
+            confgen.apply(self.env, fallback=True)
+        self.assertRegex(self.conf(), r"(?m)^allow 192\.168\.0\.0/16$")
+
+
 class UnreadableSettingsHttpTest(_ServerBase):
     def test_dashboard_answers_with_protective_message(self):
         with open(settings.SETTINGS_FILE, "w", encoding="utf-8") as handle:
@@ -179,6 +272,34 @@ class HistoryClockAheadTest(_TempData):
         h.save(force=True)
         self.assertEqual(store.query("SELECT count(*) FROM samples WHERE t > ?", (now + DAY,))[0][0], 0)
         self.assertEqual(store.query("SELECT count(*) FROM samples")[0][0], real + 1)
+
+    def test_clock_ahead_while_chrony_reports_synchronised_keeps_history(self):
+        # Die Quelle selbst stellt die Uhr vor: chrony meldet „synchron“ mit kleinem Offset.
+        h = history.History(8640, os.path.join(self.tmp, "history.json.gz"), days=30)
+        now = int(time.time())
+        for i in range(100):
+            h.add(sample(now - 25 * DAY + i * (25 * DAY // 100)))
+        h.save(force=True)
+        events.note_tracking({"leap_status": "Normal", "system_time_offset": 0.0})
+        self.assertTrue(events.clock_state())
+        ahead = now + 40 * DAY
+        with mock.patch("time.time", return_value=ahead):
+            h.add(sample(ahead))
+            h.save(force=True)
+        self.assertEqual(store.query("SELECT count(*) FROM samples")[0][0], 101)
+        h.add(sample(now + 60))   # Uhr wieder richtig
+        h.save(force=True)
+        self.assertEqual(store.query("SELECT count(*) FROM samples WHERE t <= ?", (now,))[0][0], 100)
+        self.assertEqual(store.query("SELECT count(*) FROM samples WHERE t > ?", (now + DAY,))[0][0], 0)
+
+    def test_old_points_still_expire_without_a_jump(self):
+        events.note_tracking({"leap_status": "Normal", "system_time_offset": 0.0})
+        h = history.History(8640, os.path.join(self.tmp, "history.json.gz"), days=30)
+        now = int(time.time())
+        for i in range(40):
+            h.add(sample(now - 39 * DAY + i * DAY))
+        h.save(force=True)
+        self.assertEqual(store.query("SELECT count(*) FROM samples WHERE t < ?", (now - 30 * DAY,))[0][0], 0)
 
 
 # --- Update-Prüfung: Uhr in der Zukunft -----------------------------------------------------------------
@@ -416,15 +537,24 @@ const res = {{
   settings: text(settings.render(failing)), hardware: text(hardware.render(failing)),
   holdover: text(gnss.holdoverCard(failing)), gnss: text(gnss.gnssCard(failing)),
   antenna: text(gpsq.antennaCard(failing)), role: text(gpsq.roleCard(failing)), gps: text(gps.render(failing)),
+  reception: text(gpsq.receptionCard(failing)),
   loading: text(settings.render(ctx())),
 }};
+// Einstellungen geladen, nur der DNS-Zustand scheitert: Abschnitt DNS zeigt den Fehler.
+const schema = {json.dumps(settings.public_schema())};
+const dnsFailing = ctx({{ data: (key) => key === "settings" ? schema : undefined,
+  dataError: (key) => key === "dns" ? err : null, uiState: {{ settings: {{ tab: "quellen" }} }}, subpath: "s=quellen" }});
+res.dns = text(settings.render(dnsFailing));
 console.log(JSON.stringify(res));
 """)
-        for name in ("settings", "hardware", "holdover", "gnss", "antenna", "role", "gps"):
+        for name in ("settings", "hardware", "holdover", "gnss", "antenna", "role", "gps", "reception"):
             with self.subTest(page=name):
                 self.assertIn("nicht laden", out[name])
                 self.assertIn("HTTP 500", out[name])
                 self.assertNotIn("Wird geladen", out[name])
+                self.assertNotIn("wird geladen", out[name])
+        self.assertIn("Zustand nicht laden", out["dns"].replace("den Zustand nicht laden", "Zustand nicht laden"))
+        self.assertNotIn("Zustand wird geladen", out["dns"])
         self.assertIn("Wird geladen", out["loading"])
 
 

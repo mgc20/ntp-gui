@@ -27,6 +27,7 @@ import math
 import os
 import re
 import secrets
+import sys
 import tempfile
 import threading
 import time
@@ -1593,8 +1594,10 @@ def load_error() -> str | None:
 def _unreadable(reason: str) -> str:
     return (f"settings.json im Datenverzeichnis ist nicht lesbar ({reason}). Das Dashboard läuft im Schutzmodus: "
             "Ein dort gesetztes Passwort könnte sonst still wegfallen, und Speichern würde die Datei "
-            "überschreiben. Repariere die Datei (oder ersetze sie durch eine funktionierende Kopie bzw. entferne "
-            "sie, um mit Standardwerten neu zu beginnen) und starte den Container neu")
+            "überschreiben. Repariere die Datei oder ersetze sie durch eine funktionierende Kopie; danach entsperrt "
+            "sich das Dashboard von selbst. Entfernst du sie, beginnt alles mit Standardwerten – dann ist auch ein "
+            "im Dashboard gesetztes Passwort weg und das Dashboard ohne Anmeldung erreichbar; setze vorher "
+            "WEB_USER/WEB_PASSWORD oder WEB_REQUIRE_AUTH=true in der Compose-Datei")
 
 
 def _load_file() -> dict:
@@ -1621,15 +1624,18 @@ def _load_file() -> dict:
         return _broken(stat.st_mtime_ns, "kein JSON-Objekt")
     if data and _schema_of(data) < SCHEMA_VERSION:
         with _LOCK:
+            # Die Datei ist (wieder) lesbar: Ein Fehlerzustand von vorher darf das Speichern der Migration
+            # nicht mehr sperren (_write_tmp prüft den Zwischenspeicher).
+            _CACHE.update(error=None)
             data, notes = migrate_data(data)
             try:
                 _write_file(data)
                 stat = os.stat(SETTINGS_FILE)
-            except OSError as exc:
+            except (OSError, ValidationError) as exc:
                 # Nur lesbares Volume: Migration gilt im Speicher, Hinweis bleibt sichtbar.
-                print(f"[web] Einstellungen migriert, aber nicht gespeichert: {exc}", flush=True)
+                _log(f"Einstellungen migriert, aber nicht gespeichert: {exc}")
             for note in notes:
-                print(f"[web] Update der Einstellungen: {note['title']}", flush=True)
+                _log(f"Update der Einstellungen: {note['title']}")
     _CACHE.update(mtime=stat.st_mtime_ns, data=data, error=None)
     _UNREADABLE_NOTED["error"] = None
     return data
@@ -1642,8 +1648,14 @@ def _broken(mtime: int | None, reason: str) -> dict:
     _CACHE.update(mtime=mtime, data=None, error=error)
     if _UNREADABLE_NOTED["error"] != error:
         _UNREADABLE_NOTED["error"] = error
-        print(f"[web] FEHLER: {error}.", flush=True)
+        _log(f"FEHLER: {error}.")
     return {}
+
+
+def _log(message: str) -> None:
+    """Meldung ins Container-Log – auf stderr: confgen.py gibt auf stdout Shell-Zuweisungen aus, die der
+    Entrypoint per eval übernimmt; eine Meldung dort würde sie unbrauchbar machen."""
+    print(f"[web] {message}", file=sys.stderr, flush=True)
 
 
 def _write_tmp(data: dict) -> str:

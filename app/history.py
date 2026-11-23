@@ -140,6 +140,16 @@ def _clock_ok(due: int, older: int) -> bool:
         return False
 
 
+def _jumped(conn, cutoff: float, days: float) -> bool:
+    """Liegt zwischen den zu alten Punkten und den übrigen eine Lücke von mehr als der Aufbewahrungszeit?
+    Dann stammen die neuen Punkte womöglich von einer vorgestellten Uhr – auch wenn chrony synchron meldet
+    (die Quelle selbst kann falsch gehen). Aufräumen nach Alter aussetzen, bis die neue Strecke selbst alt
+    genug ist; die Diagramme zeigen ohnehin nur die letzten `days` Tage."""
+    last_due = conn.execute("SELECT max(t) FROM samples WHERE t < ?", (cutoff,)).fetchone()[0]
+    first_kept = conn.execute("SELECT min(t) FROM samples WHERE t >= ?", (cutoff,)).fetchone()[0]
+    return last_due is not None and first_kept is not None and first_kept - last_due > days * 86400
+
+
 def _clock_confirmed() -> bool:
     """chrony meldet die Systemzeit ausdrücklich als plausibel (nicht nur „unbekannt“)."""
     try:
@@ -260,7 +270,9 @@ class History:
                                               (cutoff, newest - _recent())).fetchone()
                     # Nach Alter nur bei plausibler Systemzeit: Geht die Uhr weit vor, wären sonst alle
                     # bisherigen Punkte „zu alt“ und der ganze Verlauf weg (wie events.prune).
-                    if due and _clock_ok(due, older or 0):
+                    if due and _jumped(conn, cutoff, self.days):
+                        paused = True
+                    elif due and _clock_ok(due, older or 0):
                         conn.execute("DELETE FROM samples WHERE t < ?", (cutoff,))
                     elif due:
                         paused = True
