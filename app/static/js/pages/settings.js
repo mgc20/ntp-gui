@@ -1143,6 +1143,10 @@ function accessCards(ctx, schema, readonly) {
       authBody.push(el("p", { class: "field-error" }, rich("Das Passwort aus der Umgebung ist **schwach** (kurz oder ein Beispielwert). "
         + "Setz in der Compose-Datei ein längeres – mindestens 12 Zeichen – oder nimm `WEB_PASSWORD_FILE` mit einem Docker Secret.")));
     }
+    if (auth.gui_overridden) {
+      authBody.push(el("p", { class: "muted" }, rich("Im Dashboard ist zusätzlich ein eigenes Passwort gespeichert. Es **gilt nicht**, solange "
+        + "`WEB_PASSWORD` bzw. `WEB_PASSWORD_FILE` gesetzt ist. Soll es gelten, entferne diese Zeilen (und `WEB_USER`) aus der Compose-Datei.")));
+    }
   } else {
     const user = el("input", { type: "text", autocomplete: "username", value: auth.user || "admin", "aria-label": "Benutzername", disabled: readonly ? true : null });
     const current = auth.enabled ? el("input", { type: "password", autocomplete: "current-password", placeholder: "zur Bestätigung", "aria-label": "Bisheriges Passwort", disabled: readonly ? true : null }) : null;

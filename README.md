@@ -541,8 +541,8 @@ Voraussetzungen:
 - **`CAP_NET_RAW`** – der Container liest NTP-Pakete über einen Paket-Socket mit; ein Filter
   im Kernel lässt nur UDP an den NTP-Port durch. In Docker ist `NET_RAW` Standard; wer
   Capabilities mit `cap_drop: [ALL]` entfernt, ergänzt `cap_add: [NET_RAW]` (die Vorlagen tun das).
-  Das Dashboard bekommt `NET_RAW` nur, wenn die Messung beim Start des Containers an ist – nach dem
-  Einschalten also einmal neu starten.
+  Hat der Container `NET_RAW`, bekommt das Dashboard sie immer – die Messung lässt sich deshalb
+  jederzeit ohne Neustart ein- und ausschalten.
 - **Host-Netzwerk** (`network_mode: host`, wie in der All-in-one-Datei) – nur ohne NAT sieht
   der Container die echten Client-Adressen. Hinter der Docker-Bridge erscheinen alle Geräte
   unter einer Adresse.
@@ -1749,7 +1749,7 @@ PHC-Refclock dient ihm als Referenz für Stratum und Statistik.
 | `WEB_PORT` / `WEB_BIND` | `8080` / `0.0.0.0` | Adresse des Dashboards. IPv6 geht auch: `::` nimmt IPv4 und IPv6 an; mit `::1` oder einer anderen einzelnen Adresse erreicht der Docker-Healthcheck (fragt `127.0.0.1`) das Dashboard nicht. |
 | `WEB_TITLE` | `NTP / PTP Time Server` | Überschrift |
 | `WEB_USER` / `WEB_PASSWORD` | – | HTTP Basic Auth (alternativ Passwort im Dashboard setzen). Nur `WEB_PASSWORD` ⇒ Benutzer `admin`; nur `WEB_USER` ⇒ Dashboard gesperrt, bis auch das Passwort gesetzt ist. Siehe [Anmeldung und Zugang](#anmeldung-und-zugang) |
-| `WEB_PASSWORD_FILE` | – | Passwort aus einer Datei statt aus der Umgebung (z. B. Docker Secret `/run/secrets/…`); hat Vorrang vor `WEB_PASSWORD`. Unlesbar oder leer ⇒ Dashboard gesperrt. Im Container gilt ein geänderter Inhalt nach spätestens etwa 30 s (ohne Neustart) |
+| `WEB_PASSWORD_FILE` | – | Passwort aus einer Datei statt aus der Umgebung (z. B. Docker Secret `/run/secrets/…`); hat Vorrang vor `WEB_PASSWORD`. Unlesbar oder leer ⇒ Dashboard gesperrt. Im Container gilt ein geänderter Inhalt nach spätestens etwa 30 s (ohne Neustart, im Log „Passwortdatei geändert“) – aber nur, wenn die Datei überschrieben wird (`… > datei`). Wird sie ersetzt (`mv`, `sed -i`, viele Editoren), sieht ein als Datei eingehängtes Secret weiter den alten Inhalt; dann den Container neu erstellen (`docker compose up -d --force-recreate`) |
 | `WEB_REQUIRE_AUTH` | `false` | `true` = ohne Zugang (Passwort) bleibt das Dashboard gesperrt: Nur `/healthz` und eine Einrichtungs-Meldung antworten. Für Server, die aus dem Internet erreichbar sind (VPS) |
 | `WEB_ALLOWED_HOSTS` | – | Weitere Namen, unter denen das Dashboard **ohne Passwort** antworten darf, kommagetrennt; `*.example.org` für alle Unternamen, `*` schaltet die Prüfung ab. Gilt zusätzlich zu „Erlaubte Namen“ im Dashboard (Einstellungen → Dashboard & Zugang). Siehe [Schutz vor DNS-Rebinding](#schutz-vor-dns-rebinding) |
 | `WEB_READONLY` | `false` | Einstellungen im Dashboard sperren |
@@ -1819,8 +1819,12 @@ Ohne Zugang antwortet das Dashboard dann nur mit einer Einrichtungs-Meldung (`50
 wirken nicht; `/healthz` bleibt für den Docker-Healthcheck offen. Unvollständige Angaben gelten nie als
 „offen“: Nur `WEB_USER` ohne Passwort oder eine unlesbare `WEB_PASSWORD_FILE` sperren das Dashboard
 ebenso (ein im Dashboard gesetztes Passwort gilt dann weiter). Nur `WEB_PASSWORD` ohne `WEB_USER` heißt:
-Benutzer `admin`. Ein Passwort aus der Umgebung unter 12 Zeichen oder ein bekannter Beispielwert
-(`bitte-aendern`) wird beim Start und in der Übersicht als schwach gemeldet.
+Benutzer `admin`, und es gilt vor einem im Dashboard gesetzten Passwort – das Start-Log und die
+Einstellungsseite weisen darauf hin, wenn dort zusätzlich eines gespeichert ist. Ein Passwort aus
+der Umgebung unter 12 Zeichen, ein bekannter Beispielwert (`bitte-aendern`) oder eines gleich dem
+Benutzernamen wird beim Start und in der Übersicht als schwach gemeldet. Mit `WEB_REQUIRE_AUTH=true`
+gilt es als nicht gesetzt, wie unvollständige Angaben: Das Dashboard bleibt gesperrt, außer im
+Dashboard ist ein eigenes Passwort gesetzt (das Dashboard lehnt solche Passwörter ohnehin ab).
 
 - **Bremse gegen Passwort-Raten:** Nach 5 Fehlversuchen von einer Adresse (IPv6: je /64) muss diese
   warten – 2 s, 4 s, 8 s … bis 15 min; in der Zeit antwortet der Server mit `429` und `Retry-After`,
@@ -1950,7 +1954,7 @@ Namen. Alle anderen Seiten und die übrige API bleiben geprüft.
 | `chronyd` | `_chrony` | legt die Rechte nach dem Start selbst ab, behält nur `SYS_TIME` (und `NET_BIND_SERVICE` für den NTP-Port) |
 | `gpsd` | `gpsd` | legt die Rechte nach dem Öffnen des Geräts selbst ab |
 | `ptp4l` / `phc2sys` | root | brauchen `NET_ADMIN`/`SYS_TIME` für Hardware-Zeitstempel und die PTP-Uhr |
-| Dashboard (`python3 server.py`) | `ntpgui` (ab 1.9) | keine Capabilities außer `NET_RAW` für die Client-Messung (nur wenn sie beim Start an ist) und `NET_BIND_SERVICE` nur bei `WEB_PORT` unter 1024; `no-new-privs` |
+| Dashboard (`python3 server.py`) | `ntpgui` (ab 1.9) | keine Capabilities außer `NET_RAW` für die Client-Messung (sofern der Container sie hat) und `NET_BIND_SERVICE` nur bei `WEB_PORT` unter 1024; `no-new-privs` |
 | DNS-Weiterleiter (`dnsfwd.py`) | `ntpgui` (ab 1.9) | nur `NET_BIND_SERVICE` für Port 53 |
 
 Das Dashboard schreibt nur in sein Datenverzeichnis `/var/lib/chrony/ntp-gui` (Einstellungen, die
@@ -2161,7 +2165,8 @@ derselben Instanz zuzuordnen. **Einstellungen → Dashboard & Zugang → API-Sch
 
 ## Update-Hinweise
 
-Beim Update musst du nichts von Hand umbauen:
+Meist musst du beim Update nichts von Hand umbauen. Was sich zwischen zwei Versionen am Verhalten
+ändert, steht unten; lies den Abschnitt zu deiner Version vor dem Update.
 
 - **Einstellungen tragen eine Schema-Version.** Beim ersten Start einer neuen Version bringt
   ntp-gui die gespeicherten Einstellungen einmalig auf den neuen Stand. Was dabei geändert
@@ -2176,11 +2181,36 @@ Beim Update musst du nichts von Hand umbauen:
   Compose-Datei, kannst du die Zeile löschen.
 - **Sicherungen aus älteren Versionen** lassen sich importieren; sie durchlaufen dieselben
   Schritte. Eine Datei aus einer *neueren* Version bleibt unangetastet.
-- **Liegt `/var/lib/chrony` schreibgeschützt**, gelten die Änderungen nur im Speicher; die
-  Hinweise erscheinen trotzdem.
+- **`/var/lib/chrony` muss beschreibbar sein.** Der Container bereitet das Verzeichnis beim Start
+  vor (Besitzer und Rechte) und startet nicht, wenn es schreibgeschützt eingehängt ist. Ist nur
+  `settings.json` nicht beschreibbar, gilt eine Migration nur im Speicher; die Hinweise erscheinen
+  trotzdem.
 - **Verlauf:** Ein vorhandenes `history.json.gz` (bis 1.2) wird beim ersten Start in
   `ntp-gui.db` übernommen und als `history.json.gz.migrated` aufbewahrt. Kann die Datenbank
   nicht geöffnet werden, arbeitet der Verlauf wie in 1.2 weiter.
+
+### Von 1.8 auf 1.9
+
+Diese Änderungen greifen ohne Hinweiskarte, weil sich das Einstellungsschema nicht ändert:
+
+- **Ratelimit ab Werk:** Wer „Anfragen begrenzen“ (`ntp_ratelimit`, `NTP_RATELIMIT`) nie gesetzt
+  hat, bekommt jetzt „schonend“ für NTP und den NTS-Schlüsselaustausch (bis 1.8: kein Ratelimit).
+  Stehen viele Geräte hinter einer gemeinsamen Absenderadresse (Docker-Bridge, NAT), kann das
+  bremsen – dann `NTP_RATELIMIT=aus` setzen oder im Dashboard „aus“ wählen.
+- **`CLIENTLOGLIMIT`:** Standard 2 MiB statt 10 MB (etwa 16 000 Adressen). Brauchst du mehr,
+  setz den alten Wert (`10000000`).
+- **Benachrichtigungen an den eigenen Rechner** (Loopback, z. B. Apprise auf `127.0.0.1`) gehen
+  erst mit `OUTBOUND_TARGETS=loopback`; bis dahin meldet das Log „Dieses Ziel ist gesperrt“.
+- **Zugang aus der Umgebung:** `WEB_USER` ohne Passwort sperrt das Dashboard jetzt, statt es offen
+  zu lassen. `WEB_PASSWORD` allein heißt Benutzer `admin` und gilt **vor** einem im Dashboard
+  gesetzten Passwort; das Start-Log warnt, wenn dort eines gespeichert ist. Soll das
+  Dashboard-Passwort weiter gelten, entferne `WEB_PASSWORD` aus der Compose-Datei.
+- **Datenverzeichnis:** Beim ersten Start übergibt der Supervisor `/var/lib/chrony/ntp-gui` an den
+  Benutzer `ntpgui` (UID/GID 990). Wichtig bei Bind-Mounts und Sicherungen auf dem Host
+  (Rechte beim Zurückkopieren).
+- **Eigene `cap_drop`-Listen:** Dashboard und DNS-Weiterleiter brauchen `SETUID` und `SETGID`, um
+  root abzugeben, sonst laufen sie wie bisher als root (mit Warnung im Log). Die Vorlagen setzen
+  beides; siehe [Was im Container unter welchem Benutzer läuft](#was-im-container-unter-welchem-benutzer-läuft).
 
 ### Update-Hinweis (opt-in)
 

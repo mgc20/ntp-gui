@@ -33,7 +33,7 @@ cleanup() {
     "${PREFIX}-g" "${PREFIX}-h" "${PREFIX}-i" "${PREFIX}-j" >/dev/null 2>&1
   docker rm -f "${PREFIX}-k" "${PREFIX}-l" "${PREFIX}-m" "${PREFIX}-n" "${PREFIX}-o" >/dev/null 2>&1
   docker rm -f "${PREFIX}-p" "${PREFIX}-q" "${PREFIX}-r" "${PREFIX}-s" "${PREFIX}-t" >/dev/null 2>&1
-  docker rm -f "${PREFIX}-u" "${PREFIX}-w" "${PREFIX}-x" >/dev/null 2>&1
+  docker rm -f "${PREFIX}-u" "${PREFIX}-w" "${PREFIX}-x" "${PREFIX}-pw" "${PREFIX}-cm" >/dev/null 2>&1
   docker network rm "${PREFIX}-net" "${PREFIX}-net2" >/dev/null 2>&1
   docker volume rm "${PREFIX}-data" "${PREFIX}-hist" >/dev/null 2>&1
   if [[ -n "${VPS_DIR:-}" ]]; then
@@ -467,6 +467,48 @@ check "Status gesperrt (Einrichtung nötig)"  503 "$(http http://127.0.0.1:18097
 check "Passwort setzen gesperrt"             503 "$(http -X POST -H 'Content-Type: application/json' -H 'X-NTP-GUI: 1' -d '{"user":"x","password":"lang-genug-12345"}' http://127.0.0.1:18097/api/auth)"
 contains "Start-Log warnt" "$(docker logs "${PREFIX}-u" 2>&1)" "WEB_REQUIRE_AUTH=true, aber kein Zugang"
 docker rm -f "${PREFIX}-u" >/dev/null 2>&1
+
+echo
+echo "3d) WEB_REQUIRE_AUTH mit bekanntem Beispielpasswort: gesperrt wie ohne Zugang"
+docker run -d --name "${PREFIX}-pw" -p 18088:8080 -e WEB_REQUIRE_AUTH=true -e WEB_PASSWORD=bitte-aendern \
+  -e NTP_POOLS="" "$IMAGE" >/dev/null
+wait_for_health http://127.0.0.1:18088/healthz 90 || true
+check "Beispielpasswort: Status gesperrt"      503 "$(http -u admin:bitte-aendern http://127.0.0.1:18088/api/status)"
+contains "Start-Log nennt den Grund" "$(docker logs "${PREFIX}-pw" 2>&1)" "zu schwach"
+docker rm -f "${PREFIX}-pw" >/dev/null 2>&1
+
+echo
+echo "3e) Client-Messung beim Start aus: Einschalten wirkt ohne Neustart"
+docker run -d --name "${PREFIX}-cm" -p 18088:8080 --cap-add SYS_TIME -e CLIENTMON=false -e NTP_POOLS="" -e NTP_SERVERS="" \
+  -e NTP_PORT=10149 "$IMAGE" >/dev/null
+wait_for_health http://127.0.0.1:18088/healthz 90 || true
+MPID=$(docker exec "${PREFIX}-cm" pgrep -f -o '^python3 /app/server.py')
+check "Dashboard hat NET_RAW auch bei ausgeschalteter Messung" 0000000000002000 \
+  "$(docker exec "${PREFIX}-cm" awk '/^CapEff:/ {print $2}' "/proc/${MPID}/status")"
+curl -s -o /dev/null --max-time 10 -X POST -H 'Content-Type: application/json' -H 'X-NTP-GUI: 1' \
+  -d '{"changes":{"clientmon_enable":true}}' http://127.0.0.1:18088/api/settings
+MRUN=""
+for ((i = 0; i < 40; i++)); do
+  MRUN=$(curl -s --max-time 10 http://127.0.0.1:18088/api/clients/offsets | python3 -c "import json,sys; print(json.load(sys.stdin).get('running'))" 2>/dev/null)
+  [[ "$MRUN" == True ]] && break
+  sleep 1
+done
+check "Messung läuft nach dem Einschalten ohne Neustart" True "$MRUN"
+check "Hardware-Check sieht SYS_TIME des Containers" True \
+  "$(curl -s --max-time 30 http://127.0.0.1:18088/api/hardware | python3 -c "import json,sys; print(json.load(sys.stdin)['permissions']['sys_time'])" 2>/dev/null)"
+echo "3f) settings.json keine gewöhnliche Datei: Neuladen hängt nicht"
+MDONE=$(docker logs "${PREFIX}-cm" 2>&1 | grep -c "Neustart abgeschlossen" || true)
+docker exec -u ntpgui "${PREFIX}-cm" sh -c 'cd /var/lib/chrony/ntp-gui && rm -f settings.json && mkfifo settings.json && echo 1 > /run/ntp-gui/web/reload.request'
+MNOW="$MDONE"
+for ((i = 0; i < 40; i++)); do
+  MNOW=$(docker logs "${PREFIX}-cm" 2>&1 | grep -c "Neustart abgeschlossen" || true)
+  (( MNOW > MDONE )) && break
+  sleep 1
+done
+check "Neuladen mit Pipe als settings.json endet" 1 "$(( MNOW > MDONE ? 1 : 0 ))"
+contains "Schutzmodus im Log" "$(docker logs "${PREFIX}-cm" 2>&1)" "keine gewöhnliche Datei"
+check "chronyd läuft danach" 0 "$(docker exec "${PREFIX}-cm" pgrep -x chronyd >/dev/null; echo $?)"
+docker rm -f "${PREFIX}-cm" >/dev/null 2>&1
 
 echo
 echo "4) GPS und PTP aktiviert, aber keine Hardware vorhanden"

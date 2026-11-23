@@ -564,10 +564,9 @@ class Monitor:
         try:
             sock = socket.socket(socket.AF_PACKET, socket.SOCK_DGRAM, socket.htons(ETH_P_ALL))
         except PermissionError:
-            self.reason = ("Keine Berechtigung zum Mitlesen (CAP_NET_RAW fehlt). Das Dashboard bekommt "
-                           "sie nur, wenn die Client-Messung beim Start des Containers an ist – hast du "
-                           "sie eben eingeschaltet, starte den Container neu. Wurde sie per cap_drop "
-                           "entfernt, ergänze `cap_add: [NET_RAW]`. Gemessen wird trotzdem nichts gesendet.")
+            self.reason = ("Keine Berechtigung zum Mitlesen (CAP_NET_RAW fehlt). Dem Container fehlt "
+                           "NET_RAW – wurde sie per cap_drop entfernt, ergänze `cap_add: [NET_RAW]` und "
+                           "erstelle den Container neu. Gemessen wird trotzdem nichts gesendet.")
             return False
         except OSError as exc:
             self.reason = f"Mitlesen nicht möglich: {exc.strerror or exc}"

@@ -17,8 +17,8 @@
 services:
   ntp-gui:
     build: .
-    # Version festhalten statt „:latest“: „:1.5“ bleibt auf 1.5.x (nur
-    # Fehlerbehebungen), „:1.5.1“ bleibt fest auf genau dieser Version.
+    # Version festhalten statt „:latest“: „:1.9“ bleibt auf 1.9.x (nur
+    # Fehlerbehebungen), „:1.9.0“ bleibt fest auf genau dieser Version.
     # Gilt für das geladene Image – mit „build: .“ (docker compose build bzw.
     # up --build) baust du stattdessen den lokalen Stand unter diesem Namen.
     # Umgezogen: Früher hieß das Image ghcr.io/congp20/ntp-gui – dort kommen
@@ -31,8 +31,9 @@ services:
       - "123:123/udp"
       - "8080:8080/tcp"
 
-    # Härtung (1.9): Nur der Supervisor läuft als root, Dashboard und DNS-Weiterleiter als
-    # Benutzer ntpgui, chronyd als _chrony. Alle Capabilities weg, nur die nötigen zurück.
+    # Härtung (1.9): Nur der Supervisor läuft als root. Dashboard und DNS-Weiterleiter laufen
+    # als Benutzer ntpgui (höchstens NET_RAW bzw. NET_BIND_SERVICE), chronyd als _chrony.
+    # Alle Capabilities weg, nur die nötigen zurück.
     security_opt:
       - no-new-privileges:true
     cap_drop:

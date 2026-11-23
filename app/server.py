@@ -938,6 +938,14 @@ def env_credentials() -> dict:
     if user and not password:
         out["error"] = "WEB_USER ist gesetzt, aber kein WEB_PASSWORD bzw. WEB_PASSWORD_FILE"
         return out
+    weak = settings.password_weakness(password, user) if password and require_auth() else None
+    if weak:
+        # Mit WEB_REQUIRE_AUTH (VPS) gilt ein schwaches Passwort aus der Umgebung als nicht gesetzt – wie im
+        # Dashboard, das solche Passwörter ablehnt. Ohne WEB_REQUIRE_AUTH bleibt es bei der Warnung.
+        out["error"] = (f"Das Passwort aus der Umgebung ist zu schwach ({weak}) und gilt mit WEB_REQUIRE_AUTH=true "
+                        f"nicht – mindestens {settings.RECOMMENDED_LENGTH} Zeichen, kein Beispielwert, nicht gleich "
+                        "dem Benutzernamen")
+        return out
     out["user"], out["password"] = user, password
     return out
 
@@ -955,8 +963,11 @@ def auth_info() -> dict:
     """
     env = env_credentials()
     if env["user"] and env["password"]:
+        # gui_overridden: Ein im Dashboard gesetztes Passwort gilt nicht, solange eines aus der Umgebung gesetzt
+        # ist (ab 1.9 genügt dafür WEB_PASSWORD allein) – Start-Log und Einstellungsseite sagen es.
         return {"enabled": True, "source": "env", "user": env["user"], "locked": False,
-                "weak": bool(settings.password_weakness(env["password"], env["user"]))}
+                "weak": bool(settings.password_weakness(env["password"], env["user"])),
+                "gui_overridden": bool(settings.stored_credentials())}
     broken = settings.load_error()
     if broken:
         # settings.json nicht lesbar: Ein dort gesetztes Passwort wäre still weg – gesperrt statt offen.
@@ -3563,6 +3574,11 @@ def startup_auth_warnings(bind: str) -> list[str]:
                    "Jeder, der Port und Adresse erreicht, kann alles ändern, ein eigenes Passwort setzen und "
                    "API-Schlüssel anlegen. Im eigenen LAN ist das so gewollt; ist der Server aus dem Internet "
                    "erreichbar (VPS), WEB_REQUIRE_AUTH=true und WEB_USER/WEB_PASSWORD setzen.")
+    if info.get("gui_overridden"):
+        out.append("[web] WARNUNG: Im Dashboard ist ein eigenes Passwort gesetzt, es gilt aber nicht, solange "
+                   "WEB_PASSWORD bzw. WEB_PASSWORD_FILE gesetzt ist – angemeldet wird mit Benutzer "
+                   f"„{env['user']}“ und dem Passwort aus der Umgebung. Soll das Dashboard-Passwort gelten, "
+                   "entferne WEB_PASSWORD (und WEB_USER) aus der Compose-Datei.")
     if info.get("source") == "env":
         weak = settings.password_weakness(env["password"], env["user"])
         if weak:

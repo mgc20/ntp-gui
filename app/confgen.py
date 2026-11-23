@@ -682,6 +682,18 @@ def _install_private(path: str, data: bytes, ids: tuple[int, int] | None, secret
         raise
 
 
+def _hidden_from_us(path: str) -> bool:
+    """Gibt es die Datei, darf dieser Prozess sie aber nicht lesen (Verzeichnis oder Datei nur für root)?
+    Eine fehlende Datei zählt nicht: Dann bleibt der NTS-Server auch beim Speichern aus."""
+    try:
+        os.stat(path)
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return not os.access(path, os.R_OK)
+
+
 def prepare_nts_files(cfg: dict, target_dir: str | None = None, warn=_log,
                       ids: tuple[int, int] | None | bool = True, dry_run: bool = False) -> tuple[str, str] | None:
     """Kopiert Zertifikat + Schlüssel für chronyd; liefert die Pfade für chrony.conf.
@@ -700,6 +712,13 @@ def prepare_nts_files(cfg: dict, target_dir: str | None = None, warn=_log,
     copy_key = os.path.join(target_dir, "server.key")
     have_copies = os.path.isfile(copy_cert) and os.path.isfile(copy_key)
 
+    if dry_run and os.geteuid() != 0 and (_hidden_from_us(cert) or _hidden_from_us(key)):
+        # Vorschau im Dashboard (ohne root): Zertifikate eines Reverse Proxys sind oft nur für root lesbar.
+        # Der Supervisor liest, prüft und kopiert sie beim Speichern; geplant werden deshalb die Kopien.
+        if not have_copies:
+            warn("nts", "Hinweis: Zertifikat oder Schlüssel des NTS-Servers ist für das Dashboard nicht lesbar – "
+                        "der Supervisor prüft und kopiert beide beim Speichern.")
+        return copy_cert, copy_key
     if not (os.path.isfile(cert) and os.path.isfile(key)):
         warn("nts", f"WARNUNG: NTS-Server aktiviert, aber {cert} oder {key} fehlt – "
                     "NTS-Server bleibt aus.")

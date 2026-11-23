@@ -111,10 +111,12 @@ set_mono() {
 
 # Warten ohne Prozess: 'read -t' auf eine Pipe, in die niemand schreibt (beide Enden hält nur diese Shell,
 # es entsteht keine Datei). open_pause einmal beim Start – dort ist der Prozess für '<(:)' unkritisch;
-# klappt das nicht, wartet pause wie bisher mit sleep.
+# klappt das nicht, wartet pause wie bisher mit sleep. Die Umleitung von stderr gilt nur für diesen
+# Versuch (Gruppe): Ein „exec … 2>/dev/null“ leitete sonst stderr des Supervisors dauerhaft um, und
+# Meldungen von confgen und anderen Helfern fehlten danach im Container-Log.
 PAUSE_FD=""
 open_pause() {
-  exec {PAUSE_FD}<> <(:) 2>/dev/null || PAUSE_FD=""
+  { exec {PAUSE_FD}<> <(:); } 2>/dev/null || PAUSE_FD=""
 }
 pause() {  # pause <sekunden>
   if [[ -n "$PAUSE_FD" ]]; then
@@ -143,6 +145,17 @@ cap_has() {
     fi
   done < "$CAP_STATUS_FILE" 2>/dev/null
   return 1
+}
+
+# Rechte des Containers (die des Supervisors) für den Hardware-Check und den Einrichtungs-Assistenten:
+# Das Dashboard läuft ohne root und sieht an sich selbst weder SYS_TIME noch NET_ADMIN.
+write_container_caps() {
+  local key value out=""
+  while read -r key value; do
+    case "$key" in CapPrm:|CapBnd:|Seccomp:) out+="${key}	${value}"$'\n' ;; esac
+  done < "$CAP_STATUS_FILE" 2>/dev/null
+  { printf '%s' "$out" > "${RUN_DIR}/container-caps.tmp" && chmod 0644 "${RUN_DIR}/container-caps.tmp" \
+    && mv -f "${RUN_DIR}/container-caps.tmp" "${RUN_DIR}/container-caps"; } 2>/dev/null || true
 }
 
 # CAP_SYS_TIME fehlt: chronyd darf die Uhr nicht stellen und muss mit -x laufen.
@@ -419,10 +432,13 @@ device_id() {  # Inode + Major/Minor des Knotens (folgt by-id-Links), leer wenn 
 # Einstellung ohne diesen Wert zu starten (statt dass jeder Start scheitert) – nie ohne schützende
 # Einstellungen wie erlaubte/gesperrte Netze oder Ratelimit (dann kein Start).
 CONFIG_ERROR=""   # Grund der letzten Ablehnung (confgen schreibt ihn nach RUN_DIR/config-error)
+CONFGEN_TIMEOUT=120
 apply_config() {
   local out
   CONFIG_ERROR=""
-  if ! out=$(python3 "${APP_DIR}/confgen.py" apply "$@"); then
+  # Mit Frist: Hinge confgen (z. B. an einer Datei im Datenverzeichnis des Dashboards), stünden sonst
+  # Watchdog, Neustarts und Hotplug still.
+  if ! out=$(timeout -k 5 "$CONFGEN_TIMEOUT" python3 "${APP_DIR}/confgen.py" apply "$@"); then
     read_config_error
     log config "FEHLER: Konfiguration konnte nicht erzeugt werden – bisherige bleibt aktiv."
     return 1
@@ -1092,6 +1108,7 @@ mkdir -p /var/run/chrony /var/lib/chrony "$RUN_DIR"
 use_run_when_readonly
 mkdir -p /var/log/chrony /etc/linuxptp 2>/dev/null || true
 echo "$$" > "${RUN_DIR}/supervisor.pid"
+write_container_caps
 write_status idle "bereit"
 if (( EUID == 0 )) && ! cap_has 1; then
   log main "WARNUNG: CAP_DAC_OVERRIDE fehlt – der Supervisor erreicht die Verzeichnisse von chronyd und"
@@ -1126,9 +1143,10 @@ apply_config --start || { log main "Ohne gültige Konfiguration kein Start."; ex
 START_CONFIG_ERROR="$CONFIG_ERROR"   # gesetzt: gespeicherte Einstellungen abgelehnt, Start ohne sie
 start_services
 
-# Dashboard ohne root. NET_RAW nur für die Client-Messung, NET_BIND_SERVICE nur für Ports unter 1024.
-WEB_CAPS=""
-[[ "${NTPGUI_CLIENTMON:-1}" == 1 ]] && WEB_CAPS+="net_raw,"
+# Dashboard ohne root. NET_RAW für die Client-Messung – immer, sofern der Container sie hat: Die Messung
+# lässt sich im Dashboard ohne Neustart einschalten, und der Webserver startet beim Neuladen nicht neu.
+# NET_BIND_SERVICE nur für Ports unter 1024.
+WEB_CAPS="net_raw,"
 [[ "${WEB_PORT:-8080}" =~ ^[0-9]+$ ]] && (( 10#${WEB_PORT:-8080} < 1024 )) && WEB_CAPS+="net_bind_service"
 if [[ -n "${WEB_PASSWORD_FILE_APP:-}" ]]; then
   WEB_PASSWORD_FILE="$WEB_PASSWORD_FILE_APP" spawn_app web "$WEB_CAPS" python3 "${APP_DIR}/server.py"

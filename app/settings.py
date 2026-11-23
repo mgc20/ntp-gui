@@ -19,6 +19,7 @@ wird abgelehnt statt "repariert".
 from __future__ import annotations
 
 import base64
+import errno
 import hashlib
 import hmac
 import ipaddress
@@ -27,6 +28,7 @@ import math
 import os
 import re
 import secrets
+import stat as stat_mod
 import sys
 import tempfile
 import threading
@@ -1600,9 +1602,51 @@ def _unreadable(reason: str) -> str:
             "WEB_USER/WEB_PASSWORD oder WEB_REQUIRE_AUTH=true in der Compose-Datei")
 
 
+# Größer wird settings.json nie (Einstellungen, Passwort-Hash, Hinweise); mehr liest auch root nicht ein.
+SETTINGS_MAX_BYTES = 4 * 1024 * 1024
+
+
+class _NotRegular(Exception):
+    """settings.json ist keine gewöhnliche Datei (Link, Pipe, Gerät …) oder zu groß."""
+
+
+def _read_regular(path: str, limit: int) -> bytes:
+    """Liest eine gewöhnliche Datei ohne Links zu folgen und ohne zu blockieren (höchstens limit Bytes).
+
+    confgen.py liest settings.json als root aus dem Verzeichnis, das dem Dashboard-Benutzer gehört. Ein
+    Link, eine Pipe oder ein Gerät an dieser Stelle gilt deshalb als nicht lesbar (Schutzmodus), statt
+    dem Link zu folgen oder den Supervisor warten zu lassen. Geprüft wird am geöffneten Deskriptor."""
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_NOCTTY | os.O_CLOEXEC
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise _NotRegular("ein symbolischer Link statt einer Datei") from None
+        raise
+    try:
+        info = os.fstat(fd)
+        if not stat_mod.S_ISREG(info.st_mode):
+            raise _NotRegular("keine gewöhnliche Datei")
+        if info.st_size > limit:
+            raise _NotRegular(f"größer als {limit // (1024 * 1024)} MiB")
+        chunks, total = [], 0
+        while True:
+            chunk = os.read(fd, min(65536, limit + 1 - total))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > limit:
+                raise _NotRegular(f"größer als {limit // (1024 * 1024)} MiB")
+        return b"".join(chunks)
+    finally:
+        os.close(fd)
+
+
 def _load_file() -> dict:
     try:
-        stat = os.stat(SETTINGS_FILE)
+        # lstat: Ein Link wird nicht verfolgt (er gilt beim Öffnen ohnehin als nicht lesbar).
+        stat = os.lstat(SETTINGS_FILE)
     except FileNotFoundError:
         _CACHE.update(mtime=None, data=None, error=None)
         return {}
@@ -1611,13 +1655,16 @@ def _load_file() -> dict:
     if _CACHE["mtime"] == stat.st_mtime_ns and (_CACHE["data"] is not None or _CACHE["error"]):
         return {} if _CACHE["error"] else _CACHE["data"]
     try:
-        with open(SETTINGS_FILE, encoding="utf-8") as handle:
-            data = json.load(handle)
+        raw = _read_regular(SETTINGS_FILE, SETTINGS_MAX_BYTES)
     except FileNotFoundError:
         _CACHE.update(mtime=None, data=None, error=None)
         return {}
     except OSError as exc:
         return _broken(stat.st_mtime_ns, exc.strerror or type(exc).__name__)
+    except _NotRegular as exc:
+        return _broken(stat.st_mtime_ns, str(exc))
+    try:
+        data = json.loads(raw.decode("utf-8"))
     except (ValueError, RecursionError):
         return _broken(stat.st_mtime_ns, "kein gültiges JSON – beschädigt oder abgeschnitten")
     if not isinstance(data, dict):

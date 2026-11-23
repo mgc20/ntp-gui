@@ -80,9 +80,23 @@ Das Passwort liegt nur in `web_password.txt`; der Container liest es als Docker-
 Benutzer heißt `admin` (`WEB_USER`). Ohne gültige Passwortdatei bleibt das Dashboard gesperrt und
 zeigt nur einen Einrichtungshinweis – NTP läuft trotzdem.
 
-Passwort ändern: Neues Passwort in `web_password.txt` schreiben. Der Container übernimmt die
-Änderung innerhalb von etwa 30 Sekunden ohne Neustart, das alte Passwort gilt dann nicht mehr
-(im Log steht „Passwortdatei geändert“). Wird die Datei unlesbar, sperrt sich das Dashboard.
+Passwort ändern: Neues Passwort **in dieselbe Datei** schreiben, also ihren Inhalt überschreiben:
+
+```sh
+openssl rand -base64 18 > web_password.txt
+```
+
+Der Container übernimmt die Änderung innerhalb von etwa 30 Sekunden ohne Neustart, das alte
+Passwort gilt dann nicht mehr. Prüfe das im Log: Dort steht „Passwortdatei geändert“. Docker
+hängt das Secret als einzelne Datei ein. Ersetzt du die Datei, statt sie zu überschreiben (`mv`,
+`sed -i`, viele Editoren und Werkzeuge wie Ansible legen eine neue Datei an), sieht der Container
+weiter den alten Inhalt und **das alte Passwort bleibt gültig**. Dann hilft nur
+`docker compose -f docker-compose.vps.yml up -d --force-recreate`. Wird die Datei unlesbar,
+sperrt sich das Dashboard.
+
+Mit `WEB_REQUIRE_AUTH=true` gilt ein schwaches Passwort aus der Umgebung oder der Datei (kürzer als
+12 Zeichen, ein bekannter Beispielwert, gleich dem Benutzernamen) als nicht gesetzt: Das Dashboard
+bleibt gesperrt, das Log nennt den Grund.
 
 Ein erster Blick ohne Proxy geht per SSH-Tunnel:
 
