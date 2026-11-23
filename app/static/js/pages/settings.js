@@ -1,5 +1,5 @@
 import { el, rich, apiPost, apiGet, apiUpload, logout, fmtNumber, fmtDate as fmtDateTime, fmtZoned, serverZone, isNum } from "../util.js";
-import { card, infoButton, badge, kv, emptyState, toast, copyButton, isPopoverOpen } from "../ui.js";
+import { card, infoButton, badge, kv, emptyState, errorState, toast, copyButton, isPopoverOpen } from "../ui.js";
 import { t, has, language, setLanguage, LANGUAGES } from "../i18n.js";
 import { HELP } from "../help.js";
 import { route } from "../routes.js";
@@ -427,7 +427,7 @@ function backupCard(ctx, readonly, rows = []) {
     state.busy = "Übernehme die Sicherung … Das Dashboard ist dabei einige Sekunden beschäftigt.";
     ctx.rerender();
     try {
-      const result = await apiPost("/api/restore/apply", { token: state.token });
+      const result = await apiPost("/api/restore/apply", { token: state.token }, { timeout: 600000 });
       state.result = result; state.preview = null; state.token = null;
       toast(result.reload_triggered ? "Wiederhergestellt – Zeitdienste starten neu" : "Wiederhergestellt");
       if (result.reload_triggered) ctx.watchReload();
@@ -631,7 +631,12 @@ export function render(ctx) {
   const devices = ctx.data("devices", "/api/devices", 60);
   const dns = ctx.data("dns", "/api/dns", 0);
   const update = ctx.data("update", "/api/update", 60);
-  if (!schema) return [card("Einstellungen", {}, emptyState("Wird geladen …"))];
+  if (!schema) {
+    // Nach einem Serverfehler nicht endlos „Wird geladen …“: sagen, was schiefging (der Cache fragt erneut).
+    const failed = ctx.dataError ? ctx.dataError("settings", "/api/settings") : null;
+    return [card("Einstellungen", failed ? { class: "card-alert" } : {},
+      failed ? errorState(failed, "die Einstellungen") : emptyState("Wird geladen …"))];
+  }
   const ui = ctx.uiState;
   const st = ui.settings = ui.settings || {};
   st.draft = st.draft || {};

@@ -1280,7 +1280,8 @@ Die Kachel **Dienste** der Übersicht zeigt, ob die Zustellung klappt.
 | Apprise-API | `http://apprise:8000` | Schlüssel einer gespeicherten Konfiguration | oder direkt Apprise-URLs |
 
 - **Entprellen:** dieselbe Meldung höchstens einmal je N Minuten; „behoben“ kommt mit Dauer,
-  „Kritisch“ immer sofort.
+  „Kritisch“ immer sofort. Offene Probleme, Sperrzeiten und offene Client-Alarme überstehen einen
+  Neustart des Containers (in der Datenbank): Kein doppelter Alarm, und „behoben“ fehlt nicht.
 - **Wiederholung:** nach 30 s, 2 min und 10 min, danach verworfen (steht im Ereignisprotokoll).
 - **Limit:** standardmäßig höchstens 30 Nachrichten je Stunde und Kanal.
 - **Link:** Mit `NOTIFY_DASHBOARD_URL=http://zeitserver.lan:8080/` enthält jede Nachricht einen
@@ -2240,9 +2241,6 @@ CSV-Zeile, „nie gehört“ ist `4294967295` und `pmc` antwortet nur, wenn die 
 * `ts2phc` (PPS direkt in die PTP-Uhr der Netzwerkkarte) wird nicht unterstützt; der
   Grandmaster-Betrieb geht immer über die Systemuhr (chrony → phc2sys).
 * Hotplug und `device_cgroup_rules` gibt es nur auf Linux-Hosts, nicht mit Docker Desktop.
-* Entprellung und offene Probleme der Benachrichtigungen sowie der Zustand des Client-Alarms
-  liegen nur im Speicher: Nach einem Neustart des Containers gibt es für ein noch offenes Problem
-  keine „behoben“-Meldung, und ein noch falsch gehender Client meldet sich einmal neu.
 * Ohne OUI-Liste im Image zeigt die Client-Detailseite keinen Hersteller (eigene Datei unter
   `/config/oui.txt` möglich).
 * Ohne IPv6 im Docker-Netz meldet chronyd „Could not open … socket on [::]“ – harmlos,

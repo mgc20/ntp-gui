@@ -164,7 +164,10 @@ body.is-stale main { opacity: .55; transition: opacity .2s; }
   box-shadow: 0 0 0 6px var(--hero-tint, transparent); }
 .verdict-text { min-width: 0; }
 .verdict-title .info { margin-left: 6px; vertical-align: 3px; }
-.verdict-title h2 { display: inline; font-size: 21px; letter-spacing: -0.02em; text-transform: none; color: var(--ink); line-height: 1.25; }
+.verdict-title h2 { display: inline; font-size: 21px; letter-spacing: -0.02em; text-transform: none; color: var(--ink); line-height: 1.25;
+  overflow-wrap: anywhere; min-width: 0; }
+/* Lange Rechnernamen und Pfade vom Server brechen um statt am Kartenrand abgeschnitten zu werden. */
+.verdict-title { min-width: 0; overflow-wrap: anywhere; }
 .verdict-sub { margin: 3px 0 0; color: var(--ink-2); font-size: 14px; }
 .verdict-facts { margin: 6px 0 0; color: var(--ink-muted); font-size: 12.5px; font-variant-numeric: tabular-nums;
   display: flex; flex-wrap: wrap; gap: 0 5px; }
@@ -193,10 +196,11 @@ body.is-stale main { opacity: .55; transition: opacity .2s; }
 .hint-row[data-level="info"] .insight-icon { background: var(--info); font-family: Georgia, serif; font-style: italic; }
 .hint-row[data-level="ok"] .insight-icon { background: var(--good); }
 .hint-main { min-width: 0; padding-top: 1px; }
-.hint-title { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; font-size: 13.5px; }
+.hint-title { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; font-size: 13.5px; overflow-wrap: anywhere; min-width: 0; }
+.hint-title > * { min-width: 0; max-width: 100%; }
 .hint-area { font-size: 11.5px; color: var(--ink-muted); border: 1px solid var(--border); border-radius: 999px; padding: 0 7px;
   white-space: nowrap; }
-.hint-text { margin: 3px 0 2px; color: var(--ink-2); font-size: 13px; max-width: 900px; }
+.hint-text { margin: 3px 0 2px; color: var(--ink-2); font-size: 13px; max-width: 900px; overflow-wrap: anywhere; min-width: 0; }
 /* 1.6.1: Eine sichtbare Zeile je Hinweis (erster Satz); zu lang → „…“, der ganze Text steht im ⓘ bzw. unter „Details“. */
 .hint-line { display: flex; align-items: center; gap: 6px; min-width: 0; max-width: 110ch; margin: 2px 0 0;
   color: var(--ink-2); font-size: 13px; line-height: 1.45; }
@@ -447,7 +451,9 @@ td .badge { margin-left: 6px; }
 .reach-bits .bit.ok { background: var(--good); border-color: var(--good); }
 
 /* ---------- Schlüssel/Wert ---------- */
-.kv-list { margin: 0; }
+/* Höchstbreite: In Karten über die volle Breite (bis 2080 px Seite) stünde der Wert sonst über einen Meter
+   neben seiner Bezeichnung, das Auge verlöre die Zeile. */
+.kv-list { margin: 0; max-width: 80ch; }
 .kv { display: flex; justify-content: space-between; gap: 14px; padding: 6px 0; border-top: 1px solid var(--border-soft); font-size: 13.5px; }
 .kv:first-child { border-top: 0; }
 .kv dt { color: var(--ink-muted); display: flex; align-items: center; gap: 5px; }
@@ -1049,6 +1055,12 @@ kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fon
   body:not(.clock-page) { padding-bottom: calc(60px + env(safe-area-inset-bottom, 0px)); }
   /* Klebende Speicherleiste der Einstellungen über der Leiste (57 px) statt dahinter. */
   .save-bar { bottom: calc(68px + env(safe-area-inset-bottom, 0px)); }
+  /* Tastaturfokus nicht hinter der unteren Leiste (WCAG 2.4.11): Der Browser rollt ein fokussiertes Element
+     sonst nur ins Fenster, nicht über die Leiste. Mit sichtbarer Speicherleiste deren Höhe dazu. */
+  html { scroll-padding-bottom: calc(72px + env(safe-area-inset-bottom, 0px)); }
+  html:has(.save-bar:not([hidden])) { scroll-padding-bottom: calc(200px + env(safe-area-inset-bottom, 0px)); }
+  /* Damit auch die letzten Felder über die Speicherleiste rollen können, endet die Seite dann weiter unten. */
+  body:not(.clock-page):has(.save-bar:not([hidden])) { padding-bottom: calc(160px + env(safe-area-inset-bottom, 0px)); }
   .bottombar { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); position: fixed; left: 0; right: 0; bottom: 0;
     z-index: 30; padding: 0 4px env(safe-area-inset-bottom, 0px); background: var(--bg); border-top: 1px solid var(--border); }
   .bottombar > a, .bottom-more { position: relative; display: flex; align-items: center; justify-content: center; gap: 4px;

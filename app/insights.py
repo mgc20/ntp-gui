@@ -537,6 +537,11 @@ def build(status: dict[str, Any], cfg: dict[str, Any]) -> list[dict[str, Any]]:
     out.extend(ptp_role_insights(cfg))
 
     ui = status.get("ui") or {}
+    if (ui.get("storage") or {}).get("error"):
+        add("crit", "Einstellungen nicht lesbar – Speichern gesperrt",
+            "settings.json im Datenverzeichnis ist vorhanden, aber nicht lesbar. Es gelten Umgebung und "
+            "Standardwerte; Speichern ist gesperrt, damit die Datei nicht überschrieben wird. Datei reparieren "
+            "oder ersetzen und den Container neu starten.", key="settings_unreadable")
     if not (ui.get("storage") or {}).get("persistent", True):
         add("warn", "Einstellungen gehen beim Neuerstellen verloren",
             "/var/lib/chrony liegt nicht auf einem Volume. Im Dashboard gespeicherte "

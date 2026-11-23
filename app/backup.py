@@ -621,8 +621,45 @@ def autocal_part() -> dict:
     return scrub(state)
 
 
+# Ausdünnen des Rohverlaufs in der Sicherung, wenn sie sonst größer würde als das, was die Wiederherstellung
+# annimmt (kleines Messintervall, langer Verlauf): je Fenster dieser Breite bleibt der erste Messpunkt. Die
+# 5-Minuten-Verdichtung (samples_5m) bleibt vollständig, der älteste Punkt auch – die Diagramme über Tage und
+# Wochen sehen danach gleich aus, nur die feinste Auflösung wird gröber.
+THIN_STEPS = (10, 30, 60, 300)
+
+
+def _thin_samples(path: str, step: int) -> int:
+    """Rohverlauf in der Sicherungsdatenbank auf einen Punkt je step Sekunden kürzen. Gibt die Restzeilen."""
+    conn = sqlite3.connect(_uri(path, "rw"), uri=True, isolation_level=None)
+    try:
+        conn.execute("PRAGMA secure_delete=ON")
+        conn.execute("DELETE FROM samples WHERE t NOT IN (SELECT min(t) FROM samples GROUP BY t / ?)",
+                     (int(step),))
+        conn.execute("VACUUM")
+        return int(conn.execute("SELECT count(*) FROM samples").fetchone()[0])
+    finally:
+        conn.close()
+
+
+def _write_archive(tmp: str, manifest: dict, files: dict[str, str], created: float) -> None:
+    with open(tmp, "wb") as raw:
+        os.chmod(tmp, 0o600)
+        with tarfile.open(fileobj=raw, mode="w:gz", format=tarfile.PAX_FORMAT,
+                          compresslevel=COMPRESS_LEVEL) as tar:
+            data = (json.dumps(manifest, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+            _add(tar, MANIFEST, io.BytesIO(data), len(data), created)
+            for name, path in files.items():
+                with open(path, "rb") as handle:
+                    _add(tar, name, handle, os.path.getsize(path), created)
+
+
 def create(dest: str, version: str = "") -> dict:
-    """Schreibt eine Sicherung nach dest (.tar.gz). Gibt das Manifest zurück."""
+    """Schreibt eine Sicherung nach dest (.tar.gz). Gibt das Manifest zurück.
+
+    Die Sicherung muss sich mit diesem Aufbau wiederherstellen lassen: daten.sqlite höchstens
+    PART_LIMITS[DB_PART], die Datei höchstens MAX_UPLOAD. Wird sie größer (kleines Messintervall), wird der
+    Rohverlauf in der Sicherung stufenweise ausgedünnt (THIN_STEPS); das Manifest nennt die Stufe
+    („history_thinned_s“)."""
     with _CREATE_LOCK:
         _flush()
         with contextlib.suppress(Exception):
@@ -643,29 +680,33 @@ def create(dest: str, version: str = "") -> dict:
                 with open(files[name], "w", encoding="utf-8") as handle:
                     json.dump(content, handle, indent=2, ensure_ascii=False, sort_keys=True)
                     handle.write("\n")
-            manifest = {
-                "format": FORMAT, "format_version": FORMAT_VERSION, "ntp_gui_version": str(version or ""),
-                "created": round(created, 3),
-                "schema": {"dump": DUMP_SCHEMA, "settings": settings.SCHEMA_VERSION},
-                "parts": [{"name": name, "size": os.path.getsize(path), "sha256": _sha256(path)}
-                          for name, path in files.items()],
-                "rows": counts,
-                "excluded": ["GPS-Position", "Satellitenwinkel", "API-Schlüssel", "Passwort",
-                             "Kanal-Tokens", "NTS-Schlüssel und -Zertifikate"],
-            }
-            files_order = [(MANIFEST, None)] + list(files.items())
+            steps = list(THIN_STEPS)
+            thinned = None
+            while os.path.getsize(files[DB_PART]) > PART_LIMITS[DB_PART] and steps and counts.get("samples"):
+                thinned = steps.pop(0)
+                counts["samples"] = _thin_samples(files[DB_PART], thinned)
             tmp = dest + ".tmp"
-            with open(tmp, "wb") as raw:
-                os.chmod(tmp, 0o600)
-                with tarfile.open(fileobj=raw, mode="w:gz", format=tarfile.PAX_FORMAT,
-                                  compresslevel=COMPRESS_LEVEL) as tar:
-                    for name, path in files_order:
-                        if path is None:
-                            data = (json.dumps(manifest, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
-                            _add(tar, name, io.BytesIO(data), len(data), created)
-                        else:
-                            with open(path, "rb") as handle:
-                                _add(tar, name, handle, os.path.getsize(path), created)
+            while True:
+                manifest = {
+                    "format": FORMAT, "format_version": FORMAT_VERSION, "ntp_gui_version": str(version or ""),
+                    "created": round(created, 3),
+                    "schema": {"dump": DUMP_SCHEMA, "settings": settings.SCHEMA_VERSION},
+                    "parts": [{"name": name, "size": os.path.getsize(path), "sha256": _sha256(path)}
+                              for name, path in files.items()],
+                    "rows": counts,
+                    "excluded": ["GPS-Position", "Satellitenwinkel", "API-Schlüssel", "Passwort",
+                                 "Kanal-Tokens", "NTS-Schlüssel und -Zertifikate"],
+                }
+                if thinned:
+                    manifest["history_thinned_s"] = thinned
+                _write_archive(tmp, manifest, files, created)
+                if os.path.getsize(tmp) <= MAX_UPLOAD or not steps or not counts.get("samples"):
+                    break
+                thinned = steps.pop(0)
+                counts["samples"] = _thin_samples(files[DB_PART], thinned)
+            if thinned:
+                print(f"[web] Sicherung: Rohverlauf auf einen Messpunkt je {thinned} s ausgedünnt, damit sie sich "
+                      "wiederherstellen lässt (5-Minuten-Verlauf vollständig).", flush=True)
             os.replace(tmp, dest)
             return manifest
         finally:

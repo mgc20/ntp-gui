@@ -1091,6 +1091,9 @@ def apply(env: dict | None = None, fallback: bool = False) -> dict:
     gespeicherter Fehler soll nicht jeden weiteren Start verhindern; schützende Einstellungen fallen dabei
     nie weg (_start_fallback)."""
     env = dict(os.environ if env is None else env)
+    unreadable = settings.load_error()
+    if unreadable:
+        _log("config", f"WARNUNG: {unreadable}. Bis dahin gelten Umgebung und Standardwerte.")
     cfg = settings.values(env)
     for key, entry in settings.effective(env).items():
         if entry["error"]:

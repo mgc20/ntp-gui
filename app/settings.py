@@ -33,6 +33,7 @@ import time
 from typing import Any, Callable
 
 import numfmt
+import textsafe
 
 DATA_DIR = os.environ.get("NTPGUI_DATA_DIR", "/var/lib/chrony/ntp-gui")
 SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json")
@@ -142,16 +143,32 @@ def _as_bool(value: Any) -> bool:
     raise ValidationError(f"„{value}“ ist kein Ja/Nein-Wert")
 
 
+# Zahlen als Text: nur ASCII-Ziffern in der üblichen Schreibweise (kein „1_0“, keine anderen Ziffernsysteme,
+# kein „inf“/„nan“). Ganzzahl-Felder ohne Nachkommastellen.
+_INT_TEXT = re.compile(r"[+-]?[0-9]+", re.ASCII)
+_FLOAT_TEXT = re.compile(r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?", re.ASCII)
+
+
 def _as_number(kind: type, minimum=None, maximum=None) -> Callable[[Any], Any]:
     def convert(value: Any):
         if isinstance(value, bool):
             raise ValidationError("Zahl erwartet")
+        if isinstance(value, float) and not math.isfinite(value):
+            raise ValidationError("Zahl erwartet (endlicher Wert)")
+        if kind is int and isinstance(value, float) and not value.is_integer():
+            raise ValidationError(f"Ganze Zahl erwartet (nicht {value})")
+        if not isinstance(value, (int, float)):
+            text = str(value).strip()
+            if not (_INT_TEXT if kind is int else _FLOAT_TEXT).fullmatch(text):
+                raise ValidationError(f"„{textsafe.clean(value, 40)}“ ist keine gültige Zahl"
+                                      + (" (ganze Zahl erwartet)" if kind is int else ""))
+            value = text
         try:
-            number = kind(str(value).strip()) if not isinstance(value, (int, float)) else kind(value)
-        except (TypeError, ValueError):
-            raise ValidationError(f"„{value}“ ist keine gültige Zahl") from None
-        if kind is float and (number != number or number in (float("inf"), float("-inf"))):
-            raise ValidationError("Zahl erwartet")
+            number = kind(value)
+        except (TypeError, ValueError, OverflowError):
+            raise ValidationError(f"„{textsafe.clean(value, 40)}“ ist keine gültige Zahl") from None
+        if kind is float and not math.isfinite(number):
+            raise ValidationError("Zahl erwartet (endlicher Wert)")
         if minimum is not None and number < minimum:
             raise ValidationError(f"Mindestens {minimum}")
         if maximum is not None and number > maximum:
@@ -1556,23 +1573,52 @@ ENV_ONLY = [
 # ---------------------------------------------------------------------------
 
 _LOCK = threading.RLock()  # reentrant: save() ruft values() unter der Sperre
-_CACHE: dict[str, Any] = {"mtime": None, "data": None}
+_CACHE: dict[str, Any] = {"mtime": None, "data": None, "error": None}
+_UNREADABLE_NOTED: dict[str, Any] = {"error": None}
+
+
+class SettingsUnreadable(ValidationError):
+    """settings.json ist vorhanden, aber nicht lesbar: Schreiben ist gesperrt, damit die Datei (mit dem
+    Passwort-Hash und allen Einstellungen) nicht durch eine fast leere ersetzt wird."""
+
+
+def load_error() -> str | None:
+    """Grund, wenn settings.json vorhanden, aber nicht lesbar ist (beschädigt, abgeschnitten, keine Rechte,
+    kein JSON-Objekt). None, wenn sie lesbar ist oder fehlt. Liest die Datei bei Bedarf neu (mtime)."""
+    with _LOCK:
+        _load_file()
+        return _CACHE["error"]
+
+
+def _unreadable(reason: str) -> str:
+    return (f"settings.json im Datenverzeichnis ist nicht lesbar ({reason}). Das Dashboard läuft im Schutzmodus: "
+            "Ein dort gesetztes Passwort könnte sonst still wegfallen, und Speichern würde die Datei "
+            "überschreiben. Repariere die Datei (oder ersetze sie durch eine funktionierende Kopie bzw. entferne "
+            "sie, um mit Standardwerten neu zu beginnen) und starte den Container neu")
 
 
 def _load_file() -> dict:
     try:
         stat = os.stat(SETTINGS_FILE)
-    except OSError:
+    except FileNotFoundError:
+        _CACHE.update(mtime=None, data=None, error=None)
         return {}
-    if _CACHE["mtime"] == stat.st_mtime_ns and _CACHE["data"] is not None:
-        return _CACHE["data"]
+    except OSError as exc:
+        return _broken(None, f"Dateiinfo nicht lesbar: {exc.strerror or type(exc).__name__}")
+    if _CACHE["mtime"] == stat.st_mtime_ns and (_CACHE["data"] is not None or _CACHE["error"]):
+        return {} if _CACHE["error"] else _CACHE["data"]
     try:
         with open(SETTINGS_FILE, encoding="utf-8") as handle:
             data = json.load(handle)
-        if not isinstance(data, dict):
-            data = {}
-    except (OSError, ValueError):
-        data = {}
+    except FileNotFoundError:
+        _CACHE.update(mtime=None, data=None, error=None)
+        return {}
+    except OSError as exc:
+        return _broken(stat.st_mtime_ns, exc.strerror or type(exc).__name__)
+    except (ValueError, RecursionError):
+        return _broken(stat.st_mtime_ns, "kein gültiges JSON – beschädigt oder abgeschnitten")
+    if not isinstance(data, dict):
+        return _broken(stat.st_mtime_ns, "kein JSON-Objekt")
     if data and _schema_of(data) < SCHEMA_VERSION:
         with _LOCK:
             data, notes = migrate_data(data)
@@ -1584,12 +1630,29 @@ def _load_file() -> dict:
                 print(f"[web] Einstellungen migriert, aber nicht gespeichert: {exc}", flush=True)
             for note in notes:
                 print(f"[web] Update der Einstellungen: {note['title']}", flush=True)
-    _CACHE.update(mtime=stat.st_mtime_ns, data=data)
+    _CACHE.update(mtime=stat.st_mtime_ns, data=data, error=None)
+    _UNREADABLE_NOTED["error"] = None
     return data
 
 
+def _broken(mtime: int | None, reason: str) -> dict:
+    """Vorhandene, aber nicht lesbare settings.json: leer weiterarbeiten, Grund merken (fail-closed über
+    load_error: Dashboard gesperrt, Schreiben gesperrt). Einmal je Grund ins Log."""
+    error = _unreadable(reason)
+    _CACHE.update(mtime=mtime, data=None, error=error)
+    if _UNREADABLE_NOTED["error"] != error:
+        _UNREADABLE_NOTED["error"] = error
+        print(f"[web] FEHLER: {error}.", flush=True)
+    return {}
+
+
 def _write_tmp(data: dict) -> str:
-    """settings.json-Inhalt in eine temporäre Datei im Datenverzeichnis (0600). Gibt ihren Pfad."""
+    """settings.json-Inhalt in eine temporäre Datei im Datenverzeichnis (0600). Gibt ihren Pfad.
+    Ist die vorhandene settings.json nicht lesbar, wird nichts geschrieben (SettingsUnreadable)."""
+    # Alle Schreibwege lesen die Datei vorher (_load_file); der Stand steht daher im Zwischenspeicher. Nicht
+    # load_error() aufrufen: Die Migration in _load_file schreibt selbst und käme sonst hierher zurück.
+    if _CACHE["error"]:
+        raise SettingsUnreadable(_CACHE["error"])
     data = dict(data)
     data.setdefault("schema", SCHEMA_VERSION)
     os.makedirs(DATA_DIR, mode=0o700, exist_ok=True)
@@ -1619,7 +1682,7 @@ def _write_file(data: dict) -> None:
     finally:
         if os.path.exists(tmp):
             os.unlink(tmp)
-    _CACHE.update(mtime=None, data=None)
+    _CACHE.update(mtime=None, data=None, error=None)
 
 
 def _env_value(field: dict, env: dict[str, str]):
@@ -1846,7 +1909,7 @@ def commit_replace(staged: dict[str, Any]) -> dict[str, Any]:
     with _LOCK:
         before = values()
         os.replace(staged["tmp"], SETTINGS_FILE)
-        _CACHE.update(mtime=None, data=None)
+        _CACHE.update(mtime=None, data=None, error=None)
     after = values()
     changed = [key for key in FIELDS if before.get(key) != after.get(key)]
     restart = any(FIELDS[key]["restart"] == RESTART_SERVICES for key in changed)
@@ -1911,7 +1974,7 @@ def storage_info() -> dict:
     """Wo gespeichert wird und ob es einen Neustart des Containers übersteht."""
     persistent = _is_mounted(os.path.dirname(DATA_DIR.rstrip("/")) or DATA_DIR)
     return {"path": SETTINGS_FILE, "persistent": persistent,
-            "exists": os.path.exists(SETTINGS_FILE)}
+            "exists": os.path.exists(SETTINGS_FILE), "error": load_error()}
 
 
 def _is_mounted(path: str) -> bool:

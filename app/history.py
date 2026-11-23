@@ -25,8 +25,11 @@ Aufbewahrung:
     Zeitstempel in der Zukunft (falsches Datum von Hand, Quelle stellt die Uhr
     vor, importierte Datei) löscht sonst bei jedem Schreiben den ganzen
     Verlauf. Solche Punkte werden gar nicht erst gespeichert (auch nicht bei der
-    Übernahme der .json.gz); bereits vorhandene bleiben liegen, zählen aber
-    nicht als „neuester“.
+    Übernahme der .json.gz); bereits vorhandene zählen nicht als „neuester“
+    und werden gelöscht, sobald chrony die Systemzeit als plausibel meldet.
+    Nach Alter wird nur bei plausibler Systemzeit gelöscht (events.clock_plausible):
+    Ging die Uhr beim Schreiben weit vor, wären sonst alle bisherigen Punkte
+    „zu alt“. Abfragen enden spätestens jetzt.
   * HISTORY_SIZE (wie in 1.2: Anzahl Messpunkte) bleibt eine OBERGRENZE, wenn
     die Variable gesetzt ist. Ist sie nicht gesetzt, übergibt server.py den
     alten Standard 8640 – der wird hier als „keine Obergrenze, nur Tage“
@@ -76,6 +79,7 @@ DEFAULT_DAYS = 30.0
 FLUSH_SECONDS = 300.0
 MAX_PENDING = 5000          # Puffer, falls die Datenbank zeitweise nicht schreibbar ist
 FUTURE_SLACK = 86400.0      # Messpunkte mehr als 1 Tag in der Zukunft werden verworfen
+NOW_SLACK = 300.0           # Abfragen enden spätestens so viele Sekunden nach „jetzt“
 
 ROLLUP_SECONDS = 300        # Vorverdichtung: ein Punkt je 5 Minuten
 RAW_LIMIT = 30_000          # mehr Rohpunkte → aus der Vorverdichtung lesen
@@ -117,6 +121,41 @@ def _valid(sample: Any) -> bool:
 def _latest_allowed(now: float | None = None) -> float:
     """Spätester Zeitstempel, der noch als Gegenwart gilt."""
     return (time.time() if now is None else now) + FUTURE_SLACK
+
+
+def _recent() -> float:
+    try:
+        import events
+        return float(events.CLOCK_RECENT)
+    except Exception:  # noqa: BLE001
+        return 300.0
+
+
+def _clock_ok(due: int, older: int) -> bool:
+    """Darf nach Alter gelöscht werden? events.clock_plausible (ohne chronyc-Aufruf); im Zweifel nein."""
+    try:
+        import events
+        return events.clock_plausible(due, older)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _clock_confirmed() -> bool:
+    """chrony meldet die Systemzeit ausdrücklich als plausibel (nicht nur „unbekannt“)."""
+    try:
+        import events
+        return events.clock_state() is True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _note_paused() -> None:
+    """Einmal je Vorfall das Ereignis „Aufräumen ausgesetzt“ (außerhalb der Schreib-Transaktion)."""
+    try:
+        import events
+        events.note_prune_paused()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _storable(sample: Any, now: float | None = None) -> bool:
@@ -208,6 +247,7 @@ class History:
         latest = _latest_allowed()
         rows = [(int(s["t"]), _dumps(s))
                 for s in self._pending if _valid(s) and s["t"] <= latest]
+        paused = False
         try:
             with store.transaction(self.db_path) as conn:
                 if rows:
@@ -215,7 +255,20 @@ class History:
                 newest = conn.execute("SELECT max(t) FROM samples").fetchone()[0]
                 if newest is not None:
                     newest = min(newest, latest)
-                    conn.execute("DELETE FROM samples WHERE t < ?", (newest - self.days * 86400,))
+                    cutoff = newest - self.days * 86400
+                    due, older = conn.execute("SELECT sum(t < ?), sum(t < ?) FROM samples",
+                                              (cutoff, newest - _recent())).fetchone()
+                    # Nach Alter nur bei plausibler Systemzeit: Geht die Uhr weit vor, wären sonst alle
+                    # bisherigen Punkte „zu alt“ und der ganze Verlauf weg (wie events.prune).
+                    if due and _clock_ok(due, older or 0):
+                        conn.execute("DELETE FROM samples WHERE t < ?", (cutoff,))
+                    elif due:
+                        paused = True
+                if _clock_confirmed():
+                    # Punkte aus einer Zeit, in der die Uhr vorging, liegen jetzt in der Zukunft. Erst
+                    # löschen, wenn chrony die Uhr als plausibel meldet – nicht bei unbekanntem Stand.
+                    conn.execute("DELETE FROM samples WHERE t > ?", (latest,))
+                    conn.execute("DELETE FROM samples_5m WHERE b > ?", (int(latest) // ROLLUP_SECONDS,))
                 if self.size:
                     conn.execute("DELETE FROM samples WHERE t < (SELECT t FROM samples "
                                  "ORDER BY t DESC LIMIT 1 OFFSET ?)", (self.size - 1,))
@@ -225,6 +278,8 @@ class History:
         except Exception as exc:
             self.error = f"Verlauf nicht gespeichert: {exc}"
             return False
+        if paused:
+            _note_paused()
         self._pending = []
         self.error = None
         return True
@@ -239,7 +294,10 @@ class History:
             newest = max(pend) if newest is None else max(newest, max(pend))
         if newest is None:
             return None, None
-        newest = min(newest, _latest_allowed())
+        # Fenster an „jetzt“ verankern: Liegen noch Punkte aus einer Zeit in der Zukunft (Uhr ging vor),
+        # endete „die letzte Stunde“ sonst dort und das Diagramm bliebe leer. Wenige Minuten Spielraum für
+        # kleine Schritte der Uhr.
+        newest = min(newest, time.time() + NOW_SLACK)
         lower = newest - self.days * 86400
         if self.size:
             extra = len(set(pend))

@@ -547,12 +547,35 @@ def loop_guard_runner(stop: threading.Event | None = None) -> None:
         stop.wait(min(loopguard.MAX_INTERVAL, max(1.0, LOOP_GUARD.seconds_until_due())))
 
 
+CLIENT_ALARMS_KEY = "client_alarms"   # notify_meta: Adressen mit offenem Client-Alarm (überlebt Neustart)
+_CLIENT_ALARMS: dict = {"loaded": False, "saved": None}
+
+
+def _client_alarms_persist() -> None:
+    """Offene Client-Alarme sichern bzw. nach dem Start einmal übernehmen (notify_meta)."""
+    if not _CLIENT_ALARMS["loaded"]:
+        _CLIENT_ALARMS["loaded"] = True
+        raw = notify.meta_get(CLIENT_ALARMS_KEY)
+        try:
+            STATE_WATCH.restore_client_alarms(json.loads(raw) if raw else [])
+        except (ValueError, TypeError, RecursionError):
+            pass
+        _CLIENT_ALARMS["saved"] = raw
+        return
+    text = json.dumps(STATE_WATCH.client_alarm_ips(), separators=(",", ":"))
+    if text != _CLIENT_ALARMS["saved"] and notify.meta_set(CLIENT_ALARMS_KEY, text):
+        _CLIENT_ALARMS["saved"] = text
+
+
 def client_alarms() -> None:
     """Alarm-Schwelle für Client-Uhren (clients_alarm_ms) prüfen – Ereignis „clients“."""
     try:
+        if not _CLIENT_ALARMS["loaded"]:
+            _client_alarms_persist()
         threshold = settings.values().get("clients_alarm_ms") or 0
         if not threshold:
             STATE_WATCH.clients({}, 0)
+            _client_alarms_persist()
             return
         # Titel nur mit der Adresse (egress pseudonymisiert sie): Ein eigener Name im gespeicherten
         # Titel bliebe nach Umbenennen/Löschen 90 Tage stehen und ginge dann ungefiltert hinaus.
@@ -563,6 +586,7 @@ def client_alarms() -> None:
                             fmt=clientinfo.fmt_offset,
                             data_for=lambda ip: {"notify": False} if (rule_map.get(ip) or {}).get("mute") else {},
                             handover=clients3.own_threshold_ips(rule_map))
+        _client_alarms_persist()
     except Exception as exc:  # ein Alarm darf die Messung nie aufhalten
         print(f"[web] Alarm für Client-Uhren nicht geprüft: {exc}", flush=True)
 
@@ -933,6 +957,11 @@ def auth_info() -> dict:
     if env["user"] and env["password"]:
         return {"enabled": True, "source": "env", "user": env["user"], "locked": False,
                 "weak": bool(settings.password_weakness(env["password"], env["user"]))}
+    broken = settings.load_error()
+    if broken:
+        # settings.json nicht lesbar: Ein dort gesetztes Passwort wäre still weg – gesperrt statt offen.
+        return {"enabled": False, "source": None, "user": None, "locked": True, "reason": broken,
+                "code": "settings_unreadable"}
     stored = settings.stored_credentials()
     if stored:
         return {"enabled": True, "source": "gui", "user": stored["user"], "locked": False}
@@ -2283,16 +2312,23 @@ class Handler(BaseHTTPRequestHandler):
     def _deny_locked(self) -> None:
         """WEB_REQUIRE_AUTH ohne Zugang bzw. unvollständige Angaben in der Umgebung: Einrichtungs-Meldung (503)."""
         self.close_connection = True
-        reason = auth_info().get("reason") or "Noch kein Zugang eingerichtet"
-        text = (f"{reason}. Das Dashboard bleibt gesperrt, bis ein Zugang gesetzt ist: in der Compose-Datei "
-                "WEB_USER und WEB_PASSWORD (oder WEB_PASSWORD_FILE für ein Docker Secret) eintragen und den "
-                "Container neu erstellen. /healthz bleibt erreichbar.")
+        info = auth_info()
+        reason = info.get("reason") or "Noch kein Zugang eingerichtet"
+        if info.get("code") == "settings_unreadable":
+            code, heading = "settings_unreadable", "Einstellungen nicht lesbar"
+            text = (f"{reason}. Mit WEB_USER und WEB_PASSWORD in der Compose-Datei ist das Dashboard trotzdem "
+                    "mit Anmeldung erreichbar (Speichern bleibt gesperrt). /healthz bleibt erreichbar.")
+        else:
+            code, heading = "auth_setup_required", "Einrichtung nötig"
+            text = (f"{reason}. Das Dashboard bleibt gesperrt, bis ein Zugang gesetzt ist: in der Compose-Datei "
+                    "WEB_USER und WEB_PASSWORD (oder WEB_PASSWORD_FILE für ein Docker Secret) eintragen und den "
+                    "Container neu erstellen. /healthz bleibt erreichbar.")
         path = urlparse(self.path).path
         if path.startswith("/api") or path == "/metrics" or "json" in self.headers.get("Accept", ""):
-            self._error(HTTPStatus.SERVICE_UNAVAILABLE, text, reason="auth_setup_required")
+            self._error(HTTPStatus.SERVICE_UNAVAILABLE, text, reason=code)
             return
-        body = ("<!doctype html><html lang=\"de\"><meta charset=\"utf-8\"><title>Einrichtung nötig</title>"
-                f"<body><h1>Einrichtung nötig</h1><p>{html.escape(text)}</p></body></html>\n")
+        body = (f"<!doctype html><html lang=\"de\"><meta charset=\"utf-8\"><title>{heading}</title>"
+                f"<body><h1>{heading}</h1><p>{html.escape(text)}</p></body></html>\n")
         self._send(HTTPStatus.SERVICE_UNAVAILABLE, body.encode("utf-8"), "text/html; charset=utf-8",
                    {"Cache-Control": "no-store"})
 
@@ -3509,7 +3545,10 @@ def startup_auth_warnings(bind: str) -> list[str]:
         out.append("[web] Hinweis: WEB_PASSWORD und WEB_PASSWORD_FILE sind gesetzt – es gilt WEB_PASSWORD_FILE.")
     if env["defaulted_user"]:
         out.append("[web] Hinweis: Nur ein Passwort aus der Umgebung, kein WEB_USER – Benutzername ist „admin“.")
-    if env["error"]:
+    if info.get("code") == "settings_unreadable":
+        out.append(f"[web] WARNUNG: {info['reason']}. Das Dashboard bleibt GESPERRT (nur /healthz antwortet); "
+                   "mit WEB_USER und WEB_PASSWORD ist es mit Anmeldung erreichbar, Speichern bleibt gesperrt.")
+    elif env["error"]:
         if info["enabled"]:
             out.append(f"[web] WARNUNG: {env['error']} – es gilt das im Dashboard gesetzte Passwort.")
         else:

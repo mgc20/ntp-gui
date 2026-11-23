@@ -56,6 +56,7 @@ import hmac
 import http.client
 import ipaddress
 import json
+import math
 import re
 import secrets
 import socket
@@ -102,6 +103,9 @@ TIMEOUT = 10.0
 MAX_RESPONSE = 64 * 1024
 POLL_SECONDS = 2.0
 BATCH = 200
+ROUTER_STATE_PREFIX = "router:"       # notify_meta: Zustand je Kanal (offene Probleme, Entprellen)
+ROUTER_STATE_KEYS = 500               # höchstens so viele Betreffe je Kanal sichern
+ROUTER_STATE_EVERY = 10.0             # s – Zustand höchstens so oft schreiben (außer beim Beenden)
 BACKLOG_SECONDS = 300.0            # nach einem Neustart: ältere, noch nicht verschickte Ereignisse verwerfen
 DEFAULT_DEBOUNCE_MIN = 15
 DEFAULT_RATE_PER_HOUR = 30
@@ -154,6 +158,30 @@ def _ensure() -> None:
     if _READY["db"] != db:
         store.migrate("notify", _SCHEMA)
         _READY["db"] = db
+
+
+def meta_get(key: str) -> str | None:
+    """Kleiner Schlüssel-Wert-Speicher in notify_meta (Zustand, der einen Neustart überleben soll)."""
+    try:
+        _ensure()
+        rows = store.query("SELECT value FROM notify_meta WHERE key=?", (str(key),))
+        return str(rows[0][0]) if rows and rows[0][0] is not None else None
+    except Exception:  # noqa: BLE001 – ohne gespeicherten Zustand geht es auch
+        return None
+
+
+def meta_set(key: str, value: str | None) -> bool:
+    """Wert setzen (None: löschen). False, wenn die Datenbank nicht schreibbar ist."""
+    try:
+        _ensure()
+        if value is None:
+            store.execute("DELETE FROM notify_meta WHERE key=?", (str(key),))
+        else:
+            store.execute("INSERT INTO notify_meta(key, value) VALUES(?, ?) ON CONFLICT(key) "
+                          "DO UPDATE SET value=excluded.value", (str(key), str(value)))
+        return True
+    except Exception:  # noqa: BLE001
+        return False
 
 
 class NotifyError(ValueError):
@@ -483,6 +511,7 @@ def delete_channel(channel_id: str) -> bool:
         _ensure()
         removed = store.execute("DELETE FROM notify_channels WHERE id=?", (channel_id,))
     if removed:
+        meta_set(ROUTER_STATE_PREFIX + channel_id, None)
         events.emit("settings", "info", f"Benachrichtigungskanal gelöscht: {channel_id}", {"channel": channel_id})
         NOTIFIER.reload()
     return bool(removed)
@@ -557,6 +586,15 @@ def _level_rank(level: str) -> int:
     return LEVELS.index(level) if level in LEVELS else 0
 
 
+def _num(value: Any) -> float | None:
+    return value if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) \
+        else None
+
+
+def _lvl(value: Any) -> str | None:
+    return value if value in LEVELS else None
+
+
 class ChannelRouter:
     """Regeln eines Kanals. Reine Logik mit eingespeister Uhr – offer() und tick() geben Meldungen zurück.
 
@@ -573,6 +611,44 @@ class ChannelRouter:
 
     def configure(self, channel: dict) -> None:
         self.channel = channel
+
+    def export_state(self) -> dict:
+        """Zustand für notify_meta: Sperrzeiten (monotonic) als Uhrzeit, damit sie einen Neustart überstehen."""
+        clock, wall = self.clock(), self.wall()
+        out = {}
+        for key, st in list(self.state.items())[-ROUTER_STATE_KEYS:]:
+            item = {k: st[k] for k in ("open_since", "notified", "suppressed", "sent_level", "resolved_sent")}
+            item["last_sent"] = None if st["last_sent"] is None else wall - max(0.0, clock - st["last_sent"])
+            pending = st["pending"]
+            item["pending"] = {k: pending.get(k) for k in ("id", "t", "kind", "level", "title", "data")} \
+                if isinstance(pending, dict) else None
+            out[key] = item
+        return out
+
+    def import_state(self, saved: Any) -> int:
+        """Gesicherten Zustand übernehmen (nach einem Neustart). Unbrauchbare Einträge werden übersprungen.
+        Eine Sperrzeit läuft in Uhrzeit weiter; liegt ihr Beginn in der Zukunft (Uhr gestellt), gilt sie ab
+        jetzt."""
+        if not isinstance(saved, dict):
+            return 0
+        clock, wall = self.clock(), self.wall()
+        count = 0
+        for key, item in list(saved.items())[:ROUTER_STATE_KEYS]:
+            if not isinstance(key, str) or not isinstance(item, dict):
+                continue
+            last = _num(item.get("last_sent"))
+            pending = item.get("pending") if isinstance(item.get("pending"), dict) else None
+            self.state[key] = {
+                "open_since": _num(item.get("open_since")),
+                "notified": _lvl(item.get("notified")),
+                "last_sent": None if last is None else clock - max(0.0, wall - last),
+                "pending": pending,
+                "suppressed": max(0, min(10 ** 6, int(_num(item.get("suppressed")) or 0))),
+                "sent_level": _lvl(item.get("sent_level")),
+                "resolved_sent": item.get("resolved_sent") is True,
+            }
+            count += 1
+        return count
 
     def _matches(self, event: dict, ignore_level: bool = False) -> bool:
         kinds = self.channel.get("kinds") or []
@@ -1215,6 +1291,8 @@ class Notifier:
         self._dirty = True
         self.batch_full = False
         self.stopped = False
+        self.states_saved: dict[str, str] = {}
+        self.states_saved_at = float("-inf")
 
     # --- Steuerung -------------------------------------------------------------
     def start(self, version: str = "") -> None:
@@ -1242,8 +1320,35 @@ class Notifier:
                 sender.stop()
 
     def flush(self) -> None:
-        """Position sofort speichern (SIGTERM): sonst schickt ein Neustart schon Zugestelltes noch einmal."""
+        """Position und Zustand der Kanäle sofort speichern (SIGTERM): sonst schickt ein Neustart schon
+        Zugestelltes noch einmal, und für ein offenes Problem fehlte später „behoben“."""
         self._save_position(force=True)
+        self._save_states(force=True)
+
+    def _load_state(self, cid: str, router: ChannelRouter) -> None:
+        raw = meta_get(ROUTER_STATE_PREFIX + cid)
+        if not raw:
+            return
+        try:
+            router.import_state(json.loads(raw))
+            self.states_saved[cid] = raw
+        except (ValueError, TypeError, RecursionError):
+            pass
+
+    def _save_states(self, force: bool = False) -> None:
+        """Zustand je Kanal in notify_meta – nur, wenn er sich geändert hat, höchstens alle ROUTER_STATE_EVERY s."""
+        if not force and time.monotonic() - self.states_saved_at < ROUTER_STATE_EVERY:
+            return
+        with self.lock:
+            routers = list(self.routers.items())
+        for cid, router in routers:
+            try:
+                text = json.dumps(router.export_state(), sort_keys=True, separators=(",", ":"), default=str)
+            except (TypeError, ValueError):
+                continue
+            if self.states_saved.get(cid) != text and meta_set(ROUTER_STATE_PREFIX + cid, text):
+                self.states_saved[cid] = text
+        self.states_saved_at = time.monotonic()
 
     def skip_to(self, event_id: int) -> None:
         """Nach einer Wiederherstellung (backup.py): Ereignisse bis event_id gelten als verteilt – die
@@ -1284,6 +1389,7 @@ class Notifier:
                     self.routers[cid].configure(channel)
                 else:
                     self.routers[cid] = ChannelRouter(channel)
+                    self._load_state(cid, self.routers[cid])
                     self.senders[cid] = _Sender(self, channel)
             self._dirty = False
 
@@ -1336,6 +1442,7 @@ class Notifier:
         # Hat der Durchgang Meldungen erzeugt, Position sofort sichern (eine UPSERT-Zeile) – sonst
         # verschickt ein Neustart innerhalb der nächsten Sekunden dieselben Meldungen noch einmal.
         self._save_position(force=count > 0)
+        self._save_states(force=count > 0)
         return count
 
     def _run(self) -> None:

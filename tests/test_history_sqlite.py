@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _isolation  # noqa: E402,F401 – vor jedem App-Import: Host-Pfade umlenken
 
+import events  # noqa: E402
 import history  # noqa: E402
 import settings  # noqa: E402
 import store  # noqa: E402
@@ -42,6 +43,10 @@ class TempDataDir(unittest.TestCase):
         self.addCleanup(env.stop)
         for key in ("HISTORY_SIZE", "HISTORY_DAYS"):
             os.environ.pop(key, None)
+        # Aufräumen nach Alter folgt dem Urteil über die Systemzeit (events._CLOCK): je Test „unbekannt“.
+        clock = dict(events._CLOCK)
+        events._CLOCK.update(plausible=None, at=None, noted=False, held=False)
+        self.addCleanup(lambda: (events._CLOCK.clear(), events._CLOCK.update(clock)))
 
     def tearDown(self):
         store.close_all()

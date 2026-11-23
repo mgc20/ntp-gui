@@ -30,6 +30,7 @@ from __future__ import annotations
 import calendar
 import http.client
 import json
+import math
 import random
 import re
 import socket
@@ -300,20 +301,28 @@ class Checker:
         except Exception:
             return False
 
+    def _last_attempt(self, now: float) -> float | None:
+        """Letzter Versuch – ohne einen Zeitpunkt in der Zukunft: Lief eine Prüfung, während die Systemuhr
+        vorging, gälte sonst jede weitere bis zu diesem Datum als „heute schon gefragt“."""
+        last = self._data().get("last_attempt")
+        if not isinstance(last, (int, float)) or isinstance(last, bool) or not math.isfinite(last):
+            return None
+        return last if last <= now + DAY else None
+
     def next_check(self, now: float) -> float | None:
         if not self.is_enabled():
             return None
         today = _day(now)
-        last = self._data().get("last_attempt")
-        day = today + 1 if isinstance(last, (int, float)) and _day(last) >= today else today
+        last = self._last_attempt(now)
+        day = today + 1 if last is not None and _day(last) >= today else today
         return max(now, day * DAY + self.slot(day))
 
     def due(self, now: float) -> bool:
         if not self.is_enabled():
             return False
-        last = self._data().get("last_attempt")
+        last = self._last_attempt(now)
         today = _day(now)
-        if isinstance(last, (int, float)) and _day(last) >= today:
+        if last is not None and _day(last) >= today:
             return False  # heute schon gefragt (auch bei Fehler: höchstens eine Anfrage am Tag)
         return now >= today * DAY + self.slot(today)
 

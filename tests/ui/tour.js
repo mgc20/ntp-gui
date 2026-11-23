@@ -3775,6 +3775,100 @@ function heroState() {
     summary: summary ? summary.textContent : "" };
 }
 
+// 1.9 Korrekturen: (a) bei 390 px brechen lange Rechnernamen und Pfade in Statusband und Hinweisen um, statt am
+// Kartenrand abgeschnitten zu werden; (b) bei 390 px liegt ein per Tab erreichtes Element nie hinter der unteren
+// Leiste bzw. der Speicherleiste der Einstellungen; (c) bei 2000 und 2560 px liegt der Wert einer kv-Zeile nicht
+// über den halben Bildschirm neben seiner Bezeichnung (TOUR_FIXES_ONLY=1 prüft nur das).
+const LONG_NAME = "zeitquelle-im-rechenzentrum-mit-sehr-langem-namen.standort.beispiel.example.org";
+async function layoutFixChecks(browser) {
+  const found = [];
+  const lines = [];
+  {
+    const ctx = await browser.newContext({ viewport: { width: 390, height: 844 } });
+    const page = await ctx.newPage();
+    await page.route("**/api/status*", async (route) => {
+      const response = await route.fetch();
+      const body = await response.json();
+      body.insights = [
+        { level: "crit", key: "unreach:long", action: "sources", title: `${LONG_NAME} antwortet nicht`,
+          text: `Die Quelle ${LONG_NAME} antwortet nicht; Datei /var/lib/chrony/${LONG_NAME}/zertifikat.pem fehlt.` },
+        ...HERO_INSIGHTS.slice(1, 3)];
+      await route.fulfill({ response, json: body });
+    });
+    await page.goto(`${BASE}/#/`, { waitUntil: "load" });
+    await page.waitForSelector("#main .hero", { timeout: 8000 }).catch(() => {});
+    await page.waitForTimeout(1500);
+    const toggle = await page.$("#main .hero .hint-summary");
+    if (toggle) { await toggle.click(); await page.waitForTimeout(500); }
+    const cut = await page.evaluate(() => [...document.querySelectorAll("#main .verdict-title h2, #main .hint-title, #main .hint-text")]
+      .filter((n) => n.getClientRects().length)
+      .map((n) => ({ cls: n.className || n.tagName, over: n.scrollWidth - n.clientWidth,
+        right: Math.round(n.getBoundingClientRect().right - (n.closest(".card, .hero")?.getBoundingClientRect().right ?? innerWidth)) }))
+      .filter((x) => x.over > 1 || x.right > 1));
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+    lines.push(`lange Namen 390: abgeschnitten=${cut.length} ovf=${overflow}`);
+    if (cut.length || overflow > 0) found.push(`390 lange Namen abgeschnitten ${JSON.stringify(cut.slice(0, 3))} ovf=${overflow}`);
+    await ctx.close();
+  }
+  for (const [route, dirty] of [["#/system/einstellungen", false], ["#/system/einstellungen", true], ["#/system/diagnose", false]]) {
+    const ctx = await browser.newContext({ viewport: { width: 390, height: 700 } });
+    const page = await ctx.newPage();
+    await page.goto(`${BASE}/${route}`, { waitUntil: "load" });
+    await page.waitForTimeout(2500);
+    if (dirty) {
+      // Speicherleiste einblenden: ein Textfeld ändern (wird nicht gespeichert).
+      const input = await page.$("#main input[type=text]:not([readonly]):not([disabled])");
+      if (input) { await input.focus(); await page.keyboard.type("x"); await page.waitForTimeout(400); }
+    }
+    let hidden = 0;
+    let checked = 0;
+    const samples = [];
+    await page.evaluate(() => { document.activeElement?.blur(); window.scrollTo(0, 0); });
+    for (let i = 0; i < 60; i += 1) {
+      await page.keyboard.press("Tab");
+      await page.waitForTimeout(40);
+      const got = await page.evaluate(() => {
+        const el = document.activeElement;
+        if (!el || el === document.body || !el.closest("#main")) return null;
+        const r = el.getBoundingClientRect();
+        if (!r.height) return null;
+        const covers = [...document.querySelectorAll(".bottombar, .save-bar:not([hidden])")]
+          .filter((c) => getComputedStyle(c).display !== "none" && !c.contains(el))
+          .map((c) => c.getBoundingClientRect().top);
+        const limit = Math.min(innerHeight, ...covers);
+        return { top: Math.round(r.top), bottom: Math.round(r.bottom), limit: Math.round(limit), what: el.tagName + (el.className ? `.${String(el.className).split(" ")[0]}` : "") };
+      });
+      if (!got) continue;
+      checked += 1;
+      if (got.bottom > got.limit + 1) { hidden += 1; if (samples.length < 3) samples.push(got); }
+    }
+    lines.push(`Fokus 390 ${route}${dirty ? " (Speicherleiste)" : ""}: geprüft=${checked} verdeckt=${hidden}`);
+    if (hidden) found.push(`390 ${route}${dirty ? " mit Speicherleiste" : ""}: Fokus hinter der unteren Leiste ${JSON.stringify(samples)}`);
+    await ctx.close();
+  }
+  for (const width of [2000, 2560]) {
+    const ctx = await browser.newContext({ viewport: { width, height: 1200 } });
+    for (const route of ["#/system/diagnose", "#/uhr/hardware", "#/system/einstellungen", "#/quellen"]) {
+      const page = await ctx.newPage();
+      await page.goto(`${BASE}/${route}`, { waitUntil: "load" });
+      await page.waitForTimeout(2000);
+      const rows = await page.evaluate(() => [...document.querySelectorAll("#main .kv")]
+        .filter((row) => row.getClientRects().length && row.querySelector("dt") && row.querySelector("dd"))
+        .map((row) => {
+          const dt = row.querySelector("dt").getBoundingClientRect();
+          const dd = row.querySelector("dd").getBoundingClientRect();
+          return Math.round(dd.right - dt.left);
+        }));
+      const widest = rows.length ? Math.max(...rows) : 0;
+      lines.push(`kv ${width} ${route}: Zeilen=${rows.length} breiteste=${widest}`);
+      if (widest > 900) found.push(`${width} ${route}: kv-Zeile ${widest} px breit (Bezeichnung und Wert zu weit auseinander)`);
+      await page.close();
+    }
+    await ctx.close();
+  }
+  return { found, lines };
+}
+
 async function heroChecks(browser) {
   const found = [];
   const lines = [];
@@ -4128,6 +4222,12 @@ async function setupChecks(browser) {
       process.exitCode = result.found.length ? 1 : 0;
       return;
     }
+    if (process.env.TOUR_FIXES_ONLY) {
+      const result = await layoutFixChecks(browser);
+      console.log(JSON.stringify(result, null, 1));
+      process.exitCode = result.found.length ? 1 : 0;
+      return;
+    }
     if (process.env.TOUR_PAGES_ONLY) {
       const result = await pagesChecks(browser);
       console.log(JSON.stringify(result, null, 1));
@@ -4155,6 +4255,9 @@ async function setupChecks(browser) {
     const heroResult = await heroChecks(browser);
     nav.found.push(...heroResult.found);
     nav.lines.push(...heroResult.lines);
+    const layoutResult = await layoutFixChecks(browser);
+    nav.found.push(...layoutResult.found);
+    nav.lines.push(...layoutResult.lines);
     words = await wordCounts(browser);
     // TOUR_NAV_ONLY=1: nur die Navigationsprüfungen (schneller Durchlauf beim Arbeiten an der Navigation).
     for (const theme of process.env.TOUR_NAV_ONLY ? [] : ["light", "dark"]) {

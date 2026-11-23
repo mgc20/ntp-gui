@@ -1,7 +1,7 @@
 // GNSS-Störungen, GPS-Sperre (GPS-Seite) und echter Holdover-Test (Seite Uhrqualität) – 1.5.
 // Daten: GET /api/gnss und /api/holdover; Aktionen per POST (admin). Alles als Text im DOM (el/textContent).
 import { el, fmtNumber, fmtDate, isNum, rich, apiPost } from "../util.js";
-import { card, kv, infoButton, badge, emptyState, toast, explainLine } from "../ui.js";
+import { card, kv, infoButton, badge, emptyState, loadingOr, toast, explainLine } from "../ui.js";
 import { lineChart, stepDecimals } from "../charts.js";
 
 const STAGE = { ok: ["unauffällig", "good"], hinweis: ["Hinweis", "info"], warnung: ["Warnung", "warn"], stoerung: ["Störung", "crit"] };
@@ -56,7 +56,7 @@ function signalValue(signal, quiet) {
 export function gnssCard(ctx) {
   const g = ctx.data("gnss", "/api/gnss", 10);
   const head = { help: "gnss_guard", sub: "Jamming und Spoofing erkennen – nur aus gpsd und chrony, auf den Empfänger wird nichts geschrieben." };
-  if (!g) return card("Störungserkennung", head, emptyState("Wird geladen …"));
+  if (!g) return card("Störungserkennung", head, loadingOr(ctx, "gnss", "/api/gnss", "die Störungserkennung"));
   if (!g.enabled) {
     return card("Störungserkennung", { ...head, badge: badge("aus", "muted") },
       emptyState(g.gps_enable ? "Die Störungserkennung ist ausgeschaltet (System → Einstellungen → GPS → Störungserkennung)."
@@ -243,7 +243,7 @@ export function holdoverCard(ctx) {
   const running = ctx.uiState.hoRunning;
   const data = ctx.data("holdover", "/api/holdover", running ? 15 : 60);
   const head = { help: "holdover", sub: "Wie lange hält die Uhr ohne Zeitquelle? Gemessen statt geschätzt: chrony misst die Netzquellen weiter, nutzt sie aber nicht." };
-  if (!data) return card("Holdover-Test", head, emptyState("Wird geladen …"));
+  if (!data) return card("Holdover-Test", head, loadingOr(ctx, "holdover", "/api/holdover", "den Holdover-Test"));
   ctx.uiState.hoRunning = Boolean(data.active);
   const results = data.results || [];
   // Kopfzeile: nur echte Holdover-Läufe (alle Quellen abgewählt) mit Messergebnis (fertig oder Grenze).

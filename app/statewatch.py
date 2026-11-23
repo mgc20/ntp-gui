@@ -28,6 +28,7 @@ from typing import Any, Callable
 import numfmt
 
 CONFIRM = 2  # so oft hintereinander muss ein neuer Zustand gemessen werden
+CLIENT_RESTORE_GRACE = 3600.0  # s – übernommene Client-Alarme warten so lange auf die Client-Liste
 # GPS-Fix: Bei schwachem Empfang (Antenne innen) kommt und geht der Fix im Minutentakt. Ein
 # Wechsel zählt erst, wenn er so lange anhält – sonst füllt sich das Protokoll mit
 # „verloren/wieder da“-Paaren, die nichts aussagen (chrony überbrückt kurze Lücken ohnehin).
@@ -219,6 +220,27 @@ class StateWatcher:
             self._emit(kind, level, title, data, source="web")
         except Exception:  # Ereignisse sind nie kritisch
             pass
+
+    def client_alarm_ips(self) -> list[str]:
+        """Adressen mit offenem Client-Alarm – zum Sichern über einen Neustart (server.client_alarms)."""
+        with self._lock:
+            return sorted(ip for ip, state in self._clients.items() if state.get("alarm"))
+
+    def restore_client_alarms(self, ips: Any) -> int:
+        """Nach einem Neustart: offene Client-Alarme wieder übernehmen, ohne sie neu zu melden. Ein Gerät, das
+        noch abweicht, meldet sich so nicht doppelt; eines, das wieder im Rahmen ist, meldet „wieder im
+        Rahmen“. Fehlt ein Gerät in der Liste, bleibt sein Alarm CLIENT_RESTORE_GRACE lang stehen (die Liste
+        füllt sich nach dem Start erst wieder), danach wird er wie sonst still geschlossen."""
+        if not isinstance(ips, (list, tuple)):
+            return 0
+        until = self._clock() + CLIENT_RESTORE_GRACE
+        restored = 0
+        with self._lock:
+            for ip in ips[:5000]:
+                if isinstance(ip, str) and ip and ip not in self._clients:
+                    self._clients[ip] = {"alarm": True, "streak": 0, "count": None, "restored_until": until}
+                    restored += 1
+        return restored
 
     def _close_client(self, ip: str, why: str) -> None:
         """Offenen Client-Alarm still schließen (nur Protokoll; notify-Router schließt den Betreff)."""
@@ -509,7 +531,10 @@ class StateWatcher:
                 for state in self._clients.values():
                     state["streak"] = 0
                 self._clients_threshold = threshold
+            now = self._clock()
             for ip in [ip for ip in self._clients if ip not in clients]:
+                if ip not in handover and self._clients[ip].get("restored_until", now) > now:
+                    continue  # nach einem Neustart: Die Client-Liste füllt sich erst wieder
                 self._close_client(ip, "eigene Schwelle übernimmt" if ip in handover
                                    else "nicht mehr in der Liste")
                 del self._clients[ip]
@@ -524,6 +549,7 @@ class StateWatcher:
                 if count == state["count"]:
                     continue  # keine neue Messung
                 state["count"] = count
+                state.pop("restored_until", None)
                 if not state["alarm"]:
                     over = abs(value) > threshold
                     state["streak"] = state["streak"] + 1 if over else 0

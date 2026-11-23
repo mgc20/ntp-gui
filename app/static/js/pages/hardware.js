@@ -1,7 +1,7 @@
 // Hardware-Check: Was kann dieses Gerät von dem, was ntp-gui kann?
 // Alle Werte aus /api/hardware landen nur als Text im DOM (el/textContent).
 import { el, apiGet, fmtNumber, fmtTime, isNum, rich } from "../util.js";
-import { card, kv, infoButton, badge, emptyState, toast, copyButton, explainLine } from "../ui.js";
+import { card, kv, infoButton, badge, emptyState, errorState, toast, copyButton, explainLine } from "../ui.js";
 
 // Kein Neuaufbau alle paar Sekunden: Kopierbare Ausschnitte bleiben markierbar,
 // aufgeklappte Details bleiben offen. Neu geladen wird per Knopf oder Seitenwechsel.
@@ -40,6 +40,11 @@ const LADDER = [
   { id: "gpio", label: "GPIO", value: "~1 µs" },
   { id: "ptp_hw", label: "PTP-HW", value: "< 1 µs" },
 ];
+
+// Fehler der Abfrage des Hardware-Berichts (null, solange sie klappt oder noch läuft).
+export function hardwareError(ctx) {
+  return ctx.dataError ? ctx.dataError("hardware", "/api/hardware") : null;
+}
 
 export function hardwareData(ctx) {
   const cached = ctx.data("hardware", "/api/hardware", 30);
@@ -443,8 +448,10 @@ async function recheck(ctx) {
 export function render(ctx) {
   const report = hardwareData(ctx);
   if (!report) {
-    return [card("Hardware-Check", { help: "hw_check" },
-      emptyState("Hardware wird geprüft … (beim ersten Mal gut eine Sekunde, um PPS-Impulse zu zählen)"))];
+    const failed = hardwareError(ctx);
+    return [card("Hardware-Check", { help: "hw_check", ...(failed ? { class: "card-alert" } : {}) },
+      failed ? errorState(failed, "den Hardware-Bericht")
+        : emptyState("Hardware wird geprüft … (beim ersten Mal gut eine Sekunde, um PPS-Impulse zu zählen)"))];
   }
   const matrix = report.matrix || [];
   const fixes = matrix.filter((m) => m.status === "change" && m.fix);
