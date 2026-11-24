@@ -635,17 +635,20 @@ def status_hint(cfg: dict) -> dict[str, Any]:
 # =========================================================================================
 
 _DEPS: dict[str, Any] = {"history": None, "trigger_reload": None, "emit": None, "net_distance": None,
-                         "chronyd_started": None}
+                         "chronyd_started": None, "auto_reload": None}
 _LAST_TICK: dict[str, Any] = {"mono": None}
 
 
 def configure(history: Any = None, trigger_reload: Callable[[], bool] | None = None,
               emit: Callable[..., Any] | None = None, net_distance: Callable[[], float | None] | None = None,
-              chronyd_started: Callable[[], float | None] | None = None) -> None:
+              chronyd_started: Callable[[], float | None] | None = None,
+              auto_reload: Callable[[], bool] | None = None) -> None:
     """net_distance: () → kleinste Root Distance der genutzten NTS-Quellen (s) oder None.
     trigger_reload: Neuladen nach einer Änderung der Schranke – server.py gibt hier das Neuladen nur von
     chronyd (trigger_reload_chronyd): Die Schranke steht nur in chrony.conf, gpsd und dnsfwd laufen weiter.
-    chronyd_started: () → Unix-Zeit des letzten Starts von chronyd (Standard: aus RUN_DIR/reload.json)."""
+    chronyd_started: () → Unix-Zeit des letzten Starts von chronyd (Standard: aus RUN_DIR/reload.json).
+    auto_reload: Neustart für die stündliche Automatik (1.12: über restartctl gesammelt, mit Obergrenze je
+    Tag); ohne Angabe trigger_reload. „Auf Standard zurücksetzen“ (Mensch) nutzt immer trigger_reload."""
     if net_distance is not None:
         _DEPS["net_distance"] = net_distance
     if chronyd_started is not None:
@@ -654,6 +657,8 @@ def configure(history: Any = None, trigger_reload: Callable[[], bool] | None = N
         _DEPS["history"] = history
     if trigger_reload is not None:
         _DEPS["trigger_reload"] = trigger_reload
+    if auto_reload is not None:
+        _DEPS["auto_reload"] = auto_reload
     if emit is not None:
         _DEPS["emit"] = emit
 
@@ -869,7 +874,7 @@ def tick(cfg: dict, now: float | None = None, samples: list[dict] | None = None)
                                     "bound": measured["bound"], "samples": measured["samples"],
                                     "hours": measured["hours"], "t": now}
                 save_state(state)
-                reloaded = _automatic_reload(_DEPS.get("trigger_reload"))
+                reloaded = _automatic_reload(_DEPS.get("auto_reload") or _DEPS.get("trigger_reload"))
                 decision["reload_triggered"] = reloaded
                 _emit("gps", "info",
                       f"GPS-Fehlerschranke angepasst: ± {fmt_ms(old / 2)} → ± {fmt_ms(new_delay / 2)}",

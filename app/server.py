@@ -82,6 +82,7 @@ import instance
 import leap
 import notify
 import opsmetrics
+import restartctl
 import onboarding  # vor dem eigenen Code: merkt sich, ob das Datenverzeichnis schon Daten hatte
 import providers
 import ptp
@@ -514,6 +515,7 @@ def collector() -> None:
             gpsquality.note_offset(settings.values())  # Offset-Änderung merken (Schranke, Kalibrierung)
             autocal.maybe_tick()   # höchstens einmal pro Stunde, wirft nie
             gpsquality.maybe_tick(settings.values)  # Fehlerschranke GPS ohne PPS, stündlich, wirft nie
+            restartctl.tick()      # gesammelte automatische Neustarts anwenden (Obergrenze je Tag), wirft nie
         except Exception as exc:  # ein Messfehler darf den Thread nie beenden
             print(f"[web] Messung fehlgeschlagen: {exc}", flush=True)
         tracking, sources = None, None
@@ -1075,6 +1077,7 @@ def build_status() -> dict:
     except Exception:
         status["holdover_active"] = False
     status["notify"] = _notify_summary()
+    status["restarts"] = restartctl.status()   # 1.12: automatische Neustarts (Zahl, Grenze, wartend)
     status["heartbeat"] = _heartbeat_status()
     status["insights"] = combine_insights(insights.build(status, cfg),
                                           insights.exposure_insights(cfg, clients, clientmon.default_gateway(),
@@ -1781,6 +1784,15 @@ def build_metrics() -> str:
         running = None
     _metric(lines, "ntpgui_holdover_test_running", running,
             "1 while a holdover test runs (sources deselected on purpose, clients get less accurate time)")
+    restarts = restartctl.status()
+    _metric(lines, "ntpgui_auto_restarts_24h", restarts.get("auto_24h"),
+            "Automatic chronyd restarts in the last 24 h (calibration, GPS error bound), coordinated")
+    _metric(lines, "ntpgui_auto_restart_limit", restarts.get("limit"),
+            "Maximum automatic chronyd restarts per 24 h; changes from the user are not limited")
+    _metric(lines, "ntpgui_auto_restart_pending", 1 if restarts.get("pending") else 0,
+            "1 while an automatic change waits for its chronyd restart (collecting or daily limit reached)")
+    _metric(lines, "ntpgui_auto_restart_limited", 1 if restarts.get("state") == "limit" else 0,
+            "1 while an automatic change waits because the daily restart limit is reached")
     _hardware_metrics(lines)
     for name, value, help_text, kind, labels in opsmetrics.collect(settings.values(), STATE_WATCH):
         _metric(lines, name, value, help_text, kind=kind, labels=labels)
@@ -3807,8 +3819,13 @@ def main() -> None:
     events.add_filter(holdover.event_filter)
     holdover.configure(trigger_reload=trigger_reload)
     # Schranke und Offset stehen nur in chrony.conf: nur chronyd neu laden (gpsd und dnsfwd laufen weiter).
-    autocal.configure(history=HISTORY, trigger_reload=trigger_reload_chronyd)
+    # 1.12: Automatische Neustarts gehen über den Neustart-Koordinator (sammeln, Obergrenze je Tag);
+    # was du auslöst (Rückgängig, Zurücksetzen, Speichern), startet weiter sofort neu.
+    restartctl.COORD.configure(chronyd=trigger_reload_chronyd, full=trigger_reload)
+    autocal.configure(history=HISTORY, trigger_reload=trigger_reload_chronyd,
+                      auto_reload=restartctl.trigger_for("autocal"))
     gpsquality.configure(history=HISTORY, trigger_reload=trigger_reload_chronyd,
+                         auto_reload=restartctl.trigger_for("gps_bound"),
                          net_distance=lambda: gpsquality.nts_distance(chrony.detailed_sources()))
     threading.Thread(target=collector, daemon=True, name="collector").start()
     threading.Thread(target=loop_guard_runner, daemon=True, name="loopguard").start()

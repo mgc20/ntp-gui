@@ -84,6 +84,10 @@ bleiben leer – die Metriken gibt es nur, wenn die Funktion an ist.
 | `ntpgui_gnss_stage`, `ntpgui_gps_locked` | GNSS-Störungserkennung (0 unauffällig … 3 Störung) bzw. 1 = GPS gesperrt |
 | `ntpgui_source_loops` | Zeitquellen, die auf ntp-gui selbst zeigen (DNS-/NAT-Schleife) |
 | `ntpgui_holdover_test_running` | 1 = Holdover-Test läuft (Clients bekommen ungenauere Zeit) |
+| `ntpgui_auto_restarts_24h` | Automatische Neustarts von chronyd (Kalibrierung, Fehlerschranke) in den letzten 24 h |
+| `ntpgui_auto_restart_limit` | Obergrenze automatischer Neustarts je 24 h (was du auslöst, zählt nicht) |
+| `ntpgui_auto_restart_pending` | 1 = eine automatische Änderung wartet auf ihren Neustart (wird gesammelt oder Tagesgrenze) |
+| `ntpgui_auto_restart_limited` | 1 = sie wartet, weil die Tagesgrenze erreicht ist |
 | `ntpgui_pps_live{device=…}` | 1 = PPS-Pulse kommen an |
 | `ntpgui_temperature_celsius` | Temperatur des gewählten Sensors |
 | `ntpgui_pi_undervoltage` | 1 = Raspberry Pi meldet gerade Unterspannung (nur auf dem Pi) |

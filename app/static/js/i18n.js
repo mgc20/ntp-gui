@@ -142,6 +142,14 @@ export const CORE_DE = {
       "details_show": "Details anzeigen: {title}",
       "details_hide": "Details ausblenden: {title}",
       "label": "Hinweise"
+    },
+    "auto_restarts": {
+      "label": "Automatische Neustarts",
+      "value": "{count} von {limit} in 24 h",
+      "collecting": "wird gesammelt",
+      "limit": "wartet bis {time}",
+      "retry": "neuer Versuch {time}",
+      "title": "Wartet: {names}"
     }
   },
   // Seiten (T2 „Seiten entschlacken“): kurze Texte, die auch ohne Katalog lesbar sein müssen.

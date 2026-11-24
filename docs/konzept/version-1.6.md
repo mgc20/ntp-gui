@@ -370,6 +370,9 @@ kein ntp-gui-Release braucht.
      gemeinsam anwenden, Obergrenze je Tag, Zurückstellen nach dem Muster von
      `holdover.reload_or_defer` für **alle** Automatiken, laufende Tests haben Vorrang. Jede
      Entscheidung ist ein Ereignis mit Grund („zurückgestellt: Holdover-Test läuft“).
+     *Stand 1.12:* umgesetzt als `app/restartctl.py` für die Automatiken, die chronyd neu starten
+     (Kalibrierung, Fehlerschranke) – Abgrenzung und Begründung in
+     [Entscheidung E20](entscheidungen.md#2026-11-24).
   2. **Zustand überlebt Neustart:** Zustand der Benachrichtigungen und des Client-Alarms in SQLite
      (heute in „Bekannte Einschränkungen“).
 - **Akzeptanzkriterien:**

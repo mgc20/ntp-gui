@@ -2158,6 +2158,19 @@ Für Prometheus gibt es `ntpgui_service_up`, `ntpgui_service_enabled` (1 = soll 
 Einstellungen laufen) und `ntpgui_service_restarts_total`. Der mitgelieferte Alarm
 `NtpGuiServiceDown` meldet nur eingeschaltete Dienste, die nicht laufen.
 
+**Automatische Neustarts von chronyd** (ab 1.12): Die GPS-Kalibrierung und die gemessene
+Fehlerschranke ändern Werte in `chrony.conf` und brauchen dafür einen Neustart von chronyd. Diese
+Neustarts gehen über einen gemeinsamen Koordinator: Er sammelt Änderungen zwei Minuten lang und
+übernimmt sie in **einem** Neustart, erlaubt höchstens **4 automatische Neustarts in 24 Stunden**
+(gleitend) und wartet, solange ein Holdover-Test läuft. Ist die Grenze erreicht, gilt bis zum
+nächsten freien Neustart die bisherige Einstellung (Ereignis „Tagesgrenze erreicht“); startet
+chronyd vorher aus einem anderen Grund neu, ist die Änderung damit schon aktiv. Was du selbst
+auslöst (Speichern, Sicherung zurückspielen, „Rückgängig“, „Auf Standard zurücksetzen“), wirkt
+wie bisher sofort und zählt nicht mit; erneuertes NTS-Zertifikat und Gerätewechsel behandelt
+weiter der Supervisor. Jede Entscheidung steht im Ereignisprotokoll, der Zustand in der Karte
+**Dienste** (Zeile „Automatische Neustarts“, mit GPS) und in `ntpgui_auto_restarts_24h`,
+`ntpgui_auto_restart_limit`, `ntpgui_auto_restart_pending` und `ntpgui_auto_restart_limited`.
+
 ## Endpunkte
 
 | Pfad | Inhalt |
@@ -2204,7 +2217,7 @@ Einstellungen laufen) und `ntpgui_service_restarts_total`. Der mitgelieferte Ala
 | `/api/v1/instance` | Zufällige Instanz-Kennung; `POST /api/instance/rotate` erzeugt eine neue (nur mit Benutzer/Passwort) |
 | `/api/web/proxies/trust` | `POST` mit Verwaltungsrecht: beobachteten Reverse Proxy als vertrauenswürdig eintragen (siehe [HTTPS fürs Dashboard](#https-fürs-dashboard)) |
 | `/api/v1/…` | Versionierte, stabile API (Alias der Pfade oben); `GET /api/v1` beschreibt alle Endpunkte samt nötigem Recht, siehe [API & Automatisierung](#api--automatisierung) |
-| `/metrics` | Prometheus (u. a. Offset, max. Fehler, Quellen, GPS, PTP, `ntpgui_service_*`, `ntpgui_hardware_capability`, `ntpgui_pps_live`, `ntpgui_nts_server_cert_days_left`, Temperatur, Schaltsekunden-Liste, GPS-Fehlerschranke und Empfang, `ntpgui_gnss_stage`, `ntpgui_gps_locked`, `ntpgui_source_loops`, `ntpgui_holdover_test_running`, `ntpgui_pi_undervoltage`, `ntpgui_pi_throttled`, Client-Güte und -Gruppen (`ntpgui_clients_quality`, `ntpgui_client_group_*`), Benachrichtigungen je Kanal-Art (`ntpgui_notify_*`), `ntpgui_backup_nightly_age_seconds`, `ntpgui_events_total`, `ntpgui_holdover_last_result`, `ntpgui_gps_autocal_*`, `ntpgui_heartbeat_*`, `ntpgui_info`) |
+| `/metrics` | Prometheus (u. a. Offset, max. Fehler, Quellen, GPS, PTP, `ntpgui_service_*`, `ntpgui_hardware_capability`, `ntpgui_pps_live`, `ntpgui_nts_server_cert_days_left`, Temperatur, Schaltsekunden-Liste, GPS-Fehlerschranke und Empfang, `ntpgui_gnss_stage`, `ntpgui_gps_locked`, `ntpgui_source_loops`, `ntpgui_holdover_test_running`, `ntpgui_auto_restart*`, `ntpgui_pi_undervoltage`, `ntpgui_pi_throttled`, Client-Güte und -Gruppen (`ntpgui_clients_quality`, `ntpgui_client_group_*`), Benachrichtigungen je Kanal-Art (`ntpgui_notify_*`), `ntpgui_backup_nightly_age_seconds`, `ntpgui_events_total`, `ntpgui_holdover_last_result`, `ntpgui_gps_autocal_*`, `ntpgui_heartbeat_*`, `ntpgui_info`) |
 | `/clock` | Vollbild-Uhr (mit `CLOCK_PUBLIC=true` ohne Login) |
 | `/healthz` | `200`, solange chronyd antwortet (ohne Login) |
 | `/readyz` | Strenge Bereitschaft: `200` nur synchronisiert, mit ausgewählter Quelle und mit Fehlerschranke unter `READY_MAX_ERROR_MS`, sonst `503` (ohne Login, nur Wahrheitswerte) – siehe [Bereitschaft](#bereitschaft-readyz) |

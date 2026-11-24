@@ -118,6 +118,14 @@
       "details_show": "Show details: {title}",
       "details_hide": "Hide details: {title}",
       "label": "Notes"
+    },
+    "auto_restarts": {
+      "label": "Automatic restarts",
+      "value": "{count} of {limit} in 24 h",
+      "collecting": "collecting",
+      "limit": "waits until {time}",
+      "retry": "retry {time}",
+      "title": "Waiting: {names}"
     }
   },
   "settings": {

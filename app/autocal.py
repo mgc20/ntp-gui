@@ -711,6 +711,8 @@ _DEPS: dict[str, Callable | None] = {
     "holdover_defer": None,    # (what) -> True, wenn ein Holdover-Test läuft: Änderung zurückstellen
     "holdover_resume": None,   # () -> True einmal nach einem Test, der eine Änderung zurückgestellt hat
     "holdover_reload": None,   # (trigger) -> Neustart jetzt oder (Test hat gerade begonnen) nach dem Test
+    "auto_reload": None,       # () -> bool: Neustart für die Automatik (1.12: restartctl sammelt, Obergrenze je Tag);
+                               #    ohne Angabe trigger_reload. Rücknahme (Mensch) nutzt immer trigger_reload.
 }
 
 
@@ -1026,7 +1028,7 @@ def _apply(cfg: dict, decision: dict, state: dict, deps: dict, now: float) -> di
     reloaded = False
     if result.get("restart"):
         try:
-            reloaded = bool(deps["holdover_reload"](deps["trigger_reload"]))
+            reloaded = bool(deps["holdover_reload"](deps.get("auto_reload") or deps["trigger_reload"]))
         except Exception:
             reloaded = False
         if not reloaded:
