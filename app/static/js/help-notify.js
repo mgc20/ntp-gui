@@ -67,7 +67,11 @@ export const HELP_NOTIFY = {
       + "zurückgehaltenes Problem am Ende der Sperrzeit noch, kommt es nach („besteht seit 15 min“) – der letzte Stand kommt "
       + "also immer an. Wird ein Problem schlimmer (Warnung → Kritisch), geht das sofort hinaus; ein **Kritisch** wartet nie "
       + "hinter einer Warnung und auch nicht, wenn zuletzt „behoben“ gemeldet wurde – sonst stünde bei dir „alles gut“, während "
-      + "gerade ein Pflichtdienst ausfällt und der Container endet.",
+      + "gerade ein Pflichtdienst ausfällt und der Container endet. Offene Probleme und Sperrzeiten stehen in der "
+      + "Datenbank: Nach einem Neustart kommt nichts doppelt, und „behoben“ fehlt nicht. War der Container länger als "
+      + "21 Stunden aus, beginnt alles neu – ein weiter bestehendes Problem wird dann noch einmal gemeldet. "
+      + "Dasselbe gilt, wenn du das Ziel eines Kanals änderst (Art, Adresse oder Thema) oder eine Sicherung mit "
+      + "einem anderen Ziel zurückspielst.",
   },
   notify_rate: {
     title: "Höchstens je Stunde",

@@ -2098,6 +2098,73 @@
         },
         "overrides": []
       }
+    },
+    {
+      "id": 37,
+      "type": "stat",
+      "title": "Automatische Neustarts",
+      "description": "Automatische Neustarts von chronyd (GPS-Kalibrierung, Fehlerschranke) in den letzten 24 h. Ab 4 ist die Tagesgrenze erreicht; nur eine größere Fehlerschranke darf bis 8. Leer bei älteren Versionen.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 76
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "ntpgui_auto_restarts_24h{instance=~\"$instance\"}",
+          "legendFormat": "{{instance}}",
+          "refId": "A",
+          "range": true
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "textMode": "value",
+        "orientation": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 4
+              },
+              {
+                "color": "red",
+                "value": 8
+              }
+            ]
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      }
     }
   ]
 }

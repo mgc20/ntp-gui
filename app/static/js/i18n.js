@@ -142,10 +142,33 @@ export const CORE_DE = {
       "details_show": "Details anzeigen: {title}",
       "details_hide": "Details ausblenden: {title}",
       "label": "Hinweise"
+    },
+    "auto_restarts": {
+      "label": "Automatische Neustarts",
+      "value": "{count} von {limit} in 24 h",
+      "collecting": "wird gesammelt",
+      "limit": "wartet bis {time}",
+      "retry": "neuer Versuch {time}",
+      "title": "Wartet: {names}",
+      "holdover": "wartet auf Holdover-Test",
+      "who": {
+        "autocal": "GPS-Kalibrierung (Offset)",
+        "gps_bound": "GPS-Fehlerschranke"
+      }
     }
   },
   // Seiten (T2 „Seiten entschlacken“): kurze Texte, die auch ohne Katalog lesbar sein müssen.
   "pages": {
+    "gps": {
+      "bound_badge": "wartet auf Neustart",
+      "bound_pending": "gespeichert: {delay} – wird mit dem nächsten Neustart von chronyd aktiv ({when})",
+      "bound_when": {
+        "collecting": "in Kürze",
+        "limit": "Tagesgrenze automatischer Neustarts, frei ab {time}",
+        "holdover": "nach dem Holdover-Test",
+        "retry": "neuer Versuch {time}"
+      }
+    },
     "clients": {
       "name_add": "Namen geben",
       "name_change": "Namen ändern",

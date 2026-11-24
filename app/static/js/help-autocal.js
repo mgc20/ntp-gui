@@ -13,7 +13,10 @@ export const HELP_AUTOCAL = {
       + "lässt sich zurücknehmen. Ein anderer Empfänger (Gerät in den Einstellungen) oder „Neu lernen“ bei den "
       + "GNSS-Störungen startet die Messung von selbst neu. Wo sie gerade steht, zeigt „Phase“. **Vorschlagen**: du "
       + "siehst einen passenden Offset, sobald die Messung belastbar ist, und übernimmst ihn selbst. **Aus**: nichts "
-      + "passiert, der Assistent oben bleibt nutzbar. Umstellen kannst du das in den Einstellungen unter GPS.",
+      + "passiert, der Assistent oben bleibt nutzbar. Umstellen kannst du das in den Einstellungen unter GPS. "
+      + "Eine automatische Änderung wird mit einem Neustart von chronyd aktiv; den übernimmt der gemeinsame "
+      + "Koordinator (gesammelt, höchstens 4 automatische Neustarts in 24 h, nicht während eines Holdover-Tests – "
+      + "siehe „Automatische Neustarts“). Bis dahin gilt der bisherige Offset.",
   },
   autocal_phase: {
     title: "Phase",
@@ -104,7 +107,9 @@ export const HELP_AUTOCAL = {
       + "deutlichen Versatz nie mehr in einem Zug, nur noch in kleinen Schritten – bis du den Offset von Hand "
       + "änderst, einen anderen Empfänger einstellst oder „Neu lernen“ drückst. Soll "
       + "sie gar nicht mehr ändern, stell den Modus auf „vorschlagen“. Wurde der Offset seitdem von Hand "
-      + "geändert, geht Rückgängig nicht – sonst würde es deine Änderung überschreiben.",
+      + "geändert, geht Rückgängig nicht – sonst würde es deine Änderung überschreiben. Wartet die Änderung "
+      + "noch auf ihren Neustart (etwa an der Tagesgrenze), ist sie damit verworfen; das Ereignisprotokoll "
+      + "meldet sie dann nicht als übernommen.",
   },
 };
 

@@ -18,7 +18,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _isolation  # noqa: E402,F401 – vor jedem App-Import: Host-Pfade umlenken
-from _support import JoiningHTTPServer, stop_http_server  # noqa: E402
+from _support import JoiningHTTPServer, skip_tool, skip_unless_tool, stop_http_server  # noqa: E402
 
 CHECK = r"""
 const { chromium } = require("playwright");
@@ -58,6 +58,51 @@ const { chromium } = require("playwright");
 })().catch((e) => { console.error(String(e)); process.exit(2); });
 """
 
+# GPS-Seite: Zeile „Delay in chrony“ mit gespeicherter, noch nicht aktiver Fehlerschranke. Der Testserver hat kein GPS,
+# deshalb baut die Prüfung die Zeile mit den echten Modulen so auf wie gps.js (Karte in .grid-2).
+GPS_BOUND_CHECK = r"""
+const { chromium } = require("playwright");
+(async () => {
+  const browser = await chromium.launch();
+  const out = {};
+  try {
+    for (const [width, height] of [[390, 844], [1440, 900]]) {
+      const page = await browser.newPage({ viewport: { width, height } });
+      await page.goto(`${process.argv[2]}/#/`, { waitUntil: "networkidle" });
+      out[width] = await page.evaluate(async (vw) => {
+        const ui = await import("/static/js/ui.js");
+        const gps = await import("/static/js/pages/gps.js");
+        const { el } = await import("/static/js/util.js");
+        const res = {};
+        for (const state of ["limit", "holdover", "retry", "collecting"]) {
+          const cell = gps.delayCell({ gps_bound: { managed: true, delay: 0.04, source: "measured", saved: 0.06,
+            restart: { state, next_try: Math.floor(Date.now() / 1000) + 3600 } } }, {});
+          const own = ui.card("GPS in chrony", {}, ui.kv([["Delay in chrony", cell]]));
+          const main = document.getElementById("main");
+          main.replaceChildren(el("div", { class: "grid-2" }, own, ui.card("Daneben", {}, ui.kv([["A", "B"]]))));
+          const box = own.getBoundingClientRect();
+          const over = [];
+          for (const e of own.querySelectorAll("*")) {
+            const r = e.getBoundingClientRect();
+            if (r.width && (r.right > box.right + 0.5 || r.left < box.left - 0.5)) over.push(`${e.tagName}.${e.className}`);
+          }
+          const badge = own.querySelector(".badge");
+          const note = own.querySelector(".kv-note");
+          res[state] = { over, docWidth: document.documentElement.scrollWidth,
+            badge: badge ? badge.textContent : null, note: note ? note.textContent : null,
+            badgeWidth: badge ? badge.getBoundingClientRect().width : null };
+        }
+        return res;
+      }, width);
+      await page.close();
+    }
+  } finally {
+    await browser.close();
+  }
+  console.log(JSON.stringify(out));
+})().catch((e) => { console.error(String(e)); process.exit(2); });
+"""
+
 
 def _playwright_ready() -> bool:
     if not shutil.which("node"):
@@ -66,7 +111,7 @@ def _playwright_ready() -> bool:
     return probe.returncode == 0
 
 
-@unittest.skipUnless(_playwright_ready(), "Node mit Playwright nicht vorhanden")
+@skip_unless_tool(_playwright_ready(), "Node mit Playwright nicht vorhanden")
 class HandyBreiteTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -91,7 +136,7 @@ class HandyBreiteTest(unittest.TestCase):
             url = f"http://127.0.0.1:{self.httpd.server_address[1]}"
             result = subprocess.run(["node", str(script), url], capture_output=True, text=True, timeout=180)
         if result.returncode == 2 and "Executable doesn't exist" in result.stderr:
-            self.skipTest("Playwright-Browser nicht installiert")
+            skip_tool(self, "Playwright-Browser nicht installiert")
         self.assertEqual(result.returncode, 0, result.stderr)
         out = json.loads(result.stdout)
         for key, res in out.items():
@@ -101,6 +146,29 @@ class HandyBreiteTest(unittest.TestCase):
                 self.assertLessEqual(res["docWidth"], width)
                 self.assertFalse(res["h1Cut"], f"Titel abgeschnitten (Breite {res['h1Width']} px)")
                 self.assertLessEqual(res["h1Lines"], 2)
+
+    def _run(self, source):
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / "check.cjs"
+            script.write_text(source, encoding="utf-8")
+            url = f"http://127.0.0.1:{self.httpd.server_address[1]}"
+            result = subprocess.run(["node", str(script), url], capture_output=True, text=True, timeout=180)
+        if result.returncode == 2 and "Executable doesn't exist" in result.stderr:
+            skip_tool(self, "Playwright-Browser nicht installiert")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def test_gps_wartende_fehlerschranke_ohne_ueberbreite(self):
+        """Der Wartehinweis der Fehlerschranke bricht um und bleibt in der Karte (390 und 1440 px)."""
+        out = self._run(GPS_BOUND_CHECK)
+        for width, states in out.items():
+            for state, res in states.items():
+                with self.subTest(breite=width, zustand=state):
+                    self.assertEqual(res["over"], [], "Elemente ragen aus der Karte")
+                    self.assertLessEqual(res["docWidth"], int(width))
+                    self.assertEqual(res["badge"], "wartet auf Neustart")
+                    self.assertLess(res["badgeWidth"], 200)
+                    self.assertIn("gespeichert: 0.06 s", res["note"])
 
 
 if __name__ == "__main__":

@@ -100,3 +100,63 @@ jobs:
           sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends chrony || true
           IMAGE=$(echo "${{ steps.meta.outputs.tags }}" | head -n1)
           ./tests/container-test.sh "$IMAGE"
+
+  # Oberfläche im echten Browser: tests/ui/ci.sh (Auswahl aus dem Rundgang tests/ui/rundgang.sh gegen den
+  # Server mit erfundenem chronyc) und die Unittests, die Playwright oder ptp4l brauchen – hier Pflicht,
+  # ohne Browser oder ptp4l scheitern sie statt still übersprungen zu werden. Keine Geheimnisse, kein Netz
+  # außer den Paketquellen (npm, Ubuntu-Archiv, Browser-Download von Playwright).
+  ui:
+    name: Oberfläche (Rundgang)
+    runs-on: ubuntu-latest
+    # Über der Summe der Schritt-Grenzen (10 + 10 + 40) samt Checkout: Zuerst greift eine Schritt-Grenze,
+    # der Job gilt dann als fehlgeschlagen und der Befund wird hochgeladen.
+    timeout-minutes: 70
+    permissions:
+      contents: read
+    env:
+      # Feste Version; lokal mit derselben geprüft. Beim Anheben tests/ui/package.json, package-lock.json
+      # (npm install --package-lock-only --ignore-scripts in tests/ui) und README in tests/ui mitziehen.
+      PLAYWRIGHT_VERSION: "1.63.0"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.13"
+      - name: Playwright, Chromium und ptp4l installieren
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          node --version
+          node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 20 ? 0 : 1)'
+          PW="$RUNNER_TEMP/playwright"
+          mkdir -p "$PW"
+          # npm ci: genau die Pakete aus tests/ui/package-lock.json, mit deren Prüfsummen (integrity).
+          cp tests/ui/package.json tests/ui/package-lock.json "$PW/"
+          npm ci --prefix "$PW" --no-audit --no-fund --ignore-scripts
+          test "$(node -p "require('$PW/node_modules/playwright/package.json').version")" = "${PLAYWRIGHT_VERSION}"
+          echo "NODE_PATH=$PW/node_modules" >> "$GITHUB_ENV"
+          "$PW/node_modules/.bin/playwright" install --with-deps --only-shell chromium
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends linuxptp
+      - name: Unittests mit Browser und ptp4l
+        timeout-minutes: 10
+        env:
+          NTPGUI_WERKZEUGE_PFLICHT: "1"
+        working-directory: tests
+        run: python3 -m unittest -v test_darstellung_browser test_live_eingaben test_ptp_gm
+      - name: Rundgang
+        timeout-minutes: 40
+        env:
+          # Höchstdauer je Variante (s); eine hängende Variante beendet nicht den ganzen Schritt.
+          TOUR_CI_LIMIT: "900"
+        run: tests/ui/ci.sh 18300 "$RUNNER_TEMP/rundgang"
+      - name: Befund hochladen
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: rundgang-befund
+          path: ${{ runner.temp }}/rundgang
+          retention-days: 7
+          if-no-files-found: ignore

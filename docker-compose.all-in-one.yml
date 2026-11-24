@@ -42,8 +42,8 @@
 
 services:
   ntp-gui:
-    # Version festhalten statt „:latest“: „:1.11“ bleibt auf 1.11.x (nur
-    # Fehlerbehebungen), „:1.11.0“ bleibt fest auf genau dieser Version.
+    # Version festhalten statt „:latest“: „:1.12“ bleibt auf 1.12.x (nur
+    # Fehlerbehebungen), „:1.12.0“ bleibt fest auf genau dieser Version.
     # Umgezogen: Früher hieß das Image ghcr.io/congp20/ntp-gui – dort kommen
     # keine neuen Versionen mehr, bitte auf ghcr.io/mgc20/ntp-gui umstellen.
     image: ghcr.io/mgc20/ntp-gui:latest   # amd64 und arm64 (Raspberry Pi)

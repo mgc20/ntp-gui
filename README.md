@@ -7,7 +7,7 @@
 
 <p align="center">
   <a href="https://github.com/mgc20/ntp-gui/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/mgc20/ntp-gui/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="https://github.com/mgc20/ntp-gui/releases/latest"><img alt="Release" src="https://img.shields.io/badge/release-v1.11.0-0969da"></a>
+  <a href="https://github.com/mgc20/ntp-gui/releases/latest"><img alt="Release" src="https://img.shields.io/badge/release-v1.12.0-0969da"></a>
   <img alt="Plattformen" src="https://img.shields.io/badge/platform-amd64%20%7C%20arm64-1a7f37">
   <img alt="Image" src="https://img.shields.io/badge/image-ghcr.io-8250df">
   <a href="LICENSE"><img alt="Lizenz: MIT" src="https://img.shields.io/badge/license-MIT-59636e"></a>
@@ -1392,8 +1392,15 @@ Die Kachel **Dienste** der Übersicht zeigt, ob die Zustellung klappt.
 | Apprise-API | `http://apprise:8000` | Schlüssel einer gespeicherten Konfiguration | oder direkt Apprise-URLs |
 
 - **Entprellen:** dieselbe Meldung höchstens einmal je N Minuten; „behoben“ kommt mit Dauer,
-  „Kritisch“ immer sofort. Offene Probleme, Sperrzeiten und offene Client-Alarme überstehen einen
-  Neustart des Containers (in der Datenbank): Kein doppelter Alarm, und „behoben“ fehlt nicht.
+  „Kritisch“ immer sofort. Offene Probleme, Sperrzeiten, offene Client-Alarme und der Fehlerzähler
+  des Zeitwächter-Pings überstehen einen Neustart des Containers (in der Datenbank): Kein doppelter
+  Alarm, und „behoben“ fehlt nicht. War der Container länger als 21 Stunden aus, gilt der gespeicherte
+  Zustand der Kanäle nicht mehr (der von Zeitwächter-Ping und Client-Alarmen nach 24 Stunden) – ein
+  weiter bestehendes Problem wird dann neu gemeldet. Das gilt auch für Zustand aus einer älteren Version
+  (gemessen an der letzten Meldung darin). Steht die Uhr nach dem Start noch zurück (Pi ohne RTC), gilt
+  er weiter. Ändert sich das Ziel eines Kanals (Art, Adresse oder Thema – auch durch eine zurückgespielte
+  Sicherung), beginnt sein Zustand neu; ebenso der des Zeitwächter-Pings bei einer neuen Adresse. Gespeichert
+  wird dafür nie die Adresse, sondern eine Kennung mit einem lokalen Zufallsschlüssel.
 - **Wiederholung:** nach 30 s, 2 min und 10 min, danach verworfen (steht im Ereignisprotokoll).
 - **Limit:** standardmäßig höchstens 30 Nachrichten je Stunde und Kanal. „Kritisch“ zählt nicht
   mit, sondern hat einen eigenen Rahmen von 30 je Stunde – ein voller Kanal verschluckt keinen Ausfall.
@@ -2153,6 +2160,25 @@ Für Prometheus gibt es `ntpgui_service_up`, `ntpgui_service_enabled` (1 = soll 
 Einstellungen laufen) und `ntpgui_service_restarts_total`. Der mitgelieferte Alarm
 `NtpGuiServiceDown` meldet nur eingeschaltete Dienste, die nicht laufen.
 
+**Automatische Neustarts von chronyd** (ab 1.12): Die GPS-Kalibrierung und die gemessene
+Fehlerschranke ändern Werte in `chrony.conf` und brauchen dafür einen Neustart von chronyd. Diese
+Neustarts gehen über einen gemeinsamen Koordinator: Er sammelt Änderungen zwei Minuten lang und
+übernimmt sie in **einem** Neustart, erlaubt höchstens **4 automatische Neustarts in 24 Stunden**
+(gleitend) und wartet, solange ein Holdover-Test läuft (ohne ihn mitzuzählen). Ist die Grenze
+erreicht, gilt bis zum nächsten freien Neustart die bisherige Einstellung (Ereignis „Tagesgrenze
+erreicht“); die GPS-Seite zeigt dann bei Kalibrierung und Delay „gespeichert, wird mit dem nächsten
+Neustart aktiv“ samt Uhrzeit. Ausnahme: Wird die Fehlerschranke **größer** (die vorsichtigere
+Richtung bei schlechter werdendem Empfang), darf sie bis zu 4 weitere Neustarts in 24 h nutzen –
+sonst hielte chronyd das GPS bis zu einem Tag für genauer, als es ist. Startet chronyd vorher aus
+einem anderen Grund neu, ist die Änderung damit schon aktiv; ob sie wirklich in der laufenden
+`chrony.conf` steht, wird nachgesehen – sonst folgt ein eigener Neustart. Was du selbst
+auslöst (Speichern, Sicherung zurückspielen, „Rückgängig“, „Auf Standard zurücksetzen“), wirkt
+wie bisher sofort und zählt nicht mit; steht danach ein anderer Wert in den Einstellungen als der
+angeforderte, ist die wartende Änderung verworfen (Ereignis „verworfen“, kein „übernommen“); erneuertes NTS-Zertifikat und Gerätewechsel behandelt
+weiter der Supervisor. Jede Entscheidung steht im Ereignisprotokoll, der Zustand in der Karte
+**Dienste** (Zeile „Automatische Neustarts“, mit GPS) und in `ntpgui_auto_restarts_24h`,
+`ntpgui_auto_restart_limit`, `ntpgui_auto_restart_pending` und `ntpgui_auto_restart_limited`.
+
 ## Endpunkte
 
 | Pfad | Inhalt |
@@ -2199,7 +2225,7 @@ Einstellungen laufen) und `ntpgui_service_restarts_total`. Der mitgelieferte Ala
 | `/api/v1/instance` | Zufällige Instanz-Kennung; `POST /api/instance/rotate` erzeugt eine neue (nur mit Benutzer/Passwort) |
 | `/api/web/proxies/trust` | `POST` mit Verwaltungsrecht: beobachteten Reverse Proxy als vertrauenswürdig eintragen (siehe [HTTPS fürs Dashboard](#https-fürs-dashboard)) |
 | `/api/v1/…` | Versionierte, stabile API (Alias der Pfade oben); `GET /api/v1` beschreibt alle Endpunkte samt nötigem Recht, siehe [API & Automatisierung](#api--automatisierung) |
-| `/metrics` | Prometheus (u. a. Offset, max. Fehler, Quellen, GPS, PTP, `ntpgui_service_*`, `ntpgui_hardware_capability`, `ntpgui_pps_live`, `ntpgui_nts_server_cert_days_left`, Temperatur, Schaltsekunden-Liste, GPS-Fehlerschranke und Empfang, `ntpgui_gnss_stage`, `ntpgui_gps_locked`, `ntpgui_source_loops`, `ntpgui_holdover_test_running`, `ntpgui_pi_undervoltage`, `ntpgui_pi_throttled`, Client-Güte und -Gruppen (`ntpgui_clients_quality`, `ntpgui_client_group_*`), Benachrichtigungen je Kanal-Art (`ntpgui_notify_*`), `ntpgui_backup_nightly_age_seconds`, `ntpgui_events_total`, `ntpgui_holdover_last_result`, `ntpgui_gps_autocal_*`, `ntpgui_heartbeat_*`, `ntpgui_info`) |
+| `/metrics` | Prometheus (u. a. Offset, max. Fehler, Quellen, GPS, PTP, `ntpgui_service_*`, `ntpgui_hardware_capability`, `ntpgui_pps_live`, `ntpgui_nts_server_cert_days_left`, Temperatur, Schaltsekunden-Liste, GPS-Fehlerschranke und Empfang, `ntpgui_gnss_stage`, `ntpgui_gps_locked`, `ntpgui_source_loops`, `ntpgui_holdover_test_running`, `ntpgui_auto_restart*`, `ntpgui_pi_undervoltage`, `ntpgui_pi_throttled`, Client-Güte und -Gruppen (`ntpgui_clients_quality`, `ntpgui_client_group_*`), Benachrichtigungen je Kanal-Art (`ntpgui_notify_*`), `ntpgui_backup_nightly_age_seconds`, `ntpgui_events_total`, `ntpgui_holdover_last_result`, `ntpgui_gps_autocal_*`, `ntpgui_heartbeat_*`, `ntpgui_info`) |
 | `/clock` | Vollbild-Uhr (mit `CLOCK_PUBLIC=true` ohne Login) |
 | `/healthz` | `200`, solange chronyd antwortet (ohne Login) |
 | `/readyz` | Strenge Bereitschaft: `200` nur synchronisiert, mit ausgewählter Quelle und mit Fehlerschranke unter `READY_MAX_ERROR_MS`, sonst `503` (ohne Login, nur Wahrheitswerte) – siehe [Bereitschaft](#bereitschaft-readyz) |
@@ -2352,6 +2378,26 @@ Meist musst du beim Update nichts von Hand umbauen. Was sich zwischen zwei Versi
   `ntp-gui.db` übernommen und als `history.json.gz.migrated` aufbewahrt. Kann die Datenbank
   nicht geöffnet werden, arbeitet der Verlauf wie in 1.2 weiter.
 
+### Von 1.11 auf 1.12
+
+Nichts musst du umbauen; das Einstellungsschema ändert sich nicht. Am Verhalten ändert sich Folgendes:
+
+- **Automatische Neustarts von chronyd haben eine Tagesgrenze:** GPS-Kalibrierung und gemessene
+  Fehlerschranke starten chronyd nicht mehr sofort neu, sondern sammeln ihre Änderungen zwei Minuten lang
+  und nutzen höchstens 4 automatische Neustarts in 24 Stunden (eine größere Fehlerschranke bis zu 4
+  weitere). Eine Änderung kann daher eine Weile warten; die GPS-Seite zeigt dann „wartet auf Neustart“ mit
+  Uhrzeit. Was du selbst auslöst, wirkt wie bisher sofort (siehe [Dienste und
+  Neustarts](#dienste-und-neustarts)).
+- **Gespeicherter Zustand der Benachrichtigungen verfällt:** Der Zustand der Kanäle gilt 21 Stunden, der
+  von Zeitwächter-Ping und Client-Alarmen 24 Stunden. Zustand aus 1.11 (ohne Zeitstempel) wird übernommen,
+  aber verworfen, wenn die letzte Meldung darin mehr als 24 Stunden zurückliegt. Ein Problem, das schon
+  vor dem Update bestand, kann deshalb nach dem Update einmal neu gemeldet werden. Dasselbe gilt für einen
+  Kanal, dessen Art, Adresse oder Thema du änderst.
+- **Prometheus und Grafana:** Neu sind `ntpgui_auto_restarts_24h`, `ntpgui_auto_restart_limit`,
+  `ntpgui_auto_restart_pending` und `ntpgui_auto_restart_limited`, der Alarm `NtpGuiAutoRestartLimit`
+  und das Panel „Automatische Neustarts“. Lade das Grafana-Dashboard (`docs/grafana/ntp-gui.json`) und
+  die Alarmregeln (`docs/prometheus/alerts.yml`) neu, wenn du sie nutzen willst.
+
 ### Von 1.10 auf 1.11
 
 Nichts musst du umbauen; das Einstellungsschema ändert sich nicht, und alles Neue (Zeitwächter-Ping,
@@ -2427,7 +2473,14 @@ Metriken `ntpgui_update_available` und `ntpgui_update_check_last_success_timesta
 python3 -m unittest discover -s tests -v     # Parser, Einstellungen, Config, Kalibrierung, Hardware, NTS, Datenschutzfilter, API, Benachrichtigungen, DNS, Clients, Uhrqualität
 docker build -t ntp-gui:test .
 tests/container-test.sh ntp-gui:test         # Integrationstest gegen das gebaute Image
+tests/ui/ci.sh                               # Browser-Rundgang wie in der CI (braucht Node mit Playwright)
 ```
+
+Die CI führt außerdem im Job „Oberfläche“ den Browser-Rundgang aus `tests/ui/` und die Unittests
+aus, die Playwright oder `ptp4l` brauchen; dort scheitern sie, statt übersprungen zu werden
+(Einzelheiten in [tests/ui/README.md](tests/ui/README.md)). Was nur auf echter Hardware messbar ist
+(CPU der Studiouhr im Kiosk, Ton auf der Sekunde, Dauer der Sicherung, Serverzeit der Übersicht),
+steht im [Messblatt für den Raspberry Pi](docs/messblatt-pi.md).
 
 Der Integrationstest (348 Prüfungen) startet echte Container und prüft das, was Unittests
 nicht abdecken: Erkennung von fehlendem `CAP_SYS_TIME`, Healthcheck, alle Endpunkte,
@@ -2524,7 +2577,7 @@ Updates vor. Ein Release-Build läuft ohne Cache, zieht also immer aktuelle Debi
 **Herkunft prüfen** (GitHub-CLI, sobald das Repository öffentlich ist):
 
 ```bash
-gh attestation verify oci://ghcr.io/mgc20/ntp-gui:1.11.0 -R mgc20/ntp-gui
+gh attestation verify oci://ghcr.io/mgc20/ntp-gui:1.12.0 -R mgc20/ntp-gui
 ```
 
 Scheitert ein Schritt, entsteht kein halber Release. Bei einem privaten Repository

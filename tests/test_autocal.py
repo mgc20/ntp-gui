@@ -659,6 +659,91 @@ class VerifyActiveTest(unittest.TestCase):
         self.assertEqual(self.h.saved, [])
 
 
+class RestartWaitTest(unittest.TestCase):
+    """1.12: Hält der Neustart-Koordinator die Änderung zurück (sammeln, Tagesgrenze, Holdover-Test), läuft in
+    chronyd noch der alte Offset – gewollt, kein Fehler: ruhiger Text statt „Neuladen fehlgeschlagen?“."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.file = os.path.join(self.tmp, "autocal.json")
+        self.h = Harness()
+        self.h.target = 0.075
+        self.wait = [None]
+        self.queued = []
+        env = mock.patch.dict(os.environ, {"WEB_READONLY": ""})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def deps(self):
+        deps = self.h.deps()
+        deps["auto_reload"] = lambda: self.queued.append(1) or True     # Koordinator: vorgemerkt, noch kein Neustart
+        deps["holdover_reload"] = lambda trigger: trigger()
+        deps["restart_wait"] = lambda: self.wait[0]
+        return deps
+
+    def applied(self):
+        autocal.tick(self.h.cfg, NOW, deps=self.deps(), file=self.file)
+        d = autocal.tick(self.h.cfg, NOW + 7 * H, deps=self.deps(), file=self.file)
+        self.assertEqual(d["action"], "apply")
+        self.assertEqual(self.queued, [1])
+        self.assertNotEqual(self.h.running_offset, self.h.cfg["gps_offset"])   # chronyd hat noch den alten
+
+    def test_daily_limit_is_shown_calmly(self):
+        self.applied()
+        self.wait[0] = {"state": "limit", "next_try": NOW + 20 * H}
+        d = autocal.tick(self.h.cfg, NOW + 8 * H, deps=self.deps(), file=self.file)
+        self.assertEqual(d["action"], "none")
+        self.assertEqual(d["phase"], "restart_wait")
+        self.assertIn("Tagesgrenze automatischer Neustarts", d["reason"])
+        self.assertIn("frei ab", d["reason"])
+        self.assertNotIn("fehlgeschlagen", d["reason"])
+        s = autocal.api_status(self.h.cfg, NOW + 8 * H + 60, deps=self.deps(), file=self.file)
+        self.assertEqual(s["phase"]["key"], "restart_wait")
+        self.assertEqual(s["phase"]["tone"], "info")
+        self.assertIn("wartet auf Neustart von chronyd", s["phase"]["label"])
+        self.assertNotIn("fehlgeschlagen", s["plan"])
+        self.assertEqual(self.h.saved, [{"gps_offset": 0.055}])                  # nichts weiter verstellt
+
+    def test_collecting_and_holdover_texts(self):
+        self.applied()
+        self.wait[0] = {"state": "collecting", "next_try": NOW + 7 * H + 120}
+        d = autocal.tick(self.h.cfg, NOW + 7 * H + 30, deps=self.deps(), file=self.file)
+        self.assertEqual(d["phase"], "restart_wait")
+        self.assertIn("in Kürze neu gestartet", d["reason"])
+        self.wait[0] = {"state": "holdover", "next_try": None}
+        d = autocal.tick(self.h.cfg, NOW + 8 * H, deps=self.deps(), file=self.file)
+        self.assertIn("Holdover-Test", d["reason"])
+
+    def test_retry_stays_a_warning(self):
+        self.applied()
+        self.wait[0] = {"state": "retry", "next_try": NOW + 8 * H + 600}
+        d = autocal.tick(self.h.cfg, NOW + 8 * H, deps=self.deps(), file=self.file)
+        self.assertEqual(d["phase"], "waiting")
+        self.assertEqual(autocal.PHASE_TONES["waiting"], "warn")
+        self.assertIn("ließ sich nicht anfordern", d["reason"])
+
+    def test_without_wait_still_reports_not_active(self):
+        self.applied()
+        d = autocal.tick(self.h.cfg, NOW + 8 * H, deps=self.deps(), file=self.file)
+        self.assertEqual(d["phase"], "waiting")
+        self.assertIn("Neuladen fehlgeschlagen?", d["reason"])
+
+    def test_status_refreshes_after_restart(self):
+        """Der stündliche tick sah „wartet“; inzwischen hat der Koordinator neu gestartet – die GPS-Seite
+        zeigt das sofort, nicht erst nach der nächsten Prüfung."""
+        self.applied()
+        self.wait[0] = {"state": "limit", "next_try": NOW + 20 * H}
+        autocal.tick(self.h.cfg, NOW + 8 * H, deps=self.deps(), file=self.file)
+        self.wait[0] = None
+        self.h.running_offset = self.h.cfg["gps_offset"]                         # Neustart ist erfolgt
+        s = autocal.api_status(self.h.cfg, NOW + 8 * H + 600, deps=self.deps(), file=self.file)
+        self.assertNotIn(s["phase"]["key"], ("restart_wait", "waiting"))
+
+    def test_phase_key_is_known_for_metrics(self):
+        self.assertIn("restart_wait", autocal.PHASE_KEYS)
+
+
 class CheckActiveTest(unittest.TestCase):
     """Die Standardprüfung liest RUN_DIR/reload.json und die GPS-Zeile aus CHRONY_CONF."""
 

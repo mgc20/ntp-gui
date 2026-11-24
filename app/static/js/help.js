@@ -47,6 +47,23 @@ export const HELP = {
       + "normal; steigt die Zahl ständig, nennt das Log auf der Diagnose-Seite den Grund. Fährt man mit der "
       + "Maus über einen Dienst, steht dort, seit wann er im jetzigen Zustand ist.",
   },
+  auto_restarts: {
+    title: "Automatische Neustarts",
+    text: "Die GPS-Kalibrierung und die Fehlerschranke ändern Werte in chrony.conf; damit chronyd sie übernimmt, "
+      + "muss er neu starten – das kostet ihn kurz den Regelzustand. Diese Neustarts laufen über einen "
+      + "gemeinsamen Koordinator: Er **sammelt** Änderungen zwei Minuten lang und übernimmt sie in einem "
+      + "Neustart, erlaubt höchstens **4 automatische Neustarts in 24 Stunden** und wartet, solange ein "
+      + "Holdover-Test läuft (das zählt nicht mit). Ist die Grenze erreicht, gilt bis zum nächsten freien Neustart "
+      + "die bisherige Einstellung (Ereignis „Tagesgrenze erreicht“); die GPS-Seite zeigt den gespeicherten Wert "
+      + "als „wird mit dem nächsten Neustart aktiv“. Wird die Fehlerschranke **größer** (vorsichtiger, etwa bei "
+      + "schlechter werdendem Empfang), darf sie bis zu 4 weitere Neustarts nutzen – eine zu enge Schranke "
+      + "ließe das GPS genauer erscheinen, als es ist. Startet chronyd vorher aus einem anderen Grund neu, "
+      + "ist die Änderung damit schon aktiv (nachgesehen in der laufenden chrony.conf; fehlt sie dort, folgt "
+      + "ein eigener Neustart). Was du selbst speicherst, zurücknimmst oder zurücksetzt, wirkt "
+      + "sofort und zählt nicht mit; steht danach ein anderer Wert in den Einstellungen als der angeforderte, "
+      + "verwirft der Koordinator die wartende Änderung (Ereignis „verworfen“). Jede Entscheidung steht im Ereignisprotokoll; für Prometheus gibt es "
+      + "`ntpgui_auto_restarts_24h` und `ntpgui_auto_restart_pending`.",
+  },
   overview_events: {
     title: "Letzte Ereignisse",
     text: "Die fünf neuesten Einträge aus dem Ereignisprotokoll: Quellenwechsel, GPS-Fix verloren oder "
@@ -1005,7 +1022,7 @@ export const SELECT_STATE_SHORT = {
 
 export const HELP_GROUPS = [
   { id: "uebersicht", title: "Übersicht und Diagramme", keys: ["overview_verdict", "overview_hints", "overview_best_source",
-    "overview_restarts", "overview_events", "timeline", "daily_report", "chart_stats", "chart_markers", "number_format"] },
+    "overview_restarts", "auto_restarts", "overview_events", "timeline", "daily_report", "chart_stats", "chart_markers", "number_format"] },
   { id: "grundlagen", title: "Grundlagen", keys: ["ntp", "chronyd", "services", "stratum", "island", "minsources", "dhcp42", "setup", "clock_control", "local_orphan",
     "setup_accuracy"] },
   { id: "systemuhr", title: "Werte der Systemuhr", keys: ["reference", "system_offset", "uncertainty", "rms_offset", "frequency",

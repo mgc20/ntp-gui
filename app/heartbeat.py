@@ -27,6 +27,7 @@ Ohne Adresse: keine Verbindung, keine DNS-Abfrage (tests/test_heartbeat.py mit S
 
 from __future__ import annotations
 
+import hmac
 import threading
 import time
 import urllib.error
@@ -46,6 +47,7 @@ MIN_INTERVAL = 30
 MAX_INTERVAL = 3600
 TICK = 2.0
 FAIL_EVENT_AFTER = 3          # so viele Fehlschläge hintereinander, dann ein Ereignis (nicht bei jedem)
+STATE_KEY = "heartbeat"      # notify_meta: Fehlerzähler und „gemeldet“ über einen Neustart
 TEST_GAP = 10.0               # „Jetzt senden“ höchstens alle 10 s
 DOWN_HOLD = 120.0             # so lange muss „kritisch“ anhalten, bevor der Ping es meldet
 MODE_LABELS = {"auto": "automatisch erkennen", "healthchecks": "Healthchecks (…/fail)",
@@ -176,7 +178,7 @@ class Pinger:
     def __init__(self, config: Callable[[], dict] = config_from_settings,
                  state: Callable[[], str] | None = None, *, sender: Callable[..., str | None] = send,
                  emit: Callable[..., None] | None = None, clock: Callable[[], float] = time.monotonic,
-                 wall: Callable[[], float] = time.time) -> None:
+                 wall: Callable[[], float] = time.time, saved: Any = None) -> None:
         self.config = config
         self.state = state or (lambda: "up")
         self.sender = sender
@@ -190,6 +192,10 @@ class Pinger:
         self.last_test: float | None = None
         self.crit_since: float | None = None  # seit wann (monotonic) die Auswertung ununterbrochen „kritisch“ ist
         self.result: dict = self._blank()
+        # Zustand über einen Neustart (notify.SavedState oder None): Ohne ihn fehlte nach dem Neustart
+        # „wieder erreichbar“ – das Problem bliebe in den Benachrichtigungen offen.
+        self.saved = saved
+        self.restored = saved is None
 
     @staticmethod
     def _blank() -> dict:
@@ -243,14 +249,95 @@ class Pinger:
             return True  # kritisch hält an: jetzt nachprüfen, nicht erst beim nächsten Intervall
         return now - self.last_mono >= cfg["interval"]
 
+    @staticmethod
+    def _target_id(url: str, mode: str) -> str | None:
+        """Kennung des Ziels für den gespeicherten Zustand – nie die Adresse selbst (sie enthält den Schlüssel
+        des Wächters), sondern ein HMAC mit dem lokalen Schlüssel (notify.target_id). None: kein Schlüssel."""
+        return notify.target_id("ping", mode, url)
+
+    def _restore(self, cfg: dict | None) -> str | None:
+        """Einmal nach dem Start (unter self.lock): Fehlerzähler und „gemeldet“ übernehmen, wenn das Ziel gleich
+        geblieben ist. Ist der Ping inzwischen aus oder das Ziel ein anderes, gibt es den Grund zum stillen
+        Schließen zurück ("" = nur den gespeicherten Zustand löschen) – Ereignis und Löschen macht der Aufrufer
+        erst nach dem Freigeben der Sperre (ein Hörer des Ereignisses darf status() lesen). None: nichts zu tun."""
+        self.restored = True
+        try:
+            payload = self.saved.load()
+        except Exception:  # noqa: BLE001 – ohne gespeicherten Zustand geht es auch
+            return None
+        if not isinstance(payload, dict):
+            return None
+        failures = payload.get("failures")
+        failures = failures if isinstance(failures, int) and not isinstance(failures, bool) else 0
+        alarmed = payload.get("alarmed") is True
+        stored = payload.get("target")
+        if cfg is not None and isinstance(stored, str):
+            now = self._target_id(cfg["url"], cfg["mode"])
+            if now is not None and hmac.compare_digest(stored, now):
+                self.target = (cfg["url"], cfg["mode"])
+                self.result.update(failures=max(0, min(10 ** 6, failures)), alarmed=alarmed)
+                return None
+        if alarmed:
+            return "Zeitwächter-Ping ausgeschaltet" if cfg is None else "Wächter-Adresse geändert"
+        return ""
+
+    def _close_quietly(self, why: str) -> None:
+        """Gemeldetes „nicht erreichbar“ ohne Benachrichtigung schließen (Ping aus, anderes Ziel)."""
+        if self.emit:
+            self.emit("heartbeat", "info", f"Zeitwächter-Meldung beendet – {why}",
+                      {"subject": "heartbeat", "resolves": True, "notify": False}, "heartbeat")
+
+    def _clear_saved(self) -> None:
+        if self.saved is not None:
+            try:
+                self.saved.clear()
+            except Exception:  # noqa: BLE001
+                pass
+
+    def save(self, restamp: bool = False) -> None:
+        """Fehlerzähler und „gemeldet“ sichern (nur bei Änderung bzw. beim Herunterfahren neu gestempelt)."""
+        if self.saved is None or not self.restored:
+            return
+        with self.lock:
+            target = self.target
+            payload = {"failures": self.result["failures"], "alarmed": bool(self.result["alarmed"])}
+        if target is None:
+            return
+        payload["target"] = self._target_id(*target)
+        if payload["target"] is None:            # ohne Schlüssel keine Kennung: dann lieber nichts sichern
+            return
+        try:
+            self.saved.save(payload, restamp=restamp)
+        except Exception:  # noqa: BLE001
+            pass
+
     def tick(self, force: bool = False) -> bool:
         """Pingt, wenn eingeschaltet und fällig (force: sofort). True, wenn eine Anfrage versucht wurde."""
         cfg = self._config()
+        close = None
+        if not self.restored:
+            with self.lock:
+                close = self._restore(cfg)
+        if close is not None:
+            if close:
+                self._close_quietly(close)
+            self._clear_saved()
+        close = None
         with self.lock:
             if cfg is None:
                 if self.target is not None:
+                    close = "Zeitwächter-Ping ausgeschaltet" if self.result["alarmed"] else ""
                     self.target, self.last_mono, self.result = None, None, self._blank()
                     self.crit_since = None
+            elif not self.busy and (force or self.due(cfg)) and self.target is not None \
+                    and self.target != (cfg["url"], cfg["mode"]):
+                close = "Wächter-Adresse geändert" if self.result["alarmed"] else ""
+        if close is not None:
+            if close:
+                self._close_quietly(close)
+            self._clear_saved()
+        with self.lock:
+            if cfg is None:
                 return False
             if self.busy or not (force or self.due(cfg)):
                 return False
@@ -292,6 +379,7 @@ class Pinger:
                 if res["failures"] >= FAIL_EVENT_AFTER and not res["alarmed"]:
                     res["alarmed"] = True
                     event = ("warn", f"Zeitwächter nicht erreichbar: {error}", False)
+        self.save()
         if event and self.emit:
             level, title, resolves = event
             # Betreff fest, nie die Adresse (sie enthält den Schlüssel des Wächters).
@@ -356,7 +444,7 @@ def pinger(state: Callable[[], str] | None = None) -> Pinger:
     global PINGER
     with _START_LOCK:
         if PINGER is None:
-            PINGER = Pinger(state=state, emit=_emit)
+            PINGER = Pinger(state=state, emit=_emit, saved=notify.SavedState(STATE_KEY))
         elif state is not None:
             PINGER.state = state
         return PINGER
@@ -381,4 +469,10 @@ def start(state: Callable[[], str]) -> threading.Thread:
 
 def status(full: bool = False) -> dict:
     return pinger().status(full)
+
+
+def flush() -> None:
+    """Beim Herunterfahren (SIGTERM): Fehlerzähler und „gemeldet“ mit der jetzigen Zeit sichern."""
+    if PINGER is not None:
+        PINGER.save(restamp=True)
 

@@ -10,7 +10,7 @@ Melde sie vertraulich über **GitHub Private Vulnerability Reporting**:
 
 Hilfreich sind:
 
-- betroffene Version (z. B. `1.11.0`, steht im Dashboard unten und am Image-Tag),
+- betroffene Version (z. B. `1.12.0`, steht im Dashboard unten und am Image-Tag),
 - was ein Angreifer tun kann und unter welchen Voraussetzungen (z. B. aus dem LAN, mit oder ohne
   Verwaltungspasswort),
 - Schritte zum Nachstellen oder ein kleiner Beweis,
@@ -31,7 +31,7 @@ ntp-gui wird von einer Person in der Freizeit gepflegt. Ziel, aber kein Versprec
 
 ## Unterstützte Versionen
 
-Korrekturen gibt es für die **jeweils neueste Minor-Version** (aktuell 1.11.x). Aktualisiere
+Korrekturen gibt es für die **jeweils neueste Minor-Version** (aktuell 1.12.x). Aktualisiere
 bitte zuerst auf das neueste Image (`ghcr.io/mgc20/ntp-gui:latest`) und prüfe, ob die Lücke
 dort noch besteht.
 

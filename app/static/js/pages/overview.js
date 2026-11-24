@@ -452,10 +452,37 @@ function opsRows(status) {
     : !n.enabled ? badge("alle Kanäle aus", "muted")
       : n.failing ? el("span", {}, `${n.enabled} aktiv `, badge(`${n.failing} mit Fehler`, "warn"))
         : el("span", {}, `${n.enabled} aktiv `, badge("zugestellt", "good"));
-  return kv([
+  const rows = [
     ["DNS für ntp-gui", dnsValue, "dns_modes"],
     ["Benachrichtigungen", el("a", { href: "#/system/benachrichtigungen" }, notifyValue), "notify"],
-  ]);
+  ];
+  // Ohne GPS gibt es keine Automatik, die chronyd neu startet – die Zeile nur zeigen, wenn sie etwas sagt.
+  const r = status.restarts || {};
+  const relevant = (status.config || {}).gps_enable || r.auto_24h > 0 || (Array.isArray(r.pending) && r.pending.length);
+  const restarts = relevant ? restartsValue(r, status.system || {}) : null;
+  if (restarts) rows.push([tr("overview.auto_restarts.label"), restarts, "auto_restarts"]);
+  return kv(rows);
+}
+
+// 1.12: Neustart-Koordinator – automatische Neustarts von chronyd in 24 h und was gerade wartet.
+export function restartsValue(r, system = {}) {
+  if (!r || !isNum(r.auto_24h) || !isNum(r.limit)) return null;
+  const text = tr("overview.auto_restarts.value", { count: r.auto_24h, limit: r.limit });
+  const pending = Array.isArray(r.pending) ? r.pending : [];
+  if (!pending.length) return text;
+  const at = isNum(r.next_try) ? fmtZoned(r.next_try, serverZone(system) ? system : null,
+    { hour: "2-digit", minute: "2-digit" }, null, "toLocaleTimeString") : "";
+  const [label, tone] = r.state === "limit" ? [tr("overview.auto_restarts.limit", { time: at }), "warn"]
+    : r.state === "retry" ? [tr("overview.auto_restarts.retry", { time: at }), "warn"]
+      : r.state === "holdover" ? [tr("overview.auto_restarts.holdover"), "muted"]
+        : [tr("overview.auto_restarts.collecting"), "muted"];
+  // Feste Kennungen (pending_ids) übersetzen; ohne sie (älterer Server) die Namen aus dem Status.
+  const ids = Array.isArray(r.pending_ids) && r.pending_ids.length === pending.length ? r.pending_ids : null;
+  const names = pending.map((name, i) => {
+    const key = ids && ["autocal", "gps_bound"].includes(ids[i]) ? `overview.auto_restarts.who.${ids[i]}` : null;
+    return key ? tr(key) : name;
+  });
+  return el("span", { title: tr("overview.auto_restarts.title", { names: names.join(", ") }) }, `${text} `, badge(label, tone));
 }
 
 function servicesPanel(services, issues, status = {}) {

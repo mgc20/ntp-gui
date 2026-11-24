@@ -82,6 +82,7 @@ import instance
 import leap
 import notify
 import opsmetrics
+import restartctl
 import onboarding  # vor dem eigenen Code: merkt sich, ob das Datenverzeichnis schon Daten hatte
 import providers
 import ptp
@@ -101,7 +102,7 @@ PTP4L_CONF = os.environ.get("PTP4L_CONF", "/etc/linuxptp/ptp4l.conf")
 RUN_DIR = os.environ.get("NTPGUI_RUN_DIR", "/run/ntp-gui")
 START_MONO = time.monotonic()  # Laufzeit nach monotoner Uhr – ein Uhrsprung verfälscht sie nicht
 MAX_BODY = 64 * 1024
-VERSION = os.environ.get("NTPGUI_VERSION", "1.11.0")
+VERSION = os.environ.get("NTPGUI_VERSION", "1.12.0")
 EVENTS_INTERVAL = 5.0          # so oft liest der Server die Supervisor-Ereignisse ein
 CALIBRATION_DEFAULT_WINDOW = 86400.0  # /api/gps/calibration ohne window: letzte 24 h
 CALIBRATION_MAX_WINDOW = 7 * 86400.0  # … und höchstens 7 Tage (0 = „so viel wie möglich“ = 7 Tage)
@@ -514,6 +515,7 @@ def collector() -> None:
             gpsquality.note_offset(settings.values())  # Offset-Änderung merken (Schranke, Kalibrierung)
             autocal.maybe_tick()   # höchstens einmal pro Stunde, wirft nie
             gpsquality.maybe_tick(settings.values)  # Fehlerschranke GPS ohne PPS, stündlich, wirft nie
+            restartctl.tick()      # gesammelte automatische Neustarts anwenden (Obergrenze je Tag), wirft nie
         except Exception as exc:  # ein Messfehler darf den Thread nie beenden
             print(f"[web] Messung fehlgeschlagen: {exc}", flush=True)
         tracking, sources = None, None
@@ -571,20 +573,20 @@ CLIENT_ALARMS_KEY = "client_alarms"   # notify_meta: Adressen mit offenem Client
 _CLIENT_ALARMS: dict = {"loaded": False, "saved": None}
 
 
-def _client_alarms_persist() -> None:
-    """Offene Client-Alarme sichern bzw. nach dem Start einmal übernehmen (notify_meta)."""
+def _client_alarms_persist(restamp: bool = False) -> None:
+    """Offene Client-Alarme sichern bzw. nach dem Start einmal übernehmen (notify_meta, mit Zeitstempel:
+    nach mehr als notify.STATE_MAX_AGE ohne Dashboard gelten sie nicht mehr)."""
+    saved = _CLIENT_ALARMS["saved"]
+    if saved is None:
+        saved = _CLIENT_ALARMS["saved"] = notify.SavedState(CLIENT_ALARMS_KEY)
     if not _CLIENT_ALARMS["loaded"]:
         _CLIENT_ALARMS["loaded"] = True
-        raw = notify.meta_get(CLIENT_ALARMS_KEY)
         try:
-            STATE_WATCH.restore_client_alarms(json.loads(raw) if raw else [])
+            STATE_WATCH.restore_client_alarms(saved.load() or [])
         except (ValueError, TypeError, RecursionError):
             pass
-        _CLIENT_ALARMS["saved"] = raw
         return
-    text = json.dumps(STATE_WATCH.client_alarm_ips(), separators=(",", ":"))
-    if text != _CLIENT_ALARMS["saved"] and notify.meta_set(CLIENT_ALARMS_KEY, text):
-        _CLIENT_ALARMS["saved"] = text
+    saved.save(STATE_WATCH.client_alarm_ips(), restamp=restamp)
 
 
 def client_alarms() -> None:
@@ -1075,6 +1077,7 @@ def build_status() -> dict:
     except Exception:
         status["holdover_active"] = False
     status["notify"] = _notify_summary()
+    status["restarts"] = restartctl.status()   # 1.12: automatische Neustarts (Zahl, Grenze, wartend)
     status["heartbeat"] = _heartbeat_status()
     status["insights"] = combine_insights(insights.build(status, cfg),
                                           insights.exposure_insights(cfg, clients, clientmon.default_gateway(),
@@ -1781,6 +1784,15 @@ def build_metrics() -> str:
         running = None
     _metric(lines, "ntpgui_holdover_test_running", running,
             "1 while a holdover test runs (sources deselected on purpose, clients get less accurate time)")
+    restarts = restartctl.status()
+    _metric(lines, "ntpgui_auto_restarts_24h", restarts.get("auto_24h"),
+            "Automatic chronyd restarts in the last 24 h (calibration, GPS error bound), coordinated")
+    _metric(lines, "ntpgui_auto_restart_limit", restarts.get("limit"),
+            "Maximum automatic chronyd restarts per 24 h; changes from the user are not limited")
+    _metric(lines, "ntpgui_auto_restart_pending", 1 if restarts.get("pending") else 0,
+            "1 while an automatic change waits for its chronyd restart (collecting, daily limit or holdover test)")
+    _metric(lines, "ntpgui_auto_restart_limited", 1 if restarts.get("state") == "limit" else 0,
+            "1 while an automatic change waits because the daily restart limit is reached")
     _hardware_metrics(lines)
     for name, value, help_text, kind, labels in opsmetrics.collect(settings.values(), STATE_WATCH):
         _metric(lines, name, value, help_text, kind=kind, labels=labels)
@@ -3807,8 +3819,17 @@ def main() -> None:
     events.add_filter(holdover.event_filter)
     holdover.configure(trigger_reload=trigger_reload)
     # Schranke und Offset stehen nur in chrony.conf: nur chronyd neu laden (gpsd und dnsfwd laufen weiter).
-    autocal.configure(history=HISTORY, trigger_reload=trigger_reload_chronyd)
+    # 1.12: Automatische Neustarts gehen über den Neustart-Koordinator (sammeln, Obergrenze je Tag);
+    # was du auslöst (Rückgängig, Zurücksetzen, Speichern), startet weiter sofort neu.
+    restartctl.COORD.configure(chronyd=trigger_reload_chronyd, full=trigger_reload)
+    # Eine größere Fehlerschranke hat Vorrang vor der Tagesgrenze (grow); die Wartezeit zeigt die GPS-Seite.
+    autocal.configure(history=HISTORY, trigger_reload=trigger_reload_chronyd,
+                      auto_reload=restartctl.trigger_for("autocal"),
+                      restart_wait=lambda: restartctl.waiting("autocal"))
     gpsquality.configure(history=HISTORY, trigger_reload=trigger_reload_chronyd,
+                         auto_reload=restartctl.trigger_for("gps_bound"),
+                         auto_reload_grow=restartctl.trigger_for("gps_bound", grow=True),
+                         restart_wait=restartctl.waiting,
                          net_distance=lambda: gpsquality.nts_distance(chrony.detailed_sources()))
     threading.Thread(target=collector, daemon=True, name="collector").start()
     threading.Thread(target=loop_guard_runner, daemon=True, name="loopguard").start()
@@ -3828,10 +3849,21 @@ def main() -> None:
     # Folgt clientmon_enable/ntp_port ohne Neustart.
     threading.Thread(target=clientmon.watch, args=(settings.values,), daemon=True, name="clientmon-watch").start()
 
+    stopping = threading.Event()
+
     def save_and_exit(*_):
+        # Ein zweites SIGTERM (z. B. an die ganze Prozessgruppe und danach noch einmal an den Server) darf den
+        # laufenden Handler nicht unterbrechen: clientmon.stop() hält eine nicht-reentrante Sperre, ein zweiter
+        # Aufruf würde für immer darauf warten. Daher nur der erste Aufruf speichert und beendet.
+        if stopping.is_set():
+            return
+        stopping.set()
         clientmon.stop()
         HISTORY.save(force=True)
         notify.flush()  # Position der verteilten Ereignisse – sonst kommt Zugestelltes nach dem Neustart doppelt
+        if _CLIENT_ALARMS["loaded"]:
+            _client_alarms_persist(restamp=True)
+        heartbeat.flush()
         raise SystemExit(0)
 
     signal.signal(signal.SIGTERM, save_and_exit)

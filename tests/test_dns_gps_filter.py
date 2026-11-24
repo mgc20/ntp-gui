@@ -336,7 +336,7 @@ kill "$gps" "$dns" "${SVC_ENTRY[chronyd]%%=*}"
     def test_automatics_use_chronyd_reload(self):
         text = (ROOT / "app" / "server.py").read_text(encoding="utf-8")
         self.assertIn("gpsquality.configure(history=HISTORY, trigger_reload=trigger_reload_chronyd", text)
-        self.assertIn("autocal.configure(history=HISTORY, trigger_reload=trigger_reload_chronyd)", text)
+        self.assertIn("autocal.configure(history=HISTORY, trigger_reload=trigger_reload_chronyd,", text)
 
     def test_trigger_writes_request_and_holdover_sees_it(self):
         import server

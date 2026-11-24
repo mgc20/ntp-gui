@@ -27,7 +27,11 @@ Schön, dass du ntp-gui besser machen willst! Jeder Beitrag hilft – auch ohne 
 python3 -m unittest discover -s tests -v   # Unittests (ohne laufenden chronyd)
 docker build -t ntp-gui:test .
 tests/container-test.sh ntp-gui:test       # Integrationstest gegen das gebaute Image
+tests/ui/ci.sh                             # Browser-Rundgang wie in der CI (Node mit Playwright)
 ```
+
+Änderst du etwas, das nur auf einem Raspberry Pi messbar ist (CPU der Studiouhr, Ton, Sicherung,
+Übersicht), trag die Messung in [docs/messblatt-pi.md](docs/messblatt-pi.md) ein.
 
 Grundregeln:
 

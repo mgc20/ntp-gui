@@ -118,6 +118,19 @@
       "details_show": "Show details: {title}",
       "details_hide": "Hide details: {title}",
       "label": "Notes"
+    },
+    "auto_restarts": {
+      "label": "Automatic restarts",
+      "value": "{count} of {limit} in 24 h",
+      "collecting": "collecting",
+      "limit": "waits until {time}",
+      "retry": "retry {time}",
+      "title": "Waiting: {names}",
+      "holdover": "waits for holdover test",
+      "who": {
+        "autocal": "GPS calibration (offset)",
+        "gps_bound": "GPS error bound"
+      }
     }
   },
   "settings": {
@@ -247,6 +260,16 @@
     "result_topic": "Open topic"
   },
   "pages": {
+    "gps": {
+      "bound_badge": "waits for restart",
+      "bound_pending": "saved: {delay} – takes effect with the next chronyd restart ({when})",
+      "bound_when": {
+        "collecting": "shortly",
+        "limit": "daily limit of automatic restarts, free from {time}",
+        "holdover": "after the holdover test",
+        "retry": "retry {time}"
+      }
+    },
     "clients": {
       "name_add": "Add a name",
       "name_change": "Rename",

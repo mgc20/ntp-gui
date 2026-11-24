@@ -1,0 +1,9 @@
+{
+  "name": "ntp-gui-ui-rundgang",
+  "private": true,
+  "description": "Nur für den Browser-Rundgang (tests/ui) und die Browser-Unittests: Playwright in fester Version mit Prüfsummen.",
+  "license": "MIT",
+  "dependencies": {
+    "playwright": "1.63.0"
+  }
+}

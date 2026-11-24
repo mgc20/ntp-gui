@@ -57,7 +57,10 @@ gesendet wurden und angekommen sind – bei „nur Lebenszeichen“ und kritisch
 Zeile stehen, und **Jetzt senden** meldet „Zustand kritisch – nichts gesendet“. Läuft gerade ein
 Ping, antwortet **Jetzt senden** mit „Ein Ping läuft gerade“ (HTTP 409). Scheitert der Ping dreimal in Folge, steht ein Ereignis der Art „Zeitwächter-Ping“
 im Protokoll (und geht an deine Benachrichtigungskanäle, wenn sie diese Art zulassen); kommt er
-wieder an, folgt „wieder erreichbar“.
+wieder an, folgt „wieder erreichbar“. Fehlerzähler und Meldung überstehen einen Neustart des Containers
+(in der Datenbank, ohne die Adresse): Nach dem Neustart kommt kein zweites „nicht erreichbar“, und
+„wieder erreichbar“ fehlt nicht. Schaltest du den Ping aus oder trägst eine andere Adresse ein, wird die
+offene Meldung still geschlossen.
 
 ### Uptime Kuma
 
