@@ -69,7 +69,7 @@ services:
       #          läuft dann mit -x und verteilt die Zeit nur per NTP weiter.
       # auto   = BMCA entscheidet; phc2sys arbeitet dann wie bei slave.
       PTP_MODE: "auto"          # auto | master | slave
-      PTP_PROFILE: "default"    # default | aes67 (Audio über IP) | gptp (802.1AS)
+      PTP_PROFILE: "default"    # default | aes67 (Audio über IP) | st2059 (Broadcast) | gptp (802.1AS)
       PTP_DOMAIN: "0"
       PTP_TRANSPORT: "UDPv4"    # UDPv4 | UDPv6 | L2
       PTP_TIME_STAMPING: "hardware"

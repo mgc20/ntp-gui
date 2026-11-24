@@ -6,7 +6,7 @@ Versionierte API: /api/v1/<pfad> ist ein Alias der bisherigen Pfade (apiv1.py).
 
 Schutz der schreibenden Routen:
   * ist ein Zugang gesetzt (Env oder Dashboard), gilt Basic-Auth für alles
-    außer /healthz – oder ein API-Schlüssel („Authorization: Bearer ntpg_…“)
+    außer /healthz und /readyz – oder ein API-Schlüssel („Authorization: Bearer ntpg_…“)
     mit dem Recht, das apiv1.required_scope() für den Pfad verlangt;
   * ein mitgeschickter API-Schlüssel gilt immer mit seinem Recht, auch wenn
     kein Passwort gesetzt ist – ein „read“-Schlüssel kann nie schreiben;
@@ -21,7 +21,7 @@ Schutz der schreibenden Routen:
     lokale Namen (*.local, *.lan, *.home.arpa, *.internal …), den
     NTS-Namen, WEB_ALLOWED_HOSTS und die „Erlaubten Namen“ aus dem Dashboard
     beantwortet (host_allowed). Mit Passwort schützt die Anmeldung, dann gilt
-    jeder Name. /healthz ist immer offen;
+    jeder Name. /healthz und /readyz sind immer offen (nur Wahrheitswerte);
   * clock_public: /clock, /api/v1/time und ihre vier statischen Dateien
     antworten ohne Anmeldung und für jeden Host-Namen – der Inhalt ist bewusst
     öffentlich (Uhrzeit, Ampel, Genauigkeit, Art der Quelle). Den Quellennamen
@@ -1360,6 +1360,42 @@ def _healthz_tracking() -> dict:
         return tracking
 
 
+READY_MAX_ERROR_DEFAULT_MS = 100.0
+
+
+def ready_limit_ms() -> float:
+    """Grenze der Fehlerschranke für /readyz in Millisekunden (Einstellung ready_max_error_ms bzw.
+    READY_MAX_ERROR_MS). Sind die Einstellungen nicht lesbar, gilt die Umgebungsvariable oder der Standard –
+    /readyz darf daran nie scheitern."""
+    try:
+        value = settings.values().get("ready_max_error_ms")
+    except Exception:
+        value = settings.env_number("READY_MAX_ERROR_MS", READY_MAX_ERROR_DEFAULT_MS, 0.001, 10000.0)
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 < value <= 10000:
+        return READY_MAX_ERROR_DEFAULT_MS
+    return float(value)
+
+
+def readiness(tracking: dict, limit_ms: float) -> dict:
+    """Strenge Bereitschaft für /readyz: bereit nur, wenn chronyd antwortet, an eine echte Quelle
+    synchronisiert ist (kein Inselbetrieb, Stratum unter 16) und die Fehlerschranke (|Offset| +
+    Root-Dispersion + Root-Delay/2, wie chrony sie rechnet) unter der Grenze liegt. Die Antwort enthält
+    nur Wahrheitswerte – keine Zahlen, keine Quellen, keine Grenze."""
+    running = bool(tracking)
+    synced = bool(running and tracking.get("synchronised"))
+    within = False
+    if synced:
+        try:
+            error = (abs(float(tracking.get("system_time_offset") or 0.0))
+                     + abs(float(tracking["root_dispersion"])) + abs(float(tracking["root_delay"])) / 2)
+            within = math.isfinite(error) and error * 1000.0 < limit_ms
+        except (KeyError, TypeError, ValueError):
+            within = False
+    ready = running and synced and within
+    return {"status": "ready" if ready else "not_ready", "chrony": running,
+            "synchronised": synced, "within_limit": within}
+
+
 def _clock_leap(cfg: dict) -> dict:
     """Schaltsekunden-Angaben für /clock: {"leap_next", "tai_utc"} – öffentliche Information aus der
     leap-seconds.list (IERS Bulletin C), kein Pfad, keine Einstellung. Nie ein Fehler: im Zweifel None.
@@ -2406,12 +2442,12 @@ class Handler(BaseHTTPRequestHandler):
         if info.get("code") == "settings_unreadable":
             code, heading = "settings_unreadable", "Einstellungen nicht lesbar"
             text = (f"{reason}. Mit WEB_USER und WEB_PASSWORD in der Compose-Datei ist das Dashboard trotzdem "
-                    "mit Anmeldung erreichbar (Speichern bleibt gesperrt). /healthz bleibt erreichbar.")
+                    "mit Anmeldung erreichbar (Speichern bleibt gesperrt). /healthz und /readyz bleiben erreichbar.")
         else:
             code, heading = "auth_setup_required", "Einrichtung nötig"
             text = (f"{reason}. Das Dashboard bleibt gesperrt, bis ein Zugang gesetzt ist: in der Compose-Datei "
                     "WEB_USER und WEB_PASSWORD (oder WEB_PASSWORD_FILE für ein Docker Secret) eintragen und den "
-                    "Container neu erstellen. /healthz bleibt erreichbar.")
+                    "Container neu erstellen. /healthz und /readyz bleiben erreichbar.")
         path = urlparse(self.path).path
         if path.startswith("/api") or path == "/metrics" or "json" in self.headers.get("Accept", ""):
             self._error(HTTPStatus.SERVICE_UNAVAILABLE, text, reason=code)
@@ -2718,6 +2754,12 @@ class Handler(BaseHTTPRequestHandler):
             healthy = bool(_healthz_tracking())
             self._send_json({"status": "ok" if healthy else "degraded", "chrony": healthy},
                             HTTPStatus.OK if healthy else HTTPStatus.SERVICE_UNAVAILABLE)
+            return
+        if path == "/readyz":
+            # Strenge Variante für keepalived, Load-Balancer und Uptime-Monitore: wie /healthz ohne Anmeldung
+            # und für jeden Host-Namen, die Antwort enthält nur Wahrheitswerte.
+            state = readiness(_healthz_tracking(), ready_limit_ms())
+            self._send_json(state, HTTPStatus.OK if state["status"] == "ready" else HTTPStatus.SERVICE_UNAVAILABLE)
             return
         if path == LOGOUT_PATH:
             self._logout_probe()
@@ -3676,17 +3718,17 @@ def startup_auth_warnings(bind: str) -> list[str]:
     if env["defaulted_user"]:
         out.append("[web] Hinweis: Nur ein Passwort aus der Umgebung, kein WEB_USER – Benutzername ist „admin“.")
     if info.get("code") == "settings_unreadable":
-        out.append(f"[web] WARNUNG: {info['reason']}. Das Dashboard bleibt GESPERRT (nur /healthz antwortet); "
+        out.append(f"[web] WARNUNG: {info['reason']}. Das Dashboard bleibt GESPERRT (nur /healthz und /readyz antworten); "
                    "mit WEB_USER und WEB_PASSWORD ist es mit Anmeldung erreichbar, Speichern bleibt gesperrt.")
     elif env["error"]:
         if info["enabled"]:
             out.append(f"[web] WARNUNG: {env['error']} – es gilt das im Dashboard gesetzte Passwort.")
         else:
-            out.append(f"[web] WARNUNG: {env['error']}. Das Dashboard bleibt GESPERRT (nur /healthz antwortet), "
+            out.append(f"[web] WARNUNG: {env['error']}. Das Dashboard bleibt GESPERRT (nur /healthz und /readyz antworten), "
                        "bis WEB_USER und WEB_PASSWORD (oder WEB_PASSWORD_FILE) vollständig gesetzt sind.")
     elif info.get("locked"):
         out.append("[web] WARNUNG: WEB_REQUIRE_AUTH=true, aber kein Zugang gesetzt. Das Dashboard bleibt GESPERRT "
-                   "(nur /healthz antwortet). WEB_USER und WEB_PASSWORD (oder WEB_PASSWORD_FILE) setzen und den "
+                   "(nur /healthz und /readyz antworten). WEB_USER und WEB_PASSWORD (oder WEB_PASSWORD_FILE) setzen und den "
                    "Container neu erstellen.")
     elif not info["enabled"] and _binds_everywhere(bind):
         out.append("[web] WARNUNG: Dashboard OHNE PASSWORT auf allen Adressen (WEB_BIND=" + (bind or "0.0.0.0") + "). "

@@ -1297,19 +1297,23 @@ SCHEMA: list[dict] = [
                 "beim Uhrenstellen wie „Slave“; wer GPS-Zeit per PTP verteilen will, wählt "
                 "deshalb ausdrücklich „Grandmaster“."),
     _field("ptp_profile", "ptp", "Profil", "select", "default",
-           _as_choice("default", "aes67", "gptp"), env="PTP_PROFILE",
+           _as_choice("default", "aes67", "st2059", "gptp"), env="PTP_PROFILE",
            options=[("default", "Standard (IEEE 1588 Default-Profil)"),
                     ("aes67", "AES67 / Ravenna (Audio über IP)"),
+                    ("st2059", "SMPTE ST 2059-2 (Broadcast)"),
                     ("gptp", "gPTP / IEEE 802.1AS (AVB/TSN)")],
            help="Ein Profil legt passende Grundwerte fest, damit dieser Server mit bestimmten "
                 "Geräten zusammenspielt. Felder, die du selbst änderst, haben Vorrang. AES67 (Media-Profil): "
                 "UDPv4, End-to-End, 8 Sync/s, Announce alle 2 s und DSCP 46 (EF) für die "
-                "Pakete. gPTP (AVB/TSN, Automotive): Ethernet direkt (L2), Peer-to-Peer, transportSpecific 1, "
+                "Pakete. SMPTE ST 2059-2 (Broadcast, ST 2110): Domain 127, UDPv4, End-to-End, 8 Sync/s, "
+                "4 Announce/s, Timeout 3 – eine Voreinstellung nach den Profilwerten, keine SMPTE-Zertifizierung; "
+                "Domain 0 gilt dort als „nicht geändert“ und wird zu 127. "
+                "gPTP (AVB/TSN, Automotive): Ethernet direkt (L2), Peer-to-Peer, transportSpecific 1, "
                 "Priority 248 und die übrigen Werte aus linuxptp configs/gPTP.cfg – alle "
                 "Switches im Weg müssen 802.1AS beherrschen."),
     _field("ptp_domain", "ptp", "Domain", "int", 0, _as_number(int, 0, 255), env="PTP_DOMAIN",
            help="Getrennte PTP-Netze im selben LAN. Alle Teilnehmer brauchen dieselbe Domain; "
-                "0 ist der Standard."),
+                "0 ist der Standard. Mit dem Profil SMPTE ST 2059-2 gilt 127, solange hier 0 steht."),
     _field("ptp_transport", "ptp", "Transport", "select", "UDPv4",
            _as_choice("UDPv4", "UDPv6", "L2"), env="PTP_TRANSPORT",
            options=[("UDPv4", "UDP über IPv4 (Standard)"), ("UDPv6", "UDP über IPv6"),
@@ -1498,6 +1502,15 @@ SCHEMA: list[dict] = [
                 "Wächter, der nur das Ausbleiben bemerkt: Bei kritischem Zustand geht dann nichts hinaus. "
                 "„Kritisch“ zählt erst, wenn der Zustand mindestens 2 Minuten anhält – ein kurzes Neuladen "
                 "der Zeitdienste löst keinen Alarm aus."),
+    _field("ready_max_error_ms", "web", "Bereitschaft (/readyz): Fehlergrenze", "float", 100.0,
+           _as_number(float, 0.001, 10000.0), env="READY_MAX_ERROR_MS", unit="ms", restart=RESTART_NONE,
+           advanced=True,
+           hint="/readyz meldet 200 nur, wenn chrony synchronisiert ist und die Fehlerschranke darunter liegt.",
+           help="Grenze für die strenge Bereitschaftsprüfung /readyz (für keepalived, Load-Balancer und "
+                "Uptime-Monitore): 200 nur, wenn chrony an eine echte Quelle synchronisiert ist und die "
+                "Fehlerschranke (|Offset| + Root-Dispersion + halber Root-Delay, wie chrony sie rechnet) "
+                "unter diesem Wert liegt, sonst 503. Der Standard 100 ms passt zu Internet-NTP; mit GPS und PPS "
+                "taugen z. B. 1 ms. /healthz bleibt unverändert (nur „chronyd antwortet“). Wirkt ohne Neustart."),
     _field("backup_nightly", "web", "Nächtliche Sicherung", "bool", False, _as_bool,
            env=None, restart=RESTART_NONE,
            help="Legt jede Nacht gegen 3 Uhr (Ortszeit des Servers) eine Sicherung im Datenverzeichnis ab "
@@ -1534,6 +1547,12 @@ FIELDS = {field["key"]: field for field in SCHEMA}
 # aes67: AES67-2018 Anhang A (Media-Profil): Domain 0, Delay-Request-Response
 #   (E2E) über UDP/IPv4-Multicast, logSyncInterval -3 (Standard), logAnnounceInterval
 #   1, announceReceiptTimeout 3; QoS-Klasse "Clock" = DSCP 46 (EF).
+# st2059: SMPTE ST 2059-2 (Broadcast-Profil, Grundlage von ST 2110): Standardwerte des Profils –
+#   domainNumber 127 (zulässig 0–127), logAnnounceInterval -2 (zulässig -3 … 1), logSyncInterval -3
+#   (zulässig -7 … -1), logMinDelayReqInterval -3 (zulässig logSyncInterval … logSyncInterval+5),
+#   announceReceiptTimeout 3 (zulässig 2–10), priority1/priority2 128, Delay-Request-Response (E2E),
+#   UDP/IPv4. Die Synchronisations-Metadaten (SM-TLV) des Profils erzeugt linuxptp nicht; DSCP schreibt
+#   das Profil nicht vor (wer EF will: EXTRA_PTP4L_CONF). Eine Voreinstellung, keine Zertifizierung.
 PTP_PROFILES: dict[str, dict] = {
     "default": {"fields": {}, "extra": {}},
     "aes67": {
@@ -1541,6 +1560,13 @@ PTP_PROFILES: dict[str, dict] = {
                    "ptp_log_sync_interval": -3, "ptp_log_announce_interval": 1,
                    "ptp_announce_receipt_timeout": 3},
         "extra": {"dscp_event": "46", "dscp_general": "46"},
+    },
+    "st2059": {
+        "fields": {"ptp_domain": 127, "ptp_transport": "UDPv4", "ptp_delay_mechanism": "E2E",
+                   "ptp_priority1": 128, "ptp_priority2": 128,
+                   "ptp_log_sync_interval": -3, "ptp_log_announce_interval": -2,
+                   "ptp_log_min_delay_req_interval": -3, "ptp_announce_receipt_timeout": 3},
+        "extra": {},
     },
     "gptp": {
         "fields": {"ptp_transport": "L2", "ptp_delay_mechanism": "P2P",
@@ -1552,6 +1578,42 @@ PTP_PROFILES: dict[str, dict] = {
                   "transportSpecific": "0x1", "ptp_dst_mac": "01:80:C2:00:00:0E"},
     },
 }
+
+
+# Zulässige Bereiche des Profils ST 2059-2 – ein von Hand gesetzter Wert außerhalb wird nicht verworfen
+# (ptp4l läuft damit), aber als Abweichung vom Profil gemeldet.
+_ST2059_RANGES = {
+    "ptp_domain": (0, 127, "Domain"),
+    "ptp_log_announce_interval": (-3, 1, "Announce-Intervall"),
+    "ptp_log_sync_interval": (-7, -1, "Sync-Intervall"),
+    "ptp_announce_receipt_timeout": (2, 10, "Announce-Timeout"),
+}
+
+
+def ptp_profile_warnings(cfg: dict) -> list[str]:
+    """Abweichungen der wirksamen Werte vom gewählten Profil (bisher nur ST 2059-2) als Klartext."""
+    if (cfg.get("ptp_profile") or "default") != "st2059":
+        return []
+    eff = ptp_profile_values(cfg)[0]
+    out = []
+    for key, (low, high, label) in _ST2059_RANGES.items():
+        value = eff.get(key)
+        if isinstance(value, int) and not low <= value <= high:
+            out.append(f"{label} {value} liegt außerhalb von ST 2059-2 ({low} … {high})")
+    sync, delay_req = eff.get("ptp_log_sync_interval"), eff.get("ptp_log_min_delay_req_interval")
+    if isinstance(sync, int) and isinstance(delay_req, int) and not sync <= delay_req <= sync + 5:
+        out.append(f"Delay-Request-Intervall {delay_req} liegt außerhalb von ST 2059-2 ({sync} … {sync + 5})")
+    if eff.get("ptp_transport") == "L2":
+        out.append("Transport L2: ST 2059-2 verlangt UDP (IPv4)")
+    if eff.get("ptp_delay_mechanism") != "E2E":
+        out.append(f"Laufzeitmessung {eff.get('ptp_delay_mechanism')}: ST 2059-2 verlangt End-to-End (E2E), "
+                   "P2P ist nur zusätzlich erlaubt")
+    return out
+
+
+def ptp_effective_domain(cfg: dict) -> int:
+    """Domain, mit der ptp4l wirklich läuft (ST 2059-2 setzt 127) – pmc und phc2sys brauchen dieselbe."""
+    return int(ptp_profile_values(cfg)[0].get("ptp_domain") or 0)
 
 
 def ptp_profile_values(cfg: dict) -> tuple[dict, dict]:

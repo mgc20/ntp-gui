@@ -199,7 +199,7 @@ services:
       #  PTP_ENABLE: "true"
       #  PTP_INTERFACE: "eth0"             # Name aus „ip link“, die Hardware-Seite zeigt passende Karten
       #  PTP_MODE: "master"                # master = Grandmaster, slave = Zeit von anderem Grandmaster, auto
-      #  PTP_PROFILE: "default"            # default | aes67 (Audio über IP) | gptp (802.1AS)
+      #  PTP_PROFILE: "default"            # default | aes67 (Audio über IP) | st2059 (Broadcast) | gptp (802.1AS)
       # Systemuhr und PTP-Uhr der Karte koppeln (phc2sys). Die Richtung wählt
       # ntp-gui nach Rolle: Grandmaster kopiert die Systemuhr auf die Karte,
       # Slave stellt die Systemuhr nach der Karte.

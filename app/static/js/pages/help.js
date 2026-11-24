@@ -14,7 +14,8 @@ const SETUPS = [
 ];
 
 // Früher in der Fußzeile (bis 1.5): die Adressen für Monitoring und Skripte.
-const API_LINKS = [["/metrics", "help.api.metrics"], ["/api/status", "help.api.status"], ["/healthz", "help.api.healthz"]];
+const API_LINKS = [["/metrics", "help.api.metrics"], ["/api/status", "help.api.status"], ["/healthz", "help.api.healthz"],
+  ["/readyz", "help.api.readyz"]];
 
 function apiCard() {
   return card(t("help.api.title"), { id: "api", help: "api_keys", sub: t("help.api.intro") },

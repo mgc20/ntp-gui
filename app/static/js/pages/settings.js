@@ -1192,7 +1192,7 @@ function accessCards(ctx, schema, readonly) {
       el("label", {}, el("span", { text: "Wiederholen" }), pass2),
       el("button", { type: "button", class: "button primary", text: auth.enabled ? "Passwort ändern" : "Passwort setzen", disabled: readonly ? true : null, onclick: setPw }),
       auth.enabled ? el("button", { type: "button", class: "button", text: "Schutz entfernen", disabled: readonly ? true : null, onclick: clearPw }) : null));
-    authBody.push(emptyState("Gilt für das Dashboard und die API. `/healthz` bleibt für den Docker-Healthcheck offen. Kein TLS – für Zugriff von außen einen Reverse Proxy davorsetzen."));
+    authBody.push(emptyState("Gilt für das Dashboard und die API. `/healthz` und `/readyz` bleiben für Healthchecks offen. Kein TLS – für Zugriff von außen einen Reverse Proxy davorsetzen."));
   }
   if (auth.login) {
     authBody.push(el("div", { class: "button-row" },

@@ -11,7 +11,7 @@ server.py nutzt:
     apiv1.describe()                    # Beschreibung für GET /api/v1
 
 Rechte (scope):
-    public   – ohne Anmeldung (/healthz)
+    public   – ohne Anmeldung (/healthz, /readyz)
     read     – Anmeldung oder API-Schlüssel mit Recht „read“ oder „admin“
     admin    – Anmeldung oder API-Schlüssel mit Recht „admin“
     clock    – Anmeldung oder API-Schlüssel mit Recht „clock“ oder „admin“ (nur POST /clock/signal). Ein
@@ -170,6 +170,10 @@ endpoint("POST", "/instance/rotate", "/api/instance/rotate", "session",
 # --- Öffentlich ---------------------------------------------------------------
 endpoint("GET", "/healthz", "/healthz", "public",
          "Lebenszeichen für Docker/Monitoring: läuft chronyd?", ["status", "chrony"])
+endpoint("GET", "/readyz", "/readyz", "public",
+         "Strenge Bereitschaft (keepalived, Load-Balancer): 200 nur, wenn chrony synchronisiert ist und die "
+         "Fehlerschranke unter ready_max_error_ms liegt, sonst 503. Nur Wahrheitswerte.",
+         ["status", "chrony", "synchronised", "within_limit"])
 
 
 def _normalise(path: str) -> str:

@@ -1773,7 +1773,7 @@ docker compose -f docker-compose.ptp.yml up -d
 | `PTP_ENABLE` | `false` | ptp4l starten |
 | `PTP_INTERFACE` | – | Interface, z. B. `eth0` (Pflicht, wenn aktiviert) |
 | `PTP_MODE` | `auto` | `auto` (BMCA entscheidet), `master` (Grandmaster), `slave` |
-| `PTP_PROFILE` | `default` | `default` (IEEE 1588), `aes67` (Audio über IP) oder `gptp` (IEEE 802.1AS) – siehe unten |
+| `PTP_PROFILE` | `default` | `default` (IEEE 1588), `aes67` (Audio über IP), `st2059` (SMPTE ST 2059-2, Broadcast) oder `gptp` (IEEE 802.1AS) – siehe unten |
 | `PTP_DOMAIN` | `0` | PTP-Domain |
 | `PTP_TRANSPORT` | `UDPv4` | `UDPv4`, `UDPv6` oder `L2` |
 | `PTP_TIME_STAMPING` | `hardware` | `hardware` oder `software` |
@@ -1832,12 +1832,24 @@ eingeschaltetes phc2sys läuft die PHC frei – das Dashboard warnt dann.
 |---|---|---|
 | `default` | IEEE 1588 Standard, Labor, Linux-Clients | nichts |
 | `aes67` | Audio über IP: AES67, Ravenna, **Dante nur im AES67-Modus** | UDPv4, E2E, Sync 2^−3 s, Announce 2^1 s, Timeout 3, DSCP 46 |
+| `st2059` | Broadcast: SMPTE ST 2059-2 (Grundlage von ST 2110) | Domain 127, UDPv4, E2E, Sync 2^−3 s, Delay-Request 2^−3 s, Announce 2^−2 s, Timeout 3, Priority 128/128 |
 | `gptp` | IEEE 802.1AS (AVB/TSN, Automotive) | Layer 2, P2P, Priorität 248, Announce 2^0 s und weitere Werte aus linuxptp `gPTP.cfg` |
 
 Ein Profil setzt nur Felder, die noch auf ihrem Standard stehen – was du ausdrücklich
 änderst, gewinnt. Der wirksame Wert gilt überall: Mit `gptp` nutzt ptp4l Layer 2, auch wenn
 `PTP_TRANSPORT` auf dem Standard `UDPv4` steht – die PTP-Seite zeigt dann `L2`, und die
 Hardware-Prüfung verlangt `NET_RAW`.
+
+`st2059` ist eine **Voreinstellung nach den Standardwerten des Profils SMPTE ST 2059-2, keine
+SMPTE-Zertifizierung**: linuxptp sendet die Metadaten-Nachrichten des Profils (SM-TLV) nicht, und
+DSCP schreibt das Profil nicht vor (wer EF/46 möchte: `EXTRA_PTP4L_CONF="dscp_event 46\ndscp_general 46"`).
+Jedes Feld bleibt einzeln überschreibbar (z. B. `PTP_DOMAIN`, `PTP_LOG_ANNOUNCE_INTERVAL`). Liegt
+ein Wert außerhalb der Bereiche des Profils (Domain 0–127, Announce −3…1, Sync −7…−1,
+Delay-Request Sync…Sync+5, Timeout 2–10, Transport UDP, Laufzeitmessung E2E), läuft ptp4l trotzdem; die
+PTP-Seite meldet die Abweichung, und in `ptp4l.conf` steht ein `# HINWEIS`. Weil ein Profil nur
+Felder auf ihrem Standard ersetzt, wird Domain `0` mit `st2059` zu `127` – wer Domain 0 braucht,
+nimmt das Profil `default` mit eigenen Werten. pmc, phc2sys und die PTP-Seite nutzen die wirksame
+Domain.
 
 **PTP → NTP-Brücke:** Läuft der Container als PTP-Slave, kann chrony die PTP-Hardwareuhr
 direkt als Referenz benutzen und die Zeit als ganz normaler NTP-Server ins LAN geben:
@@ -1864,7 +1876,7 @@ PHC-Refclock dient ihm als Referenz für Stratum und Statistik.
 | `WEB_TITLE` | `NTP / PTP Time Server` | Überschrift |
 | `WEB_USER` / `WEB_PASSWORD` | – | HTTP Basic Auth (alternativ Passwort im Dashboard setzen). Nur `WEB_PASSWORD` ⇒ Benutzer `admin`; nur `WEB_USER` ⇒ Dashboard gesperrt, bis auch das Passwort gesetzt ist. Siehe [Anmeldung und Zugang](#anmeldung-und-zugang) |
 | `WEB_PASSWORD_FILE` | – | Passwort aus einer Datei statt aus der Umgebung (z. B. Docker Secret `/run/secrets/…`); hat Vorrang vor `WEB_PASSWORD`. Unlesbar oder leer ⇒ Dashboard gesperrt. Im Container gilt ein geänderter Inhalt nach spätestens etwa 30 s (ohne Neustart, im Log „Passwortdatei geändert“) – aber nur, wenn die Datei überschrieben wird (`… > datei`). Wird sie ersetzt (`mv`, `sed -i`, viele Editoren), sieht ein als Datei eingehängtes Secret weiter den alten Inhalt; dann den Container neu erstellen (`docker compose up -d --force-recreate`) |
-| `WEB_REQUIRE_AUTH` | `false` | `true` = ohne Zugang (Passwort) bleibt das Dashboard gesperrt: Nur `/healthz` und eine Einrichtungs-Meldung antworten. Für Server, die aus dem Internet erreichbar sind (VPS) |
+| `WEB_REQUIRE_AUTH` | `false` | `true` = ohne Zugang (Passwort) bleibt das Dashboard gesperrt: Nur `/healthz`, `/readyz` und eine Einrichtungs-Meldung antworten. Für Server, die aus dem Internet erreichbar sind (VPS) |
 | `WEB_ALLOWED_HOSTS` | – | Weitere Namen, unter denen das Dashboard **ohne Passwort** antworten darf, kommagetrennt; `*.example.org` für alle Unternamen, `*` schaltet die Prüfung ab. Gilt zusätzlich zu „Erlaubte Namen“ im Dashboard (Einstellungen → Dashboard & Zugang). Siehe [Schutz vor DNS-Rebinding](#schutz-vor-dns-rebinding) |
 | `WEB_READONLY` | `false` | Einstellungen im Dashboard sperren |
 | `WEB_MAX_CONNECTIONS` | `200` | Höchstzahl gleichzeitig offener Verbindungen zum Dashboard (mindestens 8). Weitere Verbindungen schließt der Server sofort, statt für jede einen Thread zu starten. Eine einzelne Adresse (IPv6: ein /64-Netz) darf höchstens ein Achtel davon belegen (mindestens 8); Verbindungen von der eigenen Maschine (Healthcheck) und von eingetragenen vertrauenswürdigen Proxys sind davon ausgenommen und haben einige Plätze für sich. Ist mehr als ¾ belegt, schließt der Server Verbindungen ohne Anfrage schon nach 10 s. Jede Verbindung braucht einen Thread: Setzt du für den Container ein `pids-limit`, muss es deutlich über `WEB_MAX_CONNECTIONS` + 64 liegen – sonst senkt der Server die Grenze beim Start selbst (Hinweis im Log). Auf einem VPS zusätzlich im Reverse Proxy die Verbindungen je Adresse begrenzen |
@@ -1873,6 +1885,7 @@ PHC-Refclock dient ihm als Referenz für Stratum und Statistik.
 | `HISTORY_DAYS` | `30` | So viele Tage hält der Verlauf (SQLite, `ntp-gui.db`; 1–3650). Neue Punkte werden gesammelt und alle 5 Minuten sowie beim Stoppen geschrieben – das schont SD-Karten |
 | `HISTORY_SIZE` | – | Nur wenn gesetzt: harte Obergrenze an Messpunkten (wie bis 1.2, z. B. `8640` = 24 h bei 10 s) |
 | `WEB_ACCESS_LOG` | `false` | Zugriffe protokollieren |
+| `READY_MAX_ERROR_MS` | `100` | Fehlergrenze für [`/readyz`](#bereitschaft-readyz) in Millisekunden (0,001–10000); auch im Dashboard (Einstellungen → Dashboard & Zugang, erweitert) |
 | `NOTIFY_DASHBOARD_URL` | – | Adresse des Dashboards für Links in [Benachrichtigungen](#benachrichtigungen) (nur `http`/`https`, ohne Benutzer/Passwort) |
 | `NOTIFY_LAN_ADDRESSES` | `false` | Private LAN-Adresse eines Geräts zusätzlich zu seinem Namen in Benachrichtigungen |
 | `TRUSTED_PROXIES` | – (niemandem trauen) | Adressen deiner Reverse Proxys, siehe [HTTPS fürs Dashboard](#https-fürs-dashboard) |
@@ -2107,7 +2120,8 @@ für `/var/lib/chrony` – siehe [`docker-compose.vps.yml`](docker-compose.vps.y
 Dashboards können `/etc/resolv.conf` dann nicht umstellen; dafür `dns: [127.0.0.1]` setzen.
 
 `/healthz` ist **bewusst ohne Login** erreichbar, damit der Docker-Healthcheck funktioniert.
-Der Endpunkt verrät nur, ob chronyd antwortet.
+Der Endpunkt verrät nur, ob chronyd antwortet. Dasselbe gilt für `/readyz` (nur Wahrheitswerte, keine
+Messwerte), siehe [Bereitschaft](#bereitschaft-readyz).
 
 ### Dienste und Neustarts
 
@@ -2178,6 +2192,24 @@ Einstellungen laufen) und `ntpgui_service_restarts_total`. Der mitgelieferte Ala
 | `/metrics` | Prometheus (u. a. Offset, max. Fehler, Quellen, GPS, PTP, `ntpgui_service_*`, `ntpgui_hardware_capability`, `ntpgui_pps_live`, `ntpgui_nts_server_cert_days_left`, Temperatur, Schaltsekunden-Liste, GPS-Fehlerschranke und Empfang, `ntpgui_gnss_stage`, `ntpgui_gps_locked`, `ntpgui_source_loops`, `ntpgui_holdover_test_running`, `ntpgui_pi_undervoltage`, `ntpgui_pi_throttled`, `ntpgui_info`) |
 | `/clock` | Vollbild-Uhr (mit `CLOCK_PUBLIC=true` ohne Login) |
 | `/healthz` | `200`, solange chronyd antwortet (ohne Login) |
+| `/readyz` | Strenge Bereitschaft: `200` nur synchronisiert und mit Fehlerschranke unter `READY_MAX_ERROR_MS`, sonst `503` (ohne Login, nur Wahrheitswerte) – siehe [Bereitschaft](#bereitschaft-readyz) |
+
+### Bereitschaft (`/readyz`)
+
+`/healthz` sagt nur „chronyd antwortet“ – auch ein Server ohne Zeitquelle ist damit gesund. Für
+**keepalived**, Load-Balancer und Uptime-Monitore gibt es die strenge Variante `/readyz`:
+
+| Antwort | Wann |
+|---|---|
+| `200 {"status": "ready", "chrony": true, "synchronised": true, "within_limit": true}` | chrony ist an eine echte Quelle synchronisiert (kein Inselbetrieb) und die Fehlerschranke (\|Offset\| + Root-Dispersion + halber Root-Delay) liegt unter der Grenze |
+| `503 {"status": "not_ready", …}` | chronyd antwortet nicht, ist nicht synchronisiert, läuft im Inselbetrieb oder liegt über der Grenze |
+
+Die Grenze steht in **Einstellungen → Dashboard & Zugang → Bereitschaft (/readyz): Fehlergrenze**
+bzw. in `READY_MAX_ERROR_MS` (Standard 100 ms; mit GPS und PPS z. B. `1`). `/readyz` ist wie
+`/healthz` ohne Anmeldung, für jeden Host-Namen und auch bei `WEB_REQUIRE_AUTH=true` erreichbar,
+fragt chronyd höchstens alle 2 s und enthält nur Wahrheitswerte – keine Zahlen, Quellen oder Grenze.
+Beispiele für keepalived (`track_script`), Docker-Healthcheck und Uptime Kuma:
+[docs/integrationen/bereitschaft.md](docs/integrationen/bereitschaft.md).
 
 ## API & Automatisierung
 
@@ -2266,6 +2298,7 @@ Fertig zum Importieren bzw. Abschreiben:
   – REST- und Template-Sensoren, Binärsensoren, Automations-Beispiel.
 - **Homepage und Glance:** [`docs/integrationen/homepage-glance.md`](docs/integrationen/homepage-glance.md).
 - **Uptime Kuma:** [`docs/integrationen/uptime-kuma.md`](docs/integrationen/uptime-kuma.md).
+- **keepalived, Docker-Healthcheck, Load-Balancer (`/readyz`):** [`docs/integrationen/bereitschaft.md`](docs/integrationen/bereitschaft.md).
 - **Zeitwächter-Ping an Uptime Kuma oder Healthchecks:** [`docs/integrationen/zeitwaechter.md`](docs/integrationen/zeitwaechter.md).
 - **Studiouhr als Browserquelle (OBS, vMix, CasparCG) und Pi-Kiosk:** [`docs/integrationen/studiouhr.md`](docs/integrationen/studiouhr.md).
 

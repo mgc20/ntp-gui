@@ -19,6 +19,10 @@ solange chronyd Auskunft gibt – sonst mit `503` und `"degraded"`.
 Das ist derselbe Check, den Docker als Healthcheck nutzt. Er sagt: Dashboard und chronyd
 leben. Er sagt **nicht**, ob die Zeit stimmt.
 
+Ob die Zeit stimmt, sagt ohne Schlüssel `/readyz`: `200` nur, wenn chrony synchronisiert ist und
+die Fehlerschranke unter der eingestellten Grenze liegt, sonst `503` – Monitor-Typ **HTTP(s)**,
+URL `http://zeitserver.lan:8080/readyz`. Mehr dazu in [bereitschaft.md](bereitschaft.md).
+
 ## 2. JSON-Abfrage: ist die Zeit synchron?
 
 `/api/v1/time` ist klein und meldet `synchronised`. Mit einem Lese-Schlüssel
