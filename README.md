@@ -7,7 +7,7 @@
 
 <p align="center">
   <a href="https://github.com/mgc20/ntp-gui/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/mgc20/ntp-gui/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="https://github.com/mgc20/ntp-gui/releases/latest"><img alt="Release" src="https://img.shields.io/badge/release-v1.9.0-0969da"></a>
+  <a href="https://github.com/mgc20/ntp-gui/releases/latest"><img alt="Release" src="https://img.shields.io/badge/release-v1.10.0-0969da"></a>
   <img alt="Plattformen" src="https://img.shields.io/badge/platform-amd64%20%7C%20arm64-1a7f37">
   <img alt="Image" src="https://img.shields.io/badge/image-ghcr.io-8250df">
   <a href="LICENSE"><img alt="Lizenz: MIT" src="https://img.shields.io/badge/license-MIT-59636e"></a>
@@ -2254,6 +2254,17 @@ Meist musst du beim Update nichts von Hand umbauen. Was sich zwischen zwei Versi
   `ntp-gui.db` übernommen und als `history.json.gz.migrated` aufbewahrt. Kann die Datenbank
   nicht geöffnet werden, arbeitet der Verlauf wie in 1.2 weiter.
 
+### Von 1.9 auf 1.10
+
+Nichts musst du umbauen; das Einstellungsschema ändert sich nicht. Auf der Studiouhr (`/clock`) fällt
+dir vielleicht auf:
+
+- Die Voreinstellungen `studio`, `tile` und `banner` setzen `fun=0`: keine Knöpfe Timer, Spiel und
+  Nacht, keine Zusätze und keine Ostereier. Die Voreinstellung `night` dimmt jetzt von 22 bis 7 Uhr.
+- Das Hinweisfeld zur möglichen Schaltsekunde am 30.6. und 31.12. über der Uhr gilt als Osterei und
+  fehlt deshalb mit `fun=0` bzw. `eggs=0`, im Kiosk, mit `lock=1`, in OBS, auf E-Ink sowie in Kachel
+  und Streifen. Die Ankündigung einer Schaltsekunde im Band bleibt.
+
 ### Von 1.8 auf 1.9
 
 Diese Änderungen greifen ohne Hinweiskarte, weil sich das Einstellungsschema nicht ändert:
@@ -2397,7 +2408,7 @@ Updates vor. Ein Release-Build läuft ohne Cache, zieht also immer aktuelle Debi
 **Herkunft prüfen** (GitHub-CLI, sobald das Repository öffentlich ist):
 
 ```bash
-gh attestation verify oci://ghcr.io/mgc20/ntp-gui:1.9.0 -R mgc20/ntp-gui
+gh attestation verify oci://ghcr.io/mgc20/ntp-gui:1.10.0 -R mgc20/ntp-gui
 ```
 
 Scheitert ein Schritt, entsteht kein halber Release. Bei einem privaten Repository

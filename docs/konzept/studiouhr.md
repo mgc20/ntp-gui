@@ -248,7 +248,7 @@ Mit `lock=1` sind die Kürzel aus.
 
 Jede Etappe besteht aus mehreren kleinen PRs. Risiko für den Zeitdienst: A und C sind R1. B ist R1 bis R2 (Signal-Endpunkt).
 
-### Etappe A – Grundgerüst (ca. 7–8 PT, Ziel 1.7.x)
+### Etappe A – Grundgerüst (ca. 7–8 PT, Ziel 1.7.x) – umgesetzt in 1.7.0
 | PR | Inhalt | PT |
 |---|---|---|
 | A1 | Monotone Zeitbasis, `errorBound`, `data-sync`-Zustände, Neumessung nach Standby, `lead` | 1 |
@@ -282,7 +282,7 @@ Jede Etappe besteht aus mehreren kleinen PRs. Risiko für den Zeitdienst: A und 
   - Ohne `clock_public` kein Zugriff.
   - `profiles_rev` ändert sich beim Speichern.
 
-### Etappe B – Profi-Ausbau (ca. 5–6 PT)
+### Etappe B – Profi-Ausbau (ca. 5–6 PT) – umgesetzt in 1.8.0
 | PR | Inhalt | PT |
 |---|---|---|
 | B1 | Design `tc`: Timecode mit DF-Rechnung, rAF nur für FF/Zehntel, Beschriftung „nicht genlocked“, Erkennung der Timer-Rundung | 1,5 |
@@ -304,7 +304,7 @@ Jede Etappe besteht aus mehreren kleinen PRs. Risiko für den Zeitdienst: A und 
 - **Prüfbild:** Bei `prefers-reduced-motion` wird es nicht aktiviert, Blitzfrequenz ≤ 1 Hz.
 - **Screenshot-Matrix** aus A, erweitert um `tc`, `world` und On-Air.
 
-### Etappe C – Spielereien (ca. 4–5 PT, einzeln verschiebbar)
+### Etappe C – Spielereien (ca. 4–5 PT, einzeln verschiebbar) – umgesetzt in 1.10.0
 - **Inhalt:** Timer-Oberfläche (Eieruhr, Pomodoro) und eigene Countdowns, Nachtmodus, Design `binary`, Nerd-Zeile, Mondphase, Fortschrittsbalken, Spiel „Tippe auf :00“, Zeitzeichen und Ostereier mit Konami-Code. Damit sind die offenen 1.6.2-Punkte zu /clock erledigt: Designs Binär (`binary`) und 7-Segment (`face=seg`), Konami-Osterei und die Zeit-Kuriositäten – GPS-Woche und -Sekunde, TAI, MJD, Unixzeit in der Nerd-Zeile, Countdowns `?goal=unix`, `ntp`, `y2038` (Unixzeit 2³¹) und `dst`. Bewusst entfallen: das Julianische Datum (die Nerd-Zeile zeigt das MJD, JD = MJD + 2 400 000,5 – ein zweiter siebenstelliger Wert brächte keinen Nutzen, kostet aber Platz) und GPS−UTC als eigener Wert (steckt in TAI und GPS-Zeit: GPS−UTC = TAI−UTC − 19 s).
 - **Akzeptanz C:**
   - Jede Spielerei hat einen Node-Test mit Referenzwerten: Mondphase gegen Tabelle, TAI/GPS gegen `leap.py`.

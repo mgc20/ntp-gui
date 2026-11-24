@@ -105,8 +105,8 @@ ssh -L 8080:127.0.0.1:8080 du@dein-vps
 # dann im Browser: http://127.0.0.1:8080
 ```
 
-**Version festhalten:** Statt `:latest` besser `ghcr.io/mgc20/ntp-gui:1.9` (nur Fehlerbehebungen
-innerhalb von 1.9.x) eintragen.
+**Version festhalten:** Statt `:latest` besser `ghcr.io/mgc20/ntp-gui:1.10` (nur Fehlerbehebungen
+innerhalb von 1.10.x) eintragen.
 
 **DNS-Modi des Dashboards:** Das Root-Dateisystem ist schreibgeschützt, der Container kann
 `/etc/resolv.conf` nicht umstellen. Willst du unter **Einstellungen → DNS für ntp-gui** eigene
@@ -220,9 +220,9 @@ chronyd -Q -t 3 "server zeit.example.com iburst nts maxsamples 1"
 
 - **Image:** Release-Hinweise lesen (CHANGELOG), dann
   `docker compose -f docker-compose.vps.yml pull && docker compose -f docker-compose.vps.yml up -d`.
-  Mit festgehaltener Minor-Version (`:1.9`) kommen so nur Fehlerbehebungen.
+  Mit festgehaltener Minor-Version (`:1.10`) kommen so nur Fehlerbehebungen.
 - **Herkunft prüfen (optional):** Jedes Release-Image hat einen Herkunftsnachweis:
-  `gh attestation verify oci://ghcr.io/mgc20/ntp-gui:1.9 --owner mgc20`.
+  `gh attestation verify oci://ghcr.io/mgc20/ntp-gui:1.10 --owner mgc20`.
 - **Host:** Sicherheitsupdates des Betriebssystems automatisch einspielen (Debian/Ubuntu:
   `unattended-upgrades`), Docker und Caddy-Image regelmäßig aktualisieren.
 - **Update-Hinweis im Dashboard:** standardmäßig aus; wer ihn will, schaltet ihn unter
