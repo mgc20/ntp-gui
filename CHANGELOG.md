@@ -84,6 +84,7 @@ CI mit. Lies vor dem Update die Update-Hinweise „Von 1.11 auf 1.12“ in der
   übersprungen zu werden.
 
 ### Behoben
+- Einstellungen → Zeitquellen bei 320 px: Mit breiten Systemschriften ragte die Beschriftung „bevorzugen“ über ihre Spalte hinaus; sie wird jetzt getrennt.
 - Automatiken konnten chronyd an einem Tag mehrfach neu starten, etwa wenn die Fehlerschranke bei schlechter
   werdendem Empfang stündlich wuchs und dazwischen kalibriert wurde. Jeder Neustart kostete chronyd den
   Regelzustand.

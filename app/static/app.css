@@ -698,6 +698,8 @@ input[type="search"] { max-width: 320px; }
 @media (max-width: 400px) {
   /* Beschriftung unter das Kästchen, damit „bevorzugen“ auch bei 320 px ganz in seine Spalte passt. */
   .src-editor-row .cell-check { flex-direction: column; align-items: flex-start; gap: 3px; }
+  /* Breite Systemschriften (z. B. DejaVu Sans) machen „bevorzugen“ breiter als die Spalte: dann trennen. */
+  .src-editor-row .cell-check-text { max-width: 100%; hyphens: auto; overflow-wrap: anywhere; }
 }
 .auth-form { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; }
 .auth-form label { display: grid; gap: 4px; font-size: 13px; color: var(--ink-muted); min-width: 180px; }
