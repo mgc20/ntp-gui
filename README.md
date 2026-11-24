@@ -7,7 +7,7 @@
 
 <p align="center">
   <a href="https://github.com/mgc20/ntp-gui/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/mgc20/ntp-gui/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="https://github.com/mgc20/ntp-gui/releases/latest"><img alt="Release" src="https://img.shields.io/badge/release-v1.9.0-0969da"></a>
+  <a href="https://github.com/mgc20/ntp-gui/releases/latest"><img alt="Release" src="https://img.shields.io/badge/release-v1.10.0-0969da"></a>
   <img alt="Plattformen" src="https://img.shields.io/badge/platform-amd64%20%7C%20arm64-1a7f37">
   <img alt="Image" src="https://img.shields.io/badge/image-ghcr.io-8250df">
   <a href="LICENSE"><img alt="Lizenz: MIT" src="https://img.shields.io/badge/license-MIT-59636e"></a>
@@ -1201,9 +1201,73 @@ Die Seite **Uhrqualität** zeigt, was die Uhr deines Servers langfristig beeinfl
   Countdown (bis 24 Zeichen), `?cd=main` macht ihn zur Hauptanzeige statt der Zeile unter der Uhr. `?timer=90s|25m|1h30m`
   ist eine Eieruhr nur für dieses Gerät (Leertaste startet und hält an, R setzt zurück); ohne Ziel startet die Leertaste
   eine Stoppuhr. Tasten: F Vollbild, D Design, L Layout, U UTC groß, T Zehntel (im Design `tc`: Zehntel oder
-  Frames; ist dort der Countdown mit `?cd=main` die Hauptanzeige, schaltet T dessen Zehntel), O On Air nur auf diesem Gerät, + und − Größe, A Uhrzeit ansagen
+  Frames; ist dort der Countdown mit `?cd=main` die Hauptanzeige, schaltet T dessen Zehntel), O On Air nur auf diesem Gerät, N Nachtmodus, + und − Größe, A Uhrzeit ansagen
   (Screenreader), ? Übersicht. `?lock=1` schaltet die Tasten ab und blendet Design, Ton und Anpassen aus; Vollbild,
   Hell/Dunkel, Rotlicht und „Mein Gerät“ bleiben (Rotlicht und Hell/Dunkel gelten je Gerät und haben keinen Parameter).
+- **Eieruhr, Pomodoro, eigene Countdowns und Nachtmodus (ab 1.10, Studiouhr):** Der Knopf **Timer** öffnet ein Panel
+  mit einer **Eieruhr** (1, 3, 5, 10, 15 oder 30 min oder eine eigene Dauer wie `7`, `7:30` oder `1h30m`), am
+  Countdown dann Start/Anhalten, **+1 min** und Zurücksetzen. Ist die Zeit um, steht „Zeit ist um!“ mit Rahmen da und
+  die Uhr zählt die Überzeit hoch – ohne Blinken. **Pomodoro** wechselt von selbst zwischen Arbeit und Pause (jede
+  vierte Pause ist lang, dreimal so lang, höchstens 30 min, aber nie kürzer als die normale Pause) und zählt die
+  geschafften Runden; Dauern per Adresse mit `?pomo=50m&pause=10m`. „Ton am Ende“ piept dreimal kurz und einmal lang,
+  aber erst nach deinem Klick und nur, solange die Seite offen ist – ein Wecker ist das nicht. Wechselst du in einen
+  anderen Tab, plant die Uhr die Töne bis zum Ende voraus (Browser drosseln Hintergrund-Tabs); beendet der Browser den
+  Tab oder schläft das Gerät, bleibt der Ton aus. Lässt der Browser kein Speichern zu (privates Fenster), sagt das
+  Panel das beim Merken. **Eigene Countdowns** (bis zu fünf, Beschriftung und Ziel wie `?label=` und `?until=`) merkt
+  sich nur dieser Browser; ein Klick öffnet `/clock?until=…&label=…`. Eingebaut sind `?goal=newyear` (Neujahr),
+  `?goal=dst` (nächste Zeitumstellung), `?goal=unix` (Unixzeit 2 000 000 000), `?goal=ntp` (Ende der NTP-Ära 2036) und `?goal=y2038`
+  (Jahr-2038-Problem: Unixzeit 2³¹ am 19.01.2038 03:14:08 UTC),
+  gerechnet wie `?until=` in der Zeitzone des Servers. Der **Nachtmodus** dimmt die Uhr (Knopf **Nacht** oder Taste
+  N); mit `?dim=22-6` schaltet er nach Uhrzeit (volle Stunden in der Ortszeit des Geräts, auch wenn groß UTC oder die
+  Zone des Servers steht), `?dimlevel=20..80` setzt die Helligkeit in % (Standard 40), `?dimred=1` macht ihn rot.
+  Gedimmt sinkt der Kontrast bewusst (bei 40 % etwa 2,6:1); wünscht das System mehr Kontrast (`prefers-contrast:
+  more`), bleibt die Uhr mindestens zu 60 % hell. Von Hand umgeschaltet gilt bis zum nächsten Wechsel des Zeitplans.
+  Das On-Air/REC-Signal (`?signal=1`) dimmt der Nachtmodus nicht: Band und Rahmen bleiben rot und voll deckend.
+  Timer, Pomodoro und eigene Countdowns laufen nur im Browser, nichts geht an den Server. Mit `?fun=0` (in den
+  Voreinstellungen `studio`, `tile` und `banner`), im Kiosk, mit `?lock=1`, in der Kachel und in einer
+  OBS-Browserquelle gibt es diese Knöpfe nicht; in OBS fehlen auch Leiste und Knöpfe am Countdown. Lädt ein Profil
+  (`?p=`) nicht, etwa weil der Server kurz nicht antwortet, bleiben Spielereien und Ostereier vorsichtshalber aus, bis
+  das Profil da ist (die Seite lädt dann neu). In Fenstern bis 480 px Höhe (Handy quer, Streifen) bleibt die Leiste
+  einzeilig: Passen nicht alle Knöpfe hinein, wischst bzw. rollst du die Knopfgruppe seitlich.
+- **Binäruhr, Mondphase, Nerd-Zeile und Fortschrittsbalken (ab 1.10, Studiouhr):** `?design=binary` zeigt die Zeit
+  als Lämpchen – je Ziffer eine Spalte mit 8-4-2-1 (BCD, Standard) oder mit `?bin=plain` Stunde, Minute und Sekunde je
+  als Dualzahl (32 … 1); die Dezimalwerte stehen zum Ablesen daneben. Unter der Uhr gibt es drei Zusätze, alle
+  standardmäßig aus und einzeln per `?show=` einzuschalten (nennt `show` nur Zusätze, bleibt der Rest der Uhr, wie er
+  ist; mit Profil bleibt dessen Auswahl): `moon` zeigt die **Mondphase** mit Name und beleuchtetem Anteil, rein rechnerisch im Browser ohne Standort
+  (Neu- und Vollmond auf etwa ±1 Tag, meist viel genauer); ein Klick auf den Mond zeigt ihn wie auf der Südhalbkugel,
+  das merkt sich nur dieser Browser. `nerd` zeigt die **Nerd-Zeile**: Unixzeit, TAI (mit dem Abstand TAI−UTC, den der
+  Server aus seiner leap-seconds.list kennt – ohne lesbare Liste steht dort „–“), GPS-Woche und -Sekunde, MJD, Tag im
+  Jahr und ISO-Datum mit Woche (`2026-W48-1`); wo Höhe frei ist (Bühne ab 700 px, nicht im Banner), dazu die Unixzeit
+  hexadezimal und Stunde:Minute römisch (Mitternacht „N:N“). Unix-Millisekunden zeigt die Zeile bewusst nicht: Sie
+  wird einmal je Sekunde gezeichnet, die Millisekunden stünden also fast still. `progress` zeigt
+  **Fortschrittsbalken** für Tag und Jahr („dieses Jahr ist zu 89 % vorbei“), mit laufender Eieruhr oder Pomodoro
+  deren Balken und den Tag; `?bars=day,week,month,year,timer` wählt selbst. Tag im Jahr, ISO-Datum und Balken gelten
+  für das angezeigte Datum – sonst die Ortszeit deines Geräts, im Design `tc` mit abweichender Zone des Servers dessen
+  Zone. Die Voreinstellung `nerd` bringt alle drei mit. Mit `?fun=0` (Voreinstellungen `studio`, `tile`, `banner`), im
+  Kiosk, in der Kachel und im Streifen gibt es keine Zusätze, auf E-Ink keine Nerd-Zeile; im Banner neben Countdown
+  oder Weltzeit-Leiste nur, wenn er mindestens 360 px hoch ist. Den Mond umschalten kannst du nur, wo es auch die
+  Knöpfe Timer und Nacht gibt. `/api/v1/time` meldet
+  dafür zusätzlich `tai_utc` (eine Zahl aus der öffentlichen Schaltsekunden-Liste); sonst geht nichts an den Server.
+- **Spiel, Zeitzeichen und Ostereier (ab 1.10, Studiouhr):** Der Knopf **Spiel** öffnet **„Tippe auf :00“**: Tippe auf
+  „Jetzt!“, genau wenn die Uhr auf die volle Sekunde (oder wahlweise die volle Minute) springt. Die Uhr nimmt den
+  Zeitstempel deines Tippens, rechnet ihn auf ihre Serverzeit um und zeigt die Abweichung in ms („12 ms zu spät“) samt
+  Wertung, daneben die Messgenauigkeit (Abgleich ± halbe Laufzeit, Genauigkeit der Serveruhr, eine Bildauffrischung).
+  Den Bestwert merkt sich nur dieser Browser; lässt er kein Speichern zu, gilt er bis zum Neuladen. Im Panel **Ton**
+  gibt es dazu das **Zeitzeichen** wie im Radio: fünf kurze Töne und ein langer auf der vollen Stunde (oder jede
+  Minute), auf die volle Stunde deiner Ortszeit. Es startet nur nach deinem Klick und ist ausdrücklich keine Referenz:
+  Browser-Audio und Lautsprecher verzögern den Ton um einige bis weit über 100 ms (Bluetooth mehr). Im Hintergrund-Tab
+  plant die Uhr die Töne bis zur nächsten vollen Stunde bzw. Minute voraus; schläft das Gerät oder beendet der Browser
+  den Tab, bleibt das Zeitzeichen aus. **Ostereier**
+  zeigt die Uhr als Zeile über der Bühne: um 13:37, um 12:34:56, in den ersten zehn Minuten des neuen Jahres (mit
+  **Konfetti**), am Tag einer möglichen oder angekündigten Schaltsekunde und am Tag der Zeitumstellung. Der
+  **Konami-Code** (↑ ↑ ↓ ↓ ← → ← → B A) bringt Konfetti und schaltet bis zum Neuladen auf die Binäruhr. Konfetti fällt
+  nur per CSS (zwei Durchläufe, dann ist es weg); wünscht dein System weniger Bewegung, bleibt es beim Text.
+  Die Ostereier richten sich nach der großen Zeit (Taste U: UTC, dann ohne Zeitumstellung; Design `tc` mit Zone des
+  Servers: deren Zeit und Tag). `?eggs=0` schaltet alle Ostereier ab (auch die Schaltsekunden-Zeile; die Ankündigung
+  im Band bleibt). Spiel und Zeitzeichen gibt es nur, wo auch Timer und Nacht erscheinen: nie mit `?fun=0`
+  (Voreinstellungen `studio`, `tile`, `banner`), im Kiosk, mit `?lock=1`, in der Kachel und in OBS – dort gibt es auch
+  keine Ostereier (also auch keine Schaltsekunden-Zeile) und kein Konfetti. Im Layout Streifen (auch per Taste L) steht
+  nur die Zeit: kein Osterei, kein Konfetti. Während des Prüfbilds (`?test=sync`) ebenso.
 - **Timecode-Anzeige (Studiouhr, Design `tc`):** `/clock?design=tc` zeigt die Tageszeit des Servers als Timecode
   `HH:MM:SS` mit einer Feinstelle, gerechnet in der Zeitzone des Servers; weicht sie von der deines Geräts ab, gehören
   auch Datum und Woche darunter zur Zone des Servers, und nach Taste U steht dessen Zeit mit Zonenname in der
@@ -2190,6 +2254,17 @@ Meist musst du beim Update nichts von Hand umbauen. Was sich zwischen zwei Versi
   `ntp-gui.db` übernommen und als `history.json.gz.migrated` aufbewahrt. Kann die Datenbank
   nicht geöffnet werden, arbeitet der Verlauf wie in 1.2 weiter.
 
+### Von 1.9 auf 1.10
+
+Nichts musst du umbauen; das Einstellungsschema ändert sich nicht. Auf der Studiouhr (`/clock`) fällt
+dir vielleicht auf:
+
+- Die Voreinstellungen `studio`, `tile` und `banner` setzen `fun=0`: keine Knöpfe Timer, Spiel und
+  Nacht, keine Zusätze und keine Ostereier. Die Voreinstellung `night` dimmt jetzt von 22 bis 7 Uhr.
+- Das Hinweisfeld zur möglichen Schaltsekunde am 30.6. und 31.12. über der Uhr gilt als Osterei und
+  fehlt deshalb mit `fun=0` bzw. `eggs=0`, im Kiosk, mit `lock=1`, in OBS, auf E-Ink sowie in Kachel
+  und Streifen. Die Ankündigung einer Schaltsekunde im Band bleibt.
+
 ### Von 1.8 auf 1.9
 
 Diese Änderungen greifen ohne Hinweiskarte, weil sich das Einstellungsschema nicht ändert:
@@ -2333,7 +2408,7 @@ Updates vor. Ein Release-Build läuft ohne Cache, zieht also immer aktuelle Debi
 **Herkunft prüfen** (GitHub-CLI, sobald das Repository öffentlich ist):
 
 ```bash
-gh attestation verify oci://ghcr.io/mgc20/ntp-gui:1.9.0 -R mgc20/ntp-gui
+gh attestation verify oci://ghcr.io/mgc20/ntp-gui:1.10.0 -R mgc20/ntp-gui
 ```
 
 Scheitert ein Schritt, entsteht kein halber Release. Bei einem privaten Repository

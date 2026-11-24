@@ -80,6 +80,32 @@
 // das zentrale Signal geht vor. Antwortet der Server nicht mehr, bleibt der letzte Zustand stehen und ist als ungewiss
 // markiert. Es ist eine gespiegelte Anzeige mit bis zu etwa 1 s Verzögerung, kein Tally.
 //
+// Studiouhr C1: Spielereien (clockextras.js). Panel „Timer“ mit Eieruhr (Schnellwahl, eigene Dauer, „+1 min“ am
+// Countdown, deutliches Ende, Ton am Ende nur nach Klick), Pomodoro (?pomo=, ?pause=; Arbeit und Pause wechseln von selbst,
+// Zähler), eigene Countdowns (bis zu fünf im localStorage, öffnen als /clock?until=…&label=…) und eingebaute (?goal=:
+// Neujahr, Zeitumstellung, Unixzeit 2 000 000 000, NTP-Ära 2036, Jahr 2038 – auf der Serverzeit wie ?until=). Nachtmodus: gedimmt
+// (data-mode="night", --night per CSSOM) bzw. mit ?dimred=1 im Rotlicht, nach Uhrzeit (?dim=22-6) und von Hand (Knopf
+// „Nacht“, Taste N; gilt bis zum nächsten Wechsel des Zeitplans). Die Knöpfe gibt es nur, wo jemand davorsitzt
+// (fx.funControls): nicht mit fun=0, lock=1, im Kiosk, in der Kachel und in einer OBS-Browserquelle (window.obsstudio).
+// Timer-Stände bleiben im Browser; es gibt keinen neuen Weg zum Server.
+//
+// Studiouhr C2: Design binary (Lämpchen, ?bin=bcd|plain) und Zusätze unter der Uhr, alle Standard aus und nur mit ?show=
+// (moon, nerd, progress; fx.mergeShow trennt sie von den Grundelementen): Mondphase (rein rechnerisch, Klick spiegelt sie
+// für die Südhalbkugel, nur localStorage), Nerd-Zeile (Unix, TAI und GPS mit tai_utc aus /api/v1/time, MJD, Tag im Jahr,
+// ISO-Woche, hex, römisch) und Fortschrittsbalken (?bars=). Nie mit fun=0, im Kiosk, in Kachel und Streifen
+// (fx.extrasShown); im Banner ohne Platz fallen sie weg (checkExtrasRoom). Mond und Kalender-
+// Balken ändern sich einmal je Minute, Nerd-Zeile und Eieruhr-Balken im Sekundentakt – ohne eigenen Zeitgeber.
+//
+// Studiouhr C3: Spiel „Tippe auf :00“ (Panel „Spiel“: Abweichung des Tipps zur vollen Sekunde bzw. Minute der Serverzeit,
+// gemessen mit dem Zeitstempel des Ereignisses, daneben die Messgenauigkeit; Bestwert nur im localStorage), Zeitzeichen
+// im Panel „Ton“ (fünf kurze, ein langer Ton zur vollen Stunde bzw. Minute, nur nach Klick, ausdrücklich keine Referenz)
+// und Ostereier aus der Tabelle fx.EGGS (13:37, 12:34:56, Neujahr mit Konfetti, Schaltsekunde, Zeitumstellung) samt
+// Konami-Code (Konfetti, Binäruhr bis zum Neuladen). Konfetti fällt nur per CSS, bei „weniger Bewegung“ bleibt der Text.
+// Ostereier nur mit fx.eggsAllowed: nie mit eggs=0 oder fun=0 (studio, tile, banner), lock=1, im Kiosk, in der Kachel,
+// in OBS und auf E-Ink, dazu nie im Layout Kachel oder Streifen, auch zur Laufzeit, und nie über dem Prüfbild
+// (fx.eggShown). Spiel und Zeitzeichen gibt es nur, wo auch Timer und Nacht erscheinen (CONTROLS.fun). Ist ein Profil
+// (?p=) angefordert, aber nicht geladen, bleiben Spielereien und Ostereier aus (fx.funWanted).
+//
 // Bewusst ohne app.js/ui.js: Die Seite muss auch ohne Anmeldung (clock_public) laufen und
 // lädt deshalb nur Dateien, die keine Inhalte aus Konfiguration oder Status enthalten
 // (clocksync.js, clockkit.js, clocktc.js, clockworld.js, util.js, i18n.js und die Sprachkataloge).
@@ -92,6 +118,7 @@ import * as cd from "./clockcount.js";
 import * as link from "./clocklink.js";
 import * as tc from "./clocktc.js";
 import * as world from "./clockworld.js";
+import * as fx from "./clockextras.js";
 import { copyText } from "./util.js";
 
 const BURST = 5;
@@ -118,6 +145,8 @@ const PROFILE = link.profileFromSearch(window.location.search);
 // Startwerte aus der Adresse bzw. dem gemerkten Stand; ein Profil (?p=) kommt in start() dazu (Object.assign).
 const params = kit.parseParams(link.effectiveQuery({ search: window.location.search, stored: store(link.STORE_KEY) || "",
   zones: ZONES }), ZONES);
+// OBS Studio legt in seiner Browserquelle window.obsstudio an: Dort sieht niemand Knöpfe, also keine Bedienung.
+const OBS = typeof window.obsstudio === "object" && window.obsstudio !== null;
 const reducedMotion = window.matchMedia ? window.matchMedia("(prefers-reduced-motion: reduce)") : { matches: false };
 const state = {
   sync: null,          // beste Messung der letzten Runde {offset, rtt, accuracy, at, perf}
@@ -155,6 +184,7 @@ const state = {
   profile: null,       // geladenes Profil (?p=) { name, title, params, profiles_rev }
   profileKey: "",      // Inhalt des Profils beim Laden (Vergleich nach einer Änderung von profiles_rev)
   profileRev: null,    // zuletzt gesehenes profiles_rev
+  profileShow: null,   // ?show= des Profils allein (fx.mergeShow)
   profileBusy: false,
   profileError: "",
   profileTries: 0,     // gescheiterte Abrufe in Folge (Abstand des nächsten Versuchs)
@@ -178,12 +208,45 @@ const state = {
   signalKey: "",       // Zustand des Signals beim letzten Zeichnen
   polling: false,      // eine Zustandsabfrage läuft noch (Sekundentakt: keine zweite daneben)
   headHeight: 0,       // Höhe der Kopfzeile, zuletzt ohne Signal gemessen (signalSpace)
+  pomo: null,          // Pomodoro (fx.pomoNew …) zum lokalen Timer, null: Eieruhr bzw. Stoppuhr
+  eggMs: null,         // Dauer der im Panel gewählten Eieruhr (null: ?timer= aus der Adresse)
+  endTone: false,      // „Ton am Ende“ (nur nach Klick, nicht gemerkt)
+  ended: false,        // Eieruhr abgelaufen: deutliches Ende (data-cd-end)
+  nightOverride: null, // Nachtmodus von Hand (Knopf, Taste N): true/false bis zum nächsten Wechsel des Zeitplans
+  nightPrev: null,     // Zeitplan beim letzten Takt (true/false, null: kein ?dim=)
+  nightKey: "",        // zuletzt angewandter Nachtmodus
+  own: [],             // eigene Countdowns (fx.ownList aus dem localStorage)
+  extraWish: [],       // Zusätze aus ?show= (moon, nerd, progress), fx.splitShow
+  extrasKey: "",       // sichtbare Zusätze und Balken beim letzten Zeichnen (Wechsel: neu einpassen)
+  extrasHeight: 0,     // Höhe der Zusätze beim letzten Einpassen der Zeit
+  extrasNoRoom: false, // Zusätze passten nicht in die Bühne (checkExtrasRoom) – bis zur nächsten Größenänderung aus
+  extrasAt: null,      // Tag, Zone und Stunde der Anzeige beim letzten Zeichnen der Zusätze (renderExtras)
+  extrasRefit: { second: -1, count: 0 },   // Neu-Einpassen durch watchExtras in dieser Sekunde
+  moonKey: "",         // Minute, Halbkugel und Sprache der letzten Mond-Zeichnung
+  barsKey: "",         // Minute und Sprache der letzten Zeichnung der Kalender-Balken
+  bars: [],            // [{ kind, node, fill, value }] der Fortschrittsbalken
+  nerd: null,          // { [key]: Wertknoten } der Nerd-Zeile
+  south: false,        // Mond wie auf der Südhalbkugel (nur dieser Browser, localStorage)
+  game: { unit: "second", best: {} },   // Spiel „Tippe auf :00“
+  eggKey: "",          // zuletzt gezeigtes Osterei (Konfetti nur beim Wechsel)
+  dst: { key: "", shift: 0 },   // Zeitumstellung am Tag der Anzeige (fx.dstShiftOfDay, je Tag einmal gerechnet)
+  konami: 0,           // Fortschritt im Konami-Code
+  konamiUntil: 0,      // performance.now(), bis zu dem das Konami-Osterei steht
+  confettiTimer: null,
 };
+/** Bedienung: Start/Anhalten am Countdown (actions) und die Spielereien (fun) – nach dem Profil neu bestimmt. */
+let CONTROLS = { actions: true, fun: true };
+/** fun nach dem Profil – aus, solange ein angefordertes Profil nicht geladen ist (fx.funWanted). */
+let FUN_ON = true;
+/** Ostereier und Konfetti erlaubt (fx.eggsAllowed) – nach dem Profil bestimmt. */
+let EGGS_ON = false;
 let COUNT_MODE = "watch";
 function initCountMode() {
-  COUNT_MODE = params.until ? "until" : (params.timer ? "timer" : "watch");
-  state.timer = COUNT_MODE === "timer" ? cd.timerNew(params.timer) : null;
-  if (params.until && params.timer) console.info("/clock: until und timer zugleich – es gilt until");
+  COUNT_MODE = params.until || params.goal ? "until" : (params.timer || params.pomo ? "timer" : "watch");
+  // ?pomo= geht ?timer= vor: Der Timer läuft dann die Phasen des Pomodoro ab.
+  state.pomo = COUNT_MODE === "timer" && params.pomo ? fx.pomoNew(params.pomo, params.pause) : null;
+  state.timer = COUNT_MODE === "timer" ? cd.timerNew(state.pomo ? fx.pomoPhaseMs(state.pomo) : params.timer) : null;
+  if ((params.until || params.goal) && (params.timer || params.pomo)) console.info("/clock: Ziel und timer/pomo zugleich – es gilt das Ziel");
   if (params.ignored.length) console.info(`/clock: unzulässige Werte ignoriert (${params.ignored.join(", ")})`);
 }
 
@@ -199,12 +262,17 @@ function setHidden(node, hidden) {
   if (node.hidden !== hidden) node.hidden = hidden;
 }
 
+/**
+ * Lesen (ohne value): gespeicherter Text oder null. Schreiben: true, wenn der Wert danach wirklich im Speicher steht –
+ * false bei gesperrtem Speicher (privates Fenster, gesperrte Website-Daten, volles Kontingent). Wirft nie.
+ */
 function store(key, value) {
   try {
     if (value === undefined) return window.localStorage.getItem(key);
     window.localStorage.setItem(key, value);
+    return window.localStorage.getItem(key) === value;
   } catch (error) { /* privates Fenster – dann eben ohne Merken */ }
-  return null;
+  return value === undefined ? null : false;
 }
 
 // --- Messung -------------------------------------------------------------------
@@ -527,6 +595,7 @@ function tick() {
   const nowMs = serverMs();
   const now = new Date(nowMs);
   render(now);
+  renderNight();
   const remaining = renderCountdown(nowMs);
   const info = renderSync();
   // Zustandswechsel der Zeitbasis auch im Band (aria-live) ansagen – nicht nur in der Zeile unter der Uhr.
@@ -579,8 +648,19 @@ function render(now) {
   setText($("iso-week"), t("clock.week", { week }));
   const redrawn = renderWorld(now.getTime());
   renderFace(now, h, m, s);
+  // Zusätze im selben Tag wie Datum und KW (Design tc mit Zone des Servers: dort), römisch die Stunde der Anzeige.
+  const shown = zoned ? new Date(now.getTime() + foreign) : null;
+  renderExtras(now.getTime(), { day, offset: zoned ? foreign : null,
+    h: shown ? shown.getUTCHours() : h, m: shown ? shown.getUTCMinutes() : m });
   renderShift(now.getTime());
-  renderEgg(now.getTime());
+  // Osterei zur großen Zeit: Design tc mit Zone des Servers deren Zeit und Tag (ohne Taste U), sonst wie oben.
+  if (shown && !utc) {
+    renderEgg(now.getTime(), { h: shown.getUTCHours(), m: shown.getUTCMinutes(), s: shown.getUTCSeconds(),
+      mo: shown.getUTCMonth() + 1, d: shown.getUTCDate() }, tcZone());
+  } else {
+    renderEgg(now.getTime(), { h, m, s, mo: utc ? now.getUTCMonth() + 1 : now.getMonth() + 1,
+      d: utc ? now.getUTCDate() : now.getDate() });
+  }
   const minuteKey = `${h}:${m}|${language()}|${foreign}`;
   if (minuteKey !== state.minuteKey || redrawn) {
     state.minuteKey = minuteKey;
@@ -616,6 +696,7 @@ function buildFace() {
   else if (state.design === "flip") buildFlip(face);
   else if (state.design === "wort") buildWort(face);
   else if (state.design === "tc") buildTc(face);
+  else if (state.design === "binary") buildBinary(face);
 }
 
 // Ohne Sekunden (E-Ink, ?show= ohne „seconds“) nur HH:MM.
@@ -792,7 +873,7 @@ function renderFace(now, h, m, s) {
   else if (state.design === "wort" && face.text.dataset.key !== minuteKey) {
     face.text.dataset.key = minuteKey;
     renderWort(h, m);
-  }
+  } else if (state.design === "binary") renderBinary(h, m, s);
   setAttr($("face"), "data-time", params.eink ? `${pad(h)}:${pad(m)}` : `${pad(h)}:${pad(m)}:${pad(s)}`);
 }
 
@@ -830,6 +911,98 @@ function renderStudio(now, h, m, s) {
   else if (line === "tz2") sub = `${world.worldEntries(params.tz, params.tzl)[0].label} ${zoneTime(now)}`;
   else if (line === "date") sub = dateText(now, "short");
   setText(face.sub, sub);
+}
+
+// --- Design binary (Studiouhr C2) ---------------------------------------------------------------------------------
+// Lämpchen als SVG (Kreise mit Klasse on), darunter bzw. daneben die Dezimalwerte zum Ablesen. ?bin=bcd: je Ziffer eine
+// Spalte mit den Gewichten 8-4-2-1 von oben; ?bin=plain: Stunde, Minute und Sekunde je als Zeile mit 32 … 1 von links.
+// Je Sekunde wechseln nur Klassen der Lämpchen, deren Zustand sich ändert – keine Animation, kein Zeitgeber.
+const BIN_STEP = 22;   // Abstand der Lämpchen (viewBox-Einheiten)
+const BIN_R = 8;
+
+function buildBinary(face) {
+  const seconds = digitCount() === 6;
+  const plain = params.bin === "plain";
+  const sample = fx.binaryLamps(0, 0, 0, { mode: params.bin, seconds });
+  const text = (x, y, value, cls, anchor = "middle") => {
+    const node = svgEl("text", { x, y, class: cls, "text-anchor": anchor });
+    node.textContent = value;
+    return node;
+  };
+  const lamps = [];
+  const values = [];
+  let svg;
+  if (plain) {
+    // Zeilen: links die Einheit (h, min, s), oben die Gewichte, rechts der Wert.
+    const left = 34;
+    const width = left + 6 * BIN_STEP + 40;
+    const height = 18 + sample.groups.length * BIN_STEP + 4;
+    svg = svgEl("svg", { viewBox: `0 0 ${width} ${height}`, class: "bin bin-plain", "aria-hidden": "true", focusable: "false",
+      preserveAspectRatio: "xMidYMid meet" });
+    [32, 16, 8, 4, 2, 1].forEach((w, i) => svg.append(text(left + i * BIN_STEP + BIN_STEP / 2, 12, String(w), "bin-weight")));
+    sample.groups.forEach((group, row) => {
+      const cy = 18 + row * BIN_STEP + BIN_STEP / 2;
+      const sec = row === 2;
+      svg.append(text(left - 8, cy + 4, ["h", "min", "s"][row], "bin-unit", "end"));
+      const offset = 6 - group.bits.length;
+      lamps.push(group.bits.map((bit, i) => {
+        const lamp = svgEl("circle", { cx: left + (offset + i) * BIN_STEP + BIN_STEP / 2, cy, r: BIN_R,
+          class: sec ? "bin-lamp is-sec" : "bin-lamp" });
+        svg.append(lamp);
+        return lamp;
+      }));
+      const value = text(width - 4, cy + 5, "", sec ? "bin-value is-sec" : "bin-value", "end");
+      svg.append(value);
+      values.push(value);
+    });
+  } else {
+    // Spalten: links die Gewichte, unter jeder Spalte ihre Ziffer; zwischen Stunde, Minute und Sekunde etwas Abstand.
+    const left = 18;
+    const gap = 10;
+    const cols = sample.groups.length;
+    const colX = (i) => left + i * BIN_STEP + Math.floor(i / 2) * gap + BIN_STEP / 2;
+    const width = colX(cols - 1) + BIN_STEP / 2 + 2;
+    const height = 4 * BIN_STEP + 22;
+    svg = svgEl("svg", { viewBox: `0 0 ${width} ${height}`, class: `bin bin-bcd bin-cols-${cols}`, "aria-hidden": "true",
+      focusable: "false", preserveAspectRatio: "xMidYMid meet" });
+    [8, 4, 2, 1].forEach((w, row) => svg.append(text(8, row * BIN_STEP + BIN_STEP / 2 + 4, String(w), "bin-weight")));
+    sample.groups.forEach((group, i) => {
+      const sec = i >= 4;
+      const offset = 4 - group.bits.length;
+      lamps.push(group.bits.map((bit, row) => {
+        const lamp = svgEl("circle", { cx: colX(i), cy: (offset + row) * BIN_STEP + BIN_STEP / 2, r: BIN_R,
+          class: sec ? "bin-lamp is-sec" : "bin-lamp" });
+        svg.append(lamp);
+        return lamp;
+      }));
+      const value = text(colX(i), 4 * BIN_STEP + 17, "", sec ? "bin-value is-sec" : "bin-value");
+      svg.append(value);
+      values.push(value);
+    });
+  }
+  let ampm = null;
+  if (params.h12) {
+    // AM/PM in der freien Ecke: bei plain oben links (über den Einheiten), bei bcd unten links (neben den Ziffern).
+    ampm = svgEl("text", { x: 1, y: plain ? 12 : 4 * BIN_STEP + 17, class: "bin-ampm" });
+    svg.append(ampm);
+  }
+  face.append(svg);
+  Object.assign(state.face, { svg, lamps, values, ampm, seconds });
+}
+
+function renderBinary(h, m, s) {
+  const face = state.face;
+  const hour = kit.hourText(h, { h12: params.h12, lz: true });
+  const lit = fx.binaryLamps(params.h12 ? Number(hour.text) : h, m, s, { mode: params.bin, seconds: face.seconds });
+  if (!lit) return;
+  lit.groups.forEach((group, i) => {
+    group.bits.forEach((bit, row) => {
+      const lamp = face.lamps[i][row];
+      if (lamp.classList.contains("on") !== bit.on) lamp.classList.toggle("on", bit.on);
+    });
+    setText(face.values[i], params.bin === "plain" ? pad(group.value) : String(group.value));
+  });
+  if (face.ampm) setText(face.ampm, hour.ampm);
 }
 
 // --- Design tc: Timecode-Anzeige (Studiouhr B1) ------------------------------------------------
@@ -1292,15 +1465,79 @@ function fitGrid(main) {
   showWorld(0);
 }
 
-// --- Osterei: Schaltsekunde ------------------------------------------------------------
-function renderEgg(nowMs) {
-  const status = state.status || {};
-  const kind = state.status ? kit.leapEgg(nowMs, status.leap, status.leap_next) : null;
+// --- Ostereier (C3): Tabelle fx.EGGS, Konami-Code, Konfetti nur per CSS ----------------------------------------
+const KONAMI_MS = 10_000;     // so lange steht das Konami-Osterei
+const CONFETTI_MS = 8_000;    // so lange liegen die Schnipsel im DOM (zwei Durchläufe der CSS-Animation samt Versatz)
+const CONFETTI_PIECES = 24;
+
+/**
+ * Zeitumstellung am Tag der Anzeige in `zone` (null: Ortszeit dieses Geräts), je Tag und Zone einmal gerechnet. Steht
+ * groß UTC (Taste U), gibt es keine Umstellung.
+ */
+function dstToday(ms, zone = null) {
+  if (state.utcBig) return 0;
+  const p = cd.zoneParts(ms, zone);
+  const key = `${zone || ""}|${p.y}-${p.mo}-${p.d}`;
+  if (state.dst.key !== key) state.dst = { key, shift: fx.dstShiftOfDay(ms, zone) };
+  return state.dst.shift;
+}
+
+/**
+ * Osterei zur angezeigten Zeit time = { h, m, s, mo, d } (zone: deren Zeitzone, null: dieses Gerät) – nur mit EGGS_ON
+ * (sonst nie, auch nicht die Schaltsekunde) und nie in Kachel und Streifen: Dort steht nur die Zeit (wie beim Konfetti).
+ */
+function renderEgg(nowMs, time, zone = null) {
   const node = $("leap-egg");
-  if (!kind) { node.hidden = true; return; }
-  const text = t(`clock.egg_${kind}`);
-  if (node.textContent !== text) node.textContent = text;
-  node.hidden = false;
+  let egg = null;
+  if (fx.eggShown({ allowed: EGGS_ON, layout: state.layout, test: Boolean(state.test) })) {
+    if (state.konamiUntil > performance.now()) egg = { kind: "konami", text: "konami", confetti: true };
+    else {
+      const status = state.status || {};
+      const leap = state.status ? kit.leapEgg(nowMs, status.leap, status.leap_next) : null;
+      egg = fx.eggFor(time, { leap, dst: dstToday(nowMs, zone) });
+    }
+  }
+  if (!egg) {
+    setHidden(node, true);
+    state.eggKey = "";
+    return;
+  }
+  setText(node, t(`clock.egg_${egg.text}`, { min: Math.abs(state.dst.shift) }));
+  setAttr(node, "data-egg", egg.kind);
+  setHidden(node, false);
+  if (egg.confetti && egg.text !== state.eggKey) startConfetti();
+  state.eggKey = egg.text;
+}
+
+/** Konfetti: fallende Schnipsel nur per CSS-Animation (transform, opacity), nach CONFETTI_MS wieder weg. */
+function startConfetti() {
+  if (fx.confettiMode({ allowed: EGGS_ON, wanted: true, reduced: reducedMotion.matches }) !== "css") return;
+  // Kachel und Streifen: dort steht nur die Zeit; über dem Prüfbild auch kein Konfetti.
+  if (!fx.eggShown({ allowed: true, layout: state.layout, test: Boolean(state.test) })) return;
+  const box = $("confetti");
+  if (!box.childElementCount) box.append(...Array.from({ length: CONFETTI_PIECES }, () => document.createElement("i")));
+  box.classList.remove("is-on");
+  box.hidden = false;
+  void box.offsetWidth;   // Animation neu beginnen lassen
+  box.classList.add("is-on");
+  clearTimeout(state.confettiTimer);
+  state.confettiTimer = setTimeout(stopConfetti, CONFETTI_MS);
+}
+
+function stopConfetti() {
+  clearTimeout(state.confettiTimer);
+  const box = $("confetti");
+  box.classList.remove("is-on");
+  box.hidden = true;
+  box.replaceChildren();
+}
+
+/** Konami-Code vollständig: Osterei mit Konfetti, Binäruhr bis zum Neuladen (nicht gemerkt). */
+function konami() {
+  state.konamiUntil = performance.now() + KONAMI_MS;
+  state.eggKey = "";
+  if (state.design !== "binary") setDesign("binary", false);
+  else render(new Date(serverMs()));
 }
 
 // --- Zustandsband ------------------------------------------------------------------
@@ -1444,7 +1681,7 @@ function togglePanel(buttonId, panelId, open) {
   panel.hidden = !show;
   $(buttonId).setAttribute("aria-expanded", show ? "true" : "false");
   // Mit offenem Panel bekommt die Bühne eine Mindesthöhe (sonst drückte das Panel sie auf null zusammen).
-  document.body.classList.toggle("has-panel", !$("tone-panel").hidden || !$("device-panel").hidden || !$("custom-panel").hidden);
+  document.body.classList.toggle("has-panel", ["tone-panel", "device-panel", "custom-panel", "timer-panel", "game-panel"].some((id) => !$(id).hidden));
   return show;
 }
 
@@ -1502,6 +1739,9 @@ function toneStatus(text) {
 }
 
 function toneAccuracyText() {
+  if (state.tone && state.tone.mode.startsWith("pips-")) {
+    return t("clock.tone_pips_running", { scope: t(`clock.tone_pips_scope.${state.tone.mode.slice(5)}`) });
+  }
   if (!state.sync) return t("clock.tone_unsynced");
   // Abgleich (± halbe RTT) plus Raster der Audiozeit (mit Ausgabezeitstempel ≈ 1 ms, sonst ≈ 3 ms).
   const extra = state.tone && state.tone.exact ? 1 : 3;
@@ -1519,8 +1759,7 @@ async function startTone(mode) {
   state.tone.mode = mode;
   state.tone.last = -Infinity;
   try { await state.tone.ctx.resume(); } catch (error) { /* bleibt stumm, Anzeige läuft trotzdem */ }
-  $("tone-seconds").setAttribute("aria-pressed", mode === "seconds" ? "true" : "false");
-  $("tone-countdown").setAttribute("aria-pressed", mode === "countdown" ? "true" : "false");
+  pressTone(mode);
   toneTick(trueMs());
 }
 
@@ -1529,10 +1768,28 @@ function stopTone() {
     state.tone.ctx.close().catch(() => {});
     state.tone = null;
   }
-  $("tone-seconds").setAttribute("aria-pressed", "false");
-  $("tone-countdown").setAttribute("aria-pressed", "false");
+  pressTone(null);
   $("tone-count").hidden = true;
   toneStatus(t("clock.tone_stopped"));
+}
+
+/** Knöpfe des Ton-Panels: der laufende Modus ist gedrückt. */
+function pressTone(mode) {
+  for (const [id, value] of [["tone-seconds", "seconds"], ["tone-countdown", "countdown"], ["tone-pips-hour", "pips-hour"],
+    ["tone-pips-minute", "pips-minute"]]) $(id).setAttribute("aria-pressed", mode === value ? "true" : "false");
+}
+
+/**
+ * Geplante Töne bis 1,5 s voraus: Sekundenpiep und „Uhr stellen“ (kit.planTones) bzw. Zeitzeichen (fx.planPips, auf die
+ * volle Stunde der Ortszeit dieses Geräts – nach Taste U die von UTC).
+ */
+function plannedTones(clock, tone) {
+  if (!tone.mode.startsWith("pips-")) return kit.planTones(clock, { mode: tone.mode, afterSecond: tone.last, horizonMs: 1500 });
+  const scope = tone.mode.slice(5);
+  const offsetMs = state.utcBig ? 0 : -new Date(clock.server + 1500).getTimezoneOffset() * 60_000;
+  // Versteckter Tab: bis zum nächsten Ziel vorausplanen (der Browser drosselt den Sekundentakt).
+  const horizonMs = fx.pipsHorizonMs(clock.server, { scope, hidden: document.hidden, horizonMs: 1500, offsetMs });
+  return fx.planPips(clock, { scope, afterSecond: tone.last, horizonMs, offsetMs });
 }
 
 function toneTick(nowMs) {
@@ -1544,7 +1801,7 @@ function toneTick(nowMs) {
     const perf = performance.now();
     const clock = kit.audioClock(ctx, perf, trueMs(perf), 0);
     tone.exact = clock.exact;
-    for (const planned of kit.planTones(clock, { mode: tone.mode, afterSecond: tone.last, horizonMs: 1500 })) {
+    for (const planned of plannedTones(clock, tone)) {
       tone.last = planned.second;
       if (planned.at > ctx.currentTime + 0.005) kit.scheduleTone(ctx, planned);
     }
@@ -1561,6 +1818,67 @@ function toneTick(nowMs) {
     count.hidden = true;
   }
   toneStatus(ctx.state === "running" ? toneAccuracyText() : t("clock.tone_blocked"));
+}
+
+// --- Spiel „Tippe auf :00“ (C3) -------------------------------------------------------------------------------------
+const GAME_UNITS = Object.keys(fx.TAP_UNITS);
+
+function openGamePanel() {
+  if (togglePanel("mode-game", "game-panel")) renderGame();
+}
+
+/** Ziel, Bestwert und „Bestwert löschen“ – Texte nur per textContent. */
+function renderGame() {
+  const { unit, best } = state.game;
+  for (const name of GAME_UNITS) setAttr($(`game-${name}`), "aria-pressed", name === unit ? "true" : "false");
+  setText($("game-best"), unit in best ? t("clock.game_best", { unit: t(`clock.game_unit_${unit}`), ms: fx.tapText(best[unit]) })
+    : t("clock.game_best_none"));
+  $("game-reset").disabled = !Object.keys(best).length;
+}
+
+function gameUnit(unit) {
+  state.game.unit = unit;
+  setText($("game-result"), "");
+  setText($("game-detail"), "");
+  renderGame();
+}
+
+/**
+ * Ein Tipp zum Zeitpunkt stamp (event.timeStamp, gleiche Uhr wie performance.now()): Abweichung zur nächsten vollen
+ * Sekunde bzw. Minute der Serverzeit (ohne ?lead=: Der Vorlauf gleicht nur die Verzögerung des Bildschirms aus), dazu
+ * die Messgenauigkeit und der Bestwert.
+ */
+function gameTap(stamp) {
+  if (!CONTROLS.fun) return;
+  if (!state.anchor || state.jumped) { setText($("game-result"), t("clock.game_wait")); return; }
+  const perf = Number.isFinite(stamp) && stamp > 0 && stamp <= performance.now() ? stamp : performance.now();
+  const { unit } = state.game;
+  const deviation = fx.tapDeviation(trueMs(perf), unit);
+  const s = state.status || {};
+  const unsure = fx.tapUncertainty({ rttMs: state.sync.rtt, serverAccMs: typeof s.accuracy === "number" ? s.accuracy * 1000 : NaN,
+    frameMs: state.frameMs });
+  const abs = Math.abs(deviation);
+  const where = abs < 0.5 ? t("clock.game_exact") : t(deviation < 0 ? "clock.game_early" : "clock.game_late", { ms: fx.tapText(abs) });
+  const parts = [where, t(`clock.game_level.${fx.tapLevel(deviation)}`)];
+  if (abs <= unsure.total) parts.push(t("clock.game_within"));
+  const update = fx.tapBestUpdate(state.game.best, unit, deviation);
+  if (update.record) {
+    state.game.best = update.best;
+    parts.push(t(store(fx.TAP_BEST_KEY, fx.tapBestText(update.best)) ? "clock.game_record" : "clock.game_unsaved"));
+  }
+  setText($("game-result"), `${parts[0]}. ${parts.slice(1).join(" ")}`);
+  setText($("game-detail"), t("clock.game_detail", { device: fmtAccuracy(unsure.device), server: fmtAccuracy(unsure.server),
+    frame: fmtAccuracy(unsure.frame) }));
+  renderGame();
+}
+
+function gameReset() {
+  state.game.best = {};
+  removeStored(fx.TAP_BEST_KEY);
+  setText($("game-result"), t("clock.game_reset_done"));
+  setText($("game-detail"), "");
+  renderGame();
+  $("game-tap").focus();
 }
 
 // --- „Wie falsch geht dein Gerät?“ ---------------------------------------------------------
@@ -1609,6 +1927,10 @@ document.addEventListener("visibilitychange", () => {
     if (state.design === "tc" && state.face && state.face.tc) { measureGrain(); tcLoop(); }
     burst();   // nach dem Aufwachen (Tablet im Standby) sofort neu abgleichen
   }
+  // Im Hintergrund drosselt der Browser die Zeitgeber: Töne eines laufenden Countdowns und das Zeitzeichen jetzt bis
+  // zum Ziel vorausplanen.
+  if (document.hidden && state.cdTone) renderCountdown();
+  if (document.hidden && state.tone && state.tone.mode.startsWith("pips-")) toneTick(trueMs());
 });
 
 // --- Countdown, Count-up, Timer (Studiouhr A5) -------------------------------------------------
@@ -1630,8 +1952,12 @@ function browserZone() {
   try { return new Intl.DateTimeFormat().resolvedOptions().timeZone; } catch (error) { return null; }
 }
 
-/** Beschriftung ohne ?label=: „bis 20:15“ (ISO: „bis 2026-12-31 23:59“), mit Zone, wenn sie von der des Browsers abweicht. */
+/**
+ * Beschriftung ohne ?label=: „bis 20:15“ (ISO: „bis 2026-12-31 23:59“), mit Zone, wenn sie von der des Browsers abweicht.
+ * Eingebaute Ziele (?goal=): „bis Neujahr“ usw.
+ */
 function untilLabel(zone) {
+  if (!params.until) return t(`clock.goal_label.${params.goal}`);
   const u = params.until;
   const clock = `${pad(u.h)}:${pad(u.m)}${u.s ? `:${pad(u.s)}` : ""}`;
   const time = u.kind === "iso" ? `${u.y}-${pad(u.mo)}-${pad(u.d)} ${clock}` : clock;
@@ -1671,7 +1997,10 @@ function renderCountdown(nowMs = serverMs()) {
   setHidden(node, !active);
   if (active) setAttr(root, "data-cd", params.cd);
   else root.removeAttribute("data-cd");
-  if (!active) return NaN;
+  if (!active) {
+    if (state.ended) { state.ended = false; delete root.dataset.cdEnd; }
+    return NaN;
+  }
   const opts = { after: params.after, warn: params.warn, dayUnit: t("clock.cd_day"), coarse: params.eink };
   const tenths = state.tenths && !params.eink;
   let view;
@@ -1692,34 +2021,52 @@ function renderCountdown(nowMs = serverMs()) {
       view = cd.countdownView(NaN, opts);   // „--:--“ ohne Stufe, bis die Zone des Servers bekannt ist
       label = params.label || untilLabel(null);
     } else {
-      const target = cd.untilTarget(params.until, nowMs, zone);
+      // ?until= geht vor; sonst ein eingebautes Ziel (?goal=, gleiche Rechenbasis). Ohne Zeitumstellung in Sicht: NaN.
+      const target = params.until ? cd.untilTarget(params.until, nowMs, zone) : fx.goalTarget(params.goal, nowMs, zone);
       remaining = target - nowMs;
       view = cd.countdownView(remaining, opts);
       label = params.label || untilLabel(zone);
-      toneTarget = target;   // absolute Serverzeit: der Ton fällt auf das Ziel, die Anzeige läuft um ?lead= vor
+      if (!Number.isFinite(target)) status = t("clock.goal_none");
+      else toneTarget = target;   // absolute Serverzeit: der Ton fällt auf das Ziel, die Anzeige läuft um ?lead= vor
     }
   } else {
     const perf = performance.now();
+    advancePomo(perf);
     const read = cd.timerRead(state.timer, perf);
     if (read.remaining === null) {
       view = { phase: "watch", level: "none", seconds: NaN,
         text: cd.stopwatchText(read.elapsed, { tenths, decimal: language() === "en" ? "." : ",", dayUnit: opts.dayUnit }) };
       label = params.label || t("clock.cd_stopwatch");
     } else {
-      view = cd.countdownView(read.remaining, opts);
+      // Eieruhr aus dem Panel und Pomodoro: nur Farbstufen, die unterwegs erreicht werden – eine 3-min-Eieruhr ist nicht
+      // von Anfang an „unter 5 min“ gelb.
+      const local = state.pomo || state.eggMs ? { ...opts, warn: localWarn(state.timer.duration) } : opts;
+      view = cd.countdownView(read.remaining, local);
       if (tenths) view = { ...view, text: withTenths(view, read.remaining) };
-      label = params.label || t("clock.cd_timer", { time: cd.fmtSpan(params.timer / 1000) });
+      label = params.label || timerLabel(read);
       if (read.state === "running") {
         toneTarget = trueMs(perf) + read.remaining;
         remaining = read.remaining;
       }
     }
     // Mit ?lock=1 fehlen Kürzel und Start-Knopf: dann nicht „Leertaste oder Start“ versprechen.
-    if (read.state === "idle") status = t(params.lock ? "clock.cd_locked" : "clock.cd_idle");
+    // Ohne Knöpfe (Kiosk, OBS) bleibt nur die Leertaste.
+    const keysOnly = !params.lock && (!CONTROLS.actions || params.kiosk);
+    if (read.state === "idle") status = keysOnly ? t("clock.cd_idle_keys") : t(params.lock ? "clock.cd_locked" : "clock.cd_idle");
     else if (read.state === "paused") status = t("clock.cd_paused");
+    else if (state.pomo && state.pomo.done) status = t("clock.pomo_done", { count: state.pomo.done });
+    // Eieruhr abgelaufen: deutlich (Rahmen, „Zeit ist um!“), ohne Blinken. Pomodoro wechselt stattdessen die Phase.
+    const ended = !state.pomo && fx.timerEnded(read);
+    if (ended) status = t("clock.cd_end");
+    if (ended !== state.ended) {
+      state.ended = ended;
+      if (ended) root.dataset.cdEnd = "1";
+      else delete root.dataset.cdEnd;
+    }
     const button = read.state === "running" ? "clock.cd_stop" : (read.state === "paused" ? "clock.cd_resume" : "clock.cd_start");
     setText($("cd-toggle"), t(button));
-    setHidden($("cd-actions"), Boolean(params.lock));
+    setHidden($("cd-actions"), Boolean(params.lock) || !CONTROLS.actions);
+    setHidden($("cd-plus"), read.remaining === null || Boolean(state.pomo));
   }
   const paused = state.timer && state.timer.state === "paused";
   setAttr(node, "data-level", view.level);
@@ -1745,7 +2092,7 @@ function renderCountdown(nowMs = serverMs()) {
 
 /** Audiouhr für ?beep= anlegen bzw. fortsetzen (gesture: bei einer Bedienung). Liefert den Zustand oder null. */
 function countdownAudio(gesture) {
-  if (!(params.beep > 0) || params.eink) return null;
+  if (!(beepCount() > 0) || params.eink) return null;
   const Ctx = window.AudioContext || window.webkitAudioContext;
   if (!Ctx) return null;
   if (!state.cdTone) {
@@ -1755,15 +2102,28 @@ function countdownAudio(gesture) {
   return state.cdTone;
 }
 
+/**
+ * Wie viele Sekunden vor dem Ziel gepiept wird: ?beep=, sonst bei „Ton am Ende“ (Panel Timer, nur lokale Timer)
+ * fx.END_BEEPS. 0: kein Ton.
+ */
+function beepCount() {
+  if (params.beep > 0) return params.beep;
+  return state.endTone && COUNT_MODE !== "until" ? fx.END_BEEPS : 0;
+}
+
 /** Piep in den letzten ?beep= Sekunden vor dem Ziel (Serverzeit), langer Ton auf dem Ziel. */
 function countdownTones(target) {
   const tone = countdownAudio(false);
   if (!tone || tone.ctx.state !== "running") return;
-  if (!Number.isFinite(tone.target) || Math.abs(tone.target - target) > 1500) stopCountdownTones();   // neues Ziel
-  tone.target = target;
   const perf = performance.now();
+  // Pomodoro: Die nächste Phase beginnt genau auf dem alten Ziel – dessen langer Ton darf ausklingen.
+  const passed = state.pomo && Number.isFinite(tone.target) && tone.target <= trueMs(perf) && target > tone.target;
+  if (passed) tone.lastK = Infinity;
+  else if (!Number.isFinite(tone.target) || Math.abs(tone.target - target) > 1500) stopCountdownTones();   // neues Ziel
+  tone.target = target;
   const clock = kit.audioClock(tone.ctx, perf, trueMs(perf), 0);
-  for (const planned of cd.planCountdownTones(clock, target, params.beep, { lastK: tone.lastK })) {
+  const horizonMs = cd.toneHorizonMs(document.hidden);
+  for (const planned of cd.planCountdownTones(clock, target, beepCount(), { lastK: tone.lastK, horizonMs })) {
     tone.lastK = planned.k;
     if (planned.at > tone.ctx.currentTime + 0.005) {
       const osc = kit.scheduleTone(tone.ctx, planned);
@@ -1789,6 +2149,34 @@ function scheduleTimer() {
   state.timerTimer = setTimeout(() => { renderCountdown(); scheduleTimer(); }, cd.timerDelay(read, state.tenths ? 100 : 1000));
 }
 
+/** Beschriftung eines lokalen Timers: Pomodoro mit Runde und Phase, sonst „Timer 05:00“ (Dauer der Eieruhr). */
+function timerLabel(read) {
+  if (state.pomo) return t(`clock.pomo_${state.pomo.phase}`, { round: state.pomo.round });
+  const duration = state.timer && state.timer.duration !== null ? state.timer.duration : params.timer;
+  return t("clock.cd_timer", { time: cd.fmtSpan(Math.round((state.eggMs || params.timer || duration || read.elapsed) / 1000)) });
+}
+
+/**
+ * Farbstufen (?warn=) für eine Eieruhr bzw. Pomodoro-Phase der Dauer duration: Schwellen ab der Dauer fallen weg (NaN,
+ * cd.countdownView überspringt sie), die übrigen behalten ihre Stufe.
+ */
+function localWarn(duration) {
+  return params.warn.map((limit) => (limit * 1000 < duration ? limit : NaN));
+}
+
+/** Pomodoro: Ist die Phase um, beginnt die nächste genau an ihrem Ende (fx.pomoAdvance) – mit Ansage und Hinweis. */
+function advancePomo(perf) {
+  if (!state.pomo) return;
+  const next = fx.pomoAdvance(state.pomo, state.timer, perf);
+  if (!next.steps) return;
+  state.pomo = next.pomo;
+  state.timer = next.timer;
+  state.cdPrev = NaN;   // neue Phase: keine Schwelle aus der alten ansagen
+  const text = t(`clock.pomo_say_${state.pomo.phase === "work" ? "work" : state.pomo.phase}`, { round: state.pomo.round });
+  say(text);
+  hint(text);
+}
+
 /** Leertaste/Start: lokalen Timer starten oder anhalten; ohne Ziel startet die Stoppuhr. ?until= lässt sich nicht anhalten. */
 function toggleTimer() {
   if (COUNT_MODE === "until") { hint(t("clock.hint_no_timer")); return; }
@@ -1804,7 +2192,10 @@ function toggleTimer() {
 /** R: zurücksetzen; die Stoppuhr verschwindet dann wieder. */
 function resetTimer() {
   if (COUNT_MODE === "until") { hint(t("clock.hint_no_timer")); return; }
-  state.timer = COUNT_MODE === "timer" ? cd.timerReset(state.timer) : null;
+  // Eieruhr aus dem Panel: zurück auf ihre gewählte Dauer (nicht auf die mit „+1 min“ verlängerte); Pomodoro: Runde 1.
+  if (state.pomo) state.pomo = fx.pomoReset(state.pomo);
+  if (COUNT_MODE !== "timer") state.timer = null;
+  else state.timer = cd.timerNew(state.pomo ? fx.pomoPhaseMs(state.pomo) : (state.eggMs || params.timer));
   state.cdPrev = NaN;
   stopCountdownTones();
   clearTimeout(state.timerTimer);
@@ -1818,6 +2209,400 @@ function einkRetick() {
   if (!params.eink) return;
   clearTimeout(state.tickTimer);
   tick();
+}
+
+// --- Spielereien C1: Eieruhr, Pomodoro, eigene Countdowns (Panel „Timer“) -----------------------------------------
+function timerStatus(text) {
+  setText($("timer-status"), text);
+}
+
+/** Lokalen Timer neu aufsetzen und gleich starten: Eieruhr (ms) oder Pomodoro (pomo). ?until=/?goal= bleiben unberührt. */
+function startLocal(duration, pomo = null) {
+  if (COUNT_MODE === "until") { hint(t("clock.hint_no_timer")); return false; }
+  COUNT_MODE = "timer";
+  state.pomo = pomo;
+  state.eggMs = pomo ? null : duration;
+  state.timer = cd.timerToggle(cd.timerNew(pomo ? fx.pomoPhaseMs(pomo) : duration), performance.now());
+  state.cdPrev = NaN;
+  state.cdShape = "";
+  stopCountdownTones();
+  countdownAudio(true);   // Klick: Ton am Ende darf jetzt starten
+  renderCountdown();
+  scheduleTimer();
+  fitTime();
+  einkRetick();
+  return true;
+}
+
+function startEgg(ms) {
+  if (startLocal(ms)) timerStatus(t("clock.egg_started", { time: cd.fmtSpan(ms / 1000) }));
+}
+
+function startEggInput() {
+  const ms = fx.parseEggInput($("egg-input").value);
+  if (ms === null) {
+    $("egg-input").setAttribute("aria-invalid", "true");
+    timerStatus(t("clock.egg_bad"));
+    return;
+  }
+  $("egg-input").setAttribute("aria-invalid", "false");
+  startEgg(ms);
+}
+
+function startPomo() {
+  const pomo = fx.pomoNew(params.pomo, params.pause);
+  if (startLocal(null, pomo)) timerStatus(t("clock.pomo_started", { work: cd.fmtLimit(pomo.work / 1000) }));
+}
+
+/** „+1 min“ an der Eieruhr: vor dem Ende eine Minute mehr, danach eine Minute ab jetzt. */
+function plusMinute() {
+  if (!state.timer || state.timer.duration === null || state.pomo) return;
+  state.timer = fx.timerAdd(state.timer, fx.EGG_PLUS_MS, performance.now());
+  state.cdPrev = NaN;
+  stopCountdownTones();
+  renderCountdown();
+  scheduleTimer();
+  einkRetick();
+  hint(t("clock.hint_plus"));
+}
+
+/** „Ton am Ende“: Der Klick ist die Bedienung, nach der der Browser die Audiouhr starten lässt. */
+function toggleEndTone() {
+  state.endTone = $("timer-tone").checked;
+  if (!state.endTone) {
+    stopCountdownTones();
+    timerStatus(t("clock.timer_tone_off"));
+    return;
+  }
+  const tone = countdownAudio(true);
+  timerStatus(t(tone ? "clock.timer_tone_on" : "clock.tone_unsupported"));
+  if (tone && tone.ctx.state !== "running") {
+    tone.ctx.resume().then(() => timerStatus(t("clock.timer_tone_on")), () => timerStatus(t("clock.timer_tone_blocked")));
+  }
+}
+
+/** Panel „Timer“: Schnellwahl, Pomodoro-Zeile, eigene und eingebaute Countdowns – Texte nur per textContent. */
+function renderTimerPanel() {
+  const blocked = COUNT_MODE === "until";
+  setHidden($("timer-blocked"), !blocked);
+  const presets = $("egg-presets");
+  presets.replaceChildren(...fx.EGG_PRESETS.map((minutes) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "clock-tool";
+    button.textContent = t("clock.egg_min", { n: minutes });
+    button.disabled = blocked;
+    button.addEventListener("click", () => startEgg(minutes * 60_000));
+    return button;
+  }));
+  for (const id of ["egg-start", "pomo-start", "egg-input", "timer-tone"]) $(id).disabled = blocked;
+  $("egg-input").placeholder = t("clock.egg_own_hint");
+  $("own-until").placeholder = t("clock.own_until_hint");
+  const pomo = fx.pomoNew(params.pomo, params.pause);
+  setText($("pomo-line"), t("clock.pomo_line", { work: cd.fmtLimit(pomo.work / 1000), brk: cd.fmtLimit(pomo.brk / 1000),
+    long: cd.fmtLimit(pomo.long / 1000) }));
+  $("timer-tone").checked = state.endTone;
+  renderOwn();
+  $("goal-list").replaceChildren(...kit.GOALS.map((goal) => {
+    const item = document.createElement("li");
+    const a = document.createElement("a");
+    a.href = link.clockHref(link.buildQuery({ goal }, ZONES));
+    a.textContent = t(`clock.goal_name.${goal}`);
+    item.append(a);
+    return item;
+  }));
+}
+
+/** Liste der eigenen Countdowns: Link /clock?until=…&label=… und „Entfernen“. */
+function renderOwn() {
+  const list = $("own-list");
+  if (!state.own.length) {
+    const empty = document.createElement("li");
+    empty.className = "clock-panel-note";
+    empty.textContent = t("clock.own_none");
+    list.replaceChildren(empty);
+    return;
+  }
+  list.replaceChildren(...state.own.map((own, index) => {
+    const item = document.createElement("li");
+    const a = document.createElement("a");
+    a.href = link.clockHref(link.buildQuery({ until: own.until, label: own.label }, ZONES));
+    a.textContent = t("clock.own_open", { label: own.label, until: own.until.replace("T", " ") });
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "clock-tool";
+    remove.textContent = t("clock.own_delete");
+    remove.setAttribute("aria-label", t("clock.own_delete_label", { label: own.label }));
+    remove.addEventListener("click", () => {
+      saveOwn(fx.ownRemove(state.own, index));
+      timerStatus(t("clock.own_removed"));
+      (list.querySelector("button") || $("own-label")).focus();
+    });
+    item.append(a, " ", remove);
+    return item;
+  }));
+}
+
+/** Liste übernehmen und merken. false: Der Browser lässt kein Speichern zu – die Liste gilt nur bis zum Neuladen. */
+function saveOwn(list) {
+  state.own = list;
+  const text = fx.ownText(list);
+  let saved = true;
+  if (text) saved = store(fx.OWN_KEY, text);
+  else removeStored(fx.OWN_KEY);
+  renderOwn();
+  return saved;
+}
+
+function addOwn() {
+  const result = fx.ownAdd(state.own, { label: $("own-label").value, until: $("own-until").value });
+  for (const id of ["own-label", "own-until"]) $(id).setAttribute("aria-invalid", result.ok ? "false" : "true");
+  if (!result.ok) { timerStatus(t("clock.own_bad")); return; }
+  $("own-label").value = "";
+  $("own-until").value = "";
+  timerStatus(t(saveOwn(result.list) ? "clock.own_saved" : "clock.own_unsaved"));
+}
+
+function openTimerPanel() {
+  if (togglePanel("mode-timer", "timer-panel")) renderTimerPanel();
+}
+
+// --- Nachtmodus (C1): gedimmt bzw. Rotlicht, nach Uhrzeit (?dim=) und von Hand -------------------------------------
+/**
+ * Zustand jetzt: Zeitplan nach der vollen Stunde in der Ortszeit dieses Geräts (nach der Serverzeit gestellt), von Hand
+ * umgeschaltet bis zum nächsten Wechsel. Bewusst nicht die groß angezeigte Zone (UTC groß, Design tc in der Zone des
+ * Servers): Der Nachtmodus richtet sich nach dem Raum, in dem der Bildschirm steht.
+ */
+function nightNow() {
+  const scheduled = fx.nightScheduled(params.dim, fx.nightHour(serverMs()));
+  state.nightOverride = fx.nightOverride({ scheduled, prev: state.nightPrev, override: state.nightOverride });
+  state.nightPrev = scheduled;
+  return fx.nightView({ scheduled, override: state.nightOverride, red: params.dimred, level: params.dimlevel, eink: params.eink });
+}
+
+/** Je Takt: Nur wenn sich der Nachtmodus ändert, Farben und Helligkeit neu setzen. */
+function renderNight() {
+  const night = nightNow();
+  const key = night.on ? `${night.mode}|${night.level}` : "";
+  if (key !== state.nightKey) applyModes();
+}
+
+function toggleNight() {
+  if (!CONTROLS.fun) return;
+  state.nightOverride = !nightNow().on;
+  applyModes();
+  hint(t(state.nightOverride ? "clock.hint_night_on" : "clock.hint_night_off"));
+}
+
+// --- Zusätze C2: Mondphase, Nerd-Zeile, Fortschrittsbalken (?show=moon,nerd,progress) ----------------------------
+// Standard aus; nie mit fun=0, im Kiosk, in Kachel und Streifen (fx.extrasShown). Gerechnet wird alles hier im Browser
+// (clockextras.js). Der Mond und die Kalender-Balken ändern sich einmal je Minute, die Nerd-Zeile und der Balken einer
+// Eieruhr im Sekundentakt – nur Text, Attribute und eine CSSOM-Variable je Balken, kein eigener Zeitgeber.
+const SOUTH_KEY = "ntp-gui-clock-south";
+// hex und roman nur auf Bühnen ab 700 px Höhe und nicht im Banner (clock.css, @container): Dort bräche die Zeile zu oft um.
+const NERD_KEYS = ["unix", "hex", "tai", "gps", "mjd", "doy", "iso", "roman"];
+
+/** Hat die Uhr eine Eieruhr bzw. Pomodoro-Phase mit Dauer (für den Balken „timer“)? */
+function timerBarAvailable() {
+  return COUNT_MODE === "timer" && Boolean(state.timer) && state.timer.duration !== null;
+}
+
+/**
+ * Zusätze zeichnen. at: { day (Datum der Anzeige als Date, Tag im Jahr und ISO-Woche), offset (ms: Abstand der Zone des
+ * angezeigten Datums zu UTC, null: Ortszeit des Geräts – für die Kalender-Balken), h, m (angezeigte Stunde und Minute) }.
+ * Ohne at: wie beim letzten Zeichnen.
+ */
+function renderExtras(nowMs, at = state.extrasAt) {
+  state.extrasAt = at;
+  // Im Banner mit Countdown unter der Uhr oder Leiste der Weltzeit nur auf höheren Bühnen (fx.extrasShown, crowded).
+  const crowded = (countdownActive() && params.cd === "below") || Boolean(state.world && state.world.mode === "bar");
+  const shown = state.extrasNoRoom ? [] : fx.extrasShown({ extras: state.extraWish, fun: FUN_ON, kiosk: params.kiosk,
+    layout: state.layout, eink: params.eink, height: state.stage.height, crowded });
+  const bars = shown.includes("progress") ? fx.barsFor(params.bars, timerBarAvailable()) : [];
+  const key = `${shown.join(",")}|${bars.join(",")}`;
+  if (key !== state.extrasKey) {
+    state.extrasKey = key;
+    setHidden($("extras"), !shown.length);
+    setHidden($("moon-box"), !shown.includes("moon"));
+    setHidden($("nerd"), !shown.includes("nerd"));
+    setHidden($("bars"), !bars.length);
+    buildNerd(shown.includes("nerd"));
+    buildBars(bars);
+    state.moonKey = "";
+    state.barsKey = "";
+    if (shown.length) {
+      renderMoon(nowMs);
+      renderNerd(nowMs);
+      renderBars(nowMs);
+    }
+    // Die Zeit bekommt den Rest der Höhe (restHeight). Vor dem ersten Layout nicht: observeStage passt ohnehin ein.
+    if (state.face && state.layout) fitTime();
+    return;
+  }
+  if (!shown.length) return;
+  const moonDrawn = renderMoon(nowMs);
+  renderNerd(nowMs);
+  const barsDrawn = renderBars(nowMs);
+  // Ändert sich die Höhe der Zusätze (TAI kommt mit der ersten Antwort des Servers, neuer Mondtext, Sprachwechsel), passt
+  // watchExtras die Zeit neu ein. Ohne ResizeObserver (alte Engines) wird hier einmal je Minute verglichen.
+  if (!EXTRAS_OBSERVED && (moonDrawn || barsDrawn) && state.face) {
+    const height = $("extras").offsetHeight;
+    if (height !== state.extrasHeight) fitTime();
+  }
+}
+
+/** Höchstens so oft je Sekunde passt watchExtras neu ein (Schutz gegen ein Hin und Her von Umbruch und Einpassen). */
+const EXTRAS_REFITS = 3;
+const EXTRAS_OBSERVED = typeof window.ResizeObserver === "function";
+
+/**
+ * Höhe der Zusätze beobachten: Wird die Zeile höher oder niedriger als beim letzten Einpassen (etwa weil die Nerd-Zeile
+ * mit TAI und GPS umbricht, sobald tai_utc da ist), die Zeit sofort neu einpassen – nicht erst zur nächsten Minute.
+ */
+function watchExtras() {
+  if (!EXTRAS_OBSERVED) return;
+  const observer = new window.ResizeObserver(() => {
+    if ($("extras").hidden || !state.face || !state.layout) return;
+    const height = $("extras").offsetHeight;
+    const second = Math.floor(performance.now() / 1000);
+    if (state.extrasRefit.second !== second) state.extrasRefit = { second, count: 0 };
+    if (height === state.extrasHeight || state.extrasRefit.count >= EXTRAS_REFITS) { checkExtrasRoom(); return; }
+    state.extrasRefit.count += 1;
+    fitTime();
+  });
+  // Im Banner teilen sich Countdown, Datum, Zeile mit Zustand, Weltzeit-Leiste und Zusätze die rechte Spalte: Wächst
+  // eins davon oder ändert sich die Bühne (nach observeStage angelegt, also nach applyLayout gemeldet), neu prüfen.
+  for (const node of [$("clock-stage"), ...$("clock-main").children]) observer.observe(node);
+}
+
+/** Mond zeichnen, wenn eine neue Minute, die andere Halbkugel oder eine andere Sprache gilt; true, wenn neu gezeichnet. */
+function renderMoon(nowMs) {
+  if ($("moon-box").hidden) return false;
+  const minute = Math.floor(nowMs / 60_000);
+  const key = `${minute}|${state.south}|${language()}`;
+  if (key === state.moonKey) return false;
+  state.moonKey = key;
+  const phase = fx.moonPhase(nowMs);
+  if (!phase) return false;
+  setAttr($("moon-lit"), "d", fx.moonPath(phase.angle, { r: 49, south: state.south }));
+  const name = t(`clock.moon.${phase.key}`);
+  const pct = Math.round(phase.illum * 100);
+  setText($("moon-text"), t("clock.moon_text", { name, pct }));
+  const full = fx.nextMoonPhase(nowMs, 180);
+  const fresh = fx.nextMoonPhase(nowMs, 0);
+  // Tag und Monat als Zahlen (kein eigener Intl-Formatierer nur für den Titel).
+  const day = (ms) => { const d = new Date(ms); return t("clock.moon_date", { d: d.getDate(), m: d.getMonth() + 1 }); };
+  const next = full < fresh ? t("clock.moon_next_full", { date: day(full) }) : t("clock.moon_next_new", { date: day(fresh) });
+  const title = `${t("clock.moon_title", { name, pct })} ${next} ${t(state.south ? "clock.moon_click_north" : "clock.moon_click_south")}`;
+  setAttr($("moon"), "title", title);
+  setAttr($("moon"), "aria-label", title);
+  setAttr($("moon"), "aria-pressed", state.south ? "true" : "false");
+  $("moon").disabled = !CONTROLS.fun;   // wie Timer und Nacht: nicht mit lock=1, im Kiosk, in OBS und auf E-Ink
+  return true;
+}
+
+function toggleSouth() {
+  if (!CONTROLS.fun) return;
+  state.south = !state.south;
+  store(SOUTH_KEY, state.south ? "1" : "0");
+  renderMoon(serverMs());
+  hint(t(state.south ? "clock.hint_moon_south" : "clock.hint_moon_north"));
+}
+
+/** Nerd-Zeile aufbauen: je Angabe eine Beschriftung und ein Wert (nur textContent). */
+function buildNerd(on) {
+  const line = $("nerd");
+  line.replaceChildren();
+  state.nerd = null;
+  if (!on) return;
+  state.nerd = {};
+  for (const key of NERD_KEYS) {
+    const item = document.createElement("span");
+    item.className = "clock-nerd-item";
+    const label = document.createElement("span");
+    label.className = "clock-nerd-label";
+    label.dataset.key = key;
+    item.dataset.key = key;
+    label.textContent = t(`clock.nerd.${key}`);
+    const value = document.createElement("span");
+    value.className = "clock-nerd-value";
+    item.append(label, " ", value);
+    line.append(item);
+    state.nerd[key] = value;
+  }
+}
+
+function renderNerd(nowMs) {
+  if (!state.nerd) return;
+  const status = state.status || {};
+  const v = fx.nerdValues(nowMs, status.tai_utc);
+  if (!v) return;
+  const at = state.extrasAt || {};
+  const day = at.day instanceof Date ? at.day : new Date(nowMs);   // derselbe Tag wie Datum und KW der Anzeige
+  const dec = language() === "en" ? "." : ",";
+  const iso = isoWeek(day);
+  const weekday = day.getDay() || 7;
+  const offset = fx.taiUtc(status.tai_utc);
+  setText(state.nerd.unix, String(v.unix));
+  setText(state.nerd.hex, v.hex || "–");
+  setText(state.nerd.tai, v.taiMs === null ? "–" : `${fx.hmsOf(v.taiMs)} (+${offset} s)`);
+  setText(state.nerd.gps, v.gps === null ? "–" : t("clock.nerd_gps", { week: v.gps.week, sow: v.gps.sow }));
+  setText(state.nerd.mjd, v.mjd.toFixed(3).replace(".", dec));
+  setText(state.nerd.doy, String(fx.dayOfYear(day.getFullYear(), day.getMonth() + 1, day.getDate())));
+  setText(state.nerd.iso, `${iso.year}-W${pad(iso.week)}-${weekday}`);
+  setText(state.nerd.roman, fx.romanTime(at.h, at.m) || "–");
+}
+
+/** Fortschrittsbalken aufbauen: role=progressbar mit Wert und Text, Füllung über die CSSOM-Variable --bar. */
+function buildBars(kinds) {
+  const box = $("bars");
+  box.replaceChildren();
+  state.bars = kinds.map((kind) => {
+    const node = document.createElement("div");
+    node.className = "clock-prog-item";
+    node.dataset.kind = kind;
+    node.setAttribute("role", "progressbar");
+    node.setAttribute("aria-valuemin", "0");
+    node.setAttribute("aria-valuemax", "100");
+    const label = document.createElement("span");
+    label.className = "clock-prog-label";
+    const track = document.createElement("span");
+    track.className = "clock-prog-track";
+    track.setAttribute("aria-hidden", "true");
+    const fill = document.createElement("span");
+    fill.className = "clock-prog-fill";
+    track.append(fill);
+    const value = document.createElement("span");
+    value.className = "clock-prog-value";
+    node.append(label, track, value);
+    box.append(node);
+    return { kind, node, label, fill, value, pct: null };
+  });
+}
+
+/** Balken stellen: Kalender einmal je Minute, die Eieruhr im Takt. true, wenn die Kalender-Balken neu gezeichnet wurden. */
+function renderBars(nowMs) {
+  if (!state.bars.length) return false;
+  const minute = `${Math.floor(nowMs / 60_000)}|${language()}`;
+  const calendar = minute !== state.barsKey;
+  state.barsKey = minute;
+  for (const bar of state.bars) {
+    if (bar.kind !== "timer" && !calendar) continue;
+    const fraction = bar.kind === "timer" ? fx.timerProgress(state.timer, performance.now())
+      : (fx.periodProgress(bar.kind, nowMs, (state.extrasAt || {}).offset ?? null) || {}).fraction;
+    const pct = fx.percentOf(fraction);
+    const name = bar.kind === "timer" && state.pomo ? t(`clock.bar.pomo_${state.pomo.phase}`) : t(`clock.bar.${bar.kind}`);
+    setText(bar.label, name);
+    if (pct === bar.pct && !calendar) continue;
+    bar.pct = pct;
+    const text = pct === null ? "–" : t("clock.bar_value", { pct });
+    setText(bar.value, text);
+    setAttr(bar.node, "aria-valuenow", String(pct ?? 0));
+    setAttr(bar.node, "aria-valuetext", bar.kind === "timer" ? `${name}: ${text}` : t(`clock.bar_say.${bar.kind}`, { pct: pct ?? 0 }));
+    setAttr(bar.node, "title", bar.kind === "timer" ? `${name}: ${text}` : t(`clock.bar_say.${bar.kind}`, { pct: pct ?? 0 }));
+    bar.fill.style.setProperty("--bar", String(Math.round((fraction ?? 0) * 1000) / 1000));
+  }
+  return calendar;
 }
 
 // --- Prüfbild ?test=sync (Studiouhr B5) --------------------------------------------------------
@@ -1834,6 +2619,10 @@ function startTest() {
   setHidden($("sync-test-less"), !run || params.lock);
   setHidden($("sync-test-more"), !run || params.lock);
   $("sync-test").hidden = false;
+  // Kein Osterei und kein Konfetti über dem Prüfbild (fx.eggShown mit test): sofort weg, nicht erst im Takt.
+  setHidden($("leap-egg"), true);
+  state.eggKey = "";
+  stopConfetti();
   coverStage(true);
   renderTest();
   flashTick();
@@ -2097,6 +2886,16 @@ function onKey(event) {
   // Prüfbild: Die Uhr dahinter ist verdeckt. Stoppuhr, Design, Layout und Größe änderten sich sonst unbemerkt – es
   // bleiben nur Hilfe und Vollbild (Esc beendet das Prüfbild, die Pfeiltasten stellen den Vorlauf: eigene Listener).
   if (state.test && key !== "?" && key.toLowerCase() !== "f") return;
+  // Konami-Code (↑ ↑ ↓ ↓ ← → ← → B A): Das abschließende A sagt dann nicht die Zeit an.
+  if (EGGS_ON) {
+    const step = fx.konamiStep(state.konami, key);
+    state.konami = step.pos;
+    if (step.done) {
+      event.preventDefault();
+      konami();
+      return;
+    }
+  }
   if (key === " " || key === "Spacebar") {
     if (target && target.closest("button, a")) return;   // dort löst die Leertaste den Knopf aus
     event.preventDefault();
@@ -2105,7 +2904,7 @@ function onKey(event) {
   }
   const actions = {
     f: toggleFullscreen, d: nextDesign, l: nextLayout, u: toggleUtc, t: toggleTenths, r: resetTimer, a: announceTime,
-    o: toggleSignal,
+    o: toggleSignal, n: toggleNight,
     "+": () => changeScale(10), "-": () => changeScale(-10), "−": () => changeScale(-10), "?": () => showKeys(),
   };
   const action = actions[key.length === 1 ? key.toLowerCase() : key];
@@ -2118,17 +2917,30 @@ function onKey(event) {
 // --- Darstellung: hell/dunkel, Rotlicht, E-Ink, Kiosk, Vollbild ------------------------------
 function applyModes() {
   const red = store("ntp-gui-clock-red") === "1";
+  const night = nightNow();
   // Ein Thema (?look=) bringt sein eigenes Hell/Dunkel mit, ?bg=black ist immer dunkel; Rotlicht und E-Ink übersteuern.
+  // Der Nachtmodus ist immer dunkel und geht dem Rotlicht-Knopf vor (mit ?dimred=1 ist er selbst Rotlicht).
   const scheme = kit.colorScheme({ eink: params.eink, look: params.look, bg: params.bg, stored: store("ntp-gui-clock-theme") });
-  root.dataset.theme = scheme.scheme;
+  root.dataset.theme = night.on ? "dark" : scheme.scheme;
   if (params.eink) root.dataset.mode = "eink";
+  else if (night.on) root.dataset.mode = night.mode;
   else if (red) root.dataset.mode = "red";
   else delete root.dataset.mode;
+  // Helligkeit des Nachtmodus (?dimlevel=, 0,2–0,8) per CSSOM: Deckkraft von Leiste, Bühne und Band.
+  if (night.on) {
+    root.dataset.night = "1";
+    root.style.setProperty("--night", String(night.level));
+  } else {
+    delete root.dataset.night;
+    root.style.removeProperty("--night");
+  }
+  state.nightKey = night.on ? `${night.mode}|${night.level}` : "";
   // Beschriftung = Aktion („Dunkel“ im hellen Modus), daher kein aria-pressed: „Dunkel, gedrückt“ wäre falsch.
   $("mode-theme").textContent = scheme.scheme === "light" ? t("clock.theme_dark") : t("clock.theme_light");
   $("mode-red").setAttribute("aria-pressed", red ? "true" : "false");
-  $("mode-theme").disabled = red || scheme.locked;
-  $("mode-red").disabled = params.eink;
+  $("mode-night").setAttribute("aria-pressed", night.on ? "true" : "false");
+  $("mode-theme").disabled = red || scheme.locked || night.on;
+  $("mode-red").disabled = params.eink || night.on;
   applyColors();
 }
 
@@ -2178,6 +2990,7 @@ function applyDisplayParams() {
  * die die Bühne mit beiden hätte, damit das Layout nicht hin- und herspringt.
  */
 function applyLayout(width, height) {
+  if (!state.stage || state.stage.width !== width || state.stage.height !== height) state.extrasNoRoom = false;
   state.stage = { width, height };
   const stage = $("clock-stage");
   const body = document.body;
@@ -2221,6 +3034,12 @@ function stageLayout(layout) {
   const stage = $("clock-stage");
   state.layout = layout;
   setAttr(stage, "data-layout", layout);
+  // Kachel und Streifen (auch per Taste L oder im flachen Fenster): Osterei und Konfetti sofort weg, nicht erst im Takt.
+  if (!fx.eggShown({ allowed: true, layout }) && !$("leap-egg").hidden) {
+    setHidden($("leap-egg"), true);
+    state.eggKey = "";
+    stopConfetti();
+  }
   if (kit.stackedTime(layout, state.stage.width, state.stage.height)) setAttr(stage, "data-stack", "1");
   else stage.removeAttribute("data-stack");
 }
@@ -2270,8 +3089,31 @@ function timeBox() {
  * Zeit nur den Rest – sonst drückte eine große Zeit (?scale=200) die Spalte auf wenige Pixel zusammen.
  */
 function fitTime() {
+  fitTimeOnly();
+  checkExtrasRoom();
+}
+
+/**
+ * Ragen die Zusätze nach dem Einpassen aus der Bühne (die rechte Spalte im Banner wächst nicht mit der Zeit: Countdown,
+ * Datum, Zeile, Weltzeit-Leiste und Zusätze untereinander), fallen sie weg, bis sich die Größe der Bühne ändert.
+ */
+function checkExtrasRoom() {
+  const box = $("extras");
+  // Nur im Banner: In den anderen Layouts bekommt die Zeit den Rest der Höhe (restHeight), die Zusätze passen immer.
+  if (state.extrasNoRoom || box.hidden || !state.face || state.layout !== "banner") return;
+  const stage = $("clock-stage").getBoundingClientRect();
+  const rect = box.getBoundingClientRect();
+  if (!rect.height || (rect.bottom <= stage.bottom + 1 && rect.top >= stage.top - 1 && rect.right <= stage.right + 1
+    && rect.left >= stage.left - 1)) return;
+  state.extrasNoRoom = true;
+  renderExtras(serverMs());   // blendet aus und passt die Zeit neu ein
+}
+
+function fitTimeOnly() {
   const main = $("clock-main");
-  if (!main || !state.face) return;
+  // Vor dem ersten Layout (Start: setDesign vor observeStage) nicht messen – observeStage passt gleich danach ein.
+  if (!main || !state.face || !state.layout) return;
+  state.extrasHeight = $("extras").offsetHeight;   // Zusätze (C2): bei geänderter Höhe passt renderExtras neu ein
   const w = state.world;
   if (w && w.mode === "grid") {
     stageLayout("world");
@@ -2461,8 +3303,38 @@ $("custom-reset").addEventListener("click", resetCustom);
 $("tone-seconds").addEventListener("click", () => startTone("seconds"));
 $("tone-countdown").addEventListener("click", () => startTone("countdown"));
 $("tone-off").addEventListener("click", stopTone);
+$("tone-pips-hour").addEventListener("click", () => startTone("pips-hour"));
+$("tone-pips-minute").addEventListener("click", () => startTone("pips-minute"));
+$("mode-game").addEventListener("click", openGamePanel);
+for (const unit of GAME_UNITS) $(`game-${unit}`).addEventListener("click", () => gameUnit(unit));
+// Tipp: der früheste Zeitstempel (pointerdown bzw. Enter/Leertaste; preventDefault unterdrückt dort den click). Ein
+// click zählt nur ohne Zeiger dahinter (event.detail 0: Screenreader) – zu Maus und Finger gehört immer ein pointerdown,
+// der schon gewertet hat, auch wenn der Druck lange dauert.
+$("game-tap").addEventListener("pointerdown", (event) => {
+  if (event.button !== 0) return;
+  gameTap(event.timeStamp);
+});
+$("game-tap").addEventListener("keydown", (event) => {
+  if ((event.key !== "Enter" && event.key !== " ") || event.repeat) return;
+  event.preventDefault();
+  gameTap(event.timeStamp);
+});
+$("game-tap").addEventListener("click", (event) => {
+  if (fx.tapFromClick(event.detail)) gameTap(event.timeStamp);
+});
+$("game-reset").addEventListener("click", gameReset);
 $("cd-toggle").addEventListener("click", () => toggleTimer());
 $("cd-reset").addEventListener("click", () => resetTimer());
+$("cd-plus").addEventListener("click", plusMinute);
+$("mode-timer").addEventListener("click", openTimerPanel);
+$("mode-night").addEventListener("click", toggleNight);
+$("moon").addEventListener("click", toggleSouth);
+$("egg-start").addEventListener("click", startEggInput);
+$("egg-input").addEventListener("keydown", (event) => { if (event.key === "Enter") startEggInput(); });
+$("pomo-start").addEventListener("click", startPomo);
+$("timer-tone").addEventListener("change", toggleEndTone);
+$("own-save").addEventListener("click", addOwn);
+for (const id of ["own-label", "own-until"]) $(id).addEventListener("keydown", (event) => { if (event.key === "Enter") addOwn(); });
 $("keys-close").addEventListener("click", () => showKeys(false));
 $("keys").addEventListener("keydown", trapKeys);
 reducedMotion.addEventListener?.("change", () => {
@@ -2476,7 +3348,7 @@ function mayHide() {
   // Offene Panels bleiben bedienbar: dann nicht ausblenden. Erst beim Ablauf prüfen – wake() läuft bei
   // pointerdown/keydown, also bevor der Klick das Panel öffnet. Liegt der Tastaturfokus in der Leiste, bleibt
   // sie ebenfalls sichtbar (nach einem Mausklick nicht, sonst bliebe sie am Wandmonitor für immer stehen).
-  if (!$("tone-panel").hidden || !$("device-panel").hidden || !$("custom-panel").hidden || !$("keys").hidden) return false;
+  if (["tone-panel", "device-panel", "custom-panel", "timer-panel", "game-panel", "keys"].some((id) => !$(id).hidden)) return false;
   const focus = document.activeElement;
   return !(focus && focus.closest(".clock-bar") && focus.matches(":focus-visible"));
 }
@@ -2492,11 +3364,15 @@ for (const type of ["pointerdown", "keydown"]) document.addEventListener(type, (
 function relabel() {
   applyModes();
   if (params.lock) $("mode-full").title = t("clock.full_title_locked");
-  for (const button of document.querySelectorAll(".clock-panel button.info, .tc-head button.info")) button.relabel?.();
+  for (const button of document.querySelectorAll(".clock-panel button.info, .tc-head button.info, #moon-info button.info")) button.relabel?.();
+  for (const label of document.querySelectorAll(".clock-nerd-label")) label.textContent = t(`clock.nerd.${label.dataset.key}`);
   if (state.face) state.face.key = "";
   if (state.face && state.face.text) state.face.text.dataset.key = "";
   state.minuteKey = "";
   state.worldKey = "";
+  state.moonKey = "";   // Mond und Balken neu beschriften (Texte kamen vor dem Sprachkatalog)
+  state.barsKey = "";
+  for (const bar of state.bars) bar.pct = null;
   render(new Date(serverMs()));
   state.syncKey = "";
   renderSync();
@@ -2506,6 +3382,8 @@ function relabel() {
   renderCountdown();
   renderProfileTitle();
   renderTest();
+  if (!$("timer-panel").hidden) renderTimerPanel();
+  if (!$("game-panel").hidden) renderGame();
   state.signalKey = `${state.signalKey.split("|")[0]}|`;   // Texte neu, ohne den Zustand noch einmal anzusagen
   renderSignal();
 }
@@ -2521,12 +3399,40 @@ async function loadProfile() {
   state.profileRev = typeof profile.profiles_rev === "string" ? profile.profiles_rev : null;
   Object.assign(params, kit.parseParams(link.effectiveQuery({ search: window.location.search, profile: profile.params,
     zones: ZONES }), ZONES));
+  // Grundauswahl des Profils allein: Nennt die Adresse nur Zusätze (show=moon), bleibt sie (fx.mergeShow).
+  state.profileShow = kit.parseParams(link.effectiveQuery({ profile: profile.params, zones: ZONES }), ZONES).show;
 }
 
 async function start() {
   const i18nReady = initI18n();
   await loadProfile();
+  // Zusätze (Mond, Nerd-Zeile, Balken) gehören nicht zu data-show: Nennt ?show= nur sie, bleibt die Uhr wie sonst –
+  // mit Profil wie im Profil.
+  const split = fx.mergeShow(params.show, state.profileShow);
+  params.show = split.base;
+  state.extraWish = split.extras;
+  state.south = store(SOUTH_KEY) === "1";
   initCountMode();
+  // Bedienung erst nach dem Profil festlegen: fun=0, lock=1, Kiosk und Kachel können von dort kommen.
+  // Profil angefordert, aber nicht geladen (Abruf fehlgeschlagen): Spielereien und Ostereier vorsichtshalber aus.
+  FUN_ON = fx.funWanted({ fun: params.fun, profile: PROFILE, loaded: Boolean(state.profile) });
+  CONTROLS = fx.funControls({ fun: FUN_ON, kiosk: params.kiosk, lock: params.lock, layout: params.layout, obs: OBS,
+    eink: params.eink });
+  if (OBS) document.body.classList.add("is-obs");
+  $("mode-timer").hidden = !CONTROLS.fun;
+  $("mode-night").hidden = !CONTROLS.fun;
+  // C3: Spiel und Zeitzeichen wie Timer und Nacht; Ostereier zusätzlich nicht mit eggs=0.
+  $("mode-game").hidden = !CONTROLS.fun;
+  for (const id of ["tone-pips-hour", "tone-pips-minute", "tone-pips-line"]) $(id).hidden = !CONTROLS.fun;
+  EGGS_ON = fx.eggsAllowed({ eggs: params.eggs, fun: FUN_ON, kiosk: params.kiosk, lock: params.lock, layout: params.layout,
+    obs: OBS, eink: params.eink });
+  state.game.best = fx.tapBestRead(store(fx.TAP_BEST_KEY) || "");
+  $("game-info").append(infoButton("clock.game_info_title", "clock.game_info"));
+  // Ohne Spielereien tut N nichts (Nachtmodus dann nur nach Zeitplan): auch nicht in der Kürzel-Übersicht nennen.
+  $("keys-n-key").hidden = !CONTROLS.fun;
+  $("keys-n").hidden = !CONTROLS.fun;
+  state.own = fx.ownList(store(fx.OWN_KEY) || "");
+  $("timer-info").append(infoButton("clock.timer_info_title", "clock.timer_info"));
   if (params.kiosk) document.body.classList.add("is-kiosk");
   if (params.eink) document.body.classList.add("is-eink");
   if (params.eink) $("mode-tone").hidden = true;   // E-Ink rechnet nur einmal je Minute
@@ -2536,10 +3442,12 @@ async function start() {
   if (params.lock) $("mode-full").dataset.i18nTitle = "clock.full_title_locked";
   $("tone-info").append(infoButton("clock.tone_info_title", "clock.tone_info"));
   $("device-info").append(infoButton("clock.device_info_title", "clock.device_info"));
+  if (CONTROLS.actions) $("moon-info").append(infoButton("clock.moon_info_title", "clock.moon_info"));
   applyDisplayParams();
   applyModes();
   setDesign(params.design || store(DESIGN_KEY), false);
   observeStage();
+  watchExtras();
   wake();
   countdownAudio(false);
   tick();

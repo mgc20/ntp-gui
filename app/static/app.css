@@ -1304,7 +1304,7 @@ details.explain-more[open] > summary { margin-bottom: 8px; }
 .link-field input[aria-invalid="true"] { border-color: var(--crit); }
 .link-checks { display: flex; flex-wrap: wrap; gap: 4px 12px; }
 .link-check { display: inline-flex; align-items: center; gap: 6px; min-height: 28px; font-size: 13.5px; cursor: pointer; }
-.link-check input { width: 18px; height: 18px; margin: 0; }
+.link-check input { width: 18px; height: 18px; margin: 0; flex: none; }   /* lange Beschriftung drückt das Kästchen nie zusammen */
 .link-result { display: grid; gap: 8px; margin: 12px 0 6px; }
 input.link-output { max-width: none; }
 .link-previews { margin: 6px 0 4px; }

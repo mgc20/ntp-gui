@@ -67,6 +67,7 @@ PUBLIC_VALUES = {
     "stratum": lambda v: v is None or (isinstance(v, int) and 0 <= v <= 16),
     "leap": lambda v: v in LEAPS,
     "leap_next": lambda v: v is None or bool(re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", v)),
+    "tai_utc": lambda v: v is None or (isinstance(v, int) and not isinstance(v, bool) and 10 <= v <= 100),
     "source_kind": lambda v: v in KINDS,
     "zone": lambda v: v is None or bool(re.fullmatch(r"[A-Za-z0-9_+\-]+(/[A-Za-z0-9_+\-]+){0,2}", v)),
     "profiles_rev": lambda v: bool(re.fullmatch(r"[0-9a-f]{12}", v)),

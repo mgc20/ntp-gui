@@ -6,7 +6,9 @@
 import { fmtNumber } from "./util.js";
 
 /** Designs in der Reihenfolge der Auswahl. Schlüssel = Wert von ?design= und im Browser gemerkt. */
-export const DESIGNS = ["digital", "studio", "bahnhof", "nixie", "flip", "wort", "tc"];
+// Höchstens acht Designs (docs/konzept/studiouhr.md, Abschnitt 7) – mit binary (Etappe C) ist die Grenze erreicht.
+export const DESIGNS = ["digital", "studio", "bahnhof", "nixie", "flip", "wort", "tc", "binary"];
+export const MAX_DESIGNS = 8;
 export const DEFAULT_DESIGN = "digital";
 
 // --- Adressparameter (Schema-Tabelle) -------------------------------------------------
@@ -31,13 +33,24 @@ export const ZONE_LABEL_CHARS = /^[\p{L}\p{N} .\-]+$/u;
 /** Weltzeit: höchstens so viele Zonen (?tz=) und Kurznamen (?tzl=), ein Kurzname höchstens so viele Zeichen. */
 export const MAX_ZONES = 6;
 export const ZONE_LABEL_LEN = 16;
+// Stundenbereich für den Nachtmodus (?dim=22-6): von – bis in vollen Stunden, über Mitternacht erlaubt, nie gleich.
+const HOURS_RANGE = /^([01]?[0-9]|2[0-3])-([01]?[0-9]|2[0-3])$/;
+/** Eingebaute Countdowns (?goal=, Etappe C): Neujahr und nächste Zeitumstellung in der Zone des Servers, dazu zwei feste
+ *  Zeitpunkte – Unixzeit 2 000 000 000 und das Ende der NTP-Ära 0 (Rechnung in clockextras.js). */
+export const GOALS = ["newyear", "dst", "unix", "ntp", "y2038"];
 const ISO_TIME = /^([0-9]{4})-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):([0-5][0-9])(?::([0-5][0-9]))?$/;
 
 // --- Darstellung: Layouts, Elemente, Farben (Studiouhr A3/A4) ---------------------------------
 /** Layouts: auto wählt per resolveLayout() aus der Größe der Bühne, die anderen setzen es fest. */
 export const LAYOUTS = ["auto", "normal", "banner", "column", "strip", "tile", "world"];
-/** Elemente, die sich mit ?show= einzeln zeigen lassen (Allowlist; was fehlt, wird ausgeblendet). */
-export const SHOW_ITEMS = ["time", "seconds", "date", "weekday", "week", "utc", "tz", "status", "countdown"];
+/** Elemente, die sich mit ?show= einzeln zeigen lassen (Allowlist; was fehlt, wird ausgeblendet). Die letzten drei sind
+ *  Zusätze der Etappe C (Mondphase, Nerd-Zeile, Fortschrittsbalken): Standard aus, nur wenn ?show= sie nennt. */
+export const SHOW_ITEMS = ["time", "seconds", "date", "weekday", "week", "utc", "tz", "status", "countdown", "moon", "nerd",
+  "progress"];
+/** Binäruhr (?bin=): bcd je Dezimalziffer eine Spalte, plain Stunde/Minute/Sekunde als Dualzahl (clockextras.js). */
+export const BIN_MODES = ["bcd", "plain"];
+/** Fortschrittsbalken (?bars=): Tag, Woche, Monat, Jahr (Ortszeit des Geräts) und die laufende Eieruhr bzw. Pomodoro-Phase. */
+export const BARS = ["day", "week", "month", "year", "timer"];
 /** Themen (data-look in clock.css, höchstens sechs). bg: Hintergrund für die Kontrastprüfung der Akzentfarbe. */
 export const LOOKS = Object.freeze({
   studio: { bg: "#000000", scheme: "dark" },
@@ -67,7 +80,8 @@ export const TC_FPS = ["24", "25", "30", "50", "60", "29.97", "59.94"];
  * („90s“, „25m“, „1h30m“; in ms), intlist (kommagetrennte ganze Zahlen in min … max, höchstens maxItems), zonelist
  * (kommagetrennte Zeitzonen, höchstens maxItems, ohne Doppelte; der Parameter darf auch mehrfach in der Adresse stehen),
  * labellist (kommagetrennte Kurznamen zu den Zonen, je höchstens len Zeichen; leere Einträge erlaubt). default gilt,
- * wenn der Parameter fehlt oder ungültig ist. Standortangaben (lat/lon) kennt das Schema bewusst nicht.
+ * wenn der Parameter fehlt oder ungültig ist. hours („22-6“: von – bis in vollen Stunden, Nachtmodus). Standortangaben
+ * (lat/lon) kennt das Schema bewusst nicht.
  */
 export const PARAM_SCHEMA = Object.freeze([
   { name: "design", type: "enum", values: DESIGNS, default: null },
@@ -103,6 +117,8 @@ export const PARAM_SCHEMA = Object.freeze([
   { name: "date", type: "enum", values: ["long", "short", "iso", "off"], default: "long" },
   // Design tc (B1): Bildrate der Timecode-Anzeige. Die Feinstelle (Zehntel, Frames, aus) wählt ?sub=.
   { name: "fps", type: "enum", values: TC_FPS, default: "25" },
+  // Design binary (C2): BCD-Spalten oder Dualzahl je Stunde, Minute, Sekunde.
+  { name: "bin", type: "enum", values: BIN_MODES, default: "bcd" },
   // Thema und Akzentfarbe (A4): gesetzt per CSSOM, nach Kontrastprüfung gegen den Hintergrund.
   { name: "look", type: "enum", values: Object.keys(LOOKS), default: null },
   { name: "accent", type: "color", default: null },
@@ -121,6 +137,23 @@ export const PARAM_SCHEMA = Object.freeze([
   // On-Air/REC-Signal (B4): Dieser Bildschirm zeigt das zentrale Signal aus /api/v1/time als Rahmen mit Text und fragt
   // dafür im Sekundentakt ab (sonst alle 5 s). Die Taste O schaltet unabhängig davon ein lokales „On Air“.
   { name: "signal", type: "flag", default: false },
+  // Spielereien (Etappe C): fun=0 blendet Eieruhr, Pomodoro, eigene Countdowns und den Nachtmodus-Knopf aus – in den
+  // Voreinstellungen studio, tile und banner gesetzt. Kiosk, lock=1, die Kachel und OBS-Browserquellen zeigen sie ohnehin nie.
+  { name: "fun", type: "flag", default: true },
+  // Ostereier (C3): 13:37, 12:34:56, Neujahr mit Konfetti, Schaltsekunde, Zeitumstellung, Konami-Code. eggs=0 schaltet sie
+  // ab; ohne Spielereien (fun=0, Kiosk, lock=1, Kachel, OBS, E-Ink) gibt es sie ohnehin nie (clockextras.eggsAllowed).
+  { name: "eggs", type: "flag", default: true },
+  // Eingebauter Countdown (Neujahr, nächste Zeitumstellung, Unixzeit 2 000 000 000, NTP-Ära 2036, Jahr 2038); ?until= geht vor.
+  { name: "goal", type: "enum", values: GOALS, default: null },
+  // Pomodoro: Dauer der Arbeitsphase (startet den Pomodoro-Timer statt ?timer=) und der Pause (ohne Angabe 5 min).
+  { name: "pomo", type: "duration", default: null },
+  { name: "pause", type: "duration", default: null },
+  // Nachtmodus: von – bis (volle Stunden der Ortszeit dieses Geräts), Helligkeit in %, Rotlicht statt Grau.
+  { name: "dim", type: "hours", default: null },
+  { name: "dimlevel", type: "int", min: 20, max: 80, default: 40 },
+  { name: "dimred", type: "flag", default: false },
+  // Fortschrittsbalken (C2, mit ?show=progress): welche Zeiträume; ohne Angabe Tag und Jahr bzw. Timer und Tag.
+  { name: "bars", type: "list", values: BARS, default: null },
   // Prüfbild (B5): test=sync lässt eine Fläche zur vollen Sekunde wechseln und klickt dazu (Einmessen von ?lead=).
   // Wirkt nur aus der Adresse (ADDRESS_ONLY, testMode) – nie aus einem Profil oder dem gemerkten Stand.
   { name: "test", type: "enum", values: ["sync"], default: null },
@@ -166,6 +199,16 @@ export function parseTimeValue(value) {
   const probe = new Date(Date.UTC(y, mo - 1, d));
   if (probe.getUTCMonth() !== mo - 1 || probe.getUTCDate() !== d) return null;   // 31.02. gibt es nicht
   return { kind: "iso", y, mo, d, h, m, s: Number(iso[6] || 0) };
+}
+
+/** „22-6“ → { from: 22, to: 6 }; gleiche Stunden, Minuten oder anderes: null. */
+export function parseHours(value) {
+  if (typeof value !== "string") return null;
+  const m = HOURS_RANGE.exec(value);
+  if (!m) return null;
+  const from = Number(m[1]);
+  const to = Number(m[2]);
+  return from === to ? null : { from, to };
 }
 
 /** „90s“ → 90 000, „25m“ → 1 500 000, „1h30m“ → 5 400 000 (ms); 0, über 24 h oder unlesbar: null. */
@@ -274,6 +317,10 @@ export function checkParam(entry, raw, zones = [], intl = globalThis.Intl) {
     case "duration": {
       const value = parseDuration(raw);
       return value ? { ok: true, value } : fail;
+    }
+    case "hours": {
+      const value = parseHours(raw);
+      return value ? { ok: true, value: Object.freeze(value) } : fail;
     }
     case "intlist": {
       // Kommagetrennte ganze Zahlen im Bereich, ohne Doppelte, höchstens maxItems; absteigend sortiert. Ein

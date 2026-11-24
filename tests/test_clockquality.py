@@ -658,9 +658,9 @@ class ClockPublicNoPasswordTest(unittest.TestCase):
         self.assertIsNone(payload["source"], "über einen fremden Namen nie der Quellenname")
         self.assertEqual(payload["source_kind"], "GPS")
         self.assertEqual(set(payload), {"synchronised", "running", "level", "accuracy", "stratum", "leap",
-                                        "leap_next", "source_kind", "t1", "t2", "public", "source", "zone",
+                                        "leap_next", "tai_utc", "source_kind", "t1", "t2", "public", "source", "zone",
                                         "profiles_rev", "ptp_state", "holdover", "holdover_seconds", "signal", "signal_rev"},
-                         "nur Zeit, Ampel, Genauigkeit, Art der Quelle, die öffentliche Schaltsekunden-Ankündigung "
+                         "nur Zeit, Ampel, Genauigkeit, Art der Quelle, die öffentliche Schaltsekunden-Ankündigung samt TAI−UTC, "
                          "die Zeitzone des Servers (für Countdown-Ziele), der Stand der Uhr-Profile, der Zustand von "
                          "PTP als fester Wert, Holdover mit Dauer und das On-Air-Signal als fester Wert")
         self.assertIn(payload["ptp_state"], server.PTP_STATES)

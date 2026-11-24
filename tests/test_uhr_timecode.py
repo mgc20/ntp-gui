@@ -320,7 +320,7 @@ class ParameterTest(unittest.TestCase):
         self.assertEqual(out["fps"], {"name": "fps", "type": "enum", "values": self.FPS, "default": "25"})
         self.assertEqual(out["sub"]["values"], ["utc", "tz2", "date", "off", "tenths", "frames"])
         self.assertEqual(out["sub"]["default"], "utc", "Standard bleibt; das Design tc zeigt damit Zehntel")
-        self.assertEqual(out["designs"][-1], "tc")
+        self.assertIn("tc", out["designs"])
         self.assertLessEqual(len(out["designs"]), 8, "höchstens acht Designs")
         self.assertEqual(sorted(out["rates"]), sorted(self.FPS))
         self.assertEqual(out["list"], self.FPS)
@@ -480,7 +480,7 @@ class TexteUndSeiteTest(unittest.TestCase):
         self.assertIn("[state.face.row]", self.js[start:self.js.index("\n}\n", start)])
         start = self.js.index("function fitOnce(main)")
         self.assertIn("tcFixed()", self.js[start:self.js.index("\n}\n", start)])
-        start = self.js.index("function fitTime()")
+        start = self.js.index("function fitTimeOnly()")
         self.assertIn("fitOnce(main)", self.js[start:self.js.index("\n}\n", start)])
 
     def test_datum_und_nebenzeile_in_der_zone_des_servers(self):

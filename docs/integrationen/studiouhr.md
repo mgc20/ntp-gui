@@ -37,7 +37,9 @@ http://zeitserver.lan:8080/clock?layout=tile&bg=transparent&design=digital&face=
 | `safe=5` | Sicherheitsrand in Prozent (Title-Safe, Overscan), in der Kachel Standard 5 |
 | `lock=1` | keine Tastenkürzel, Design, Ton und Anpassen ausgeblendet (Vollbild, Hell/Dunkel, Rotlicht und „Mein Gerät“ bleiben) |
 | `lead=40` | Anzeige 40 ms vorlaufen lassen, wenn der Bildschirm das Bild verzögert |
-| `p=regie` | ein im Dashboard gespeichertes Profil laden (Parameter in der Adresse gehen vor) |
+| `p=regie` | ein im Dashboard gespeichertes Profil laden (Parameter in der Adresse gehen vor); lädt es nicht, bleiben Spielereien und Ostereier aus, bis es da ist |
+| `fun=0` | keine Spielereien: Knöpfe „Timer“ (Eieruhr, Pomodoro), „Nacht“ und „Spiel“ fehlen, ebenso Zeitzeichen, Mondphase, Nerd-Zeile, Fortschrittsbalken und Ostereier (in `studio`, `tile` und `banner` gesetzt; im Kiosk, mit `lock=1` und in OBS gilt dasselbe) |
+| `eggs=0` | keine Ostereier und kein Konfetti (13:37, Neujahr, Schaltsekunden-Tag, Zeitumstellung, Konami-Code), Timer und Spiel bleiben. Ohne Ostereier – also auch mit `fun=0`, in `studio`, `tile`, `banner`, im Kiosk, mit `lock=1`, in OBS, auf E-Ink sowie in den Layouts Kachel und Streifen – fehlt auch die Schaltsekunden-Zeile über der Uhr („Heute Nacht gibt es eine Schaltsekunde …“); die Ankündigung im Band bleibt |
 
 Fest eingebaute Profile: `studio`, `tile`, `banner`, `kitchen`, `workshop`, `night` und `nerd`,
 z. B. `/clock?p=tile`.
@@ -172,7 +174,7 @@ http://zeitserver.lan:8080/clock?p=studio&signal=1
 
 | Parameter | Wirkung |
 |---|---|
-| `signal=1` | dieser Bildschirm zeigt das zentrale On-Air/REC-Signal und fragt dafür jede Sekunde ab (sonst alle 5 s) |
+| `signal=1` | dieser Bildschirm zeigt das zentrale On-Air/REC-Signal und fragt dafür jede Sekunde ab (sonst alle 5 s); auch im Nachtmodus (`dim=22-6`) bleibt es rot und voll deckend |
 
 Drei Wege, das Signal zu schalten:
 
@@ -249,6 +251,10 @@ andere Ereignisse verdrängt es nicht.
 4. „Benutzerdefiniertes CSS“ leer lassen. Mit `bg=transparent` ist der Hintergrund schon durchsichtig.
 5. „Quelle herunterfahren, wenn nicht sichtbar“ aus lassen: Sonst gleicht sich die Uhr nach jedem
    Szenenwechsel neu ab.
+
+In einer OBS-Browserquelle erkennt die Uhr OBS selbst: Kopfzeile, Panels und die Knöpfe am Countdown (Start, +1 min,
+Zurücksetzen) fehlen dort immer, auch ohne `lock=1`. Ein Timer (`timer=5m`) startet über „Interagieren“ mit der
+Leertaste.
 
 ## vMix
 

@@ -42,6 +42,34 @@ Der Rundgang öffnet jede Route bei 1440 und 390 px, hell und dunkel, und meldet
   Überzeit – gerechnet nach der gemockten Serverzeit samt Zeitzone des Servers, im Bild und ohne Umbruch; dazu
   `after=stop`, abweichende Zone des Servers, E-Ink, Timer (Leertaste, R), Stoppuhr mit Zehnteln (T), die Tasten D, L,
   U, +, ?, A, `lock=1` und die Ansage beim Unterschreiten von 1 min,
+- die Spielereien der Studiouhr C1 (`clockTimerChecks`, einzeln mit `TOUR_TIMER_ONLY=1`): eine Eieruhr läuft auf den
+  neun Flächen und fest als Streifen bzw. Kachel ab („Zeit ist um!“ als Text mit Rahmen, Überzeit, im Bild, ohne Umbruch
+  und Scrollbalken), Merken bei gesperrtem Speicher (ehrliche Meldung), Timer und Nacht auf Handys im Querformat (Touch; bei 640×360, 740×360 und 844×390 bleibt die Leiste einzeilig
+  wie in 1.9 und die Ziffern mindestens 20 % der Fensterhöhe), das Panel „Timer“ bei
+  390 und 1440 px (Schnellwahl, „+1 min“, eigene Dauer, Pomodoro, eigener Countdown merken und entfernen, Tippflächen
+  ≥ 24 px), der Phasenwechsel des Pomodoro, der Nachtmodus nach Uhrzeit und per Taste N, keine Knöpfe in den
+  Voreinstellungen `studio`, `tile`, `banner`, mit `kiosk=1`, `lock=1`, `fun=0` und in OBS (`window.obsstudio`), dort
+  auch kein N in der Kürzel-Übersicht, dazu
+  ein Lauf in Echtzeit ohne Long Tasks und ohne Bildschleife,
+- Binäruhr und Zusätze der Studiouhr C2 (`clockExtrasChecks`, einzeln mit `TOUR_EXTRAS_ONLY=1`): `?design=binary` (BCD
+  und `bin=plain`) zeigt auf den neun Flächen die gemockte Serverzeit als Lämpchen; `?show=moon,nerd,progress` auf den
+  neun Flächen im Bild (in Kachel, Streifen und auf Bühnen unter 360 px Höhe außer im Banner nie), Nerd-Zeile mit TAI und
+  GPS aus `tai_utc` des Mocks bzw. „–“ ohne den Wert, Balken für Tag, Jahr und Eieruhr, Klick auf den Mond (Südhalbkugel,
+  nur localStorage); im Banner 3840×1080 mit allen Zusätzen mindestens 24 px Abstand von Zeit und Zusätzen zum Rand;
+  keine Zusätze in `studio`, `tile`, `banner`, mit `fun=0` und ohne `show`; im Ruhebetrieb keine
+  Long Tasks und keine Bildschleife,
+- Spiel, Zeitzeichen und Ostereier der Studiouhr C3 (`clockFunChecks`, einzeln mit `TOUR_FUN_ONLY=1`): Osterei 13:37 auf
+  den neun Flächen (im Bild; in Kachel, Streifen und Fenstern bis 320 px Höhe nie, Streifen auch fest per
+  `?layout=strip` und per Taste L bei 1920×1080), Design `tc` mit Zone des Servers (Ei zu deren 13:37 bei Gerät in
+  UTC), Neujahr mit CSS-Konfetti (bei
+  „weniger Bewegung“ nur Text), Konami-Code (Konfetti, Binäruhr nicht gemerkt, das abschließende A sagt nichts an); nie
+  ein Ei oder Konfetti mit `eggs=0`, `fun=0`, in `studio`, `tile`, `banner`, mit `kiosk=1` (auch `p=nerd&kiosk=1`),
+  `lock=1` und in OBS, auch nicht, wenn der Profil-Abruf ausfällt (`studio`, `tile`, `banner` und ein eigenes Profil
+  mit 503: auch keine Knöpfe Timer, Spiel, Nacht), und nicht über dem Prüfbild `?test=sync` (13:37 und Neujahr); Panel „Spiel“ bei 390, 768 und 1920 px (Tipp mit Maus und Enter, Ergebnis, Messgenauigkeit,
+  Bestwert im localStorage, Tippflächen ≥ 24 px, gesperrter Speicher ehrlich; langer Druck von 700 ms mit Maus und
+  Finger ergibt genau eine Wertung, ein Klick ohne Zeiger wie vom Screenreader genau eine), Zeitzeichen-Knöpfe im Panel
+  Ton; dazu ein
+  Lauf in Echtzeit ohne Long Tasks und ohne Bildschleife, Konfetti danach wieder weg,
 - die „Heute“-Zeitleiste der Übersicht mit einem erfundenen Tag (Holdover 03:00–04:30, drei Ereignisse) bei 390 und
   1440 px: genau drei Marker an der richtigen Stelle, Holdover-Abschnitt im Band, Marker im Diagramm, Tagesbericht-Satz,
   Tippflächen ≥ 24 px; per Tastatur Band → Pos1 → Enter öffnet „So sah es um … aus“ (ohne Satellitenwinkel), Esc gibt den
@@ -74,6 +102,9 @@ TOUR_SHOTS=/tmp/fotos tests/ui/rundgang.sh   # zusätzlich Bildschirmfotos (hell
 TOUR_NAV_ONLY=1 tests/ui/rundgang.sh          # nur die Navigationsprüfungen (Reiter, untere Leiste, „Mehr“, Speicherleiste)
 TOUR_WORDS_ONLY=1 tests/ui/rundgang.sh        # nur die Wortzahl je Seite messen
 TOUR_PAGES_ONLY=1 tests/ui/rundgang.sh        # nur Clients mit Messwert und Rohdaten der Ereignisse (erfundene Antworten)
+TOUR_TIMER_ONLY=1 tests/ui/rundgang.sh        # nur Studiouhr C1: Eieruhr, Pomodoro, eigene Countdowns, Nachtmodus, keine Knöpfe in Studio/Kachel/Kiosk/OBS
+TOUR_EXTRAS_ONLY=1 tests/ui/rundgang.sh       # nur Studiouhr C2: Binäruhr, Mondphase, Nerd-Zeile, Fortschrittsbalken
+TOUR_FUN_ONLY=1 tests/ui/rundgang.sh          # nur Studiouhr C3: Spiel „Tippe auf :00“, Zeitzeichen, Ostereier, Konfetti
 TOUR_CLOCK_ONLY=1 tests/ui/rundgang.sh        # nur die Uhr-Werkstatt /clock (Designs, Kiosk, E-Ink, Ruhe zwischen den Minuten, Leiste bei offenem Panel)
 TOUR_TIMELINE_ONLY=1 tests/ui/rundgang.sh     # nur „Heute“-Zeitleiste: Band, Marker, Tagesbericht, Tastatur (erfundener Tag)
 TOUR_HERO_ONLY=1 tests/ui/rundgang.sh         # nur das Statusband der Übersicht (TOUR_HERO_SHOTS=<Ordner> für Fotos)

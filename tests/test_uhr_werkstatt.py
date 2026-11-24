@@ -33,12 +33,18 @@ LEAP_REAL = Path(__file__).resolve().parent / "fixtures" / "leap-seconds.list"
 # Standardwerte der Darstellungsparameter (Studiouhr A3/A4), damit die Erwartungen kurz bleiben.
 DISPLAY_DEFAULTS = {"layout": "auto", "safe": None, "bg": None, "scale": 100, "show": None, "weight": None, "shift": None,
                     "color": "amber", "sub": "utc", "seconds": "both", "h12": False, "face": "sans", "colon": "steady",
-                    "lz": True, "date": "long", "fps": "25", "look": None, "accent": None,
+                    "lz": True, "date": "long", "fps": "25",
+                    # Design binary (C2)
+                    "bin": "bcd", "look": None, "accent": None,
                     # Countdown und Timer (A5)
                     "until": None, "timer": None, "after": "up", "warn": [300, 60, 10], "beep": 0, "label": None,
                     "cd": "below", "lock": False,
                     # On-Air/REC-Signal (B4): zentrales Signal zeigen, Abfrage im Sekundentakt
                     "signal": False,
+                    # Spielereien (C1): Bedienung an, eingebaute Countdowns, Pomodoro, Nachtmodus
+                    "fun": True, "eggs": True, "goal": None, "pomo": None, "pause": None, "dim": None, "dimlevel": 40, "dimred": False,
+                    # Fortschrittsbalken (C2, mit show=progress)
+                    "bars": None,
                     # Prüfbild (B5): nur aus der Adresse
                     "test": None}
 
@@ -139,7 +145,7 @@ class ClockKitTest(unittest.TestCase):
         self.assertIsNone(out["none"]["tz"], "ohne Liste und ohne Intl keine Zeitzone")
         self.assertEqual(out["safe"], ["nixie", "digital", "digital"])
         self.assertEqual(out["label"], "New York")
-        self.assertEqual(out["designs"], ["digital", "studio", "bahnhof", "nixie", "flip", "wort", "tc"])
+        self.assertEqual(out["designs"], ["digital", "studio", "bahnhof", "nixie", "flip", "wort", "tc", "binary"])
         self.assertTrue(out["zones"], "Node kennt Intl.supportedValuesOf")
         self.assertEqual(out["noIntl"], [])
 
@@ -456,7 +462,9 @@ class ParameterSchemaTest(unittest.TestCase):
                                  "seconds": "enum", "h12": "flag", "face": "enum", "colon": "enum", "lz": "flag",
                                  "date": "enum", "fps": "enum", "look": "enum", "accent": "color", "until": "time",
                                  "timer": "duration", "after": "enum", "warn": "intlist", "beep": "int", "label": "label",
-                                 "cd": "enum", "lock": "flag", "signal": "flag", "test": "enum"})
+                                 "cd": "enum", "lock": "flag", "signal": "flag", "fun": "flag", "eggs": "flag", "goal": "enum",
+                                 "pomo": "duration", "pause": "duration", "dim": "hours", "dimlevel": "int",
+                                 "dimred": "flag", "test": "enum", "bin": "enum", "bars": "list"})
         lead = next(e for e in out["schema"] if e["name"] == "lead")
         self.assertEqual((lead["min"], lead["max"], lead["default"]), (0, 200, 0))
         self.assertEqual(out["defaults"], {"design": None, "kiosk": False, "eink": False, "tz": None, "tzl": None,
@@ -698,7 +706,7 @@ class SeitenregelnTest(unittest.TestCase):
         keys = re.findall(r"store\(\s*([^,)]+)", self.js)
         self.assertTrue(keys)
         for key in keys:
-            self.assertRegex(key.strip(), r'^(DESIGN_KEY|"ntp-gui-clock-(theme|red)"|link\.STORE_KEY|key)$')
+            self.assertRegex(key.strip(), r'^(DESIGN_KEY|"ntp-gui-clock-(theme|red)"|link\.STORE_KEY|fx\.OWN_KEY|fx\.TAP_BEST_KEY|SOUTH_KEY|key)$')
         self.assertEqual(re.findall(r"fetch\(\s*[\"`]([^\"`?]+)", self.js), ["/api/v1/time", "/api/v1/clock/profile"])
         self.assertNotRegex(self.js, r"method:\s*\"POST\"|sendBeacon|WebSocket")
         self.assertNotIn("localStorage.setItem", self.js.replace("window.localStorage.setItem(key, value)", ""))
@@ -1006,7 +1014,8 @@ class DarstellungsregelnTest(unittest.TestCase):
         # Nur feste Variablen per setProperty, Werte aus dem Schema bzw. aus kit.ensureContrast; kein style-Attribut.
         props = set(re.findall(r'setProperty\("([^"]+)"', self.js))
         self.assertEqual(props, {"--accent", "--studio-ink", "--safe", "--clock-scale", "--fit", "--info-w",
-                                 "--world-cols", "--world-rows", "--world-fit", "--world-grow"})
+                                 "--world-cols", "--world-rows", "--world-fit", "--world-grow", "--night",
+                                 "--bar"})   # --bar: Füllung eines Fortschrittsbalkens (Zahl 0 … 1), am Balken selbst
         for text in (self.js, self.faces):
             self.assertNotRegex(text, r"setAttribute\(\s*[\"']style|\.style\.cssText|innerHTML")
         self.assertIn("kit.ensureContrast(kit.colorValue(params.accent), bg)", self.js)
@@ -1025,7 +1034,7 @@ class DarstellungsregelnTest(unittest.TestCase):
         self.assertEqual(server.CLOCK_PUBLIC_PATHS, {
             "/clock", "/api/v1/time", "/api/v1/clock/profile", "/static/app.css", "/static/clock.css", "/static/js/clock.js",
             "/static/js/clocksync.js", "/static/js/clockkit.js", "/static/js/clockfaces.js", "/static/js/clockcount.js",
-            "/static/js/clocklink.js", "/static/js/clocktc.js", "/static/js/clockworld.js",
+            "/static/js/clocklink.js", "/static/js/clocktc.js", "/static/js/clockworld.js", "/static/js/clockextras.js",
             "/static/js/util.js", "/static/js/i18n.js", "/static/i18n/de.json", "/static/i18n/en.json"})
         self.assertIn('import * as faces from "./clockfaces.js";', self.js)
         self.assertIn('import * as cd from "./clockcount.js";', self.js)

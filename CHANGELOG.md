@@ -6,6 +6,97 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 
 ## [Unveröffentlicht]
 
+## [1.10.0] – 2026-11-24
+
+Schwerpunkt: Die Studiouhr bekommt Spielereien – Eieruhr und Pomodoro, eigene Countdowns, Nachtmodus,
+Binäruhr, Mondphase, Nerd-Zeile, Fortschrittsbalken, ein Reaktionsspiel, Zeitzeichen und Ostereier.
+Alles rechnet und merkt sich nur dein Browser, nichts wird gesendet. Mit `?fun=0` bzw. `?eggs=0` ist
+es abgeschaltet; Studio-, Kachel- und Banner-Voreinstellung, Kiosk und OBS bleiben ruhig wie bisher.
+
+### Hinzugefügt
+- **Timer (Studiouhr):** Das neue Panel **Timer** auf `/clock` hat eine Eieruhr (Schnellwahl 1–30 min
+  oder eigene Dauer wie `7:30`), „+1 min“ am Countdown und ein deutliches Ende („Zeit ist um!“ mit
+  Rahmen, ohne Blinken).
+  - **Pomodoro** per Knopf oder `?pomo=25m&pause=5m`: Arbeit und Pause wechseln von selbst, jede vierte
+    Pause ist lang, und die Uhr zählt die geschafften Runden.
+  - **„Ton am Ende“** piept erst nach deinem Klick und nur, solange die Seite offen ist. Liegt die Seite
+    in einem Hintergrund-Tab, plant sie die Töne von Eieruhr und Pomodoro bis zum Ende voraus. Die Hilfe
+    nennt, wann der Ton trotzdem ausbleibt.
+- **Eigene Countdowns:** Bis zu fünf, die sich nur dieser Browser merkt. Lässt der Browser kein Speichern
+  zu, sagt das Panel „nur bis zum Neuladen gemerkt“. Eingebaute Ziele, gerechnet auf der Serverzeit wie
+  `?until=`: `?goal=newyear` (Neujahr), `?goal=dst` (nächste Zeitumstellung), `?goal=unix` (Unixzeit
+  2 000 000 000), `?goal=y2038` (Jahr-2038-Problem, Unixzeit 2³¹ am 19.01.2038 03:14:08 UTC) und
+  `?goal=ntp` (Ende der NTP-Ära 2036).
+- **Nachtmodus:** Er dimmt grau oder rot (`?dimred=1`), schaltet nach der Ortszeit des Geräts mit
+  `?dim=22-6`, die Helligkeit stellst du mit `?dimlevel=20..80` ein. Von Hand per Knopf **Nacht** oder
+  Taste N; das gilt bis zum nächsten Wechsel des Zeitplans. Wünscht das System mehr Kontrast
+  (`prefers-contrast: more`), bleibt die Uhr mindestens zu 60 % hell. Das On-Air/REC-Signal wird nie
+  gedimmt. Im Link-Baukasten gibt es dafür eine eigene Gruppe „Nachtmodus“.
+- **Design „Binär“** (`/clock?design=binary`) mit Lämpchen je Ziffer (8-4-2-1) oder mit `?bin=plain` als
+  Dualzahl für Stunde, Minute und Sekunde, Dezimalwerte daneben. Damit gibt es acht Designs, mehr werden
+  es nicht.
+- **Zusätze unter der Uhr**, standardmäßig aus und per `?show=moon,nerd,progress` einzeln einzuschalten.
+  Die Voreinstellung `nerd` zeigt alle drei.
+  - **Mondphase**, rein rechnerisch im Browser. Ein Klick auf den Mond zeigt ihn wie auf der
+    Südhalbkugel (nur in diesem Browser gemerkt, und nur dort, wo es die Knöpfe Timer und Nacht gibt).
+  - **Nerd-Zeile** mit Unixzeit, TAI, GPS-Woche und -Sekunde, MJD, Tag im Jahr und ISO-Woche; auf
+    Bühnen ab 700 px Höhe (nicht im Banner) zusätzlich die Unixzeit hexadezimal und die Uhrzeit römisch
+    (Mitternacht „N:N“).
+  - **Fortschrittsbalken** für Tag, Woche, Monat, Jahr oder die laufende Eieruhr (`?bars=`).
+  - Tag im Jahr, ISO-Datum und Kalender-Balken gelten für das angezeigte Datum, im Design `tc` mit
+    abweichender Zone des Servers also für die Zone des Servers.
+- **Spiel „Tippe auf :00“:** Der Knopf **Spiel** öffnet ein Reaktionsspiel. Du tippst auf „Jetzt!“, genau
+  wenn die Uhr auf die volle Sekunde oder die volle Minute springt. Die Uhr zeigt deine Abweichung in ms
+  mit Wertung und daneben die Messgenauigkeit (Abgleich ± halbe Laufzeit, Serveruhr, Bildauffrischung).
+  Den Bestwert merkt sich nur dein Browser.
+- **Zeitzeichen:** Das Panel **Ton** spielt wie im Radio fünf kurze Töne und einen langen zur vollen
+  Stunde (oder jede Minute) deiner Ortszeit, im Hintergrund-Tab bis dahin vorausgeplant. Es startet nur
+  nach deinem Klick und ist ausdrücklich keine Referenz, weil Browser-Audio und Lautsprecher den Ton
+  verzögern.
+- **Ostereier:** um 13:37, um 12:34:56, in den ersten zehn Minuten des neuen Jahres (mit Konfetti) und am
+  Tag der Zeitumstellung. Der Konami-Code (↑ ↑ ↓ ↓ ← → ← → B A) bringt Konfetti und zeigt bis zum
+  Neuladen die Binäruhr. Konfetti fällt nur per CSS; wünscht dein System weniger Bewegung, bleibt es beim
+  Text. Ostereier richten sich nach der großen Zeit (im Design `tc` mit Zone des Servers nach deren Zeit
+  und Tag; nach Taste U gibt es kein Zeitumstellungs-Ei). `?eggs=0` schaltet alle ab, auch im
+  Link-Baukasten und in Profilen.
+- `/api/v1/time` meldet `tai_utc`: den heute gültigen Abstand TAI−UTC aus der Schaltsekunden-Liste des
+  Images, damit die Nerd-Zeile TAI und GPS-Zeit nicht raten muss. Das Feld steht auch ohne Anmeldung
+  dort, wenn die öffentliche Uhr eingeschaltet ist; sonst gibt der öffentliche Pfad nichts Neues preis.
+
+### Geändert
+- **`?fun=0`** blendet die Knöpfe **Timer**, **Nacht** und **Spiel**, die Zeitzeichen, die Zusätze und
+  die Ostereier aus. Die Voreinstellungen `studio`, `tile` und `banner` setzen `fun=0`, die
+  Voreinstellung `night` dimmt von 22 bis 7 Uhr.
+- **Ruhige Flächen:** In einer OBS-Browserquelle blendet `/clock` Leiste, Panels und die Knöpfe am
+  Countdown aus. Im Kiosk, mit `lock=1` und in der Kachel gibt es keine Knöpfe für Timer und Nacht und
+  keine Zusätze; in Kachel, Streifen (auch per Taste L) und auf sehr niedrigen Flächen keine Zusätze, auf
+  E-Ink keine Nerd-Zeile. Ostereier und Konfetti gibt es dort ebenso wenig wie während des Prüfbilds
+  (`?test=sync`). Fällt der Abruf eines Profils aus (`?p=studio` usw.), bleiben Ostereier, Konfetti und
+  die Knöpfe Timer, Spiel und Nacht vorsichtshalber aus, bis das Profil geladen ist.
+- **Schaltsekunden-Zeile:** Das Hinweisfeld über der Uhr zur möglichen Schaltsekunde am 30.6. und 31.12.
+  („Heute Nacht gibt es eine Schaltsekunde …“) gilt jetzt als Osterei. Es fehlt mit `eggs=0` oder
+  `fun=0`, in den Voreinstellungen `studio`, `tile` und `banner`, im Kiosk, mit `lock=1`, in OBS, auf
+  E-Ink sowie in Kachel und Streifen. Die Ankündigung einer Schaltsekunde im Band bleibt.
+- Nennt `?show=` nur Zusätze (z. B. `show=moon`), bleibt die restliche Uhr wie gewohnt; mit einem Profil
+  (`?p=night&show=moon`) bleibt auch dessen Auswahl erhalten.
+- Ohne Knöpfe am Countdown (Kiosk, OBS) sagt die Uhr „bereit – Leertaste startet“.
+- In Fenstern bis 480 px Höhe (Handy quer, Streifen) bleibt die Kopfzeile einzeilig. Passen nicht alle
+  Knöpfe hinein, wischst bzw. rollst du die Knopfgruppe seitlich; die Uhr bleibt so groß wie in 1.9. In
+  Fenstern bis 320 px Höhe fehlt der Knopf **Spiel**, in sehr kleinen, flachen Fenstern auch Timer und
+  Nacht.
+- Die Kürzel-Übersicht nennt die Taste N nur, wo der Nachtmodus von Hand schaltbar ist. Die Hilfe zur Uhr
+  beschreibt Kontrast, lange Pomodoro-Pause und den Zeitplan des Nachtmodus genau.
+
+### Behoben
+- Link-Baukasten: Eine lange Beschriftung drückt das Kästchen daneben nicht mehr zusammen.
+
+### Intern
+- Node-Tests mit Referenzwerten für jede Spielerei: Mondphase gegen eine Tabelle von Neu- und
+  Vollmonden, TAI und GPS gegen `app/leap.py`, dazu Tests, dass `eggs=0`, `fun=0` sowie Studio-, Kachel-
+  und Kiosk-Profil nie ein Ei oder Konfetti zeigen.
+- Containertest: Bei eingeschalteter öffentlicher Uhr wird `/static/js/clockextras.js` ohne Anmeldung
+  ausgeliefert (sonst 401), und `tai_utc` steht auch ohne Anmeldung in `/api/v1/time`.
+
 ## [1.9.0] – 2026-11-23
 
 Schwerpunkt: Sicherheit und Betrieb auf einem VPS. Anmeldung, HTTP-Server, Eingaben, Netzdienste
@@ -1840,6 +1931,7 @@ Erste Veröffentlichung.
 - CI mit Unittests und Integrationstest gegen das gebaute Image; Release-Workflow,
   der das Image für amd64 und arm64 nach ghcr.io veröffentlicht.
 
+[1.10.0]: https://github.com/mgc20/ntp-gui/compare/v1.9.0...v1.10.0
 [1.9.0]: https://github.com/mgc20/ntp-gui/compare/v1.8.0...v1.9.0
 [1.8.0]: https://github.com/mgc20/ntp-gui/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/mgc20/ntp-gui/compare/v1.6.3...v1.7.0

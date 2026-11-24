@@ -35,6 +35,9 @@
 // Zeit im safe-Rand, kein Ziffernumbruch, kein Scrollbalken, CSS-Spiegel = resolveLayout, Ziffern, CSSOM-Farben, CSP.
 // Studiouhr A5 (clockCountdownChecks, TOUR_COUNTDOWN_ONLY=1): Countdown, Überzeit und Countdown als Hauptanzeige auf
 // neun Flächen, Farbstufen mit Symbol und Text, Zone des Servers, Timer, Stoppuhr, Tastenkürzel, lock=1, Ansagen.
+// Studiouhr C1 (clockTimerChecks, TOUR_TIMER_ONLY=1): Eieruhr, Pomodoro, eigene Countdowns, Nachtmodus, Bedienung.
+// Studiouhr C2 (clockExtrasChecks, TOUR_EXTRAS_ONLY=1): Design binary, Mondphase, Nerd-Zeile, Fortschrittsbalken.
+// Studiouhr C3 (clockFunChecks, TOUR_FUN_ONLY=1): Spiel „Tippe auf :00“, Zeitzeichen, Ostereier mit Konfetti und Konami-Code.
 // Studiouhr A6 (clockLinkChecks, TOUR_LINK_ONLY=1): Profil (?p=) auf neun Flächen mit gemocktem Profil und /api/v1/time,
 // Neuladen bei geändertem profiles_rev, Panel „Anpassen“ (Übernehmen ohne Parameter), Reiter „Anzeigen“ im Dashboard.
 // Studiouhr B1 (clockTimecodeChecks, TOUR_TC_ONLY=1): Design tc auf neun Flächen – Kopfzeile „nicht genlocked“, Zehntel als
@@ -723,9 +726,10 @@ const CLOCK_STEP_MS = 250;
 // zurück, um den Zustand vor der ersten Antwort zu prüfen. zone: Zeitzone des Browsers. at: Serverzeit nach dem
 // Einschwingen (ms), Standard CLOCK_SERVER. reduced: Das System wünscht weniger Bewegung (prefers-reduced-motion).
 async function openPausedClock(browser, { width, height = 900, query = "", red = false, reply, hold = null, settle = true,
-  zone = "Europe/Berlin", profile = null, storage = null, at = CLOCK_SERVER, reduced = false } = {}) {
+  zone = "Europe/Berlin", profile = null, storage = null, at = CLOCK_SERVER, reduced = false, init = null, touch = false } = {}) {
   const ctx = await browser.newContext({ viewport: { width, height }, timezoneId: zone,
-    ...(reduced ? { reducedMotion: "reduce" } : {}) });
+    ...(reduced ? { reducedMotion: "reduce" } : {}), ...(touch ? { isMobile: true, hasTouch: true } : {}) });
+  if (init) await ctx.addInitScript(init);   // z. B. window.obsstudio wie in einer OBS-Browserquelle
   await ctx.addInitScript(([isRed, extra]) => {
     window.__csp = [];
     document.addEventListener("securitypolicyviolation", (e) => window.__csp.push(`${e.violatedDirective} ${e.blockedURI}`));
@@ -1058,7 +1062,8 @@ async function clockStudioChecks(browser) {
 // Uhr die Ziffern von studio und face=seg (10:15:42, Kranz bis Sekunde 42), die Akzentfarbe per CSSOM (wirksam,
 // ≥ 4,5:1) und die Pixel-Shift-Klasse.
 const LAYOUT_DESIGNS = ["?design=digital", "?design=digital&face=seg", "?design=studio", "?design=bahnhof", "?design=nixie",
-  "?design=flip", "?design=wort", "?design=tc"];
+  "?design=flip", "?design=wort", "?design=tc", "?design=binary", "?design=binary&bin=plain&h12=1",
+  "?design=binary&show=moon,nerd,progress"];
 const LAYOUT_PARAMS = ["?layout=tile&safe=10&design=studio", "?layout=tile&design=digital", "?scale=200",
   "?scale=50&design=digital&face=seg", "?shift=2&safe=3&design=digital", "?layout=strip&design=nixie",
   "?layout=banner&design=flip", "?layout=column&design=wort", "?show=time,status&design=digital",
@@ -1480,6 +1485,778 @@ async function clockCountdownChecks(browser) {
     });
     note("/clock Countdown-Ansage", [out.live === "" ? "" : `schon beim Laden „${out.live}“`,
       got.live === "Noch 1 min." ? "" : `Ansage „${got.live}“ (${got.text})`, ...errors(got, msgs)].filter(Boolean));
+  }
+  return { found, lines };
+}
+
+// Studiouhr C1 (clockTimerChecks, TOUR_TIMER_ONLY=1): Eieruhr, Pomodoro, eigene Countdowns, Nachtmodus und die Regel
+// für Bedienelemente. Auf allen neun Flächen und fest als Streifen (1920×100) bzw. Kachel (480×270): Eieruhr (?timer=3s,
+// Leertaste) läuft ab – „Zeit ist um!“ als Text mit Rahmen, Überzeit, im Bild, ohne Umbruch und Scrollbalken. Gesperrter
+// Speicher: Merken meldet „nur bis zum Neuladen“. Handy quer (Touch 740×300, 667×320): Timer und Nacht in der Leiste. Bei 390 und 1440 px das Panel „Timer“: sechs Schnellwahlen, 3 min ohne gelbe
+// Stufe, „+1 min“, eigene Dauer, Pomodoro-Start, eigener Countdown merken und wieder entfernen (nur localStorage), Tippflächen
+// ≥ 24 px, keine Überbreite. Pomodoro (?pomo=1m&pause=1m) wechselt nach einer Minute in die Pause und zählt. Nachtmodus
+// nach Uhrzeit (grau bzw. rot, Deckkraft aus dimlevel), Taste N schaltet von Hand. Keine Knöpfe in den Voreinstellungen
+// studio, tile, banner, mit kiosk=1, lock=1, fun=0 und in OBS (window.obsstudio); Taste N wirkt dort nicht und fehlt in
+// der Kürzel-Übersicht. Dazu ein Lauf
+// in Echtzeit: keine Long Tasks (> 50 ms) und keine Bildschleife bei laufendem Pomodoro. Fotos mit TOUR_SHOTS.
+function timerState() {
+  const root = document.documentElement;
+  const cd = document.getElementById("cd");
+  const time = document.getElementById("cd-time");
+  const stage = document.getElementById("clock-stage").getBoundingClientRect();
+  const safe = parseFloat(getComputedStyle(root).getPropertyValue("--safe")) || 0;
+  const box = cd.getBoundingClientRect();
+  const size = parseFloat(getComputedStyle(time).fontSize);
+  const visible = (id) => { const el = document.getElementById(id); const r = el.getBoundingClientRect();
+    return !el.hidden && getComputedStyle(el).display !== "none" && r.width > 0 && r.height > 0; };
+  return {
+    text: time.textContent, label: document.getElementById("cd-label").textContent, state: document.getElementById("cd-state").textContent,
+    level: cd.dataset.level, phase: cd.dataset.phase, end: root.dataset.cdEnd || "", outline: getComputedStyle(cd).outlineStyle,
+    wrapped: time.getBoundingClientRect().height > size * 1.6, layout: document.getElementById("clock-stage").dataset.layout,
+    box: { left: box.left, right: box.right, top: box.top, bottom: box.bottom, w: box.width, h: box.height },
+    safeBox: { left: stage.left + stage.width * safe / 100, right: stage.right - stage.width * safe / 100,
+      top: stage.top + stage.height * safe / 100, bottom: stage.bottom - stage.height * safe / 100 },
+    vscroll: root.scrollHeight - root.clientHeight, hscroll: root.scrollWidth - root.clientWidth,
+    mode: root.dataset.mode || "", night: root.dataset.night || "",
+    opacity: getComputedStyle(document.getElementById("clock-stage")).opacity,
+    timerBtn: visible("mode-timer"), nightBtn: visible("mode-night"), actions: visible("cd-actions"), plus: visible("cd-plus"),
+    bar: visible("clock-back"), barH: document.querySelector(".clock-bar").getBoundingClientRect().height,
+    timeFont: parseFloat(getComputedStyle(document.getElementById("local-time")).fontSize), nightPressed: document.getElementById("mode-night").getAttribute("aria-pressed"),
+    stateShown: visible("cd-state"), keysN: !document.getElementById("keys-n").hidden && !document.getElementById("keys-n-key").hidden,
+    csp: window.__csp || [],
+  };
+}
+
+function timerPanelState() {
+  const panel = document.getElementById("timer-panel");
+  // ⓘ hat seine eigene 24-px-Prüfung (infoHitCheck); beim Kästchen zählt das Label drumherum.
+  const small = [...panel.querySelectorAll("button:not(.info), input:not([type=checkbox]), a, label.clock-timer-check")].filter((el) => {
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && (r.width < 24 || r.height < 24);
+  }).map((el) => el.id || el.textContent.trim().slice(0, 20));
+  return {
+    open: !panel.hidden, presets: [...document.querySelectorAll("#egg-presets button")].map((b) => b.textContent),
+    goals: [...document.querySelectorAll("#goal-list a")].map((a) => a.getAttribute("href")),
+    own: [...document.querySelectorAll("#own-list a")].map((a) => [a.textContent, a.getAttribute("href")]),
+    stored: localStorage.getItem("ntp-gui-clock-countdowns"), status: document.getElementById("timer-status").textContent,
+    small, hscroll: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    pomo: document.getElementById("pomo-line").textContent,
+    untilFits: (() => {   // Platzhalter des Ziel-Felds ganz zu sehen (Breite des Texts in der Schrift des Felds)
+      const input = document.getElementById("own-until");
+      const style = getComputedStyle(input);
+      const ctx = document.createElement("canvas").getContext("2d");
+      ctx.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+      return ctx.measureText(input.placeholder).width <= input.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+    })(),
+  };
+}
+
+async function clockTimerChecks(browser) {
+  const found = [];
+  const lines = [];
+  const note = (label, problems) => {
+    lines.push(`${label}: ${problems.length ? problems.join("; ") : "ok"}`);
+    if (problems.length) found.push(`${label}: ${problems.join("; ")}`);
+  };
+  const M = "−";
+  const errors = (got, msgs) => (got.csp.length || msgs.length ? [`Fehler ${JSON.stringify([...got.csp, ...msgs])}`] : []);
+  const shot = async (page, name) => { if (SHOTS) await page.screenshot({ path: `${SHOTS}/clock-c1-${name}.png` }); };
+  // 1) Eieruhr läuft ab, auf allen neun Flächen und fest im Streifen bzw. in der Kachel (dort steht „Zeit ist um!“ klein).
+  for (const [width, height, layout] of [...STUDIO_VIEWPORTS, [1920, 100, "strip"], [480, 270, "tile"]]) {
+    const query = layout ? `?layout=${layout}&timer=3s` : "?timer=3s";
+    const { ctx, page, msgs, clock } = await openPausedClock(browser, { width, height, query });
+    await page.keyboard.press("Space");
+    await clock.run(4500);   // die Anzeige wechselt 2 ms nach der vollen Sekunde
+    const got = await page.evaluate(timerState);
+    await shot(page, `ende-${width}x${height}${layout ? `-${layout}` : ""}`);
+    await ctx.close();
+    const problems = [];
+    if (got.end !== "1") problems.push("kein data-cd-end");
+    if (got.text !== "+00:00:01") problems.push(`zeigt ${got.text}`);
+    if (got.state !== "Zeit ist um!" || !got.stateShown) problems.push(`Text „${got.state}“ ${got.stateShown ? "" : "(ausgeblendet)"}`);
+    if (layout && got.layout !== layout) problems.push(`Layout ${got.layout}`);
+    if (got.outline !== "solid") problems.push(`kein Rahmen (${got.outline})`);
+    const b = got.box;
+    const z = got.safeBox;
+    if (!(b.w > 0 && b.h > 0)) problems.push("Countdown nicht sichtbar");
+    else if (b.left < z.left - 6 || b.right > z.right + 6 || b.top < z.top - 6 || b.bottom > z.bottom + 6) {
+      problems.push(`außerhalb der Bühne (${[b.left, b.top, b.right, b.bottom].map(Math.round)} in ${[z.left, z.top, z.right, z.bottom].map(Math.round)})`);
+    }
+    if (got.wrapped) problems.push("Umbruch");
+    if (got.vscroll > 0 || got.hscroll > 0) problems.push(`Scrollbalken (${got.hscroll}/${got.vscroll} px)`);
+    problems.push(...errors(got, msgs));
+    note(`/clock Eieruhr-Ende ${width}×${height}${layout ? ` ${layout}` : ""}`, problems);
+  }
+  // 2) Panel „Timer“ bei 390 und 1440 px.
+  for (const width of [390, 1440]) {
+    const { ctx, page, msgs, clock } = await openPausedClock(browser, { width, height: 900, query: "" });
+    await page.click("#mode-timer");
+    await clock.run(250);
+    const panel = await page.evaluate(timerPanelState);
+    await shot(page, `panel-${width}`);
+    await page.click("#egg-presets button:nth-child(2)");   // 3 min
+    await clock.run(1500);
+    const egg = await page.evaluate(timerState);
+    await page.click("#cd-plus");
+    await clock.run(250);
+    const plus = await page.evaluate(timerState);
+    await page.fill("#egg-input", "7:30");
+    await page.click("#egg-start");
+    await clock.run(250);   // gerade gestartet: noch die volle Dauer
+    const own = await page.evaluate(timerState);
+    await page.fill("#egg-input", "abc");
+    await page.click("#egg-start");
+    const bad = await page.evaluate(() => [document.getElementById("egg-input").getAttribute("aria-invalid"),
+      document.getElementById("timer-status").textContent]);
+    await page.fill("#own-label", "Tagesschau");
+    await page.fill("#own-until", "20:15");
+    await page.click("#own-save");
+    const saved = await page.evaluate(timerPanelState);
+    await shot(page, `panel-gemerkt-${width}`);
+    await page.click("#own-list button");
+    const removed = await page.evaluate(timerPanelState);
+    await page.click("#pomo-start");
+    await clock.run(1500);
+    const pomo = await page.evaluate(timerState);
+    await ctx.close();
+    const problems = [];
+    if (!panel.open) problems.push("Panel zu");
+    if (panel.presets.join("|") !== "1 min|3 min|5 min|10 min|15 min|30 min") problems.push(`Schnellwahl ${panel.presets}`);
+    if (panel.goals.join(" ") !== "/clock?goal=newyear /clock?goal=dst /clock?goal=unix /clock?goal=ntp /clock?goal=y2038") problems.push(`Ziele ${panel.goals}`);
+    if (panel.small.length) problems.push(`Tippflächen < 24 px: ${panel.small.join(", ")}`);
+    if (panel.hscroll > 0) problems.push(`Überbreite ${panel.hscroll} px`);
+    if (!panel.untilFits) problems.push("Platzhalter im Feld „Ziel“ abgeschnitten");
+    if (egg.text !== `${M}02:59` || egg.level !== "none" || egg.label !== "Timer 03:00") problems.push(`3 min: ${egg.text} ${egg.level} „${egg.label}“`);
+    if (!egg.plus) problems.push("+1 min fehlt");
+    if (plus.text !== `${M}03:59`) problems.push(`+1 min: ${plus.text}`);
+    if (own.text !== `${M}07:30` || own.label !== "Timer 07:30") problems.push(`eigene Dauer: ${own.text} „${own.label}“`);
+    if (bad[0] !== "true" || !/verstehe/.test(bad[1])) problems.push(`falsche Dauer: ${bad}`);
+    if (JSON.stringify(saved.own) !== JSON.stringify([["Tagesschau (20:15)", "/clock?until=20:15&label=Tagesschau"]])) problems.push(`gemerkt ${JSON.stringify(saved.own)}`);
+    if (saved.stored !== JSON.stringify([{ until: "20:15", label: "Tagesschau" }])) problems.push(`localStorage ${saved.stored}`);
+    if (removed.own.length || removed.stored !== null) problems.push("Entfernen wirkt nicht");
+    if (pomo.label !== "Pomodoro 1 · Arbeit" || pomo.text !== `${M}24:59` || pomo.plus) problems.push(`Pomodoro: ${pomo.text} „${pomo.label}“`);
+    problems.push(...errors(pomo, msgs));
+    note(`/clock Panel Timer ${width}`, problems);
+  }
+  // 2b) Gesperrter Speicher (privates Fenster): Merken sagt ehrlich, dass nur bis zum Neuladen gemerkt ist.
+  {
+    const blocked = () => { Object.defineProperty(window, "localStorage", { get() { throw new DOMException("gesperrt", "SecurityError"); } }); };
+    const { ctx, page, msgs, clock } = await openPausedClock(browser, { width: 1440, height: 900, init: blocked });
+    await page.click("#mode-timer");
+    await page.fill("#own-label", "Test");
+    await page.fill("#own-until", "20:15");
+    await page.click("#own-save");
+    await clock.run(250);
+    const got = await page.evaluate(() => ({ status: document.getElementById("timer-status").textContent,
+      own: [...document.querySelectorAll("#own-list a")].map((a) => a.textContent), csp: window.__csp || [] }));
+    await ctx.close();
+    note("/clock eigener Countdown, Speicher gesperrt", [/Neuladen/.test(got.status) ? "" : `Meldung „${got.status}“`,
+      got.own.join() === "Test (20:15)" ? "" : `Liste ${got.own}`, ...errors(got, msgs)].filter(Boolean));
+  }
+  // 2c) Handy im Querformat (Touch, ohne Tastatur): Timer und Nacht bleiben in der Leiste; nur sehr kleine flache Fenster
+  // verzichten darauf.
+  // Die Leiste bleibt dabei einzeilig wie in 1.9 (Knopfgruppe rollt seitlich, höchstens 48 px hoch). Die Ziffern
+  // mindestens 20 % der Fensterhöhe: Mit der umbrochenen Leiste (zwei bis drei Zeilen) lagen sie darunter.
+  for (const [width, height, want, minFont] of [[740, 300, true, 0], [667, 320, true, 0], [568, 300, false, 0],
+    [640, 360, true, 72], [740, 360, true, 72], [844, 390, true, 78]]) {
+    const { ctx, page, msgs, clock } = await openPausedClock(browser, { width, height, touch: true });
+    await clock.run(250);
+    const got = await page.evaluate(timerState);
+    await shot(page, `quer-${width}x${height}`);
+    await ctx.close();
+    note(`/clock Querformat ${width}×${height} Touch`, [got.timerBtn === want && got.nightBtn === want ? ""
+      : `Timer/Nacht ${got.timerBtn}/${got.nightBtn}, erwartet ${want}`, got.hscroll > 0 ? `Überbreite ${got.hscroll} px` : "",
+      got.barH <= 48 ? "" : `Leiste ${Math.round(got.barH)} px hoch (umbrochen)`,
+      got.timeFont >= minFont ? "" : `Ziffern nur ${got.timeFont.toFixed(1)} px statt ≥ ${minFont} px`,
+      ...errors(got, msgs)].filter(Boolean));
+  }
+  // 3) Pomodoro wechselt nach der Arbeitsphase in die Pause und zählt.
+  {
+    const { ctx, page, msgs, clock } = await openPausedClock(browser, { width: 1920, height: 1080, query: "?pomo=1m&pause=1m" });
+    await page.keyboard.press("Space");
+    await clock.run(500);
+    clock.advanced += 60000;
+    await page.clock.runFor(60000);
+    await clock.run(1500);
+    const got = await page.evaluate(timerState);
+    const live = await page.evaluate(() => document.getElementById("clock-live").textContent);
+    await shot(page, "pomodoro-pause");
+    await ctx.close();
+    note("/clock Pomodoro Phasenwechsel", [got.label === "Pomodoro 1 · Pause" ? "" : `„${got.label}“`,
+      got.state === "1 Pomodoro geschafft" ? "" : `„${got.state}“`, /^−00:5\d$/.test(got.text) ? "" : `zeigt ${got.text}`,
+      got.end ? "Eieruhr-Ende beim Pomodoro" : "", /Pause/.test(live) ? "" : `Ansage „${live}“`, ...errors(got, msgs)].filter(Boolean));
+  }
+  // 4) Nachtmodus nach Uhrzeit (10:15 liegt in 8-17) und Taste N.
+  for (const [query, mode, opacity] of [["?dim=8-17", "night", "0.4"], ["?dim=8-17&dimred=1&dimlevel=60", "red", "0.6"]]) {
+    const { ctx, page, msgs, clock } = await openPausedClock(browser, { width: 1440, height: 900, query });
+    const on = await page.evaluate(timerState);
+    await shot(page, `nacht-${mode}`);
+    await page.keyboard.press("n");
+    await clock.run(250);
+    const off = await page.evaluate(timerState);
+    await ctx.close();
+    note(`/clock Nachtmodus ${query}`, [on.mode === mode && on.night === "1" ? "" : `an: ${on.mode}/${on.night}`,
+      on.opacity === opacity ? "" : `Deckkraft ${on.opacity}`, on.nightPressed === "true" ? "" : "Knopf nicht gedrückt",
+      !off.night && off.mode === "" && off.opacity === "1" ? "" : `nach N: ${off.mode}/${off.night}/${off.opacity}`,
+      ...errors(off, msgs)].filter(Boolean));
+  }
+  {
+    const { ctx, page, msgs, clock } = await openPausedClock(browser, { width: 1440, height: 900, query: "?dim=20-6" });
+    const before = await page.evaluate(timerState);
+    await page.click("#mode-night");
+    await clock.run(250);
+    const after = await page.evaluate(timerState);
+    await ctx.close();
+    note("/clock Nachtmodus von Hand", [before.night ? "außerhalb des Zeitplans an" : "", after.mode === "night" ? "" : `nach Klick ${after.mode}`,
+      before.keysN ? "" : "Kürzel-Übersicht ohne N",
+      ...errors(after, msgs)].filter(Boolean));
+  }
+  // 5) Keine Bedienung in Studio-, Kachel- und Kiosk-Voreinstellungen, mit lock=1, fun=0 und in OBS.
+  const obs = () => { window.obsstudio = { pluginVersion: "30.0.0" }; };
+  for (const [name, query, init, actions] of [["studio", "?p=studio&timer=5m", null, false], ["tile", "?p=tile&timer=5m", null, false],
+    ["banner", "?p=banner&timer=5m", null, false], ["kiosk", "?kiosk=1&timer=5m", null, false], ["lock", "?lock=1&timer=5m", null, false],
+    ["fun0", "?fun=0&timer=5m", null, true], ["obs", "?timer=5m", obs, false]]) {
+    const { ctx, page, msgs, clock } = await openPausedClock(browser, { width: 1920, height: 1080, query, init });
+    await clock.run(1500);   // Profil geladen
+    await page.keyboard.press("n");
+    await clock.run(250);
+    const got = await page.evaluate(timerState);
+    if (name === "obs") await shot(page, "obs");
+    await ctx.close();
+    note(`/clock Bedienung ${name}`, [got.timerBtn || got.nightBtn ? "Knöpfe Timer/Nacht sichtbar" : "",
+      got.actions !== actions ? `Knöpfe am Countdown ${got.actions ? "sichtbar" : "fehlen"}` : "",
+      got.night ? "Taste N wirkt" : "", got.keysN ? "Kürzel-Übersicht nennt N" : "", name === "obs" && got.bar ? "Leiste in OBS sichtbar" : "",
+      name === "obs" && /Start/.test(got.state) ? `verspricht Start-Knopf „${got.state}“` : "", ...errors(got, msgs)].filter(Boolean));
+  }
+  // 6) Echtzeit: laufender Pomodoro ohne Long Tasks und ohne Bildschleife.
+  {
+    const ctx = await browser.newContext({ viewport: { width: 1920, height: 1080 } });
+    await ctx.addInitScript(() => {
+      window.__long = [];
+      window.__raf = 0;
+      const raf = window.requestAnimationFrame.bind(window);
+      window.requestAnimationFrame = (cb) => { window.__raf += 1; return raf(cb); };
+      try { new PerformanceObserver((list) => window.__long.push(...list.getEntries().map((e) => e.duration))).observe({ type: "longtask", buffered: true }); } catch (e) { /* egal */ }
+    });
+    const page = await ctx.newPage();
+    await page.goto(`${BASE}/clock?pomo=25m&dim=0-23`, { waitUntil: "load" });
+    await page.waitForTimeout(1500);
+    await page.keyboard.press("Space");
+    const rafStart = await page.evaluate(() => window.__raf);
+    await page.waitForTimeout(6000);
+    const got = await page.evaluate(() => ({ long: window.__long, raf: window.__raf }));
+    await ctx.close();
+    note("/clock C1 Leistung", [got.long.length ? `Long Tasks ${got.long.map(Math.round)}` : "",
+      got.raf - rafStart > 2 ? `Bildschleife (${got.raf - rafStart} Bilder)` : ""].filter(Boolean));
+  }
+  return { found, lines };
+}
+
+// Studiouhr C2 (clockExtrasChecks, TOUR_EXTRAS_ONLY=1): Design binary und die Zusätze Mondphase, Nerd-Zeile und
+// Fortschrittsbalken (?show=moon,nerd,progress). Auf den neun Flächen: Zusätze im Bild (in Kachel und Streifen nie),
+// keine Scrollbalken, Zeit ohne Umbruch, Nerd-Zeile mit TAI und GPS aus tai_utc des (gemockten) Servers, ohne tai_utc „–“.
+// Binäruhr (bcd und plain) zeigt die gemockte Serverzeit 10:15:42 als Lämpchen. Nie Zusätze in den Voreinstellungen
+// studio, tile, banner und mit fun=0; Standard ohne ?show= ohne Zusätze. Klick auf den Mond spiegelt ihn (Südhalbkugel,
+// nur localStorage). Echtzeit: keine Long Tasks, keine Bildschleife. Fotos mit TOUR_SHOTS.
+function extrasState() {
+  const root = document.documentElement;
+  const stage = document.getElementById("clock-stage").getBoundingClientRect();
+  const visible = (id) => { const el = document.getElementById(id); const r = el.getBoundingClientRect();
+    return !el.hidden && getComputedStyle(el).display !== "none" && r.width > 0 && r.height > 0; };
+  const extras = document.getElementById("extras").getBoundingClientRect();
+  const time = document.getElementById(document.getElementById("local-time").hidden ? "face" : "local-time");
+  const tb = time.getBoundingClientRect();
+  const size = parseFloat(getComputedStyle(time).fontSize);
+  const lamps = [...document.querySelectorAll("#face .bin-lamp")].map((l) => (l.classList.contains("on") ? "1" : "0")).join("");
+  return {
+    layout: document.getElementById("clock-stage").dataset.layout, stageH: stage.height, extras: visible("extras"), moon: visible("moon-box"),
+    nerd: visible("nerd"), bars: visible("bars"), inside: extras.bottom <= stage.bottom + 1 && extras.top >= stage.top - 1
+      && extras.right <= stage.right + 1 && extras.left >= stage.left - 1,
+    timeInside: tb.bottom <= stage.bottom + 1 && tb.top >= stage.top - 1,
+    wrapped: !document.getElementById("local-time").hidden && tb.height > size * 1.6,
+    nerdText: [...document.querySelectorAll(".clock-nerd-item")].map((n) => n.textContent),
+    moonText: document.getElementById("moon-text").textContent, moonPath: document.getElementById("moon-lit").getAttribute("d"),
+    moonPressed: document.getElementById("moon").getAttribute("aria-pressed"),
+    barTexts: [...document.querySelectorAll(".clock-prog-item")].map((n) => n.textContent),
+    barNow: [...document.querySelectorAll(".clock-prog-item")].map((n) => n.getAttribute("aria-valuenow")),
+    lamps, values: [...document.querySelectorAll("#face .bin-value")].map((n) => n.textContent),
+    vscroll: root.scrollHeight - root.clientHeight, hscroll: root.scrollWidth - root.clientWidth, csp: window.__csp || [],
+  };
+}
+
+async function clockExtrasChecks(browser) {
+  const found = [];
+  const lines = [];
+  const note = (label, problems) => {
+    lines.push(`${label}: ${problems.length ? problems.join("; ") : "ok"}`);
+    if (problems.length) found.push(`${label}: ${problems.join("; ")}`);
+  };
+  const errors = (got, msgs) => (got.csp.length || msgs.length ? [`Fehler ${JSON.stringify([...got.csp, ...msgs])}`] : []);
+  const shot = async (page, name) => { if (SHOTS) await page.screenshot({ path: `${SHOTS}/clock-c2-${name}.png` }); };
+  const withTai = (tai) => (ms) => ({ t1: ms / 1000, t2: ms / 1000, synchronised: true, running: true, level: "good",
+    accuracy: 0.0004, stratum: 1, leap: "Normal", leap_next: null, tai_utc: tai, source_kind: "GPS", source: null, public: true });
+  // Serverzeit CLOCK_SERVER = 2026-06-30 08:15:42,5 UTC (10:15:42 in Berlin): Unix 1782807342, TAI 08:16:19,
+  // GPS 1782807342 − 315964800 + 18 = 1466842560 s → Woche 2425, Sekunde 216960 (Dienstag 12:16:00 GPS-Zeit).
+  const unix = Math.floor(CLOCK_SERVER / 1000);
+  const gps = unix - 315964800 + 18;
+  const wantNerd = [`Unix ${unix}`, `Hex 0x${unix.toString(16).toUpperCase()}`, "TAI 08:16:19 (+37 s)", `GPS Woche ${Math.floor(gps / 604800)} · ${gps % 604800} s`,
+    `MJD ${(CLOCK_SERVER / 86400000 + 40587).toFixed(3).replace(".", ",")}`, "Tag 181", "ISO 2026-W27-2", "Römisch X:XV"];
+  // 1) Alle Zusätze auf den neun Flächen.
+  for (const [width, height] of STUDIO_VIEWPORTS) {
+    const { ctx, page, msgs, clock } = await openPausedClock(browser, { width, height, query: "?show=moon,nerd,progress", reply: withTai(37) });
+    const got = await page.evaluate(extrasState);
+    await shot(page, `zusaetze-${width}x${height}`);
+    await ctx.close();
+    const small = ["tile", "strip"].includes(got.layout) || (got.layout !== "banner" && got.stageH < 360);
+    const problems = [];
+    if (small && got.extras) problems.push(`Zusätze im Layout ${got.layout}`);
+    if (!small) {
+      if (!(got.extras && got.moon && got.nerd && got.bars)) problems.push(`nicht alle Zusätze sichtbar ${JSON.stringify([got.moon, got.nerd, got.bars])}`);
+      if (!got.inside) problems.push("Zusätze außerhalb der Bühne");
+      if (JSON.stringify(got.nerdText) !== JSON.stringify(wantNerd)) problems.push(`Nerd-Zeile ${JSON.stringify(got.nerdText)}`);
+      if (got.barTexts.join("|") !== "Tag42 %|Jahr49 %") problems.push(`Balken ${got.barTexts.join("|")}`);
+      if (!/^Vollmond · (9\d|100) %$/.test(got.moonText)) problems.push(`Mond „${got.moonText}“`);
+    }
+    if (!got.timeInside) problems.push("Zeit außerhalb der Bühne");
+    if (got.wrapped) problems.push("Umbruch");
+    if (got.vscroll > 0 || got.hscroll > 0) problems.push(`Scrollbalken (${got.hscroll}/${got.vscroll} px)`);
+    problems.push(...errors(got, msgs));
+    note(`/clock Zusätze ${width}×${height} (${got.layout})`, problems);
+  }
+  // 2) Binäruhr: 10:15:42 als BCD (1|0|1|5|4|2) und als Dualzahl (01010|001111|101010).
+  const bcd = "01" + "0000" + "001" + "0101" + "100" + "0010";
+  for (const [query, lamps, values] of [["?design=binary", bcd, "1,0,1,5,4,2"],
+    ["?design=binary&bin=plain", "01010" + "001111" + "101010", "10,15,42"]]) {
+    for (const [width, height] of STUDIO_VIEWPORTS) {
+      const { ctx, page, msgs, clock } = await openPausedClock(browser, { width, height, query });
+      const got = await page.evaluate(extrasState);
+      if ([390, 1920, 3840].includes(width) && height !== 200) await shot(page, `${query.includes("plain") ? "dual" : "bcd"}-${width}x${height}`);
+      await ctx.close();
+      note(`/clock ${query} ${width}×${height}`, [got.lamps === lamps ? "" : `Lämpchen ${got.lamps}`,
+        got.values.join(",") === values ? "" : `Werte ${got.values}`, got.timeInside ? "" : "außerhalb der Bühne",
+        got.vscroll > 0 || got.hscroll > 0 ? `Scrollbalken (${got.hscroll}/${got.vscroll} px)` : "", ...errors(got, msgs)].filter(Boolean));
+    }
+  }
+  // 3) Ohne tai_utc: TAI und GPS „–“, nichts geraten. Zunehmende Sichel (16.8.2026) und Klick: Südhalbkugel.
+  {
+    const at = Date.parse("2026-08-16T10:00:00.500Z");
+    const { ctx, page, msgs, clock } = await openPausedClock(browser, { width: 1440, height: 900, query: "?show=moon,nerd", at });
+    const before = await page.evaluate(extrasState);
+    await shot(page, "sichel-nord");
+    await page.click("#moon");
+    await clock.run(250);
+    const after = await page.evaluate(extrasState);
+    const stored = await page.evaluate(() => localStorage.getItem("ntp-gui-clock-south"));
+    await shot(page, "sichel-sued");
+    await ctx.close();
+    note("/clock Mond und Nerd ohne tai_utc", [before.nerdText[2] === "TAI –" && before.nerdText[3] === "GPS –" ? "" : `ohne TAI: ${before.nerdText}`,
+      /^Zunehmende Sichel/.test(before.moonText) ? "" : `Mond „${before.moonText}“`,
+      / 0 1 50 /.test(before.moonPath) ? "" : `Nord nicht rechts: ${before.moonPath}`,
+      after.moonPressed === "true" && / 0 0 50 /.test(after.moonPath) ? "" : `Süd: ${after.moonPressed} ${after.moonPath}`,
+      stored === "1" ? "" : `localStorage ${stored}`, ...errors(after, msgs)].filter(Boolean));
+  }
+  // 4) Nie Zusätze in Studio-, Kachel- und Banner-Voreinstellung, mit fun=0, im Streifen; Standard ohne show keine.
+  for (const [name, query] of [["studio", "?p=studio&show=moon,nerd,progress"], ["tile", "?p=tile&show=moon,nerd,progress"],
+    ["banner", "?p=banner&show=moon,nerd,progress"], ["fun0", "?fun=0&show=moon,nerd,progress"],
+    ["strip", "?layout=strip&show=moon,nerd,progress"], ["kiosk", "?kiosk=1&show=moon,nerd,progress"],
+    ["kiosk-profil", "?p=nerd&kiosk=1"], ["standard", ""]]) {
+    const { ctx, page, msgs, clock } = await openPausedClock(browser, { width: 1920, height: 1080, query, reply: withTai(37) });
+    await clock.run(1500);
+    const got = await page.evaluate(extrasState);
+    await ctx.close();
+    note(`/clock keine Zusätze ${name}`, [got.extras ? "Zusätze sichtbar" : "", ...errors(got, msgs)].filter(Boolean));
+  }
+  // 4b) Profil mit eigener Auswahl (night: nur die Zeit) und show=moon: Die Auswahl des Profils bleibt, der Mond kommt dazu.
+  {
+    const { ctx, page, msgs } = await openPausedClock(browser, { width: 1920, height: 1080, query: "?p=night&show=moon" });
+    const got = await page.evaluate(() => ({ show: document.documentElement.dataset.show || null,
+      date: getComputedStyle(document.getElementById("local-date")).display, csp: window.__csp || [] }));
+    const ex = await page.evaluate(extrasState);
+    await ctx.close();
+    note("/clock Profil night mit show=moon", [got.show === "time" ? "" : `data-show ${got.show}`,
+      got.date === "none" ? "" : "Datum sichtbar", ex.moon ? "" : "Mond fehlt", ...errors(ex, msgs)].filter(Boolean));
+  }
+  // 4c) Quadratische Zifferblätter: TAI kommt erst mit der zweiten Antwort (die Nerd-Zeile bricht dann um) – die Zeit
+  // wird sofort neu eingepasst, die Zusätze bleiben über dem Band (nicht erst zur nächsten Minute).
+  for (const design of ["binary", "studio", "bahnhof"]) {
+    for (const [width, height] of [[1920, 1080], [1280, 720]]) {
+      let answers = 0;
+      const late = (ms) => withTai(answers++ ? 37 : null)(ms);
+      const { ctx, page, msgs, clock } = await openPausedClock(browser, { width, height, reply: late,
+        query: `?design=${design}&show=moon,nerd,progress` });
+      await clock.run(6000);
+      const got = await page.evaluate(extrasState);
+      if (width === 1920) await shot(page, `${design}-zusaetze-${width}x${height}`);
+      await ctx.close();
+      note(`/clock ${design} mit Zusätzen ${width}×${height}`, [got.extras ? "" : "Zusätze fehlen",
+        got.inside ? "" : "Zusätze unter dem Band", got.timeInside ? "" : "Zeit außerhalb der Bühne",
+        /\(\+37 s\)/.test(got.nerdText.join(" ")) ? "" : `ohne TAI ${got.nerdText}`, ...errors(got, msgs)].filter(Boolean));
+    }
+  }
+  // 4d) Banner mit Countdown unter der Uhr und Leiste der Weltzeit: niedrig (1920×200) ohne Zusätze, höher (2560×720)
+  // mit Zusätzen in der rechten Spalte – kein Rasterfeld ohne Namen, alles in der Bühne. Mit Countdown und Weltzeit
+  // zusammen reicht die Höhe dort nicht: Dann fallen die Zusätze weg (checkExtrasRoom), statt unter das Band zu ragen.
+  for (const query of ["&until=2026-12-31T23:00", "&tz=Asia/Tokyo,America/New_York", "&until=2026-12-31T23:00&tz=Asia/Tokyo"]) {
+    for (const [width, height] of [[1920, 200], [2560, 720]]) {
+      const { ctx, page, msgs, clock } = await openPausedClock(browser, { width, height, reply: withTai(37),
+        query: `?layout=banner&show=moon,nerd,progress${query}` });
+      await clock.run(1500);
+      const got = await page.evaluate(extrasState);
+      const cols = await page.evaluate(() => getComputedStyle(document.getElementById("clock-main")).gridTemplateColumns.split(" ").length);
+      if (width === 2560) await shot(page, `banner${query.replace(/[^a-z]+/g, "-")}${width}x${height}`);
+      await ctx.close();
+      note(`/clock Banner Zusätze${query} ${width}×${height}`, [height < 360 && got.extras ? "Zusätze trotz Platzmangel" : "",
+        height >= 360 && !got.extras && !(query.includes("until=") && query.includes("tz=")) ? "Zusätze fehlen" : "", got.extras && !got.inside ? "Zusätze außerhalb der Bühne" : "",
+        got.timeInside ? "" : "Zeit außerhalb der Bühne", cols === 2 ? "" : `${cols} Rasterspalten`, ...errors(got, msgs)].filter(Boolean));
+    }
+  }
+  // 4f) Banner 32:9 (3840×1080) mit allen Zusätzen: Zeit und Zusätze behalten ihren Abstand zum Rand wie ohne Zusätze
+  // (die lange Nerd-Zeile bricht in ihrer Spalte um, statt das Raster über den Rand zu schieben).
+  for (const design of ["wort", "digital", "nixie", "binary"]) {
+    const { ctx, page, msgs, clock } = await openPausedClock(browser, { width: 3840, height: 1080, reply: withTai(37),
+      query: `?design=${design}&show=moon,nerd,progress&timer=5m` });
+    await clock.run(1500);
+    const got = await page.evaluate(() => {
+      const stage = document.getElementById("clock-stage").getBoundingClientRect();
+      const box = (el) => (el && !el.hidden && el.offsetWidth ? el.getBoundingClientRect() : null);
+      const time = box(document.getElementById("face")) || box(document.getElementById("local-time"));
+      const parts = [...document.querySelectorAll("#extras *")].filter((el) => el.offsetWidth > 0).map((el) => el.getBoundingClientRect());
+      return { layout: document.getElementById("clock-stage").dataset.layout, extras: parts.length > 0,
+        left: time ? time.left - stage.left : -1, right: parts.length ? stage.right - Math.max(...parts.map((r) => r.right)) : -1,
+        hscroll: document.documentElement.scrollWidth - document.documentElement.clientWidth, csp: window.__csp || [] };
+    });
+    if (design === "wort") await shot(page, `banner-zusaetze-${design}-3840x1080`);
+    await ctx.close();
+    note(`/clock Banner 3840×1080 ${design} mit Zusätzen: Rand`, [got.layout === "banner" ? "" : `Layout ${got.layout}`,
+      got.extras ? "" : "Zusätze fehlen", got.left >= 24 ? "" : `Zeit ${Math.round(got.left)} px vom linken Rand`,
+      got.right >= 24 ? "" : `Zusätze ${Math.round(got.right)} px vom rechten Rand`, got.hscroll > 0 ? `Überbreite ${got.hscroll} px` : "",
+      ...errors(got, msgs)].filter(Boolean));
+  }
+  // 4e) Design tc mit Zone des Servers (UTC) auf einem Gerät in Kiritimati (UTC+14): Am 23.11. um 12:30 UTC ist dort schon
+  // der 24.11. – Tag im Jahr, ISO-Datum und Tagesbalken folgen dem angezeigten Datum (Montag, 23.11.).
+  {
+    const at = Date.parse("2026-11-23T12:30:00.500Z");
+    const reply = (ms) => ({ ...withTai(37)(ms), zone: "Etc/UTC" });
+    const { ctx, page, msgs } = await openPausedClock(browser, { width: 1920, height: 1080, zone: "Pacific/Kiritimati", at, reply,
+      query: "?design=tc&show=nerd,progress&bars=day" });
+    const got = await page.evaluate(extrasState);
+    const date = await page.evaluate(() => document.getElementById("local-date").textContent);
+    await ctx.close();
+    note("/clock tc Zusätze in der Zone der Anzeige", [/23\. November/.test(date) ? "" : `Datum ${date}`,
+      got.nerdText.includes("Tag 327") ? "" : `Tag ${got.nerdText}`, got.nerdText.includes("ISO 2026-W48-1") ? "" : `ISO ${got.nerdText}`,
+      got.barTexts.join("|") === "Tag52 %" ? "" : `Balken ${got.barTexts}`, ...errors(got, msgs)].filter(Boolean));
+  }
+  // 5) Eieruhr-Balken: 10 min, nach 2,5 min 25 %.
+  {
+    const { ctx, page, msgs, clock } = await openPausedClock(browser, { width: 1440, height: 900, query: "?timer=10m&show=progress" });
+    await page.keyboard.press("Space");
+    await clock.run(151000);
+    const got = await page.evaluate(extrasState);
+    await shot(page, "timer-balken");
+    await ctx.close();
+    note("/clock Balken der Eieruhr", [got.barTexts.join("|") === "Tag42 %|Timer25 %" ? "" : `Balken ${got.barTexts.join("|")}`,
+      ...errors(got, msgs)].filter(Boolean));
+  }
+  // 6) Echtzeit: Binäruhr mit allen Zusätzen ohne Long Tasks und ohne Bildschleife.
+  {
+    const ctx = await browser.newContext({ viewport: { width: 1920, height: 1080 } });
+    await ctx.addInitScript(() => {
+      window.__long = [];
+      window.__raf = 0;
+      const raf = window.requestAnimationFrame.bind(window);
+      window.requestAnimationFrame = (cb) => { window.__raf += 1; return raf(cb); };
+      try { new PerformanceObserver((list) => window.__long.push(...list.getEntries().map((e) => e.duration))).observe({ type: "longtask", buffered: true }); } catch (e) { /* egal */ }
+    });
+    const page = await ctx.newPage();
+    await page.goto(`${BASE}/clock?design=binary&show=moon,nerd,progress`, { waitUntil: "load" });
+    await page.waitForTimeout(1500);
+    // Ruhebetrieb (Konzept, Akzeptanz A): gezählt wird nach dem Start, nicht das erste Laden der Seite.
+    const rafStart = await page.evaluate(() => { window.__long = []; return window.__raf; });
+    await page.waitForTimeout(6000);
+    const got = await page.evaluate(() => ({ long: window.__long, raf: window.__raf }));
+    await ctx.close();
+    note("/clock C2 Leistung", [got.long.length ? `Long Tasks ${got.long.map(Math.round)}` : "",
+      got.raf - rafStart > 2 ? `Bildschleife (${got.raf - rafStart} Bilder)` : ""].filter(Boolean));
+  }
+  return { found, lines };
+}
+
+// Studiouhr C3 (clockFunChecks, TOUR_FUN_ONLY=1): Spiel „Tippe auf :00“, Zeitzeichen und Ostereier. Mit angehaltener
+// Playwright-Uhr: Osterei 13:37 auf den neun Flächen (im Bild, in Kachel und Streifen nie, keine Scrollbalken; Streifen
+// auch fest per ?layout=strip und per Taste L bei 1920×1080), Design tc mit Zone des Servers (Ei zu deren 13:37), Neujahr
+// mit CSS-Konfetti (bei „weniger Bewegung“ nur Text), Konami-Code (Konfetti, Binäruhr bis zum Neuladen, nicht gemerkt).
+// Nie ein Ei oder Konfetti mit eggs=0, fun=0, in studio, tile, banner, im Kiosk (auch aus einem Profil), mit lock=1 und
+// in OBS. Panel „Spiel“ bei 390 und 1920 px (Tipp mit Maus und Taste, Ergebnis, Bestwert im localStorage, auch bei
+// gesperrtem Speicher ehrlich; langer Druck mit Maus und Finger ergibt genau eine Wertung), Zeitzeichen-Knöpfe nur mit
+// Spielereien. Echtzeit: keine Long Tasks, keine Bildschleife.
+function funState() {
+  const root = document.documentElement;
+  const visible = (id) => { const el = document.getElementById(id); if (!el) return false; const r = el.getBoundingClientRect();
+    return !el.hidden && getComputedStyle(el).display !== "none" && r.width > 0 && r.height > 0; };
+  const egg = document.getElementById("leap-egg");
+  const er = egg.getBoundingClientRect();
+  const confetti = document.getElementById("confetti");
+  const piece = confetti.querySelector("i");
+  return {
+    egg: visible("leap-egg"), eggText: egg.textContent, eggKind: egg.dataset.egg || "",
+    eggInside: er.left >= -1 && er.right <= innerWidth + 1 && er.top >= -1 && er.bottom <= innerHeight + 1,
+    confetti: visible("confetti"), pieces: confetti.childElementCount, anim: piece ? getComputedStyle(piece).animationName : "",
+    design: root.dataset.design, layout: document.getElementById("clock-stage").dataset.layout,
+    compact: document.body.classList.contains("is-compact"),
+    game: !document.getElementById("mode-game").hidden, pips: !document.getElementById("tone-pips-hour").hidden,
+    result: document.getElementById("game-result").textContent, detail: document.getElementById("game-detail").textContent,
+    best: document.getElementById("game-best").textContent,
+    vscroll: root.scrollHeight - root.clientHeight, hscroll: root.scrollWidth - root.clientWidth, csp: window.__csp || [],
+  };
+}
+
+async function clockFunChecks(browser) {
+  const found = [];
+  const lines = [];
+  const note = (label, problems) => {
+    lines.push(`${label}: ${problems.length ? problems.join("; ") : "ok"}`);
+    if (problems.length) found.push(`${label}: ${problems.join("; ")}`);
+  };
+  const errors = (got, msgs) => (got.csp.length || msgs.length ? [`Fehler ${JSON.stringify([...got.csp, ...msgs])}`] : []);
+  const shot = async (page, name) => { if (SHOTS) await page.screenshot({ path: `${SHOTS}/clock-c3-${name}.png` }); };
+  const LEET = Date.parse("2026-11-23T12:37:10.500Z");      // 13:37:10 in Berlin
+  const NEWYEAR = Date.parse("2026-12-31T23:00:03.500Z");   // 1.1.2027 00:00:03 in Berlin
+  const KONAMI = ["ArrowUp", "ArrowUp", "ArrowDown", "ArrowDown", "ArrowLeft", "ArrowRight", "ArrowLeft", "ArrowRight", "b", "a"];
+  // 1) 13:37 auf den neun Flächen.
+  for (const [width, height] of STUDIO_VIEWPORTS) {
+    const { ctx, page, msgs } = await openPausedClock(browser, { width, height, at: LEET });
+    const got = await page.evaluate(funState);
+    if ([390, 1920, 3840].includes(width)) await shot(page, `leet-${width}x${height}`);
+    await ctx.close();
+    // Kachel, Streifen, Bühnen ohne Kopfzeile (is-compact) und Fenster bis 320 px Höhe (clock.css): nur die Zeit, kein Ei.
+    const small = ["tile", "strip"].includes(got.layout) || got.compact || height <= 320;
+    note(`/clock 13:37 ${width}×${height} (${got.layout})`, [
+      small && got.egg ? "Ei in Kachel/Streifen" : "", !small && !got.egg ? "Ei fehlt" : "",
+      !small && got.eggText !== "13:37 – leet." ? `Text „${got.eggText}“` : "", got.egg && !got.eggInside ? "Ei außerhalb" : "",
+      got.confetti ? "Konfetti ohne Anlass" : "", got.vscroll > 0 || got.hscroll > 0 ? `Scrollbalken (${got.hscroll}/${got.vscroll} px)` : "",
+      ...errors(got, msgs)].filter(Boolean));
+  }
+  // 1b) Streifen bei 1920×1080: fest (?layout=strip, auch nach dem Konami-Code) und per Taste L – nie ein Ei.
+  {
+    const { ctx, page, msgs } = await openPausedClock(browser, { width: 1920, height: 1080, query: "?layout=strip", at: LEET });
+    const fixed = await page.evaluate(funState);
+    for (const key of KONAMI) await page.keyboard.press(key);
+    await page.waitForTimeout(400);
+    const after = await page.evaluate(funState);
+    await shot(page, "strip-1920x1080");
+    await ctx.close();
+    note("/clock 13:37 ?layout=strip 1920×1080", [fixed.layout === "strip" ? "" : `Layout ${fixed.layout}`,
+      fixed.egg ? `Ei „${fixed.eggText}“` : "", after.egg ? `Ei nach Konami „${after.eggText}“` : "",
+      after.confetti || after.pieces ? "Konfetti" : "", ...errors(after, msgs)].filter(Boolean));
+  }
+  {
+    const { ctx, page, msgs, clock } = await openPausedClock(browser, { width: 1920, height: 1080, at: LEET });
+    const seen = [];
+    for (let i = 0; i < 6; i += 1) {
+      const got = await page.evaluate(funState);
+      seen.push([got.layout, got.egg]);
+      await page.keyboard.press("l");
+      await clock.run(200);
+    }
+    const last = await page.evaluate(funState);
+    await ctx.close();
+    const wrong = seen.filter(([layout, egg]) => egg === ["tile", "strip"].includes(layout));
+    note("/clock 13:37 Taste L", [seen.some(([layout]) => layout === "strip") ? "" : `kein Streifen ${JSON.stringify(seen)}`,
+      wrong.length ? `Ei falsch ${JSON.stringify(seen)}` : "", ...errors(last, msgs)].filter(Boolean));
+  }
+  // 1c) Design tc, Gerät in UTC, Server in Berlin: Das Ei kommt zu 13:37 der Anzeige (Berlin), nicht eine Stunde später.
+  {
+    const reply = (ms) => ({ t1: ms / 1000, t2: ms / 1000, synchronised: true, running: true, level: "good", accuracy: 0.0004,
+      stratum: 1, leap: "Normal", leap_next: null, source_kind: "GPS", source: null, public: true, zone: "Europe/Berlin" });
+    const { ctx, page, msgs } = await openPausedClock(browser, { width: 1920, height: 1080, query: "?design=tc", at: LEET,
+      zone: "UTC", reply });
+    const got = await page.evaluate(funState);
+    await ctx.close();
+    note("/clock 13:37 tc mit Zone des Servers", [got.design === "tc" ? "" : `Design ${got.design}`,
+      got.egg && got.eggText === "13:37 – leet." ? "" : `Ei „${got.egg ? got.eggText : ""}“`, ...errors(got, msgs)].filter(Boolean));
+  }
+  // 2) Neujahr: Konfetti per CSS, bei „weniger Bewegung“ nur Text.
+  for (const [width, height, reduced] of [[1920, 1080, false], [390, 844, false], [1920, 1080, true]]) {
+    const { ctx, page, msgs } = await openPausedClock(browser, { width, height, at: NEWYEAR, reduced });
+    await page.waitForTimeout(900);
+    const got = await page.evaluate(funState);
+    await shot(page, `neujahr-${width}x${height}${reduced ? "-reduced" : ""}`);
+    await ctx.close();
+    note(`/clock Neujahr ${width}×${height}${reduced ? " weniger Bewegung" : ""}`, [
+      got.eggText === "Frohes neues Jahr!" ? "" : `Text „${got.eggText}“`,
+      reduced ? (got.confetti || got.pieces ? "Konfetti trotz weniger Bewegung" : "")
+        : (got.confetti && got.pieces === 24 && /clock-confetti-fall/.test(got.anim) ? "" : `Konfetti ${JSON.stringify([got.confetti, got.pieces, got.anim])}`),
+      got.vscroll > 0 || got.hscroll > 0 ? `Scrollbalken (${got.hscroll}/${got.vscroll} px)` : "", ...errors(got, msgs)].filter(Boolean));
+  }
+  // 3) Konami-Code: Konfetti und Binäruhr, nicht gemerkt; danach (10 s) wieder ohne Ei.
+  {
+    const { ctx, page, msgs, clock } = await openPausedClock(browser, { width: 1920, height: 1080 });
+    for (const key of KONAMI) await page.keyboard.press(key);
+    await page.waitForTimeout(400);
+    const got = await page.evaluate(funState);
+    const said = await page.evaluate(() => document.getElementById("clock-live").textContent);
+    const stored = await page.evaluate(() => localStorage.getItem("ntp-gui-clock-design"));
+    await shot(page, "konami");
+    await clock.run(11000);
+    const later = await page.evaluate(funState);
+    await ctx.close();
+    note("/clock Konami-Code", [got.eggKind === "konami" ? "" : `Ei ${got.eggKind} „${got.eggText}“`,
+      got.design === "binary" ? "" : `Design ${got.design}`, got.confetti ? "" : "kein Konfetti",
+      said ? `A hat angesagt: ${said}` : "", stored ? `Design gemerkt: ${stored}` : "",
+      later.egg && later.eggKind === "konami" ? "Konami-Ei bleibt stehen" : "", ...errors(got, msgs)].filter(Boolean));
+  }
+  // 4) Nie ein Ei oder Konfetti: eggs=0, fun=0, Voreinstellungen, Kiosk (auch aus dem Profil), lock=1, OBS.
+  for (const [name, query, init] of [["eggs0", "?eggs=0"], ["fun0", "?fun=0"], ["studio", "?p=studio"], ["tile", "?p=tile"],
+    ["banner", "?p=banner"], ["kiosk", "?kiosk=1"], ["kiosk-profil", "?p=nerd&kiosk=1"], ["lock", "?lock=1"],
+    ["obs", "", () => { window.obsstudio = { pluginVersion: "30.0.0" }; }], ["studio-eggs1", "?p=studio&eggs=1&fun=1"]]) {
+    for (const at of [LEET, NEWYEAR]) {
+      const { ctx, page, msgs } = await openPausedClock(browser, { width: 1920, height: 1080, query, at, init });
+      for (const key of KONAMI) await page.keyboard.press(key);
+      await page.waitForTimeout(400);
+      const got = await page.evaluate(funState);
+      await ctx.close();
+      note(`/clock kein Ei ${name} ${at === LEET ? "13:37" : "Neujahr"}`, [got.egg ? `Ei „${got.eggText}“` : "",
+        got.confetti || got.pieces ? "Konfetti" : "", got.design === "binary" && !query.includes("binary") ? "Konami wirkt" : "",
+        // eggs=0 schaltet nur die Ostereier ab – Spiel und Zeitzeichen bleiben dort.
+        got.game && name !== "eggs0" ? "Knopf Spiel" : "", got.pips && name !== "eggs0" ? "Zeitzeichen-Knöpfe" : "",
+        name === "eggs0" && !(got.game && got.pips) ? "eggs=0 nimmt Spiel oder Zeitzeichen weg" : "", ...errors(got, msgs)].filter(Boolean));
+    }
+  }
+  // 4g) Profil-Abruf fällt aus (503): ?p=studio zeigt vorsichtshalber weder Ei noch Konfetti noch Timer, Spiel und Nacht.
+  for (const name of ["studio", "tile", "banner", "eigenes"]) {
+    for (const at of [LEET, NEWYEAR]) {
+      const { ctx, page, msgs } = await openPausedClock(browser, { width: 1920, height: 1080, query: `?p=${name}`, at,
+        profile: () => "fail" });
+      await page.waitForTimeout(400);
+      const got = await page.evaluate(funState);
+      const btns = await page.evaluate(() => ["mode-timer", "mode-night", "mode-game"].filter((id) => !document.getElementById(id).hidden));
+      await ctx.close();
+      const rest = msgs.filter((m) => !/status of 503/.test(m));
+      note(`/clock Profil ${name} nicht geladen ${at === LEET ? "13:37" : "Neujahr"}`, [got.egg ? `Ei „${got.eggText}“` : "",
+        got.confetti || got.pieces ? "Konfetti" : "", btns.length ? `Knöpfe ${btns}` : "", ...errors(got, rest)].filter(Boolean));
+    }
+  }
+  // 4h) Prüfbild ?test=sync zu Neujahr und um 13:37: kein Ei und kein Konfetti über der Blitzfläche.
+  for (const at of [LEET, NEWYEAR]) {
+    const { ctx, page, msgs, clock } = await openPausedClock(browser, { width: 1920, height: 1080, query: "?test=sync", at });
+    await clock.run(1500);
+    const got = await page.evaluate(funState);
+    const test = await page.evaluate(() => !document.getElementById("sync-test").hidden);
+    await ctx.close();
+    note(`/clock Prüfbild ${at === LEET ? "13:37" : "Neujahr"}`, [test ? "" : "Prüfbild fehlt", got.egg ? `Ei „${got.eggText}“` : "",
+      got.confetti || got.pieces ? "Konfetti" : "", ...errors(got, msgs)].filter(Boolean));
+  }
+  // 5) Panel „Spiel“: Tipp mit Maus und Taste, Bestwert im localStorage; Zeitzeichen-Knöpfe im Panel Ton.
+  for (const [width, height] of [[390, 844], [1920, 1080], [768, 1024]]) {
+    const { ctx, page, msgs, clock } = await openPausedClock(browser, { width, height });
+    const before = await page.evaluate(funState);
+    await page.click("#mode-game");
+    await clock.run(500);
+    await page.click("#game-tap");
+    await clock.run(300);
+    const first = await page.evaluate(funState);
+    await page.click("#game-minute");
+    await page.focus("#game-tap");
+    await page.keyboard.press("Enter");
+    await clock.run(300);
+    const second = await page.evaluate(funState);
+    const stored = await page.evaluate(() => localStorage.getItem("ntp-gui-clock-tap"));
+    const sizes = await page.evaluate(() => [...document.querySelectorAll("#game-panel button:not(.info)")].filter((b) => b.offsetParent)
+      .map((b) => { const r = b.getBoundingClientRect(); return Math.min(r.width, r.height); }));
+    await shot(page, `spiel-${width}x${height}`);
+    await page.click("#mode-game");
+    await page.click("#mode-tone");
+    await clock.run(300);
+    await shot(page, `ton-${width}x${height}`);
+    const tone = await page.evaluate(() => ({ pips: !document.getElementById("tone-pips-hour").hidden,
+      line: document.getElementById("tone-pips-line").textContent }));
+    await ctx.close();
+    const want = /^(genau drauf|[0-9.,]+ (ms|s|min [0-9]+ s) zu (früh|spät))\. /;
+    note(`/clock Spiel ${width}×${height}`, [before.game ? "" : "Knopf Spiel fehlt", want.test(first.result) ? "" : `Ergebnis „${first.result}“`,
+      /Messgenauigkeit: Abgleich ± .* · Server ± .* · Bild ± /.test(first.detail) ? "" : `Genauigkeit „${first.detail}“`,
+      want.test(second.result) ? "" : `Taste: „${second.result}“`, /^Bestwert \(volle Minute\): /.test(second.best) ? "" : `Bestwert „${second.best}“`,
+      stored && JSON.parse(stored).second >= 0 && JSON.parse(stored).minute >= 0 ? "" : `localStorage ${stored}`,
+      sizes.every((v) => v >= 24) ? "" : `Tippfläche ${Math.min(...sizes)} px`, tone.pips ? "" : "Zeitzeichen fehlen",
+      /keine Referenz/.test(tone.line) ? "" : "Hinweis Referenz fehlt",
+      second.hscroll > 0 ? `Überbreite ${second.hscroll} px` : "", ...errors(second, msgs)].filter(Boolean));
+  }
+  // 5a) Langer Druck (700 ms) mit Maus und Finger: genau eine Wertung – der click beim Loslassen zählt nicht noch einmal.
+  for (const how of ["mouse", "touch"]) {
+    const touch = how === "touch";
+    const { ctx, page, msgs, clock } = await openPausedClock(browser, touch ? { width: 390, height: 844, touch: true }
+      : { width: 1920, height: 1080 });
+    await page.click("#mode-game");
+    await clock.run(500);
+    await page.evaluate(() => {
+      window.__results = [];
+      new MutationObserver(() => window.__results.push(document.getElementById("game-result").textContent))
+        .observe(document.getElementById("game-result"), { childList: true, characterData: true, subtree: true });
+    });
+    await page.locator("#game-tap").scrollIntoViewIfNeeded();
+    const box = await page.locator("#game-tap").boundingBox();
+    const x = box.x + box.width / 2;
+    const y = box.y + box.height / 2;
+    let cdp = null;
+    if (touch) {
+      cdp = await ctx.newCDPSession(page);
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] });
+    } else {
+      await page.mouse.move(x, y);
+      await page.mouse.down();
+    }
+    await clock.run(700);
+    if (touch) await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    else await page.mouse.up();
+    await clock.run(300);
+    const results = await page.evaluate(() => window.__results.filter(Boolean));
+    // Ein click ohne Zeiger (Screenreader: element.click(), detail 0) zählt selbst – genau einmal.
+    await clock.run(1000);
+    await page.evaluate(() => document.getElementById("game-tap").click());
+    await clock.run(300);
+    const reader = await page.evaluate(() => window.__results.filter(Boolean).length);
+    const got = await page.evaluate(funState);
+    await ctx.close();
+    note(`/clock Spiel langer Druck ${how === "touch" ? "Finger" : "Maus"}`, [results.length === 1 ? "" : `${results.length} Wertungen ${JSON.stringify(results)}`,
+      reader === results.length + 1 ? "" : `Screenreader-Klick: ${reader - results.length} Wertungen`, ...errors(got, msgs)].filter(Boolean));
+  }
+  // 5b) Gesperrter Speicher: Bestwert gilt bis zum Neuladen, ehrlich gesagt; kein Fehler.
+  {
+    const init = () => { const deny = () => { throw new DOMException("gesperrt", "SecurityError"); };
+      Object.defineProperty(window, "localStorage", { get: deny, configurable: true }); };
+    const { ctx, page, msgs, clock } = await openPausedClock(browser, { width: 1440, height: 900, init });
+    await page.click("#mode-game");
+    await page.click("#game-tap");
+    await clock.run(300);
+    const got = await page.evaluate(funState);
+    await ctx.close();
+    note("/clock Spiel ohne Speicher", [/nur bis zum Neuladen/.test(got.result) ? "" : `Ergebnis „${got.result}“`,
+      ...errors(got, msgs)].filter(Boolean));
+  }
+  // 6) Echtzeit: Konami (Konfetti) und offenes Spiel ohne Long Tasks und ohne Bildschleife.
+  {
+    const ctx = await browser.newContext({ viewport: { width: 1920, height: 1080 } });
+    await ctx.addInitScript(() => {
+      window.__long = [];
+      window.__raf = 0;
+      const raf = window.requestAnimationFrame.bind(window);
+      window.requestAnimationFrame = (cb) => { window.__raf += 1; return raf(cb); };
+      try { new PerformanceObserver((list) => window.__long.push(...list.getEntries().map((e) => e.duration))).observe({ type: "longtask", buffered: true }); } catch (e) { /* egal */ }
+    });
+    const page = await ctx.newPage();
+    await page.goto(`${BASE}/clock`, { waitUntil: "load" });
+    await page.waitForTimeout(1500);
+    const rafStart = await page.evaluate(() => { window.__long = []; return window.__raf; });
+    for (const key of KONAMI) await page.keyboard.press(key);
+    await page.click("#mode-game");
+    await page.waitForTimeout(6000);
+    const got = await page.evaluate(() => ({ long: window.__long, raf: window.__raf,
+      confetti: document.getElementById("confetti").childElementCount }));
+    await page.waitForTimeout(3500);
+    const gone = await page.evaluate(() => document.getElementById("confetti").hidden && !document.getElementById("confetti").childElementCount);
+    await ctx.close();
+    note("/clock C3 Leistung", [got.long.length ? `Long Tasks ${got.long.map(Math.round)}` : "",
+      got.raf - rafStart > 3 ? `Bildschleife (${got.raf - rafStart} Bilder)` : "", got.confetti ? "" : "Konfetti fehlte",
+      gone ? "" : "Konfetti bleibt liegen"].filter(Boolean));
   }
   return { found, lines };
 }
@@ -2249,6 +3026,21 @@ async function clockSignalChecks(browser) {
     await ctx.close();
     note("/clock Signal Rotlicht", [...look(got, "on_air"), errors(got, msgs)]);
   }
+  // Nachtmodus (Zeitplan dim um 10:15, auch im Profil studio mit fun=0; dimred=1 rot): On Air und REC bleiben rot und
+  // voll deckend – gesendet wird gerade nachts.
+  for (const [query, state] of [["?signal=1&dim=10-11", "on_air"], ["?signal=1&dim=10-11", "rec"], ["?p=studio&signal=1&dim=10-11", "on_air"],
+    ["?signal=1&dim=10-11&dimred=1", "on_air"]]) {
+    const { ctx, page, msgs } = await openPausedClock(browser, { width: 1920, height: 1080, query, reply: answer({ signal: state }) });
+    const got = await page.evaluate(signalShown);
+    const look2 = await page.evaluate(() => { const bar = getComputedStyle(document.getElementById("signal"));
+      return { bg: bar.backgroundColor, opacity: bar.opacity, night: document.documentElement.dataset.night || "",
+        border: getComputedStyle(document.body).borderTopColor }; });
+    await ctx.close();
+    const red = (c) => { const m = c.match(/\d+/g) || []; return Number(m[0]) >= 180 && Number(m[1]) < 80 && Number(m[2]) < 80; };
+    note(`/clock Signal ${state} im Nachtmodus ${query}`, [look2.night === "1" ? "" : "Nachtmodus nicht an",
+      red(look2.bg) ? "" : `Band ${look2.bg}`, red(look2.border) ? "" : `Rahmen ${look2.border}`,
+      look2.opacity === "1" ? "" : `Deckkraft ${look2.opacity}`, got.shown ? "" : "Band fehlt", errors(got, msgs)]);
+  }
 
   // Höhen um die Grenze zum automatischen Streifen (Kopfzeile und Band fallen weg): Das Layout ist mit und ohne Signal
   // dasselbe und pendelt nicht zwischen Streifen und Banner.
@@ -2599,6 +3391,7 @@ function statusState() {
     title: vis(title) ? { text: title.textContent, box: rect(title), inStage: inStage(title), size: parseFloat(getComputedStyle(title).fontSize),
       clipped: title.scrollWidth > title.clientWidth + 1 } : null,
     titleText: title.textContent, barTitle: vis($("clock-title")) ? $("clock-title").textContent : "",
+    barTitleClipped: vis($("clock-title")) && $("clock-title").scrollWidth > $("clock-title").clientWidth + 1,
     syncIcon: vis(sync) ? { text: sync.textContent.trim(), inStage: inStage(sync), box: rect(sync) } : null,
     holdIcon: vis(hold) ? { text: hold.querySelector(".clock-hold-icon").textContent, label: $("clock-hold-text").textContent,
       inStage: inStage(hold), box: rect(hold) } : null,
@@ -2754,7 +3547,9 @@ async function clockStatusChecks(browser) {
     const plain = await openPausedClock(browser, { width: 480, height: 270, query: "?layout=tile", reply: answer() });
     const gotPlain = await plain.page.evaluate(statusState);
     await plain.ctx.close();
-    const auto = await openPausedClock(browser, { width: 470, height: 400, query: "?p=regie", profile: profileOf(), reply: answer({ holdover: true }) });
+    // 470×340: Seit 1.10 bleibt die Leiste bei wenig Höhe einzeilig – bei 470×400 bliebe der Bühne genug Höhe für das
+    // normale Layout (wie in 1.9 ohne Titel), die Kachel greift erst darunter.
+    const auto = await openPausedClock(browser, { width: 470, height: 340, query: "?p=regie", profile: profileOf(), reply: answer({ holdover: true }) });
     const gotAuto = await auto.page.evaluate(statusState);
     await auto.ctx.close();
     note("/clock Kachel langer Titel", [gotLong.title && gotLong.title.clipped && gotLong.title.box.h < 2.2 * gotLong.title.size ? "" : `Titel ${JSON.stringify(gotLong.title)}`,
@@ -2764,6 +3559,7 @@ async function clockStatusChecks(browser) {
       scroll(gotPlain), errors(gotPlain, plain.msgs)]);
     // Automatische Kachel (kleines Fenster ohne ?layout=tile): Kopfzeile und Band bleiben, der Titel steht in der Kopfzeile.
     note(`/clock Kachel automatisch [${gotAuto.layout}]`, [gotAuto.layout === "tile" ? "" : "kein Layout tile", gotAuto.title ? "Titel doppelt (Bühne und Kopfzeile)" : "", gotAuto.barTitle === "Regie 1" ? "" : `Kopfzeile „${gotAuto.barTitle}“`,
+      gotAuto.barTitleClipped ? "Titel in der einzeiligen Kopfzeile abgeschnitten" : "",
       gotAuto.hold && !gotAuto.holdIcon ? "" : "Holdover nicht im Band", errors(gotAuto, auto.msgs)]);
   }
   {
@@ -4158,6 +4954,24 @@ async function setupChecks(browser) {
     }
     if (process.env.TOUR_COUNTDOWN_ONLY) {
       const result = await clockCountdownChecks(browser);
+      console.log(JSON.stringify(result, null, 1));
+      process.exitCode = result.found.length ? 1 : 0;
+      return;
+    }
+    if (process.env.TOUR_TIMER_ONLY) {
+      const result = await clockTimerChecks(browser);
+      console.log(JSON.stringify(result, null, 1));
+      process.exitCode = result.found.length ? 1 : 0;
+      return;
+    }
+    if (process.env.TOUR_EXTRAS_ONLY) {
+      const result = await clockExtrasChecks(browser);
+      console.log(JSON.stringify(result, null, 1));
+      process.exitCode = result.found.length ? 1 : 0;
+      return;
+    }
+    if (process.env.TOUR_FUN_ONLY) {
+      const result = await clockFunChecks(browser);
       console.log(JSON.stringify(result, null, 1));
       process.exitCode = result.found.length ? 1 : 0;
       return;

@@ -31,11 +31,12 @@ export const PROFILE_RETRY_MAX_MS = 60_000;
 
 /** Gruppen des Formulars; jeder Schema-Parameter steht in genau einer. */
 export const FORM_GROUPS = Object.freeze([
-  { key: "look", names: ["design", "layout", "look", "accent", "scale", "weight", "show", "bg", "safe", "shift"] },
-  { key: "digits", names: ["color", "sub", "seconds", "h12", "face", "colon", "lz", "date", "fps"] },
+  { key: "look", names: ["design", "layout", "look", "accent", "scale", "weight", "show", "bars", "bg", "safe", "shift"] },
+  { key: "digits", names: ["color", "sub", "seconds", "h12", "face", "colon", "lz", "date", "fps", "bin"] },
   { key: "zone", names: ["tz", "tzl", "lead", "maxerr"] },
-  { key: "countdown", names: ["until", "timer", "after", "warn", "beep", "label", "cd"] },
-  { key: "mode", names: ["kiosk", "eink", "lock", "signal", "test"] },
+  { key: "countdown", names: ["until", "goal", "label", "timer", "pomo", "pause", "after", "warn", "beep", "cd"] },
+  { key: "night", names: ["dim", "dimlevel", "dimred"] },
+  { key: "mode", names: ["kiosk", "eink", "lock", "fun", "eggs", "signal", "test"] },
 ]);
 
 /** Feste Fenstergrößen der Vorschau (window.open im neuen Tab, kein iframe: frame-ancestors bleibt 'none'). */
@@ -254,7 +255,7 @@ function node(tag, attrs = {}, ...children) {
   return item;
 }
 
-const EXAMPLES = { until: "20:15", timer: "25m", warn: "300,60,10", tz: "Europe/London,Asia/Tokyo", tzl: "LON,TYO",
+const EXAMPLES = { until: "20:15", timer: "25m", pomo: "25m", pause: "5m", dim: "22-6", warn: "300,60,10", tz: "Europe/London,Asia/Tokyo", tzl: "LON,TYO",
   accent: "amber, ff8800" };
 
 function example(name) {
@@ -282,6 +283,7 @@ function optionText(name, value) {
   if (name === "design") return t(`clock.design.${value}`);
   if (name === "layout") return t(`clock.layout_name.${value}`);
   if (name === "test") return t(`clock.link.test_value.${value}`);
+  if (name === "goal") return t(`clock.goal_name.${value}`);
   return value;
 }
 
@@ -331,7 +333,8 @@ export function buildForm({ values = {}, onChange = () => {}, prefix = "cl", dis
             set(name, picked.join(","), null);
           });
           control.append(node("label", { class: "link-check", for: `${id}-${value}` }, box2,
-            node("span", { text: t(`clock.link.show_item.${value}`) }), node("code", { class: "link-param", text: value })));
+            node("span", { text: t(name === "show" ? `clock.link.show_item.${value}` : `clock.link.${name}_item.${value}`) }),
+            node("code", { class: "link-param", text: value })));
         }
         label.removeAttribute("for");
       } else {

@@ -25,11 +25,15 @@
         <option value="flip" data-i18n="clock.design.flip">Klappzahlen</option>
         <option value="wort" data-i18n="clock.design.wort">Wortuhr</option>
         <option value="tc" data-i18n="clock.design.tc">Timecode</option>
+        <option value="binary" data-i18n="clock.design.binary">Binär</option>
       </select>
     </label>
     <button type="button" class="clock-tool" id="mode-theme" title="Hell oder dunkel" data-i18n-title="clock.theme_title">Hell</button>
     <button type="button" class="clock-tool" id="mode-red" aria-pressed="false" title="Rotlicht: schont die Dunkeladaption der Augen (Sternwarte, Schlafzimmer, Serverraum bei Nacht)" data-i18n-title="clock.red_title" data-i18n="clock.red">Rotlicht</button>
     <button type="button" class="clock-tool" id="mode-tone" aria-expanded="false" aria-controls="tone-panel" data-i18n="clock.tone">Ton</button>
+    <button type="button" class="clock-tool" id="mode-timer" aria-expanded="false" aria-controls="timer-panel" hidden data-i18n="clock.timer">Timer</button>
+    <button type="button" class="clock-tool" id="mode-game" aria-expanded="false" aria-controls="game-panel" hidden data-i18n="clock.game">Spiel</button>
+    <button type="button" class="clock-tool" id="mode-night" aria-pressed="false" hidden title="Nachtmodus: gedimmt (mit dimred=1 in Rot); mit dim=22-6 in der Adresse auch nach Uhrzeit (Ortszeit dieses Geräts). Taste N" data-i18n-title="clock.night_title" data-i18n="clock.night">Nacht</button>
     <button type="button" class="clock-tool" id="mode-device" aria-expanded="false" aria-controls="device-panel" data-i18n="clock.device">Mein Gerät</button>
     <button type="button" class="clock-tool clock-tool-icon" id="mode-custom" aria-expanded="false" aria-controls="custom-panel" title="Anpassen" aria-label="Anpassen" data-i18n-title="clock.custom" data-i18n-aria-label="clock.custom"><span aria-hidden="true">⚙</span></button>
     <button type="button" class="clock-tool" id="mode-full" title="Vollbild ein oder aus (Taste F)" data-i18n-title="clock.full_title" data-i18n="clock.full">Vollbild</button>
@@ -37,6 +41,8 @@
 </header>
 
 <p class="clock-egg" id="leap-egg" role="status" hidden></p>
+<!-- Konfetti (Ostereier, C3): Schnipsel fallen nur per CSS (clock.css, .clock-confetti); bei „weniger Bewegung“ nie. -->
+<div class="clock-confetti" id="confetti" aria-hidden="true" hidden></div>
 <!-- On-Air/REC-Signal: Balken mit Symbol und Text, dazu ein Rahmen um die Seite (body.has-signal in clock.css). -->
 <p class="clock-signal" id="signal" data-signal="off" hidden><span class="clock-signal-icon" aria-hidden="true"></span><span class="clock-signal-text" id="signal-text"></span><span class="clock-signal-note" id="signal-note"></span><span class="clock-signal-note clock-signal-note-short" id="signal-note-short"></span></p>
 
@@ -53,6 +59,7 @@
       <span class="clock-cd-now" id="cd-now"></span>
       <span class="clock-cd-actions" id="cd-actions" hidden>
         <button type="button" class="clock-tool" id="cd-toggle" data-i18n="clock.cd_start">Start</button>
+        <button type="button" class="clock-tool" id="cd-plus" aria-label="eine Minute dazu" data-i18n-aria-label="clock.cd_plus_label" hidden data-i18n="clock.cd_plus">+1 min</button>
         <button type="button" class="clock-tool" id="cd-reset" data-i18n="clock.cd_reset">Zurücksetzen</button>
       </span>
     </div>
@@ -63,6 +70,16 @@
       <span class="clock-week" id="iso-week">KW –</span>
       <span class="clock-hold" id="clock-hold" hidden><span class="clock-hold-icon" aria-hidden="true">H</span><span class="sr-only" id="clock-hold-text"></span></span>
       <span class="clock-sync" id="clock-sync" data-sync="none"><span class="clock-sync-icon" id="clock-sync-icon" aria-hidden="true">–</span> <span id="clock-sync-text">Gerätezeit, nicht abgeglichen</span></span>
+    </div>
+    <!-- Zusätze (Etappe C, mit ?show=moon,nerd,progress): Mondphase (Klick: Ansicht Südhalbkugel, nur in diesem Browser
+         gemerkt), Nerd-Zeile und Fortschrittsbalken. Gefüllt nur über textContent, Attribute und CSSOM-Variablen. -->
+    <div class="clock-extras" id="extras" hidden>
+      <span class="clock-moon-box" id="moon-box" hidden>
+        <button type="button" class="clock-moon" id="moon" aria-pressed="false"><svg class="clock-moon-svg" viewBox="0 0 100 100" aria-hidden="true" focusable="false"><circle class="moon-disc" cx="50" cy="50" r="49"></circle><path class="moon-lit" id="moon-lit" d=""></path></svg><span class="clock-moon-text" id="moon-text"></span></button>
+        <span id="moon-info"></span>
+      </span>
+      <p class="clock-nerd" id="nerd" hidden></p>
+      <div class="clock-prog" id="bars" role="group" aria-label="Fortschritt" data-i18n-aria-label="clock.bars_label" hidden></div>
     </div>
     <div class="clock-world" id="world" role="list" aria-label="Weltzeit" data-i18n-aria-label="clock.world_label" hidden></div>
   </main>
@@ -94,6 +111,7 @@
     <dt><kbd>U</kbd></dt><dd data-i18n="clock.keys.u">UTC groß oder Ortszeit groß</dd>
     <dt><kbd>T</kbd></dt><dd data-i18n="clock.keys.t">Zehntel bei Stoppuhr und Timer; im Design Timecode Zehntel oder Frames</dd>
     <dt><kbd>O</kbd></dt><dd data-i18n="clock.keys.o">On Air an oder aus – nur auf diesem Gerät</dd>
+    <dt id="keys-n-key"><kbd>N</kbd></dt><dd id="keys-n" data-i18n="clock.keys.n">Nachtmodus an oder aus</dd>
     <dt><kbd>Leertaste</kbd></dt><dd data-i18n="clock.keys.space">Timer oder Stoppuhr starten und anhalten</dd>
     <dt><kbd>R</kbd></dt><dd data-i18n="clock.keys.r">Timer oder Stoppuhr zurücksetzen</dd>
     <dt><kbd>+</kbd> <kbd>−</kbd></dt><dd data-i18n="clock.keys.size">größer oder kleiner</dd>
@@ -110,10 +128,64 @@
   <div class="clock-panel-actions" role="group" aria-label="Ton" data-i18n-aria-label="clock.tone">
     <button type="button" class="clock-tool" id="tone-seconds" aria-pressed="false" data-i18n="clock.tone_seconds">Sekundenpiep</button>
     <button type="button" class="clock-tool" id="tone-countdown" aria-pressed="false" data-i18n="clock.tone_countdown">Uhr stellen</button>
+    <button type="button" class="clock-tool" id="tone-pips-hour" aria-pressed="false" hidden data-i18n="clock.tone_pips_hour">Zeitzeichen zur Stunde</button>
+    <button type="button" class="clock-tool" id="tone-pips-minute" aria-pressed="false" hidden data-i18n="clock.tone_pips_minute">Zeitzeichen jede Minute</button>
     <button type="button" class="clock-tool" id="tone-off" data-i18n="clock.tone_off">Aus</button>
   </div>
+  <p class="clock-panel-note" id="tone-pips-line" hidden data-i18n="clock.tone_pips_line">Zeitzeichen wie im Radio: fünf kurze Töne, der lange Ton ist die volle Stunde bzw. Minute. Zum Spaß, keine Referenz: Browser und Lautsprecher verzögern den Ton um einige bis weit über 100 ms.</p>
   <p class="clock-countdown" id="tone-count" aria-live="off" hidden></p>
   <p class="clock-panel-note" id="tone-status" aria-live="polite"></p>
+</section>
+
+<!-- Spielereien (Etappe C): Eieruhr, Pomodoro, eigene und eingebaute Countdowns. Alles nur in diesem Browser. -->
+<section class="clock-panel clock-timer" id="timer-panel" hidden aria-labelledby="timer-title">
+  <h2 class="clock-panel-title" id="timer-title"><span data-i18n="clock.timer_title">Eieruhr, Pomodoro und Countdowns</span> <span id="timer-info"></span></h2>
+  <p class="clock-panel-line" data-i18n="clock.timer_line">Läuft nur in diesem Browser. Start, Anhalten und Zurücksetzen auch per Leertaste und R.</p>
+  <p class="clock-panel-note" id="timer-blocked" hidden data-i18n="clock.timer_blocked">Diese Uhr zählt auf ein festes Ziel aus der Adresse oder dem Profil. Für Eieruhr und Pomodoro öffne /clock ohne Ziel.</p>
+  <h3 class="clock-timer-head" data-i18n="clock.egg_title">Eieruhr</h3>
+  <div class="clock-panel-actions" id="egg-presets" role="group" aria-label="Eieruhr" data-i18n-aria-label="clock.egg_group"></div>
+  <div class="clock-timer-row">
+    <label class="clock-timer-field" for="egg-input"><span data-i18n="clock.egg_own">Eigene Dauer</span>
+      <input type="text" id="egg-input" maxlength="16" autocomplete="off" spellcheck="false" placeholder="z. B. 7, 7:30 oder 1h30m"></label>
+    <button type="button" class="clock-tool" id="egg-start" data-i18n="clock.egg_start">Starten</button>
+  </div>
+  <h3 class="clock-timer-head" data-i18n="clock.pomo_title">Pomodoro</h3>
+  <div class="clock-timer-row">
+    <button type="button" class="clock-tool" id="pomo-start" data-i18n="clock.pomo_start">Pomodoro starten</button>
+    <span class="clock-panel-note" id="pomo-line"></span>
+  </div>
+  <label class="clock-timer-check" for="timer-tone"><input type="checkbox" id="timer-tone"> <span data-i18n="clock.timer_tone">Ton am Ende</span></label>
+  <h3 class="clock-timer-head" data-i18n="clock.own_title">Eigene Countdowns</h3>
+  <p class="clock-panel-note" data-i18n="clock.own_line">Bis zu fünf, gemerkt nur in diesem Browser. Für viele Bildschirme gehört das Ziel in den Link oder ein Profil (Dashboard, Reiter „Anzeigen“).</p>
+  <ul class="clock-timer-list" id="own-list"></ul>
+  <div class="clock-timer-row">
+    <label class="clock-timer-field" for="own-label"><span data-i18n="clock.own_label">Beschriftung</span>
+      <input type="text" id="own-label" maxlength="24" autocomplete="off"></label>
+    <label class="clock-timer-field" for="own-until"><span data-i18n="clock.own_until">Ziel</span>
+      <input type="text" id="own-until" maxlength="19" autocomplete="off" spellcheck="false" placeholder="20:15 oder 2026-12-31T23:59"></label>
+    <button type="button" class="clock-tool" id="own-save" data-i18n="clock.own_save">Merken</button>
+  </div>
+  <h3 class="clock-timer-head" data-i18n="clock.goal_title">Eingebaut</h3>
+  <ul class="clock-timer-list clock-timer-goals" id="goal-list"></ul>
+  <p class="clock-panel-note" id="timer-status" aria-live="polite"></p>
+</section>
+
+<!-- Spiel „Tippe auf :00“ (C3): Abweichung zur vollen Sekunde bzw. Minute der Serverzeit; Bestwert nur im localStorage. -->
+<section class="clock-panel clock-game" id="game-panel" hidden aria-labelledby="game-title">
+  <h2 class="clock-panel-title" id="game-title"><span data-i18n="clock.game_title">Tippe auf :00</span> <span id="game-info"></span></h2>
+  <p class="clock-panel-line" data-i18n="clock.game_line">Tippe auf „Jetzt!“, genau wenn die Uhr auf die volle Sekunde bzw. Minute springt.</p>
+  <div class="clock-panel-actions" role="group" aria-label="Ziel" data-i18n-aria-label="clock.game_group">
+    <button type="button" class="clock-tool" id="game-second" aria-pressed="true" data-i18n="clock.game_unit_second">volle Sekunde</button>
+    <button type="button" class="clock-tool" id="game-minute" aria-pressed="false" data-i18n="clock.game_unit_minute">volle Minute</button>
+  </div>
+  <button type="button" class="clock-tool clock-game-tap" id="game-tap" data-i18n="clock.game_tap">Jetzt!</button>
+  <p class="clock-game-result" id="game-result" aria-live="polite"></p>
+  <p class="clock-panel-note" id="game-detail"></p>
+  <div class="clock-timer-row">
+    <span class="clock-panel-note" id="game-best"></span>
+    <button type="button" class="clock-tool" id="game-reset" data-i18n="clock.game_reset">Bestwert löschen</button>
+  </div>
+  <p class="clock-panel-note" data-i18n="clock.game_note">Der Bestwert bleibt nur in diesem Browser.</p>
 </section>
 
 <section class="clock-panel" id="device-panel" hidden aria-labelledby="device-title">

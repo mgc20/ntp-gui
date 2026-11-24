@@ -119,7 +119,7 @@ class AllowlistTest(unittest.TestCase):
             {"regie": {"params": {"until": "2026-02-31T10:00"}}},
             {"regie": {"params": {"timer": "25h"}}},
             {"regie": {"params": {"warn": "300,300"}}},
-            {"regie": {"params": {"show": "time,nerd"}}},
+            {"regie": {"params": {"show": "time,sun"}}},
             {"regie": {"params": {"tz": "Mars/Olymp"}}},
             {"regie": {"params": {"tz": "../../etc/passwd"}}},
             {"regie": {"params": {"scale": "500"}}},

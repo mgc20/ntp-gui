@@ -923,7 +923,7 @@ class UhrTest(unittest.TestCase):
         self.assertIn("body.clock-page.has-signal[data-signal-stale] { border-style: dashed; }", block)
         self.assertRegex(block, r'\.clock-signal\[data-signal="rec"\] \.clock-signal-icon \{', "REC hat ein eigenes Symbol")
         pairs = re.findall(r"--signal: (#[0-9a-f]{6}); --signal-ink: (#[0-9a-f]{6});", block)
-        self.assertEqual(len(pairs), 3, "Standard, Rotlicht, E-Ink")
+        self.assertEqual(len(pairs), 3, "Standard, Rotlicht, E-Ink – der Nachtmodus (C1) lässt das Signal rot")
         ratios = run_node(f"console.log(JSON.stringify({json.dumps(pairs)}.map(([a, b]) => k.contrastRatio(a, b))));")
         for ratio in ratios:
             self.assertGreaterEqual(ratio, 4.5)

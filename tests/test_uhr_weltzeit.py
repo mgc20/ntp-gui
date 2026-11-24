@@ -565,7 +565,7 @@ class TexteUndSeiteTest(unittest.TestCase):
         self.assertIn('world.worldMode(params.tz ? params.tz.length : 0, state.picked, world.worldAllowed(params.show))', js)
         self.assertIn('const want = params.layout === "world" && !world.worldAllowed(params.show) ? "auto" : params.layout;', js)
         # Raster ohne eine einzige Zone: Uhr im automatischen Layout statt klein auf leerer Fläche.
-        start = js.index("function fitTime()")
+        start = js.index("function fitTimeOnly()")
         fit = js[start:js.index("\n}\n", start)]
         self.assertIn('stageLayout(kit.resolveLayout(state.stage.width, state.stage.height));', fit)
         self.assertLess(fit.index('stageLayout("world");'), fit.index("fitGrid(main);"))

@@ -79,9 +79,44 @@ body.is-stale .clock-time { color: var(--ink-unsure); }
 /* Mehr Inhalt als Höhe (Banner, Panels): oben anfangen statt nach oben aus dem Bild zu ragen. */
 body.clock-page { height: auto; }
 .clock-main { justify-content: safe center; }
-body.is-kiosk .clock-egg { margin-top: max(10px, env(safe-area-inset-top)); }
 .clock-egg { margin: 0 auto; padding: 0.4em 1em; max-width: min(46em, calc(100% - 24px)); box-sizing: border-box; text-align: center;
   font-size: clamp(13px, 1vw + 8px, 20px); color: var(--ink); border: 1px dashed var(--accent); border-radius: 12px; }
+
+/* Konfetti (Ostereier, C3): nur CSS – 24 Schnipsel (JS legt leere <i> an, Lage und Farbe hier über nth-child), fallen
+   zweimal per transform/opacity und sind dann weg. Nie bei „weniger Bewegung“, im Kiosk, in Kachel, Streifen, E-Ink. */
+.clock-confetti { position: fixed; inset: 0; overflow: hidden; pointer-events: none; z-index: 30; contain: strict; }
+.clock-confetti i { position: absolute; top: -4vh; left: 50%; width: 10px; height: 16px; border-radius: 2px; opacity: 0;
+  background: var(--accent); will-change: transform, opacity; }
+.clock-confetti.is-on i { animation: clock-confetti-fall 3.2s cubic-bezier(0.25, 0.6, 0.5, 1) 2 both; }
+.clock-confetti i:nth-child(6n+1) { left: 6%; }
+.clock-confetti i:nth-child(6n+2) { left: 23%; }
+.clock-confetti i:nth-child(6n+3) { left: 41%; }
+.clock-confetti i:nth-child(6n+4) { left: 58%; }
+.clock-confetti i:nth-child(6n+5) { left: 76%; }
+.clock-confetti i:nth-child(6n+6) { left: 92%; }
+.clock-confetti i:nth-child(4n+1) { background: #e5534b; animation-delay: 0s; }
+.clock-confetti i:nth-child(4n+2) { background: #f2cc60; animation-delay: 0.45s; width: 8px; height: 12px; }
+.clock-confetti i:nth-child(4n+3) { background: #57ab5a; animation-delay: 0.9s; }
+.clock-confetti i:nth-child(4n+4) { background: #539bf5; animation-delay: 1.35s; width: 12px; height: 8px; }
+.clock-confetti i:nth-child(5n+1) { margin-left: -3vw; }
+.clock-confetti i:nth-child(5n+3) { margin-left: 2vw; }
+.clock-confetti i:nth-child(5n+4) { margin-left: 4vw; }
+@keyframes clock-confetti-fall {
+  0% { opacity: 0; transform: translate3d(0, 0, 0) rotate(0deg); }
+  8% { opacity: 1; }
+  85% { opacity: 1; }
+  100% { opacity: 0; transform: translate3d(6vw, 108vh, 0) rotate(540deg); }
+}
+.clock-confetti.is-on i:nth-child(even) { animation-name: clock-confetti-fall-left; }
+@keyframes clock-confetti-fall-left {
+  0% { opacity: 0; transform: translate3d(0, 0, 0) rotate(0deg); }
+  8% { opacity: 1; }
+  85% { opacity: 1; }
+  100% { opacity: 0; transform: translate3d(-7vw, 108vh, 0) rotate(-480deg); }
+}
+@media (prefers-reduced-motion: reduce) { .clock-confetti { display: none; } }
+body:is(.is-kiosk, .is-tile, .is-compact, .is-eink, .is-obs) .clock-confetti { display: none; }
+@media (max-height: 320px) { .clock-confetti { display: none; } }   /* wie die Zeile der Ostereier */
 
 /* Bahnhofsuhr: eigenes, schlichtes Zifferblatt (Striche, Balkenzeiger, Sekundenzeiger mit offenem Ring). */
 .face-bahnhof .bh { width: min(80vw, 44vh); height: auto; max-width: 100%; display: block; }
@@ -205,7 +240,7 @@ body.is-kiosk .clock-band { font-size: clamp(12px, 0.9vw + 6px, 20px); }
 @media (max-height: 320px) {
   .clock-time { font-size: min(19vw, 27vh); margin: 0 0 0.05em; }
   .clock-face { margin: 0; }
-  .clock-egg { display: none; }   /* Osterei (zwei Tage im Jahr) hat hier keinen Platz */
+  .clock-egg { display: none; }   /* Ostereier haben hier keinen Platz */
   .face-bahnhof .bh { width: min(80vw, 34vh); }
   .nixie-tube { font-size: min(14vw, 22vh); }
   .flip-card { font-size: min(13vw, 22vh); }
@@ -534,6 +569,9 @@ body:is(.is-kiosk, .is-tile, .is-compact) .tc-head .info { display: none; }
     flex-wrap: nowrap; align-items: baseline; gap: 0.6em; }
   :root[data-cd="main"] .clock-stage[data-layout="banner"] .clock-cd-now { display: inline; white-space: nowrap; }
   .clock-stage:is([data-layout="strip"], [data-layout="tile"]) :is(.clock-cd-label, .clock-cd-state, .clock-cd-actions, .clock-cd-now) { display: none; }
+  /* Ausnahme: Ist die Eieruhr um, steht „Zeit ist um!“ auch in Streifen und Kachel – klein, aber als Text, nicht nur Rahmen. */
+  :root[data-cd-end] .clock-stage:is([data-layout="strip"], [data-layout="tile"]) .clock-cd-state { display: inline;
+    white-space: nowrap; font-size: max(0.6em, 12px); }
   .clock-stage[data-layout="strip"] .clock-cd { margin: 0; flex-wrap: nowrap; }
 }
 body:is(.is-kiosk, .is-tile, .is-compact, .is-eink) .clock-cd-actions { display: none; }
@@ -791,3 +829,151 @@ body.has-signal .clock-hint { top: auto; bottom: max(12px, env(safe-area-inset-b
 @media (max-height: 240px) {
   body.has-signal .clock-bar { display: none; }
 }
+
+/* --- Studiouhr C1: Eieruhr, Pomodoro, eigene Countdowns, Nachtmodus -----------------------------------------------
+   Panel „Timer“ wie die übrigen Panels. Das Ende einer Eieruhr steht still und deutlich da: Rahmen um den Countdown,
+   „Zeit ist um!“ fett – nie nur Farbe, kein Blinken. Der Nachtmodus dimmt Leiste, Bühne und Band über ihre Deckkraft
+   (--night aus ?dimlevel=, per CSSOM) und färbt grau (data-mode="night") bzw. rot (?dimred=1: data-mode="red").
+   OBS-Browserquelle (body.is-obs): keine Leiste, keine Panels, keine Knöpfe am Countdown, kein Mauszeiger. */
+.clock-timer { width: min(44em, calc(100% - 24px)); }
+.clock-timer-head { margin: 12px 0 2px; font-size: 1em; font-weight: 650; }
+.clock-timer-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 6px 10px; margin: 6px 0; }
+.clock-timer-field { display: inline-flex; flex-direction: column; gap: 2px; font-size: 0.9em; color: var(--ink-2); }
+.clock-timer-field input { font: inherit; font-size: 1em; min-height: 32px; box-sizing: border-box; padding: 0.3em 0.6em;
+  border-radius: 9px; border: 1px solid var(--border); background: var(--bg); color: var(--ink); width: 15em; max-width: 100%; }
+.clock-timer-field input[aria-invalid="true"] { border-color: var(--crit-ink); }
+/* Das Ziel braucht Platz für den ganzen Platzhalter „20:15 oder 2026-12-31T23:59“ – sonst fehlt gerade das ISO-Format. */
+.clock-timer-field #own-until { width: 19em; }
+.clock-timer-check { display: inline-flex; align-items: center; gap: 8px; min-height: 32px; margin: 6px 0; cursor: pointer; }
+.clock-timer-check input { width: 18px; height: 18px; margin: 0; accent-color: var(--accent); }
+.clock-timer-list { margin: 4px 0; padding: 0; list-style: none; display: grid; gap: 4px; }
+.clock-timer-list li { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-height: 32px; }
+.clock-timer-list a { display: inline-flex; align-items: center; min-height: 32px; color: var(--accent); overflow-wrap: anywhere; }
+.clock-timer-goals { display: flex; flex-wrap: wrap; gap: 4px 16px; }
+:root[data-cd-end] .clock-cd { outline: max(3px, 0.08em) solid var(--crit-ink); outline-offset: 0.15em; border-radius: 0.2em; }
+:root[data-cd-end] .clock-cd-state { font-weight: 800; font-size: max(0.9em, 14px); color: var(--crit-ink); }
+:root[data-mode][data-cd-end] .clock-cd { outline-color: var(--ink); }
+:root[data-mode][data-cd-end] .clock-cd-state { color: var(--ink); }
+body.is-obs :is(.clock-bar, .clock-panel, .clock-cd-actions) { display: none; }
+body.is-obs, body.is-obs * { cursor: none; }
+:root[data-mode="night"] {
+  --bg: #000000; --surface: #0b0b0b; --surface-2: #121212; --border: #3a3a3a; --border-soft: #222222;
+  --ink: #c8c8c8; --ink-2: #a8a8a8; --ink-muted: #8a8a8a; --accent: #c8c8c8;
+  --good: #c8c8c8; --warn: #a8a8a8; --crit: #c8c8c8; --on-status: #000000;
+  --surface-3: #1a1a1a; --good-ink: #c8c8c8; --warn-ink: #c8c8c8; --crit-ink: #c8c8c8; --info-ink: #c8c8c8;
+  --good-soft: #1a1a1a; --warn-soft: #1a1a1a; --crit-soft: #1a1a1a; --info-soft: #1a1a1a;
+  --ink-unsure: #7a7a7a; --studio-ink: #c8c8c8;
+  color-scheme: dark;
+}
+/* Die Leiste nicht: Sie blendet sich im Leerlauf über ihre Deckkraft aus (is-idle), dunkel ist sie über die Farben.
+   On-Air/REC auch nicht: Gesendet wird gerade nachts, das Band und der Rahmen bleiben rot und voll deckend (--signal
+   bleibt unverändert; mit ?dimred=1 gilt das Rot des Rotlichts). */
+/* Kontrast: Die Farbtabelle oben hat auf Schwarz mindestens 4,5:1. Gedimmt sinkt er bewusst – bei 40 % liegen die
+   Ziffern bei etwa 2,6:1, bei 20 % bei etwa 1,4:1. Wünscht das System mehr Kontrast, bleibt mindestens 60 % (Ziffern ≈ 4,7:1). */
+:root[data-night] :is(.clock-stage, .clock-band, .clock-egg) { opacity: var(--night, 0.4); }
+@media (prefers-contrast: more) {
+  :root[data-night] :is(.clock-stage, .clock-band, .clock-egg) { opacity: max(var(--night, 0.4), 0.6); }
+}
+/* Wenig Höhe (Handy quer, Streifen, Banner): Die Leiste bleibt einzeilig wie in 1.9 und nimmt der Zeit keine Höhe.
+   Passen nicht alle Knöpfe in die Zeile, lässt sich die Knopfgruppe seitlich wischen bzw. rollen (Tab führt den Fokus
+   mit, der Browser rollt nach); so bleiben Timer und Nacht auch auf Touch-Geräten erreichbar. Rechts bündig über
+   margin-left: auto statt justify-content, damit beim Überlauf der Anfang der Gruppe erreichbar bleibt. In sehr
+   kleinen, flachen Fenstern (kleine Kachel mit Leiste, bis 600 × 320 px) fehlen Timer und Nacht ganz. */
+@media (max-height: 480px) {
+  .clock-bar { flex-wrap: nowrap; }
+  .clock-back { flex: none; white-space: nowrap; }
+  /* Der Titel eines Profils behält seine Breite (bis 40 %), die Knopfgruppe nimmt den Rest und rollt. */
+  .clock-title { flex: 0 1 auto; max-width: 40%; }
+  .clock-tools { flex: 1 1 0; flex-wrap: nowrap; min-width: 0; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none; }
+  .clock-tools::-webkit-scrollbar { display: none; }
+  .clock-tools > * { flex: none; }
+  .clock-tools > :first-child { margin-left: auto; }
+}
+@media (max-height: 320px) and (max-width: 600px) { #mode-timer, #mode-night { display: none; } }
+
+/* --- Studiouhr C2: Design binary, Mondphase, Nerd-Zeile, Fortschrittsbalken ---------------------------------------
+   Binäruhr: Lämpchen als SVG-Kreise; aus bleiben sie als Ring mit schwacher Füllung sichtbar, an voll gefüllt (Klasse on,
+   ein Klassenwechsel je geänderter Stelle). Die Zusätze unter der Uhr (?show=moon,nerd,progress) sind Text, ein kleines
+   SVG und Balken, deren Füllung allein über transform: scaleX(--bar) läuft (CSSOM-Variable, kein style-Attribut). */
+.face-binary { color: var(--accent); }
+.face-binary .bin { display: block; height: auto; max-width: 100%; }
+.face-binary .bin-bcd { width: min(86vw, 52vh * 1.56); }
+.face-binary .bin-bcd.bin-cols-4 { width: min(86vw, 52vh * 1.07); }
+.face-binary .bin-plain { width: min(90vw, 40vh * 2.34); }
+.bin-lamp { fill: currentColor; fill-opacity: 0.12; stroke: currentColor; stroke-opacity: 0.45; stroke-width: 1.4; }
+.bin-lamp.on { fill-opacity: 1; stroke-opacity: 1; }
+.bin-weight, .bin-unit { fill: var(--ink-muted); font-size: 8px; font-variant-numeric: tabular-nums; }
+.bin-value { fill: var(--ink); font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.bin-ampm { fill: var(--ink-muted); font-size: 8px; letter-spacing: 0.08em; }
+:root[data-seconds="unsure"] .face-binary .is-sec { opacity: 0.45; }
+:root[data-mode="eink"] .bin-lamp { fill-opacity: 0; stroke-opacity: 1; }
+:root[data-mode="eink"] .bin-lamp.on { fill-opacity: 1; }
+
+.clock-extras { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 0.5em 1.6em;
+  margin-top: clamp(6px, 1.4vh, 24px); font-size: clamp(13px, 1.6vw, 3vh); color: var(--ink-2, var(--ink));
+  font-variant-numeric: tabular-nums; }
+.clock-moon-box { display: inline-flex; align-items: center; gap: 0.3em; }
+.clock-moon { display: inline-flex; align-items: center; gap: 0.5em; font: inherit; color: inherit; background: transparent;
+  border: 0; padding: 0.1em 0.2em; min-height: 24px; border-radius: 6px; cursor: pointer; }
+.clock-moon:disabled { cursor: default; opacity: 1; }
+.clock-moon:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.clock-moon-svg { width: 1.4em; height: 1.4em; flex: none; display: block; }
+.moon-disc { fill: var(--ink-muted); fill-opacity: 0.22; stroke: var(--ink-muted); stroke-width: 1.5; }
+.moon-lit { fill: var(--ink); }
+.clock-nerd { margin: 0; display: flex; flex-wrap: wrap; justify-content: center; gap: 0.2em 1.2em; font-size: 0.9em;
+  font-family: ui-monospace, "DejaVu Sans Mono", Menlo, Consolas, monospace; }
+.clock-nerd-item { white-space: nowrap; }
+.clock-nerd-label { color: var(--ink-muted); }
+.clock-prog { display: flex; flex-wrap: wrap; justify-content: center; gap: 0.4em 1.6em; }
+.clock-prog-item { display: inline-flex; align-items: center; gap: 0.5em; white-space: nowrap; }
+.clock-prog-label { color: var(--ink-muted); min-width: 3.2em; text-align: right; }
+.clock-prog-track { position: relative; display: block; width: clamp(80px, 12vw, 260px); height: 0.5em; overflow: hidden;
+  border-radius: 0.25em; background: var(--border); }
+.clock-prog-fill { position: absolute; inset: 0; background: var(--accent); transform-origin: left center;
+  transform: scaleX(var(--bar, 0)); }
+.clock-prog-value { min-width: 3.2em; }
+:root[data-mode="eink"] .clock-prog-track { background: transparent; outline: 1px solid #000000; }
+@media (prefers-contrast: more) {
+  .bin-lamp { fill-opacity: 0; stroke-opacity: 1; }
+  .clock-prog-track { outline: 1px solid var(--ink); }
+}
+
+@supports (container-type: size) {
+  .clock-stage .face-binary .bin-bcd { width: calc(min(var(--face-w), var(--face-h) * 1.56) * var(--clock-scale) * var(--fit));
+    max-width: none; flex: none; }
+  .clock-stage .face-binary .bin-bcd.bin-cols-4 {
+    width: calc(min(var(--face-w), var(--face-h) * 1.07) * var(--clock-scale) * var(--fit)); }
+  .clock-stage .face-binary .bin-plain { width: calc(min(var(--face-w), var(--face-h) * 2.34) * var(--clock-scale) * var(--fit));
+    max-width: none; flex: none; }
+  .clock-stage .clock-extras { font-size: var(--status); margin-top: 1cqh; }
+  .clock-stage .clock-prog-track { width: clamp(60px, 14cqw, 320px); }
+  /* Banner: Zusätze in der rechten Spalte unter Datum und Zeile – auch mit Countdown darüber und Leiste der Weltzeit
+     (gleiche oder höhere Spezifität als deren Raster weiter oben, sonst entstünden Spalten ohne Namen). Auf niedrigen
+     Bannern fehlen die Zusätze neben Countdown oder Leiste ganz (fx.extrasShown, crowded). */
+  .clock-stage[data-layout="banner"] .clock-main { grid-template-areas: "time date" "time sub" "time extras"; }
+  :root[data-cd="below"] .clock-stage[data-layout="banner"] .clock-main {
+    grid-template-areas: "time cd" "time date" "time sub" "time extras"; }
+  .clock-stage[data-layout="banner"][data-world="bar"] .clock-main {
+    grid-template-areas: "time date" "time sub" "time world" "time extras"; }
+  :root[data-cd="below"] .clock-stage[data-layout="banner"][data-world="bar"] .clock-main {
+    grid-template-areas: "time cd" "time date" "time sub" "time world" "time extras"; }
+  /* Mit Zusätzen füllt das Raster die Breite ganz (die Nerd-Zeile ist lang, clock.js passt die Zeit in den Rest ein):
+     Ein eigener Innenabstand hält Zeit und Zusätze vom Bildrand fern wie ohne Zusätze. */
+  .clock-stage[data-layout="banner"] .clock-main:has(> .clock-extras:not([hidden])) { padding-inline: 1.25cqw; }
+  .clock-stage[data-layout="banner"] .clock-extras { grid-area: extras; justify-content: flex-start; margin: 0;
+    font-size: max(12px, min(1.4cqw, 11cqh)); max-width: 60cqw; }
+  .clock-stage[data-layout="banner"] :is(.clock-nerd, .clock-prog) { justify-content: flex-start; }
+  .clock-stage:is([data-layout="strip"], [data-layout="tile"]) .clock-extras { display: none; }
+  /* Hex und römisch nur, wo Höhe frei ist: Die Zeile bricht mit ihnen auf zwei Zeilen um, die Zeit wird kleiner. */
+  .clock-stage[data-layout="banner"] .clock-nerd-item:is([data-key="hex"], [data-key="roman"]) { display: none; }
+  @container (max-height: 700px) { .clock-nerd-item:is([data-key="hex"], [data-key="roman"]) { display: none; } }
+}
+
+/* Studiouhr C3: Spiel „Tippe auf :00“ – großer Knopf, Ergebnis gut lesbar. */
+.clock-game-tap { display: block; width: 100%; min-height: 64px; margin: 8px 0; font-size: clamp(20px, 3vw, 32px); font-weight: 700;
+  color: var(--ink); touch-action: manipulation; user-select: none; -webkit-user-select: none; }
+.clock-game-result { margin: 6px 0; min-height: 1.4em; font-size: 1.15em; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--ink); }
+.clock-game .clock-timer-row { align-items: center; }
+/* Das Spiel braucht die Uhr groß im Blick: In Fenstern bis 320 px Höhe (Streifen, Banner, kleine Kachel) fehlt der Knopf,
+   sonst bräche die Leiste dort um und nähme der Zeit die Höhe. */
+@media (max-height: 320px) { #mode-game { display: none; } }

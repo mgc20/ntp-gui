@@ -424,10 +424,17 @@ check "healthz bleibt offen"    200 "$(http http://127.0.0.1:18081/healthz)"
 check "Mit Login gilt jeder Host-Name" 200 "$(http -u 'admin:S3hr geheim' -H 'Host: attacker.example' http://127.0.0.1:18081/api/status)"
 check "Fremder Host ohne Login: 401" 401 "$(http -H 'Host: attacker.example' http://127.0.0.1:18081/api/status)"
 check "Vollbild-Uhr standardmäßig geschützt" 401 "$(http http://127.0.0.1:18081/api/v1/time)"
+check "clock_public aus: clockextras.js ohne Login 401" 401 "$(http http://127.0.0.1:18081/static/js/clockextras.js)"
 curl -s --max-time 10 -u 'admin:S3hr geheim' -H 'Content-Type: application/json' -H 'X-NTP-GUI: 1' \
   -d '{"changes":{"clock_public":true}}' http://127.0.0.1:18081/api/settings >/dev/null
 check "clock_public: /clock ohne Login"        200 "$(http http://127.0.0.1:18081/clock)"
 check "clock_public: /api/v1/time ohne Login"  200 "$(http http://127.0.0.1:18081/api/v1/time)"
+# 1.10: clock.js importiert clockextras.js – ohne das Modul fiele die ganze Uhr aus. tai_utc (TAI−UTC aus der
+# öffentlichen Schaltsekunden-Liste) steht auch ohne Login in /api/v1/time: eine ganze Zahl oder None.
+check "clock_public: clockextras.js ohne Login" 200 "$(http http://127.0.0.1:18081/static/js/clockextras.js)"
+check "clock_public: tai_utc ohne Login" ok \
+  "$(curl -s --max-time 10 http://127.0.0.1:18081/api/v1/time | python3 -c "import json,sys; d=json.load(sys.stdin); v=d.get('tai_utc', 'fehlt'); print('ok' if v is None or (type(v) is int and 10 <= v <= 100) else v)" 2>/dev/null)"
+check "clock_public: app.js bleibt geschützt" 401 "$(http http://127.0.0.1:18081/static/js/app.js)"
 check "clock_public: Status bleibt geschützt"  401 "$(http http://127.0.0.1:18081/api/v1/status)"
 check "clock_public: kein Quellenname ohne Login" None \
   "$(curl -s --max-time 10 http://127.0.0.1:18081/api/v1/time | python3 -c "import json,sys; print(json.load(sys.stdin).get('source'))" 2>/dev/null)"
