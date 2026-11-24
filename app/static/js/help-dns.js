@@ -99,6 +99,7 @@ export const HELP_DNS = {
 };
 
 export const HELP_GROUP_DNS = {
+  id: "dns",
   title: "DNS für ntp-gui",
   keys: ["dns", "dns_modes", "dns_state", "dns_resolv", "dns_upstreams", "dns_fallback", "dns_pin", "dns_counts",
     "dns_last_ok", "dns_reachable", "dns_nts"],

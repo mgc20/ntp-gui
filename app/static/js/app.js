@@ -18,6 +18,7 @@ import * as help from "./pages/help.js";
 import * as muster from "./pages/muster.js";
 import { t, initI18n, setLanguage, language, LANGUAGES, onLanguageChange } from "./i18n.js";
 import { NAV, resolve, route, tabsOf, navOf, stampEntry, hashChange } from "./routes.js";
+import { pageTopic, topicHref } from "./helpnav.js";
 import { createShortcuts, shortcutList } from "./shortcuts.js";
 import { captureFocus, restoreFocus, renderGate } from "./focus.js";
 
@@ -166,10 +167,16 @@ function render({ background = false } = {}) {
     nodes = [el("p", { class: "empty-note", text: t("app.render_error", { message: error.message }) })];
   }
   const focus = captureFocus(main, document.activeElement);
-  main.replaceChildren(...nodes.filter(Boolean));
+  main.replaceChildren(...nodes.filter(Boolean), pageHelpLink(page.id));
   for (const fn of pendingAfter) { try { fn(); } catch (error) { console.error(error); } }
   restoreFocus(main, focus, document.activeElement, document.body);
   window.scrollTo(0, scroll);
+}
+
+// 1.11: Unter jeder Seite ein Verweis auf die passende Unterseite der Hilfe (helpnav.js PAGE_TOPICS).
+function pageHelpLink(pageId) {
+  const topic = pageTopic(pageId);
+  return topic ? el("p", { class: "page-help" }, el("a", { href: topicHref(topic.id), text: t("help.page_more", { topic: topic.title }) })) : "";
 }
 
 function renderHeader() {

@@ -56,6 +56,7 @@ export const HELP_UPDATE = {
 };
 
 export const HELP_GROUP_UPDATE = {
+  id: "update",
   title: "Update-Hinweis",
   keys: ["update_check", "update_banner", "update_attention", "update_current", "update_latest", "update_last",
     "update_next"],

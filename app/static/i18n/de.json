@@ -225,7 +225,25 @@
       "status": "Gesamtzustand als JSON (dieselben Daten wie das Dashboard)",
       "healthz": "Lebenszeichen für den Container-Healthcheck (läuft chronyd?)",
       "readyz": "Strenge Bereitschaft: 200 nur synchronisiert, mit ausgewählter Quelle und unter der Fehlergrenze (keepalived, Load-Balancer, Uptime-Monitore)"
-    }
+    },
+    "toc_title": "Inhalt",
+    "toc_label": "Themen der Hilfe",
+    "all_topics": "Alle Themen",
+    "crumb_label": "Pfad in der Hilfe",
+    "pager_label": "Weitere Themen",
+    "prev": "← {topic}",
+    "next": "{topic} →",
+    "see_also": "Siehe auch:",
+    "entry_link": "Link auf „{title}“",
+    "not_found": "Dieses Hilfethema gibt es nicht. Hier ist das Inhaltsverzeichnis.",
+    "more": "Mehr in der Hilfe →",
+    "page_more": "Mehr in der Hilfe: {topic} →",
+    "search_placeholder": "Begriff suchen, z. B. Stratum, Falseticker, PPS …",
+    "search_label": "Hilfe durchsuchen",
+    "nothing_found": "Nichts gefunden.",
+    "entries_one": "{count} Eintrag",
+    "entries_other": "{count} Einträge",
+    "result_topic": "Thema öffnen"
   },
   "pages": {
     "clients": {

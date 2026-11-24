@@ -144,6 +144,7 @@ export const HELP_BACKUP = {
 };
 
 export const HELP_GROUP_BACKUP = {
+  id: "sicherung",
   title: "Sichern und wiederherstellen",
   keys: ["backup", "backup_privacy", "backup_contents", "backup_excluded", "backup_restore", "backup_created",
     "backup_history", "backup_devices", "backup_groups", "backup_events", "backup_calibration", "backup_channels",

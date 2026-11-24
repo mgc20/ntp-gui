@@ -8,6 +8,7 @@ import { t as tr } from "./i18n.js";
 import { el, rich, copyText, selectContents, apiPost, isNum, fmtTime, fmtDate } from "./util.js";
 import { HELP } from "./help.js";
 import { actionHref } from "./routes.js";
+import { helpHref } from "./helpnav.js";
 
 // --- ⓘ-Popover --------------------------------------------------------------
 let openPopover = null;
@@ -44,7 +45,7 @@ export function isPopoverOpen() {
  * Rand per CSS, verschiebt nichts im Layout); blass, bis die Maus darüber steht oder er den Fokus hat.
  * Unbekannter Schlüssel: null (dann steht einfach kein Knopf da).
  * more = { title, text }: eigener Text im Popover (z. B. der Rest eines Feld-Hilfetexts, der unter dem
- * Feld keinen Platz hat); der Link „In der Hilfe ansehen“ führt dann weiter zu HELP[key], falls es ihn gibt.
+ * Feld keinen Platz hat); der Link „Mehr in der Hilfe“ führt dann weiter zu HELP[key], falls es ihn gibt.
  * more.withHelp: unter dem eigenen Text steht zusätzlich die Erklärung aus HELP[key] (Karten, deren
  * Untertitel ins ⓘ gewandert ist – so bleibt beides an einem Knopf).
  */
@@ -65,7 +66,8 @@ export function infoButton(key, label, more) {
       el("strong", { class: "popover-title", text: entry.title }),
       el("p", {}, rich(entry.text)),
       entry.also ? el("p", { class: "popover-also" }, rich(entry.also)) : null,
-      found ? el("a", { href: `#/hilfe?t=${key}`, class: "popover-more", text: "In der Hilfe ansehen →",
+      // Tiefer Link auf die Unterseite der Hilfe (#/hilfe/<thema>/<schlüssel>, 1.11).
+      found ? el("a", { href: helpHref(key), class: "popover-more", text: tr("help.more"),
         onclick: closePopover }) : null);
     document.body.append(node);
     const rect = button.getBoundingClientRect();

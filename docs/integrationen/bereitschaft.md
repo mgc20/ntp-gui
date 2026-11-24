@@ -121,3 +121,6 @@ Anführungszeichen – `"not_ready"` enthält es so nicht). Anders als die JSON-
 `/api/v1/time` braucht `/readyz` keinen API-Schlüssel. Healthchecks, Gatus, Zabbix, Nagios
 (`check_http -u /readyz -e 200`) und Load-Balancer (HAProxy `option httpchk GET /readyz`)
 funktionieren genauso.
+
+Im Dashboard steht dieselbe Erklärung unter **Hilfe → Betrieb und Überwachung** (`#/hilfe/betrieb/readyz`);
+das ⓘ am Feld „Bereitschaft (/readyz): Fehlergrenze“ verweist dorthin.

@@ -45,7 +45,7 @@ export const FIELD_HELP = {
   web_title: "web_title", web_refresh_seconds: "web_refresh", history_interval: "history_interval",
   notify_dashboard_url: "notify_link",
   temp_sensor: "temp_sensor", clock_public: "clock_public", update_check: "update_check", backup_nightly: "backup_nightly",
-  metrics_group_names: "metrics_privacy",
+  metrics_group_names: "metrics_privacy", ready_max_error_ms: "readyz",
   heartbeat_url: "heartbeat", heartbeat_interval: "heartbeat_mode", heartbeat_mode: "heartbeat_mode",
   trusted_proxies: "trusted_proxies", web_allowed_hosts: "allowed_hosts",
   dns_mode: "dns_modes", dns_servers: "dns_upstreams", dns_dot: "dns_modes", dns_doh: "dns_modes",

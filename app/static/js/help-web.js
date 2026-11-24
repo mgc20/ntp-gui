@@ -71,6 +71,7 @@ export const HELP_WEB = {
 };
 
 export const HELP_GROUP_WEB = {
+  id: "web",
   title: "HTTPS, Proxy und Sprache",
   keys: ["https_proxy", "trusted_proxies", "allowed_hosts", "ui_language"],
 };

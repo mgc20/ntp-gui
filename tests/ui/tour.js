@@ -54,6 +54,8 @@
 // Rahmen und Balken mit Symbol und Text, ohne Bewegung, Zeit in der Bühne unter dem Balken, kein Scrollbalken; nur mit
 // signal=1 (dann Abfrage im Sekundentakt), Taste O lokal, fremde Werte zeigen nichts, ohne Antwort „Stand ungewiss“,
 // Schalter im Reiter „Anzeigen“.
+// Dazu helpChecks (1.11, TOUR_HELP_ONLY=1): Hilfe mit Inhaltsverzeichnis, Unterseiten, tiefen und alten Links, Suche,
+// „Zurück“ im Browser und „Mehr in der Hilfe“ aus dem ⓘ bei 390 und 1440 px.
 // Dazu timelineChecks (1.6, T7): Zustandsband und Marker bei 390/1440 px mit erfundenem Tag, Tastaturbedienung.
 //
 // Aufruf: node tests/ui/tour.js [Basis-URL]   (Standard http://127.0.0.1:18300, oder TOUR_BASE)
@@ -67,7 +69,8 @@ const SHOTS = process.env.TOUR_SHOTS || "";
 const routes = ["/#/", "/#/quellen", "/#/gps", "/#/clients", "/#/clients/192.0.2.10", "/#/clients/192.0.2.10/pass",
   "/#/uhr/qualitaet", "/#/uhr/hardware", "/#/uhr/ptp", "/#/uhr/anzeigen", "/#/system/diagnose", "/#/system/benachrichtigungen",
   "/#/system/einstellungen", "/#/system/einrichtung", "/#/system/einrichtung/quellen", "/#/system/einrichtung/gps",
-  "/#/system/einrichtung/clients", "/#/system/einrichtung/benachrichtigung", "/#/hilfe", "/clock", "/?dev=1#/muster",
+  "/#/system/einrichtung/clients", "/#/system/einrichtung/benachrichtigung", "/#/hilfe", "/#/hilfe/betrieb",
+  "/#/hilfe/gps/pps", "/clock", "/?dev=1#/muster",
   "/#/muster"];
 // Alte Routen (bis 1.5) und Gruppen ohne Reiter → erwartete Adresse nach der Weiterleitung (location.replace,
 // kein Verlaufseintrag). Alte Lesezeichen dürfen nie auf einer leeren Seite landen.
@@ -77,6 +80,7 @@ const redirects = {
   "/#/einstellungen": "#/system/einstellungen", "/#/einstellungen?s=gps": "#/system/einstellungen?s=gps",
   "/#/gnss": "#/gps", "/#/gpsquality": "#/gps", "/#/uhr": "#/uhr/qualitaet", "/#/system": "#/system/diagnose",
   "/#/quellen": "#/quellen", "/#/gps": "#/gps", "/#/clients": "#/clients", "/#/hilfe": "#/hilfe", "/#/": "#/",
+  "/#/hilfe/ptp": "#/hilfe/ptp", "/#/hilfe?t=pps": "#/hilfe?t=pps",
   "/#/clients/192.0.2.10/pass": "#/clients/192.0.2.10/pass", "/#/hardware/x?y=1": "#/uhr/hardware/x?y=1",
 };
 const FORBIDDEN = /\d,000(\s|$)|\d\.\d+ (s|ms)\b|\d{1,3}\.\d{3}(,\d+)? (ppm|ppb|ns|µs|ms|s)\b/;
@@ -206,7 +210,8 @@ async function navChecks(browser) {
     await page.evaluate(() => { location.hash = "#/uhr/ptp"; });
     await page.waitForTimeout(1200);
     const ptp = await page.evaluate(() => ({ off: Boolean(document.querySelector("#main .ptp-off")),
-      children: document.getElementById("main").children.length, cards: document.querySelectorAll("#main .card").length }));
+      // Der Verweis „Mehr in der Hilfe“ unter jeder Seite (1.11) zählt nicht als Zeile.
+      children: document.querySelectorAll("#main > :not(.page-help)").length, cards: document.querySelectorAll("#main .card").length }));
     if (!ptp.off || ptp.children !== 1 || ptp.cards) found.push(`${width} PTP aus: ${JSON.stringify(ptp)}`);
     const bar = await page.evaluate(() => {
       const node = document.getElementById("bottombar");
@@ -4938,6 +4943,128 @@ async function setupChecks(browser) {
   return { found, lines };
 }
 
+// Hilfe mit Unterseiten (1.11, helpChecks, einzeln mit TOUR_HELP_ONLY=1) bei 390 und 1440 px: Inhaltsverzeichnis
+// mit allen Themen, Unterseite per Klick, vorheriges/nächstes Thema, „Zurück“ im Browser (Adresse und Ansicht),
+// tiefer Link #/hilfe/gps/pps (Eintrag hervorgehoben und im Bild), alter Link #/hilfe?t=pps, unbekanntes Thema,
+// Suche über alle Themen mit Sprung auf den Treffer, „Mehr in der Hilfe“ aus einem ⓘ, Verweis unter einer Seite,
+// keine Überbreite, Tippflächen der neuen Links ≥ 24 px. Fotos mit TOUR_SHOTS.
+async function helpChecks(browser) {
+  const found = [];
+  const lines = [];
+  for (const width of [390, 1440]) {
+    const height = width === 390 ? 844 : 900;
+    const ctx = await browser.newContext({ viewport: { width, height } });
+    const page = await ctx.newPage();
+    const errors = [];
+    page.on("console", (m) => { if (m.type() === "error") errors.push(m.text()); });
+    page.on("pageerror", (e) => errors.push(e.message));
+    const shot = async (name) => { if (SHOTS) await page.screenshot({ path: `${SHOTS}/hilfe-${name}-${width}.png`, fullPage: false }); };
+    const go = async (hash) => { await page.evaluate((h) => { location.hash = h; }, hash); await page.waitForTimeout(700); };
+    const state = () => page.evaluate(() => {
+      const visible = (n) => Boolean(n && n.offsetParent !== null);
+      const focus = document.querySelector(".gloss.is-focus");
+      const r = focus?.getBoundingClientRect();
+      return { hash: location.hash, toc: document.querySelectorAll(".help-toc a").length,
+        topic: visible(document.querySelector(".help-topic")) ? document.querySelector(".help-topic h2")?.textContent : null,
+        focus: focus ? focus.id : null, focusInView: Boolean(r && r.top >= 0 && r.top < innerHeight),
+        notFound: [...document.querySelectorAll("#main .empty-note")].some((n) => visible(n) && /gibt es nicht/.test(n.textContent)),
+        results: visible(document.querySelector(".help-groups")) ? document.querySelectorAll(".help-groups .gloss").length : 0,
+        overflow: document.documentElement.scrollWidth - innerWidth };
+    });
+    const small = () => page.evaluate(() => [...document.querySelectorAll(".help-toc a, .help-crumbs a, .gloss-link, .help-pager a, .help-see a, .page-help a")]
+      .filter((n) => n.offsetParent !== null).map((n) => ({ t: n.textContent.trim().slice(0, 30), r: n.getBoundingClientRect() }))
+      .filter(({ r }) => r.height < 24 || r.width < 24).map(({ t, r }) => `${t} ${Math.round(r.width)}×${Math.round(r.height)}`));
+    await page.goto(`${BASE}/#/hilfe`, { waitUntil: "load" });
+    await page.waitForTimeout(1200);
+    const topics = await page.evaluate(async () => (await import("/static/js/helpnav.js")).TOPICS.map((t) => t.id));
+    let s = await state();
+    if (s.toc !== topics.length) found.push(`${width} Inhaltsverzeichnis: ${s.toc} Links statt ${topics.length}`);
+    if (s.overflow > 0) found.push(`${width} #/hilfe: Überbreite ${s.overflow} px`);
+    found.push(...(await small()).map((x) => `${width} #/hilfe: Tippfläche zu klein: ${x}`));
+    await shot("inhalt");
+    // Unterseite per Klick, dann nächstes Thema, dann zweimal „Zurück“.
+    await page.click('.help-toc a[href="#/hilfe/betrieb"]');
+    await page.waitForTimeout(700);
+    s = await state();
+    if (s.hash !== "#/hilfe/betrieb" || s.topic !== "Betrieb und Überwachung") found.push(`${width} Klick auf Thema: ${JSON.stringify(s)}`);
+    if (s.overflow > 0) found.push(`${width} #/hilfe/betrieb: Überbreite ${s.overflow} px`);
+    found.push(...(await small()).map((x) => `${width} #/hilfe/betrieb: Tippfläche zu klein: ${x}`));
+    await shot("betrieb");
+    const next = topics[topics.indexOf("betrieb") + 1];
+    await page.click('.help-pager a[rel="next"]');
+    await page.waitForTimeout(700);
+    s = await state();
+    if (s.hash !== `#/hilfe/${next}`) found.push(`${width} nächstes Thema: ${s.hash} statt #/hilfe/${next}`);
+    await page.goBack();
+    await page.waitForTimeout(700);
+    s = await state();
+    if (s.hash !== "#/hilfe/betrieb" || s.topic !== "Betrieb und Überwachung") found.push(`${width} Zurück auf das Thema: ${JSON.stringify(s)}`);
+    await page.goBack();
+    await page.waitForTimeout(700);
+    s = await state();
+    if (s.hash !== "#/hilfe" || s.toc !== topics.length || s.topic) found.push(`${width} Zurück ins Inhaltsverzeichnis: ${JSON.stringify(s)}`);
+    await page.goForward();
+    await page.waitForTimeout(700);
+    s = await state();
+    if (s.hash !== "#/hilfe/betrieb") found.push(`${width} Vor: ${s.hash}`);
+    // Tiefer Link und alter Link.
+    await go("#/hilfe/gps/pps");
+    await page.waitForTimeout(600);
+    s = await state();
+    if (s.topic !== "GPS" || s.focus !== "h-pps" || !s.focusInView) found.push(`${width} tiefer Link #/hilfe/gps/pps: ${JSON.stringify(s)}`);
+    await shot("gps-pps");
+    await go("#/hilfe?t=dhcp42");
+    await page.waitForTimeout(600);
+    s = await state();
+    if (s.hash !== "#/hilfe?t=dhcp42" || s.focus !== "h-dhcp42" || !s.focusInView) found.push(`${width} alter Link #/hilfe?t=dhcp42: ${JSON.stringify(s)}`);
+    await go("#/hilfe/gibtsnicht");
+    s = await state();
+    if (!s.notFound || s.toc !== topics.length) found.push(`${width} unbekanntes Thema: ${JSON.stringify(s)}`);
+    // Suche über alle Themen; ein Treffer springt auf seine Unterseite, die Suche ist danach leer.
+    await go("#/hilfe/betrieb");
+    await page.fill(".help-search", "Falseticker");
+    await page.waitForTimeout(300);
+    s = await state();
+    if (!s.results || s.topic) found.push(`${width} Suche: ${JSON.stringify(s)}`);
+    await shot("suche");
+    const target = await page.getAttribute('.help-groups .gloss-link[href$="/state_falseticker"]', "href");
+    await page.click('.help-groups .gloss-link[href$="/state_falseticker"]');
+    await page.waitForTimeout(900);
+    s = await state();
+    const query = await page.inputValue(".help-search");
+    if (s.hash !== target || s.focus !== "h-state_falseticker" || s.results || query) found.push(`${width} Treffer der Suche: ${JSON.stringify({ ...s, query, target })}`);
+    // „Mehr in der Hilfe“ aus einem ⓘ und der Verweis unter einer Seite.
+    await go("#/quellen");
+    await page.waitForTimeout(800);
+    const more = await page.evaluate(() => {
+      for (const button of document.querySelectorAll("#main button.info")) {
+        button.click();
+        const link = document.querySelector(".popover .popover-more");
+        if (link) return { href: link.getAttribute("href"), text: link.textContent };
+        button.click();
+      }
+      return null;
+    });
+    if (!more || !/^#\/hilfe\/[a-z0-9-]+\/[a-z0-9_]+$/.test(more.href) || !/Mehr in der Hilfe/.test(more.text)) {
+      found.push(`${width} ⓘ ohne tiefen Hilfe-Link: ${JSON.stringify(more)}`);
+    } else {
+      if (width === 390) await shot("popover");
+      await page.click(".popover .popover-more");
+      await page.waitForTimeout(900);
+      s = await state();
+      if (s.hash !== more.href || s.focus !== `h-${more.href.split("/").pop()}` || !s.focusInView) found.push(`${width} ⓘ-Link: ${JSON.stringify({ ...s, href: more.href })}`);
+    }
+    await go("#/uhr/ptp");
+    await page.waitForTimeout(500);
+    const pageLink = await page.evaluate(() => document.querySelector("#main .page-help a")?.getAttribute("href") || null);
+    if (pageLink !== "#/hilfe/ptp") found.push(`${width} Verweis unter #/uhr/ptp: ${pageLink}`);
+    if (errors.length) found.push(`${width} Hilfe Seitenfehler: ${errors.join(" | ")}`);
+    lines.push(`hilfe ${width}: ${found.length ? "Befund" : "ok"}`);
+    await ctx.close();
+  }
+  return { found, lines };
+}
+
 (async () => {
   const browser = await chromium.launch();
   const results = [];
@@ -5008,6 +5135,13 @@ async function setupChecks(browser) {
       process.exitCode = result.found.length ? 1 : 0;
       return;
     }
+    // Hilfe: ohne Assistent – #/hilfe öffnet ihn nie von selbst.
+    if (process.env.TOUR_HELP_ONLY) {
+      const result = await helpChecks(browser);
+      console.log(JSON.stringify(result, null, 1));
+      process.exitCode = result.found.length ? 1 : 0;
+      return;
+    }
     if (process.env.TOUR_CLOCK_ONLY) {
       // Nur die Uhr-Werkstatt (/clock braucht keinen Assistenten).
       const result = await clockChecks(browser);
@@ -5069,6 +5203,9 @@ async function setupChecks(browser) {
     const heroResult = await heroChecks(browser);
     nav.found.push(...heroResult.found);
     nav.lines.push(...heroResult.lines);
+    const helpResult = await helpChecks(browser);
+    nav.found.push(...helpResult.found);
+    nav.lines.push(...helpResult.lines);
     const layoutResult = await layoutFixChecks(browser);
     nav.found.push(...layoutResult.found);
     nav.lines.push(...layoutResult.lines);

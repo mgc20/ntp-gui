@@ -109,6 +109,7 @@ export const HELP_AUTOCAL = {
 };
 
 export const HELP_GROUP_AUTOCAL = {
+  id: "gps-kalibrierung",
   title: "Automatische GPS-Kalibrierung",
   keys: ["autocal_mode", "autocal_phase", "autocal_decision", "autocal_bias", "autocal_threshold", "autocal_reference",
     "autocal_window", "autocal_next", "autocal_step", "autocal_changes", "autocal_rollback"],

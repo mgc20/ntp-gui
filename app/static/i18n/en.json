@@ -225,7 +225,25 @@
       "status": "Overall state as JSON (the same data as the dashboard)",
       "healthz": "Liveness for the container healthcheck (is chronyd running?)",
       "readyz": "Strict readiness: 200 only when synchronised, with a selected source and below the error limit (keepalived, load balancers, uptime monitors)"
-    }
+    },
+    "toc_title": "Contents",
+    "toc_label": "Help topics",
+    "all_topics": "All topics",
+    "crumb_label": "Path in the help",
+    "pager_label": "More topics",
+    "prev": "← {topic}",
+    "next": "{topic} →",
+    "see_also": "See also:",
+    "entry_link": "Link to “{title}”",
+    "not_found": "This help topic does not exist. Here is the table of contents.",
+    "more": "More in the help →",
+    "page_more": "More in the help: {topic} →",
+    "search_placeholder": "Search a term, e.g. stratum, falseticker, PPS …",
+    "search_label": "Search the help",
+    "nothing_found": "Nothing found.",
+    "entries_one": "{count} entry",
+    "entries_other": "{count} entries",
+    "result_topic": "Open topic"
   },
   "pages": {
     "clients": {

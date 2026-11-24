@@ -3,6 +3,7 @@
 import { t as tr } from "../i18n.js";
 import { el, apiPost, isNum, fmtNumber, fmtZoned, serverZone } from "../util.js";
 import { card, infoButton, badge, kv, emptyState, toast, rangePicker } from "../ui.js";
+import { helpHref } from "../helpnav.js";
 
 // Nicht bei jedem Status-Refresh neu aufbauen – Filter, Vorschau und Scrollposition bleiben stehen.
 export const live = false;
@@ -501,7 +502,9 @@ export function render(ctx) {
       infoButton("diag_no_upload", "Nichts wird hochgeladen", { title: "Nichts wird hochgeladen", withHelp: true,
         text: "Was das Gerät verlässt, lädst du selbst herunter – vorher siehst du in der Vorschau genau, was drinsteht." })),
     el("p", { class: "card-sub" }, `${tr("pages.diagnose.troubleshoot_hint")} `,
-      el("a", { href: "#/clients?s=fehlersuche", text: tr("pages.diagnose.troubleshoot_link") }), " ", infoButton("troubleshoot"))),
+      el("a", { href: "#/clients?s=fehlersuche", text: tr("pages.diagnose.troubleshoot_link") }), " · ",
+      // Statt eines ⓘ direkt am Link (dessen Tippfläche überdeckte den Link): Verweis auf den Hilfe-Eintrag.
+      el("a", { href: helpHref("troubleshoot"), text: tr("help.more") }))),
     logCard(state),
     eventsCard(state, system),
     bundleCard(state),

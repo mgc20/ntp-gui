@@ -68,6 +68,7 @@ export const HELP_API = {
 };
 
 export const HELP_GROUP_API = {
+  id: "api",
   title: "API, Schlüssel und Updates",
   keys: ["api_keys", "api_key_scope", "api_key_token", "api_key_used", "api_v1", "instance_id", "metrics_privacy", "settings_notes"],
 };

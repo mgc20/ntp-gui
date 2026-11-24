@@ -100,4 +100,9 @@ Die Adresse wird wie ein Geheimnis behandelt:
   Host und Port.
 - **Diagnosepaket:** nur „gesetzt“.
 
-Prometheus-Metriken gibt es für den Ping bewusst nicht; den Zustand zeigt der Wächter selbst.
+Für Prometheus gibt es nur Zustandswerte ohne Adresse: `ntpgui_heartbeat_enabled`,
+`ntpgui_heartbeat_consecutive_failures`, `ntpgui_heartbeat_last_success_timestamp_seconds` und
+`ntpgui_heartbeat_reported_down` (siehe [Grafana und Prometheus](grafana-prometheus.md)).
+
+Im Dashboard erklärt **Hilfe → Betrieb und Überwachung** (`#/hilfe/betrieb`) den Ping zusammen mit
+`/readyz`, den Betriebsmetriken und der Fehlersuche.

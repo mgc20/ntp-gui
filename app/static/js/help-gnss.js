@@ -289,6 +289,7 @@ export const HELP_GNSS = {
 };
 
 export const HELP_GROUP_GNSS = {
+  id: "gps-empfang",
   title: "GPS ohne PPS, Empfang und Störungen",
   keys: ["gpsq_assessment", "gpsq_fix_share", "gpsq_changes", "gpsq_cn0", "gpsq_used", "gpsq_unstet",
     "gpsq_basis", "gpsq_tips", "gpsq_role", "gpsq_bound", "gpsq_bound_mode", "gpsq_spread", "gpsq_bound_check",

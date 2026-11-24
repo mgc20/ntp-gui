@@ -178,8 +178,11 @@ export const HELP_NOTIFY = {
 };
 
 export const HELP_GROUP_NOTIFY = {
+  id: "benachrichtigungen",
   title: "Benachrichtigungen",
   keys: ["notify", "notify_channel", "notify_types", "notify_target", "notify_secret", "notify_filter", "notify_debounce",
     "notify_rate", "notify_resolved", "notify_enabled", "notify_status", "notify_error", "notify_counts", "notify_retry",
-    "notify_link", "notify_webhook", "notify_apprise", "heartbeat", "heartbeat_mode", "heartbeat_status"],
+    "notify_link", "notify_webhook", "notify_apprise"],
+  // Der Zeitwächter-Ping (Texte oben) steht auf der Hilfe-Unterseite „Betrieb und Überwachung“ (help-betrieb.js).
+  see: ["heartbeat", "ops_overview"],
 };

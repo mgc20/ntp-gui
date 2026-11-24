@@ -2019,6 +2019,13 @@ Hardware, PTP) · System (Reiter Diagnose, Benachrichtigungen, Einstellungen, Ei
 sitzen Übersicht, Quellen, GPS und Clients in einer Leiste unten, der Rest unter „Mehr“. Alte
 Lesezeichen aus 1.5 und früher leiten automatisch auf die neue Adresse weiter.
 
+Die **Hilfe** beginnt mit einem Inhaltsverzeichnis; jedes Thema hat eine eigene Unterseite (`#/hilfe/gps`,
+`#/hilfe/betrieb`) mit Verweisen auf das vorige und nächste Thema, jeder Eintrag eine feste Adresse zum Teilen
+(`#/hilfe/gps/pps`). Dorthin führen „Mehr in der Hilfe →“ in jedem ⓘ und der Verweis unter jeder Seite. Die Suche
+durchsucht alle Themen, „Zurück“ im Browser geht den Weg zurück, und alte Links wie `#/hilfe?t=pps` zeigen weiter
+den Eintrag. Das Thema **Betrieb und Überwachung** fasst Zeitwächter-Ping, Bereitschaft (`/readyz`) und die
+Betriebsmetriken in `/metrics` zusammen und verweist auf die Fehlersuche unter Clients.
+
 Mit der Tastatur: `g o` Übersicht, `g s` Zeitquellen, `g g` GPS, `g c` Clients, `g u` Uhr & Hardware,
 `g y` System, `/` Suche der Seite, `?` Übersicht der Kürzel. In Eingabefeldern sind die Kürzel aus.
 

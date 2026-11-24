@@ -363,6 +363,7 @@ export const HELP_UHR = {
 };
 
 export const HELP_GROUP_UHR = {
+  id: "uhrqualitaet",
   title: "Uhrqualität",
   keys: ["uq_page", "temp_freq", "temp_sensor", "temp_now", "temp_span", "temp_duration", "temp_correlation",
     "temp_scatter", "temp_history", "temp_candidates", "leap_overview", "leap_tai_utc", "leap_last", "leap_next",

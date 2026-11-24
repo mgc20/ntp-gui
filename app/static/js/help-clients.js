@@ -461,6 +461,7 @@ export const HELP_CLIENTS = {
 };
 
 export const HELP_GROUP_CLIENTS = {
+  id: "client-uhren",
   title: "Zeitserver erzwingen und Client-Uhren",
   keys: [
     "clientmon", "clientmon_status", "client_offset", "client_measurable",

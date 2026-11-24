@@ -11,6 +11,7 @@ import { el, rich, apiGet, apiPost } from "../util.js";
 import { card, badge, kv, emptyState, errorState, toast, copyButton } from "../ui.js";
 import { t } from "../i18n.js";
 import { route, SETUP_STEPS, setupHref } from "../routes.js";
+import { helpHref } from "../helpnav.js";
 import { PRESETS, withPreset, previewFile } from "./settings.js";
 import { serverAddress, usableAddress, usableHostname, clientSnippets, snippet, IP_PLACEHOLDER } from "./clients.js";
 import { blankDraft, channelCard, editorCard } from "./notify.js";
@@ -223,7 +224,7 @@ function stepGps(ctx, data, canWrite) {
       st.gps !== undefined ? applyRow(ctx, "gps", changes, canWrite) : null,
       st.gps !== undefined ? previewBox(ctx, "gps") : null,
       el("p", { class: "field-help setup-more" },
-        el("a", { href: "#/hilfe?t=pps", text: t("setup.gps.pps_link") }), " · ",
+        el("a", { href: helpHref("pps"), text: t("setup.gps.pps_link") }), " · ",
         el("a", { href: route("gps"), text: t("setup.gps.page_link") }))),
   ];
 }
@@ -262,8 +263,8 @@ function stepClients(ctx) {
       el("h3", { class: "mini-head", text: t("setup.clients.guides") }),
       el("ul", { class: "setup-links" },
         el("li", {}, el("a", { href: route("clients"), text: t("setup.clients.router") })),
-        el("li", {}, el("a", { href: "#/hilfe?t=dhcp42", text: t("setup.clients.option42") })),
-        el("li", {}, el("a", { href: "#/hilfe?t=enforce", text: t("setup.clients.enforce") })),
+        el("li", {}, el("a", { href: helpHref("dhcp42"), text: t("setup.clients.option42") })),
+        el("li", {}, el("a", { href: helpHref("enforce"), text: t("setup.clients.enforce") })),
         el("li", {}, rich(t("setup.clients.smarthome"))))),
   ];
 }
