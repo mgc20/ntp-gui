@@ -112,15 +112,18 @@ per npm, dazu Chromium (Headless-Shell) mit seinen Systempaketen und `linuxptp`.
    Clients und alle Routen in beiden Themen und Breiten), `seiten`, `zeitleiste`, `statusband`, `hilfe`,
    `korrekturen` (`TOUR_FIXES_ONLY=1`) und `uhr` (`TOUR_CLOCK_BASIC_ONLY=1`: jedes Design mit fester Serverzeit,
    Rotlicht, Kiosk, E-Ink und unzulässige Parameter). Jede Variante hat eine Höchstdauer (`TOUR_CI_LIMIT`,
-   Standard 900 s), der Job eine eigene Zeitgrenze. Der vollständige Rundgang dauert lokal etwa eine halbe Stunde.
+   Standard 900 s): Danach endet sie mit Rückgabecode 124, ihr Testserver wird beendet und die nächste
+   Variante startet. Die Schritte haben eigene Zeitgrenzen, der Job eine größere als ihre Summe. Der
+   vollständige Rundgang dauert lokal etwa eine halbe Stunde.
 
 Die Studiouhr-Prüfungen mit Läufen in Echtzeit (Long Tasks, Bildschleife) und die großen Flächenmatrizen
 (der Rest von `TOUR_CLOCK_ONLY`, `TOUR_LAYOUT_ONLY`, `TOUR_COUNTDOWN_ONLY`, `TOUR_TIMER_ONLY`, `TOUR_EXTRAS_ONLY`, `TOUR_FUN_ONLY`, `TOUR_TC_ONLY`,
 `TOUR_WORLD_ONLY`, `TOUR_STATUS_ONLY`, `TOUR_SIGNAL_ONLY`, `TOUR_LINK_ONLY`) laufen weiter nur lokal: Sie dauern
 lange und hängen von der Rechenleistung des Runners ab.
 
-Bei einem Fehlschlag lädt der Job den Ausgabeordner als Artefakt `rundgang-befund` hoch (7 Tage): die JSON-Ausgabe
-je Variante, Fehlerausgabe, Serverprotokoll und Bildschirmfotos. Alles stammt aus dem Testaufbau mit erfundenen
+Bei einem Fehlschlag oder Abbruch lädt der Job den Ausgabeordner als Artefakt `rundgang-befund` hoch (7 Tage): die
+JSON-Ausgabe je Variante, Fehlerausgabe und Serverprotokoll, dazu Bildschirmfotos der Varianten `routen`,
+`statusband` und `hilfe` (die übrigen Varianten machen keine Fotos). Alles stammt aus dem Testaufbau mit erfundenen
 Werten und Beispieladressen.
 
 Lokal mit denselben Parametern:

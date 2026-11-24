@@ -12,7 +12,7 @@ gehört nicht in die Tabelle.
 |---|---|---|
 | Studiouhr im Chromium-Kiosk, Design Studio | < 10 % CPU | [1](#1-studiouhr-im-chromium-kiosk-cpu) |
 | Studiouhr im Chromium-Kiosk, Design Digital | < 3 % CPU | [1](#1-studiouhr-im-chromium-kiosk-cpu) |
-| Ton auf der Sekunde im Kiosk | ±5 ms um die volle Sekunde (ohne Laufzeit des Lautsprechers) | [2](#2-ton-auf-der-sekunde) |
+| Ton auf der Sekunde im Chromium-Kiosk | ±5 ms um die volle Sekunde (ohne Laufzeit des Lautsprechers) | [2](#2-ton-auf-der-sekunde) |
 | Sicherung mit 30 Tagen Verlauf | < 10 s, andere Anfragen laufen weiter | [3](#3-sicherung-mit-30-tagen-verlauf) |
 | Übersicht | < 500 ms Serverzeit | [4](#4-übersicht-serverzeit) |
 
@@ -23,7 +23,7 @@ Einmal je Messreihe ausfüllen. Alle Befehle laufen auf dem Pi, wenn nicht ander
 | Feld | Befehl | Eintrag |
 |---|---|---|
 | Datum der Messung | – | |
-| ntp-gui-Version | `curl -s http://127.0.0.1:8080/api/v1/status \| grep -o '"version": *"[^"]*"'` (mit Passwort: Schlüssel wie in Abschnitt 4) | |
+| ntp-gui-Version | `curl -s "${AUTH[@]}" http://127.0.0.1:8080/api/v1/status \| grep -o '"version": *"[^"]*"'` (vorher [Schlüssel bereitlegen](#schlüssel-bereitlegen)) | |
 | Modell | `tr -d '\0' < /proc/device-tree/model` | |
 | Arbeitsspeicher | `free -h \| awk '/^Mem/ {print $2}'` | |
 | Betriebssystem | `. /etc/os-release && echo "$PRETTY_NAME"` | |
@@ -35,6 +35,25 @@ Einmal je Messreihe ausfüllen. Alle Befehle laufen auf dem Pi, wenn nicht ander
 | Temperatur vor der Messung | `cat /sys/class/thermal/thermal_zone0/temp` (Milligrad) | |
 | Drosselung | `vcgencmd get_throttled` (0x0 = keine) | |
 | Läuft ntp-gui auf demselben Pi? | – | |
+
+### Schlüssel bereitlegen
+
+Ist ein Passwort gesetzt, brauchen die Abrufe in den Abschnitten 3 und 4 und die Versionsabfrage einen
+API-Schlüssel. Leg ihn in den Einstellungen unter **API-Schlüssel** an – für Abschnitt 3 mit dem Recht
+„lesen und verwalten“, sonst genügt „nur lesen“ – und widerruf ihn nach der Messung. Den Schlüssel nur
+in die Shell geben, nicht in dieses Blatt. Er landet in einer Datei, die nur du lesen kannst, und nicht
+in der Befehlszeile von `curl` (die sehen andere Konten mit `ps`):
+
+```sh
+read -rs KEY   # Schlüssel ntpg_… einfügen, Enter (ohne Passwort: einfach Enter)
+H=$(umask 077; mktemp)
+[ -n "$KEY" ] && printf 'header = "Authorization: Bearer %s"\n' "$KEY" > "$H"
+unset KEY
+AUTH=(-K "$H")
+BASE=http://127.0.0.1:8080
+```
+
+Nach der Messung: `rm -f "$H"; unset H AUTH` und den Schlüssel widerrufen.
 
 Vor jeder CPU-Messung: Pi mindestens 10 min laufen lassen, keine anderen Fenster offen, kein
 Update im Hintergrund (`pgrep -a apt; pgrep -a unattended`).
@@ -64,11 +83,19 @@ Nach dem Start 2 min warten, dann per SSH auf dem Pi messen (der Kiosk bleibt un
 
 ```sh
 # CPU-Zeit aller Chromium-Prozesse über 60 s, in Prozent eines Kerns
-ticks() { awk '{ sub(/^[0-9]+ \([^)]*\) /, ""); s += $12 + $13 } END { print s + 0 }' \
-  $(pgrep -f 'chrom(e|ium)' | sed 's|.*|/proc/&/stat|') 2>/dev/null; }
-a=$(ticks); sleep 60; b=$(ticks)
-awk -v a="$a" -v b="$b" -v hz="$(getconf CLK_TCK)" 'BEGIN { printf "%.1f %%\n", (b - a) * 100 / (60 * hz) }'
+snap() { for p in $(pgrep -f 'chrom(e|ium)'); do
+  awk -v p="$p" '{ sub(/^[0-9]+ \([^)]*\) /, ""); print p, $12 + $13 }' "/proc/$p/stat" 2>/dev/null
+done; }
+snap > cpu-a.txt; sleep 60; snap > cpu-b.txt
+awk -v hz="$(getconf CLK_TCK)" '
+  NR == FNR { a[$1] = $2; na++; next }
+  { nb++ } ($1 in a) { d += $2 - a[$1]; n++ }
+  END { if (n == 0 || n != na || n != nb) print "ungültig: Chromium-Prozesse haben sich geändert oder fehlen"
+        else printf "%.1f %% (%d Prozesse)\n", d * 100 / (60 * hz), n }' cpu-a.txt cpu-b.txt
 ```
+
+Jeder Prozess wird einzeln gelesen; endet oder startet einer während der 60 s, ist der Lauf
+**ungültig** und wird wiederholt (kein Wert eintragen). Läuft gar kein Chromium, ebenfalls.
 
 Dreimal hintereinander messen. Zur Gegenprobe: `top -b -d 60 -n 2 | grep -i chrom` (zweiter Block).
 
@@ -88,9 +115,17 @@ Analogausgang oder zieh eine bekannte Laufzeit ab.
 Du brauchst eine Bezugssekunde, die nicht vom Browser kommt. Am einfachsten ist die PPS-LED des
 GPS-Empfängers am Zeitserver (sie blinkt zur vollen Sekunde) oder ein Funkuhr-/GPS-Sekundenton.
 
-1. Kiosk mit `http://zeitserver.lan:8080/clock?p=studio` (oder dem Design deiner Wahl) starten,
-   einmal tippen bzw. klicken und im Panel **Ton** den Sekundenton einschalten (Browser spielen
-   Ton erst nach einer Bedienung).
+1. Chromium wie in Abschnitt 1 mit `--kiosk` starten, aber mit
+   `http://zeitserver.lan:8080/clock?design=studio&look=studio&fun=0` – also **ohne** `kiosk=1` bzw.
+   das Profil `studio`. Mit `kiosk=1` blendet die Uhr Kopfzeile und Panels aus, und für den Ton gibt
+   es kein Tastenkürzel; dort lässt sich der Sekundenton nicht einschalten. Einmal tippen bzw.
+   klicken, in der Kopfzeile **Ton** öffnen und **Sekundenpiep** einschalten (Browser spielen Ton erst
+   nach einer Bedienung). Maus bzw. Finger danach wegnehmen, bis die Kopfzeile verschwindet.
+
+   Soll die Uhr dabei genau wie im Betrieb mit `kiosk=1` laufen, nimm das Prüfbild:
+   `http://zeitserver.lan:8080/clock?p=studio&test=sync` und dort **Ton-Klick** (siehe
+   [Studiouhr](integrationen/studiouhr.md)). Der Klick wird gleich geplant wie der Sekundenton und
+   fällt auf die wahre Sekunde, unabhängig vom Vorlauf der Fläche. Notier, welchen Weg du genommen hast.
 2. Prüfen, dass die Uhr synchron ist: Zustandszeile ohne „frei“ bzw. „ungewiss“.
 3. Mit einem Handy oder einer Kamera bei mindestens 120 Bildern/s (Zeitlupe) die PPS-LED aufnehmen
    und den Ton gleichzeitig aufzeichnen. Lautsprecher dicht an das Mikrofon, damit die Schalllaufzeit
@@ -103,6 +138,7 @@ GPS-Empfängers am Zeitserver (sie blinkt zur vollen Sekunde) oder ein Funkuhr-/
 
 | Feld | Eintrag |
 |---|---|
+| Weg (Sekundenpiep ohne `kiosk=1` / Prüfbild mit Ton-Klick) | |
 | Bezug (PPS-LED, Funkuhr, …) | |
 | Aufnahmegerät, Bilder/s | |
 | Abstand Lautsprecher–Mikrofon (m) | |
@@ -126,24 +162,24 @@ docker exec ntp-gui ls -l /var/lib/chrony/ntp-gui/ntp-gui.db
 ```
 
 Ist ein Passwort gesetzt, braucht die Sicherung einen API-Schlüssel mit dem Recht „lesen und
-verwalten“. Leg ihn in den Einstellungen unter **API-Schlüssel** an und widerruf ihn nach der Messung.
-Den Schlüssel nur in die Shell geben, nicht in dieses Blatt.
+verwalten“ ([Schlüssel bereitlegen](#schlüssel-bereitlegen)).
 
 ```sh
-read -rs KEY   # Schlüssel ntpg_… einfügen, Enter (ohne Passwort: einfach Enter)
-BASE=http://127.0.0.1:8080
-AUTH=(); [ -n "$KEY" ] && AUTH=(-H "Authorization: Bearer $KEY")
-
-# Gegenprobe im Hintergrund: jede Sekunde /healthz, Antwortzeit in Sekunden
-( for i in $(seq 1 30); do curl -s -o /dev/null -w '%{time_total}\n' "$BASE/healthz"; sleep 1; done ) > healthz.txt &
+# Gegenprobe im Hintergrund: jede Sekunde /healthz, Status und Antwortzeit in Sekunden
+( for i in $(seq 1 30); do curl -s -o /dev/null -w '%{http_code} %{time_total}\n' "$BASE/healthz"; sleep 1; done ) > healthz.txt &
 
 # Sicherung messen (Datei wird verworfen; sie enthält Client-Adressen, nicht weitergeben)
 curl -s -o /dev/null "${AUTH[@]}" \
   -w 'HTTP %{http_code}, %{size_download} Bytes, %{time_total} s\n' "$BASE/api/v1/backup"
 
-wait; sort -n healthz.txt | tail -1   # langsamste /healthz-Antwort währenddessen
-unset KEY
+wait
+grep -vc '^200 ' healthz.txt               # muss 0 sein: jede /healthz-Antwort mit HTTP 200
+sort -k2 -n healthz.txt | tail -1          # langsamste /healthz-Antwort währenddessen
 ```
+
+Zählt nur, wenn die Sicherung mit **HTTP 200** und mehr als 0 Bytes endet. Eine Absage (401/403:
+Schlüssel fehlt oder hat zu wenig Rechte, 429: eine andere Sicherung läuft noch) kommt sofort und ist
+kein Messwert – Ursache beheben und den Lauf wiederholen.
 
 Dreimal messen, zwischen den Läufen 1 min Pause (eine Sicherung gleichzeitig; eine zweite
 Anfrage bekommt sonst eine Absage).
@@ -151,13 +187,14 @@ Anfrage bekommt sonst eine Absage).
 | Feld | Lauf 1 | Lauf 2 | Lauf 3 |
 |---|---|---|---|
 | Größe von `ntp-gui.db` | | | |
+| HTTP-Status der Sicherung | | | |
 | Größe der Sicherung (Bytes) | | | |
 | Dauer der Sicherung (s) | | | |
 | langsamste `/healthz`-Antwort währenddessen (s) | | | |
 
 | Grenze | bestanden? |
 |---|---|
-| jede Sicherung < 10 s, `/healthz` immer < 1 s | |
+| jede Sicherung HTTP 200 mit Größe > 0 und < 10 s, `/healthz` immer HTTP 200 und < 1 s | |
 
 ## 4. Übersicht (Serverzeit)
 
@@ -166,24 +203,25 @@ weniger als 500 ms. Gemessen wird die Zeit bis zum ersten Byte (`time_starttrans
 Pi über 127.0.0.1, also ohne Netz und ohne Browser. Bedingung wie in Abschnitt 3: 30 Tage Verlauf
 vorhanden.
 
-Ist ein Passwort gesetzt, brauchst du einen API-Schlüssel mit dem Recht „nur lesen“ (danach widerrufen):
+Ist ein Passwort gesetzt, brauchst du einen API-Schlüssel mit dem Recht „nur lesen“
+([Schlüssel bereitlegen](#schlüssel-bereitlegen)). Jeder Abruf muss mit HTTP 200 antworten; sonst
+bricht die Schleife ab und die Messung ist **ungültig** (eine Absage mit 401/403 kommt sofort und sähe
+sonst wie eine sehr schnelle Antwort aus).
 
 ```sh
-read -rs KEY   # Schlüssel ntpg_… einfügen, Enter (ohne Passwort: einfach Enter)
-BASE=http://127.0.0.1:8080
-AUTH=(); [ -n "$KEY" ] && AUTH=(-H "Authorization: Bearer $KEY")
 PATHS="status history?range=3600&points=600 timeline timeline/markers?range=2678400 clients/offsets events?limit=5 setup"
 for run in 1 2 3 4 5 6 7 8 9 10; do
   sum=0; max=0
   for p in $PATHS; do
-    s=$(curl -s -o /dev/null "${AUTH[@]}" -w '%{time_starttransfer}' "$BASE/api/v1/$p")
+    r=$(curl -s -o /dev/null "${AUTH[@]}" -w '%{http_code} %{time_starttransfer}' "$BASE/api/v1/$p")
+    code=${r%% *}; s=${r#* }
+    if [ "$code" != 200 ]; then echo "ungültig: HTTP $code für $p – Messung abgebrochen"; break 2; fi
     sum=$(awk -v a="$sum" -v b="$s" 'BEGIN { print a + b }')
     max=$(awk -v a="$max" -v b="$s" 'BEGIN { print (b > a) ? b : a }')
   done
   echo "Lauf $run: Summe ${sum} s, langsamste ${max} s"
   sleep 5
 done
-unset KEY
 ```
 
 Die Liste entspricht den Abrufen der Übersicht in `app/static/js/app.js`, `pages/overview.js` und

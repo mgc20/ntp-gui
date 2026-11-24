@@ -108,7 +108,9 @@ jobs:
   ui:
     name: Oberfläche (Rundgang)
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # Über der Summe der Schritt-Grenzen (10 + 10 + 40) samt Checkout: Zuerst greift eine Schritt-Grenze,
+    # der Job gilt dann als fehlgeschlagen und der Befund wird hochgeladen.
+    timeout-minutes: 70
     permissions:
       contents: read
     env:
@@ -141,10 +143,13 @@ jobs:
         working-directory: tests
         run: python3 -m unittest -v test_darstellung_browser test_live_eingaben test_ptp_gm
       - name: Rundgang
-        timeout-minutes: 30
+        timeout-minutes: 40
+        env:
+          # Höchstdauer je Variante (s); eine hängende Variante beendet nicht den ganzen Schritt.
+          TOUR_CI_LIMIT: "900"
         run: tests/ui/ci.sh 18300 "$RUNNER_TEMP/rundgang"
       - name: Befund hochladen
-        if: failure()
+        if: failure() || cancelled()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: rundgang-befund

@@ -3828,7 +3828,15 @@ def main() -> None:
     # Folgt clientmon_enable/ntp_port ohne Neustart.
     threading.Thread(target=clientmon.watch, args=(settings.values,), daemon=True, name="clientmon-watch").start()
 
+    stopping = threading.Event()
+
     def save_and_exit(*_):
+        # Ein zweites SIGTERM (z. B. an die ganze Prozessgruppe und danach noch einmal an den Server) darf den
+        # laufenden Handler nicht unterbrechen: clientmon.stop() hält eine nicht-reentrante Sperre, ein zweiter
+        # Aufruf würde für immer darauf warten. Daher nur der erste Aufruf speichert und beendet.
+        if stopping.is_set():
+            return
+        stopping.set()
         clientmon.stop()
         HISTORY.save(force=True)
         notify.flush()  # Position der verteilten Ereignisse – sonst kommt Zugestelltes nach dem Neustart doppelt

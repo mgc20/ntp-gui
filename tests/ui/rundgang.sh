@@ -25,13 +25,27 @@ PTP4L_CONF="$TMP/etc/ptp4l.conf" NTPGUI_NTS_CERT_DIR="$TMP/nts-certs" \
 NTPGUI_CHRONYC="$HERE/fake_chronyc.py" WEB_BIND=127.0.0.1 WEB_PORT="$PORT" \
   python3 "$ROOT/app/server.py" >"$TMP/server.log" 2>&1 &
 SERVER=$!
+# Server genau einmal beenden: Bei einer Zeitüberschreitung (ci.sh, timeout) hat er SIGTERM schon mit der
+# Prozessgruppe bekommen (SIGNALED=1) – dann kein zweites TERM. Sonst einmal TERM schicken. Nach einer Frist
+# hart beenden, damit ein hängender Server den Rundgang nicht festhält.
+SIGNALED=0
 cleanup() {
-  kill "$SERVER" 2>/dev/null || true
+  trap - TERM INT
+  if kill -0 "$SERVER" 2>/dev/null; then
+    [ "$SIGNALED" = 1 ] || kill "$SERVER" 2>/dev/null || true
+    for _i in $(seq 1 50); do
+      kill -0 "$SERVER" 2>/dev/null || break
+      sleep 0.2
+    done
+    kill -9 "$SERVER" 2>/dev/null || true
+  fi
   wait "$SERVER" 2>/dev/null || true
   if [ -n "${TOUR_SERVER_LOG:-}" ]; then cp "$TMP/server.log" "$TOUR_SERVER_LOG" 2>/dev/null || true; fi
   rm -rf "$TMP"
 }
 trap cleanup EXIT
+trap 'SIGNALED=1; exit 143' TERM
+trap 'exit 130' INT
 
 for _ in $(seq 1 50); do
   if python3 -c "import urllib.request,sys; urllib.request.urlopen(sys.argv[1], timeout=1)" "http://127.0.0.1:$PORT/" 2>/dev/null; then break; fi
