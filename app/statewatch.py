@@ -20,6 +20,7 @@ alles andere durch den Datenschutzfilter (egress).
 
 from __future__ import annotations
 
+import ipaddress
 import threading
 import time
 from collections import deque
@@ -29,6 +30,19 @@ import numfmt
 
 CONFIRM = 2  # so oft hintereinander muss ein neuer Zustand gemessen werden
 CLIENT_RESTORE_GRACE = 3600.0  # s – übernommene Client-Alarme warten so lange auf die Client-Liste
+
+
+def _plain_ip(value: Any) -> bool:
+    """Nur eine IP-Adresse – gespeicherter Zustand landet später im Titel eines Ereignisses."""
+    if not isinstance(value, str) or not value or len(value) > 45:
+        return False
+    try:
+        ipaddress.ip_address(value)
+    except ValueError:
+        return False
+    return True
+
+
 # Client-Uhren lassen sich von außen auslösen (jede Absenderadresse ein eigenes Gerät): Höchstens so viele
 # Meldungen je Stunde – Alarme und „wieder im Rahmen“ zusammen – gehen an die Benachrichtigungen, weitere
 # nur ins Protokoll (ein still gemeldetes Ende schließt den Betreff im Router ohne Nachricht). Sonst
@@ -246,7 +260,7 @@ class StateWatcher:
         restored = 0
         with self._lock:
             for ip in ips[:5000]:
-                if isinstance(ip, str) and ip and ip not in self._clients:
+                if _plain_ip(ip) and ip not in self._clients:
                     self._clients[ip] = {"alarm": True, "streak": 0, "count": None, "restored_until": until}
                     restored += 1
         return restored

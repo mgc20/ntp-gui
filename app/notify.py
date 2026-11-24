@@ -60,6 +60,7 @@ import math
 import re
 import secrets
 import socket
+import sqlite3
 import ssl
 import sys
 import threading
@@ -162,28 +163,137 @@ def _ensure() -> None:
         _READY["db"] = db
 
 
+_META_TABLE = "CREATE TABLE IF NOT EXISTS notify_meta (key TEXT PRIMARY KEY, value TEXT)"
+
+
+def _meta_retry(action: Callable[[], Any]) -> Any:
+    """Zugriff auf notify_meta; fehlt die Tabelle (beschädigte oder von Hand bearbeitete Datenbank),
+    wird sie einmal neu angelegt und der Zugriff wiederholt."""
+    _ensure()
+    try:
+        return action()
+    except sqlite3.OperationalError as exc:
+        if "no such table" not in str(exc):
+            raise
+        store.execute(_META_TABLE)
+        return action()
+
+
 def meta_get(key: str) -> str | None:
     """Kleiner Schlüssel-Wert-Speicher in notify_meta (Zustand, der einen Neustart überleben soll)."""
     try:
-        _ensure()
-        rows = store.query("SELECT value FROM notify_meta WHERE key=?", (str(key),))
+        rows = _meta_retry(lambda: store.query("SELECT value FROM notify_meta WHERE key=?", (str(key),)))
         return str(rows[0][0]) if rows and rows[0][0] is not None else None
     except Exception:  # noqa: BLE001 – ohne gespeicherten Zustand geht es auch
         return None
 
 
+def meta_keys(prefix: str) -> list[str]:
+    """Schlüssel in notify_meta, die mit prefix beginnen (leer, wenn die Tabelle nicht lesbar ist)."""
+    try:
+        rows = _meta_retry(lambda: store.query("SELECT key FROM notify_meta"))
+        return [str(row[0]) for row in rows if str(row[0]).startswith(prefix)]
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def meta_set(key: str, value: str | None) -> bool:
     """Wert setzen (None: löschen). False, wenn die Datenbank nicht schreibbar ist."""
     try:
-        _ensure()
         if value is None:
-            store.execute("DELETE FROM notify_meta WHERE key=?", (str(key),))
+            _meta_retry(lambda: store.execute("DELETE FROM notify_meta WHERE key=?", (str(key),)))
         else:
-            store.execute("INSERT INTO notify_meta(key, value) VALUES(?, ?) ON CONFLICT(key) "
-                          "DO UPDATE SET value=excluded.value", (str(key), str(value)))
+            _meta_retry(lambda: store.execute("INSERT INTO notify_meta(key, value) VALUES(?, ?) ON CONFLICT(key) "
+                                              "DO UPDATE SET value=excluded.value", (str(key), str(value))))
         return True
     except Exception:  # noqa: BLE001
         return False
+
+
+# ---------------------------------------------------------------------------
+# Zustand über einen Neustart: mit Zeitstempel, damit sehr alter Zustand verfällt
+# ---------------------------------------------------------------------------
+
+STATE_MAX_AGE = 24 * 3600.0   # s – älterer gespeicherter Zustand gilt nicht mehr (Container lange aus)
+STATE_REFRESH = 3600.0        # s – unveränderten Zustand so oft neu stempeln (sonst „altert“ er im Betrieb)
+STATE_FORMAT = 2              # 1.9–1.11 speicherten den Zustand ohne Hülle und ohne Zeitstempel
+
+
+def _canonical(payload: Any) -> str:
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def stamp(payload: Any, now: float | None = None) -> str:
+    """Zustand mit Speicherzeit (Uhrzeit) als JSON-Text für notify_meta."""
+    saved = time.time() if now is None else now
+    return _canonical({"v": STATE_FORMAT, "saved": round(saved, 3), "state": payload})
+
+
+def unstamp(raw: str | None, now: float | None = None, max_age: float = STATE_MAX_AGE) -> tuple[Any, str]:
+    """Gespeicherten Zustand lesen → (Zustand oder None, Grund).
+
+    Grund: „ok“, „alt“ (älteres Format ohne Zeitstempel, wird übernommen), „leer“, „kaputt“ oder
+    „abgelaufen“ (älter als max_age – oder die Uhr steht nach dem Neustart weit vor). Liegt die
+    Speicherzeit in der Zukunft, ist die Uhr nach dem Neustart noch nicht gestellt (Pi ohne RTC):
+    Das Alter ist dann unbekannt, der Zustand gilt – ein kurzer Neustart ist der häufige Fall."""
+    if not raw:
+        return None, "leer"
+    try:
+        data = json.loads(raw)
+    except (ValueError, TypeError, RecursionError):
+        return None, "kaputt"
+    if isinstance(data, dict) and data.get("v") == STATE_FORMAT and "state" in data:
+        saved = _num(data.get("saved"))
+        if saved is None:
+            return None, "kaputt"
+        now = time.time() if now is None else now
+        if now - saved > max_age:
+            return None, "abgelaufen"
+        return data["state"], "ok"
+    if isinstance(data, dict) and "v" in data:
+        return None, "kaputt"   # unbekanntes (neueres) Format: lieber ohne Zustand starten
+    return data, "alt"
+
+
+class SavedState:
+    """Ein Eintrag in notify_meta mit Zeitstempel. save() schreibt nur bei Änderung, beim Neu-Stempeln
+    (alle STATE_REFRESH s) oder mit restamp (Herunterfahren) – das hält die Schreiblast klein."""
+
+    def __init__(self, key: str, clock: Callable[[], float] = time.monotonic,
+                 wall: Callable[[], float] = time.time) -> None:
+        self.key = key
+        self.clock = clock
+        self.wall = wall
+        self.text: str | None = None
+        self.saved_at = float("-inf")
+        self.reason = "leer"
+
+    def load(self) -> Any:
+        """Zustand nach dem Start (None, wenn keiner, kaputt oder abgelaufen; Unbrauchbares wird gelöscht)."""
+        raw = meta_get(self.key)
+        payload, self.reason = unstamp(raw, self.wall())
+        if payload is None and raw:
+            meta_set(self.key, None)
+        if payload is not None:
+            self.text = _canonical(payload)
+            self.saved_at = float("-inf")  # gleich neu stempeln: das Alter zählt ab jetzt neu
+        return payload
+
+    def save(self, payload: Any, restamp: bool = False) -> bool:
+        try:
+            text = _canonical(payload)
+        except (TypeError, ValueError, RecursionError):
+            return False
+        if not restamp and text == self.text and self.clock() - self.saved_at < STATE_REFRESH:
+            return False
+        if meta_set(self.key, stamp(payload, self.wall())):
+            self.text, self.saved_at = text, self.clock()
+            return True
+        return False
+
+    def clear(self) -> None:
+        if meta_set(self.key, None):
+            self.text, self.saved_at = None, float("-inf")
 
 
 class NotifyError(ValueError):
@@ -616,6 +726,24 @@ def _lvl(value: Any) -> str | None:
     return value if value in LEVELS else None
 
 
+def _clean_pending(value: Any) -> dict | None:
+    """Zurückgehaltenes Ereignis aus gespeichertem Zustand – nur bekannte Felder mit passendem Typ."""
+    if not isinstance(value, dict):
+        return None
+    title = value.get("title")
+    if not isinstance(title, str) or not title:
+        return None
+    eid = value.get("id")
+    kind = value.get("kind")
+    data = value.get("data")
+    return {"id": eid if isinstance(eid, int) and not isinstance(eid, bool) else None,
+            "t": _num(value.get("t")),
+            "kind": kind if isinstance(kind, str) and _KIND_RE.match(kind) else "other",
+            "level": _lvl(value.get("level")) or "warn",
+            "title": title[:500],
+            "data": data if isinstance(data, dict) else {}}
+
+
 class ChannelRouter:
     """Regeln eines Kanals. Reine Logik mit eingespeister Uhr – offer() und tick() geben Meldungen zurück.
 
@@ -658,7 +786,7 @@ class ChannelRouter:
             if not isinstance(key, str) or not isinstance(item, dict):
                 continue
             last = _num(item.get("last_sent"))
-            pending = item.get("pending") if isinstance(item.get("pending"), dict) else None
+            pending = _clean_pending(item.get("pending"))
             self.state[key] = {
                 "open_since": _num(item.get("open_since")),
                 "notified": _lvl(item.get("notified")),
@@ -780,7 +908,7 @@ class ChannelRouter:
                 continue
             if st["last_sent"] is not None and now - st["last_sent"] < window:
                 continue
-            since = fmt_duration(self.wall() - st["open_since"])
+            since = fmt_duration(max(0.0, self.wall() - st["open_since"]))
             out.append(self._message(pending, f"{pending.get('title') or ''} (besteht seit {since})",
                                      suppressed=st["suppressed"]))
             level = pending.get("level") or "warn"
@@ -1321,7 +1449,7 @@ class Notifier:
         self._dirty = True
         self.batch_full = False
         self.stopped = False
-        self.states_saved: dict[str, str] = {}
+        self.saved_states: dict[str, SavedState] = {}
         self.states_saved_at = float("-inf")
 
     # --- Steuerung -------------------------------------------------------------
@@ -1353,32 +1481,50 @@ class Notifier:
         """Position und Zustand der Kanäle sofort speichern (SIGTERM): sonst schickt ein Neustart schon
         Zugestelltes noch einmal, und für ein offenes Problem fehlte später „behoben“."""
         self._save_position(force=True)
-        self._save_states(force=True)
+        self._save_states(force=True, restamp=True)
+
+    def _saved(self, cid: str) -> SavedState:
+        if cid not in self.saved_states:
+            self.saved_states[cid] = SavedState(ROUTER_STATE_PREFIX + cid)
+        return self.saved_states[cid]
 
     def _load_state(self, cid: str, router: ChannelRouter) -> None:
-        raw = meta_get(ROUTER_STATE_PREFIX + cid)
-        if not raw:
-            return
-        try:
-            router.import_state(json.loads(raw))
-            self.states_saved[cid] = raw
-        except (ValueError, TypeError, RecursionError):
-            pass
+        """Gespeicherten Zustand übernehmen. Älter als STATE_MAX_AGE (Container lange aus, Kanal lange
+        ausgeschaltet) gilt er nicht mehr: Ein inzwischen still behobenes Problem bliebe sonst offen, und
+        jeder spätere Alarm desselben Betreffs gälte als „schon gemeldet“."""
+        saved = self._saved(cid)
+        payload = saved.load()
+        if payload is not None:
+            try:
+                router.import_state(payload)
+            except (ValueError, TypeError, RecursionError):
+                router.state.clear()
+        if saved.reason in ("abgelaufen", "kaputt"):
+            print(f"[notify] Gespeicherter Zustand eines Kanals verworfen ({saved.reason})", flush=True)
 
-    def _save_states(self, force: bool = False) -> None:
-        """Zustand je Kanal in notify_meta – nur, wenn er sich geändert hat, höchstens alle ROUTER_STATE_EVERY s."""
+    def _save_states(self, force: bool = False, restamp: bool = False) -> None:
+        """Zustand je Kanal in notify_meta – nur, wenn er sich geändert hat (oder zum Neu-Stempeln),
+        höchstens alle ROUTER_STATE_EVERY s. restamp (Herunterfahren): alle mit der jetzigen Zeit."""
         if not force and time.monotonic() - self.states_saved_at < ROUTER_STATE_EVERY:
             return
         with self.lock:
             routers = list(self.routers.items())
         for cid, router in routers:
             try:
-                text = json.dumps(router.export_state(), sort_keys=True, separators=(",", ":"), default=str)
+                state = router.export_state()
             except (TypeError, ValueError):
                 continue
-            if self.states_saved.get(cid) != text and meta_set(ROUTER_STATE_PREFIX + cid, text):
-                self.states_saved[cid] = text
+            self._saved(cid).save(state, restamp=restamp)
         self.states_saved_at = time.monotonic()
+
+    def _forget_states(self, known: set[str]) -> None:
+        """Gespeicherten Zustand von Kanälen löschen, die es nicht mehr gibt (z. B. nach einer
+        Wiederherstellung ohne diesen Kanal). Ausgeschaltete Kanäle behalten ihn (er verfällt mit der Zeit)."""
+        for key in meta_keys(ROUTER_STATE_PREFIX):
+            cid = key[len(ROUTER_STATE_PREFIX):]
+            if cid not in known:
+                meta_set(key, None)
+                self.saved_states.pop(cid, None)
 
     def skip_to(self, event_id: int) -> None:
         """Nach einer Wiederherstellung (backup.py): Ereignisse bis event_id gelten als verteilt – die
@@ -1404,15 +1550,20 @@ class Notifier:
     # --- Kanäle --------------------------------------------------------------
     def _sync_channels(self) -> None:
         try:
-            channels = [c for c in _load_all() if c["enabled"]]
+            every = _load_all()
         except Exception:
             return
+        channels = [c for c in every if c["enabled"]]
+        known = {c["id"] for c in every}
+        self._forget_states(known)
         with self.lock:
             wanted = {c["id"]: c for c in channels}
             for cid in list(self.senders):
                 if cid not in wanted:
                     self.senders.pop(cid).stop()
-                    self.routers.pop(cid, None)
+                    router = self.routers.pop(cid, None)
+                    if router is not None and cid in known:  # ausgeschaltet (nicht gelöscht): Zustand sichern
+                        self._saved(cid).save(router.export_state(), restamp=True)
             for cid, channel in wanted.items():
                 if cid in self.senders:
                     self.senders[cid].channel = channel

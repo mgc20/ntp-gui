@@ -571,20 +571,20 @@ CLIENT_ALARMS_KEY = "client_alarms"   # notify_meta: Adressen mit offenem Client
 _CLIENT_ALARMS: dict = {"loaded": False, "saved": None}
 
 
-def _client_alarms_persist() -> None:
-    """Offene Client-Alarme sichern bzw. nach dem Start einmal übernehmen (notify_meta)."""
+def _client_alarms_persist(restamp: bool = False) -> None:
+    """Offene Client-Alarme sichern bzw. nach dem Start einmal übernehmen (notify_meta, mit Zeitstempel:
+    nach mehr als notify.STATE_MAX_AGE ohne Dashboard gelten sie nicht mehr)."""
+    saved = _CLIENT_ALARMS["saved"]
+    if saved is None:
+        saved = _CLIENT_ALARMS["saved"] = notify.SavedState(CLIENT_ALARMS_KEY)
     if not _CLIENT_ALARMS["loaded"]:
         _CLIENT_ALARMS["loaded"] = True
-        raw = notify.meta_get(CLIENT_ALARMS_KEY)
         try:
-            STATE_WATCH.restore_client_alarms(json.loads(raw) if raw else [])
+            STATE_WATCH.restore_client_alarms(saved.load() or [])
         except (ValueError, TypeError, RecursionError):
             pass
-        _CLIENT_ALARMS["saved"] = raw
         return
-    text = json.dumps(STATE_WATCH.client_alarm_ips(), separators=(",", ":"))
-    if text != _CLIENT_ALARMS["saved"] and notify.meta_set(CLIENT_ALARMS_KEY, text):
-        _CLIENT_ALARMS["saved"] = text
+    saved.save(STATE_WATCH.client_alarm_ips(), restamp=restamp)
 
 
 def client_alarms() -> None:
@@ -3832,6 +3832,9 @@ def main() -> None:
         clientmon.stop()
         HISTORY.save(force=True)
         notify.flush()  # Position der verteilten Ereignisse – sonst kommt Zugestelltes nach dem Neustart doppelt
+        if _CLIENT_ALARMS["loaded"]:
+            _client_alarms_persist(restamp=True)
+        heartbeat.flush()
         raise SystemExit(0)
 
     signal.signal(signal.SIGTERM, save_and_exit)
