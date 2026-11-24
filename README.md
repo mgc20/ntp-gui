@@ -1394,9 +1394,11 @@ Die Kachel **Dienste** der Übersicht zeigt, ob die Zustellung klappt.
 - **Entprellen:** dieselbe Meldung höchstens einmal je N Minuten; „behoben“ kommt mit Dauer,
   „Kritisch“ immer sofort. Offene Probleme, Sperrzeiten, offene Client-Alarme und der Fehlerzähler
   des Zeitwächter-Pings überstehen einen Neustart des Containers (in der Datenbank): Kein doppelter
-  Alarm, und „behoben“ fehlt nicht. War der Container länger als 24 Stunden aus, gilt der gespeicherte
-  Zustand nicht mehr – ein weiter bestehendes Problem wird dann neu gemeldet. Steht die Uhr nach dem
-  Start noch zurück (Pi ohne RTC), gilt er weiter.
+  Alarm, und „behoben“ fehlt nicht. War der Container länger als 21 Stunden aus, gilt der gespeicherte
+  Zustand der Kanäle nicht mehr (der von Zeitwächter-Ping und Client-Alarmen nach 24 Stunden) – ein
+  weiter bestehendes Problem wird dann neu gemeldet. Das gilt auch für Zustand aus einer älteren Version
+  (gemessen an der letzten Meldung darin). Steht die Uhr nach dem Start noch zurück (Pi ohne RTC), gilt
+  er weiter.
 - **Wiederholung:** nach 30 s, 2 min und 10 min, danach verworfen (steht im Ereignisprotokoll).
 - **Limit:** standardmäßig höchstens 30 Nachrichten je Stunde und Kanal. „Kritisch“ zählt nicht
   mit, sondern hat einen eigenen Rahmen von 30 je Stunde – ein voller Kanal verschluckt keinen Ausfall.

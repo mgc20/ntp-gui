@@ -217,6 +217,12 @@ def meta_set(key: str, value: str | None) -> bool:
 STATE_MAX_AGE = 24 * 3600.0   # s – älterer gespeicherter Zustand gilt nicht mehr (Container lange aus)
 STATE_REFRESH = 3600.0        # s – unveränderten Zustand so oft neu stempeln (sonst „altert“ er im Betrieb)
 STATE_FORMAT = 2              # 1.9–1.11 speicherten den Zustand ohne Hülle und ohne Zeitstempel
+# Der Zustand der Kanäle verfällt etwas früher als der Zustand der Quellen (Zeitwächter-Ping, Client-Alarme):
+# Jeder Eintrag wird für sich neu gestempelt (höchstens alle STATE_REFRESH s, der Ping erst nach dem
+# nächsten Versuch, also bis zu STATE_REFRESH + eine Stunde später). Ohne diesen Abstand könnte nach einem
+# Stromausfall die Quelle ihr „gemeldet“ vergessen, während der Kanal den Betreff noch offen hält – dann
+# käme nie „behoben“, und jeder spätere Ausfall gälte als „schon gemeldet“.
+ROUTER_STATE_MAX_AGE = STATE_MAX_AGE - 3 * STATE_REFRESH
 
 
 def _canonical(payload: Any) -> str:
@@ -235,7 +241,9 @@ def unstamp(raw: str | None, now: float | None = None, max_age: float = STATE_MA
     Grund: „ok“, „alt“ (älteres Format ohne Zeitstempel, wird übernommen), „leer“, „kaputt“ oder
     „abgelaufen“ (älter als max_age – oder die Uhr steht nach dem Neustart weit vor). Liegt die
     Speicherzeit in der Zukunft, ist die Uhr nach dem Neustart noch nicht gestellt (Pi ohne RTC):
-    Das Alter ist dann unbekannt, der Zustand gilt – ein kurzer Neustart ist der häufige Fall."""
+    Das Alter ist dann unbekannt, der Zustand gilt – ein kurzer Neustart ist der häufige Fall.
+    Beim älteren Format schätzt die jüngste enthaltene Uhrzeit (last_sent, open_since, Zeit einer
+    zurückgehaltenen Meldung) das Alter; ohne solche Zeiten (Liste der Client-Alarme) wird er übernommen."""
     if not raw:
         return None, "leer"
     try:
@@ -252,7 +260,28 @@ def unstamp(raw: str | None, now: float | None = None, max_age: float = STATE_MA
         return data["state"], "ok"
     if isinstance(data, dict) and "v" in data:
         return None, "kaputt"   # unbekanntes (neueres) Format: lieber ohne Zustand starten
+    newest = _legacy_newest(data)
+    if newest is not None and (time.time() if now is None else now) - newest > max_age:
+        return None, "abgelaufen"
     return data, "alt"
+
+
+def _legacy_newest(data: Any) -> float | None:
+    """Jüngste Uhrzeit im Zustand eines Kanals im älteren Format (None, wenn keine enthalten ist)."""
+    if not isinstance(data, dict):
+        return None
+    newest = None
+    for item in list(data.values())[:ROUTER_STATE_KEYS]:
+        if not isinstance(item, dict):
+            continue
+        pending = item.get("pending")
+        times = [item.get("last_sent"), item.get("open_since"),
+                 pending.get("t") if isinstance(pending, dict) else None]
+        for value in times:
+            value = _num(value)
+            if value is not None and (newest is None or value > newest):
+                newest = value
+    return newest
 
 
 class SavedState:
@@ -260,8 +289,9 @@ class SavedState:
     (alle STATE_REFRESH s) oder mit restamp (Herunterfahren) – das hält die Schreiblast klein."""
 
     def __init__(self, key: str, clock: Callable[[], float] = time.monotonic,
-                 wall: Callable[[], float] = time.time) -> None:
+                 wall: Callable[[], float] = time.time, max_age: float = STATE_MAX_AGE) -> None:
         self.key = key
+        self.max_age = max_age
         self.clock = clock
         self.wall = wall
         self.text: str | None = None
@@ -271,7 +301,7 @@ class SavedState:
     def load(self) -> Any:
         """Zustand nach dem Start (None, wenn keiner, kaputt oder abgelaufen; Unbrauchbares wird gelöscht)."""
         raw = meta_get(self.key)
-        payload, self.reason = unstamp(raw, self.wall())
+        payload, self.reason = unstamp(raw, self.wall(), self.max_age)
         if payload is None and raw:
             meta_set(self.key, None)
         if payload is not None:
@@ -1485,11 +1515,11 @@ class Notifier:
 
     def _saved(self, cid: str) -> SavedState:
         if cid not in self.saved_states:
-            self.saved_states[cid] = SavedState(ROUTER_STATE_PREFIX + cid)
+            self.saved_states[cid] = SavedState(ROUTER_STATE_PREFIX + cid, max_age=ROUTER_STATE_MAX_AGE)
         return self.saved_states[cid]
 
     def _load_state(self, cid: str, router: ChannelRouter) -> None:
-        """Gespeicherten Zustand übernehmen. Älter als STATE_MAX_AGE (Container lange aus, Kanal lange
+        """Gespeicherten Zustand übernehmen. Älter als ROUTER_STATE_MAX_AGE (Container lange aus, Kanal lange
         ausgeschaltet) gilt er nicht mehr: Ein inzwischen still behobenes Problem bliebe sonst offen, und
         jeder spätere Alarm desselben Betreffs gälte als „schon gemeldet“."""
         saved = self._saved(cid)

@@ -87,6 +87,27 @@ class StampTest(unittest.TestCase):
                          ({"gps:fix": {"notified": "warn"}}, "alt"))
         self.assertEqual(notify.unstamp('["192.0.2.1"]'), (["192.0.2.1"], "alt"))
 
+    def test_legacy_format_is_aged_by_its_newest_time(self):
+        """Älteres Format: Die jüngste enthaltene Uhrzeit schätzt das Alter – sehr alter Zustand verfällt."""
+        now = 1_800_000_000.0
+        old = {"gps:fix": {"open_since": now - 90 * DAY, "notified": "warn", "last_sent": now - 90 * DAY},
+               "ntp:quelle": {"open_since": None, "notified": None, "last_sent": now - 30 * DAY}}
+        self.assertEqual(notify.unstamp(json.dumps(old), now=now), (None, "abgelaufen"))
+        recent = dict(old, **{"pps:pps": {"open_since": now - 3600, "notified": "warn", "last_sent": None}})
+        self.assertEqual(notify.unstamp(json.dumps(recent), now=now), (recent, "alt"))
+        held = dict(old, **{"x:y": {"pending": {"t": now - 60, "kind": "x"}}})
+        self.assertEqual(notify.unstamp(json.dumps(held), now=now)[1], "alt")
+        # Uhr steht nach dem Start zurück (Pi ohne RTC): Alter unbekannt, Zustand gilt.
+        self.assertEqual(notify.unstamp(json.dumps(old), now=now - 120 * DAY)[1], "alt")
+        # ohne Zeitangaben (Liste der Client-Alarme, Einträge ohne Zeit): übernommen
+        self.assertEqual(notify.unstamp('{"a:b":{"open_since":null,"last_sent":true}}', now=now)[1], "alt")
+
+    def test_channel_state_expires_before_source_state(self):
+        """Kanäle verfallen früher als die Quellen (die erst nach dem nächsten Ping neu stempeln)."""
+        self.assertLessEqual(notify.ROUTER_STATE_MAX_AGE + notify.STATE_REFRESH + heartbeat.MAX_INTERVAL,
+                             notify.STATE_MAX_AGE)
+        self.assertGreater(notify.ROUTER_STATE_MAX_AGE, 12 * 3600)
+
     def test_broken_values(self):
         for raw in ("nicht json", '{"v":2,"saved":"gestern","state":{}}', '{"v":2,"saved":NaN,"state":{}}',
                     '{"v":3,"saved":1,"state":{}}', "[" * 5000):
@@ -242,6 +263,41 @@ class NotifierRestartTest(_Data):
         self.assertIn("Dauer", self.captured[0]["title"])
         stored = json.loads(notify.meta_get(notify.ROUTER_STATE_PREFIX + self.cid))
         self.assertEqual(stored["v"], notify.STATE_FORMAT)              # neues Format geschrieben
+
+    def test_very_old_legacy_state_is_dropped(self):
+        """Update nach langer Pause: Zustand im älteren Format mit 30 Tage alter Meldung verschluckt nichts."""
+        router = notify.ChannelRouter(notify._load_all()[0])
+        router.offer({"id": 1, "t": time.time(), "kind": "gps", "level": "warn",
+                      "title": "GPS-Fix verloren", "data": {"subject": "fix"}})
+        legacy = router.export_state()
+        for item in legacy.values():
+            item["open_since"] = item["last_sent"] = time.time() - 30 * DAY
+        notify.meta_set(notify.ROUTER_STATE_PREFIX + self.cid, json.dumps(legacy))
+        second = self.restart()
+        self.problem()
+        self.assertTrue(ev_wait(second, 1, self.captured))            # neu gemeldet
+        self.assertEqual(self.captured[0]["title"], "GPS-Fix verloren")
+
+    def test_channel_state_does_not_outlive_heartbeat_state(self):
+        """Stromausfall knapp einen Tag: Der Ping-Zustand (vor 24,5 h gestempelt) ist verfallen. Der Kanal
+        (vor 23,5 h gestempelt) darf den Betreff dann nicht offen halten – sonst wäre jeder spätere Ausfall
+        „schon gemeldet“."""
+        first = self.boot()
+        events.emit("heartbeat", "warn", "Zeitwächter nicht erreichbar", {"subject": "heartbeat", "resolves": False})
+        self.assertTrue(ev_wait(first, 1, self.captured))
+        key = notify.ROUTER_STATE_PREFIX + self.cid
+        notify.meta_set(heartbeat.STATE_KEY, notify.stamp({"failures": 3, "alarmed": True, "target": "0" * 16},
+                                                          now=time.time() - 24.5 * 3600))
+
+        def power_cut():
+            stored = json.loads(notify.meta_get(key))
+            stored["saved"] = time.time() - 23.5 * 3600
+            notify.meta_set(key, json.dumps(stored))
+
+        second = self.restart(power_cut)
+        self.assertIsNone(notify.SavedState(heartbeat.STATE_KEY).load())   # Quelle: verfallen
+        events.emit("heartbeat", "warn", "Zeitwächter nicht erreichbar", {"subject": "heartbeat", "resolves": False})
+        self.assertTrue(ev_wait(second, 2, self.captured))           # neuer Ausfall wird gemeldet
 
     def test_garbage_state_starts_clean(self):
         notify.meta_set(notify.ROUTER_STATE_PREFIX + self.cid, '{"v":2,"saved":1e300,"state":{"x":')
