@@ -103,7 +103,9 @@ Der Rundgang öffnet jede Route bei 1440 und 390 px, hell und dunkel, und meldet
 ## In der CI
 
 Der Job `ui` in `.github/workflows/ci.yml` installiert Playwright in fester Version (`PLAYWRIGHT_VERSION`)
-per npm, dazu Chromium (Headless-Shell) mit seinen Systempaketen und `linuxptp`. Danach:
+per `npm ci --ignore-scripts` aus `tests/ui/package.json` und `tests/ui/package-lock.json` (Versionen und
+Prüfsummen festgelegt; beim Anheben beide Dateien mit `npm install --package-lock-only --ignore-scripts` in
+`tests/ui` neu erzeugen), dazu Chromium (Headless-Shell) mit seinen Systempaketen und `linuxptp`. Danach:
 
 1. die Unittests, die Node mit Playwright oder `ptp4l` brauchen (`test_darstellung_browser`,
    `test_live_eingaben`, `test_ptp_gm`) mit `NTPGUI_WERKZEUGE_PFLICHT=1`: Fehlt ein Werkzeug, scheitern sie,

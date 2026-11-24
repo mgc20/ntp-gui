@@ -223,6 +223,55 @@ STATE_FORMAT = 2              # 1.9–1.11 speicherten den Zustand ohne Hülle u
 # Stromausfall die Quelle ihr „gemeldet“ vergessen, während der Kanal den Betreff noch offen hält – dann
 # käme nie „behoben“, und jeder spätere Ausfall gälte als „schon gemeldet“.
 ROUTER_STATE_MAX_AGE = STATE_MAX_AGE - 3 * STATE_REFRESH
+TARGET_KEY = "target_key"     # notify_meta: lokaler Zufallsschlüssel für die Ziel-Kennungen (target_id)
+
+
+def _target_key() -> bytes | None:
+    """Lokaler Schlüssel der Ziel-Kennungen: beim ersten Bedarf zufällig erzeugt, bleibt in notify_meta (nicht
+    in Sicherungen oder Diagnosepaketen). None, wenn die Datenbank nicht les- oder schreibbar ist."""
+    key = meta_get(TARGET_KEY)
+    if not key:
+        try:
+            _meta_retry(lambda: store.execute("INSERT INTO notify_meta(key, value) VALUES(?, ?) "
+                                              "ON CONFLICT(key) DO NOTHING", (TARGET_KEY, secrets.token_hex(32))))
+        except Exception:  # noqa: BLE001
+            return None
+        key = meta_get(TARGET_KEY)
+    if not key or not re.fullmatch(r"[0-9a-f]{64}", key):
+        return None
+    return bytes.fromhex(key)
+
+
+def target_id(*parts: str) -> str | None:
+    """Kennung eines Ziels (Art, Adresse …) für gespeicherten Zustand: „gleiches Ziel wie vorher?“. Ein HMAC
+    mit dem lokalen Schlüssel – nie die Adresse selbst, und ohne den Schlüssel nicht aus einer vermuteten
+    Adresse nachzurechnen. None, wenn kein Schlüssel verfügbar ist (dann gilt das Ziel als „anders“)."""
+    key = _target_key()
+    if key is None:
+        return None
+    text = "\n".join(str(p) for p in parts).encode("utf-8", "replace")
+    return hmac.new(key, text, hashlib.sha256).hexdigest()[:32]
+
+
+def _channel_target(channel: dict) -> tuple[str, str, str]:
+    """Wohin ein Kanal meldet (Art, Adresse, Thema) – ein anderes Ziel übernimmt keinen alten Zustand."""
+    return (str(channel.get("type") or ""), str(channel.get("url") or ""), str(channel.get("topic") or ""))
+
+
+def _wrap_router_state(channel: dict, state: dict) -> dict:
+    return {"target": target_id("kanal", *_channel_target(channel)), "subjects": state}
+
+
+def _unwrap_router_state(channel: dict, payload: Any) -> tuple[Any, bool]:
+    """Gespeicherten Kanalzustand prüfen → (Betreffe oder None, Ziel passt). Ohne Hülle (älteres Format)
+    wird er übernommen – das Ziel ist dann unbekannt."""
+    if isinstance(payload, dict) and set(payload) == {"target", "subjects"}:
+        stored = payload.get("target")
+        now = target_id("kanal", *_channel_target(channel))
+        if not isinstance(stored, str) or now is None or not hmac.compare_digest(stored, now):
+            return None, False
+        return payload.get("subjects"), True
+    return payload, True
 
 
 def _canonical(payload: Any) -> str:
@@ -1525,6 +1574,11 @@ class Notifier:
         saved = self._saved(cid)
         payload = saved.load()
         if payload is not None:
+            payload, same = _unwrap_router_state(router.channel, payload)
+            if not same:                           # anderes Ziel (geändert, Sicherung zurückgespielt)
+                saved.clear()
+                print("[notify] Gespeicherter Zustand eines Kanals verworfen (anderes Ziel)", flush=True)
+                return
             try:
                 router.import_state(payload)
             except (ValueError, TypeError, RecursionError):
@@ -1541,7 +1595,7 @@ class Notifier:
             routers = list(self.routers.items())
         for cid, router in routers:
             try:
-                state = router.export_state()
+                state = _wrap_router_state(router.channel, router.export_state())
             except (TypeError, ValueError):
                 continue
             self._saved(cid).save(state, restamp=restamp)
@@ -1593,11 +1647,17 @@ class Notifier:
                     self.senders.pop(cid).stop()
                     router = self.routers.pop(cid, None)
                     if router is not None and cid in known:  # ausgeschaltet (nicht gelöscht): Zustand sichern
-                        self._saved(cid).save(router.export_state(), restamp=True)
+                        self._saved(cid).save(_wrap_router_state(router.channel, router.export_state()),
+                                              restamp=True)
             for cid, channel in wanted.items():
                 if cid in self.senders:
                     self.senders[cid].channel = channel
-                    self.routers[cid].configure(channel)
+                    router = self.routers[cid]
+                    if _channel_target(router.channel) != _channel_target(channel):
+                        # Anderes Ziel: offene Betreffe und Sperrzeiten gehören zum alten – neu anfangen.
+                        router.state.clear()
+                        self._saved(cid).clear()
+                    router.configure(channel)
                 else:
                     self.routers[cid] = ChannelRouter(channel)
                     self._load_state(cid, self.routers[cid])

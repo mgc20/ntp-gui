@@ -60,7 +60,8 @@ export const HELP = {
       + "ließe das GPS genauer erscheinen, als es ist. Startet chronyd vorher aus einem anderen Grund neu, "
       + "ist die Änderung damit schon aktiv (nachgesehen in der laufenden chrony.conf; fehlt sie dort, folgt "
       + "ein eigener Neustart). Was du selbst speicherst, zurücknimmst oder zurücksetzt, wirkt "
-      + "sofort und zählt nicht mit. Jede Entscheidung steht im Ereignisprotokoll; für Prometheus gibt es "
+      + "sofort und zählt nicht mit; steht danach ein anderer Wert in den Einstellungen als der angeforderte, "
+      + "verwirft der Koordinator die wartende Änderung (Ereignis „verworfen“). Jede Entscheidung steht im Ereignisprotokoll; für Prometheus gibt es "
       + "`ntpgui_auto_restarts_24h` und `ntpgui_auto_restart_pending`.",
   },
   overview_events: {

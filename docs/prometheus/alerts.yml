@@ -249,3 +249,12 @@ groups:
         annotations:
           summary: "Zeitwächter-Ping erreicht den Wächter nicht ({{ $labels.instance }})"
           description: "Drei oder mehr Pings in Folge schlugen fehl – der eigene Wächter meldet den Server bald als ausgefallen. Adresse und Erreichbarkeit unter „Benachrichtigungen“ prüfen."
+
+      - alert: NtpGuiAutoRestartLimit
+        expr: ntpgui_auto_restart_limited == 1
+        for: 1h
+        labels:
+          severity: info
+        annotations:
+          summary: "Tagesgrenze automatischer Neustarts erreicht ({{ $labels.instance }})"
+          description: "Eine automatische Änderung (GPS-Kalibrierung oder Fehlerschranke) wartet seit über einer Stunde, weil chronyd schon 4-mal in 24 h automatisch neu gestartet wurde – bis dahin gilt die bisherige Einstellung. Meist pendelt etwas: GPS-Seite und Ereignisprotokoll (Art „reload“) prüfen."

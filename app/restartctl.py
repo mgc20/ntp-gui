@@ -33,6 +33,11 @@ Automatiken jetzt hier durch:
     folgt sicherheitshalber ein eigener. Zusätzlich wird nachgesehen, ob der Wert wirklich in der
     laufenden chrony.conf steht (verify); fehlt er, bleibt die Anforderung stehen und es folgt ein
     eigener Neustart.
+  * Zurückgenommen oder überschrieben: Mit der Anforderung merkt sich der Koordinator den angeforderten
+    Wert (wanted: Offset bzw. Delay in s). Steht in den Einstellungen inzwischen ein anderer Wert (du hast
+    „Rückgängig“ gewählt, auf Standard zurückgesetzt oder eine Sicherung zurückgespielt – das startet
+    chronyd ohnehin sofort neu), ist die Anforderung erledigt: Ereignis „verworfen“, kein „übernommen“,
+    kein eigener Neustart.
   * Holdover-Test: Läuft ein Test, wartet die Änderung (Zustand „holdover“, ein Ereignis, nichts
     gezählt); nach dem Test noch COLLECT_SECONDS, damit ein Neustart des Tests sie mitnehmen kann, dann
     ein eigener. Das Anwenden selbst geht weiter über holdover.reload_or_defer – beginnt der Test genau
@@ -41,7 +46,8 @@ Jede Entscheidung (angewandt, Tagesgrenze, mitgenommen, zurückgestellt, nicht a
 Ereignis der Art „reload“. Der Zustand steht in DATA_DIR/neustarts.json (überlebt einen Neustart von ntp-gui), in
 /api/status („restarts“), auf der Übersicht (Kachel Dienste) und in /metrics.
 
-Datenschutz: gespeichert werden nur Zeitpunkte und feste Namen der Automatiken.
+Datenschutz: gespeichert werden nur Zeitpunkte, feste Namen der Automatiken und die angeforderten
+Zahlenwerte (Offset bzw. Delay in Sekunden).
 """
 
 from __future__ import annotations
@@ -113,6 +119,29 @@ def _default_verify(who: str) -> bool | None:
     return None
 
 
+def _default_wanted(who: str) -> float | None:
+    """Der Wert, den die Einstellungen für diese Automatik gerade vorgeben (Offset bzw. Delay in s).
+    None = nicht bestimmbar (dann keine Prüfung auf Rücknahme)."""
+    import autocal
+    import gpsquality
+    import settings
+    cfg = settings.values()
+    if not cfg.get("gps_enable"):
+        return None
+    if who == "autocal":
+        return _num(autocal._cfg_float(cfg, "gps_offset", 0.0))
+    if who == "gps_bound":
+        try:
+            return _num(float(gpsquality.refclock_values(cfg)["delay"]))
+        except Exception:
+            return None
+    return None
+
+
+def _same(a: float, b: float) -> bool:
+    return abs(a - b) <= max(1e-9, abs(b) * 1e-6)
+
+
 def _num(value: Any) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
@@ -126,7 +155,8 @@ class Coordinator:
     def __init__(self, path: Callable[[], str] | None = None, wall: Callable[[], float] = time.time,
                  emit: Callable[..., Any] | None = None, gate: Callable[[Callable[[], Any]], bool] | None = None,
                  started: Callable[[], float | None] | None = None, busy: Callable[[], bool] | None = None,
-                 verify: Callable[[str], bool | None] | None = None) -> None:
+                 verify: Callable[[str], bool | None] | None = None,
+                 wanted: Callable[[str], float | None] | None = None) -> None:
         self.lock = threading.RLock()
         self._path = path or _default_path
         self.wall = wall
@@ -135,6 +165,7 @@ class Coordinator:
         self._started = started or _default_started
         self._busy = busy or _default_busy
         self._verify = verify or _default_verify
+        self._wanted = wanted or _default_wanted
         self.triggers: dict[str, Callable[[], bool] | None] = {"chronyd": None, "all": None}
         self.last_error: str | None = None
 
@@ -167,6 +198,10 @@ class Coordinator:
                     "next_try": _num(pending.get("next_try")), "grow": pending.get("grow") is True,
                     "checked": _num(pending.get("checked")),
                 }
+                want = pending.get("want") if isinstance(pending.get("want"), dict) else {}
+                want = {k: _num(v) for k, v in want.items() if k in who}
+                if any(v is not None for v in want.values()):
+                    state["pending"]["want"] = {k: v for k, v in want.items() if v is not None}
         return state
 
     def _save(self, state: dict) -> None:
@@ -201,6 +236,39 @@ class Coordinator:
             return None
         return result if isinstance(result, bool) else None
 
+    def _current(self, who: str) -> float | None:
+        try:
+            return _num(self._wanted(who))
+        except Exception:
+            return None
+
+    def _superseded(self, pending: dict, who: str) -> bool:
+        """Steht in den Einstellungen inzwischen ein anderer Wert als der angeforderte?"""
+        want = (pending.get("want") or {}).get(who)
+        if want is None:
+            return False
+        now_value = self._current(who)
+        return now_value is not None and not _same(now_value, want)
+
+    def _drop_superseded(self, state: dict, pending: dict, names: list[str]) -> list[str]:
+        """Zurückgenommene bzw. überschriebene Anforderungen verwerfen. Rückgabe: was noch wartet."""
+        gone = [n for n in names if self._superseded(pending, n)]
+        if not gone:
+            return names
+        rest = [n for n in names if n not in gone]
+        self._emit("info", f"Wartende automatische Änderung verworfen: {', '.join(LABELS[n] for n in gone)} – "
+                           "inzwischen von Hand geändert oder zurückgenommen, kein eigener Neustart nötig",
+                   {"who": gone, "decision": "superseded"})
+        if not rest:
+            state["pending"] = None
+        else:
+            pending["who"] = {n: pending["who"][n] for n in rest}
+            pending["want"] = {n: v for n, v in (pending.get("want") or {}).items() if n in rest}
+            if "gps_bound" not in rest:
+                pending["grow"] = False
+        self._save(state)
+        return rest
+
     def _emit(self, level: str, title: str, data: dict) -> None:
         try:
             self._emit_fn("reload", level, title, data)
@@ -230,6 +298,11 @@ class Coordinator:
             pending["last"] = max(now, pending.get("last") or now)
             if pending["who"].get(who) != "all":
                 pending["who"][who] = scope
+            want = self._current(who)                  # der angeforderte Wert (steht schon in den Einstellungen)
+            wants = {k: v for k, v in (pending.get("want") or {}).items() if k != who}
+            if want is not None:
+                wants[who] = want
+            pending["want"] = wants
             if grow and who == "gps_bound":
                 pending["grow"] = True
                 if pending.get("held") == "limit":      # wartet an der Tagesgrenze: gleich neu bewerten
@@ -264,6 +337,10 @@ class Coordinator:
                 self._save(state)
             started = _num(self._started())
             if started is not None and started >= last + TAKE_ALONG_MARGIN and started != pending.get("checked"):
+                names = self._drop_superseded(state, pending, names)
+                if not names:
+                    return {"decision": "superseded", "who": []}
+                labels = [LABELS[n] for n in names]
                 missing = [n for n in names if self._arrived(n) is False]
                 taken = [n for n in names if n not in missing]
                 if taken:
@@ -276,6 +353,7 @@ class Coordinator:
                     return {"decision": "taken_along", "who": names}
                 # Der Neustart hat seine Konfiguration noch vor dieser Änderung erzeugt: eigener Neustart.
                 pending["who"] = {n: pending["who"][n] for n in missing}
+                pending["want"] = {n: v for n, v in (pending.get("want") or {}).items() if n in missing}
                 pending["checked"] = started
                 if "gps_bound" not in missing:
                     pending["grow"] = False
@@ -297,6 +375,10 @@ class Coordinator:
             next_try = pending.get("next_try")
             if next_try is not None and now < next_try and next_try - now <= DAY:
                 return {"decision": "wait", "who": names, "held": pending.get("held")}
+            names = self._drop_superseded(state, pending, names)     # vor Tagesgrenze und eigenem Neustart
+            if not names:
+                return {"decision": "superseded", "who": []}
+            labels = [LABELS[n] for n in names]
             recent = self._recent(state["auto"], now)
             grow = bool(pending.get("grow"))
             beyond = len(recent) >= MAX_PER_DAY

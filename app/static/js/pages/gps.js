@@ -395,8 +395,10 @@ export function delayCell(cfg, system = {}) {
     const time = isNum(wait.next_try) ? fmtZoned(wait.next_try, serverZone(system) ? system : null,
       { hour: "2-digit", minute: "2-digit" }, null, "toLocaleTimeString") : "–";
     const when = tr(`pages.gps.bound_when.${["limit", "holdover", "retry"].includes(wait.state) ? wait.state : "collecting"}`, { time });
-    return el("span", {}, `${text} `, badge(tr("pages.gps.bound_pending",
-      { delay: `${bound.saved} s (± ${fmtSeconds(bound.saved / 2)})`, when }), wait.state === "retry" ? "warn" : "info"));
+    // Kurzes Badge (bricht nicht um), der ganze Satz als umbrechender Text darunter.
+    return el("span", {}, `${text} `, badge(tr("pages.gps.bound_badge"), wait.state === "retry" ? "warn" : "info"),
+      el("span", { class: "kv-note", text: tr("pages.gps.bound_pending",
+        { delay: `${bound.saved} s (± ${fmtSeconds(bound.saved / 2)})`, when }) }));
   }
   return `${configSeconds(cfg.gps_delay)} (eingestellt)`;
 }

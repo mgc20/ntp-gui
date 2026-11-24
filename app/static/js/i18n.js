@@ -160,6 +160,7 @@ export const CORE_DE = {
   // Seiten (T2 „Seiten entschlacken“): kurze Texte, die auch ohne Katalog lesbar sein müssen.
   "pages": {
     "gps": {
+      "bound_badge": "wartet auf Neustart",
       "bound_pending": "gespeichert: {delay} – wird mit dem nächsten Neustart von chronyd aktiv ({when})",
       "bound_when": {
         "collecting": "in Kürze",

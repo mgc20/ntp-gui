@@ -58,13 +58,36 @@ class CiJobTest(unittest.TestCase):
         version = re.search(r'PLAYWRIGHT_VERSION: "([^"]+)"', self.job)
         self.assertIsNotNone(version)
         self.assertRegex(version.group(1), r"^\d+\.\d+\.\d+$")
-        self.assertIn('"playwright@${PLAYWRIGHT_VERSION}"', self.job)
+        self.assertIn("npm ci --prefix", self.job)                   # nur aus dem Lockfile, mit Prüfsummen
+        self.assertNotRegex(self.job, r"(?m)^\s+npm install")              # kein Auflösen ohne Lockfile
+        self.assertIn("tests/ui/package-lock.json", self.job)
         self.assertNotIn("@latest", self.job)
         self.assertIn("--ignore-scripts", self.job)
         self.assertIn('NTPGUI_WERKZEUGE_PFLICHT: "1"', self.job)
         self.assertIn("test_darstellung_browser test_live_eingaben test_ptp_gm", self.job)
         self.assertIn("linuxptp", self.job)
         self.assertIn("tests/ui/ci.sh", self.job)
+
+    def test_lockfile_matches_pinned_version(self):
+        """package.json und package-lock.json in tests/ui legen Playwright mit Prüfsumme fest – dieselbe
+        Version wie PLAYWRIGHT_VERSION und das README."""
+        import json
+        version = re.search(r'PLAYWRIGHT_VERSION: "([^"]+)"', self.job).group(1)
+        package = json.loads((UI / "package.json").read_text(encoding="utf-8"))
+        lock = json.loads((UI / "package-lock.json").read_text(encoding="utf-8"))
+        self.assertTrue(package.get("private"))
+        self.assertEqual(package["dependencies"], {"playwright": version})
+        self.assertEqual(lock["packages"][""]["dependencies"], {"playwright": version})
+        names = {key.split("node_modules/")[-1] for key in lock["packages"] if key}
+        self.assertEqual(names, {"playwright", "playwright-core"})
+        for key, entry in lock["packages"].items():
+            if not key:
+                continue
+            with self.subTest(paket=key):
+                self.assertEqual(entry["version"], version)
+                self.assertRegex(entry["integrity"], r"^sha512-[A-Za-z0-9+/]{86}==$")
+                self.assertTrue(entry["resolved"].startswith("https://registry.npmjs.org/"))
+        self.assertIn(f"playwright@{version}", (UI / "README.md").read_text(encoding="utf-8"))
 
     def test_artifact_only_on_failure(self):
         uses = [USES_RE.match(line).group(1) for line in self.job.splitlines() if USES_RE.match(line)]

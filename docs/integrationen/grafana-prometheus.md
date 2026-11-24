@@ -7,7 +7,8 @@ Dateien:
   Frequenz, Stratum, Quellen, Clients, Anfragen, GPS-Empfang, Temperatur, Schaltsekunden-
   Liste, NTS-Zertifikat und Update-Hinweis, dazu (ab 1.11) Zeilen „Clients und Betrieb“:
   Client-Uhrgüte, Abweichung je Client-Gruppe, Benachrichtigungen, nächtliche Sicherung,
-  Ereignisse, Holdover-Test, GPS-Automatik und Zeitwächter-Ping;
+  Ereignisse, Holdover-Test, GPS-Automatik und Zeitwächter-Ping, ab 1.12 automatische Neustarts
+  von chronyd in 24 h;
 - [`docs/prometheus/alerts.yml`](../prometheus/alerts.yml) – Alarmregeln: chronyd antwortet
   nicht, nicht synchron, keine nutzbare Quelle, Abweichung bzw. Fehlerschranke zu groß, GPS
   ohne Fix > 10 min, PPS weg, Dienst ausgefallen, NTS-Zertifikat läuft ab, Schaltsekunden-Liste
@@ -15,7 +16,8 @@ Dateien:
   fragt nicht mehr (erst nach 24 h ununterbrochenem Mithören), Benachrichtigungskanal stellt
   nicht zu bzw. Warteschlange hängt, nächtliche Sicherung alt oder fehlgeschlagen bzw. seit über
   26 h eingeschaltet, aber noch keine da, kritisches Ereignis, Holdover-Test gescheitert (24 h lang nach dem Testende), GPS-Automatik
-  wartet auf dich, Zeitwächter-Ping scheitert.
+  wartet auf dich, Zeitwächter-Ping scheitert; ab 1.12 Tagesgrenze automatischer Neustarts seit
+  über einer Stunde erreicht (`NtpGuiAutoRestartLimit`, Info).
 
 Ein Test (`tests/test_integrations.py`) prüft, dass jede Metrik aus beiden Dateien wirklich im
 `/metrics`-Output steht – Dashboard und Regeln veralten also nicht still.

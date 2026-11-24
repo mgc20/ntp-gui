@@ -320,7 +320,91 @@ class NotifierRestartTest(_Data):
         notifier.reload()
         notifier.process()
         stored = notify.unstamp(notify.meta_get(notify.ROUTER_STATE_PREFIX + self.cid))[0]
-        self.assertEqual(stored["gps:fix"]["notified"], "warn")
+        self.assertEqual(stored["subjects"]["gps:fix"]["notified"], "warn")
+
+    def open_problem(self):
+        notifier = self.boot()
+        self.problem()
+        self.assertTrue(ev_wait(notifier, 1, self.captured))
+        return notifier
+
+    def test_saved_channel_state_carries_keyed_target(self):
+        self.open_problem()
+        notify.NOTIFIER._save_states(force=True)
+        raw = notify.meta_get(notify.ROUTER_STATE_PREFIX + self.cid)
+        self.assertNotIn("192.168.1.5", raw)
+        stored = notify.unstamp(raw)[0]
+        self.assertEqual(stored["target"], notify.target_id("kanal", "webhook", "http://192.168.1.5/hook", ""))
+
+    def test_target_change_while_enabled_drops_open_subjects(self):
+        """Ziel ändern: Probleme beim neuen Ziel gelten nicht als „schon gemeldet“, kein „behoben“ ohne Alarm."""
+        notifier = self.open_problem()
+        notify.save_channel({"id": self.cid, "name": "Haus", "type": "webhook", "url": "http://192.168.1.6/hook"})
+        notifier.process()
+        self.problem()
+        self.assertTrue(ev_wait(notifier, 2, self.captured))          # neu gemeldet
+        self.assertEqual(self.captured[1]["title"], "GPS-Fix verloren")
+
+    def test_target_change_after_restart_drops_saved_state(self):
+        """Kanal ändert das Ziel, während der Container aus ist (z. B. Sicherung zurückgespielt): nach dem
+        Neustart kein offener Betreff des alten Ziels."""
+        self.open_problem()
+
+        def other_target():
+            store.execute("UPDATE notify_channels SET url=? WHERE id=?", ("http://192.168.1.6/hook", self.cid))
+
+        second = self.restart(other_target)
+        self.fixed()
+        second.process()
+        time.sleep(0.3)
+        self.assertEqual(len(self.captured), 1)                       # kein „behoben“ ohne vorherigen Alarm
+        self.problem()
+        self.assertTrue(ev_wait(second, 2, self.captured))
+        self.assertEqual(self.captured[1]["title"], "GPS-Fix verloren")
+
+    def test_target_change_while_disabled_drops_state_on_enable(self):
+        notifier = self.open_problem()
+        store.execute("UPDATE notify_channels SET enabled=0 WHERE id=?", (self.cid,))
+        notifier.reload()
+        notifier.process()
+        self.assertIsNotNone(notify.meta_get(notify.ROUTER_STATE_PREFIX + self.cid))
+        store.execute("UPDATE notify_channels SET enabled=1, topic=? WHERE id=?", ("anders", self.cid))
+        notifier.reload()
+        notifier.process()
+        self.problem()
+        self.assertTrue(ev_wait(notifier, 2, self.captured))
+
+    def test_same_target_new_secret_keeps_state(self):
+        notifier = self.open_problem()
+        notify.save_channel({"id": self.cid, "name": "Neu", "type": "webhook", "url": "http://192.168.1.5/hook",
+                             "secret": "neues-token"})
+        notifier.process()
+        self.problem()
+        notifier.process()
+        time.sleep(0.3)
+        self.assertEqual(len(self.captured), 1)                       # bleibt „schon gemeldet“
+
+
+class TargetIdTest(_Data):
+    def test_keyed_and_not_derivable_from_address(self):
+        import hashlib
+        url = "https://hc.example.org/ping/abc"
+        first = notify.target_id("ping", "auto", url)
+        self.assertRegex(first, r"^[0-9a-f]{32}$")
+        self.assertEqual(notify.target_id("ping", "auto", url), first)              # stabil
+        self.assertNotEqual(notify.target_id("ping", "get", url), first)
+        plain = hashlib.sha256(f"auto\n{url}".encode()).hexdigest()
+        self.assertFalse(plain.startswith(first[:16]))
+        self.assertNotIn(first, hashlib.sha256(f"ping\nauto\n{url}".encode()).hexdigest())
+        key = notify.meta_get(notify.TARGET_KEY)
+        self.assertRegex(key, r"^[0-9a-f]{64}$")
+        notify.meta_set(notify.TARGET_KEY, None)                                     # anderer Schlüssel
+        self.assertNotEqual(notify.target_id("ping", "auto", url), first)
+
+    def test_without_database_no_id(self):
+        with mock.patch.object(notify, "meta_get", return_value=None), \
+                mock.patch.object(notify, "_meta_retry", side_effect=OSError):
+            self.assertIsNone(notify.target_id("ping", "auto", "https://hc.example.org/x"))
 
 
 class ClientAlarmRestartTest(_Data):
@@ -416,6 +500,27 @@ class HeartbeatRestartTest(_Data):
         raw = notify.meta_get(heartbeat.STATE_KEY)
         self.assertNotIn("hc.example.org", raw)
         self.assertNotIn("abc", raw.replace('"alarmed"', ""))
+
+    def test_unknown_key_counts_as_other_target(self):
+        """Fehlt der lokale Schlüssel (oder ist er ein anderer), gilt das Ziel als „anders“: still schließen."""
+        self.fail_until_alarm(self.make())
+        notify.meta_set(notify.TARGET_KEY, None)
+        ping = self.make(ok=True)
+        ping.tick()
+        self.assertEqual([e[3].get("notify") for e in self.emitted], [False])
+
+    def test_listener_reading_status_does_not_block(self):
+        """Das stille Schließen nach dem Start feuert sein Ereignis außerhalb der Sperre des Pingers."""
+        import threading
+        self.fail_until_alarm(self.make())
+        ping = self.make(url="")
+        seen = []
+        ping.emit = lambda *a: seen.append(ping.status())
+        worker = threading.Thread(target=ping.tick, daemon=True)
+        worker.start()
+        worker.join(5)
+        self.assertFalse(worker.is_alive(), "tick() hängt an der eigenen Sperre")
+        self.assertEqual(len(seen), 1)
 
     def test_switched_off_after_restart_closes_quietly(self):
         self.fail_until_alarm(self.make())

@@ -176,6 +176,13 @@ class MetricsCoverageTest(unittest.TestCase):
                        "ntpgui_gps_fix_mode", "ntpgui_nts_server_cert_days_left", "ntpgui_leapseconds_list_days_left"):
             self.assertIn(needed, used)
 
+    def test_auto_restarts_have_alert_and_panel(self):
+        """1.12: Tagesgrenze automatischer Neustarts als Alarm, Zahl in 24 h als Panel."""
+        alerts = {name for expr in alert_exprs() for name in METRIC_RE.findall(expr)}
+        panels = {name for expr in dashboard_exprs() for name in METRIC_RE.findall(expr)}
+        self.assertIn("ntpgui_auto_restart_limited", alerts)
+        self.assertIn("ntpgui_auto_restarts_24h", panels)
+
     def test_max_error_value(self):
         line = next(l for l in self.text.splitlines() if l.startswith("ntpgui_max_error_seconds "))
         value = float(line.split()[1])

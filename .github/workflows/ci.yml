@@ -114,7 +114,8 @@ jobs:
     permissions:
       contents: read
     env:
-      # Feste Version; lokal mit derselben geprüft. Beim Anheben README in tests/ui mitziehen.
+      # Feste Version; lokal mit derselben geprüft. Beim Anheben tests/ui/package.json, package-lock.json
+      # (npm install --package-lock-only --ignore-scripts in tests/ui) und README in tests/ui mitziehen.
       PLAYWRIGHT_VERSION: "1.63.0"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -131,7 +132,10 @@ jobs:
           node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 20 ? 0 : 1)'
           PW="$RUNNER_TEMP/playwright"
           mkdir -p "$PW"
-          npm install --prefix "$PW" --no-save --no-audit --no-fund --ignore-scripts "playwright@${PLAYWRIGHT_VERSION}"
+          # npm ci: genau die Pakete aus tests/ui/package-lock.json, mit deren Prüfsummen (integrity).
+          cp tests/ui/package.json tests/ui/package-lock.json "$PW/"
+          npm ci --prefix "$PW" --no-audit --no-fund --ignore-scripts
+          test "$(node -p "require('$PW/node_modules/playwright/package.json').version")" = "${PLAYWRIGHT_VERSION}"
           echo "NODE_PATH=$PW/node_modules" >> "$GITHUB_ENV"
           "$PW/node_modules/.bin/playwright" install --with-deps --only-shell chromium
           sudo apt-get update -qq

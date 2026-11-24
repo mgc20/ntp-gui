@@ -261,6 +261,7 @@
   },
   "pages": {
     "gps": {
+      "bound_badge": "waits for restart",
       "bound_pending": "saved: {delay} – takes effect with the next chronyd restart ({when})",
       "bound_when": {
         "collecting": "shortly",

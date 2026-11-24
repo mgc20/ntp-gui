@@ -40,6 +40,7 @@ class Harness(unittest.TestCase):
         self.ok = [True]
         self.busy = [False]                    # Holdover-Test läuft?
         self.arrived = {}                      # who -> True/False/None: steht die Änderung in chrony.conf?
+        self.want = {}                         # who -> Wert, den die Einstellungen gerade vorgeben (None = unbekannt)
         self.file = os.path.join(self.tmp, "data", "neustarts.json")
         self.coord = self.make()
 
@@ -50,7 +51,8 @@ class Harness(unittest.TestCase):
         coord = restartctl.Coordinator(path=lambda: self.file, wall=lambda: self.now[0],
                                        emit=lambda *a: self.events.append(a), gate=gate,
                                        started=lambda: self.started[0], busy=lambda: self.busy[0],
-                                       verify=lambda who: self.arrived.get(who))
+                                       verify=lambda who: self.arrived.get(who),
+                                       wanted=lambda who: self.want.get(who))
         coord.configure(chronyd=lambda: self.fire("chronyd"), full=lambda: self.fire("all"))
         return coord
 
@@ -300,6 +302,68 @@ class TakeAlongTest(Harness):
         self.started[0] = self.now[0]
         self.assertEqual(self.coord.tick()["decision"], "taken_along")
 
+    def test_rollback_with_restart_is_not_reported_as_taken_along(self):
+        """„Rückgängig“ (bzw. Sicherung zurückspielen) startet chronyd sofort neu. Danach stimmt die laufende
+        chrony.conf mit den Einstellungen überein – die Automatik-Änderung ist aber gerade nicht aktiv."""
+        self.want["autocal"] = 0.120
+        self.coord.request("autocal")
+        self.want["autocal"] = 0.100                                # zurückgenommen
+        self.arrived["autocal"] = True                              # Einstellungen == chrony.conf
+        self.now[0] += restartctl.TAKE_ALONG_MARGIN + 5
+        self.started[0] = self.now[0]                               # sofortiger Neustart der Rücknahme
+        self.assertEqual(self.coord.tick()["decision"], "superseded")
+        self.assertEqual([e[3]["decision"] for e in self.events], ["superseded"])
+        self.assertNotIn("übernommen", " ".join(self.titles()))
+        self.assertIn("verworfen", self.titles()[0])
+        self.assertEqual(self.fired, [])
+        self.assertEqual(self.coord.status()["pending_ids"], [])
+        self.assertIsNone(self.coord.waiting("autocal"))
+
+    def test_superseded_part_dropped_rest_taken_along(self):
+        self.want.update(autocal=0.12, gps_bound=0.05)
+        self.coord.request("autocal")
+        self.coord.request("gps_bound", grow=True)
+        self.want["gps_bound"] = 0.2                                # Sicherung brachte eine andere Schranke
+        self.now[0] += restartctl.TAKE_ALONG_MARGIN + 5
+        self.started[0] = self.now[0]
+        self.assertEqual(self.coord.tick(), {"decision": "taken_along", "who": ["autocal"]})
+        self.assertEqual([(e[3]["decision"], e[3]["who"]) for e in self.events],
+                         [("superseded", ["gps_bound"]), ("taken_along", ["autocal"])])
+
+    def test_superseded_without_restart_needs_no_own_restart(self):
+        self.want["gps_bound"] = 0.05
+        self.coord.request("gps_bound")
+        self.want["gps_bound"] = 0.04
+        self.advance(restartctl.COLLECT_SECONDS + 30)
+        self.assertEqual(self.fired, [])
+        self.assertEqual([e[3]["decision"] for e in self.events], ["superseded"])
+
+    def test_same_value_and_new_request_still_apply(self):
+        self.want["autocal"] = 0.12
+        self.coord.request("autocal")
+        self.want["autocal"] = 0.13
+        self.coord.request("autocal")                               # neue Anforderung: neuer Wert gilt
+        self.advance(restartctl.COLLECT_SECONDS + 30)
+        self.assertEqual(len(self.fired), 1)
+        with open(self.file, encoding="utf-8") as handle:
+            self.assertIsNone(json.load(handle)["pending"])
+
+    def test_requested_value_survives_reload(self):
+        self.want["autocal"] = 0.12
+        self.coord.request("autocal")
+        with open(self.file, encoding="utf-8") as handle:
+            self.assertEqual(json.load(handle)["pending"]["want"], {"autocal": 0.12})
+        self.coord = self.make()
+        self.want["autocal"] = 0.0
+        self.advance(restartctl.COLLECT_SECONDS + 30)
+        self.assertEqual(self.fired, [])
+
+    def test_unknown_value_keeps_old_behaviour(self):
+        self.coord.request("autocal")                               # Wert nicht bestimmbar (z. B. GPS aus)
+        self.want["autocal"] = 0.5
+        self.advance(restartctl.COLLECT_SECONDS + 30)
+        self.assertEqual(len(self.fired), 1)
+
     def test_old_restart_is_ignored(self):
         self.started[0] = T0 - 100
         self.coord.request("autocal")
@@ -444,6 +508,17 @@ class AutomaticsWiringTest(unittest.TestCase):
         self.assertEqual((len(self.queued), len(self.direct)), (1, 0))
         gpsquality.reset(gq_cfg(), samples[-1]["t"] + 2)            # „Auf Standard zurücksetzen“
         self.assertEqual((len(self.queued), len(self.direct)), (1, 1))
+
+    def test_default_wanted_reads_settings(self):
+        """Der gemerkte Wert ist der gespeicherte Offset bzw. die Fehlerschranke, die chrony.conf bekäme."""
+        self.assertIsNone(restartctl._default_wanted("autocal"))      # ohne GPS: nicht prüfbar
+        with mock.patch.object(settings, "values", return_value={"gps_enable": True, "gps_offset": 0.125}):
+            self.assertEqual(restartctl._default_wanted("autocal"), 0.125)
+            with mock.patch.object(gpsquality, "refclock_values", return_value={"delay": 0.04}):
+                self.assertEqual(restartctl._default_wanted("gps_bound"), 0.04)
+            with mock.patch.object(gpsquality, "refclock_values", side_effect=ValueError):
+                self.assertIsNone(restartctl._default_wanted("gps_bound"))
+            self.assertIsNone(restartctl._default_wanted("irgendwas"))
 
     def test_without_auto_reload_old_behaviour(self):
         from test_gpsquality import cfg as gq_cfg, vk162_samples
@@ -609,6 +684,7 @@ console.log(JSON.stringify({{
         self.assertIn("wird mit dem nächsten Neustart von chronyd aktiv (Tagesgrenze automatischer Neustarts, frei ab 16:46)",
                       out["limit"])
         self.assertIn("(in Kürze)", out["soon"])
+        self.assertIn("wartet auf Neustart", out["limit"])            # kurzes Badge, der Satz steht darunter
 
 
 try:

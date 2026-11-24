@@ -69,7 +69,9 @@ export const HELP_NOTIFY = {
       + "hinter einer Warnung und auch nicht, wenn zuletzt „behoben“ gemeldet wurde – sonst stünde bei dir „alles gut“, während "
       + "gerade ein Pflichtdienst ausfällt und der Container endet. Offene Probleme und Sperrzeiten stehen in der "
       + "Datenbank: Nach einem Neustart kommt nichts doppelt, und „behoben“ fehlt nicht. War der Container länger als "
-      + "21 Stunden aus, beginnt alles neu – ein weiter bestehendes Problem wird dann noch einmal gemeldet.",
+      + "21 Stunden aus, beginnt alles neu – ein weiter bestehendes Problem wird dann noch einmal gemeldet. "
+      + "Dasselbe gilt, wenn du das Ziel eines Kanals änderst (Art, Adresse oder Thema) oder eine Sicherung mit "
+      + "einem anderen Ziel zurückspielst.",
   },
   notify_rate: {
     title: "Höchstens je Stunde",

@@ -1398,7 +1398,9 @@ Die Kachel **Dienste** der Übersicht zeigt, ob die Zustellung klappt.
   Zustand der Kanäle nicht mehr (der von Zeitwächter-Ping und Client-Alarmen nach 24 Stunden) – ein
   weiter bestehendes Problem wird dann neu gemeldet. Das gilt auch für Zustand aus einer älteren Version
   (gemessen an der letzten Meldung darin). Steht die Uhr nach dem Start noch zurück (Pi ohne RTC), gilt
-  er weiter.
+  er weiter. Ändert sich das Ziel eines Kanals (Art, Adresse oder Thema – auch durch eine zurückgespielte
+  Sicherung), beginnt sein Zustand neu; ebenso der des Zeitwächter-Pings bei einer neuen Adresse. Gespeichert
+  wird dafür nie die Adresse, sondern eine Kennung mit einem lokalen Zufallsschlüssel.
 - **Wiederholung:** nach 30 s, 2 min und 10 min, danach verworfen (steht im Ereignisprotokoll).
 - **Limit:** standardmäßig höchstens 30 Nachrichten je Stunde und Kanal. „Kritisch“ zählt nicht
   mit, sondern hat einen eigenen Rahmen von 30 je Stunde – ein voller Kanal verschluckt keinen Ausfall.
@@ -2171,7 +2173,8 @@ sonst hielte chronyd das GPS bis zu einem Tag für genauer, als es ist. Startet 
 einem anderen Grund neu, ist die Änderung damit schon aktiv; ob sie wirklich in der laufenden
 `chrony.conf` steht, wird nachgesehen – sonst folgt ein eigener Neustart. Was du selbst
 auslöst (Speichern, Sicherung zurückspielen, „Rückgängig“, „Auf Standard zurücksetzen“), wirkt
-wie bisher sofort und zählt nicht mit; erneuertes NTS-Zertifikat und Gerätewechsel behandelt
+wie bisher sofort und zählt nicht mit; steht danach ein anderer Wert in den Einstellungen als der
+angeforderte, ist die wartende Änderung verworfen (Ereignis „verworfen“, kein „übernommen“); erneuertes NTS-Zertifikat und Gerätewechsel behandelt
 weiter der Supervisor. Jede Entscheidung steht im Ereignisprotokoll, der Zustand in der Karte
 **Dienste** (Zeile „Automatische Neustarts“, mit GPS) und in `ntpgui_auto_restarts_24h`,
 `ntpgui_auto_restart_limit`, `ntpgui_auto_restart_pending` und `ntpgui_auto_restart_limited`.

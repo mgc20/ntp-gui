@@ -27,7 +27,7 @@ Ohne Adresse: keine Verbindung, keine DNS-Abfrage (tests/test_heartbeat.py mit S
 
 from __future__ import annotations
 
-import hashlib
+import hmac
 import threading
 import time
 import urllib.error
@@ -250,30 +250,36 @@ class Pinger:
         return now - self.last_mono >= cfg["interval"]
 
     @staticmethod
-    def _target_id(url: str, mode: str) -> str:
-        """Kennung des Ziels für den gespeicherten Zustand – nie die Adresse selbst (sie enthält den Schlüssel)."""
-        return hashlib.sha256(f"{mode}\n{url}".encode("utf-8", "replace")).hexdigest()[:16]
+    def _target_id(url: str, mode: str) -> str | None:
+        """Kennung des Ziels für den gespeicherten Zustand – nie die Adresse selbst (sie enthält den Schlüssel
+        des Wächters), sondern ein HMAC mit dem lokalen Schlüssel (notify.target_id). None: kein Schlüssel."""
+        return notify.target_id("ping", mode, url)
 
-    def _restore(self, cfg: dict | None) -> None:
-        """Einmal nach dem Start: Fehlerzähler und „gemeldet“ übernehmen, wenn das Ziel gleich geblieben ist.
-        Ist der Ping inzwischen aus oder das Ziel ein anderes, wird ein gemeldetes Problem still geschlossen."""
+    def _restore(self, cfg: dict | None) -> str | None:
+        """Einmal nach dem Start (unter self.lock): Fehlerzähler und „gemeldet“ übernehmen, wenn das Ziel gleich
+        geblieben ist. Ist der Ping inzwischen aus oder das Ziel ein anderes, gibt es den Grund zum stillen
+        Schließen zurück ("" = nur den gespeicherten Zustand löschen) – Ereignis und Löschen macht der Aufrufer
+        erst nach dem Freigeben der Sperre (ein Hörer des Ereignisses darf status() lesen). None: nichts zu tun."""
         self.restored = True
         try:
             payload = self.saved.load()
         except Exception:  # noqa: BLE001 – ohne gespeicherten Zustand geht es auch
-            return
+            return None
         if not isinstance(payload, dict):
-            return
+            return None
         failures = payload.get("failures")
         failures = failures if isinstance(failures, int) and not isinstance(failures, bool) else 0
         alarmed = payload.get("alarmed") is True
-        if cfg is not None and payload.get("target") == self._target_id(cfg["url"], cfg["mode"]):
-            self.target = (cfg["url"], cfg["mode"])
-            self.result.update(failures=max(0, min(10 ** 6, failures)), alarmed=alarmed)
-            return
+        stored = payload.get("target")
+        if cfg is not None and isinstance(stored, str):
+            now = self._target_id(cfg["url"], cfg["mode"])
+            if now is not None and hmac.compare_digest(stored, now):
+                self.target = (cfg["url"], cfg["mode"])
+                self.result.update(failures=max(0, min(10 ** 6, failures)), alarmed=alarmed)
+                return None
         if alarmed:
-            self._close_quietly("Zeitwächter-Ping ausgeschaltet" if cfg is None else "Wächter-Adresse geändert")
-        self._clear_saved()
+            return "Zeitwächter-Ping ausgeschaltet" if cfg is None else "Wächter-Adresse geändert"
+        return ""
 
     def _close_quietly(self, why: str) -> None:
         """Gemeldetes „nicht erreichbar“ ohne Benachrichtigung schließen (Ping aus, anderes Ziel)."""
@@ -298,6 +304,8 @@ class Pinger:
         if target is None:
             return
         payload["target"] = self._target_id(*target)
+        if payload["target"] is None:            # ohne Schlüssel keine Kennung: dann lieber nichts sichern
+            return
         try:
             self.saved.save(payload, restamp=restamp)
         except Exception:  # noqa: BLE001
@@ -306,9 +314,14 @@ class Pinger:
     def tick(self, force: bool = False) -> bool:
         """Pingt, wenn eingeschaltet und fällig (force: sofort). True, wenn eine Anfrage versucht wurde."""
         cfg = self._config()
+        close = None
         if not self.restored:
             with self.lock:
-                self._restore(cfg)
+                close = self._restore(cfg)
+        if close is not None:
+            if close:
+                self._close_quietly(close)
+            self._clear_saved()
         close = None
         with self.lock:
             if cfg is None:
