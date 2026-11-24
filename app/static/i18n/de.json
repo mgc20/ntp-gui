@@ -447,7 +447,7 @@
     },
     "heartbeat": {
       "title": "Zeitwächter-Ping",
-      "sub": "Ein Lebenszeichen an deinen eigenen Wächter (Uptime Kuma Push, Healthchecks): Fällt dieser Server ganz aus – Rechner aus, Container weg, Strom weg –, merkt es der Wächter, auch wenn hier niemand mehr eine Nachricht schicken kann. Bei kritischem Zustand meldet der Ping „ausgefallen“.",
+      "sub": "Ein Lebenszeichen an deinen eigenen Wächter (Uptime Kuma Push, Healthchecks): Fällt dieser Server ganz aus, merkt es der Wächter. Das gilt auch, wenn Rechner, Container oder Strom weg sind und hier niemand mehr eine Nachricht schicken kann. Bei kritischem Zustand meldet der Ping „ausgefallen“.",
       "off": "Aus – ohne Wächter-Adresse verlässt nichts den Server.",
       "never": "noch keiner",
       "interval": "alle {seconds} s",

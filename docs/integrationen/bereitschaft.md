@@ -39,7 +39,9 @@ keine Messwerte, keine Quellen, keine Grenze. chronyd wird dafür höchstens all
 egal wie viele Anfragen kommen. `/healthz` bleibt unverändert.
 
 Auf einem Server im Internet (siehe [vps.md](vps.md)) ist `/readyz` damit wie `/healthz` offen: Wer
-den Port erreicht, erfährt, ob der Server synchron ist – mehr nicht. Wer das nicht möchte, gibt den
+den Port erreicht, erfährt, ob chronyd läuft, ob der Server synchron ist, ob gerade eine Quelle
+ausgewählt ist (also auch, ob Holdover oder ein Holdover-Test läuft) und ob die Fehlerschranke im
+Rahmen liegt – keine Zahlen, keine Quellen, keine Grenze. Wer das nicht möchte, gibt den
 Pfad im Reverse Proxy nicht nach außen frei und fragt ihn nur lokal oder im eigenen Netz ab.
 
 ## keepalived (`track_script`)

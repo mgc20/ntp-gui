@@ -447,7 +447,7 @@
     },
     "heartbeat": {
       "title": "Watchdog ping",
-      "sub": "A sign of life sent to your own watchdog (Uptime Kuma push, Healthchecks): if this server fails completely – machine off, container gone, power cut – the watchdog notices, even though nothing here can send a message any more. In a critical state the ping reports “down”.",
+      "sub": "A sign of life sent to your own watchdog (Uptime Kuma push, Healthchecks): if this server fails completely, the watchdog notices. That holds even when the machine, container or power is gone and nothing here can send a message any more. In a critical state the ping reports “down”.",
       "off": "Off – without a watchdog address nothing leaves the server.",
       "never": "none yet",
       "interval": "every {seconds} s",
