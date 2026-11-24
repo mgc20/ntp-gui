@@ -519,7 +519,26 @@ def delete_channel(channel_id: str) -> bool:
     return bool(removed)
 
 
-def _record(channel_id: str, ok: bool, error: str | None = None, dropped: int = 0, attempt: bool = True) -> None:
+# Zustellungen je Kanal-Art seit dem Start (ntpgui_notify_*_total). Nur die Art als Label – nie Kennung,
+# Name oder Adresse eines Kanals. Im Speicher, damit gelöschte Kanäle die Summe nicht schrumpfen lassen.
+_TALLY: dict[str, dict[str, int]] = {}
+_TALLY_LOCK = threading.Lock()
+
+
+def _tally(kind: str | None, ok: bool, dropped: int, attempt: bool) -> None:
+    if kind not in CHANNEL_TYPES:
+        return
+    with _TALLY_LOCK:
+        row = _TALLY.setdefault(kind, {"ok": 0, "failed": 0, "dropped": 0})
+        if attempt:
+            row["ok" if ok else "failed"] += 1
+        if dropped:
+            row["dropped"] += int(dropped)
+
+
+def _record(channel_id: str, ok: bool, error: str | None = None, dropped: int = 0, attempt: bool = True,
+            kind: str | None = None) -> None:
+    _tally(kind, ok, dropped, attempt)
     now = time.time()
     try:
         _ensure()
@@ -1203,7 +1222,7 @@ class _Sender:
         with self.cond:
             if len(self.queue) >= QUEUE_MAX:
                 self.queue.popleft()
-                _record(self.channel["id"], True, dropped=1, attempt=False)
+                _record(self.channel["id"], True, dropped=1, attempt=False, kind=self.channel.get("type"))
             msg.setdefault("attempt", 0)
             msg.setdefault("due", 0.0)
             self.queue.append(msg)
@@ -1248,7 +1267,7 @@ class _Sender:
                 return
             channel = self.channel
             if not msg.get("attempt") and not self._rate_ok(msg):
-                _record(channel["id"], True, dropped=1, attempt=False)
+                _record(channel["id"], True, dropped=1, attempt=False, kind=channel.get("type"))
                 if self.limit_noted is None or time.monotonic() - self.limit_noted > 3600:
                     self.limit_noted = time.monotonic()
                     events.emit("notify", "warn", f"Benachrichtigungen über Kanal {_label(channel)} gedrosselt: "
@@ -1258,7 +1277,7 @@ class _Sender:
             try:
                 clean = outgoing(msg)
             except egress.NotifyLeak as exc:
-                _record(channel["id"], False, str(exc))
+                _record(channel["id"], False, str(exc), kind=channel.get("type"))
                 events.emit("notify", "warn", f"Benachrichtigung über Kanal {_label(channel)} zurückgehalten: {exc}",
                             {"channel": channel["id"], "reason": "filter"})
                 continue
@@ -1267,7 +1286,7 @@ class _Sender:
             try:
                 self.notifier.deliver(channel, clean)
             except DeliveryError as exc:
-                _record(channel["id"], False, str(exc))
+                _record(channel["id"], False, str(exc), kind=channel.get("type"))
                 attempt = int(msg.get("attempt", 0))
                 if attempt < len(RETRY_DELAYS) and not self.stopped:
                     msg["attempt"] = attempt + 1
@@ -1275,12 +1294,12 @@ class _Sender:
                     with self.cond:
                         self.queue.append(msg)
                 else:
-                    _record(channel["id"], True, dropped=1, attempt=False)
+                    _record(channel["id"], True, dropped=1, attempt=False, kind=channel.get("type"))
                     events.emit("notify", "warn", f"Benachrichtigung über Kanal {_label(channel)} verworfen "
                                 f"nach {len(RETRY_DELAYS) + 1} Versuchen: {exc}",
                                 {"channel": channel["id"], "reason": "retries"})
                 continue
-            _record(channel["id"], True)
+            _record(channel["id"], True, kind=channel.get("type"))
 
     def queued(self) -> int:
         with self.cond:
@@ -1524,9 +1543,9 @@ def send_test(channel_id: str) -> dict:
         clean = outgoing(msg)
         NOTIFIER.deliver(channel, clean)
     except (DeliveryError, egress.NotifyLeak) as exc:
-        _record(channel["id"], False, str(exc))
+        _record(channel["id"], False, str(exc), kind=channel.get("type"))
         return {"ok": False, "error": textsafe.clean(exc, 200), "status": status_of(get_channel(channel["id"]) or channel)}
-    _record(channel["id"], True)
+    _record(channel["id"], True, kind=channel.get("type"))
     return {"ok": True, "status": status_of(get_channel(channel["id"]) or channel)}
 
 
@@ -1563,6 +1582,34 @@ def api_status() -> dict:
     return {"channels": out, "running": NOTIFIER.running()}
 
 
+def metrics_summary() -> dict[str, dict[str, int]]:
+    """Für /metrics: Summen je Kanal-Art (webhook, ntfy, gotify, apprise) – konfigurierte und eingeschaltete
+    Kanäle, eingeschaltete mit letztem Zustellversuch fehlgeschlagen, Warteschlange und die Zähler seit dem
+    Start. Keine Kennung, kein Name, keine Adresse."""
+    out = {kind: {"channels": 0, "enabled": 0, "failing": 0, "queued": 0, "ok": 0, "failed": 0, "dropped": 0}
+           for kind in CHANNEL_TYPES}
+    try:
+        rows = _load_all()
+    except Exception:
+        rows = []
+    for channel in rows:
+        row = out.get(channel.get("type"))
+        if row is None:
+            continue
+        state = status_of(channel)["state"]
+        row["channels"] += 1
+        if channel.get("enabled"):
+            row["enabled"] += 1
+            row["queued"] += NOTIFIER.queued(channel["id"])
+            if state == "error":
+                row["failing"] += 1
+    with _TALLY_LOCK:
+        for kind, counts in _TALLY.items():
+            if kind in out:
+                out[kind].update(counts)
+    return out
+
+
 # Für Tests: Zustand zurücksetzen.
 def _reset_for_tests() -> None:
     global NOTIFIER
@@ -1574,3 +1621,5 @@ def _reset_for_tests() -> None:
         _TEST_LAST.clear()
     _READY["db"] = None
     _KNOWN.update(t=0.0, ok=False, names=[], values={})
+    with _TALLY_LOCK:
+        _TALLY.clear()

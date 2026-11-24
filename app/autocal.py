@@ -1354,6 +1354,37 @@ def _plan(cfg: dict, mode: str, phase: dict, manual: dict | None, fast: bool,
     return head + phase["text"] + " " + how + tail
 
 
+PHASE_KEYS = tuple(PHASE_TONES)
+
+
+def metrics_state(cfg: dict, now: float | None = None, file: str | None = None) -> dict:
+    """Für /metrics: Modus, Phase und letzte Änderung der GPS-Automatik – nur aus dem gespeicherten Stand
+    (rechnet nie neu, liest keinen Verlauf). Ohne gespeicherte Entscheidung gilt die Phase „wartet“."""
+    now = time.time() if now is None else now
+    mode = _mode(cfg)
+    with _LOCK:
+        state = load(file)
+    decision = state.get("last_decision")
+    if mode == "off":
+        phase = "off"
+    elif not isinstance(decision, dict):
+        phase = "waiting"
+    else:
+        last_tick = _num(state.get("last_tick"))
+        try:
+            phase = _phase(cfg, mode, decision, state.get("observed") or {}, fast_allowed(cfg),
+                           (last_tick + TICK_INTERVAL) if last_tick is not None else None, now,
+                           _last_auto_event(state))["key"]
+        except Exception:
+            phase = "waiting"
+    if phase not in PHASE_TONES:
+        phase = "waiting"
+    times = [_num(c.get("t")) for c in state.get("changes") or [] if c.get("kind") in {"auto", "rollback"}]
+    times = [t for t in times if t is not None]
+    return {"mode": mode, "phase": phase, "active_changes": len(_active_auto(state)),
+            "last_change": max(times) if times else None}
+
+
 def api_status(cfg: dict | None = None, now: float | None = None, fresh: bool = False,
                deps: dict | None = None, file: str | None = None) -> dict:
     """Alles für die Kalibrierkarte.

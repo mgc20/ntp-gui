@@ -46,9 +46,18 @@ GPS = {"enabled": True, "running": True, "mode": 3, "satellites_used": 9, "satel
 PTP = {"enabled": True, "running": True, "offset_ns": 12, "meanPathDelay": 800, "stepsRemoved": 1}
 SERVICES = {"chronyd": {"state": "running", "restarts": 0}, "gpsd": {"state": "running", "restarts": 1}}
 REPORT = {"pps": [{"dev": "/dev/pps0", "state": "live"}], "matrix": [{"key": "gps_pps", "status": "ok"}]}
+NOW = time.time()
+CLIENTS = {"192.168.1.5": {"last_seen": NOW - 60, "requests": 10, "measurable": True, "ewma": 0.002,
+                           "state": "ok"},
+           "10.9.9.9": {"last_seen": NOW - 120, "requests": 4, "measurable": False}}
+GROUPS = [{"id": 1, "name": "Kameras", "network": "192.168.1.0/24"}]
+QUALITIES = {"192.168.1.5": {"score": 90}}
+HOLDOVER_LAST = {"outcome": "done", "deviation_ms": 1.5, "duration_s": 3600, "drift_ppm": 0.2,
+                 "ended": NOW - 600, "include_network": True}
+VALUES = settings.values
 
 
-def full_metrics() -> str:
+def full_metrics(extra: dict | None = None) -> str:
     tmp = tempfile.mkdtemp()
     saved = settings.DATA_DIR
     settings.DATA_DIR = tmp
@@ -76,6 +85,23 @@ def full_metrics() -> str:
                               return_value=("list", str(FIXTURES / "leap-seconds.list"))),
             mock.patch.object(server.hardware, "_REPORT", REPORT, create=True),
             mock.patch.object(updatecheck, "CHECKER", check),
+            # 1.11: Betriebsmetriken (opsmetrics) – Clients mit Gruppe, Sicherung, Holdover, Automatik, Ping
+            mock.patch.object(server.clientmon, "status", return_value={"available": True, "running": True,
+                                                                        "clients": {}, "since": time.time()}),
+            mock.patch.object(server.clientmon, "private_snapshot", return_value=CLIENTS),
+            mock.patch.object(server.clients3, "groups", return_value=GROUPS),
+            mock.patch.object(server.clients3, "rules", return_value={}),
+            mock.patch.object(server.clients3, "quality_all", return_value=QUALITIES),
+            mock.patch.object(server.backup, "nightly_metrics", return_value={
+                "enabled": True, "stored": 3, "age": 7200.0, "failed": False}),
+            mock.patch.object(server.holdover.TEST, "last_result", return_value=HOLDOVER_LAST),
+            mock.patch.object(server.autocal, "metrics_state", return_value={
+                "mode": "auto", "phase": "calibrated", "active_changes": 1, "last_change": 1.7e9}),
+            mock.patch.object(server.gpsquality, "overview", return_value={"level": "green", "stability": "stabil"}),
+            mock.patch.object(server.heartbeat, "status", return_value={
+                "enabled": True, "failures": 0, "last_ok": time.time(), "last_state": "up"}),
+            mock.patch.object(settings, "values", side_effect=lambda *a, **k: dict(VALUES(*a, **k), gps_enable=True,
+                                                                       **(extra or {}))),
         ]
         if hasattr(server.hardware, "cached_report"):
             patches.append(mock.patch.object(server.hardware, "cached_report", return_value=REPORT))
@@ -182,7 +208,8 @@ class DashboardShapeTest(unittest.TestCase):
         ids = [p["id"] for p in self.data["panels"]]
         self.assertEqual(len(ids), len(set(ids)))
         titles = {p["title"] for p in self.data["panels"]}
-        for title in ("Offset", "Max. Fehler", "Frequenz", "Stratum", "Quellen", "GPS-Satelliten", "Temperatur"):
+        for title in ("Offset", "Max. Fehler", "Frequenz", "Stratum", "Quellen", "GPS-Empfang", "Temperatur",
+                      "Client-Uhrgüte", "Benachrichtigungen gestört", "Letzte nächtliche Sicherung"):
             self.assertIn(title, titles)
 
 

@@ -742,6 +742,21 @@ class HoldoverTest:
                 out.append(item)
         return out
 
+    def last_result(self) -> dict | None:
+        """Nur das jüngste Ergebnis (für /metrics) – ohne alle gespeicherten Läufe zu lesen."""
+        try:
+            _ensure()
+            rows = store.query("SELECT json FROM holdover_runs ORDER BY id DESC LIMIT 1")
+        except Exception:
+            return None
+        if not rows:
+            return None
+        try:
+            item = json.loads(rows[0][0])
+        except (TypeError, ValueError):
+            return None
+        return item if isinstance(item, dict) else None
+
     def freeze_intervals(self) -> list[tuple[float, float]]:
         """Zeiträume (start, ende) mit eingefrorener Frequenz: Holdover-Tests mit Netzquellen abgewählt –
         chronyd führte die Frequenz dabei nicht nach (wichtig für die Allan-Abweichung). Ein laufender

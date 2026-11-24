@@ -70,6 +70,7 @@ import clients3
 import devices
 import diagnostics
 import dnsfwd
+import egress
 import enforce
 import events
 import gps
@@ -80,6 +81,7 @@ import insights
 import instance
 import leap
 import notify
+import opsmetrics
 import onboarding  # vor dem eigenen Code: merkt sich, ob das Datenverzeichnis schon Daten hatte
 import providers
 import ptp
@@ -1654,7 +1656,7 @@ def _metric(lines: list[str], name: str, value, help_text: str, kind: str = "gau
 
 def _escape_label(value) -> str:
     """Prometheus label values escape backslash, quote and newline."""
-    return str(value).replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+    return opsmetrics.escape_label(value)
 
 
 def build_metrics() -> str:
@@ -1680,16 +1682,22 @@ def build_metrics() -> str:
     _metric(lines, "ntpgui_sources", len(sources), "Configured time sources known to chronyd")
     _metric(lines, "ntpgui_sources_usable", sum(1 for s in sources if s.get("state") in {"*", "+"}),
             "Sources currently used by chronyd (selected or combined)")
-    for source in sources:
-        labels = '{source="%s",mode="%s"}' % (
-            _escape_label(source.get("name", "")), _escape_label(source.get("mode_label", "")))
-        _metric(lines, "ntpgui_source_offset_seconds", source.get("offset"), "Offset per source", labels=labels)
-        _metric(lines, "ntpgui_source_stratum", source.get("stratum"), "Stratum per source", labels=labels)
-        _metric(lines, "ntpgui_source_reach_percent", source.get("reach_percent"), "Reachability per source", labels=labels)
-        _metric(lines, "ntpgui_source_jitter_seconds", source.get("std_dev"), "Standard deviation per source", labels=labels)
-        _metric(lines, "ntpgui_source_selected", 1 if source.get("state") == "*" else 0, "1 for the selected source", labels=labels)
-        _metric(lines, "ntpgui_source_combined", 1 if source.get("state") in {"*", "+"} else 0, "1 when the source is used", labels=labels)
-        _metric(lines, "ntpgui_source_authenticated", 1 if source.get("authenticated") else 0, "1 when NTS-authenticated", labels=labels)
+    labelled = [('{source="%s",mode="%s"}' % (_escape_label(source.get("name", "")),
+                                               _escape_label(source.get("mode_label", ""))), source)
+                for source in sources]
+    # Je Metrik ein zusammenhängender Block über alle Quellen (Textformat: eine Familie am Stück).
+    per_source = (
+        ("ntpgui_source_offset_seconds", lambda s: s.get("offset"), "Offset per source"),
+        ("ntpgui_source_stratum", lambda s: s.get("stratum"), "Stratum per source"),
+        ("ntpgui_source_reach_percent", lambda s: s.get("reach_percent"), "Reachability per source"),
+        ("ntpgui_source_jitter_seconds", lambda s: s.get("std_dev"), "Standard deviation per source"),
+        ("ntpgui_source_selected", lambda s: 1 if s.get("state") == "*" else 0, "1 for the selected source"),
+        ("ntpgui_source_combined", lambda s: 1 if s.get("state") in {"*", "+"} else 0, "1 when the source is used"),
+        ("ntpgui_source_authenticated", lambda s: 1 if s.get("authenticated") else 0, "1 when NTS-authenticated"),
+    )
+    for name, value_of, help_text in per_source:
+        for labels, source in labelled:
+            _metric(lines, name, value_of(source), help_text, labels=labels)
 
     stats = chrony.serverstats()
     _metric(lines, "ntpgui_ntp_packets_received_total", stats.get("ntp_packets_received"), "NTP packets served", kind="counter")
@@ -1701,9 +1709,10 @@ def build_metrics() -> str:
     if gps_state.get("enabled"):
         _metric(lines, "ntpgui_gps_running", 1 if gps_state.get("running") else 0, "1 when gpsd answers")
         _metric(lines, "ntpgui_gps_fix_mode", gps_state.get("mode"), "gpsd fix mode (0-3)")
-        _metric(lines, "ntpgui_gps_satellites_used", gps_state.get("satellites_used"), "Satellites used for the fix")
-        _metric(lines, "ntpgui_gps_satellites_seen", gps_state.get("satellites_seen"), "Satellites in view")
-        _metric(lines, "ntpgui_gps_hdop", gps_state.get("hdop"), "Horizontal dilution of precision")
+        # Keine Satellitenzahlen und HDOP nur als Stufe: Als Zeitreihe markiert jeder Sprung den Auf- oder
+        # Untergang eines Satelliten und grenzt so die Region ein (wie in der Aufzeichnung des Diagnosepakets).
+        _metric(lines, "ntpgui_gps_hdop", egress.hdop_step(gps_state.get("hdop")),
+                "Horizontal dilution of precision as step (upper bound 1, 2, 5, 10 or 20)")
         _metric(lines, "ntpgui_gps_snr_avg_db", gps_state.get("snr_avg"), "Average SNR of used satellites")
         _gps15_metrics(lines)
 
@@ -1771,6 +1780,8 @@ def build_metrics() -> str:
     _metric(lines, "ntpgui_holdover_test_running", running,
             "1 while a holdover test runs (sources deselected on purpose, clients get less accurate time)")
     _hardware_metrics(lines)
+    for name, value, help_text, kind, labels in opsmetrics.collect(settings.values(), STATE_WATCH):
+        _metric(lines, name, value, help_text, kind=kind, labels=labels)
     return "\n".join(lines) + "\n"
 
 

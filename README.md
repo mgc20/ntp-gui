@@ -1886,6 +1886,7 @@ PHC-Refclock dient ihm als Referenz für Stratum und Statistik.
 | `HISTORY_DAYS` | `30` | So viele Tage hält der Verlauf (SQLite, `ntp-gui.db`; 1–3650). Neue Punkte werden gesammelt und alle 5 Minuten sowie beim Stoppen geschrieben – das schont SD-Karten |
 | `HISTORY_SIZE` | – | Nur wenn gesetzt: harte Obergrenze an Messpunkten (wie bis 1.2, z. B. `8640` = 24 h bei 10 s) |
 | `WEB_ACCESS_LOG` | `false` | Zugriffe protokollieren |
+| `METRICS_GROUP_NAMES` | `true` | Namen der Client-Gruppen als Label `group` in `/metrics`; `false` = nur die Kennung (`group_id`, z. B. `g3`). Auch im Dashboard (Einstellungen → Dashboard & Zugang, erweitert) |
 | `READY_MAX_ERROR_MS` | `100` | Fehlergrenze für [`/readyz`](#bereitschaft-readyz) in Millisekunden (0,001–10000); auch im Dashboard (Einstellungen → Dashboard & Zugang, erweitert) |
 | `NOTIFY_DASHBOARD_URL` | – | Adresse des Dashboards für Links in [Benachrichtigungen](#benachrichtigungen) (nur `http`/`https`, ohne Benutzer/Passwort) |
 | `NOTIFY_LAN_ADDRESSES` | `false` | Private LAN-Adresse eines Geräts zusätzlich zu seinem Namen in Benachrichtigungen |
@@ -2190,7 +2191,7 @@ Einstellungen laufen) und `ntpgui_service_restarts_total`. Der mitgelieferte Ala
 | `/api/v1/instance` | Zufällige Instanz-Kennung; `POST /api/instance/rotate` erzeugt eine neue (nur mit Benutzer/Passwort) |
 | `/api/web/proxies/trust` | `POST` mit Verwaltungsrecht: beobachteten Reverse Proxy als vertrauenswürdig eintragen (siehe [HTTPS fürs Dashboard](#https-fürs-dashboard)) |
 | `/api/v1/…` | Versionierte, stabile API (Alias der Pfade oben); `GET /api/v1` beschreibt alle Endpunkte samt nötigem Recht, siehe [API & Automatisierung](#api--automatisierung) |
-| `/metrics` | Prometheus (u. a. Offset, max. Fehler, Quellen, GPS, PTP, `ntpgui_service_*`, `ntpgui_hardware_capability`, `ntpgui_pps_live`, `ntpgui_nts_server_cert_days_left`, Temperatur, Schaltsekunden-Liste, GPS-Fehlerschranke und Empfang, `ntpgui_gnss_stage`, `ntpgui_gps_locked`, `ntpgui_source_loops`, `ntpgui_holdover_test_running`, `ntpgui_pi_undervoltage`, `ntpgui_pi_throttled`, `ntpgui_info`) |
+| `/metrics` | Prometheus (u. a. Offset, max. Fehler, Quellen, GPS, PTP, `ntpgui_service_*`, `ntpgui_hardware_capability`, `ntpgui_pps_live`, `ntpgui_nts_server_cert_days_left`, Temperatur, Schaltsekunden-Liste, GPS-Fehlerschranke und Empfang, `ntpgui_gnss_stage`, `ntpgui_gps_locked`, `ntpgui_source_loops`, `ntpgui_holdover_test_running`, `ntpgui_pi_undervoltage`, `ntpgui_pi_throttled`, Client-Güte und -Gruppen (`ntpgui_clients_quality`, `ntpgui_client_group_*`), Benachrichtigungen je Kanal-Art (`ntpgui_notify_*`), `ntpgui_backup_nightly_age_seconds`, `ntpgui_events_total`, `ntpgui_holdover_last_result`, `ntpgui_gps_autocal_*`, `ntpgui_heartbeat_*`, `ntpgui_info`) |
 | `/clock` | Vollbild-Uhr (mit `CLOCK_PUBLIC=true` ohne Login) |
 | `/healthz` | `200`, solange chronyd antwortet (ohne Login) |
 | `/readyz` | Strenge Bereitschaft: `200` nur synchronisiert, mit ausgewählter Quelle und mit Fehlerschranke unter `READY_MAX_ERROR_MS`, sonst `503` (ohne Login, nur Wahrheitswerte) – siehe [Bereitschaft](#bereitschaft-readyz) |
@@ -2289,12 +2290,16 @@ Fertig zum Importieren bzw. Abschreiben:
 
 - **Grafana:** [`docs/grafana/ntp-gui.json`](docs/grafana/ntp-gui.json) – Variablen für
   Datenquelle und Instanz; Offset, max. Fehler, Frequenz, Stratum, Quellen, Clients, Anfragen,
-  GPS, Temperatur, Schaltsekunden-Liste, NTS-Zertifikat. Anleitung und Metrik-Tabelle:
+  GPS, Temperatur, Schaltsekunden-Liste, NTS-Zertifikat, dazu Client-Güte und -Gruppen,
+  Benachrichtigungen, nächtliche Sicherung, Ereignisse, Holdover-Test, GPS-Automatik und
+  Zeitwächter-Ping. Anleitung und Metrik-Tabelle:
   [`docs/integrationen/grafana-prometheus.md`](docs/integrationen/grafana-prometheus.md).
 - **Prometheus-Alarme:** [`docs/prometheus/alerts.yml`](docs/prometheus/alerts.yml) – nicht
   synchron, Abweichung zu groß, keine nutzbare Quelle, GPS ohne Fix, PPS weg, Dienst gestört,
   NTS-Zertifikat und Schaltsekunden-Liste laufen ab, neue Version, Zeitquelle zeigt auf ntp-gui
-  selbst (Schleife), GNSS-Störung.
+  selbst (Schleife), GNSS-Störung, Client-Uhren außer Toleranz, Client-Gruppe fragt nicht mehr,
+  Benachrichtigungskanal stellt nicht zu, nächtliche Sicherung fehlt, kritisches Ereignis,
+  Holdover-Test gescheitert, GPS-Automatik wartet, Zeitwächter-Ping scheitert.
 - **Home Assistant:** [`docs/integrationen/home-assistant.md`](docs/integrationen/home-assistant.md)
   – REST- und Template-Sensoren, Binärsensoren, Automations-Beispiel.
 - **Homepage und Glance:** [`docs/integrationen/homepage-glance.md`](docs/integrationen/homepage-glance.md).
