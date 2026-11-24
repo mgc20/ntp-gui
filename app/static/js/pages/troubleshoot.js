@@ -9,7 +9,8 @@ import { clientHref } from "./clientdetail.js";
 const LEVEL = { ok: "good", warn: "warn", fail: "crit" };
 const ACTION_HREF = { settings: "#/system/einstellungen", diagnose: "#/system/diagnose", sources: "#/quellen" };
 
-let state = { input: "", busy: false, result: null, error: null, open: true };
+// checked: die Adresse, zu der result gehört – in der Schreibweise des Servers (Kurzform, ohne ::ffff:).
+let state = { input: "", checked: "", busy: false, result: null, error: null, open: true };
 
 // Grobe Vorprüfung im Browser – die strenge Prüfung macht der Server.
 export function looksLikeIp(text) {
@@ -18,7 +19,7 @@ export function looksLikeIp(text) {
   return a.includes(":") && /^[0-9a-f:.]+$/i.test(a) && a.length <= 45;
 }
 
-async function run(ctx, value) {
+export async function run(ctx, value) {
   const ip = String(value || "").trim();
   state.input = ip;
   if (!looksLikeIp(ip)) {
@@ -31,8 +32,13 @@ async function run(ctx, value) {
   try {
     state.result = await apiGet(`/api/clients/troubleshoot?ip=${encodeURIComponent(ip)}`);
     state.open = (state.result.verdict || {}).level !== "ok";
+    // Der Server schreibt die Adresse um („FD00:0::1“ → „fd00::1“, „::ffff:192.168.1.10“ → „192.168.1.10“).
+    // Das Feld zeigt danach die geprüfte Schreibweise – solange in der Zwischenzeit nichts Neues getippt wurde.
+    state.checked = String(state.result.address || ip);
+    if (state.input === ip) state.input = state.checked;
   } catch (error) {
     state.result = null;
+    state.checked = "";
     state.error = error.message;
   }
   state.busy = false;
@@ -73,7 +79,22 @@ function resultView(ctx, result, snippets) {
       el("ol", { class: "enforce-list ts-checks" }, (result.checks || []).map(checkRow))));
 }
 
+// Sprungziel #/clients?s=fehlersuche (Hinweis auf der Diagnose-Seite): einmal je Hash-Wechsel zur Karte
+// scrollen und das Feld fokussieren – erst nach dem Zeichnen, app.js stellt danach die Scrollposition wieder her.
+function jumpHere(ctx) {
+  const query = String(window.location?.hash || "").split("?")[1] || "";
+  if (new URLSearchParams(query).get("s") !== "fehlersuche" || ctx.uiState.scrolled) return;
+  ctx.uiState.scrolled = true;
+  ctx.afterRender(() => setTimeout(() => {
+    const node = document.getElementById("fehlersuche");
+    if (!node) return;
+    node.scrollIntoView({ block: "start" });
+    node.querySelector("input")?.focus({ preventScroll: true });
+  }, 0));
+}
+
 export function troubleshootCard(ctx, snippets) {
+  jumpHere(ctx);
   const input = el("input", { type: "text", inputmode: "text", maxlength: "45", autocomplete: "off", spellcheck: "false",
     class: "mono", value: state.input, placeholder: tr("pages.clients.ts.placeholder"),
     "aria-label": tr("pages.clients.ts.input_label"), "data-focus-key": "troubleshoot-ip",
@@ -83,8 +104,8 @@ export function troubleshootCard(ctx, snippets) {
     text: state.busy ? tr("pages.clients.ts.busy") : tr("pages.clients.ts.run") });
   const form = el("form", { class: "ts-form", onsubmit: (event) => { event.preventDefault(); run(ctx, input.value); } },
     input, button);
-  const matches = state.result && state.result.address && state.input
-    && state.input.replace(/^\[|\]$/g, "").toLowerCase() === state.result.address.toLowerCase();
+  // Ergebnis nur zur Adresse im Feld zeigen – wer eine andere tippt, sieht kein fremdes Ergebnis.
+  const matches = state.result && state.checked && state.input.trim() === state.checked;
   return card(tr("pages.clients.ts.title"), { help: "troubleshoot", id: "fehlersuche",
     sub: tr("pages.clients.ts.sub") },
     form,
@@ -93,4 +114,4 @@ export function troubleshootCard(ctx, snippets) {
 }
 
 // Für Tests: Zustand zurücksetzen.
-export function _reset() { state = { input: "", busy: false, result: null, error: null, open: true }; }
+export function _reset() { state = { input: "", checked: "", busy: false, result: null, error: null, open: true }; }

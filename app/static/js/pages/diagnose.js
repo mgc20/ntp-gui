@@ -501,7 +501,7 @@ export function render(ctx) {
       infoButton("diag_no_upload", "Nichts wird hochgeladen", { title: "Nichts wird hochgeladen", withHelp: true,
         text: "Was das Gerät verlässt, lädst du selbst herunter – vorher siehst du in der Vorschau genau, was drinsteht." })),
     el("p", { class: "card-sub" }, `${tr("pages.diagnose.troubleshoot_hint")} `,
-      el("a", { href: "#/clients", text: tr("pages.diagnose.troubleshoot_link") }), " ", infoButton("troubleshoot"))),
+      el("a", { href: "#/clients?s=fehlersuche", text: tr("pages.diagnose.troubleshoot_link") }), " ", infoButton("troubleshoot"))),
     logCard(state),
     eventsCard(state, system),
     bundleCard(state),

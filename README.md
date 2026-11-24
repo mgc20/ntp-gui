@@ -610,21 +610,23 @@ IP-Adresse des Geräts ein (IPv4 oder IPv6; Namen werden bewusst nicht aufgelös
 eine feste Prüfliste durch und nennt **genau einen Befund** mit dem nächsten Schritt:
 
 1. **Erlaubte Netze** – liegt die Adresse in `ALLOW_NETWORKS` und nicht in `DENY_NETWORKS`
-   (die genaueste Zeile gilt, wie bei chronyd)?
+   (die genaueste Zeile gilt, wie bei chronyd; `all` in `DENY_NETWORKS` sperrt alle Geräte)?
 2. **Dienst lauscht** – hat chronyd einen UDP-Socket auf dem NTP-Port, passt `BIND_ADDRESS` zur
-   Adressfamilie des Geräts, ist der Port 123?
+   Adressfamilie des Geräts, ist der Port 123 (oder fragt das Gerät schon den eingestellten Port)?
 3. **Server synchron** – oder im Inselbetrieb; ist `SERVE_UNSYNCED` aus (Standard, sobald
    „Erlaubte Netze“ öffentliche Adressen enthält), bekommen Geräte ohne Quelle keine gültige Zeit.
 4. **Netzmodus** – erscheinen im Bridge-Netz alle Anfragen als Gateway des Docker-Netzes?
 5. **Anfragen angekommen** – kennen chronyd oder die eigene Messung das Gerät, ist es verstummt?
-6. **Begrenzung** – hat das Ratelimit Anfragen dieses Geräts verworfen?
+6. **Begrenzung** – hat das Ratelimit Anfragen dieses Geräts verworfen? Bei öffentlich erreichbarem
+   Server rät die Prüfung nicht zum Lockern, sondern zu einem längeren Abfrageintervall des Geräts.
 7. **Uhr des Geräts** – messbar, und wie weit liegt sie daneben?
 
 Befund ist das erste Problem, sonst der erste Hinweis. Wo es passt, stehen die Anleitungen für
 Windows (`w32tm`), systemd-timesyncd, chrony und macOS darunter. Die Prüfung braucht eine
 Anmeldung, liest nur, was der Server schon weiß, und schickt nichts ins Netz. Nachmessen geht
 weiter nur über **Aktiv nachmessen** auf der Seite des Geräts (private Adressen, gedrosselt).
-API: `/api/clients/troubleshoot?ip=` (Leserecht).
+API: `/api/clients/troubleshoot?ip=` (Leserecht). Direkt zur Karte springt `#/clients?s=fehlersuche`
+(so verlinkt auch die Diagnose-Seite).
 
 ### Clients 3: Uhrgüte, Gruppen, Regeln, Gerätepass (ab 1.5)
 

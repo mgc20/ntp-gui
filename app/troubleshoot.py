@@ -63,16 +63,19 @@ def clean_target(value: Any) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Erlaubte Netze wie chronyd: die genaueste passende Zeile gilt, bei Gleichstand „deny“
-# (confgen schreibt die deny-Zeilen nach den allow-Zeilen).
+# Erlaubte Netze wie chronyd (chrony.conf, allow/deny): confgen schreibt erst alle allow-, dann alle
+# deny-Zeilen. Jede Zeile setzt die Regel für ihr Netz (dieselbe Zeile später gewinnt), für eine Adresse gilt
+# das genaueste Netz mit Regel. „all“ wirkt anders als 0.0.0.0/0: Es setzt die Regel für alle Adressen
+# beider Familien und verwirft dabei alle vorher gesetzten genaueren Regeln.
 # ---------------------------------------------------------------------------
 
 def _networks(items: Iterable[Any]) -> list[tuple[Any, str]]:
+    """(Netz, Text) je gültigem Eintrag; „all“ als (None, Text)."""
     out = []
     for item in items or []:
         text = str(item).strip()
         if text.lower() == "all":
-            out += [(ipaddress.ip_network("0.0.0.0/0"), text), (ipaddress.ip_network("::/0"), text)]
+            out.append((None, text))
             continue
         try:
             out.append((ipaddress.ip_network(text, strict=False), text))
@@ -84,14 +87,20 @@ def _networks(items: Iterable[Any]) -> list[tuple[Any, str]]:
 def access(addr: str, allow: Iterable[Any], deny: Iterable[Any]) -> dict:
     """{"allowed": bool, "allow": Eintrag|None, "deny": Eintrag|None} für eine (bereinigte) Adresse."""
     ip = ipaddress.ip_address(addr)
-
-    def best(items):
-        hits = [(net.prefixlen, text) for net, text in _networks(items) if net.version == ip.version and ip in net]
-        return max(hits, default=None)
-
-    a, d = best(allow), best(deny)
-    allowed = a is not None and (d is None or a[0] > d[0])
-    return {"allowed": allowed, "allow": a[1] if a else None, "deny": d[1] if d and not allowed else None}
+    rules: dict[Any, tuple[str, str]] = {}
+    for action, items in (("allow", allow), ("deny", deny)):
+        for net, text in _networks(items):
+            if net is None:
+                rules = {ipaddress.ip_network("0.0.0.0/0"): (action, text),
+                         ipaddress.ip_network("::/0"): (action, text)}
+            else:
+                rules[net] = (action, text)
+    hits = [(net.prefixlen, rule) for net, rule in rules.items() if net.version == ip.version and ip in net]
+    if not hits:
+        return {"allowed": False, "allow": None, "deny": None}
+    action, text = max(hits, key=lambda hit: hit[0])[1]
+    allowed = action == "allow"
+    return {"allowed": allowed, "allow": text if allowed else None, "deny": None if allowed else text}
 
 
 # ---------------------------------------------------------------------------
@@ -161,6 +170,12 @@ def _ago(seconds: float) -> str:
 def _check_access(addr: str, cfg: dict) -> dict:
     title = "Erlaubte Netze"
     result = access(addr, cfg.get("allow_networks") or [], cfg.get("deny_networks") or [])
+    if result["deny"] and result["deny"].lower() == "all":
+        return _check("access", title, FAIL,
+                      "„Ausgenommene Netze“ (DENY_NETWORKS) enthält „all“ – chronyd verweigert damit allen Geräten "
+                      "die Zeit, auch denen aus „Erlaubte Netze“.",
+                      "Unter System → Einstellungen → LAN-Server „all“ aus „Ausgenommene Netze“ (DENY_NETWORKS) nehmen "
+                      "und dort nur die Netze eintragen, die keine Zeit bekommen sollen.", action="settings")
     if result["deny"]:
         return _check("access", title, FAIL,
                       f"{addr} liegt in „Ausgenommene Netze“ ({result['deny']}) – chronyd antwortet diesem Gerät nicht.",
@@ -179,7 +194,7 @@ def _check_access(addr: str, cfg: dict) -> dict:
     return _check("access", title, OK, text)
 
 
-def _check_listen(addr: str, cfg: dict, listeners: list[str] | None, net_mode: str) -> dict:
+def _check_listen(addr: str, cfg: dict, listeners: list[str] | None, net_mode: str, seen: bool = False) -> dict:
     title = "Dienst lauscht"
     port = int(cfg.get("ntp_port") or 123)
     bind = str(cfg.get("bind_address") or "").strip()
@@ -209,13 +224,16 @@ def _check_listen(addr: str, cfg: dict, listeners: list[str] | None, net_mode: s
         if net_mode == "bridge":
             text += (f" Im Bridge-Netz zählt der Port, den die Compose-Datei nach außen freigibt "
                      f"(z. B. „123:{port}/udp“).")
+        elif seen:
+            # Das Gerät fragt nachweislich auf diesem Port – kein Grund, den Port zu ändern.
+            text += f" Das ist nicht der übliche Port 123, aber dieses Gerät fragt bereits Port {port}."
         else:
             return _check("listen", title, WARN,
                           f"chronyd lauscht auf UDP-Port {port} statt 123. Die meisten Geräte (Windows-Zeitdienst, "
                           "systemd-timesyncd, Router) fragen nur Port 123.",
                           "NTP-Port (NTP_PORT) auf 123 zurückstellen oder den Port im Gerät eintragen, falls es "
                           "das kann.", action="settings")
-    if net_mode == "bridge":
+    elif net_mode == "bridge":
         text += " Im Bridge-Netz muss die Compose-Datei den Port freigeben (ports: „123:123/udp“)."
     return _check("listen", title, OK, text)
 
@@ -305,7 +323,7 @@ def _check_seen(addr: str, row: dict | None, entry: dict | None, now: float, por
     return _check("seen", title, OK, text), True
 
 
-def _check_drops(cfg: dict, row: dict | None) -> dict:
+def _check_drops(addr: str, cfg: dict, row: dict | None) -> dict:
     title = "Begrenzung (Ratelimit)"
     if not row:
         return _check("ratelimit", title, INFO,
@@ -319,8 +337,15 @@ def _check_drops(cfg: dict, row: dict | None) -> dict:
     text = (f"{dropped} von {packets} Anfragen wurden durch die Begrenzung verworfen "
             f"(Stufe „{level or '?'}“). Das Gerät fragt zu oft – oder viele Geräte teilen sich diese Adresse "
             "(NAT, Docker-Gateway).")
-    nxt = ("Unter System → Einstellungen → LAN-Server „Anfragen begrenzen“ (NTP_RATELIMIT) lockern, z. B. auf „schonend“; "
-           "hinter NAT auch „aus“. Ein einzelnes Gerät auf ein längeres Abfrageintervall stellen.")
+    if not clientinfo.is_lan(addr) or settings.public_networks(cfg.get("allow_networks")):
+        # Öffentlich erreichbar: Die Begrenzung bleibt (seit 1.9 „streng“), nur das Gerät fragt seltener.
+        nxt = ("Das Gerät auf ein längeres Abfrageintervall stellen (z. B. höchstens eine Anfrage je 64 s). "
+               "Weil der Server öffentlich erreichbar ist, „Anfragen begrenzen“ (NTP_RATELIMIT) nicht lockern – "
+               "die Begrenzung schützt ihn vor Missbrauch.")
+    else:
+        nxt = ("Unter System → Einstellungen → LAN-Server „Anfragen begrenzen“ (NTP_RATELIMIT) lockern, z. B. auf "
+               "„schonend“; hinter NAT im reinen LAN auch „aus“. Ein einzelnes Gerät auf ein längeres "
+               "Abfrageintervall stellen.")
     return _check("ratelimit", title, FAIL if share >= DROP_FAIL else WARN, text, nxt, action="settings")
 
 
@@ -366,13 +391,13 @@ def run(ip: Any, cfg: dict, *, tracking: dict | None, chrony_row: dict | None, e
     probe_allowed = (clientinfo.is_lan(addr) and not clientinfo.is_link_local(addr) and bool(entry))
     checks = [
         _check_access(addr, cfg),
-        _check_listen(addr, cfg, listeners, net_mode),
+        _check_listen(addr, cfg, listeners, net_mode, seen),
         _check_server(cfg, tracking or {}),
         _check_bridge(addr, seen, net_mode, gw, known),
         seen_check,
     ]
     if seen:
-        checks += [_check_drops(cfg, chrony_row), _check_clock(addr, entry, probe_allowed)]
+        checks += [_check_drops(addr, cfg, chrony_row), _check_clock(addr, entry, probe_allowed)]
     else:
         checks += [_check("ratelimit", "Begrenzung (Ratelimit)", SKIP, "Entfällt – keine Anfrage gesehen."),
                    _check("clock", "Uhr des Geräts", SKIP, "Entfällt – keine Anfrage gesehen.")]

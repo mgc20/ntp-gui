@@ -5,7 +5,9 @@ import base64
 import http.client
 import json
 import os
+import shutil
 import socket
+import subprocess
 import struct
 import sys
 import tempfile
@@ -73,11 +75,31 @@ class EingabeTest(unittest.TestCase):
 
 class ZugriffTest(unittest.TestCase):
     def test_genaueste_zeile_gilt(self):
-        self.assertTrue(ts.access("10.1.2.3", ["10.0.0.0/8"], ["10.1.0.0/16"])["allowed"] is False)
+        self.assertTrue(ts.access("10.1.2.3", ["10.0.0.0/8"], ["10.1.2.0/24"])["allowed"] is False)
         self.assertTrue(ts.access("10.1.2.3", ["10.1.2.0/24"], ["10.0.0.0/8"])["allowed"])
         self.assertFalse(ts.access("10.1.2.3", ["10.0.0.0/8"], ["10.0.0.0/8"])["allowed"])  # Gleichstand: deny
         self.assertTrue(ts.access("2001:db8::1", ["all"], [])["allowed"])
         self.assertFalse(ts.access("192.168.1.1", ["fd00::/8"], [])["allowed"])
+
+    def test_all_in_ausgenommenen_netzen_sperrt_alle(self):
+        # chronyd: „deny all“ nach den allow-Zeilen hebt auch die genaueren allow-Zeilen auf.
+        self.assertEqual(ts.access("10.0.0.1", ["10.0.0.0/8"], ["all"]),
+                         {"allowed": False, "allow": None, "deny": "all"})
+        self.assertFalse(ts.access("fd00::1", ["fd00::/8"], ["ALL"])["allowed"])
+        r = run(cfg={"deny_networks": ["all"]})
+        self.assertEqual(r["verdict"]["key"], "access")
+        self.assertEqual(r["verdict"]["level"], "crit")
+        self.assertIn("„all“", r["verdict"]["text"])
+        self.assertIn("DENY_NETWORKS", r["verdict"]["next"])
+
+    def test_reihenfolge_wie_confgen(self):
+        # allow all, danach genauere deny-Zeilen: die deny-Zeile gilt, der Rest bleibt erlaubt.
+        self.assertFalse(ts.access("10.1.2.3", ["all"], ["10.0.0.0/8"])["allowed"])
+        self.assertTrue(ts.access("192.168.1.1", ["all"], ["10.0.0.0/8"])["allowed"])
+        # „all“ setzt Vorheriges zurück, spätere genauere Zeilen gelten wieder.
+        self.assertTrue(ts.access("10.1.2.3", ["192.168.0.0/16", "all", "10.0.0.0/8"], [])["allowed"])
+        self.assertEqual(ts.access("10.1.2.3", ["all", "10.0.0.0/8"], [])["allow"], "10.0.0.0/8")
+        self.assertFalse(ts.access("10.1.2.3", [], [])["allowed"])
 
     def test_nicht_erlaubt(self):
         r = run("203.0.113.9", entry=None, chrony_row=None)
@@ -118,13 +140,30 @@ class LauschenTest(unittest.TestCase):
         self.assertEqual(check(r, "listen")["status"], "ok")
         self.assertIn("nur auf 192.168.1.2", check(r, "listen")["text"])
 
-    def test_anderer_port(self):
-        r = run(cfg={"ntp_port": 1123})
-        self.assertEqual(r["verdict"]["key"], "listen")
-        self.assertEqual(r["verdict"]["level"], "warn")
-        r = run(cfg={"ntp_port": 1123}, net_mode="bridge")
+    def test_anderer_port_ohne_anfragen(self):
+        r = run(cfg={"ntp_port": 1123}, chrony_row=None, entry=None)
+        self.assertEqual(check(r, "listen")["status"], "warn")
+        self.assertIn("NTP_PORT", check(r, "listen")["next"])
+        self.assertEqual(r["verdict"]["key"], "seen")
+        self.assertIn("UDP-Port 1123", r["verdict"]["next"])
+
+    def test_anderer_port_geraet_fragt_erfolgreich(self):
+        # Das Gerät fragt nachweislich auf Port 1123 und bekommt Zeit – kein Rat, den Port zu ändern.
+        r = run(cfg={"ntp_port": 1123}, chrony_row=dict(ROW, ntp_packets=500),
+                entry=dict(ENTRY, requests=500, ewma=0.001))
         self.assertEqual(check(r, "listen")["status"], "ok")
-        self.assertIn("123:1123/udp", check(r, "listen")["text"])
+        self.assertIn("fragt bereits Port 1123", check(r, "listen")["text"])
+        self.assertEqual(r["verdict"]["key"], "ok")
+        self.assertEqual([c["status"] for c in r["checks"]], ["ok"] * 7)
+
+    def test_bridge_anderer_port_nennt_nur_passende_freigabe(self):
+        r = run(cfg={"ntp_port": 1123}, net_mode="bridge")
+        text = check(r, "listen")["text"]
+        self.assertEqual(check(r, "listen")["status"], "ok")
+        self.assertIn("123:1123/udp", text)
+        self.assertNotIn("123:123/udp", text)
+        r = run(net_mode="bridge")
+        self.assertIn("123:123/udp", check(r, "listen")["text"])
 
 
 class ServerTest(unittest.TestCase):
@@ -209,6 +248,23 @@ class BegrenzungTest(unittest.TestCase):
     def test_meist_verworfen(self):
         r = run(chrony_row=dict(ROW, ntp_packets=100, ntp_dropped=80))
         self.assertEqual(r["verdict"]["level"], "crit")
+
+    def test_lan_rat_zum_lockern(self):
+        r = run(chrony_row=dict(ROW, ntp_packets=100, ntp_dropped=10))
+        self.assertIn("schonend", r["verdict"]["next"])
+
+    def test_oeffentlich_kein_rat_zum_lockern(self):
+        # Öffentliche Adresse oder öffentlich erlaubte Netze: nur das Abfrageintervall des Geräts, keine Lockerung.
+        for ip, nets in (("203.0.113.9", ["all"]), ("192.168.1.40", list(settings.PRIVATE_NETWORKS) + ["0.0.0.0/0"])):
+            with self.subTest(ip=ip):
+                r = run(ip, cfg={"allow_networks": nets, "ntp_ratelimit": "streng"},
+                        chrony_row=dict(ROW, address=ip, ntp_packets=100, ntp_dropped=10))
+                self.assertEqual(r["verdict"]["key"], "ratelimit")
+                nxt = r["verdict"]["next"]
+                self.assertIn("Abfrageintervall", nxt)
+                self.assertIn("nicht lockern", nxt)
+                self.assertNotIn("schonend", nxt)
+                self.assertNotIn("„aus“", nxt)
 
     def test_ohne_chrony_zeile_nur_info(self):
         r = run(chrony_row=None)
@@ -376,6 +432,67 @@ class EndpunktTest(unittest.TestCase):
             status, data = self.get("/api/clients/troubleshoot?ip=192.168.1.41", self.basic())
         self.assertEqual(status, 200, data)
         self.assertEqual(data["verdict"]["key"] in {"seen", "listen", "bridge"}, True)
+
+
+@unittest.skipUnless(shutil.which("node"), "node fehlt")
+class KarteTest(unittest.TestCase):
+    """Die Karte im echten JS-Interpreter: Befund auch bei Langform/Großschreibung/::ffff:-Eingabe."""
+
+    def run_js(self, body: str):
+        from test_frontend_states import DOM
+        js = Path(__file__).resolve().parents[1] / "app" / "static" / "js"
+        page = json.dumps((js / "pages" / "troubleshoot.js").resolve().as_uri())
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "dom.mjs").write_text(DOM, encoding="utf-8")
+            script = Path(tmp) / "run.mjs"
+            script.write_text('import { text, ctx } from "./dom.mjs";\n'
+                              f"const ts = await import({page});\n" + body, encoding="utf-8")
+            result = subprocess.run(["node", str(script)], capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout.strip().splitlines()[-1])
+
+    def test_befund_bei_anderer_schreibweise(self):
+        out = self.run_js(r"""
+const answers = { "FD00:0:0::0001": "fd00::1", "::ffff:192.168.1.10": "192.168.1.10", "[fd00::1]": "fd00::1",
+  "192.168.1.77": "192.168.1.77" };
+let asked = "";
+globalThis.fetch = async (url) => {
+  asked = decodeURIComponent(String(url).split("ip=")[1]);
+  const body = { address: answers[asked], lan: true, known: false, probe_allowed: false, checks: [],
+    verdict: { key: "seen", level: "fail", title: "Anfragen angekommen", text: "BEFUND", next: null } };
+  return { ok: true, status: 200, text: async () => JSON.stringify(body) };
+};
+const out = {};
+for (const input of Object.keys(answers)) {
+  ts._reset();
+  const c = ctx();
+  await ts.run(c, input);
+  const card = ts.troubleshootCard(c, null);
+  const find = (n) => (n.tagName === "INPUT" ? n : (n.childNodes || []).map(find).find(Boolean));
+  const field = find(card);
+  out[input] = { shown: text(card).includes("BEFUND"), field: field.value ?? field.attrs.value ?? null };
+}
+console.log(JSON.stringify(out));
+""")
+        for raw in ("FD00:0:0::0001", "::ffff:192.168.1.10", "[fd00::1]", "192.168.1.77"):
+            with self.subTest(raw=raw):
+                self.assertTrue(out[raw]["shown"], out)
+        self.assertEqual(out["::ffff:192.168.1.10"]["field"], "192.168.1.10")
+        self.assertEqual(out["FD00:0:0::0001"]["field"], "fd00::1")
+
+    def test_sprungziel_von_der_diagnose(self):
+        out = self.run_js(r"""
+const after = [];
+window.location.hash = "#/clients?s=fehlersuche";
+const c = ctx({ afterRender: (fn) => after.push(fn) });
+ts.troubleshootCard(c, null);
+ts.troubleshootCard(c, null);  // Neuzeichnen im Hintergrund springt nicht erneut
+window.location.hash = "#/clients";
+const plain = ctx({ afterRender: (fn) => after.push(fn) });
+ts.troubleshootCard(plain, null);
+console.log(JSON.stringify({ jumps: after.length, scrolled: c.uiState.scrolled === true }));
+""")
+        self.assertEqual(out, {"jumps": 1, "scrolled": True})
 
 
 if __name__ == "__main__":
