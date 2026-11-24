@@ -2162,9 +2162,14 @@ Einstellungen laufen) und `ntpgui_service_restarts_total`. Der mitgelieferte Ala
 Fehlerschranke ändern Werte in `chrony.conf` und brauchen dafür einen Neustart von chronyd. Diese
 Neustarts gehen über einen gemeinsamen Koordinator: Er sammelt Änderungen zwei Minuten lang und
 übernimmt sie in **einem** Neustart, erlaubt höchstens **4 automatische Neustarts in 24 Stunden**
-(gleitend) und wartet, solange ein Holdover-Test läuft. Ist die Grenze erreicht, gilt bis zum
-nächsten freien Neustart die bisherige Einstellung (Ereignis „Tagesgrenze erreicht“); startet
-chronyd vorher aus einem anderen Grund neu, ist die Änderung damit schon aktiv. Was du selbst
+(gleitend) und wartet, solange ein Holdover-Test läuft (ohne ihn mitzuzählen). Ist die Grenze
+erreicht, gilt bis zum nächsten freien Neustart die bisherige Einstellung (Ereignis „Tagesgrenze
+erreicht“); die GPS-Seite zeigt dann bei Kalibrierung und Delay „gespeichert, wird mit dem nächsten
+Neustart aktiv“ samt Uhrzeit. Ausnahme: Wird die Fehlerschranke **größer** (die vorsichtigere
+Richtung bei schlechter werdendem Empfang), darf sie bis zu 4 weitere Neustarts in 24 h nutzen –
+sonst hielte chronyd das GPS bis zu einem Tag für genauer, als es ist. Startet chronyd vorher aus
+einem anderen Grund neu, ist die Änderung damit schon aktiv; ob sie wirklich in der laufenden
+`chrony.conf` steht, wird nachgesehen – sonst folgt ein eigener Neustart. Was du selbst
 auslöst (Speichern, Sicherung zurückspielen, „Rückgängig“, „Auf Standard zurücksetzen“), wirkt
 wie bisher sofort und zählt nicht mit; erneuertes NTS-Zertifikat und Gerätewechsel behandelt
 weiter der Supervisor. Jede Entscheidung steht im Ereignisprotokoll, der Zustand in der Karte

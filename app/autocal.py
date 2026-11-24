@@ -624,22 +624,46 @@ def _chrony_conf() -> str:
 
 def conf_offset(text: str, refid: str) -> float | None:
     """Offset aus der Refclock-Zeile mit dieser refid (wie confgen sie schreibt) oder None."""
+    return conf_value(text, refid, "offset", 0.0)
+
+
+def conf_value(text: str, refid: str, key: str, default: float | None = None) -> float | None:
+    """Zahl `key` (offset, delay, …) aus der Refclock-Zeile mit dieser refid oder None."""
     for line in text.splitlines():
         parts = line.split("#", 1)[0].split()
         if len(parts) < 2 or parts[0] != "refclock":
             continue
         options = parts[3:] if len(parts) > 3 else []
         values = {}
-        for key, value in zip(options, options[1:]):
-            values.setdefault(key, value)
+        for name, value in zip(options, options[1:]):
+            values.setdefault(name, value)
         if values.get("refid") != refid:
             continue
+        if key not in values and default is None:
+            return None
         try:
-            value = float(values.get("offset", "0"))
+            value = float(values[key]) if key in values else float(default)
         except ValueError:
             return None
         return value if math.isfinite(value) else None
     return None
+
+
+def running_conf_value(refid: str, key: str, default: float | None = None) -> float | None:
+    """Wert aus der laufenden chrony.conf (None: Datei fehlt oder keine passende Zeile)."""
+    try:
+        with open(_chrony_conf(), encoding="utf-8") as handle:
+            return conf_value(handle.read(), refid, key, default)
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def offset_running(cfg: dict) -> bool | None:
+    """Steht der eingestellte gps_offset in der laufenden chrony.conf? None = nicht prüfbar."""
+    running = running_conf_value(str(cfg.get("gps_refid") or "GPS"), "offset", 0.0)
+    if running is None:
+        return None
+    return abs(running - _cfg_float(cfg, "gps_offset", 0.0)) <= OFFSET_EPS
 
 
 def _read_reload() -> dict | None:
@@ -713,6 +737,8 @@ _DEPS: dict[str, Callable | None] = {
     "holdover_reload": None,   # (trigger) -> Neustart jetzt oder (Test hat gerade begonnen) nach dem Test
     "auto_reload": None,       # () -> bool: Neustart für die Automatik (1.12: restartctl sammelt, Obergrenze je Tag);
                                #    ohne Angabe trigger_reload. Rücknahme (Mensch) nutzt immer trigger_reload.
+    "restart_wait": None,      # () -> {"state", "next_try"} oder None: Änderung wartet noch auf ihren Neustart
+                               #    (restartctl.waiting – sammeln, Tagesgrenze, Holdover-Test, neuer Versuch)
 }
 
 
@@ -850,6 +876,52 @@ _NOT_ACTIVE = ("Die letzte Änderung ist noch nicht aktiv (Neuladen fehlgeschlag
                "nichts weiter verstellt.")
 
 
+def _restart_waiting(deps: dict) -> dict | None:
+    """restartctl: wartet die gespeicherte Änderung noch auf ihren Neustart von chronyd?"""
+    fn = deps.get("restart_wait")
+    if fn is None:
+        return None
+    try:
+        wait = fn()
+    except Exception:
+        return None
+    return wait if isinstance(wait, dict) and wait.get("state") else None
+
+
+def _waiting_for_restart(cfg: dict, wait: dict, now: float) -> dict:
+    """Gewollte Wartezeit (Koordinator) – kein Fehler: ruhiger Text, Phase „restart_wait“ (bei „retry“
+    bleibt es eine Warnung, dann ließ sich der Neustart wirklich nicht anfordern)."""
+    at = _num(wait.get("next_try"))
+    at = at if at is not None and at > now else None
+    offset = _off(_cfg_float(cfg, "gps_offset", 0.0))
+    tail = " Bis dahin gilt in chronyd der bisherige Offset; die Automatik verstellt nichts weiter."
+    state = wait.get("state")
+    if state == "limit":
+        reason = ("Neustart von chronyd wartet (Tagesgrenze automatischer Neustarts" +
+                  (f", frei ab {_clock(at)}" if at else "") + f") – der neue Offset {offset} s ist gespeichert."
+                  + tail)
+    elif state == "holdover":
+        reason = (f"Neustart von chronyd wartet, bis der Holdover-Test endet – der neue Offset {offset} s ist "
+                  "gespeichert." + tail)
+    elif state == "retry":
+        reason = ("Der Neustart von chronyd ließ sich nicht anfordern – neuer Versuch" +
+                  (f" um {_clock(at)}" if at else " in Kürze") + f". Der neue Offset {offset} s ist gespeichert."
+                  + tail)
+        return _result("none", reason, cfg, not_active=True, phase="waiting", restart_wait=state, restart_at=at)
+    else:
+        reason = (f"Der neue Offset {offset} s ist gespeichert; chronyd wird in Kürze neu gestartet "
+                  f"(automatische Änderungen werden {int(_restart_collect() // 60)} Minuten gesammelt).")
+    return _result("none", reason, cfg, not_active=True, phase="restart_wait", restart_wait=state, restart_at=at)
+
+
+def _restart_collect() -> float:
+    try:
+        import restartctl
+        return restartctl.COLLECT_SECONDS
+    except Exception:
+        return 120.0
+
+
 def _verify(cfg: dict, state: dict, deps: dict, now: float) -> dict:
     """Prüft, ob der eingestellte Offset läuft; ändert ggf. state["observed"]/["pending"].
 
@@ -894,6 +966,8 @@ def _evaluate(cfg: dict, now: float, state: dict, deps: dict, cached: bool = Fal
     info = {"window_seconds": window, "measuring_since": float(observed["since"]) + SETTLE_SECONDS}
     if _mode(cfg) == "off" or not cfg.get("gps_enable"):
         decision = decide(cfg, None, None, now)
+    elif active is not None and active.get("active") is not True and _restart_waiting(deps):
+        decision = _waiting_for_restart(cfg, _restart_waiting(deps), now)
     elif active is not None and active.get("active") is not True:
         reason = _NOT_ACTIVE
         if active.get("reason"):
@@ -1245,6 +1319,7 @@ HOLD_TEXT = ("Gesperrt wegen GNSS-Störung – hier entscheidest du: Hast du Emp
 
 PHASE_TONES = {"off": "muted", "measure": "info", "correct": "good", "follow": "good", "calibrated": "good",
                "drift_wait": "good", "step_wait": "info", "hold": "crit", "check": "warn", "waiting": "warn",
+               "restart_wait": "info",
                "suggest": "warn", "readonly": "muted"}
 
 
@@ -1313,6 +1388,10 @@ def _phase(cfg: dict, mode: str, decision: dict, observed: dict, fast: bool, nex
     elif key == "suggest":
         label = "Vorschlag bereit"
         text = f"Vorschlag: Offset {_off(decision.get('new_offset'))} s – im Modus „vorschlagen“ übernimmst du ihn selbst."
+    elif key == "restart_wait":
+        at = _num(decision.get("restart_at"))
+        label = "wartet auf Neustart von chronyd" + (f" (≈ {_clock(at)})" if at else "")
+        text = str(decision.get("reason") or "Die Änderung ist gespeichert und wird mit dem nächsten Neustart aktiv.")
     elif key == "readonly":
         label = "nur lesen"
         text = "Die Einstellungen sind gesperrt (WEB_READONLY) – es wird nichts automatisch geändert."
@@ -1402,7 +1481,10 @@ def api_status(cfg: dict | None = None, now: float | None = None, fresh: bool = 
         state = load(file)
     mode = _mode(cfg)
     decision = state.get("last_decision")
-    if fresh or not isinstance(decision, dict):
+    # Wartet/wartete die letzte Änderung auf ihren Neustart, kann sich das seit dem stündlichen tick geändert
+    # haben (Koordinator hat neu gestartet oder hält sie an der Tagesgrenze): dann neu bewerten.
+    stale = isinstance(decision, dict) and bool(decision.get("not_active"))
+    if fresh or stale or not isinstance(decision, dict):
         try:
             decision = dict(_evaluate(cfg, now, state, _deps(deps), cached=True), t=now)
             decision.pop("nts_distance", None)

@@ -38,6 +38,8 @@ class Harness(unittest.TestCase):
         self.events, self.fired, self.gated = [], [], []
         self.started = [None]
         self.ok = [True]
+        self.busy = [False]                    # Holdover-Test läuft?
+        self.arrived = {}                      # who -> True/False/None: steht die Änderung in chrony.conf?
         self.file = os.path.join(self.tmp, "data", "neustarts.json")
         self.coord = self.make()
 
@@ -47,7 +49,8 @@ class Harness(unittest.TestCase):
             return trigger()
         coord = restartctl.Coordinator(path=lambda: self.file, wall=lambda: self.now[0],
                                        emit=lambda *a: self.events.append(a), gate=gate,
-                                       started=lambda: self.started[0])
+                                       started=lambda: self.started[0], busy=lambda: self.busy[0],
+                                       verify=lambda who: self.arrived.get(who))
         coord.configure(chronyd=lambda: self.fire("chronyd"), full=lambda: self.fire("all"))
         return coord
 
@@ -106,24 +109,85 @@ class CollectTest(Harness):
         self.assertEqual([s for _t, s in self.fired], ["all"])
 
     def test_goes_through_holdover_gate(self):
-        """Gesammelt angewandt wird über holdover.reload_or_defer: Läuft ein Test, folgt der Neustart danach."""
-        deferred = []
+        """Gesammelt angewandt wird über holdover.reload_or_defer (Standard-gate)."""
+        gated = []
 
         class FakeTest:
+            def running(self):
+                return False
+
             def reload_or_defer(self, trigger):
-                deferred.append(trigger)
-                return True                                       # „fest vorgemerkt“
+                gated.append(trigger)
+                return trigger()
 
         coord = restartctl.Coordinator(path=lambda: self.file, wall=lambda: self.now[0],
-                                       emit=lambda *a: self.events.append(a), started=lambda: None)
+                                       emit=lambda *a: self.events.append(a), started=lambda: None,
+                                       verify=lambda who: None)
         coord.configure(chronyd=lambda: self.fire("chronyd"))
         with mock.patch.object(holdover, "TEST", FakeTest()):
             coord.request("gps_bound")
             self.now[0] += restartctl.COLLECT_SECONDS + 1
             self.assertEqual(coord.tick()["decision"], "applied")
-        self.assertEqual(len(deferred), 1)
-        self.assertEqual(self.fired, [])                          # der Test entscheidet, wann
+        self.assertEqual(len(gated), 1)
+        self.assertEqual(len(self.fired), 1)
         self.assertEqual(coord.status()["auto_24h"], 1)
+
+
+class HoldoverTest(Harness):
+    """Läuft ein Holdover-Test, wird nichts neu gestartet, nichts gezählt und nichts als „neu gestartet“ gemeldet."""
+
+    def test_running_test_holds_change_without_counting(self):
+        self.coord.request("gps_bound")
+        self.busy[0] = True
+        results = self.advance(restartctl.COLLECT_SECONDS + 600)
+        self.assertEqual([r["decision"] for r in results], ["deferred"] * len(results))
+        self.assertEqual(self.fired, [])
+        self.assertEqual(self.gated, [])
+        status = self.coord.status()
+        self.assertEqual((status["auto_24h"], status["state"]), (0, "holdover"))
+        self.assertEqual(self.coord.waiting("gps_bound")["state"], "holdover")
+        self.assertEqual(len(self.events), 1)                       # ein Ereignis je Wartezeit
+        self.assertIn("zurückgestellt: Holdover-Test läuft", self.titles()[0])
+        self.assertEqual(self.events[0][3]["decision"], "deferred")
+        self.assertFalse(any("neu gestartet" in t for t in self.titles()))
+        # Test vorbei: kurz warten (ein Neustart nach dem Test nähme die Änderung mit), dann eigener Neustart.
+        self.busy[0] = False
+        self.advance(restartctl.COLLECT_SECONDS - 20)
+        self.assertEqual(self.fired, [])
+        self.advance(40)
+        self.assertEqual(len(self.fired), 1)
+        self.assertEqual(self.coord.status()["auto_24h"], 1)
+        self.assertIn("neu gestartet", self.titles()[-1])
+
+    def test_restart_after_test_takes_change_along(self):
+        self.coord.request("autocal")
+        self.busy[0] = True
+        self.advance(restartctl.COLLECT_SECONDS + 600)
+        self.busy[0] = False
+        self.started[0] = self.now[0] + 20                          # holdover startet nach dem Test neu
+        self.advance(restartctl.COLLECT_SECONDS + 30)
+        self.assertEqual(self.fired, [])
+        self.assertEqual(self.events[-1][3]["decision"], "taken_along")
+        self.assertEqual(self.coord.status()["auto_24h"], 0)
+
+    def test_gate_that_only_defers_is_not_a_restart(self):
+        """Beginnt der Test genau beim Anwenden, merkt reload_or_defer nur vor (True ohne Auslöser)."""
+        def gate(trigger):
+            self.busy[0] = True                                     # Test hat gerade begonnen
+            return True
+        coord = restartctl.Coordinator(path=lambda: self.file, wall=lambda: self.now[0],
+                                       emit=lambda *a: self.events.append(a), gate=gate,
+                                       started=lambda: None, busy=lambda: self.busy[0], verify=lambda who: None)
+        coord.configure(chronyd=lambda: self.fire("chronyd"))
+        coord.request("gps_bound")
+        self.now[0] += restartctl.COLLECT_SECONDS + 1
+        result = coord.tick()
+        self.assertEqual(result, {"decision": "deferred", "who": ["gps_bound"]})
+        self.assertEqual(self.fired, [])
+        self.assertEqual(coord.status()["auto_24h"], 0)
+        self.assertEqual(len(self.events), 1)
+        self.assertIn("zurückgestellt", self.events[0][2])
+        self.assertNotIn("neu gestartet", self.events[0][2])
 
 
 class LimitTest(Harness):
@@ -196,11 +260,98 @@ class TakeAlongTest(Harness):
         self.advance(restartctl.COLLECT_SECONDS + 10)
         self.assertEqual(len(self.fired), 1)
 
+    def test_later_request_is_not_taken_along_by_earlier_restart(self):
+        """Verglichen wird mit der LETZTEN Anforderung: Eine zweite Automatik, die erst nach der
+        Konfigurationserzeugung eines fremden Neustarts dazukam, ist nicht mitgenommen."""
+        self.coord.request("autocal")
+        self.now[0] += 90
+        self.coord.request("gps_bound")
+        self.started[0] = self.now[0] + 5                            # fremder Neustart endet 5 s später
+        self.now[0] += 10
+        self.assertEqual(self.coord.tick()["decision"], "collect")
+        results = self.advance(restartctl.COLLECT_SECONDS)
+        self.assertEqual([r["decision"] for r in results], ["applied"])
+        self.assertEqual(results[0]["who"], ["autocal", "gps_bound"])
+        self.assertEqual(len(self.fired), 1)
+
+    def test_take_along_checks_running_config(self):
+        """Hat der fremde Neustart seine Konfiguration vor der Änderung erzeugt (langes Beenden der Dienste),
+        steht sie nicht in chrony.conf: Die Anforderung bleibt, es folgt ein eigener Neustart."""
+        self.coord.request("autocal")
+        self.coord.request("gps_bound")
+        self.arrived.update(autocal=False, gps_bound=True)
+        self.now[0] += restartctl.TAKE_ALONG_MARGIN + 5
+        self.started[0] = self.now[0]
+        self.coord.tick()
+        decisions = [e[3]["decision"] for e in self.events]
+        self.assertEqual(decisions, ["taken_along", "not_taken_along"])
+        self.assertEqual(self.events[0][3]["who"], ["gps_bound"])
+        self.assertEqual(self.events[1][3]["who"], ["autocal"])
+        self.assertEqual(self.coord.status()["pending_ids"], ["autocal"])
+        results = self.advance(restartctl.COLLECT_SECONDS)
+        self.assertEqual([(r["decision"], r["who"]) for r in results], [("applied", ["autocal"])])
+        self.assertEqual(len(self.events), 3)                       # „nicht übernommen“ nur einmal
+        self.assertEqual(self.coord.status()["auto_24h"], 1)
+
+    def test_unknown_config_counts_as_taken_along(self):
+        self.arrived["autocal"] = None                                # nicht prüfbar (ohne GPS, kein chrony.conf)
+        self.coord.request("autocal")
+        self.now[0] += restartctl.TAKE_ALONG_MARGIN + 5
+        self.started[0] = self.now[0]
+        self.assertEqual(self.coord.tick()["decision"], "taken_along")
+
     def test_old_restart_is_ignored(self):
         self.started[0] = T0 - 100
         self.coord.request("autocal")
         self.advance(restartctl.COLLECT_SECONDS + 10)
         self.assertEqual(len(self.fired), 1)
+
+
+class GrowTest(Harness):
+    """Eine größere GPS-Fehlerschranke (vorsichtigere Richtung) hat Vorrang vor der Tagesgrenze."""
+
+    def fill(self):
+        for _ in range(restartctl.MAX_PER_DAY):
+            self.coord.request("autocal")
+            self.advance(H)
+        self.assertEqual(len(self.fired), restartctl.MAX_PER_DAY)
+
+    def test_growing_bound_passes_limit_shrinking_waits(self):
+        self.fill()
+        self.coord.request("gps_bound")                              # kleiner: wartet
+        results = self.advance(restartctl.COLLECT_SECONDS + 10)
+        self.assertEqual([r["decision"] for r in results], ["limit"])
+        self.coord.request("gps_bound", grow=True)                   # größer: sofort neu bewertet
+        results = self.advance(10)
+        self.assertEqual([r["decision"] for r in results], ["applied"])
+        self.assertEqual(len(self.fired), restartctl.MAX_PER_DAY + 1)
+        self.assertIn("Vorrang vor der Tagesgrenze", self.titles()[-1])
+        self.assertTrue(self.events[-1][3]["grow"])
+
+    def test_reserve_is_bounded(self):
+        self.fill()
+        for _ in range(restartctl.GROW_RESERVE):
+            self.coord.trigger_for("gps_bound", grow=True)()
+            self.advance(H)
+        self.assertEqual(len(self.fired), restartctl.MAX_PER_DAY + restartctl.GROW_RESERVE)
+        self.coord.request("gps_bound", grow=True)
+        results = self.advance(restartctl.COLLECT_SECONDS + 10)
+        self.assertEqual([r["decision"] for r in results], ["limit"])
+        free_at = results[0]["free_at"]
+        self.assertEqual(free_at, self.fired[0][0] + DAY)            # der älteste fällt heraus
+        for start in range(int(T0), int(T0 + 3 * DAY), 600):        # in keinem 24-h-Fenster mehr als erlaubt
+            inside = [t for t, _s in self.fired if start <= t < start + DAY]
+            self.assertLessEqual(len(inside), restartctl.MAX_PER_DAY + restartctl.GROW_RESERVE)
+
+    def test_normal_request_counts_extra_restarts(self):
+        """Nach Plätzen aus der Reserve wartet eine normale Änderung, bis wieder weniger als die Grenze in 24 h liegen."""
+        self.fill()
+        self.coord.request("gps_bound", grow=True)
+        self.advance(H)
+        self.coord.request("autocal")
+        results = self.advance(restartctl.COLLECT_SECONDS + 10)
+        self.assertEqual(results[0]["decision"], "limit")
+        self.assertEqual(results[0]["free_at"], self.fired[1][0] + DAY)   # 5 in 24 h: erst wenn zwei herausfallen
 
 
 class FailureAndStateTest(Harness):
@@ -275,7 +426,8 @@ class AutomaticsWiringTest(unittest.TestCase):
         self.addCleanup(self._cleanup)
 
     def _cleanup(self):
-        gpsquality._DEPS.update(history=None, trigger_reload=None, emit=None, net_distance=None, auto_reload=None)
+        gpsquality._DEPS.update(history=None, trigger_reload=None, emit=None, net_distance=None, auto_reload=None,
+                                auto_reload_grow=None, restart_wait=None)
         store.close_all()
         settings.DATA_DIR = self.saved
         shutil.rmtree(self.tmp, ignore_errors=True)
@@ -299,6 +451,61 @@ class AutomaticsWiringTest(unittest.TestCase):
         samples = vk162_samples(loops=5)
         self.assertTrue(gpsquality.tick(gq_cfg(), samples[-1]["t"] + 1, samples)["apply"])
         self.assertEqual(len(self.direct), 1)
+
+    def test_growing_bound_asks_with_priority(self):
+        from test_gpsquality import cfg as gq_cfg, vk162_samples
+        grown = []
+        gpsquality.configure(trigger_reload=lambda: self.direct.append(1) or True,
+                             auto_reload=lambda: self.queued.append(1) or True,
+                             auto_reload_grow=lambda: grown.append(1) or True, emit=lambda *a, **k: None)
+        samples = vk162_samples(loops=5)
+        bigger = gpsquality.unmeasured_delay(gq_cfg()) * 2
+        with mock.patch.object(gpsquality, "decide", return_value={"apply": True, "delay": bigger, "reason": "r"}):
+            self.assertTrue(gpsquality.tick(gq_cfg(), samples[-1]["t"] + 1, samples)["apply"])
+        self.assertEqual((len(grown), len(self.queued), len(self.direct)), (1, 0, 0))
+        with mock.patch.object(gpsquality, "decide", return_value={"apply": True, "delay": bigger / 4, "reason": "r"}):
+            self.assertTrue(gpsquality.tick(gq_cfg(), samples[-1]["t"] + 2, samples)["apply"])
+        self.assertEqual((len(grown), len(self.queued), len(self.direct)), (1, 1, 0))
+
+    def test_bound_waiting_for_restart_is_shown_as_saved(self):
+        """GPS-Seite: Solange der Koordinator den Neustart hält, gilt in chronyd die bisherige Schranke."""
+        from test_gpsquality import cfg as gq_cfg, vk162_samples
+        wait = [None]
+        gpsquality.configure(auto_reload=lambda: True, emit=lambda *a, **k: None,
+                             restart_wait=lambda who: wait[0] if who == "gps_bound" else None)
+        samples = vk162_samples(loops=5)
+        cfg = gq_cfg()
+        old = gpsquality.unmeasured_delay(cfg)
+        conf = os.path.join(self.tmp, "chrony.conf")
+        with open(conf, "w", encoding="utf-8") as handle:
+            handle.write(f"refclock SHM 0 refid GPS offset 0.05 delay {old} precision 0.1\n")
+        self.assertTrue(gpsquality.tick(cfg, samples[-1]["t"] + 1, samples)["apply"])
+        new = gpsquality.refclock_values(cfg)["delay"]
+        self.assertNotAlmostEqual(new, old)
+        with mock.patch.dict(os.environ, {"CHRONY_CONF": conf}):
+            self.assertIs(gpsquality.bound_running(cfg), False)
+            self.assertEqual(gpsquality.status_hint(cfg)["delay"], new)    # ohne Koordinator wie bisher
+            wait[0] = {"state": "limit", "next_try": T0 + 20 * H}
+            hint = gpsquality.status_hint(cfg)
+            self.assertEqual(hint["delay"], old)
+            self.assertEqual(hint["saved"], new)
+            self.assertEqual(hint["restart"], {"state": "limit", "next_try": T0 + 20 * H})
+            with open(conf, "w", encoding="utf-8") as handle:
+                handle.write(f"refclock SHM 0 refid GPS offset 0.05 delay {new} precision 0.1\n")
+            self.assertIs(gpsquality.bound_running(cfg), True)
+            self.assertNotIn("saved", gpsquality.status_hint(cfg))
+
+    def test_autocal_offset_running(self):
+        conf = os.path.join(self.tmp, "chrony.conf")
+        with open(conf, "w", encoding="utf-8") as handle:
+            handle.write("refclock SHM 0 refid GPS offset 0.05 delay 0.2\n")
+        with mock.patch.dict(os.environ, {"CHRONY_CONF": conf}):
+            self.assertIs(autocal.offset_running({"gps_offset": 0.05, "gps_refid": "GPS"}), True)
+            self.assertIs(autocal.offset_running({"gps_offset": 0.065, "gps_refid": "GPS"}), False)
+            self.assertIsNone(autocal.offset_running({"gps_offset": 0.05, "gps_refid": "PPS"}))
+            self.assertEqual(autocal.running_conf_value("GPS", "delay"), 0.2)
+        with mock.patch.dict(os.environ, {"CHRONY_CONF": os.path.join(self.tmp, "fehlt.conf")}):
+            self.assertIsNone(autocal.offset_running({"gps_offset": 0.05}))
 
     def test_autocal_dependency_is_known(self):
         self.assertIn("auto_reload", autocal._DEPS)
@@ -357,6 +564,51 @@ console.log(JSON.stringify({{
         self.assertEqual(out["title"], "Wartet: A, B")
         self.assertIsNone(out["none"])
         self.assertIsNone(out["unknown"])
+
+    @unittest.skipUnless(shutil.which("node"), "node fehlt")
+    def test_names_follow_language(self):
+        """Die wartenden Automatiken kommen als feste Kennungen (pending_ids) und werden übersetzt."""
+        static = json.dumps(str(Path(__file__).resolve().parents[1] / "app" / "static"))
+        out = self.run_js(f"""
+import {{ readFileSync }} from "node:fs";
+globalThis.fetch = async (u) => ({{ ok: true, json: async () => JSON.parse(readFileSync({static} + u.replace("/static", ""), "utf8")) }});
+const i18n = await import({mod("i18n.js")});
+const ov = await import({mod("pages/overview.js")});
+const r = {{ auto_24h: 4, limit: 4, pending: ["GPS-Kalibrierung (Offset)", "GPS-Fehlerschranke"],
+  pending_ids: ["autocal", "gps_bound"], state: "limit", next_try: 1783003600 }};
+const de = ov.restartsValue(r).getAttribute("title");
+const old = ov.restartsValue({{ ...r, pending_ids: undefined }}).getAttribute("title");
+const held = text(ov.restartsValue({{ ...r, state: "holdover", next_try: null }}));
+if (typeof document.querySelectorAll !== "function") document.querySelectorAll = () => [];
+await i18n.setLanguage("en");
+console.log(JSON.stringify({{ de, old, held, en: ov.restartsValue(r).getAttribute("title"),
+  enHeld: text(ov.restartsValue({{ ...r, state: "holdover", next_try: null }})) }}));
+""")
+        self.assertEqual(out["de"], "Wartet: GPS-Kalibrierung (Offset), GPS-Fehlerschranke")
+        self.assertEqual(out["old"], out["de"])                                  # älterer Server ohne Kennungen
+        self.assertEqual(out["en"], "Waiting: GPS calibration (offset), GPS error bound")
+        self.assertEqual(out["held"], "4 von 4 in 24 h wartet auf Holdover-Test")
+        self.assertEqual(out["enHeld"], "4 of 4 in 24 h waits for holdover test")
+
+    @unittest.skipUnless(shutil.which("node"), "node fehlt")
+    def test_gps_delay_cell_shows_saved_bound(self):
+        out = self.run_js(f"""
+const gps = await import({mod("pages/gps.js")});
+const sys = {{ time: 1783000000, utc_offset: 7200 }};
+const t = (v) => typeof v === "string" ? v : text(v);
+const base = {{ managed: true, source: "measured", delay: 0.04, pps: false }};
+console.log(JSON.stringify({{
+  plain: t(gps.delayCell({{ gps_bound: base }}, sys)),
+  limit: t(gps.delayCell({{ gps_bound: {{ ...base, saved: 0.06, restart: {{ state: "limit", next_try: 1783003600 }} }} }}, sys)),
+  soon: t(gps.delayCell({{ gps_bound: {{ ...base, saved: 0.03, restart: {{ state: "collecting", next_try: 1783000120 }} }} }}, sys)),
+}}));
+""", tz="America/New_York")
+        self.assertEqual(out["plain"], "0.04 s (gemessen, ± 20 ms)")
+        self.assertIn("0.04 s (bisher", out["limit"])
+        self.assertIn("gespeichert: 0.06 s", out["limit"])
+        self.assertIn("wird mit dem nächsten Neustart von chronyd aktiv (Tagesgrenze automatischer Neustarts, frei ab 16:46)",
+                      out["limit"])
+        self.assertIn("(in Kürze)", out["soon"])
 
 
 try:

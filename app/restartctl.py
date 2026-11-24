@@ -21,16 +21,24 @@ Automatiken jetzt hier durch:
   * Obergrenze: höchstens MAX_PER_DAY automatische Neustarts in 24 h (gleitend). Darüber wartet die
     Änderung, bis wieder einer frei ist (Ereignis „Tagesgrenze erreicht“, einmal je Wartezeit). Die
     Einstellung ist dann schon gespeichert; chronyd nutzt bis dahin die bisherige. autocal verstellt
-    in der Zeit nichts weiter (es wartet, bis der Neustart belegt ist).
+    in der Zeit nichts weiter (es wartet, bis der Neustart belegt ist); GPS-Seite und Übersicht zeigen
+    die Wartezeit (waiting()).
+  * Vorrang für eine größere Fehlerschranke: Sie schützt davor, das GPS für genauer zu halten, als es
+    ist (schlechter werdender Empfang). Eine Anforderung mit grow=True darf darum über die Grenze hinaus
+    noch GROW_RESERVE weitere Plätze in 24 h nutzen; alles, was gerade wartet, geht mit.
   * Mitgenommen: Startet chronyd inzwischen aus einem anderen Grund neu (du speicherst, Zertifikat,
     Hotplug), erzeugt der Supervisor die Konfiguration dabei neu – die wartende Änderung ist damit aktiv
-    und zählt nicht zur Obergrenze. Endete jener Neustart weniger als TAKE_ALONG_MARGIN nach der
-    Anforderung, könnte er die Konfiguration noch davor erzeugt haben – dann folgt sicherheitshalber
-    ein eigener.
-  * Holdover-Test: Auch das gesammelte Anwenden prüft holdover.reload_or_defer – läuft ein Test,
-    folgt der Neustart nach dessen Ende.
-Jede Entscheidung (angewandt, Tagesgrenze, mitgenommen, nicht anforderbar) ist ein Ereignis der Art
-„reload“. Der Zustand steht in DATA_DIR/neustarts.json (überlebt einen Neustart von ntp-gui), in
+    und zählt nicht zur Obergrenze. Verglichen wird mit der LETZTEN Anforderung: Endete jener Neustart
+    weniger als TAKE_ALONG_MARGIN danach, könnte er die Konfiguration noch davor erzeugt haben – dann
+    folgt sicherheitshalber ein eigener. Zusätzlich wird nachgesehen, ob der Wert wirklich in der
+    laufenden chrony.conf steht (verify); fehlt er, bleibt die Anforderung stehen und es folgt ein
+    eigener Neustart.
+  * Holdover-Test: Läuft ein Test, wartet die Änderung (Zustand „holdover“, ein Ereignis, nichts
+    gezählt); nach dem Test noch COLLECT_SECONDS, damit ein Neustart des Tests sie mitnehmen kann, dann
+    ein eigener. Das Anwenden selbst geht weiter über holdover.reload_or_defer – beginnt der Test genau
+    in dem Moment, gilt dasselbe.
+Jede Entscheidung (angewandt, Tagesgrenze, mitgenommen, zurückgestellt, nicht anforderbar) ist ein
+Ereignis der Art „reload“. Der Zustand steht in DATA_DIR/neustarts.json (überlebt einen Neustart von ntp-gui), in
 /api/status („restarts“), auf der Übersicht (Kachel Dienste) und in /metrics.
 
 Datenschutz: gespeichert werden nur Zeitpunkte und feste Namen der Automatiken.
@@ -53,6 +61,7 @@ MAX_PER_DAY = 4             # automatische Neustarts von chronyd in 24 h (gleite
 RETRY_SECONDS = 600.0       # Anforderung gescheitert (kein Supervisor?): neuer Versuch nach …
 CLOCK_SLACK = 300.0         # Zeitpunkte so weit in der Zukunft gelten noch (Uhr leicht zurückgestellt)
 TAKE_ALONG_MARGIN = 30.0    # ein anderer Neustart nimmt die Änderung nur mit, wenn er so lange danach endete
+GROW_RESERVE = 4            # zusätzliche Plätze in 24 h nur für eine größere GPS-Fehlerschranke
 MAX_LOG = 20                # gemerkte Neustarts (für die Anzeige „zuletzt“)
 
 # Feste Namen – nur diese werden angenommen (keine freien Texte in Zustand, Ereignis oder Metrik).
@@ -61,6 +70,7 @@ LABELS = {
     "gps_bound": "GPS-Fehlerschranke",
 }
 SCOPES = ("chronyd", "all")   # nur chronyd neu laden bzw. alle Zeitdienste
+HELD = ("limit", "retry", "holdover")
 
 
 def _default_path() -> str:
@@ -83,6 +93,26 @@ def _default_started() -> float | None:
     return gpsquality.chronyd_started()
 
 
+def _default_busy() -> bool:
+    import holdover
+    return holdover.TEST.running()
+
+
+def _default_verify(who: str) -> bool | None:
+    """Steht die gespeicherte Änderung in der laufenden chrony.conf? None = nicht prüfbar."""
+    import autocal
+    import gpsquality
+    import settings
+    cfg = settings.values()
+    if not cfg.get("gps_enable"):
+        return None
+    if who == "autocal":
+        return autocal.offset_running(cfg)
+    if who == "gps_bound":
+        return gpsquality.bound_running(cfg)
+    return None
+
+
 def _num(value: Any) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
@@ -95,13 +125,16 @@ class Coordinator:
 
     def __init__(self, path: Callable[[], str] | None = None, wall: Callable[[], float] = time.time,
                  emit: Callable[..., Any] | None = None, gate: Callable[[Callable[[], Any]], bool] | None = None,
-                 started: Callable[[], float | None] | None = None) -> None:
+                 started: Callable[[], float | None] | None = None, busy: Callable[[], bool] | None = None,
+                 verify: Callable[[str], bool | None] | None = None) -> None:
         self.lock = threading.RLock()
         self._path = path or _default_path
         self.wall = wall
         self._emit_fn = emit or _default_emit
         self._gate = gate or _default_gate
         self._started = started or _default_started
+        self._busy = busy or _default_busy
+        self._verify = verify or _default_verify
         self.triggers: dict[str, Callable[[], bool] | None] = {"chronyd": None, "all": None}
         self.last_error: str | None = None
 
@@ -126,10 +159,13 @@ class Coordinator:
             who = pending.get("who") if isinstance(pending.get("who"), dict) else {}
             who = {k: (v if v in SCOPES else "chronyd") for k, v in who.items() if k in LABELS}
             if who:
+                since = _num(pending.get("since"))
+                last = _num(pending.get("last"))
                 state["pending"] = {
-                    "since": _num(pending.get("since")), "who": who,
-                    "held": pending.get("held") if pending.get("held") in ("limit", "retry") else None,
-                    "next_try": _num(pending.get("next_try")),
+                    "since": since, "last": since if last is None else max(since, last), "who": who,
+                    "held": pending.get("held") if pending.get("held") in HELD else None,
+                    "next_try": _num(pending.get("next_try")), "grow": pending.get("grow") is True,
+                    "checked": _num(pending.get("checked")),
                 }
         return state
 
@@ -152,6 +188,19 @@ class Coordinator:
         except OSError as exc:
             self.last_error = f"Zustand nicht gespeichert ({type(exc).__name__})"
 
+    def _busy_now(self) -> bool:
+        try:
+            return bool(self._busy())
+        except Exception:
+            return False
+
+    def _arrived(self, who: str) -> bool | None:
+        try:
+            result = self._verify(who)
+        except Exception:
+            return None
+        return result if isinstance(result, bool) else None
+
     def _emit(self, level: str, title: str, data: dict) -> None:
         try:
             self._emit_fn("reload", level, title, data)
@@ -165,9 +214,10 @@ class Coordinator:
         return [t for t in auto if now - DAY < t <= now + DAY]
 
     # --- Automatiken -------------------------------------------------------------------------------
-    def request(self, who: str, scope: str = "chronyd") -> bool:
+    def request(self, who: str, scope: str = "chronyd", grow: bool = False) -> bool:
         """Eine Automatik hat gespeichert und braucht einen Neustart. True = vorgemerkt (der Neustart
-        folgt gesammelt). Unbekannte Namen werden abgelehnt (False)."""
+        folgt gesammelt). Unbekannte Namen werden abgelehnt (False). grow: die GPS-Fehlerschranke wird
+        größer (Vorrang, siehe GROW_RESERVE)."""
         if who not in LABELS or scope not in SCOPES:
             return False
         with self.lock:
@@ -175,16 +225,22 @@ class Coordinator:
             state = self._load()
             pending = state.get("pending")
             if not pending:
-                pending = {"since": now, "who": {}, "held": None, "next_try": None}
+                pending = {"since": now, "last": now, "who": {}, "held": None, "next_try": None,
+                           "grow": False, "checked": None}
+            pending["last"] = max(now, pending.get("last") or now)
             if pending["who"].get(who) != "all":
                 pending["who"][who] = scope
+            if grow and who == "gps_bound":
+                pending["grow"] = True
+                if pending.get("held") == "limit":      # wartet an der Tagesgrenze: gleich neu bewerten
+                    pending["next_try"] = None
             state["pending"] = pending
             self._save(state)
             return True
 
-    def trigger_for(self, who: str, scope: str = "chronyd") -> Callable[[], bool]:
+    def trigger_for(self, who: str, scope: str = "chronyd", grow: bool = False) -> Callable[[], bool]:
         """Als trigger_reload für eine Automatik (autocal, gpsquality)."""
-        return lambda: self.request(who, scope)
+        return lambda: self.request(who, scope, grow)
 
     # --- Takt --------------------------------------------------------------------------------------
     def tick(self, now: float | None = None) -> dict | None:
@@ -199,25 +255,54 @@ class Coordinator:
             labels = [LABELS[n] for n in names]
             since = pending["since"]
             if since > now + CLOCK_SLACK:      # Uhr deutlich zurückgestellt: ab jetzt sammeln
-                pending["since"] = since = now
-                pending["next_try"] = None
+                pending.update(since=now, last=now, next_try=None)
+                since = now
+                self._save(state)
+            last = pending.get("last") or since
+            if last > now + CLOCK_SLACK:
+                pending["last"] = last = now
                 self._save(state)
             started = _num(self._started())
-            if started is not None and started >= since + TAKE_ALONG_MARGIN:
-                state["pending"] = None
+            if started is not None and started >= last + TAKE_ALONG_MARGIN and started != pending.get("checked"):
+                missing = [n for n in names if self._arrived(n) is False]
+                taken = [n for n in names if n not in missing]
+                if taken:
+                    self._emit("info", "Automatische Änderung mit dem letzten Neustart von chronyd übernommen: "
+                                       f"{', '.join(LABELS[n] for n in taken)} – kein eigener Neustart nötig",
+                               {"who": taken, "decision": "taken_along"})
+                if not missing:
+                    state["pending"] = None
+                    self._save(state)
+                    return {"decision": "taken_along", "who": names}
+                # Der Neustart hat seine Konfiguration noch vor dieser Änderung erzeugt: eigener Neustart.
+                pending["who"] = {n: pending["who"][n] for n in missing}
+                pending["checked"] = started
+                if "gps_bound" not in missing:
+                    pending["grow"] = False
                 self._save(state)
-                self._emit("info", f"Automatische Änderung mit dem letzten Neustart von chronyd übernommen: "
-                                   f"{', '.join(labels)} – kein eigener Neustart nötig",
-                           {"who": names, "decision": "taken_along"})
-                return {"decision": "taken_along", "who": names}
+                names = missing
+                labels = [LABELS[n] for n in names]
+                self._emit("info", f"Der letzte Neustart von chronyd hat {', '.join(labels)} noch nicht übernommen "
+                                   "– es folgt ein eigener Neustart",
+                           {"who": names, "decision": "not_taken_along"})
             if now - since < COLLECT_SECONDS:
                 return {"decision": "collect", "who": names}
+            if self._busy_now():
+                return self._hold_for_holdover(state, pending, names, labels)
+            if pending.get("held") == "holdover":
+                # Test vorbei: kurz warten – ein Neustart nach dem Test nimmt die Änderung mit.
+                pending.update(held=None, next_try=now + COLLECT_SECONDS)
+                self._save(state)
+                return {"decision": "wait", "who": names, "held": None}
             next_try = pending.get("next_try")
             if next_try is not None and now < next_try and next_try - now <= DAY:
                 return {"decision": "wait", "who": names, "held": pending.get("held")}
             recent = self._recent(state["auto"], now)
-            if len(recent) >= MAX_PER_DAY:
-                free_at = min(recent) + DAY
+            grow = bool(pending.get("grow"))
+            beyond = len(recent) >= MAX_PER_DAY
+            if beyond and not (grow and len(recent) < MAX_PER_DAY + GROW_RESERVE):
+                ceiling = MAX_PER_DAY + GROW_RESERVE if grow else MAX_PER_DAY
+                free_at = sorted(recent)[len(recent) - ceiling] + DAY
                 first = pending.get("held") != "limit"
                 pending.update(held="limit", next_try=free_at)
                 self._save(state)
@@ -235,6 +320,10 @@ class Coordinator:
                 ok = bool(self._gate(trigger)) if trigger else False
             except Exception:
                 ok = False
+            if ok and self._busy_now():
+                # Gerade eben hat ein Holdover-Test begonnen: reload_or_defer hat nur vorgemerkt, chronyd
+                # startet erst nach dem Test neu (vom Test ausgelöst) – nichts zählen, nichts „neu gestartet“.
+                return self._hold_for_holdover(state, pending, names, labels)
             if not ok:
                 first = pending.get("held") != "retry"
                 pending.update(held="retry", next_try=now + RETRY_SECONDS)
@@ -250,13 +339,39 @@ class Coordinator:
             count = len(self._recent(state["auto"], now))
             what = "Zeitdienste" if scope == "all" else "chronyd"
             late = " (nach Tagesgrenze nachgeholt)" if pending.get("held") == "limit" else ""
+            if beyond:
+                late = " (größere GPS-Fehlerschranke hat Vorrang vor der Tagesgrenze)"
             self._emit("info", f"{what} für automatische Änderungen neu gestartet{late}: {', '.join(labels)} "
                                f"({count} von {MAX_PER_DAY} in 24 h)",
                        {"who": names, "decision": "applied", "scope": scope, "auto_24h": count,
-                        "limit": MAX_PER_DAY})
+                        "limit": MAX_PER_DAY, "grow": grow})
             return {"decision": "applied", "who": names, "scope": scope}
 
+    def _hold_for_holdover(self, state: dict, pending: dict, names: list[str], labels: list[str]) -> dict:
+        first = pending.get("held") != "holdover"
+        pending.update(held="holdover", next_try=None)
+        self._save(state)
+        if first:
+            self._emit("info", f"Neustart von chronyd für {', '.join(labels)} zurückgestellt: Holdover-Test läuft – "
+                               "folgt nach dem Test (bis dahin gilt die bisherige Einstellung)",
+                       {"who": names, "decision": "deferred"})
+        return {"decision": "deferred", "who": names}
+
     # --- Anzeige -----------------------------------------------------------------------------------
+    def waiting(self, who: str, now: float | None = None) -> dict[str, Any] | None:
+        """Wartet eine gespeicherte Änderung von `who` noch auf ihren Neustart? {"state", "next_try"} oder None."""
+        with self.lock:
+            now = self.wall() if now is None else now
+            state = self._load()
+        pending = state.get("pending")
+        if not pending or who not in pending["who"]:
+            return None
+        held = pending.get("held")
+        next_try = pending.get("next_try")
+        if next_try is None and not held:
+            next_try = max(pending["since"] + COLLECT_SECONDS, now)
+        return {"state": held or "collecting", "next_try": next_try}
+
     def status(self, now: float | None = None) -> dict[str, Any]:
         """Für /api/status und /metrics: nur Zahlen, Zeitpunkte und feste Namen."""
         with self.lock:
@@ -267,12 +382,15 @@ class Coordinator:
         out: dict[str, Any] = {
             "auto_24h": len(recent), "limit": MAX_PER_DAY, "collect_s": COLLECT_SECONDS,
             "last": max(state["auto"]) if state["auto"] else None,
-            "state": "idle", "pending": [], "next_try": None,
+            "grow_reserve": GROW_RESERVE, "state": "idle", "pending": [], "pending_ids": [], "next_try": None,
         }
         if pending:
-            out["pending"] = [LABELS[n] for n in sorted(pending["who"])]
+            ids = sorted(pending["who"])
+            out["pending"] = [LABELS[n] for n in ids]
+            out["pending_ids"] = ids
             out["state"] = pending.get("held") or "collecting"
-            out["next_try"] = pending.get("next_try") if pending.get("held") else pending["since"] + COLLECT_SECONDS
+            out["next_try"] = pending.get("next_try") if pending.get("next_try") is not None or pending.get("held") \
+                else pending["since"] + COLLECT_SECONDS
         if self.last_error:
             out["error"] = self.last_error
         return out
@@ -281,8 +399,16 @@ class Coordinator:
 COORD = Coordinator()
 
 
-def trigger_for(who: str, scope: str = "chronyd") -> Callable[[], bool]:
-    return COORD.trigger_for(who, scope)
+def trigger_for(who: str, scope: str = "chronyd", grow: bool = False) -> Callable[[], bool]:
+    return COORD.trigger_for(who, scope, grow)
+
+
+def waiting(who: str) -> dict[str, Any] | None:
+    """Wirft nie (Anzeige)."""
+    try:
+        return COORD.waiting(who)
+    except Exception:
+        return None
 
 
 def tick() -> dict | None:
@@ -297,4 +423,4 @@ def status() -> dict[str, Any]:
     try:
         return COORD.status()
     except Exception:
-        return {"auto_24h": None, "limit": MAX_PER_DAY, "state": "unknown", "pending": []}
+        return {"auto_24h": None, "limit": MAX_PER_DAY, "state": "unknown", "pending": [], "pending_ids": []}

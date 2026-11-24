@@ -474,8 +474,15 @@ export function restartsValue(r, system = {}) {
     { hour: "2-digit", minute: "2-digit" }, null, "toLocaleTimeString") : "";
   const [label, tone] = r.state === "limit" ? [tr("overview.auto_restarts.limit", { time: at }), "warn"]
     : r.state === "retry" ? [tr("overview.auto_restarts.retry", { time: at }), "warn"]
-      : [tr("overview.auto_restarts.collecting"), "muted"];
-  return el("span", { title: tr("overview.auto_restarts.title", { names: pending.join(", ") }) }, `${text} `, badge(label, tone));
+      : r.state === "holdover" ? [tr("overview.auto_restarts.holdover"), "muted"]
+        : [tr("overview.auto_restarts.collecting"), "muted"];
+  // Feste Kennungen (pending_ids) übersetzen; ohne sie (älterer Server) die Namen aus dem Status.
+  const ids = Array.isArray(r.pending_ids) && r.pending_ids.length === pending.length ? r.pending_ids : null;
+  const names = pending.map((name, i) => {
+    const key = ids && ["autocal", "gps_bound"].includes(ids[i]) ? `overview.auto_restarts.who.${ids[i]}` : null;
+    return key ? tr(key) : name;
+  });
+  return el("span", { title: tr("overview.auto_restarts.title", { names: names.join(", ") }) }, `${text} `, badge(label, tone));
 }
 
 function servicesPanel(services, issues, status = {}) {

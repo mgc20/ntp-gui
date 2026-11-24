@@ -1,4 +1,5 @@
-import { el, fmtSeconds, fmtDuration, fmtNumber, fmtIsoUtc, fmtDate, isNum, rich, apiPost, holdoverNote } from "../util.js";
+import { el, fmtSeconds, fmtDuration, fmtNumber, fmtIsoUtc, fmtDate, isNum, rich, apiPost, holdoverNote, fmtZoned, serverZone } from "../util.js";
+import { t as tr } from "../i18n.js";
 import { card, statCard, kv, infoButton, badge, emptyState, errorState, loadingOr, toast, chartCard } from "../ui.js";
 import { lineChart, skyPlot, snrBars } from "../charts.js";
 import { stateBadge, reasonCell, reasonDiffers } from "./sources.js";
@@ -382,10 +383,20 @@ function calibrationCard(ctx, gpsSource) {
 
 // Delay, den chrony wirklich nutzt: im Modus „gemessen“ die gemessene Schranke bzw. der
 // vorsichtige Standard (nicht die Einstellung gps_delay), sonst die Einstellung.
-function delayCell(cfg) {
+// 1.12: Wartet eine automatisch angepasste Schranke noch auf den Neustart von chronyd (Neustart-Koordinator),
+// gilt in chronyd noch die bisherige („delay“); die gespeicherte steht unter „saved“ und kommt als Hinweis dazu.
+export function delayCell(cfg, system = {}) {
   const bound = cfg.gps_bound || {};
   if (bound.managed && isNum(bound.delay)) {
-    return `${bound.delay} s (${bound.source === "measured" ? "gemessen" : "vorsichtiger Standard"}, ± ${fmtSeconds(bound.delay / 2)})`;
+    const what = isNum(bound.saved) ? "bisher" : bound.source === "measured" ? "gemessen" : "vorsichtiger Standard";
+    const text = `${bound.delay} s (${what}, ± ${fmtSeconds(bound.delay / 2)})`;
+    const wait = bound.restart;
+    if (!isNum(bound.saved) || !wait) return text;
+    const time = isNum(wait.next_try) ? fmtZoned(wait.next_try, serverZone(system) ? system : null,
+      { hour: "2-digit", minute: "2-digit" }, null, "toLocaleTimeString") : "–";
+    const when = tr(`pages.gps.bound_when.${["limit", "holdover", "retry"].includes(wait.state) ? wait.state : "collecting"}`, { time });
+    return el("span", {}, `${text} `, badge(tr("pages.gps.bound_pending",
+      { delay: `${bound.saved} s (± ${fmtSeconds(bound.saved / 2)})`, when }), wait.state === "retry" ? "warn" : "info"));
   }
   return `${configSeconds(cfg.gps_delay)} (eingestellt)`;
 }
@@ -421,7 +432,7 @@ export function render(ctx) {
       ["Offset der letzten Messung", fmtSeconds(gpsSource.offset, 3, true), "source_offset"],
       ["Jitter", isNum(gpsSource.std_dev) ? fmtSeconds(gpsSource.std_dev) : "–", "jitter"],
       ["Eingestellter Offset", `${configSeconds(cfg.gps_offset)}`, "gps_offset"],
-      ["Delay in chrony", delayCell(cfg), "gps_delay"],
+      ["Delay in chrony", delayCell(cfg, status.system || {}), "gps_delay"],
       ["Rolle", { auto: "automatisch", prefer: "bevorzugt", noselect: "nur beobachten" }[cfg.gps_select] || cfg.gps_select, "gps_role"],
     ]) : emptyState("Die GPS-Zeile fehlt in chrony – meist weil das Gerät beim Start nicht vorhanden war. Der Hinweis oben auf der Übersicht nennt den Grund."));
 

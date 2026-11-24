@@ -53,9 +53,13 @@ export const HELP = {
       + "muss er neu starten – das kostet ihn kurz den Regelzustand. Diese Neustarts laufen über einen "
       + "gemeinsamen Koordinator: Er **sammelt** Änderungen zwei Minuten lang und übernimmt sie in einem "
       + "Neustart, erlaubt höchstens **4 automatische Neustarts in 24 Stunden** und wartet, solange ein "
-      + "Holdover-Test läuft. Ist die Grenze erreicht, gilt bis zum nächsten freien Neustart die bisherige "
-      + "Einstellung (Ereignis „Tagesgrenze erreicht“). Startet chronyd vorher aus einem anderen Grund neu, "
-      + "ist die Änderung damit schon aktiv. Was du selbst speicherst, zurücknimmst oder zurücksetzt, wirkt "
+      + "Holdover-Test läuft (das zählt nicht mit). Ist die Grenze erreicht, gilt bis zum nächsten freien Neustart "
+      + "die bisherige Einstellung (Ereignis „Tagesgrenze erreicht“); die GPS-Seite zeigt den gespeicherten Wert "
+      + "als „wird mit dem nächsten Neustart aktiv“. Wird die Fehlerschranke **größer** (vorsichtiger, etwa bei "
+      + "schlechter werdendem Empfang), darf sie bis zu 4 weitere Neustarts nutzen – eine zu enge Schranke "
+      + "ließe das GPS genauer erscheinen, als es ist. Startet chronyd vorher aus einem anderen Grund neu, "
+      + "ist die Änderung damit schon aktiv (nachgesehen in der laufenden chrony.conf; fehlt sie dort, folgt "
+      + "ein eigener Neustart). Was du selbst speicherst, zurücknimmst oder zurücksetzt, wirkt "
       + "sofort und zählt nicht mit. Jede Entscheidung steht im Ereignisprotokoll; für Prometheus gibt es "
       + "`ntpgui_auto_restarts_24h` und `ntpgui_auto_restart_pending`.",
   },

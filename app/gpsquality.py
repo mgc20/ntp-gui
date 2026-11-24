@@ -619,15 +619,59 @@ def annotate_calibration(result: dict[str, Any], cfg: dict, applied: dict | None
     return result
 
 
+def running_delay(cfg: dict) -> float | None:
+    """Delay der GPS-Zeile in der laufenden chrony.conf (None: nicht lesbar)."""
+    try:
+        import autocal
+        return autocal.running_conf_value(str(cfg.get("gps_refid") or "GPS"), "delay")
+    except Exception:
+        return None
+
+
+def bound_running(cfg: dict) -> bool | None:
+    """Steht der Delay, den chrony nutzen soll, schon in der laufenden chrony.conf? None = nicht prüfbar."""
+    running = running_delay(cfg)
+    if running is None:
+        return None
+    try:
+        want = float(refclock_values(cfg)["delay"])
+    except Exception:
+        return None
+    return abs(running - want) <= max(1e-9, abs(want) * 1e-6)
+
+
+def _restart_wait(who: str) -> dict | None:
+    fn = _DEPS.get("restart_wait")
+    if fn is None:
+        return None
+    try:
+        wait = fn(who)
+    except Exception:
+        return None
+    return wait if isinstance(wait, dict) and wait.get("state") else None
+
+
 def status_hint(cfg: dict) -> dict[str, Any]:
-    """Kurzfassung für /api/status (GPS-Seite): PPS wirklich aktiv? Welcher Delay gilt?"""
+    """Kurzfassung für /api/status (GPS-Seite): PPS wirklich aktiv? Welcher Delay gilt?
+
+    1.12: Wartet eine automatisch angepasste Schranke noch auf den Neustart von chronyd (Koordinator:
+    sammeln, Tagesgrenze, Holdover-Test), gilt in chronyd noch die bisherige. Dann steht der gespeicherte
+    Wert unter „saved“, unter „delay“ der laufende (sofern lesbar) und unter „restart“ die Wartezeit."""
     if not cfg.get("gps_enable"):
         return {"pps": False, "managed": False, "delay": None, "source": None}
     try:
         values = refclock_values(cfg)
     except Exception:
         values = {"delay": float(cfg.get("gps_delay") or DEFAULT_DELAY), "source": "manual"}
-    return {"pps": has_pps(cfg), "managed": managed(cfg), "delay": values["delay"], "source": values["source"]}
+    out = {"pps": has_pps(cfg), "managed": managed(cfg), "delay": values["delay"], "source": values["source"]}
+    wait = _restart_wait("gps_bound") if out["managed"] else None
+    if wait:
+        running = running_delay(cfg)
+        out["restart"] = {"state": wait["state"], "next_try": _num(wait.get("next_try"))}
+        if running is not None and abs(running - values["delay"]) > max(1e-9, abs(values["delay"]) * 1e-6):
+            out["saved"] = values["delay"]
+            out["delay"] = running
+    return out
 
 
 # =========================================================================================
@@ -635,20 +679,26 @@ def status_hint(cfg: dict) -> dict[str, Any]:
 # =========================================================================================
 
 _DEPS: dict[str, Any] = {"history": None, "trigger_reload": None, "emit": None, "net_distance": None,
-                         "chronyd_started": None, "auto_reload": None}
+                         "chronyd_started": None, "auto_reload": None, "auto_reload_grow": None,
+                         "restart_wait": None}
 _LAST_TICK: dict[str, Any] = {"mono": None}
 
 
 def configure(history: Any = None, trigger_reload: Callable[[], bool] | None = None,
               emit: Callable[..., Any] | None = None, net_distance: Callable[[], float | None] | None = None,
               chronyd_started: Callable[[], float | None] | None = None,
-              auto_reload: Callable[[], bool] | None = None) -> None:
+              auto_reload: Callable[[], bool] | None = None,
+              auto_reload_grow: Callable[[], bool] | None = None,
+              restart_wait: Callable[[str], dict | None] | None = None) -> None:
     """net_distance: () → kleinste Root Distance der genutzten NTS-Quellen (s) oder None.
     trigger_reload: Neuladen nach einer Änderung der Schranke – server.py gibt hier das Neuladen nur von
     chronyd (trigger_reload_chronyd): Die Schranke steht nur in chrony.conf, gpsd und dnsfwd laufen weiter.
     chronyd_started: () → Unix-Zeit des letzten Starts von chronyd (Standard: aus RUN_DIR/reload.json).
     auto_reload: Neustart für die stündliche Automatik (1.12: über restartctl gesammelt, mit Obergrenze je
-    Tag); ohne Angabe trigger_reload. „Auf Standard zurücksetzen“ (Mensch) nutzt immer trigger_reload."""
+    Tag); ohne Angabe trigger_reload. „Auf Standard zurücksetzen“ (Mensch) nutzt immer trigger_reload.
+    auto_reload_grow: dasselbe, wenn die Schranke größer wird (Vorrang vor der Tagesgrenze); ohne Angabe
+    auto_reload. restart_wait: (who) → {"state", "next_try"} solange eine Änderung auf ihren Neustart
+    wartet (restartctl.waiting), für die Anzeige."""
     if net_distance is not None:
         _DEPS["net_distance"] = net_distance
     if chronyd_started is not None:
@@ -659,6 +709,10 @@ def configure(history: Any = None, trigger_reload: Callable[[], bool] | None = N
         _DEPS["trigger_reload"] = trigger_reload
     if auto_reload is not None:
         _DEPS["auto_reload"] = auto_reload
+    if auto_reload_grow is not None:
+        _DEPS["auto_reload_grow"] = auto_reload_grow
+    if restart_wait is not None:
+        _DEPS["restart_wait"] = restart_wait
     if emit is not None:
         _DEPS["emit"] = emit
 
@@ -874,7 +928,10 @@ def tick(cfg: dict, now: float | None = None, samples: list[dict] | None = None)
                                     "bound": measured["bound"], "samples": measured["samples"],
                                     "hours": measured["hours"], "t": now}
                 save_state(state)
-                reloaded = _automatic_reload(_DEPS.get("auto_reload") or _DEPS.get("trigger_reload"))
+                auto = _DEPS.get("auto_reload")
+                if new_delay > old and _DEPS.get("auto_reload_grow"):
+                    auto = _DEPS["auto_reload_grow"]   # größer = vorsichtiger: Vorrang vor der Tagesgrenze
+                reloaded = _automatic_reload(auto or _DEPS.get("trigger_reload"))
                 decision["reload_triggered"] = reloaded
                 _emit("gps", "info",
                       f"GPS-Fehlerschranke angepasst: ± {fmt_ms(old / 2)} → ± {fmt_ms(new_delay / 2)}",

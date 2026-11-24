@@ -1790,7 +1790,7 @@ def build_metrics() -> str:
     _metric(lines, "ntpgui_auto_restart_limit", restarts.get("limit"),
             "Maximum automatic chronyd restarts per 24 h; changes from the user are not limited")
     _metric(lines, "ntpgui_auto_restart_pending", 1 if restarts.get("pending") else 0,
-            "1 while an automatic change waits for its chronyd restart (collecting or daily limit reached)")
+            "1 while an automatic change waits for its chronyd restart (collecting, daily limit or holdover test)")
     _metric(lines, "ntpgui_auto_restart_limited", 1 if restarts.get("state") == "limit" else 0,
             "1 while an automatic change waits because the daily restart limit is reached")
     _hardware_metrics(lines)
@@ -3822,10 +3822,14 @@ def main() -> None:
     # 1.12: Automatische Neustarts gehen über den Neustart-Koordinator (sammeln, Obergrenze je Tag);
     # was du auslöst (Rückgängig, Zurücksetzen, Speichern), startet weiter sofort neu.
     restartctl.COORD.configure(chronyd=trigger_reload_chronyd, full=trigger_reload)
+    # Eine größere Fehlerschranke hat Vorrang vor der Tagesgrenze (grow); die Wartezeit zeigt die GPS-Seite.
     autocal.configure(history=HISTORY, trigger_reload=trigger_reload_chronyd,
-                      auto_reload=restartctl.trigger_for("autocal"))
+                      auto_reload=restartctl.trigger_for("autocal"),
+                      restart_wait=lambda: restartctl.waiting("autocal"))
     gpsquality.configure(history=HISTORY, trigger_reload=trigger_reload_chronyd,
                          auto_reload=restartctl.trigger_for("gps_bound"),
+                         auto_reload_grow=restartctl.trigger_for("gps_bound", grow=True),
+                         restart_wait=restartctl.waiting,
                          net_distance=lambda: gpsquality.nts_distance(chrony.detailed_sources()))
     threading.Thread(target=collector, daemon=True, name="collector").start()
     threading.Thread(target=loop_guard_runner, daemon=True, name="loopguard").start()
