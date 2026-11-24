@@ -11,6 +11,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _isolation  # noqa: E402,F401 – vor jedem App-Import: Host-Pfade umlenken
+from _support import skip_unless_tool  # noqa: E402
 
 import confgen  # noqa: E402
 import ptp  # noqa: E402
@@ -549,7 +550,7 @@ class HomelabOptionTests(Phc2sysPlanTests):
         cfg = settings.values({"GPS_ENABLE": "false", "GPS_DEVICE": "/dev/ttyACM-fehlt"})
         self.assertEqual(confgen.hotplug_paths(cfg), [])
 
-    @unittest.skipUnless(shutil.which("ptp4l"), "ptp4l nicht installiert")
+    @skip_unless_tool(bool(shutil.which("ptp4l")), "ptp4l nicht installiert")
     def test_ptp4l_accepts_profiles(self):
         import subprocess
         for profile in ("default", "aes67", "st2059", "gptp"):

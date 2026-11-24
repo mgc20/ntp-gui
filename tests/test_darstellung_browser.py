@@ -18,7 +18,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _isolation  # noqa: E402,F401 – vor jedem App-Import: Host-Pfade umlenken
-from _support import JoiningHTTPServer, stop_http_server  # noqa: E402
+from _support import JoiningHTTPServer, skip_tool, skip_unless_tool, stop_http_server  # noqa: E402
 
 CHECK = r"""
 const { chromium } = require("playwright");
@@ -66,7 +66,7 @@ def _playwright_ready() -> bool:
     return probe.returncode == 0
 
 
-@unittest.skipUnless(_playwright_ready(), "Node mit Playwright nicht vorhanden")
+@skip_unless_tool(_playwright_ready(), "Node mit Playwright nicht vorhanden")
 class HandyBreiteTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -91,7 +91,7 @@ class HandyBreiteTest(unittest.TestCase):
             url = f"http://127.0.0.1:{self.httpd.server_address[1]}"
             result = subprocess.run(["node", str(script), url], capture_output=True, text=True, timeout=180)
         if result.returncode == 2 and "Executable doesn't exist" in result.stderr:
-            self.skipTest("Playwright-Browser nicht installiert")
+            skip_tool(self, "Playwright-Browser nicht installiert")
         self.assertEqual(result.returncode, 0, result.stderr)
         out = json.loads(result.stdout)
         for key, res in out.items():

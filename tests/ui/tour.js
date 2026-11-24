@@ -1,6 +1,6 @@
 // UI-Rundgang: alle Routen bei 1440 und 390 px, helles und dunkles Thema, im echten Browser (Playwright).
-// Kein Unit-Test – läuft nur von Hand (siehe README.md) und braucht einen laufenden Server mit dem
-// erfundenen chronyc (fake_chronyc.py).
+// Kein Unit-Test – läuft von Hand oder als Auswahl in der CI (tests/ui/ci.sh, siehe README.md) und braucht einen
+// laufenden Server mit dem erfundenen chronyc (fake_chronyc.py).
 //
 // Prüft je Route (kanonische Routen seit 1.6):
 //   * Konsolenfehler und Seitenfehler,
@@ -863,6 +863,9 @@ async function clockChecks(browser) {
       if (problem) found.push(`/clock${query} ${width}: ${problem}`);
     }
   }
+  // TOUR_CLOCK_BASIC_ONLY=1 (CI): nur die Designs mit fester Serverzeit, Kiosk, E-Ink und die Allowlist – ohne die
+  // Studiouhr-Matrizen, die zusammen mehr als zehn Minuten brauchen.
+  if (process.env.TOUR_CLOCK_BASIC_ONLY) return { found, lines };
   const quiet = await clockQuietChecks(browser);
   found.push(...quiet.found);
   lines.push(...quiet.lines);
@@ -5172,7 +5175,7 @@ async function helpChecks(browser) {
       process.exitCode = result.found.length ? 1 : 0;
       return;
     }
-    if (process.env.TOUR_CLOCK_ONLY) {
+    if (process.env.TOUR_CLOCK_ONLY || process.env.TOUR_CLOCK_BASIC_ONLY) {
       // Nur die Uhr-Werkstatt (/clock braucht keinen Assistenten).
       const result = await clockChecks(browser);
       console.log(JSON.stringify(result, null, 1));
@@ -5221,25 +5224,29 @@ async function helpChecks(browser) {
     const clientsResult = await clientsChecks(browser);
     nav.found.push(...clientsResult.found);
     nav.lines.push(...clientsResult.lines);
-    const pagesResult = await pagesChecks(browser);
-    nav.found.push(...pagesResult.found);
-    nav.lines.push(...pagesResult.lines);
-    const clockResult = await clockChecks(browser);
-    nav.found.push(...clockResult.found);
-    nav.lines.push(...clockResult.lines);
-    const timelineResult = await timelineChecks(browser);
-    nav.found.push(...timelineResult.found);
-    nav.lines.push(...timelineResult.lines);
-    const heroResult = await heroChecks(browser);
-    nav.found.push(...heroResult.found);
-    nav.lines.push(...heroResult.lines);
-    const helpResult = await helpChecks(browser);
-    nav.found.push(...helpResult.found);
-    nav.lines.push(...helpResult.lines);
-    const layoutResult = await layoutFixChecks(browser);
-    nav.found.push(...layoutResult.found);
-    nav.lines.push(...layoutResult.lines);
-    words = await wordCounts(browser);
+    // TOUR_ROUTES_ONLY=1 (CI): Assistent, Navigation, Einstellungen, Clients und alle Routen; die übrigen Prüfungen
+    // laufen dort als eigene Varianten (tests/ui/ci.sh).
+    if (!process.env.TOUR_ROUTES_ONLY) {
+      const pagesResult = await pagesChecks(browser);
+      nav.found.push(...pagesResult.found);
+      nav.lines.push(...pagesResult.lines);
+      const clockResult = await clockChecks(browser);
+      nav.found.push(...clockResult.found);
+      nav.lines.push(...clockResult.lines);
+      const timelineResult = await timelineChecks(browser);
+      nav.found.push(...timelineResult.found);
+      nav.lines.push(...timelineResult.lines);
+      const heroResult = await heroChecks(browser);
+      nav.found.push(...heroResult.found);
+      nav.lines.push(...heroResult.lines);
+      const helpResult = await helpChecks(browser);
+      nav.found.push(...helpResult.found);
+      nav.lines.push(...helpResult.lines);
+      const layoutResult = await layoutFixChecks(browser);
+      nav.found.push(...layoutResult.found);
+      nav.lines.push(...layoutResult.lines);
+      words = await wordCounts(browser);
+    }
     // TOUR_NAV_ONLY=1: nur die Navigationsprüfungen (schneller Durchlauf beim Arbeiten an der Navigation).
     for (const theme of process.env.TOUR_NAV_ONLY ? [] : ["light", "dark"]) {
       for (const width of [1440, 390]) {

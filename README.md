@@ -2432,7 +2432,14 @@ Metriken `ntpgui_update_available` und `ntpgui_update_check_last_success_timesta
 python3 -m unittest discover -s tests -v     # Parser, Einstellungen, Config, Kalibrierung, Hardware, NTS, Datenschutzfilter, API, Benachrichtigungen, DNS, Clients, Uhrqualität
 docker build -t ntp-gui:test .
 tests/container-test.sh ntp-gui:test         # Integrationstest gegen das gebaute Image
+tests/ui/ci.sh                               # Browser-Rundgang wie in der CI (braucht Node mit Playwright)
 ```
+
+Die CI führt außerdem im Job „Oberfläche“ den Browser-Rundgang aus `tests/ui/` und die Unittests
+aus, die Playwright oder `ptp4l` brauchen; dort scheitern sie, statt übersprungen zu werden
+(Einzelheiten in [tests/ui/README.md](tests/ui/README.md)). Was nur auf echter Hardware messbar ist
+(CPU der Studiouhr im Kiosk, Ton auf der Sekunde, Dauer der Sicherung, Serverzeit der Übersicht),
+steht im [Messblatt für den Raspberry Pi](docs/messblatt-pi.md).
 
 Der Integrationstest (348 Prüfungen) startet echte Container und prüft das, was Unittests
 nicht abdecken: Erkennung von fehlendem `CAP_SYS_TIME`, Healthcheck, alle Endpunkte,

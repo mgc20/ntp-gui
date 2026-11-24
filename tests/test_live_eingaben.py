@@ -28,13 +28,14 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from test_frontend_states import DOM  # noqa: E402 – dieselbe DOM-Attrappe
 from test_darstellung_browser import _playwright_ready  # noqa: E402
+from _support import skip_tool, skip_unless_tool  # noqa: E402
 
 
 def mod(path: str) -> str:
     return json.dumps((JS / path).resolve().as_uri())
 
 
-@unittest.skipUnless(shutil.which("node"), "node fehlt")
+@skip_unless_tool(bool(shutil.which("node")), "node fehlt")
 class NodeTest(unittest.TestCase):
     def run_js(self, body: str):
         with tempfile.TemporaryDirectory() as tmp:
@@ -215,7 +216,7 @@ const { chromium } = require("playwright");
 """
 
 
-@unittest.skipUnless(_playwright_ready(), "Node mit Playwright nicht vorhanden")
+@skip_unless_tool(_playwright_ready(), "Node mit Playwright nicht vorhanden")
 class KlickNachZahlenfeldBrowserTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -250,7 +251,7 @@ class KlickNachZahlenfeldBrowserTest(unittest.TestCase):
             url = f"http://127.0.0.1:{self.httpd.server_address[1]}"
             result = subprocess.run(["node", str(script), url], capture_output=True, text=True, timeout=180)
         if result.returncode == 2 and "Executable doesn't exist" in result.stderr:
-            self.skipTest("Playwright-Browser nicht installiert")
+            skip_tool(self, "Playwright-Browser nicht installiert")
         self.assertEqual(result.returncode, 0, result.stderr)
         out = json.loads(result.stdout)
         self.assertTrue(out["numHeld"], "Zahlenfeld wurde trotz Fokus im Hintergrund neu gebaut")

@@ -1,7 +1,43 @@
 """Kleine Hilfen für mehrere Testmodule."""
 
+import os
 import socket
 import unittest
+
+# In der CI (Job „Oberfläche“) sind Node, Playwright mit Chromium und ptp4l Pflicht: Dort darf ein Test,
+# der sie braucht, nicht still übersprungen werden, sondern muss scheitern. Lokal bleibt es beim Überspringen.
+PFLICHT_ENV = "NTPGUI_WERKZEUGE_PFLICHT"
+
+
+def werkzeuge_pflicht() -> bool:
+    return os.environ.get(PFLICHT_ENV) == "1"
+
+
+def skip_unless_tool(ok: bool, reason: str):
+    """Wie unittest.skipUnless – mit NTPGUI_WERKZEUGE_PFLICHT=1 scheitert der Test stattdessen."""
+    if ok or not werkzeuge_pflicht():
+        return unittest.skipUnless(ok, reason)
+
+    def decorate(obj):
+        if isinstance(obj, type):
+            def setUpClass(cls):  # noqa: N802 – Name von unittest vorgegeben
+                raise AssertionError(f"Pflicht-Werkzeug fehlt: {reason}")
+            obj.setUpClass = classmethod(setUpClass)
+            return obj
+
+        def failing(*_args, **_kwargs):
+            raise AssertionError(f"Pflicht-Werkzeug fehlt: {reason}")
+        failing.__name__ = getattr(obj, "__name__", "test")
+        failing.__doc__ = getattr(obj, "__doc__", None)
+        return failing
+    return decorate
+
+
+def skip_tool(testcase: unittest.TestCase, reason: str) -> None:
+    """Wie testcase.skipTest – mit NTPGUI_WERKZEUGE_PFLICHT=1 ein Fehlschlag."""
+    if werkzeuge_pflicht():
+        testcase.fail(f"Pflicht-Werkzeug fehlt: {reason}")
+    testcase.skipTest(reason)
 
 
 def closed_tcp_port(testcase: unittest.TestCase) -> int:

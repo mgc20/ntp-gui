@@ -1,7 +1,8 @@
 # UI-Rundgang (Playwright)
 
 Werkzeug für Änderungen an der Oberfläche, **kein Teil der Unit-Testsuite**: `python3 -m unittest discover -s tests`
-findet hier nichts (kein `test*.py`, kein Paket) und braucht weder Node noch Playwright.
+findet hier nichts (kein `test*.py`, kein Paket) und braucht weder Node noch Playwright. Eine Auswahl läuft in der
+CI im Job „Oberfläche (Rundgang)“ (siehe [In der CI](#in-der-ci)).
 
 Der Rundgang öffnet jede Route bei 1440 und 390 px, hell und dunkel, und meldet:
 
@@ -95,11 +96,46 @@ Der Rundgang öffnet jede Route bei 1440 und 390 px, hell und dunkel, und meldet
   RFC 5737 (192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24).
 - `tour.js` – der Rundgang (Node, Playwright).
 - `rundgang.sh` – startet den Server mit dem erfundenen `chronyc` in einem Temp-Verzeichnis auf
-  127.0.0.1, führt `tour.js` aus und beendet den Server wieder.
+  127.0.0.1, führt `tour.js` aus und beendet den Server wieder. `TOUR_REQUIRE_PLAYWRIGHT=1` macht fehlendes
+  Playwright zum Fehler (Rückgabecode 3), `TOUR_SERVER_LOG=<Datei>` hebt das Serverprotokoll auf.
+- `ci.sh` – die Auswahl der CI: mehrere Varianten nacheinander, je mit eigenem Server.
+
+## In der CI
+
+Der Job `ui` in `.github/workflows/ci.yml` installiert Playwright in fester Version (`PLAYWRIGHT_VERSION`)
+per npm, dazu Chromium (Headless-Shell) mit seinen Systempaketen und `linuxptp`. Danach:
+
+1. die Unittests, die Node mit Playwright oder `ptp4l` brauchen (`test_darstellung_browser`,
+   `test_live_eingaben`, `test_ptp_gm`) mit `NTPGUI_WERKZEUGE_PFLICHT=1`: Fehlt ein Werkzeug, scheitern sie,
+   statt übersprungen zu werden;
+2. `tests/ui/ci.sh` mit den Varianten `routen` (`TOUR_ROUTES_ONLY=1`: Assistent, Navigation, Einstellungen,
+   Clients und alle Routen in beiden Themen und Breiten), `seiten`, `zeitleiste`, `statusband`, `hilfe`,
+   `korrekturen` (`TOUR_FIXES_ONLY=1`) und `uhr` (`TOUR_CLOCK_BASIC_ONLY=1`: jedes Design mit fester Serverzeit,
+   Rotlicht, Kiosk, E-Ink und unzulässige Parameter). Jede Variante hat eine Höchstdauer (`TOUR_CI_LIMIT`,
+   Standard 900 s), der Job eine eigene Zeitgrenze. Der vollständige Rundgang dauert lokal etwa eine halbe Stunde.
+
+Die Studiouhr-Prüfungen mit Läufen in Echtzeit (Long Tasks, Bildschleife) und die großen Flächenmatrizen
+(der Rest von `TOUR_CLOCK_ONLY`, `TOUR_LAYOUT_ONLY`, `TOUR_COUNTDOWN_ONLY`, `TOUR_TIMER_ONLY`, `TOUR_EXTRAS_ONLY`, `TOUR_FUN_ONLY`, `TOUR_TC_ONLY`,
+`TOUR_WORLD_ONLY`, `TOUR_STATUS_ONLY`, `TOUR_SIGNAL_ONLY`, `TOUR_LINK_ONLY`) laufen weiter nur lokal: Sie dauern
+lange und hängen von der Rechenleistung des Runners ab.
+
+Bei einem Fehlschlag lädt der Job den Ausgabeordner als Artefakt `rundgang-befund` hoch (7 Tage): die JSON-Ausgabe
+je Variante, Fehlerausgabe, Serverprotokoll und Bildschirmfotos. Alles stammt aus dem Testaufbau mit erfundenen
+Werten und Beispieladressen.
+
+Lokal mit denselben Parametern:
+
+```sh
+tests/ui/ci.sh 18300 /tmp/rundgang                    # alle Varianten der CI
+TOUR_CI_VARIANTS="hilfe seiten" tests/ui/ci.sh 18301  # nur einzelne
+```
+
+Messungen, die nur auf echter Hardware gehen, stehen in [docs/messblatt-pi.md](../../docs/messblatt-pi.md).
 
 ## Starten
 
-Voraussetzung: Node mit Playwright und Chromium (`npm install -g playwright && npx playwright install chromium`).
+Voraussetzung: Node mit Playwright und Chromium (`npm install -g playwright@1.63.0 && npx playwright install chromium`;
+dieselbe Version wie `PLAYWRIGHT_VERSION` in der CI).
 Fehlt Playwright, beendet sich `rundgang.sh` ohne Fehler mit einem Hinweis.
 
 ```sh
@@ -107,6 +143,9 @@ tests/ui/rundgang.sh            # Port 18300 (der Containertest belegt 18080–1
 tests/ui/rundgang.sh 18301      # anderer Port
 TOUR_SHOTS=/tmp/fotos tests/ui/rundgang.sh   # zusätzlich Bildschirmfotos (helles Thema)
 TOUR_NAV_ONLY=1 tests/ui/rundgang.sh          # nur die Navigationsprüfungen (Reiter, untere Leiste, „Mehr“, Speicherleiste)
+TOUR_ROUTES_ONLY=1 tests/ui/rundgang.sh       # Assistent, Navigation, Einstellungen, Clients und alle Routen (CI-Variante „routen“)
+TOUR_CLOCK_BASIC_ONLY=1 tests/ui/rundgang.sh  # nur die Designs der Uhr-Werkstatt, Kiosk, E-Ink, Allowlist (CI-Variante „uhr“)
+TOUR_FIXES_ONLY=1 tests/ui/rundgang.sh        # nur die Korrekturen aus 1.9 (Umbruch und Tab-Fokus bei 390 px, kv-Zeilen bei 2000/2560 px)
 TOUR_WORDS_ONLY=1 tests/ui/rundgang.sh        # nur die Wortzahl je Seite messen
 TOUR_PAGES_ONLY=1 tests/ui/rundgang.sh        # nur Clients mit Messwert und Rohdaten der Ereignisse (erfundene Antworten)
 TOUR_TIMER_ONLY=1 tests/ui/rundgang.sh        # nur Studiouhr C1: Eieruhr, Pomodoro, eigene Countdowns, Nachtmodus, keine Knöpfe in Studio/Kachel/Kiosk/OBS
