@@ -52,11 +52,12 @@ export const HELP_API = {
     title: "Prometheus-Metriken (/metrics)",
     text: "`/metrics` liefert Messwerte für Prometheus und Grafana – mit einem **nur lesen**-Schlüssel, sobald ein "
       + "Passwort gesetzt ist. Zu Clients, Benachrichtigungen, nächtlicher Sicherung, Ereignissen, Holdover-Test, "
-      + "GPS-Automatik und Zeitwächter-Ping stehen dort nur **Summen und feste Werte**: keine Adressen, keine "
-      + "Gerätenamen, keine Kanal-Adressen, keine Satellitenzahlen und HDOP nur als Stufe. Der einzige frei "
-      + "vergebene Text sind die Namen deiner Client-Gruppen. **Gruppennamen in /metrics** aus: Prometheus sieht "
-      + "dann nur die Kennung (z. B. `g3`) – sinnvoll, wenn ein zentrales Monitoring deine Netzeinteilung nicht "
-      + "kennen soll. Wirkt ohne Neustart.",
+      + "GPS-Automatik und Zeitwächter-Ping stehen dort nur **Summen und feste Werte**: keine Client-Adressen, keine "
+      + "Gerätenamen, keine Kanal-Adressen, keine Satellitenzahlen, HDOP nur als Stufe und von der Signalstärke nur "
+      + "der stärkste Wert. Frei vergebene Texte sind die Namen bzw. Adressen deiner **Zeitquellen** (Label `source`) "
+      + "und – nur wenn du **Gruppennamen in /metrics** einschaltest – die Namen deiner Client-Gruppen. Standard ist "
+      + "aus: Prometheus sieht dann nur die Kennung (z. B. `g3`), denn Gruppennamen beschreiben oft Räume oder Orte. "
+      + "Wirkt ohne Neustart.",
   },
   settings_notes: {
     title: "Was sich beim Update geändert hat",

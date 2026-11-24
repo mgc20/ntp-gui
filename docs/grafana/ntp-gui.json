@@ -1448,7 +1448,7 @@
       "id": 26,
       "type": "timeseries",
       "title": "Abweichung je Client-Gruppe",
-      "description": "Median der Abweichung der messbaren Geräte je Gruppe (Netz). Den Gruppennamen zeigt das Label group, abschaltbar in den Einstellungen (dann nur group_id).",
+      "description": "Median der Abweichung der messbaren Geräte je Gruppe (Netz). Standard ist nur die Kennung (group_id); den Gruppennamen (Label group) zeigt es, wenn du „Gruppennamen in /metrics“ in den Einstellungen einschaltest.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"

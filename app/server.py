@@ -1713,7 +1713,9 @@ def build_metrics() -> str:
         # Untergang eines Satelliten und grenzt so die Region ein (wie in der Aufzeichnung des Diagnosepakets).
         _metric(lines, "ntpgui_gps_hdop", egress.hdop_step(gps_state.get("hdop")),
                 "Horizontal dilution of precision as step (upper bound 1, 2, 5, 10 or 20)")
-        _metric(lines, "ntpgui_gps_snr_avg_db", gps_state.get("snr_avg"), "Average SNR of used satellites")
+        # Signalstärke nur als stärkster Wert: Der Mittelwert springt, wenn ein schwacher Satellit tief am
+        # Horizont dazukommt oder untergeht – dieselbe Spur wie die Satellitenzahl.
+        _metric(lines, "ntpgui_gps_snr_max_db", gps_state.get("snr_max"), "Strongest SNR of used satellites")
         _gps15_metrics(lines)
 
     ptp_state = ptp.status()

@@ -5,8 +5,8 @@ Jede Funktion liefert Zeilen (Name, Wert, Hilfetext, Art, Labels) – server.bui
 mit HELP/TYPE ins Textformat. Die Bausteine sind rein (Eingaben werden übergeben), collect() holt die
 Daten aus den Modulen und lässt einen fehlerhaften Teil einfach weg.
 
-Datenschutz: Labels tragen nur feste Werte (Güte-Stufe, Kanal-Art, Stufe, Phase …) und – abschaltbar mit
-metrics_group_names – die selbst vergebenen Gruppennamen. Nie Client-Adressen, Gerätenamen, Kanal-Namen
+Datenschutz: Labels tragen nur feste Werte (Güte-Stufe, Kanal-Art, Stufe, Phase …) und – nur wenn
+metrics_group_names eingeschaltet ist (Standard aus) – die selbst vergebenen Gruppennamen. Nie Client-Adressen, Gerätenamen, Kanal-Namen
 oder -Adressen, nie Dateinamen. /metrics liest nur Zwischenstände und rechnet nichts Teures neu.
 """
 
@@ -58,13 +58,19 @@ def grade_key(score: Any) -> str:
 
 def client_rows(clients: dict[str, dict], qualities: dict[str, dict], silent: Callable[[dict, float], Any],
                 offset_alarms: int, silent_alarms: int, view: dict | None, names: bool,
-                now: float | None = None) -> list[Row]:
-    """Summen über die passiv gemessenen Geräte und je Gruppe. view: clients3.view(…, by="group")."""
+                now: float | None = None, listening: float | None = None) -> list[Row]:
+    """Summen über die passiv gemessenen Geräte und je Gruppe. view: clients3.view(…, by="group").
+    listening: wie lange die Messung schon mithört (clientmon.listening_seconds) – Alarme auf „Gruppe fragt
+    nicht mehr“ brauchen das, denn nach einer Pause ist jedes gespeicherte „zuletzt gesehen“ alt."""
     now = time.time() if now is None else now
     rows: list[Row] = []
     entries = {ip: e for ip, e in (clients or {}).items() if isinstance(e, dict)}
     rows.append(("ntpgui_clients_monitored", len(entries),
                  "Devices seen by the passive client measurement", "gauge", ""))
+    listening = _num(listening)
+    if listening is not None:
+        rows.append(("ntpgui_clients_listening_seconds", round(listening),
+                     "Seconds the passive client measurement has been listening without a break", "gauge", ""))
     grades = dict.fromkeys(GRADE_KEYS, 0)
     for ip in entries:
         grades[grade_key((qualities.get(ip) or {}).get("score"))] += 1
@@ -303,7 +309,8 @@ def collect(cfg: dict, state_watch: Any = None) -> list[Row]:
         qualities = clients3.quality_all()
         view = clients3.view(snap, "group", {}, rule_map, qualities, now=time.time())
         return client_rows(snap, qualities, clientinfo.silent_reason, len(open_offset),
-                           len(open_silent), view, bool(cfg.get("metrics_group_names", True)))
+                           len(open_silent), view, bool(cfg.get("metrics_group_names", False)),
+                           listening=clientmon.listening_seconds())
 
     _part(rows, clients_part)
     _part(rows, lambda: notify_rows(notify.metrics_summary(), notify.NOTIFIER.running()))

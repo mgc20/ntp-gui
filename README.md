@@ -1886,7 +1886,7 @@ PHC-Refclock dient ihm als Referenz für Stratum und Statistik.
 | `HISTORY_DAYS` | `30` | So viele Tage hält der Verlauf (SQLite, `ntp-gui.db`; 1–3650). Neue Punkte werden gesammelt und alle 5 Minuten sowie beim Stoppen geschrieben – das schont SD-Karten |
 | `HISTORY_SIZE` | – | Nur wenn gesetzt: harte Obergrenze an Messpunkten (wie bis 1.2, z. B. `8640` = 24 h bei 10 s) |
 | `WEB_ACCESS_LOG` | `false` | Zugriffe protokollieren |
-| `METRICS_GROUP_NAMES` | `true` | Namen der Client-Gruppen als Label `group` in `/metrics`; `false` = nur die Kennung (`group_id`, z. B. `g3`). Auch im Dashboard (Einstellungen → Dashboard & Zugang, erweitert) |
+| `METRICS_GROUP_NAMES` | `false` | `true` = Namen der Client-Gruppen zusätzlich als Label `group` in `/metrics`; Standard nur die Kennung (`group_id`, z. B. `g3`), weil Gruppennamen oft Räume oder Orte beschreiben. Auch im Dashboard (Einstellungen → Dashboard & Zugang, erweitert) |
 | `READY_MAX_ERROR_MS` | `100` | Fehlergrenze für [`/readyz`](#bereitschaft-readyz) in Millisekunden (0,001–10000); auch im Dashboard (Einstellungen → Dashboard & Zugang, erweitert) |
 | `NOTIFY_DASHBOARD_URL` | – | Adresse des Dashboards für Links in [Benachrichtigungen](#benachrichtigungen) (nur `http`/`https`, ohne Benutzer/Passwort) |
 | `NOTIFY_LAN_ADDRESSES` | `false` | Private LAN-Adresse eines Geräts zusätzlich zu seinem Namen in Benachrichtigungen |

@@ -42,7 +42,7 @@ SOURCES = [{"name": "PPS", "mode_label": "Referenzuhr", "state": "*", "offset": 
             "reach_percent": 75, "std_dev": 1e-4, "authenticated": True}]
 SERVERSTATS = {"ntp_packets_received": 1234, "ntp_packets_dropped": 2, "nts_ke_connections_accepted": 5}
 GPS = {"enabled": True, "running": True, "mode": 3, "satellites_used": 9, "satellites_seen": 14, "hdop": 0.8,
-       "snr_avg": 38.5}
+       "snr_avg": 38.5, "snr_max": 44}
 PTP = {"enabled": True, "running": True, "offset_ns": 12, "meanPathDelay": 800, "stepsRemoved": 1}
 SERVICES = {"chronyd": {"state": "running", "restarts": 0}, "gpsd": {"state": "running", "restarts": 1}}
 REPORT = {"pps": [{"dev": "/dev/pps0", "state": "live"}], "matrix": [{"key": "gps_pps", "status": "ok"}]}
@@ -89,6 +89,7 @@ def full_metrics(extra: dict | None = None) -> str:
             mock.patch.object(server.clientmon, "status", return_value={"available": True, "running": True,
                                                                         "clients": {}, "since": time.time()}),
             mock.patch.object(server.clientmon, "private_snapshot", return_value=CLIENTS),
+            mock.patch.object(server.clientmon, "listening_seconds", return_value=90000.0),
             mock.patch.object(server.clients3, "groups", return_value=GROUPS),
             mock.patch.object(server.clients3, "rules", return_value={}),
             mock.patch.object(server.clients3, "quality_all", return_value=QUALITIES),

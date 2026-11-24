@@ -162,7 +162,9 @@ groups:
 
       - alert: NtpGuiClientGroupSilent
         # Gruppe mit Geräten, von denen seit 24 h keines mehr gefragt hat (Umleitung/DHCP-Option 42 weg?).
-        expr: ntpgui_client_group_devices > 0 and ntpgui_client_group_active == 0
+        # Wie auf der Clients-Seite erst, wenn ntp-gui selbst seit 24 h ohne Pause mithört (nach einem
+        # Neustart sind alle gespeicherten „zuletzt gesehen“ alt), und nie für „ohne Gruppe“.
+        expr: (ntpgui_client_group_devices{group_id!="none"} > 0 and ntpgui_client_group_active{group_id!="none"} == 0) and on(instance, job) ntpgui_clients_listening_seconds > 86400
         for: 1h
         labels:
           severity: warning
@@ -191,13 +193,24 @@ groups:
 
       - alert: NtpGuiNightlyBackupOld
         # Nur mit eingeschalteter nächtlicher Sicherung; 36 h = eine Nacht ausgefallen.
-        expr: ntpgui_backup_nightly_age_seconds > 36 * 3600 or (ntpgui_backup_nightly_enabled == 1 unless on(instance, job) ntpgui_backup_nightly_age_seconds) or ntpgui_backup_nightly_failed == 1
+        expr: ntpgui_backup_nightly_age_seconds > 36 * 3600 or ntpgui_backup_nightly_failed == 1
         for: 2h
         labels:
           severity: warning
         annotations:
-          summary: "Nächtliche Sicherung fehlt oder ist alt ({{ $labels.instance }})"
-          description: "Die jüngste nächtliche Sicherung ist älter als 36 h, fehlt ganz, oder der letzte Versuch schlug fehl. Container-Log ([backup]) und freien Platz im Datenverzeichnis prüfen."
+          summary: "Nächtliche Sicherung alt oder fehlgeschlagen ({{ $labels.instance }})"
+          description: "Die jüngste nächtliche Sicherung ist älter als 36 h, oder der letzte Versuch schlug fehl. Container-Log ([backup]) und freien Platz im Datenverzeichnis prüfen."
+
+      - alert: NtpGuiNightlyBackupMissing
+        # Eingeschaltet, aber noch keine Sicherung: Die erste entsteht erst gegen 3 Uhr Ortszeit des
+        # Servers – deshalb erst nach 26 h ohne Sicherung melden (eingeschaltet um 3:01 → erste nach ~24 h).
+        expr: ntpgui_backup_nightly_enabled == 1 unless on(instance, job) ntpgui_backup_nightly_age_seconds
+        for: 26h
+        labels:
+          severity: warning
+        annotations:
+          summary: "Nächtliche Sicherung fehlt ({{ $labels.instance }})"
+          description: "Die nächtliche Sicherung ist seit über 26 h eingeschaltet, es gibt aber noch keine. Container-Log ([backup]) und freien Platz im Datenverzeichnis prüfen."
 
       - alert: NtpGuiCritEvents
         expr: increase(ntpgui_events_total{level="crit"}[15m]) > 0
@@ -209,8 +222,9 @@ groups:
           description: "Im Ereignisprotokoll steht ein neuer Eintrag der Stufe „kritisch“. Details auf der Seite „Ereignisse“."
 
       - alert: NtpGuiHoldoverTestFailed
-        # Der letzte Holdover-Test endete an der Grenze oder war ungültig.
-        expr: ntpgui_holdover_last_result{outcome=~"limit|invalid"} == 1
+        # Der letzte Holdover-Test endete an der Grenze oder war ungültig – nur 24 h lang nach dem Testende,
+        # damit ein altes Ergebnis nicht dauerhaft als Alarm stehen bleibt.
+        expr: ntpgui_holdover_last_result{outcome=~"limit|invalid"} == 1 and on(instance, job) (time() - ntpgui_holdover_last_end_timestamp_seconds) < 86400
         for: 5m
         labels:
           severity: info

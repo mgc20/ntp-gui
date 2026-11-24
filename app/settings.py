@@ -1515,13 +1515,13 @@ SCHEMA: list[dict] = [
                 "(im Holdover nie) und die Fehlerschranke (|Offset| + Root-Dispersion + halber Root-Delay, wie chrony sie rechnet) "
                 "unter diesem Wert liegt, sonst 503. Der Standard 100 ms passt zu Internet-NTP; mit GPS und PPS "
                 "taugen z. B. 1 ms. /healthz bleibt unverändert (nur „chronyd antwortet“). Wirkt ohne Neustart."),
-    _field("metrics_group_names", "web", "Gruppennamen in /metrics", "bool", True, _as_bool,
+    _field("metrics_group_names", "web", "Gruppennamen in /metrics", "bool", False, _as_bool,
            env="METRICS_GROUP_NAMES", restart=RESTART_NONE, advanced=True,
-           hint="Zeigt in den Prometheus-Metriken je Client-Gruppe deren Namen. Aus: nur die Kennung (g1, g2 …).",
-           help="Zeigt in den Prometheus-Metriken je Client-Gruppe deren Namen (Label group). Aus: nur die "
-                "Kennung der Gruppe (Label group_id, z. B. g3) – für ein zentrales Monitoring, das deine "
-                "Gruppennamen nicht kennen soll. Adressen und Gerätenamen stehen nie in /metrics, nur Summen. "
-                "Wirkt ohne Neustart."),
+           hint="Zeigt in den Prometheus-Metriken je Client-Gruppe deren Namen. Aus (Standard): nur die Kennung (g1, g2 …).",
+           help="Zeigt in den Prometheus-Metriken je Client-Gruppe deren Namen (Label group). Standard aus: "
+                "Prometheus sieht nur die Kennung der Gruppe (Label group_id, z. B. g3). Gruppennamen beschreiben "
+                "oft Räume oder Orte – einschalten nur, wenn dein Monitoring sie sehen soll. Client-Adressen und "
+                "Gerätenamen stehen nie in /metrics, nur Summen. Wirkt ohne Neustart."),
     _field("backup_nightly", "web", "Nächtliche Sicherung", "bool", False, _as_bool,
            env=None, restart=RESTART_NONE,
            help="Legt jede Nacht gegen 3 Uhr (Ortszeit des Servers) eine Sicherung im Datenverzeichnis ab "

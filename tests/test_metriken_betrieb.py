@@ -179,11 +179,23 @@ class ExpositionTest(unittest.TestCase):
         self.assertTrue(values)
         for value in values:
             self.assertIsNone(IP_RE.search(value), value)
-        self.assertIn("Kameras", values)   # Gruppenname (Standard an)
+        self.assertNotIn("Kameras", values)   # Gruppenname nur eingeschaltet (Standard aus)
+        values_on = label_values(test_integrations.full_metrics({"metrics_group_names": True}))
+        self.assertIn("Kameras", values_on)
+        for value in values_on:
+            self.assertIsNone(IP_RE.search(value), value)
 
     def test_gps_hdop_step_and_no_satellite_counts(self):
         self.assertNotIn("ntpgui_gps_satellites", self.text)
         self.assertRegex(self.text, r"(?m)^ntpgui_gps_hdop 1$")   # 0.8 → Stufe 1
+
+    def test_gps_snr_only_strongest(self):
+        # Der Mittelwert springt mit jedem schwachen Satelliten am Horizont – nur der stärkste Wert bleibt.
+        self.assertNotIn("ntpgui_gps_snr_avg", self.text)
+        self.assertRegex(self.text, r"(?m)^ntpgui_gps_snr_max_db 44$")
+
+    def test_listening_seconds(self):
+        self.assertRegex(self.text, r"(?m)^ntpgui_clients_listening_seconds 90000$")
 
 
 class GroupNamesSwitchTest(unittest.TestCase):
@@ -216,13 +228,16 @@ class GroupNamesSwitchTest(unittest.TestCase):
 
     def test_setting(self):
         field = settings.FIELDS["metrics_group_names"]
-        self.assertIs(field["default"], True)
+        self.assertIs(field["default"], False)   # Gruppennamen nur bewusst eingeschaltet
         self.assertEqual(field["env"], "METRICS_GROUP_NAMES")
         self.assertIs(settings.validate({"metrics_group_names": "false"})["metrics_group_names"], False)
 
     def test_collect_honours_switch(self):
-        text_on = test_integrations.full_metrics()
+        text_default = test_integrations.full_metrics()
+        text_on = test_integrations.full_metrics({"metrics_group_names": True})
         text_off = test_integrations.full_metrics({"metrics_group_names": False})
+        self.assertNotIn("Kameras", text_default)
+        self.assertNotIn("group=", text_default)
         self.assertIn('group="Kameras"', text_on)
         self.assertNotIn("Kameras", text_off)
         self.assertIn('group_id="g1"', text_off)
@@ -256,6 +271,12 @@ class ClientRowsTest(unittest.TestCase):
         self.assertEqual(by[("ntpgui_clients_silent_alarm", "")], 1)
         for row in rows:
             self.assertNotIn("192.168", row[4])
+
+    def test_listening_only_while_measuring(self):
+        rows = opsmetrics.client_rows({}, {}, lambda e, t: False, 0, 0, None, False, now=1.0, listening=None)
+        self.assertNotIn("ntpgui_clients_listening_seconds", [r[0] for r in rows])
+        rows = opsmetrics.client_rows({}, {}, lambda e, t: False, 0, 0, None, False, now=1.0, listening=3600.4)
+        self.assertIn(("ntpgui_clients_listening_seconds", 3600), [(r[0], r[1]) for r in rows])
 
     def test_grade_thresholds_match_clients3(self):
         import clients3
@@ -470,3 +491,34 @@ class RobustnessTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AlertRulesTest(unittest.TestCase):
+    """Die Alarmregeln dürfen nicht anschlagen, wo die Dashboard-Seiten bewusst schweigen."""
+
+    @classmethod
+    def setUpClass(cls):
+        text = (Path(__file__).resolve().parents[1] / "docs" / "prometheus" / "alerts.yml").read_text(encoding="utf-8")
+        cls.rules = {}
+        for block in text.split("      - alert: ")[1:]:
+            name = block.split("\n", 1)[0].strip()
+            cls.rules[name] = block
+
+    def expr(self, name):
+        return next(l for l in self.rules[name].splitlines() if l.strip().startswith("expr:"))
+
+    def for_(self, name):
+        return next(l.split(":", 1)[1].strip() for l in self.rules[name].splitlines() if l.strip().startswith("for:"))
+
+    def test_group_silent_waits_for_listening_and_skips_none(self):
+        expr = self.expr("NtpGuiClientGroupSilent")
+        self.assertIn('group_id!="none"', expr)
+        self.assertIn("ntpgui_clients_listening_seconds > 86400", expr)
+
+    def test_backup_missing_waits_for_first_night(self):
+        self.assertNotIn("unless", self.expr("NtpGuiNightlyBackupOld"))
+        self.assertIn("unless", self.expr("NtpGuiNightlyBackupMissing"))
+        self.assertEqual(self.for_("NtpGuiNightlyBackupMissing"), "26h")
+
+    def test_holdover_result_only_fresh(self):
+        self.assertIn("time() - ntpgui_holdover_last_end_timestamp_seconds", self.expr("NtpGuiHoldoverTestFailed"))
