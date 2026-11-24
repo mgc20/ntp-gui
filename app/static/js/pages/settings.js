@@ -3,6 +3,7 @@ import { card, infoButton, badge, kv, emptyState, errorState, loadingOr, toast, 
 import { t, has, language, setLanguage, LANGUAGES } from "../i18n.js";
 import { HELP } from "../help.js";
 import { route } from "../routes.js";
+import { heartbeatRows, heartbeatError } from "./notify.js";
 
 export const live = false; // nicht bei jedem Refresh neu aufbauen – Eingaben bleiben stehen
 
@@ -44,6 +45,7 @@ export const FIELD_HELP = {
   web_title: "web_title", web_refresh_seconds: "web_refresh", history_interval: "history_interval",
   notify_dashboard_url: "notify_link",
   temp_sensor: "temp_sensor", clock_public: "clock_public", update_check: "update_check", backup_nightly: "backup_nightly",
+  heartbeat_url: "heartbeat", heartbeat_interval: "heartbeat_mode", heartbeat_mode: "heartbeat_mode",
   trusted_proxies: "trusted_proxies", web_allowed_hosts: "allowed_hosts",
   dns_mode: "dns_modes", dns_servers: "dns_upstreams", dns_dot: "dns_modes", dns_doh: "dns_modes",
   dns_pin: "dns_pin", dns_fallback: "dns_fallback",
@@ -248,6 +250,16 @@ function updateStatus(upd) {
     el("h3", { class: "mini-head" }, "Update-Hinweis ", infoButton("update_check", "Update-Hinweis")),
     kv(rows),
     upd.error ? el("p", { class: "field-error", role: "alert", text: `Letzte Prüfung gescheitert: ${upd.error}` }) : null);
+}
+
+// Zeitwächter-Ping: Zustand aus /api/status (ohne Adresse); einstellen über die Felder heartbeat_* darunter.
+function heartbeatStatus(hb) {
+  if (!hb || !hb.enabled) return null;
+  return el("div", { class: "update-status" },
+    el("h3", { class: "mini-head" }, `${t("pages.heartbeat.title")} `, infoButton("heartbeat", t("pages.heartbeat.title"))),
+    kv(heartbeatRows(hb)),
+    heartbeatError(hb),
+    el("p", { class: "field-help" }, el("a", { href: "#/system/benachrichtigungen", text: t("pages.heartbeat.notify_link") })));
 }
 
 function dnsStatus(ctx, dns) {
@@ -994,6 +1006,7 @@ export function render(ctx) {
       sub: has(descKey) ? t(descKey) : section.description, actions: toggle },
     !st.onlyChanged && section.key === "dns" ? dnsStatus(ctx, dns) : null,
     !st.onlyChanged && section.key === "web" ? updateStatus(update) : null,
+    !st.onlyChanged && section.key === "web" ? heartbeatStatus(ctx.status?.heartbeat) : null,
     !st.onlyChanged && section.key === "web" ? languageRow() : null,
     el("div", { class: "fields" }, basic.map(fieldRow)),
     showAdv ? el("div", { class: "fields fields-advanced" }, advanced.map(fieldRow)) : null);

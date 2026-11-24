@@ -74,6 +74,7 @@ import enforce
 import events
 import gps
 import hardware
+import heartbeat
 import history as historymod
 import insights
 import instance
@@ -267,8 +268,10 @@ apiv1.endpoint("GET", "/clients/pass", "/api/clients/pass", "read",
                 "recommendations"], {"ip": "Adresse des Clients (Pflicht)", "share": "1 = gefilterte Textkopie"})
 apiv1.endpoint("GET", "/notify", "/api/notify", "admin",
                "Benachrichtigungen: Kanäle mit Filtern und Zustellstand. Tokens nur als „gesetzt“ "
-               "(secret_set), nie im Klartext; Adressen mit Pfad/Abfrage nur gekürzt (url_hidden).", ["channels", "types", "levels", "kinds", "defaults", "limits",
-                                                 "dashboard_url", "running"])
+               "(secret_set), nie im Klartext; Adressen mit Pfad/Abfrage nur gekürzt (url_hidden). heartbeat: "
+               "Zustand des Zeitwächter-Pings (Adresse nur gekürzt).", ["channels", "types", "levels", "kinds",
+                                                                       "defaults", "limits", "dashboard_url",
+                                                                       "running", "heartbeat"])
 apiv1.endpoint("GET", "/notify/status", "/api/notify/status", "read",
                "Zustellstand je Benachrichtigungskanal (Kennung, Art, zuletzt gesendet, letzter Fehler) – "
                "ohne Namen, Adressen und Tokens.", ["channels", "running"])
@@ -282,6 +285,9 @@ apiv1.endpoint("POST", "/notify/channels/delete", "/api/notify/channels/delete",
 apiv1.endpoint("POST", "/notify/test", "/api/notify/test", "admin",
                "Testnachricht sofort über einen Kanal senden (ohne Wiederholung). Body: {\"id\": …}.",
                ["ok", "error", "status"])
+apiv1.endpoint("POST", "/notify/heartbeat/test", "/api/notify/heartbeat/test", "admin",
+               "Zeitwächter-Ping sofort senden – mit dem echten Zustand (gut/kritisch), höchstens alle 10 s. "
+               "Body: {}.", ["ok", "error", "heartbeat"])
 apiv1.endpoint("GET", "/gps/autocal", "/api/gps/autocal", "read",
                "Automatische GPS-Kalibrierung: Modus, aktuelle Entscheidung, letzte Änderungen.",
                ["mode", "decision", "changes", "rollback"], {"fresh": "0 = letzte gespeicherte Entscheidung"})
@@ -1044,6 +1050,7 @@ def build_status() -> dict:
     except Exception:
         status["holdover_active"] = False
     status["notify"] = _notify_summary()
+    status["heartbeat"] = _heartbeat_status()
     status["insights"] = combine_insights(insights.build(status, cfg),
                                           insights.exposure_insights(cfg, clients, clientmon.default_gateway(),
                                                                      devices.network_mode()),
@@ -1086,6 +1093,20 @@ def _leap_summary(info: dict) -> dict:
     """Kurzfassung der Schaltsekunden-Liste für die Übersicht (volle Angaben: /api/leap)."""
     return {key: info.get(key) for key in ("available", "source", "level", "reason", "days_left", "expired",
                                             "expires_date", "tai_utc")}
+
+
+def _heartbeat_status(full: bool = False) -> dict:
+    """Zeitwächter-Ping für Übersicht und Benachrichtigungsseite (wirft nie). Ohne full keine Adresse."""
+    try:
+        return heartbeat.status(full)
+    except Exception:
+        return {"enabled": False}
+
+
+def heartbeat_state() -> str:
+    """„down“, sobald die Übersicht einen kritischen Hinweis zeigt (wie die rote Ampel), sonst „up“."""
+    items = current_insights()
+    return "down" if any(isinstance(i, dict) and i.get("level") == "crit" for i in items or []) else "up"
 
 
 def _notify_summary() -> dict:
@@ -2949,7 +2970,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._send_json(data)
         elif path == "/api/notify":
-            self._send_json(notify.api_config())
+            payload = notify.api_config()
+            payload["heartbeat"] = _heartbeat_status(full=True)
+            self._send_json(payload)
         elif path == "/api/notify/status":
             self._send_json(notify.api_status())
         elif path == "/api/apikeys":
@@ -3382,6 +3405,17 @@ class Handler(BaseHTTPRequestHandler):
                 self._error(HTTPStatus.TOO_MANY_REQUESTS, str(exc))
             except notify.NotifyError as exc:
                 self._error(HTTPStatus.NOT_FOUND, str(exc))
+        elif path == "/api/notify/heartbeat/test":
+            try:
+                result = heartbeat.pinger(heartbeat_state).test()
+            except heartbeat.TestRateLimited as exc:
+                self._error(HTTPStatus.TOO_MANY_REQUESTS, str(exc))
+                return
+            except heartbeat.PingError as exc:
+                self._error(HTTPStatus.CONFLICT, str(exc))
+                return
+            result = dict(result, url=heartbeat.mask_url(settings.values().get("heartbeat_url") or ""))
+            self._send_json({"ok": result.get("error") is None, "error": result.get("error"), "heartbeat": result})
         elif path == "/api/v1/clock/signal":
             self._clock_signal(data, ident)
         elif path == "/api/apikeys":
@@ -3674,6 +3708,7 @@ def main() -> None:
                      name="backup").start()
     notify.start(VERSION)  # eigener Thread je Kanal; ohne angelegte Kanäle geht nichts hinaus
     updatecheck.start(VERSION)  # opt-in; ausgeschaltet keine Anfrage nach außen
+    heartbeat.start(heartbeat_state)  # opt-in (heartbeat_url); ohne Adresse keine Verbindung
     diagnostics.own_hostnames()  # eigenen FQDN schon jetzt im Hintergrund auflösen (Host-Prüfung)
     # Folgt clientmon_enable/ntp_port ohne Neustart.
     threading.Thread(target=clientmon.watch, args=(settings.values,), daemon=True, name="clientmon-watch").start()

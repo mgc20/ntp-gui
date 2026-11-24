@@ -396,6 +396,39 @@
         "tile": "Tile",
         "stele": "Totem"
       }
+    },
+    "heartbeat": {
+      "title": "Watchdog ping",
+      "sub": "A sign of life sent to your own watchdog (Uptime Kuma push, Healthchecks): if this server fails completely – machine off, container gone, power cut – the watchdog notices, even though nothing here can send a message any more. In a critical state the ping reports “down”.",
+      "off": "Off – without a watchdog address nothing leaves the server.",
+      "never": "none yet",
+      "interval": "every {seconds} s",
+      "row": {
+        "target": "Target",
+        "mode": "Type",
+        "last": "Last ping",
+        "last_ok": "Last delivered",
+        "next": "Next ping"
+      },
+      "flavor": {
+        "kuma": "Uptime Kuma push (critical = status=down)",
+        "healthchecks": "Healthchecks (critical = …/fail)",
+        "silent": "sign of life only (nothing when critical)"
+      },
+      "state": {
+        "up": "reported good",
+        "fail": "reported critical",
+        "none": "critical – nothing sent",
+        "error": "not delivered"
+      },
+      "error": "Last ping failed ({count}× in a row): {error}",
+      "send_now": "Send now",
+      "sent_ok": "Ping delivered",
+      "sent_failed": "Ping failed: {error}",
+      "privacy": "Privacy: only a GET request without content is sent. A watchdog on the internet sees your public IP address (roughly locatable) and how often the ping arrives – ideally run it in your own network.",
+      "where": "Configure under System → Settings → Dashboard & access (“Watchdog ping”).",
+      "settings_link": "To the settings →",
+      "notify_link": "Status and “Send now” under Notifications →"
     }
   },
   "setup": {

@@ -86,7 +86,8 @@ KIND_LABELS = {
     "service": "Dienste", "reload": "Neuladen", "settings": "Einstellungen", "source": "Zeitquellen",
     "gps": "GPS", "pps": "PPS", "calibration": "Kalibrierung", "cert": "Zertifikat",
     "leap": "Schaltsekunde", "startup": "Start", "clients": "Clients", "api": "API", "dns": "DNS für ntp-gui",
-    "update": "Update-Hinweis", "pi": "Pi-Zustand", "access": "Zugang", "other": "Sonstiges",
+    "update": "Update-Hinweis", "pi": "Pi-Zustand", "access": "Zugang", "heartbeat": "Zeitwächter-Ping",
+    "other": "Sonstiges",
 }
 # Seite im Dashboard, auf die der Link einer Meldung zeigt – Pfade wie die Routen in
 # app/static/js/routes.js (seit 1.6; alte Pfade leitet das Dashboard weiter).
@@ -94,7 +95,7 @@ KIND_PAGES = {"gps": "gps", "pps": "gps", "calibration": "gps", "source": "quell
               "service": "system/diagnose", "reload": "system/diagnose", "cert": "system/einstellungen",
               "settings": "system/einstellungen", "leap": "quellen", "dns": "system/einstellungen",
               "update": "system/einstellungen", "pi": "uhr/hardware",
-              "access": "system/einstellungen"}
+              "access": "system/einstellungen", "heartbeat": "system/benachrichtigungen"}
 
 MAX_CHANNELS = 10
 QUEUE_MAX = 50                     # Meldungen je Kanal; bei Überlauf fällt die älteste weg
@@ -541,7 +542,7 @@ def _record(channel_id: str, ok: bool, error: str | None = None, dropped: int = 
 # Arten, deren info-Ereignisse wirklich ein vorheriges Problem beenden („wieder da“, „läuft wieder“,
 # „erneuert“, „wieder im Rahmen“ …). Andere Arten (Kalibrierung, Einstellungen, Sonstiges) haben keine
 # solchen Paare. Neue Quellen können data.resolves = true/false setzen, ohne hier etwas zu ändern.
-RESOLVING_KINDS = ("gps", "pps", "service", "source", "reload", "cert", "clients", "dns", "pi")
+RESOLVING_KINDS = ("gps", "pps", "service", "source", "reload", "cert", "clients", "dns", "pi", "heartbeat")
 # Arten, deren Ereignisse für sich stehen: auch „warn“ ist kein offenes Problem. „Neue Version 1.5.0 –
 # Achtung beim Update“ darf weder die nächste Achtung-Version unterdrücken noch von einem späteren
 # Info-Ereignis als „behoben … – Dauer 30 Tage“ geschlossen werden.

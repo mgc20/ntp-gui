@@ -396,6 +396,39 @@
         "tile": "Kachel",
         "stele": "Stele"
       }
+    },
+    "heartbeat": {
+      "title": "Zeitwächter-Ping",
+      "sub": "Ein Lebenszeichen an deinen eigenen Wächter (Uptime Kuma Push, Healthchecks): Fällt dieser Server ganz aus – Rechner aus, Container weg, Strom weg –, merkt es der Wächter, auch wenn hier niemand mehr eine Nachricht schicken kann. Bei kritischem Zustand meldet der Ping „ausgefallen“.",
+      "off": "Aus – ohne Wächter-Adresse verlässt nichts den Server.",
+      "never": "noch keiner",
+      "interval": "alle {seconds} s",
+      "row": {
+        "target": "Ziel",
+        "mode": "Art",
+        "last": "Letzter Ping",
+        "last_ok": "Zuletzt angekommen",
+        "next": "Nächster Ping"
+      },
+      "flavor": {
+        "kuma": "Uptime Kuma Push (kritisch = status=down)",
+        "healthchecks": "Healthchecks (kritisch = …/fail)",
+        "silent": "nur Lebenszeichen (bei kritisch nichts)"
+      },
+      "state": {
+        "up": "gut gemeldet",
+        "fail": "kritisch gemeldet",
+        "none": "kritisch – nichts gesendet",
+        "error": "nicht angekommen"
+      },
+      "error": "Letzter Ping gescheitert ({count}× in Folge): {error}",
+      "send_now": "Jetzt senden",
+      "sent_ok": "Ping angekommen",
+      "sent_failed": "Ping gescheitert: {error}",
+      "privacy": "Datenschutz: Gesendet wird nur eine GET-Anfrage ohne Inhalt. Ein Wächter im Internet sieht dabei deine öffentliche IP-Adresse (grob ortbar) und wie oft der Ping kommt – am besten läuft er im eigenen Netz.",
+      "where": "Einstellen unter System → Einstellungen → Dashboard & Zugang („Zeitwächter-Ping“).",
+      "settings_link": "Zu den Einstellungen →",
+      "notify_link": "Zustand und „Jetzt senden“ unter Benachrichtigungen →"
     }
   },
   "setup": {

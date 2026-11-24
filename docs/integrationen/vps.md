@@ -227,6 +227,9 @@ chronyd -Q -t 3 "server zeit.example.com iburst nts maxsamples 1"
   `unattended-upgrades`), Docker und Caddy-Image regelmäßig aktualisieren.
 - **Update-Hinweis im Dashboard:** standardmäßig aus; wer ihn will, schaltet ihn unter
   **Einstellungen** ein (fragt dann nur die Release-Liste ab).
+- **Zeitwächter-Ping:** Ein Wächter auf einem anderen Rechner (Uptime Kuma Push, Healthchecks)
+  merkt, wenn der VPS ganz ausfällt. Adresse unter **System → Einstellungen → Dashboard & Zugang** eintragen,
+  mit `https://` – siehe [zeitwaechter.md](zeitwaechter.md).
 
 ## 7. Sicherung
 

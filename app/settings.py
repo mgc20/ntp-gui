@@ -364,6 +364,16 @@ def http_url_ok(text: str, max_len: int = 300) -> bool:
     return all(_URL_PATH_RE.match(part) for part in (path, query, fragment))
 
 
+def _as_heartbeat_url(value: Any) -> str:
+    """Leer (aus) oder Adresse eines eigenen Wächters (heartbeat.validate_url: Ziel erlaubt, Schlüssel in der
+    Adresse über http:// nur ins eigene Netz)."""
+    import heartbeat  # spät: heartbeat → notify → settings
+    try:
+        return heartbeat.validate_url(value)
+    except ValueError as exc:
+        raise ValidationError(str(exc)) from None
+
+
 def _as_link_url(value: Any) -> str:
     """Leer oder http(s)-URL (Adresse des Dashboards für Links in Benachrichtigungen)."""
     text = str(value if value is not None else "").strip()
@@ -1459,6 +1469,33 @@ SCHEMA: list[dict] = [
                 "dabei einmal am Tag deine öffentliche IP-Adresse (grob ortbar) und dass hier "
                 "vermutlich ntp-gui läuft. Darum ist der Hinweis aus, bis du ihn einschaltest. Kein "
                 "Download, kein automatisches Update. Wirkt ohne Neustart."),
+    _field("heartbeat_url", "web", "Zeitwächter-Ping (Adresse)", "text", "", _as_heartbeat_url,
+           restart=RESTART_NONE, placeholder="leer = aus, z. B. http://kuma.lan:3001/api/push/…",
+           hint="Schickt regelmäßig ein Lebenszeichen an deinen eigenen Wächter (Uptime Kuma Push, Healthchecks). Leer = aus.",
+           help="Schickt regelmäßig ein Lebenszeichen an deinen eigenen Wächter (Uptime Kuma mit Monitor-Typ "
+                "„Push“, Healthchecks oder kompatibel). Bleibt es aus – Rechner aus, Container weg, Strom weg –, "
+                "schlägt der Wächter Alarm; das können die Benachrichtigungen von ntp-gui selbst nicht. Bei "
+                "kritischem Zustand meldet der Ping „ausgefallen“ (Healthchecks: …/fail, Uptime Kuma: "
+                "status=down). Gesendet wird nur eine GET-Anfrage ohne Inhalt mit dem User-Agent „ntp-gui“. "
+                "Ein Wächter im Internet sieht dabei deine öffentliche IP-Adresse (grob ortbar) und wie oft "
+                "der Ping kommt – am besten läuft er im eigenen Netz. Die Adresse enthält den Schlüssel des "
+                "Wächters: Sicherungen lassen sie weg, Lese-Schlüssel sehen sie nur gekürzt. Leer = aus, "
+                "dann verlässt nichts den Server. Wirkt ohne Neustart."),
+    _field("heartbeat_interval", "web", "Zeitwächter-Ping: Intervall", "int", 60, _as_number(int, 30, 3600),
+           unit="s", restart=RESTART_NONE, advanced=True,
+           help="Alle wie viele Sekunden der Ping hinausgeht (30 bis 3600). Stell im Wächter eine Frist ein, "
+                "die etwas länger ist – z. B. Intervall 60 s, Uptime Kuma „Heartbeat Interval“ 90 s bzw. "
+                "Healthchecks „Period“ 1 Minute mit „Grace“ 2 Minuten."),
+    _field("heartbeat_mode", "web", "Zeitwächter-Ping: Art", "select", "auto",
+           _as_choice("auto", "healthchecks", "kuma", "silent"), restart=RESTART_NONE, advanced=True,
+           options=[("auto", "Automatisch erkennen (Standard)"),
+                    ("healthchecks", "Healthchecks: …/fail"),
+                    ("kuma", "Uptime Kuma Push: status=down"),
+                    ("silent", "Nur Lebenszeichen (bei kritisch nichts)")],
+           help="Wie der Ping einen kritischen Zustand meldet. „Automatisch“ erkennt Uptime-Kuma-Push-Adressen "
+                "(…/api/push/<token>) und setzt dann status=up bzw. status=down; jede andere Adresse bekommt bei "
+                "kritischem Zustand „/fail“ angehängt (Healthchecks). „Nur Lebenszeichen“ passt für jeden "
+                "Wächter, der nur das Ausbleiben bemerkt: Bei kritischem Zustand geht dann nichts hinaus."),
     _field("backup_nightly", "web", "Nächtliche Sicherung", "bool", False, _as_bool,
            env=None, restart=RESTART_NONE,
            help="Legt jede Nacht gegen 3 Uhr (Ortszeit des Servers) eine Sicherung im Datenverzeichnis ab "
@@ -2113,9 +2150,10 @@ def discard_staged(staged: dict[str, Any]) -> None:
         pass
 
 
-# Werte, die keine Geheimnisse sind, aber Konto-Kennungen enthalten können (NextDNS-ID im
-# DoH-Pfad oder als erster Teil des DoT-Namens): API-Schlüssel mit Leserecht sehen sie nur gekürzt.
-MASKED_FOR_READ = ("dns_doh", "dns_dot", "dns_pin")
+# Werte, die Konto-Kennungen oder Schlüssel enthalten können (NextDNS-ID im DoH-Pfad oder als erster Teil
+# des DoT-Namens, Schlüssel des Zeitwächters im Pfad der Ping-Adresse): API-Schlüssel mit Leserecht sehen
+# sie nur gekürzt.
+MASKED_FOR_READ = ("dns_doh", "dns_dot", "dns_pin", "heartbeat_url")
 
 
 def _mask_host(host: str) -> str:
@@ -2125,6 +2163,9 @@ def _mask_host(host: str) -> str:
 
 
 def mask_value(key: str, value: Any) -> Any:
+    if key == "heartbeat_url" and isinstance(value, str):
+        import heartbeat
+        return heartbeat.mask_url(value)
     if not isinstance(value, list):
         return value
     if key == "dns_doh":

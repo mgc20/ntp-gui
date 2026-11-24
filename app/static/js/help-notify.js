@@ -139,11 +139,43 @@ export const HELP_NOTIFY = {
       + "Ziele speichern, z. B. `mailto://user:pass@mail.example.org` oder `tgram://bottoken/chatid`. Hier dann Adresse "
       + "`http://apprise:8000` und Schlüssel `ntp` eintragen. So liegen E-Mail-Passwörter nur bei Apprise.",
   },
+  heartbeat: {
+    title: "Zeitwächter-Ping",
+    text: "Die Benachrichtigungen laufen im selben Prozess wie alles andere: Ist der Rechner aus, der Container weg oder der "
+      + "Strom ausgefallen, kann ntp-gui nichts mehr melden. Dafür gibt es den Zeitwächter-Ping. Trag unter **System → Einstellungen → "
+      + "Dashboard & Zugang** die Adresse deines eigenen Wächters ein – **Uptime Kuma** (Monitor-Typ „Push“, Adresse "
+      + "`http://kuma.lan:3001/api/push/<token>`) oder **Healthchecks** (selbst gehostet oder `https://hc-ping.com/<uuid>`). "
+      + "ntp-gui ruft sie dann regelmäßig auf; bleibt der Aufruf aus, schlägt der Wächter Alarm. Gesendet wird nur eine "
+      + "GET-Anfrage ohne Inhalt mit dem User-Agent `ntp-gui` (Zweck „heartbeat“ im Datenschutzfilter, leere Feldliste) – "
+      + "keine Messwerte, keine Namen. Weiterleitungen werden nicht befolgt, nach 5 s ist Schluss, und das Ziel wird nach der "
+      + "Namensauflösung geprüft wie bei den Benachrichtigungen (keine Metadaten-Dienste, Loopback nur mit "
+      + "`OUTBOUND_TARGETS=loopback`). **Datenschutz:** Ein Wächter im Internet sieht deine öffentliche IP-Adresse (grob "
+      + "ortbar) und wie oft der Ping kommt – am besten läuft er im eigenen Netz. Die Adresse enthält den Schlüssel des "
+      + "Wächters: Sicherungen lassen sie weg, Lese-Schlüssel und das Diagnosepaket sehen sie nicht, über `http://` geht sie "
+      + "nur an Adressen im eigenen Netz. Ohne Adresse ist der Ping aus.",
+  },
+  heartbeat_mode: {
+    title: "Zeitwächter-Ping: Art und Intervall",
+    text: "Bei gutem Zustand geht immer `GET <adresse>` hinaus. Kritisch heißt: Die Übersicht zeigt einen roten Hinweis (z. B. "
+      + "chronyd antwortet nicht, Pflichtdienst ausgefallen). Dann je nach Art: **Healthchecks** ruft `<adresse>/fail` auf, "
+      + "**Uptime Kuma Push** setzt `status=down` (und `msg=kritisch`) statt `status=up`, **nur Lebenszeichen** sendet gar "
+      + "nichts – das passt für jeden Wächter, der nur das Ausbleiben bemerkt. **Automatisch** erkennt Uptime-Kuma-Adressen "
+      + "am Pfad `/api/push/…` und behandelt alle anderen wie Healthchecks. Das Intervall (30 bis 3600 s, Standard 60 s) "
+      + "sollte etwas kürzer sein als die Frist im Wächter – z. B. 60 s bei Uptime Kuma „Heartbeat Interval“ 90 s.",
+  },
+  heartbeat_status: {
+    title: "Zeitwächter-Ping: letztes Ergebnis",
+    text: "**Letzter Ping** zeigt, was zuletzt gemeldet wurde (gut, kritisch oder bei „nur Lebenszeichen“: nichts gesendet) "
+      + "und ob es angekommen ist. **Zuletzt angekommen**: letzte Antwort mit HTTP 2xx. Scheitert der Ping dreimal in Folge, "
+      + "steht ein Ereignis der Art „Zeitwächter-Ping“ im Protokoll (und geht an deine Benachrichtigungskanäle, wenn sie "
+      + "diese Art zulassen); kommt er wieder an, folgt „wieder erreichbar“. **Jetzt senden** schickt sofort einen Ping mit "
+      + "dem echten Zustand (höchstens alle 10 s). Die Zieladresse steht hier nur gekürzt.",
+  },
 };
 
 export const HELP_GROUP_NOTIFY = {
   title: "Benachrichtigungen",
   keys: ["notify", "notify_channel", "notify_types", "notify_target", "notify_secret", "notify_filter", "notify_debounce",
     "notify_rate", "notify_resolved", "notify_enabled", "notify_status", "notify_error", "notify_counts", "notify_retry",
-    "notify_link", "notify_webhook", "notify_apprise"],
+    "notify_link", "notify_webhook", "notify_apprise", "heartbeat", "heartbeat_mode", "heartbeat_status"],
 };

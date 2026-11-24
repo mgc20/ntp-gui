@@ -1,6 +1,6 @@
 # ntp-gui mit Uptime Kuma überwachen
 
-Drei Monitore, von einfach bis gründlich. Zusammen merkst du, ob der Container läuft, ob chrony
+Drei Monitore, von einfach bis gründlich, und als vierter Weg der Push von ntp-gui selbst. Zusammen merkst du, ob der Container läuft, ob chrony
 synchron ist und ob der NTP-Port im Netz wirklich antwortet.
 
 ## 1. HTTP-Monitor mit Stichwort auf `/healthz`
@@ -63,8 +63,19 @@ Push-URL kopieren und auf einem Linux-Rechner im LAN per Cron prüfen lassen (Pa
 Bleibt der Push aus, meldet Uptime Kuma den Monitor nach dem eingestellten Intervall als
 ausgefallen.
 
+## 4. Push von ntp-gui selbst: der Zeitwächter-Ping
+
+Statt Uptime Kuma fragen zu lassen, kann sich ntp-gui auch selbst melden: Monitor-Typ **Push**
+anlegen, die Push-URL unter **System → Einstellungen → Dashboard & Zugang → Zeitwächter-Ping (Adresse)**
+eintragen. ntp-gui ruft sie jede Minute auf – mit `status=up`, solange alles gut ist, und mit
+`status=down`, sobald die Übersicht einen kritischen Hinweis zeigt. Bleibt der Aufruf ganz aus
+(Rechner, Container oder Strom weg), meldet Uptime Kuma den Monitor nach dem Heartbeat Interval
+als ausgefallen. Das klappt auch, wenn Uptime Kuma ntp-gui nicht erreichen kann (anderes Netz,
+Firewall). Einzelheiten, Healthchecks und Datenschutz:
+[zeitwaechter.md](zeitwaechter.md).
+
 ## Und von innen?
 
 ntp-gui kann Probleme auch selbst melden (Seite **Benachrichtigungen**: ntfy, Gotify, Webhook,
 Apprise). Uptime Kuma ergänzt das von außen: Ist der ganze Rechner weg, kann ntp-gui nichts
-mehr senden – Uptime Kuma merkt es trotzdem.
+mehr senden – Uptime Kuma merkt es trotzdem (Monitore 1 bis 3 oder der Zeitwächter-Ping).

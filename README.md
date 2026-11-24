@@ -53,7 +53,7 @@ Raspberry Pi starten, die Adresse per **DHCP Option 42** verteilen – fertig.
 - **Diagnose ohne Datenleck** – Log-Seite, Ereignisprotokoll und ein Diagnosepaket mit Vorschau; ein zentraler Datenschutzfilter sorgt dafür, dass sich aus dem Paket kein Standort ablesen lässt. Hochgeladen wird nichts
 - **Fällt nicht um** – stirbt gpsd oder ptp4l (Kabel gezogen, Karte weg), startet der Supervisor nur diesen Dienst neu; NTP läuft weiter
 - **Dashboard ohne Ballast** – reines Python aus der Distribution, kein npm, kein pip; Diagramme in eigenem SVG
-- **Monitoring eingebaut** – versionierte JSON-API `/api/v1` mit API-Schlüsseln (nur lesen / verwalten), Prometheus-`/metrics` und `/healthz`; Verlauf über 30 Tage (SQLite), übersteht Neustarts; fertiges Grafana-Dashboard, Alarmregeln und Anleitungen für Home Assistant, Homepage, Glance und Uptime Kuma
+- **Monitoring eingebaut** – versionierte JSON-API `/api/v1` mit API-Schlüsseln (nur lesen / verwalten), Prometheus-`/metrics` und `/healthz`; Verlauf über 30 Tage (SQLite), übersteht Neustarts; fertiges Grafana-Dashboard, Alarmregeln und Anleitungen für Home Assistant, Homepage, Glance und Uptime Kuma; optional ein Zeitwächter-Ping an deinen eigenen Wächter
 - **Sichern und wiederherstellen** – eine Datei mit Einstellungen, Verlauf, Ereignissen, Geräten und Kalibrierung, ohne Position und Geheimnisse; auf Wunsch jede Nacht, Wiederherstellen mit Vorschau ([mehr](#sichern-und-wiederherstellen))
 - **Nachprüfbare Lieferkette** – SBOM, Schwachstellen-Bericht und Herkunftsnachweis zu jedem Release
 - **Getestet** – knapp 2000 Unittests und ein 173-Punkte-Integrationstest gegen das gebaute Image in der CI
@@ -1452,6 +1452,21 @@ iptables -I DOCKER-USER -d 169.254.0.0/16 -j DROP
 Zustand für Monitoring (Lese-Schlüssel genügt): `GET /api/v1/notify/status` – je Kanal nur
 Kennung, Art und Zustellstand.
 
+### Zeitwächter-Ping (opt-in)
+
+Fällt der ganze Rechner aus, kann ntp-gui keine Nachricht mehr schicken. Dafür meldet es sich auf
+Wunsch regelmäßig bei **deinem eigenen Wächter** (Uptime Kuma Push, Healthchecks): Adresse unter
+**System → Einstellungen → Dashboard & Zugang → Zeitwächter-Ping** eintragen (Standard: leer = aus, keine
+Verbindung). Bei gutem Zustand geht `GET <adresse>` hinaus, bei kritischem Zustand `<adresse>/fail`
+(Healthchecks) bzw. `?status=down` (Uptime Kuma, automatisch am Pfad `/api/push/…` erkannt);
+bleibt der Ping aus, schlägt der Wächter Alarm. Nur eine GET-Anfrage ohne Inhalt (Zweck
+`heartbeat` im Datenschutzfilter, leere Feldliste), keine Weiterleitungen, höchstens 5 s, Ziel
+geprüft wie bei den Benachrichtigungen. Zustand, letztes Ergebnis und **Jetzt senden** stehen auf
+der Seite **Benachrichtigungen**. Ein Wächter im Internet sieht deine öffentliche IP-Adresse – am
+besten läuft er im eigenen Netz. Die Adresse enthält den Schlüssel des Wächters und wird wie ein
+Geheimnis behandelt (nicht in Sicherungen und im Diagnosepaket, für Lese-Schlüssel gekürzt).
+Anleitung: [docs/integrationen/zeitwaechter.md](docs/integrationen/zeitwaechter.md).
+
 ## Diagnose & Fehlersuche
 
 Die Seite **Diagnose** bündelt alles, was du für die Fehlersuche brauchst – ohne
@@ -2223,6 +2238,7 @@ Fertig zum Importieren bzw. Abschreiben:
   – REST- und Template-Sensoren, Binärsensoren, Automations-Beispiel.
 - **Homepage und Glance:** [`docs/integrationen/homepage-glance.md`](docs/integrationen/homepage-glance.md).
 - **Uptime Kuma:** [`docs/integrationen/uptime-kuma.md`](docs/integrationen/uptime-kuma.md).
+- **Zeitwächter-Ping an Uptime Kuma oder Healthchecks:** [`docs/integrationen/zeitwaechter.md`](docs/integrationen/zeitwaechter.md).
 - **Studiouhr als Browserquelle (OBS, vMix, CasparCG) und Pi-Kiosk:** [`docs/integrationen/studiouhr.md`](docs/integrationen/studiouhr.md).
 
 Der API-Schlüssel reist über HTTP im Klartext. Nutze `https://` über einen Reverse Proxy oder

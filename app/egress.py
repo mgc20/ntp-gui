@@ -48,14 +48,17 @@ import math
 import re
 import sys
 import threading
+import urllib.parse
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
 # Zwecke: wofür etwas die Instanz verlässt. "notify" (Benachrichtigungen, 1.4) hat zusätzlich eine
 # eigene Feldliste (NOTIFY_FIELDS) – nur diese Felder einer Meldung gehen überhaupt hinaus.
 # "update_check" (Update-Hinweis, 1.4) schickt gar keine Daten: eine feste GET-Anfrage mit festen
-# Kopfzeilen (update_check_request) – ohne Version, ohne Kennung.
-PURPOSES = ("diagnostics", "recording", "community", "notify", "update_check")
+# Kopfzeilen (update_check_request) – ohne Version, ohne Kennung. "heartbeat" (Zeitwächter-Ping, 1.11)
+# schickt ebenfalls nichts: eine GET-Anfrage an die eingetragene Wächter-Adresse, leere Feldliste
+# (HEARTBEAT_FIELDS), nur der Zustand „gut/kritisch“ steckt in der Form der Adresse (heartbeat_request).
+PURPOSES = ("diagnostics", "recording", "community", "notify", "update_check", "heartbeat")
 
 PUBLIC_IP = "<öffentliche-IP>"
 REMOVED = "<entfernt>"
@@ -2736,3 +2739,70 @@ def update_check_request(url: str = UPDATE_CHECK_URL, headers: dict | None = Non
     if _update_findings(_render_update_request(url, headers)) - baseline:
         raise UpdateCheckRejected("Update-Hinweis: die Filterprüfung findet Daten der Instanz")
     return url, headers
+
+
+# --- Zeitwächter-Ping (Zweck "heartbeat", 1.11) -------------------------------------------
+# Ein Lebenszeichen an einen eigenen Wächter (Healthchecks, Uptime Kuma Push …): GET ohne Inhalt.
+# Die Adresse trägt der Admin selbst ein; hinaus geht nur, ob der Zustand gut oder kritisch ist –
+# ausgedrückt durch die Form der Adresse, nie durch Daten der Instanz.
+HEARTBEAT_FIELDS: tuple = ()          # Positivliste der Felder: leer – keine Messwerte, keine Namen
+HEARTBEAT_STATES = ("up", "down")
+HEARTBEAT_MODES = ("auto", "healthchecks", "kuma", "silent")
+HEARTBEAT_HEADERS: dict[str, str] = {"User-Agent": "ntp-gui"}
+# Uptime Kuma Push: feste Wörter für „msg“ (sonst zeigt Kuma bei „down“ sein Standard-„OK“).
+HEARTBEAT_KUMA_MSG = {"up": "OK", "down": "kritisch"}
+_HEARTBEAT_KUMA_KEYS = {"status", "msg", "ping"}
+_KUMA_PUSH_RE = re.compile(r"/api/push/[A-Za-z0-9_-]+/?$")
+
+
+class HeartbeatRejected(ValueError):
+    """Zeitwächter-Ping: die Anfrage entspricht nicht der festen Form."""
+
+
+def heartbeat_flavor(url: str, mode: str = "auto") -> str:
+    """Wie der Zustand in die Adresse kommt: „kuma“ (?status=up|down), „healthchecks“ (/fail anhängen)
+    oder „silent“ (nur bei gutem Zustand pingen). „auto“: Uptime-Kuma-Push-Adressen (/api/push/<token>)
+    erkennt der Pfad, alles andere gilt als Healthchecks-Form."""
+    if mode not in HEARTBEAT_MODES:
+        raise HeartbeatRejected("Zeitwächter: unbekannte Art")
+    if mode != "auto":
+        return mode
+    try:
+        path = urllib.parse.urlsplit(str(url or "")).path
+    except ValueError:
+        path = ""
+    return "kuma" if _KUMA_PUSH_RE.search(path) else "healthchecks"
+
+
+def heartbeat_request(base_url: str, state: str, mode: str = "auto", fields: dict | None = None,
+                      headers: dict | None = None) -> tuple[str, dict] | None:
+    """Die eine Anfrage des Zeitwächter-Pings: (URL, Kopfzeilen) – oder None, wenn nichts zu senden ist
+    („silent“ bei kritischem Zustand: der Wächter merkt das ausbleibende Lebenszeichen).
+
+    Leere Feldliste: fields muss leer sein, die Kopfzeilen exakt HEARTBEAT_HEADERS, ein Body ist nicht
+    vorgesehen. Gegenüber der eingetragenen Adresse ändert sich nur der Zustand: „/fail“ am Pfad
+    (Healthchecks) bzw. status/msg in der Abfrage (Uptime Kuma) mit festen Werten; ein Fragment fällt weg."""
+    if fields:
+        raise HeartbeatRejected("Zeitwächter: die Anfrage trägt keine Felder")
+    headers = dict(HEARTBEAT_HEADERS if headers is None else headers)
+    if headers != HEARTBEAT_HEADERS:
+        raise HeartbeatRejected("Zeitwächter: Kopfzeilen weichen von der festen Form ab")
+    if state not in HEARTBEAT_STATES:
+        raise HeartbeatRejected("Zeitwächter: Zustand muss up oder down sein")
+    flavor = heartbeat_flavor(base_url, mode)
+    try:
+        parts = urllib.parse.urlsplit(str(base_url or ""))
+    except ValueError:
+        raise HeartbeatRejected("Zeitwächter: Adresse ungültig") from None
+    if parts.scheme.lower() not in ("http", "https") or not parts.netloc:
+        raise HeartbeatRejected("Zeitwächter: nur http:// oder https://")
+    path, query = parts.path, parts.query
+    if flavor == "silent" and state == "down":
+        return None
+    if flavor == "healthchecks" and state == "down":
+        path = path.rstrip("/") + "/fail"
+    if flavor == "kuma":
+        kept = [(k, v) for k, v in urllib.parse.parse_qsl(query, keep_blank_values=True)
+                if k not in _HEARTBEAT_KUMA_KEYS]
+        query = urllib.parse.urlencode(kept + [("status", state), ("msg", HEARTBEAT_KUMA_MSG[state])])
+    return urllib.parse.urlunsplit((parts.scheme, parts.netloc, path, query, "")), dict(HEARTBEAT_HEADERS)
