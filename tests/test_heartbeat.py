@@ -297,12 +297,17 @@ class PingerTest(unittest.TestCase):
     def test_state_down_and_state_errors(self):
         ping = self.make(state="down")
         ping.tick()
+        self.assertEqual(self.sent[-1][1], "up", "erst nach der Haltezeit kritisch")
+        self.clock.t += heartbeat.DOWN_HOLD
+        ping.tick()
         self.assertEqual(self.sent[-1][1], "down")
 
         def broken():
             raise RuntimeError("kaputt")
 
         ping = self.make(state=broken)
+        ping.tick()
+        self.clock.t += heartbeat.DOWN_HOLD
         ping.tick()
         self.assertEqual(self.sent[-1][1], "down", "Zustand unbekannt = lieber kritisch")
         self.assertEqual(ping.status()["last_sent"], "fail")
@@ -331,6 +336,78 @@ class PingerTest(unittest.TestCase):
         self.assertEqual(self.events[1][1], "info")
         self.assertTrue(self.events[1][3]["resolves"])
         self.assertIsNone(ping.status()["error"])
+
+    def test_silent_critical_is_neither_success_nor_failure(self):
+        """„nur Lebenszeichen“ bei kritisch sendet nichts: kein „angekommen“, kein „wieder erreichbar“."""
+        state = {"now": "up"}
+
+        def sender(u, s, m):
+            self.sent.append(s)
+            if s == "down":
+                return None  # wie egress bei „silent“: nichts zu senden
+            raise heartbeat.PingError("Ziel nicht erreichbar")
+
+        ping = self.make(state=lambda: state["now"], sender=sender, mode="silent")
+        with mock.patch.object(heartbeat, "DOWN_HOLD", 0):
+            for _ in range(3):
+                ping.tick(force=True)
+            self.assertEqual([e[1] for e in self.events], ["warn"])
+            state["now"] = "down"
+            ping.tick(force=True)
+        status = ping.status()
+        self.assertEqual(self.sent[-1], "down")
+        self.assertEqual([e[1] for e in self.events], ["warn"], "kein „wieder erreichbar“ ohne Verbindung")
+        self.assertIsNone(status["last_ok"])
+        self.assertIsNone(status["last_sent"])
+        self.assertIsNone(status["error"])
+        self.assertEqual(status["failures"], 3)
+        self.assertEqual(status["last_state"], "down")
+
+        ping = self.make(state="down", mode="silent", sender=lambda u, s, m: None)
+        with mock.patch.object(heartbeat, "DOWN_HOLD", 0):
+            result = ping.test()
+        self.assertIsNone(result["last_ok"])
+        self.assertIsNone(result["last_sent"])
+        self.assertIsNotNone(result["last_attempt"])
+
+    def test_short_critical_is_held(self):
+        """Ein kurzer kritischer Ausschlag (Neuladen, Dienst-Neustart) meldet noch kein „ausgefallen“."""
+        state = {"now": "up"}
+        ping = self.make(state=lambda: state["now"], interval=3600)
+        ping.tick()
+        state["now"] = "down"
+        ping.tick(force=True)
+        self.assertEqual(self.sent[-1][1], "up")
+        self.assertTrue(ping.status()["held"])
+        self.clock.t += 60
+        state["now"] = "up"  # wieder gut: Haltezeit beginnt beim nächsten Ausschlag neu
+        ping.tick(force=True)
+        self.assertFalse(ping.status()["held"])
+        state["now"] = "down"
+        self.clock.t += 60
+        ping.tick(force=True)
+        self.clock.t += heartbeat.DOWN_HOLD - 1
+        self.assertFalse(ping.tick(), "vor Ablauf der Haltezeit nicht vorziehen")
+        self.assertEqual([s for _, s, _ in self.sent], ["up", "up", "up", "up"])
+        self.clock.t += 1
+        self.assertTrue(ping.tick(), "Haltezeit abgelaufen: sofort nachprüfen, nicht erst nach 3600 s")
+        self.assertEqual(self.sent[-1][1], "down")
+        status = ping.status()
+        self.assertEqual(status["last_sent"], "fail")
+        self.assertFalse(status["held"])
+        self.clock.t += 60
+        self.assertFalse(ping.tick(), "danach wieder im normalen Takt")
+
+    def test_test_button_while_ping_running(self):
+        ping = self.make()
+        ping.tick()
+        ping.busy = True
+        with self.assertRaises(heartbeat.TestBusy):
+            ping.test()
+        self.assertEqual(len(self.sent), 1, "dieser Klick hat nichts gesendet")
+        ping.busy = False
+        ping.test()  # Bremse nicht verbraucht
+        self.assertEqual(len(self.sent), 2)
 
     def test_test_button_rate_limited(self):
         ping = self.make()
@@ -479,6 +556,24 @@ class RouteTest(unittest.TestCase):
             self.assertTrue(payload["heartbeat"]["enabled"])
             self.assertTrue(payload["heartbeat"]["url"].endswith("/…"))
             self.assertNotIn("geheim", json.dumps(payload))
+
+    def test_route_silent_critical_is_not_ok(self):
+        with Recorder() as rec, mock.patch.object(heartbeat, "PINGER", None), \
+                mock.patch.object(heartbeat, "DOWN_HOLD", 0), mock.patch.object(server, "heartbeat_state", lambda: "down"):
+            settings.save({"heartbeat_url": rec.url("/ping/geheim"), "heartbeat_mode": "silent"})
+            self.addCleanup(settings.save, {"heartbeat_url": "", "heartbeat_mode": "auto"})
+            status, payload = self.request("POST", "/api/notify/heartbeat/test", {}, self.basic())
+            self.assertEqual(status, 200, payload)
+            self.assertFalse(payload["ok"])
+            self.assertIsNone(payload["error"])
+            self.assertIn("nichts gesendet", payload["note"])
+            self.assertIsNone(payload["heartbeat"]["last_ok"])
+            self.assertEqual(rec.hits, [])
+            heartbeat.pinger().busy = True
+            heartbeat.pinger().last_test = None
+            status, payload = self.request("POST", "/api/notify/heartbeat/test", {}, self.basic())
+            self.assertEqual(status, 409, payload)
+            heartbeat.pinger().busy = False
 
 
 if __name__ == "__main__":

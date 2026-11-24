@@ -19,6 +19,12 @@ eingetragene Adresse baut ntp-gui keine Verbindung auf und fragt auch kein DNS.
 - **Kritisch** heißt: Die Übersicht zeigt einen roten Hinweis – z. B. „chronyd antwortet nicht“
   oder ein Pflichtdienst (gpsd, ptp4l) ist ausgefallen. Lässt sich der Zustand nicht ermitteln,
   meldet der Ping ebenfalls „kritisch“.
+- **Haltezeit 2 Minuten:** „Kritisch“ geht erst hinaus, wenn der rote Hinweis mindestens 2 Minuten
+  anhält. Ein kurzer Ausschlag – die Zeitdienste starten nach einer geänderten Einstellung neu,
+  ein Dienst startet kurz neu, der Container fährt hoch – meldet so noch kein „ausgefallen“; bis
+  dahin geht weiter „gut“ hinaus, und die Zeile **Letzter Ping** zeigt „gut gemeldet – kritisch
+  erst nach 2 min“. Hält der Zustand an, prüft ntp-gui nach Ablauf der Haltezeit sofort nach und
+  wartet nicht auf das nächste Intervall.
 - Nur eine **GET-Anfrage ohne Inhalt**, User-Agent `ntp-gui` ohne Version. Keine Messwerte, keine
   Namen, keine Kennung der Instanz. Im Datenschutzfilter ist das der Zweck `heartbeat` mit leerer
   Feldliste (`app/egress.py`, `heartbeat_request`).
@@ -46,7 +52,10 @@ eines Aufrufs, wähle **nur Lebenszeichen**.
 
 Zustand, letztes Ergebnis und den Knopf **Jetzt senden** (sofort ein Ping mit dem echten Zustand,
 höchstens alle 10 s) findest du auf der Seite **Benachrichtigungen**, eine Kurzfassung auch in den
-Einstellungen. Scheitert der Ping dreimal in Folge, steht ein Ereignis der Art „Zeitwächter-Ping“
+Einstellungen direkt unter der Adresse. **Zuletzt angekommen** zählt nur Pings, die wirklich
+gesendet wurden und angekommen sind – bei „nur Lebenszeichen“ und kritischem Zustand bleibt die
+Zeile stehen, und **Jetzt senden** meldet „Zustand kritisch – nichts gesendet“. Läuft gerade ein
+Ping, antwortet **Jetzt senden** mit „Ein Ping läuft gerade“ (HTTP 409). Scheitert der Ping dreimal in Folge, steht ein Ereignis der Art „Zeitwächter-Ping“
 im Protokoll (und geht an deine Benachrichtigungskanäle, wenn sie diese Art zulassen); kommt er
 wieder an, folgt „wieder erreichbar“.
 

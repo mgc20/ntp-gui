@@ -11,6 +11,11 @@ Eingeschaltet (Einstellung heartbeat_url gesetzt) schickt ntp-gui alle heartbeat
   nicht) je nach Art (heartbeat_mode): Healthchecks ``GET <url>/fail``, Uptime Kuma
   ``GET <url>?status=down&msg=kritisch``, „silent“ gar nichts.
 
+„Kritisch“ gilt erst, wenn der Zustand mindestens DOWN_HOLD Sekunden anhält (zwei Auswertungen im
+Abstand von DOWN_HOLD). Ein kurzer roter Hinweis – Neuladen der Zeitdienste nach einer Einstellung,
+Dienst-Neustart, Start des Containers – meldet so noch kein „ausgefallen“; bis dahin geht weiter „gut“
+hinaus. Hält er an, wird die zweite Auswertung vorgezogen (nicht erst beim nächsten Intervall).
+
 Die Anfrage baut egress.heartbeat_request (Zweck „heartbeat“, leere Feldliste): kein Body, nur der
 User-Agent „ntp-gui“ ohne Version. Gesendet wird wie bei den Benachrichtigungen: Zielprüfung nach der
 Namensauflösung (netguard), keine Weiterleitungen, keine Proxys aus der Umgebung, Gesamtfrist TIMEOUT,
@@ -42,6 +47,7 @@ MAX_INTERVAL = 3600
 TICK = 2.0
 FAIL_EVENT_AFTER = 3          # so viele Fehlschläge hintereinander, dann ein Ereignis (nicht bei jedem)
 TEST_GAP = 10.0               # „Jetzt senden“ höchstens alle 10 s
+DOWN_HOLD = 120.0             # so lange muss „kritisch“ anhalten, bevor der Ping es meldet
 MODE_LABELS = {"auto": "automatisch erkennen", "healthchecks": "Healthchecks (…/fail)",
                "kuma": "Uptime Kuma Push (?status=down)", "silent": "nur Lebenszeichen (bei kritisch schweigen)"}
 
@@ -52,6 +58,10 @@ class PingError(Exception):
 
 class TestRateLimited(Exception):
     """„Jetzt senden“ zu schnell hintereinander."""
+
+
+class TestBusy(Exception):
+    """„Jetzt senden“, während gerade ein Ping unterwegs ist – dieser Klick hat nichts gesendet."""
 
 
 # ---------------------------------------------------------------------------
@@ -178,12 +188,13 @@ class Pinger:
         self.target: tuple | None = None   # (url, mode) des letzten Versuchs – Wechsel = neu anfangen
         self.last_mono: float | None = None
         self.last_test: float | None = None
+        self.crit_since: float | None = None  # seit wann (monotonic) die Auswertung ununterbrochen „kritisch“ ist
         self.result: dict = self._blank()
 
     @staticmethod
     def _blank() -> dict:
         return {"last_attempt": None, "last_ok": None, "last_state": None, "last_sent": None,
-                "error": None, "failures": 0, "alarmed": False}
+                "error": None, "failures": 0, "alarmed": False, "held": False}
 
     def _config(self) -> dict | None:
         try:
@@ -207,13 +218,30 @@ class Pinger:
             return "down"
         return value if value in egress.HEARTBEAT_STATES else "down"
 
+    def _held_state(self) -> tuple[str, bool]:
+        """Zustand mit Haltezeit: „down“ erst nach DOWN_HOLD s ununterbrochen kritisch. (Zustand, zurückgehalten)"""
+        raw = self._current_state()
+        now = self.clock()
+        with self.lock:
+            if raw != "down":
+                self.crit_since = None
+                return raw, False
+            if self.crit_since is None:
+                self.crit_since = now
+            if now - self.crit_since >= DOWN_HOLD:
+                return "down", False
+            return "up", True
+
     def due(self, cfg: dict | None = None) -> bool:
         cfg = self._config() if cfg is None else cfg
         if cfg is None:
             return False
         if self.target != (cfg["url"], cfg["mode"]) or self.last_mono is None:
             return True
-        return self.clock() - self.last_mono >= cfg["interval"]
+        now = self.clock()
+        if self.result.get("held") and self.crit_since is not None and now - self.crit_since >= DOWN_HOLD:
+            return True  # kritisch hält an: jetzt nachprüfen, nicht erst beim nächsten Intervall
+        return now - self.last_mono >= cfg["interval"]
 
     def tick(self, force: bool = False) -> bool:
         """Pingt, wenn eingeschaltet und fällig (force: sofort). True, wenn eine Anfrage versucht wurde."""
@@ -222,6 +250,7 @@ class Pinger:
             if cfg is None:
                 if self.target is not None:
                     self.target, self.last_mono, self.result = None, None, self._blank()
+                    self.crit_since = None
                 return False
             if self.busy or not (force or self.due(cfg)):
                 return False
@@ -238,7 +267,7 @@ class Pinger:
         return True
 
     def _run(self, cfg: dict) -> None:
-        state = self._current_state()
+        state, held = self._held_state()
         now = self.wall()
         error, sent = None, None
         try:
@@ -250,8 +279,10 @@ class Pinger:
         event = None
         with self.lock:
             res = self.result
-            res.update(last_attempt=now, last_state=state, last_sent=sent, error=error)
-            if error is None:
+            res.update(last_attempt=now, last_state=state, last_sent=sent, error=error, held=held)
+            if error is None and sent is None:
+                pass  # nichts gesendet („nur Lebenszeichen“ bei kritisch): kein Erfolg, kein Fehlschlag
+            elif error is None:
                 res["last_ok"] = now
                 if res["alarmed"]:
                     event = ("info", "Zeitwächter wieder erreichbar", True)
@@ -274,8 +305,13 @@ class Pinger:
         with self.lock:
             if self.last_test is not None and now - self.last_test < TEST_GAP:
                 raise TestRateLimited(f"Bitte {int(TEST_GAP)} s warten, bevor du erneut sendest.")
+            previous = self.last_test
             self.last_test = now
-        self.tick(force=True)
+        if not self.tick(force=True):
+            with self.lock:
+                if self.last_test == now:
+                    self.last_test = previous  # dieser Klick hat nichts gesendet: Bremse nicht verbrauchen
+            raise TestBusy("Ein Ping läuft gerade – gleich nochmal versuchen.")
         return self.status()
 
     def status(self, full: bool = False) -> dict:
@@ -291,6 +327,7 @@ class Pinger:
             "flavor": egress.heartbeat_flavor(cfg["url"], cfg["mode"]) if cfg else None,
             "last_attempt": res["last_attempt"], "last_ok": res["last_ok"], "last_state": res["last_state"],
             "last_sent": res["last_sent"], "error": res["error"], "failures": res["failures"],
+            "held": bool(res.get("held")),
             "next": (self.wall() + max(0.0, cfg["interval"] - (self.clock() - last)))
             if cfg and last is not None else None,
         }

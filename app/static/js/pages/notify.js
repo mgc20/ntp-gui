@@ -248,8 +248,9 @@ export function heartbeatRows(hb, withTarget = false) {
   const sentText = hb.last_attempt == null ? t("pages.heartbeat.never")
     : failed ? badge(t("pages.heartbeat.state.error"), "crit")
       : hb.last_sent === "fail" ? badge(t("pages.heartbeat.state.fail"), "warn")
-        : hb.last_sent === "up" ? badge(t("pages.heartbeat.state.up"), "good")
-          : badge(t("pages.heartbeat.state.none"), "warn");
+        : hb.last_sent === "up" && hb.held ? badge(t("pages.heartbeat.state.held"), "warn")
+          : hb.last_sent === "up" ? badge(t("pages.heartbeat.state.up"), "good")
+            : badge(t("pages.heartbeat.state.none"), "warn");
   const flavorKey = HEARTBEAT_FLAVOR[hb.flavor];
   return [
     withTarget && hb.url ? [t("pages.heartbeat.row.target"), el("span", { class: "mono", text: hb.url }), "heartbeat"] : null,
@@ -274,6 +275,7 @@ export function heartbeatCard(ctx, hb, disabled) {
     try {
       const result = await apiPost("/api/notify/heartbeat/test", {});
       if (result.ok) toast(t("pages.heartbeat.sent_ok"));
+      else if (!result.error && result.note) toast(t("pages.heartbeat.sent_none"), "warn");
       else toast(t("pages.heartbeat.sent_failed", { error: result.error || "?" }), "crit");
     } catch (error) { toast(error.message, "crit"); }
     ui.heartbeatBusy = false;

@@ -1495,7 +1495,9 @@ SCHEMA: list[dict] = [
            help="Wie der Ping einen kritischen Zustand meldet. „Automatisch“ erkennt Uptime-Kuma-Push-Adressen "
                 "(…/api/push/<token>) und setzt dann status=up bzw. status=down; jede andere Adresse bekommt bei "
                 "kritischem Zustand „/fail“ angehängt (Healthchecks). „Nur Lebenszeichen“ passt für jeden "
-                "Wächter, der nur das Ausbleiben bemerkt: Bei kritischem Zustand geht dann nichts hinaus."),
+                "Wächter, der nur das Ausbleiben bemerkt: Bei kritischem Zustand geht dann nichts hinaus. "
+                "„Kritisch“ zählt erst, wenn der Zustand mindestens 2 Minuten anhält – ein kurzes Neuladen "
+                "der Zeitdienste löst keinen Alarm aus."),
     _field("backup_nightly", "web", "Nächtliche Sicherung", "bool", False, _as_bool,
            env=None, restart=RESTART_NONE,
            help="Legt jede Nacht gegen 3 Uhr (Ortszeit des Servers) eine Sicherung im Datenverzeichnis ab "

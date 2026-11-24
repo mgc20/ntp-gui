@@ -286,8 +286,10 @@ apiv1.endpoint("POST", "/notify/test", "/api/notify/test", "admin",
                "Testnachricht sofort über einen Kanal senden (ohne Wiederholung). Body: {\"id\": …}.",
                ["ok", "error", "status"])
 apiv1.endpoint("POST", "/notify/heartbeat/test", "/api/notify/heartbeat/test", "admin",
-               "Zeitwächter-Ping sofort senden – mit dem echten Zustand (gut/kritisch), höchstens alle 10 s. "
-               "Body: {}.", ["ok", "error", "heartbeat"])
+               "Zeitwächter-Ping sofort senden – mit dem echten Zustand (gut/kritisch, „kritisch“ erst nach "
+               "2 min Haltezeit), höchstens alle 10 s. ok nur, wenn etwas angekommen ist; note, wenn bei "
+               "„nur Lebenszeichen“ nichts gesendet wurde; 409, solange gerade ein Ping läuft. Body: {}.",
+               ["ok", "error", "note", "heartbeat"])
 apiv1.endpoint("GET", "/gps/autocal", "/api/gps/autocal", "read",
                "Automatische GPS-Kalibrierung: Modus, aktuelle Entscheidung, letzte Änderungen.",
                ["mode", "decision", "changes", "rollback"], {"fresh": "0 = letzte gespeicherte Entscheidung"})
@@ -3411,11 +3413,18 @@ class Handler(BaseHTTPRequestHandler):
             except heartbeat.TestRateLimited as exc:
                 self._error(HTTPStatus.TOO_MANY_REQUESTS, str(exc))
                 return
+            except heartbeat.TestBusy as exc:
+                self._error(HTTPStatus.CONFLICT, str(exc))
+                return
             except heartbeat.PingError as exc:
                 self._error(HTTPStatus.CONFLICT, str(exc))
                 return
             result = dict(result, url=heartbeat.mask_url(settings.values().get("heartbeat_url") or ""))
-            self._send_json({"ok": result.get("error") is None, "error": result.get("error"), "heartbeat": result})
+            # ok nur, wenn wirklich etwas angekommen ist – „nur Lebenszeichen“ bei kritisch sendet nichts.
+            delivered = result.get("error") is None and result.get("last_sent") is not None
+            note = "Zustand kritisch – nichts gesendet (Art: nur Lebenszeichen)" \
+                if result.get("error") is None and result.get("last_sent") is None else None
+            self._send_json({"ok": delivered, "error": result.get("error"), "note": note, "heartbeat": result})
         elif path == "/api/v1/clock/signal":
             self._clock_signal(data, ident)
         elif path == "/api/apikeys":

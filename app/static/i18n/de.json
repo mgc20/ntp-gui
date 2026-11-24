@@ -418,12 +418,14 @@
       "state": {
         "up": "gut gemeldet",
         "fail": "kritisch gemeldet",
+        "held": "gut gemeldet – kritisch erst nach 2 min",
         "none": "kritisch – nichts gesendet",
         "error": "nicht angekommen"
       },
       "error": "Letzter Ping gescheitert ({count}× in Folge): {error}",
       "send_now": "Jetzt senden",
       "sent_ok": "Ping angekommen",
+      "sent_none": "Zustand kritisch – nichts gesendet (Art: nur Lebenszeichen)",
       "sent_failed": "Ping gescheitert: {error}",
       "privacy": "Datenschutz: Gesendet wird nur eine GET-Anfrage ohne Inhalt. Ein Wächter im Internet sieht dabei deine öffentliche IP-Adresse (grob ortbar) und wie oft der Ping kommt – am besten läuft er im eigenen Netz.",
       "where": "Einstellen unter System → Einstellungen → Dashboard & Zugang („Zeitwächter-Ping“).",

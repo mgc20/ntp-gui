@@ -418,12 +418,14 @@
       "state": {
         "up": "reported good",
         "fail": "reported critical",
+        "held": "reported good – critical only after 2 min",
         "none": "critical – nothing sent",
         "error": "not delivered"
       },
       "error": "Last ping failed ({count}× in a row): {error}",
       "send_now": "Send now",
       "sent_ok": "Ping delivered",
+      "sent_none": "State critical – nothing sent (type: sign of life only)",
       "sent_failed": "Ping failed: {error}",
       "privacy": "Privacy: only a GET request without content is sent. A watchdog on the internet sees your public IP address (roughly locatable) and how often the ping arrives – ideally run it in your own network.",
       "where": "Configure under System → Settings → Dashboard & access (“Watchdog ping”).",

@@ -252,10 +252,10 @@ function updateStatus(upd) {
     upd.error ? el("p", { class: "field-error", role: "alert", text: `Letzte Prüfung gescheitert: ${upd.error}` }) : null);
 }
 
-// Zeitwächter-Ping: Zustand aus /api/status (ohne Adresse); einstellen über die Felder heartbeat_* darunter.
+// Zeitwächter-Ping: Zustand aus /api/status (ohne Adresse); steht direkt unter dem Feld heartbeat_url.
 function heartbeatStatus(hb) {
   if (!hb || !hb.enabled) return null;
-  return el("div", { class: "update-status" },
+  return el("div", { class: "heartbeat-status" },
     el("h3", { class: "mini-head" }, `${t("pages.heartbeat.title")} `, infoButton("heartbeat", t("pages.heartbeat.title"))),
     kv(heartbeatRows(hb)),
     heartbeatError(hb),
@@ -976,7 +976,8 @@ export function render(ctx) {
       control(field),
       envExtra(field),
       hint ? el("p", { class: "field-help" }, rich(hint)) : null,
-      error ? el("p", { class: "field-error", role: "alert", text: error }) : null);
+      error ? el("p", { class: "field-error", role: "alert", text: error }) : null,
+      field.key === "heartbeat_url" && !st.onlyChanged ? heartbeatStatus(ctx.status?.heartbeat) : null);
   }
 
   function sectionCard(section) {
@@ -1006,7 +1007,6 @@ export function render(ctx) {
       sub: has(descKey) ? t(descKey) : section.description, actions: toggle },
     !st.onlyChanged && section.key === "dns" ? dnsStatus(ctx, dns) : null,
     !st.onlyChanged && section.key === "web" ? updateStatus(update) : null,
-    !st.onlyChanged && section.key === "web" ? heartbeatStatus(ctx.status?.heartbeat) : null,
     !st.onlyChanged && section.key === "web" ? languageRow() : null,
     el("div", { class: "fields" }, basic.map(fieldRow)),
     showAdv ? el("div", { class: "fields fields-advanced" }, advanced.map(fieldRow)) : null);

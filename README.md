@@ -1458,8 +1458,9 @@ Fällt der ganze Rechner aus, kann ntp-gui keine Nachricht mehr schicken. Dafür
 Wunsch regelmäßig bei **deinem eigenen Wächter** (Uptime Kuma Push, Healthchecks): Adresse unter
 **System → Einstellungen → Dashboard & Zugang → Zeitwächter-Ping** eintragen (Standard: leer = aus, keine
 Verbindung). Bei gutem Zustand geht `GET <adresse>` hinaus, bei kritischem Zustand `<adresse>/fail`
-(Healthchecks) bzw. `?status=down` (Uptime Kuma, automatisch am Pfad `/api/push/…` erkannt);
-bleibt der Ping aus, schlägt der Wächter Alarm. Nur eine GET-Anfrage ohne Inhalt (Zweck
+(Healthchecks) bzw. `?status=down` (Uptime Kuma, automatisch am Pfad `/api/push/…` erkannt) –
+„kritisch“ erst, wenn der Zustand mindestens 2 Minuten anhält (ein Neuladen der Zeitdienste löst
+also keinen Alarm aus); bleibt der Ping aus, schlägt der Wächter Alarm. Nur eine GET-Anfrage ohne Inhalt (Zweck
 `heartbeat` im Datenschutzfilter, leere Feldliste), keine Weiterleitungen, höchstens 5 s, Ziel
 geprüft wie bei den Benachrichtigungen. Zustand, letztes Ergebnis und **Jetzt senden** stehen auf
 der Seite **Benachrichtigungen**. Ein Wächter im Internet sieht deine öffentliche IP-Adresse – am
@@ -2130,7 +2131,7 @@ Einstellungen laufen) und `ntpgui_service_restarts_total`. Der mitgelieferte Ala
 | `/api/enforce/snippets`, `/api/enforce/check` | Zeitserver erzwingen: Anleitungen (DNS/Firewall) und Prüfung |
 | `/api/clients/offsets` | Passiv gemessene Abweichung der Client-Uhren (mit eigenen Namen) |
 | `/api/clients/overview`, `/api/clients/detail?ip=&range=` | Netzüberblick bzw. Verlauf und Gerätedaten eines Clients; `POST /api/clients/meta` (Name, Notiz) und `/api/clients/probe` (Aktiv nachmessen) mit Verwaltungsrecht |
-| `/api/notify/status` | Zustellstand je Benachrichtigungskanal (ohne Namen, Adressen, Tokens); `/api/notify`, `POST /api/notify/channels`, `/channels/delete`, `/test` mit Verwaltungsrecht |
+| `/api/notify/status` | Zustellstand je Benachrichtigungskanal (ohne Namen, Adressen, Tokens); `/api/notify` (mit Zustand des Zeitwächter-Pings, Adresse gekürzt), `POST /api/notify/channels`, `/channels/delete`, `/test` und `POST /api/notify/heartbeat/test` (Zeitwächter-Ping sofort senden, höchstens alle 10 s) mit Verwaltungsrecht; `/api/status` enthält `heartbeat` ohne Adresse |
 | `/api/dns` | DNS für ntp-gui: Modus, Zustand des Weiterleiters, Server, resolv.conf, letzte erfolgreiche Auflösung |
 | `/api/loops` | Erkannte Schleifen (Zeitquelle zeigt auf ntp-gui selbst) mit Ursache und Abhilfe |
 | `/api/gps/quality`, `/api/gps/antenna` | Empfangsbewertung (24 h), Rolle und Fehlerschranke des GPS bzw. Antennen-Test; `POST /api/gps/antenna` und `POST /api/gps/bound` mit Verwaltungsrecht |

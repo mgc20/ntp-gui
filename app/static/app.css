@@ -943,6 +943,7 @@ details.enforce-names { margin-top: 10px; }
 /* DNS für ntp-gui: Zustand über den Feldern (Einstellungen) */
 .dns-status { margin: 4px 0 16px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
 .dns-status .mini-head { margin-top: 12px; }
+.heartbeat-status { margin-top: 8px; padding-top: 6px; border-top: 1px dashed var(--border); }
 .dns-status .svc-name { overflow-wrap: anywhere; }
 
 /* ---------- Uhrqualität (1.4) ---------- */

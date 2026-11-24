@@ -159,17 +159,21 @@ export const HELP_NOTIFY = {
     text: "Bei gutem Zustand geht immer `GET <adresse>` hinaus. Kritisch heißt: Die Übersicht zeigt einen roten Hinweis (z. B. "
       + "chronyd antwortet nicht, Pflichtdienst ausgefallen). Dann je nach Art: **Healthchecks** ruft `<adresse>/fail` auf, "
       + "**Uptime Kuma Push** setzt `status=down` (und `msg=kritisch`) statt `status=up`, **nur Lebenszeichen** sendet gar "
-      + "nichts – das passt für jeden Wächter, der nur das Ausbleiben bemerkt. **Automatisch** erkennt Uptime-Kuma-Adressen "
+      + "nichts – das passt für jeden Wächter, der nur das Ausbleiben bemerkt. **Haltezeit:** „Kritisch“ geht erst hinaus, "
+      + "wenn der rote Hinweis mindestens 2 Minuten anhält; ein kurzes Neuladen oder ein Dienst-Neustart meldet so noch "
+      + "kein „ausgefallen“, bis dahin geht weiter „gut“ hinaus. **Automatisch** erkennt Uptime-Kuma-Adressen "
       + "am Pfad `/api/push/…` und behandelt alle anderen wie Healthchecks. Das Intervall (30 bis 3600 s, Standard 60 s) "
       + "sollte etwas kürzer sein als die Frist im Wächter – z. B. 60 s bei Uptime Kuma „Heartbeat Interval“ 90 s.",
   },
   heartbeat_status: {
     title: "Zeitwächter-Ping: letztes Ergebnis",
     text: "**Letzter Ping** zeigt, was zuletzt gemeldet wurde (gut, kritisch oder bei „nur Lebenszeichen“: nichts gesendet) "
-      + "und ob es angekommen ist. **Zuletzt angekommen**: letzte Antwort mit HTTP 2xx. Scheitert der Ping dreimal in Folge, "
+      + "und ob es angekommen ist. **Zuletzt angekommen**: letzte Antwort mit HTTP 2xx – wurde nichts gesendet, bleibt die "
+      + "Zeile unverändert. „Gut gemeldet – kritisch erst nach 2 min“ heißt: Der Zustand ist gerade kritisch, die "
+      + "Haltezeit läuft noch. Scheitert der Ping dreimal in Folge, "
       + "steht ein Ereignis der Art „Zeitwächter-Ping“ im Protokoll (und geht an deine Benachrichtigungskanäle, wenn sie "
       + "diese Art zulassen); kommt er wieder an, folgt „wieder erreichbar“. **Jetzt senden** schickt sofort einen Ping mit "
-      + "dem echten Zustand (höchstens alle 10 s). Die Zieladresse steht hier nur gekürzt.",
+      + "dem echten Zustand (höchstens alle 10 s); läuft gerade ein Ping, meldet er das, statt zu senden. Die Zieladresse steht hier nur gekürzt.",
   },
 };
 
