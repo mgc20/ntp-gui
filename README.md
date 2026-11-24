@@ -46,6 +46,7 @@ Raspberry Pi starten, die Adresse per **DHCP Option 42** verteilen – fertig.
 - **NTS** – kryptografisch abgesicherte Zeit von PTB, Cloudflare, Netnod & Co., optional auch als NTS-Server – auch hinter einem Reverse Proxy, mit dessen Let's-Encrypt-Zertifikat
 - **Hardware-Check** – erkennt GPS-Empfänger, PPS, PTP-Netzwerkkarten, VM und Container-Rechte und sagt, was geht und welche Zeile in der Compose-Datei fehlt
 - **Zeitserver erzwingen** – fertige Anleitungen für AdGuard, Pi-hole, dnsmasq, Unbound, OPNsense, MikroTik, OpenWrt, nftables und UniFi, damit auch Geräte mit fest eingebautem Zeitserver bei dir landen – samt Prüfung per Klick
+- **„Mein Gerät bekommt keine Zeit“** – geführte Fehlersuche für eine IP-Adresse: feste Prüfliste, genau ein Befund mit nächstem Schritt und passender Anleitung
 - **Wie genau gehen meine Clients?** – misst passiv aus den NTP-Anfragen, wie weit die Uhr jedes Geräts im LAN danebenliegt – mit 7-Tage-Verlauf und Detailseite je Gerät, Netzüberblick und Alarm bei falsch gehender Uhr
 - **Benachrichtigungen** – per ntfy, Gotify, Webhook oder Apprise (E-Mail, Telegram, Matrix …), entprellt, mit „behoben“-Meldung und durch den Datenschutzfilter
 - **Uhrqualität** – Temperatur gegen Frequenz, Ablauf der Schaltsekunden-Liste und eine Vollbild-Uhr unter `/clock` für Wandmonitor und Tablet
@@ -601,6 +602,29 @@ mit der größten Abweichung, verstummte Geräte und Geräte, die öfter als all
 meldet ntp-gui das Ereignis „Uhr von … weicht um … ab“, sobald ein Gerät zweimal in Folge mehr
 als eine Sekunde danebenliegt. Mit einem [Benachrichtigungskanal](#benachrichtigungen) für die
 Art „Clients“ landet die Meldung z. B. auf dem Handy.
+
+### „Mein Gerät bekommt keine Zeit“: geführte Fehlersuche (ab 1.11)
+
+Die Karte **Clients → Mein Gerät bekommt keine Zeit** fängt beim Symptom an. Du gibst die
+IP-Adresse des Geräts ein (IPv4 oder IPv6; Namen werden bewusst nicht aufgelöst), ntp-gui geht
+eine feste Prüfliste durch und nennt **genau einen Befund** mit dem nächsten Schritt:
+
+1. **Erlaubte Netze** – liegt die Adresse in `ALLOW_NETWORKS` und nicht in `DENY_NETWORKS`
+   (die genaueste Zeile gilt, wie bei chronyd)?
+2. **Dienst lauscht** – hat chronyd einen UDP-Socket auf dem NTP-Port, passt `BIND_ADDRESS` zur
+   Adressfamilie des Geräts, ist der Port 123?
+3. **Server synchron** – oder im Inselbetrieb; ist `SERVE_UNSYNCED` aus (Standard, sobald
+   „Erlaubte Netze“ öffentliche Adressen enthält), bekommen Geräte ohne Quelle keine gültige Zeit.
+4. **Netzmodus** – erscheinen im Bridge-Netz alle Anfragen als Gateway des Docker-Netzes?
+5. **Anfragen angekommen** – kennen chronyd oder die eigene Messung das Gerät, ist es verstummt?
+6. **Begrenzung** – hat das Ratelimit Anfragen dieses Geräts verworfen?
+7. **Uhr des Geräts** – messbar, und wie weit liegt sie daneben?
+
+Befund ist das erste Problem, sonst der erste Hinweis. Wo es passt, stehen die Anleitungen für
+Windows (`w32tm`), systemd-timesyncd, chrony und macOS darunter. Die Prüfung braucht eine
+Anmeldung, liest nur, was der Server schon weiß, und schickt nichts ins Netz. Nachmessen geht
+weiter nur über **Aktiv nachmessen** auf der Seite des Geräts (private Adressen, gedrosselt).
+API: `/api/clients/troubleshoot?ip=` (Leserecht).
 
 ### Clients 3: Uhrgüte, Gruppen, Regeln, Gerätepass (ab 1.5)
 
@@ -2130,6 +2154,7 @@ Einstellungen laufen) und `ntpgui_service_restarts_total`. Der mitgelieferte Ala
 | `/api/recording` | Aufzeichnung der Datenquellen; `POST {"seconds": 300}` startet, `{"action": "stop"}` stoppt |
 | `/api/enforce/snippets`, `/api/enforce/check` | Zeitserver erzwingen: Anleitungen (DNS/Firewall) und Prüfung |
 | `/api/clients/offsets` | Passiv gemessene Abweichung der Client-Uhren (mit eigenen Namen) |
+| `/api/clients/troubleshoot?ip=` | Fehlersuche „Mein Gerät bekommt keine Zeit“: Prüfliste und genau ein Befund für eine IP-Adresse (rein lesend, keine Namensauflösung); Leserecht |
 | `/api/clients/overview`, `/api/clients/detail?ip=&range=` | Netzüberblick bzw. Verlauf und Gerätedaten eines Clients; `POST /api/clients/meta` (Name, Notiz) und `/api/clients/probe` (Aktiv nachmessen) mit Verwaltungsrecht |
 | `/api/notify/status` | Zustellstand je Benachrichtigungskanal (ohne Namen, Adressen, Tokens); `/api/notify` (mit Zustand des Zeitwächter-Pings, Adresse gekürzt), `POST /api/notify/channels`, `/channels/delete`, `/test` und `POST /api/notify/heartbeat/test` (Zeitwächter-Ping sofort senden, höchstens alle 10 s) mit Verwaltungsrecht; `/api/status` enthält `heartbeat` ohne Adresse |
 | `/api/dns` | DNS für ntp-gui: Modus, Zustand des Weiterleiters, Server, resolv.conf, letzte erfolgreiche Auflösung |

@@ -89,6 +89,7 @@ import statewatch
 import pistate
 import thermal
 import timeline
+import troubleshoot
 import updatecheck
 import webtransport
 
@@ -241,6 +242,12 @@ apiv1.endpoint("POST", "/clients/probe", "/api/clients/probe", "admin",
                "Aktiv nachmessen: eine NTP-Anfrage an einen bekannten Client im LAN (2 s Zeitlimit; je Gerät "
                "alle 30 s, insgesamt 10 pro Minute). Body: {\"ip\": …}.",
                ["ip", "answered", "offset", "rtt", "stratum", "text"])
+apiv1.endpoint("GET", "/clients/troubleshoot", "/api/clients/troubleshoot", "read",
+               "Fehlersuche „Mein Gerät bekommt keine Zeit“: feste Prüfliste für eine IP-Adresse (erlaubte Netze, "
+               "lauscht der Dienst, Server synchron, Netzmodus, Anfragen gesehen, Begrenzung, Uhr des Geräts) und "
+               "genau ein Befund mit nächstem Schritt. Rein lesend, keine Namensauflösung, keine Messung.",
+               ["address", "lan", "known", "probe_allowed", "checks", "verdict"],
+               {"ip": "IPv4- oder IPv6-Adresse des Geräts (Pflicht, kein Name)"})
 apiv1.endpoint("GET", "/clients/groups", "/api/clients/groups", "read",
                "Clients 3: Geräte nach Gruppe (eigene Netze, spezifischstes Netz gewinnt), VLAN oder Software – je "
                "Gruppe Anzahl, aktive, messbare, Median-Abweichung, Anteil „gut“ (< 10 ms), Hinweis bei leerer Gruppe; "
@@ -723,6 +730,20 @@ def chrony_client_row(addr: str | None) -> dict | None:
     if addr is None:
         return None
     return next((c for c in chrony.clients() if clientinfo.clean_ip(c.get("address")) == addr), None)
+
+
+def troubleshoot_view(ip) -> dict:
+    """Fehlersuche für eine Adresse: sammelt nur Lokales (chronyc, eigene Messung, /proc) – nichts geht ins Netz."""
+    addr = troubleshoot.clean_target(ip)
+    cfg = settings.values()
+    rows = chrony.clients()
+    row = next((c for c in rows if clientinfo.clean_ip(c.get("address")) == addr), None)
+    mon = clientmon.status()
+    others = [c.get("address") for c in rows if (c.get("ntp_packets") or 0) > 0] + list(mon.get("clients") or {})
+    return troubleshoot.run(addr, cfg, tracking=chrony.tracking(), chrony_row=row, entry=clientmon.client(addr),
+                            listeners=troubleshoot.udp_listeners(int(cfg["ntp_port"])),
+                            net_mode=devices.network_mode(), gateway=clientmon.default_gateway(),
+                            others=[a for a in others if a])
 
 
 def system_info(cfg: dict) -> dict:
@@ -2940,6 +2961,13 @@ class Handler(BaseHTTPRequestHandler):
                 result.update(clients3.detail_extras(result["address"], result, settings.values()))
             except Exception as exc:  # noqa: BLE001 – Clients 3 ist ein Zusatz zur Detailseite
                 print(f"[web] Uhrgüte/Regeln für die Detailseite fehlgeschlagen: {exc}", flush=True)
+            self._send_json(result)
+        elif path == "/api/clients/troubleshoot":
+            try:
+                result = troubleshoot_view(query.get("ip"))
+            except troubleshoot.InputError as exc:
+                self._error(HTTPStatus.BAD_REQUEST, str(exc))
+                return
             self._send_json(result)
         elif path == "/api/clients/groups":
             status = clientmon.status()

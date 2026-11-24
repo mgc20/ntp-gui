@@ -265,6 +265,11 @@ check "Clients: Nachmessen öffentlicher Adressen abgelehnt" 422 "$(http "${CJ[@
 check "Clients: Nachmessen über 6to4 (öffentliche IPv4 darin) abgelehnt" 422 "$(http "${CJ[@]}" -d '{"ip":"2002:808:808::1"}' http://127.0.0.1:18080/api/clients/probe)"
 check "Clients: Nachmessen link-lokaler IPv6 abgelehnt" 422 "$(http "${CJ[@]}" -d '{"ip":"fe80::1"}' http://127.0.0.1:18080/api/clients/probe)"
 check "Clients: Detail einer unbekannten Adresse -> 404" 404 "$(http 'http://127.0.0.1:18080/api/clients/detail?ip=192.0.2.77')"
+# Fehlersuche „Mein Gerät bekommt keine Zeit“ (1.11): echter chronyd lauscht, Namen werden abgelehnt.
+TS=$(curl -s --max-time 10 'http://127.0.0.1:18080/api/clients/troubleshoot?ip=192.168.1.77')
+check "Fehlersuche: chronyd lauscht laut Socket-Liste" "ok" "$(python3 -c "import json,sys; d=json.loads(sys.argv[1]); print(next(c['status'] for c in d['checks'] if c['key']=='listen'))" "$TS" 2>/dev/null)"
+check "Fehlersuche: genau ein Befund" "True" "$(python3 -c "import json,sys; d=json.loads(sys.argv[1]); print(isinstance(d['verdict'], dict) and bool(d['verdict']['title']))" "$TS" 2>/dev/null)"
+check "Fehlersuche: Name statt Adresse -> 400" 400 "$(http 'http://127.0.0.1:18080/api/clients/troubleshoot?ip=pool.ntp.org')"
 docker exec "${PREFIX}-a" python3 -c '
 import socket, struct, time
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(0.5)

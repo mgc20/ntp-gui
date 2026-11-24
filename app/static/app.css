@@ -1322,3 +1322,10 @@ input.link-output { max-width: none; }
 .link-public-state { margin: 0 0 6px; font-weight: 600; }
 .link-public-state[data-state="on"] { color: var(--warn-ink); }
 .link-signal { margin: 0 0 8px; }
+
+/* Fehlersuche „Mein Gerät bekommt keine Zeit“ (Clients) */
+.ts-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 4px 0 10px; }
+.ts-form input { flex: 1 1 220px; max-width: 320px; min-width: 0; }
+.ts-result .verdict p + p { margin-top: 6px; }
+.ts-links { font-size: 13.5px; }
+.ts-checks { margin-top: 8px; }

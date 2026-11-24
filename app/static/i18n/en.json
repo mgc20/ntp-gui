@@ -238,7 +238,33 @@
       "cards_label": "Devices",
       "ignore_42": "Devices that ignore option 42 (Windows, Linux, macOS)",
       "notes": "Notes on {system} ({count})",
-      "check_line": "“Check” tests the redirection from here."
+      "check_line": "“Check” tests the redirection from here.",
+      "ts": {
+        "title": "My device gets no time",
+        "sub": "Enter the device's IP address: ntp-gui walks through a fixed checklist and names exactly one finding with the next step. The check only reads what the server already knows – it sends nothing to the network and resolves no names.",
+        "placeholder": "e.g. 192.168.1.42",
+        "input_label": "IP address of the device",
+        "run": "Check",
+        "busy": "Checking …",
+        "invalid": "Please enter an IPv4 or IPv6 address (not a name).",
+        "verdict": "Finding",
+        "next": "Next step",
+        "checks": "Checklist for {address}",
+        "detail": "Open device",
+        "detail_probe": "Open device (measure actively there)",
+        "action": {
+          "settings": "Open settings",
+          "diagnose": "Open diagnostics (log)",
+          "sources": "Open time sources"
+        },
+        "status": {
+          "ok": "fine",
+          "warn": "note",
+          "fail": "problem",
+          "info": "info",
+          "skip": "skipped"
+        }
+      }
     },
     "sources": {
       "steps": "The four steps in detail",
@@ -246,7 +272,9 @@
     },
     "diagnose": {
       "intro": "Log, events and diagnostic bundle for troubleshooting – nothing is uploaded automatically.",
-      "privacy": "With privacy filter."
+      "privacy": "With privacy filter.",
+      "troubleshoot_hint": "A single device gets no time?",
+      "troubleshoot_link": "Clients → My device gets no time"
     },
     "more": "More",
     "timeline": {
