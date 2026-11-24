@@ -173,7 +173,8 @@ function render({ background = false } = {}) {
   window.scrollTo(0, scroll);
 }
 
-// 1.11: Unter jeder Seite ein Verweis auf die passende Unterseite der Hilfe (helpnav.js PAGE_TOPICS).
+// 1.11: Unter den Seiten (nicht Einstellungen, Hilfe, Einrichtung) ein Verweis auf das passende Hilfe-Thema
+// (helpnav.js PAGE_TOPICS).
 function pageHelpLink(pageId) {
   const topic = pageTopic(pageId);
   return topic ? el("p", { class: "page-help" }, el("a", { href: topicHref(topic.id), text: t("help.page_more", { topic: topic.title }) })) : "";

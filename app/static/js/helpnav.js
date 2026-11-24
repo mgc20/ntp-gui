@@ -53,7 +53,8 @@ export function neighbours(id) {
 /**
  * Was die Hilfe zeigt. sub: Unterpfad nach #/hilfe (ctx.subpath), query: Abfrageteil ohne „?“.
  * Ergebnis { view: "index" } (Inhaltsverzeichnis, notFound bei unbekanntem Thema) oder
- * { view: "topic", topic, focus } (focus: Schlüssel des hervorgehobenen Eintrags oder null).
+ * { view: "topic", topic, focus, missing } (focus: Schlüssel des hervorgehobenen Eintrags oder null; missing: die
+ * Adresse nannte einen Eintrag, den es nicht gibt). Ein Schlüssel unter einem fremden Thema führt auf sein Thema.
  */
 export function resolveHelp(sub, query = "") {
   const parts = String(sub || "").split("/").filter(Boolean);
@@ -69,7 +70,12 @@ export function resolveHelp(sub, query = "") {
   const group = topic(parts[0]);
   if (group) {
     const key = known(parts[1]) || known(legacy);
-    return { view: "topic", topic: group, focus: key && group.keys.includes(key) ? key : null };
+    if (key && group.keys.includes(key)) return { view: "topic", topic: group, focus: key };
+    // Ein Eintrag, der inzwischen in einem anderen Thema steht (z. B. ein älterer geteilter Link): dort zeigen.
+    const owner = key ? topicOfKey(key) : null;
+    if (owner) return { view: "topic", topic: owner, focus: key };
+    // Unbekannter Eintrag: die Unterseite des Themas mit Hinweis (missing), statt still ohne Hervorhebung.
+    return { view: "topic", topic: group, focus: null, missing: Boolean(parts[1] || legacy) };
   }
   // #/hilfe/pps: ein Schlüssel statt eines Themas – der Eintrag auf seiner Unterseite.
   const key = known(parts[0]);
@@ -79,7 +85,7 @@ export function resolveHelp(sub, query = "") {
 }
 
 /**
- * Hilfe-Thema zu einer Seite des Dashboards (Verweis „Mehr in der Hilfe“ unter jeder Seite).
+ * Hilfe-Thema zu einer Seite des Dashboards (Verweis „Mehr in der Hilfe“ unter der Seite).
  * Schlüssel: Seiten-ids aus routes.js. Einstellungen, Hilfe, Einrichtung und Musterseite haben keinen Verweis.
  */
 export const PAGE_TOPICS = {

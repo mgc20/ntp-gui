@@ -4945,7 +4945,8 @@ async function setupChecks(browser) {
 
 // Hilfe mit Unterseiten (1.11, helpChecks, einzeln mit TOUR_HELP_ONLY=1) bei 390 und 1440 px: Inhaltsverzeichnis
 // mit allen Themen, Unterseite per Klick, vorheriges/nächstes Thema, „Zurück“ im Browser (Adresse und Ansicht),
-// tiefer Link #/hilfe/gps/pps (Eintrag hervorgehoben und im Bild), alter Link #/hilfe?t=pps, unbekanntes Thema,
+// tiefer Link #/hilfe/gps/pps (Eintrag hervorgehoben und im Bild, auch beim zweiten Aufruf und per Zurück/Vor),
+// Eintrag unter fremdem Thema, unbekannter Eintrag, kaputte Kodierung, alter Link #/hilfe?t=pps, unbekanntes Thema,
 // Suche über alle Themen mit Sprung auf den Treffer, „Mehr in der Hilfe“ aus einem ⓘ, Verweis unter einer Seite,
 // keine Überbreite, Tippflächen der neuen Links ≥ 24 px. Fotos mit TOUR_SHOTS.
 async function helpChecks(browser) {
@@ -5020,6 +5021,35 @@ async function helpChecks(browser) {
     await go("#/hilfe/gibtsnicht");
     s = await state();
     if (!s.notFound || s.toc !== topics.length) found.push(`${width} unbekanntes Thema: ${JSON.stringify(s)}`);
+    // Derselbe tiefe Link nach einem Seitenwechsel erneut, per Zurück und per Vor: der Eintrag ist jedes Mal im Bild.
+    await go("#/gps");
+    await go("#/hilfe/gps/pps");
+    await page.waitForTimeout(600);
+    s = await state();
+    if (s.focus !== "h-pps" || !s.focusInView) found.push(`${width} tiefer Link zum zweiten Mal: ${JSON.stringify(s)}`);
+    await go("#/uebersicht");
+    await page.goBack();
+    await page.waitForTimeout(1200);
+    s = await state();
+    if (s.hash !== "#/hilfe/gps/pps" || s.focus !== "h-pps" || !s.focusInView) found.push(`${width} tiefer Link per Zurück: ${JSON.stringify(s)}`);
+    await page.goBack();
+    await page.waitForTimeout(800);
+    await page.goForward();
+    await page.waitForTimeout(1200);
+    s = await state();
+    if (s.hash !== "#/hilfe/gps/pps" || s.focus !== "h-pps" || !s.focusInView) found.push(`${width} tiefer Link per Vor: ${JSON.stringify(s)}`);
+    // Eintrag unter einem fremden Thema → sein Thema; unbekannter Eintrag → Thema mit Hinweis; kaputte Kodierung → Hinweis.
+    await go("#/hilfe/benachrichtigungen/heartbeat");
+    await page.waitForTimeout(600);
+    s = await state();
+    if (s.topic !== "Betrieb und Überwachung" || s.focus !== "h-heartbeat" || !s.focusInView) found.push(`${width} Eintrag unter fremdem Thema: ${JSON.stringify(s)}`);
+    await go("#/hilfe/gps/ppss");
+    s = await state();
+    if (s.topic !== "GPS" || s.focus || !s.notFound) found.push(`${width} unbekannter Eintrag: ${JSON.stringify(s)}`);
+    await shot("eintrag-fehlt");
+    await go("#/hilfe/%E0%A4%A");
+    s = await state();
+    if (!s.notFound || s.toc !== topics.length) found.push(`${width} kaputte Kodierung: ${JSON.stringify(s)}`);
     // Suche über alle Themen; ein Treffer springt auf seine Unterseite, die Suche ist danach leer.
     await go("#/hilfe/betrieb");
     await page.fill(".help-search", "Falseticker");

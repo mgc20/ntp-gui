@@ -85,12 +85,12 @@ function resultsView(needle, onLink) {
   keys.length ? el("dl", { class: "glossary" }, keys.map((key) => entry(key, null, onLink))) : null));
 }
 
-// Adresse, zu deren Eintrag zuletzt gerollt wurde.
-let scrolledFor = "";
-
 export function render(ctx) {
   const hash = window.location.hash;
-  const view = resolveHelp(ctx.subpath, hash.includes("?") ? hash.slice(hash.indexOf("?") + 1) : "");
+  const query = hash.includes("?") ? hash.slice(hash.indexOf("?") + 1) : "";
+  // Kaputte Prozent-Kodierung: routes.js liefert dann einen leeren Unterpfad – Hinweis statt stillem Inhaltsverzeichnis.
+  const broken = !ctx.subpath && /^#\/hilfe\/[^?]/.test(hash);
+  const view = broken ? { view: "index", notFound: true } : resolveHelp(ctx.subpath, query);
   const focus = view.view === "topic" ? view.focus : null;
   // Ein tiefer Link (ⓘ „Mehr in der Hilfe“) zeigt den Eintrag – eine alte Suche stünde sonst davor.
   if (focus) ctx.uiState.helpQuery = "";
@@ -99,7 +99,7 @@ export function render(ctx) {
   const search = el("input", { type: "search", placeholder: t("help.search_placeholder"),
     value: ctx.uiState.helpQuery || "", "aria-label": t("help.search_label"), class: "help-search" });
   const content = el("div", { class: "help-content" }, view.view === "topic"
-    ? topicView(view.topic, focus, clearSearch)
+    ? [view.missing ? el("p", { class: "empty-note", text: t("help.entry_not_found") }) : null, topicView(view.topic, focus, clearSearch)]
     : [view.notFound ? el("p", { class: "empty-note", text: t("help.not_found") }) : null, tocCard(), setupCard(), apiCard()]);
   const results = el("div", { class: "help-groups", hidden: true });
 
@@ -111,11 +111,12 @@ export function render(ctx) {
   };
   search.addEventListener("input", () => { ctx.uiState.helpQuery = search.value; draw(search.value); });
   draw(ctx.uiState.helpQuery || "");
-  // Zum Eintrag rollen – einmal je Adresse (ein Neuzeichnen im Hintergrund reißt den Leser nicht zurück) und erst
-  // nach dem Zeichnen: app.js stellt danach die Rollposition wieder her, das bräche ein sanftes Rollen ab.
-  if (!focus) scrolledFor = "";
-  else if (scrolledFor !== hash) {
-    scrolledFor = hash;
+  // Zum Eintrag rollen – einmal je Aufruf der Adresse: uiState.scrolled setzt app.js bei jedem Hash-Wechsel zurück
+  // (auch bei Zurück/Vor und erneutem Aufruf derselben Adresse); ein Neuzeichnen im Hintergrund reißt den Leser
+  // nicht zurück. Erst nach dem Zeichnen: app.js stellt danach die Rollposition wieder her, das bräche ein sanftes
+  // Rollen ab.
+  if (focus && !ctx.uiState.scrolled) {
+    ctx.uiState.scrolled = true;
     ctx.afterRender(() => setTimeout(() => document.getElementById(`h-${focus}`)?.scrollIntoView({
       behavior: window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "center" }), 0));
   }

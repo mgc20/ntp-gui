@@ -46,7 +46,7 @@ const h = await import({mod("help.js")});
 const r = await import({mod("routes.js")});
 const view = (sub, query) => {{
   const v = n.resolveHelp(sub, query);
-  return {{ view: v.view, topic: v.topic ? v.topic.id : null, focus: v.focus ?? null, notFound: Boolean(v.notFound) }};
+  return {{ view: v.view, topic: v.topic ? v.topic.id : null, focus: v.focus ?? null, notFound: Boolean(v.notFound), missing: Boolean(v.missing) }};
 }};
 const route = (hash) => {{ const x = r.resolve(hash); return {{ redirect: x.redirect || null, page: x.page?.id || null, sub: x.sub ?? null, query: x.query ?? null }}; }};
 console.log(JSON.stringify({{
@@ -61,6 +61,8 @@ console.log(JSON.stringify({{
     index: view("", ""), legacy: view("", "t=pps"), legacyUnknown: view("", "t=gibtsnicht"), topic: view("gps", ""),
     deep: view("gps/pps", ""), deepWrongTopic: view("ptp/pps", ""), keyAsTopic: view("readyz", ""), unknown: view("gibtsnicht", ""),
     upper: view("GPS/pps", ""), topicLegacy: view("gps", "t=pps"), proto: view("constructor", ""), trailing: view("betrieb/", ""),
+    moved: view("benachrichtigungen/heartbeat", ""), unknownKey: view("gps/ppss", ""), protoKey: view("gps/__proto__", ""),
+    ctorKey: view("gps/constructor", ""), topicLegacyUnknown: view("gps", "t=gibtsnicht"),
   }},
   routes: {{ deep: route("#/hilfe/gps/pps"), topic: route("#/hilfe/betrieb"), legacy: route("#/hilfe?t=pps"), plain: route("#/hilfe") }},
   neighbours: {{ first: n.neighbours(n.TOPICS[0].id), last: n.neighbours(n.TOPICS[n.TOPICS.length - 1].id), gps: n.neighbours("gps") }},
@@ -108,20 +110,26 @@ console.log(JSON.stringify({{
 
     def test_ansichten(self):
         v = self.data["views"]
-        self.assertEqual(v["index"], {"view": "index", "topic": None, "focus": None, "notFound": False})
-        self.assertEqual(v["legacy"], {"view": "topic", "topic": "gps", "focus": "pps", "notFound": False})
+        self.assertEqual(v["index"], {"view": "index", "topic": None, "focus": None, "notFound": False, "missing": False})
+        self.assertEqual(v["legacy"], {"view": "topic", "topic": "gps", "focus": "pps", "notFound": False, "missing": False})
         self.assertEqual(v["legacyUnknown"]["view"], "index")
         self.assertTrue(v["legacyUnknown"]["notFound"])
-        self.assertEqual(v["topic"], {"view": "topic", "topic": "gps", "focus": None, "notFound": False})
-        self.assertEqual(v["deep"], {"view": "topic", "topic": "gps", "focus": "pps", "notFound": False})
+        self.assertEqual(v["topic"], {"view": "topic", "topic": "gps", "focus": None, "notFound": False, "missing": False})
+        self.assertEqual(v["deep"], {"view": "topic", "topic": "gps", "focus": "pps", "notFound": False, "missing": False})
         self.assertEqual(v["upper"], v["deep"])
         self.assertEqual(v["topicLegacy"], v["deep"])
         self.assertEqual(v["trailing"]["topic"], "betrieb")
-        # Ein Schlüssel aus einem anderen Thema wird nicht hervorgehoben (es gibt ihn dort nicht).
-        self.assertEqual(v["deepWrongTopic"], {"view": "topic", "topic": "ptp", "focus": None, "notFound": False})
-        self.assertEqual(v["keyAsTopic"], {"view": "topic", "topic": "betrieb", "focus": "readyz", "notFound": False})
+        # Ein Schlüssel unter einem fremden Thema (älterer oder geteilter Link) führt auf die Unterseite seines Themas.
+        self.assertEqual(v["deepWrongTopic"], v["deep"])
+        self.assertEqual(v["moved"], {"view": "topic", "topic": "betrieb", "focus": "heartbeat", "notFound": False, "missing": False})
+        self.assertEqual(v["keyAsTopic"], {"view": "topic", "topic": "betrieb", "focus": "readyz", "notFound": False, "missing": False})
+        # Ein unbekannter Eintrag: die Unterseite des Themas mit Hinweis, nichts hervorgehoben.
+        for name in ("unknownKey", "protoKey", "ctorKey", "topicLegacyUnknown"):
+            self.assertEqual(v[name], {"view": "topic", "topic": "gps", "focus": None, "notFound": False, "missing": True}, name)
+        for name in ("index", "legacy", "topic", "deep", "trailing"):
+            self.assertFalse(v[name]["missing"], name)
         for name in ("unknown", "proto"):
-            self.assertEqual(v[name], {"view": "index", "topic": None, "focus": None, "notFound": True}, name)
+            self.assertEqual(v[name], {"view": "index", "topic": None, "focus": None, "notFound": True, "missing": False}, name)
 
     def test_routen_ohne_weiterleitung(self):
         routes = self.data["routes"]

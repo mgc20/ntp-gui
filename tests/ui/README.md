@@ -27,7 +27,9 @@ Der Rundgang öffnet jede Route bei 1440 und 390 px, hell und dunkel, und meldet
   keine Loopback-Adresse zum Kopieren angeboten. In `TOUR_WORDS_ONLY`/`TOUR_PAGES_ONLY` wird der Assistent nur per API abgeschlossen.
 - die Hilfe (`helpChecks`, einzeln mit `TOUR_HELP_ONLY=1`) bei 390 und 1440 px: Inhaltsverzeichnis mit allen Themen,
   Unterseite per Klick, nächstes Thema, „Zurück“ und „Vor“ im Browser (Adresse und Ansicht), tiefer Link
-  `#/hilfe/gps/pps` und alter Link `#/hilfe?t=dhcp42` (Eintrag hervorgehoben und im Bild), unbekanntes Thema,
+  `#/hilfe/gps/pps` (auch nach einem Seitenwechsel erneut und per Zurück/Vor) und alter Link `#/hilfe?t=dhcp42`
+  (Eintrag hervorgehoben und im Bild), Eintrag unter fremdem Thema (führt auf sein Thema), unbekannter Eintrag
+  (Thema mit Hinweis), kaputte Kodierung und unbekanntes Thema (Inhaltsverzeichnis mit Hinweis),
   Suche über alle Themen mit Sprung auf den Treffer (Suche danach leer), „Mehr in der Hilfe“ aus einem ⓘ, Verweis
   unter `#/uhr/ptp`, keine Überbreite, Tippflächen der neuen Links ≥ 24 px,
 - auf der Clients-Seite: bei 390 px Karten statt Tabelle ohne Überbreite, bei 1440 px die Tabelle, Name direkt in

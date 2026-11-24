@@ -236,6 +236,7 @@
     "see_also": "Siehe auch:",
     "entry_link": "Link auf „{title}“",
     "not_found": "Dieses Hilfethema gibt es nicht. Hier ist das Inhaltsverzeichnis.",
+    "entry_not_found": "Diesen Eintrag gibt es nicht. Hier ist das ganze Thema.",
     "more": "Mehr in der Hilfe →",
     "page_more": "Mehr in der Hilfe: {topic} →",
     "search_placeholder": "Begriff suchen, z. B. Stratum, Falseticker, PPS …",

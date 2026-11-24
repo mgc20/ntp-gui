@@ -236,6 +236,7 @@
     "see_also": "See also:",
     "entry_link": "Link to “{title}”",
     "not_found": "This help topic does not exist. Here is the table of contents.",
+    "entry_not_found": "This entry does not exist. Here is the whole topic.",
     "more": "More in the help →",
     "page_more": "More in the help: {topic} →",
     "search_placeholder": "Search a term, e.g. stratum, falseticker, PPS …",
