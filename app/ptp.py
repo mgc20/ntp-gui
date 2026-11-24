@@ -133,7 +133,7 @@ def _pmc_base(cfg: dict) -> list[str]:
     # The domain must match ptp4l's, otherwise the daemon silently ignores the
     # management message and pmc returns nothing but its "sending:" line. The
     # same holds for transportSpecific in the gPTP (802.1AS) profile.
-    args = [PMC, "-u", "-b", "0", "-d", str(cfg["ptp_domain"]), "-s", socket]
+    args = [PMC, "-u", "-b", "0", "-d", str(settings.ptp_effective_domain(cfg)), "-s", socket]
     if cfg.get("ptp_profile") == "gptp":
         args += ["-t", "1"]
     if os.geteuid() != 0:
@@ -206,6 +206,7 @@ def _effective_transport(cfg: dict) -> str:
 
 
 def _collect() -> dict[str, Any]:
+    import settings
     cfg = _cfg()
     state: dict[str, Any] = {
         "enabled": True,
@@ -213,7 +214,7 @@ def _collect() -> dict[str, Any]:
         "mode": cfg["ptp_mode"],
         "transport": _effective_transport(cfg),
         "time_stamping": cfg["ptp_time_stamping"],
-        "domain": str(cfg["ptp_domain"]),
+        "domain": str(settings.ptp_effective_domain(cfg)),
         "phc2sys": bool(cfg["phc2sys_enable"]),
     }
 

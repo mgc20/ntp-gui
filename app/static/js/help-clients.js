@@ -406,6 +406,28 @@ export const HELP_CLIENTS = {
       + "alle 30 Sekunden. Eine Firewall-Umleitung lässt sich von hier aus nur auf die Schleife hin "
       + "prüfen (ntp-gui ist ja ausgenommen) – ob Geräte umgeleitet werden, zeigt der Selbsttest.",
   },
+  // --- Fehlersuche „Mein Gerät bekommt keine Zeit“ (1.11) ----------------------
+  troubleshoot: {
+    title: "Mein Gerät bekommt keine Zeit",
+    text: "Fehlersuche vom Symptom her: Gib die **IP-Adresse** des Geräts ein (IPv4 oder IPv6, keinen Namen – "
+      + "Namen werden bewusst nicht aufgelöst). ntp-gui prüft der Reihe nach: liegt die Adresse in den "
+      + "**erlaubten Netzen** und nicht in den ausgenommenen, **lauscht** chronyd auf dem NTP-Port "
+      + "(und der Bind-Adresse), ist der **Server synchron** bzw. darf er im Inselbetrieb ausliefern, "
+      + "erscheinen die Geräte im **Bridge-Netz** nur als Docker-Gateway, sind **Anfragen** dieses Geräts "
+      + "angekommen, hat die **Begrenzung** welche verworfen und wie weit liegt die **Uhr des Geräts** "
+      + "daneben. Das erste Problem (sonst der erste Hinweis) ist der Befund, mit dem nächsten Schritt "
+      + "und – wo es passt – den Anleitungen für Windows, systemd-timesyncd, chrony und macOS. "
+      + "Die Prüfung liest nur, was der Server schon weiß, und schickt nichts ins Netz. Nachmessen geht "
+      + "auf der Seite des Geräts mit „Aktiv nachmessen“ (nur private Adressen, gedrosselt).",
+  },
+  troubleshoot_verdict: {
+    title: "Befund",
+    text: "Genau ein Befund: die erste Prüfung mit **Problem**, sonst die erste mit **Hinweis**, sonst "
+      + "„Alles in Ordnung“. Darunter steht die ganze Prüfliste. Erscheinen im Bridge-Netz alle Geräte als "
+      + "Gateway des Docker-Netzes, lässt sich ein einzelnes Gerät nicht unterscheiden – dann hilft "
+      + "`network_mode: host`. Chronyd leert seine Zähler bei jedem Neustart; die eigene Messung "
+      + "kennt Geräte länger.",
+  },
   enforce_verdict: {
     title: "Ergebnis der Prüfung",
     text: "**DNS-Umschreibung wirkt**: Der Name zeigt auf ntp-gui. **Antwortet wie dieser Server**: "
@@ -439,6 +461,7 @@ export const HELP_CLIENTS = {
 };
 
 export const HELP_GROUP_CLIENTS = {
+  id: "client-uhren",
   title: "Zeitserver erzwingen und Client-Uhren",
   keys: [
     "clientmon", "clientmon_status", "client_offset", "client_measurable",
@@ -449,6 +472,7 @@ export const HELP_GROUP_CLIENTS = {
     "client_rules", "client_rule_silent", "client_rule_offset", "client_rule_mute", "client_rule_expect",
     "client_group", "clients_groups", "clients_group_by", "clients_group_stats", "clients_group_suggest",
     "client_nts", "client_pass", "client_pass_share", "client_pass_values", "clients_new_device", "notify_lan_addresses",
+    "troubleshoot", "troubleshoot_verdict",
     "enforce", "enforce_dns", "enforce_nat", "enforce_hairpin", "enforce_nts", "enforce_not_ntp",
     "enforce_hostnames", "enforce_check", "enforce_verdict", "enforce_upstream", "enforce_selftest",
   ],

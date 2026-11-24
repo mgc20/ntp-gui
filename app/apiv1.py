@@ -11,7 +11,7 @@ server.py nutzt:
     apiv1.describe()                    # Beschreibung für GET /api/v1
 
 Rechte (scope):
-    public   – ohne Anmeldung (/healthz)
+    public   – ohne Anmeldung (/healthz, /readyz)
     read     – Anmeldung oder API-Schlüssel mit Recht „read“ oder „admin“
     admin    – Anmeldung oder API-Schlüssel mit Recht „admin“
     clock    – Anmeldung oder API-Schlüssel mit Recht „clock“ oder „admin“ (nur POST /clock/signal). Ein
@@ -52,8 +52,8 @@ endpoint("GET", "/status", "/api/status", "read",
          "Gesamtzustand: Systemuhr, Quellen, Clients, GPS, PTP, Dienste und Hinweise – "
          "dieselben Daten wie die Übersicht im Dashboard.",
          ["system", "tracking", "sources", "activity", "serverstats", "clients", "client_count",
-          "ptp", "gps", "gps_summary", "nts_server", "services", "chrony_running", "update", "config", "ui",
-          "insights"])
+          "ptp", "gps", "gps_summary", "nts_server", "services", "chrony_running", "update", "heartbeat",
+          "config", "ui", "insights"])
 endpoint("GET", "/history", "/api/history", "read",
          "Verlauf der Messwerte für Diagramme, auf höchstens „points“ Punkte verdichtet.",
          ["samples", "interval"],
@@ -170,6 +170,10 @@ endpoint("POST", "/instance/rotate", "/api/instance/rotate", "session",
 # --- Öffentlich ---------------------------------------------------------------
 endpoint("GET", "/healthz", "/healthz", "public",
          "Lebenszeichen für Docker/Monitoring: läuft chronyd?", ["status", "chrony"])
+endpoint("GET", "/readyz", "/readyz", "public",
+         "Strenge Bereitschaft (keepalived, Load-Balancer): 200 nur, wenn chrony synchronisiert ist, eine Quelle "
+         "ausgewählt hat (kein Holdover) und die Fehlerschranke unter ready_max_error_ms liegt, sonst 503. Nur Wahrheitswerte.",
+         ["status", "chrony", "synchronised", "source_selected", "within_limit"])
 
 
 def _normalise(path: str) -> str:

@@ -474,6 +474,72 @@ class HomelabOptionTests(Phc2sysPlanTests):
                         r"dscp_event\s+46\n", r"dscp_general\s+46\n", r"domainNumber\s+0\n"):
             self.assertRegex(text, pattern)
 
+    def test_st2059_profile(self):
+        text = confgen.render_ptp4l(_cfg(ptp_profile="st2059"), {})
+        for pattern in (r"domainNumber\s+127\n", r"network_transport\s+UDPv4\n", r"delay_mechanism\s+E2E\n",
+                        r"logSyncInterval\s+-3\n", r"logAnnounceInterval\s+-2\n",
+                        r"logMinDelayReqInterval\s+-3\n", r"announceReceiptTimeout\s+3\n",
+                        r"priority1\s+128\n", r"priority2\s+128\n", r"Profil: st2059"):
+            self.assertRegex(text, pattern)
+        self.assertNotIn("transportSpecific", text)
+        self.assertNotIn("HINWEIS", text)
+        self.assertEqual(settings.ptp_profile_warnings(_cfg(ptp_profile="st2059")), [])
+
+    def test_st2059_fields_stay_overridable(self):
+        text = confgen.render_ptp4l(_cfg(ptp_profile="st2059", ptp_domain=12, ptp_log_announce_interval=0,
+                                         ptp_log_sync_interval=-4, ptp_log_min_delay_req_interval=-2,
+                                         ptp_announce_receipt_timeout=4, ptp_priority1=100,
+                                         ptp_priority2=90), {})
+        for pattern in (r"domainNumber\s+12\n", r"logAnnounceInterval\s+0\n", r"logSyncInterval\s+-4\n",
+                        r"logMinDelayReqInterval\s+-2\n", r"announceReceiptTimeout\s+4\n",
+                        r"priority1\s+100\n", r"priority2\s+90\n"):
+            self.assertRegex(text, pattern)
+        self.assertNotIn("HINWEIS", text)
+        # Auch über Umgebungsvariablen, wie bei den übrigen PTP-Einstellungen.
+        cfg = settings.values({"PTP_PROFILE": "st2059", "PTP_DOMAIN": "5", "PTP_LOG_ANNOUNCE_INTERVAL": "-3"})
+        text = confgen.render_ptp4l(cfg, {})
+        self.assertRegex(text, r"domainNumber\s+5\n")
+        self.assertRegex(text, r"logAnnounceInterval\s+-3\n")
+        self.assertEqual(settings.validate({"ptp_profile": "st2059"})["ptp_profile"], "st2059")
+
+    def test_st2059_domain_0_and_announce_1_count_as_unchanged(self):
+        # Ein Profil ersetzt nur Felder auf ihrem allgemeinen Standard: Domain 0 und Announce 1 sind
+        # dieser Standard und werden mit st2059 zu 127 bzw. -2 (so dokumentiert). Andere Werte bleiben.
+        eff = settings.ptp_profile_values(_cfg(ptp_profile="st2059", ptp_domain=0,
+                                               ptp_log_announce_interval=1))[0]
+        self.assertEqual((eff["ptp_domain"], eff["ptp_log_announce_interval"]), (127, -2))
+        eff = settings.ptp_profile_values(_cfg(ptp_profile="default", ptp_domain=0,
+                                               ptp_log_announce_interval=1))[0]
+        self.assertEqual((eff["ptp_domain"], eff["ptp_log_announce_interval"]), (0, 1))
+        for key in ("ptp_domain", "ptp_log_announce_interval"):
+            self.assertIn("Standard mit eigenen Werten", settings.FIELDS[key]["help"])
+        self.assertIn("Announce-Intervall 1", settings.FIELDS["ptp_profile"]["help"])
+
+    def test_st2059_deviations_are_noted(self):
+        cfg = _cfg(ptp_profile="st2059", ptp_domain=200, ptp_log_sync_interval=0, ptp_transport="L2",
+                   ptp_delay_mechanism="P2P", ptp_announce_receipt_timeout=2)
+        notes = settings.ptp_profile_warnings(cfg)
+        joined = " | ".join(notes)
+        for part in ("Domain 200", "Sync-Intervall 0", "Delay-Request-Intervall -3", "Transport L2",
+                     "Laufzeitmessung P2P"):
+            self.assertIn(part, joined)
+        self.assertNotIn("Announce-Timeout", joined)
+        text = confgen.render_ptp4l(cfg, {})
+        self.assertIn("# HINWEIS: Domain 200", text)
+        # Hinweise sind Kommentarzeilen – keine davon ist eine ptp4l-Einstellung.
+        self.assertTrue(all(line.startswith("# ") for line in text.splitlines() if "HINWEIS" in line))
+        self.assertEqual(settings.ptp_profile_warnings(_cfg(ptp_profile="default", ptp_domain=200)), [])
+
+    def test_st2059_domain_reaches_pmc_phc2sys_and_status(self):
+        cfg = _cfg(ptp_mode="master", ptp_profile="st2059")
+        self.assertEqual(settings.ptp_effective_domain(cfg), 127)
+        self.assertEqual(confgen.phc2sys_plan(cfg, {})["options"], "-a -rr -m -n 127")
+        base = ptp._pmc_base(cfg)
+        self.assertEqual(base[base.index("-d") + 1], "127")
+        self.assertNotIn("-t", base)
+        self.assertEqual(settings.ptp_effective_domain(_cfg(ptp_profile="st2059", ptp_domain=3)), 3)
+        self.assertEqual(settings.ptp_effective_domain(_cfg()), 0)
+
     def test_hotplug_paths(self):
         cfg = settings.values({"GPS_ENABLE": "true", "GPS_DEVICE": "/dev/ttyACM-fehlt",
                                "GPS_PPS_DEVICE": "/dev/pps-fehlt"})
@@ -486,7 +552,7 @@ class HomelabOptionTests(Phc2sysPlanTests):
     @unittest.skipUnless(shutil.which("ptp4l"), "ptp4l nicht installiert")
     def test_ptp4l_accepts_profiles(self):
         import subprocess
-        for profile in ("default", "aes67", "gptp"):
+        for profile in ("default", "aes67", "st2059", "gptp"):
             with self.subTest(profile=profile):
                 text = confgen.render_ptp4l(_cfg(ptp_profile=profile, ptp_interface="lo",
                                                  ptp_time_stamping="software"),

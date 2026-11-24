@@ -4,6 +4,7 @@
 // Token neu eingegeben werden – der Server schickt ein gespeichertes Token nie an ein neues Ziel.
 import { el, rich, apiPost, fmtTime, fmtDate } from "../util.js";
 import { card, infoButton, badge, kv, emptyState, toast, isPopoverOpen } from "../ui.js";
+import { t } from "../i18n.js";
 
 export const live = false; // Eingaben im Editor bleiben stehen; der Zustand wird gezielt nachgeladen
 
@@ -233,12 +234,71 @@ export function editorCard(ctx, cfg, disabled) {
       el("button", { type: "button", class: "button", text: "Abbrechen", onclick: () => { ui.notifyDraft = null; ui.notifyErrors = null; ctx.rerender(); } })));
 }
 
+// --- Zeitwächter-Ping (1.11) ------------------------------------------------------------------------
+// Lebenszeichen an einen eigenen Wächter. Eingestellt wird er unter System → Einstellungen → Dashboard & Zugang;
+// hier stehen Zustand, letztes Ergebnis und „Jetzt senden“. Die Adresse kommt vom Server nur gekürzt.
+const HEARTBEAT_FLAVOR = {
+  kuma: "pages.heartbeat.flavor.kuma", healthchecks: "pages.heartbeat.flavor.healthchecks", silent: "pages.heartbeat.flavor.silent",
+};
+
+/** Zeilen für Zustand und letztes Ergebnis – auch für den Einstellungs-Reiter (ohne Ziel-Zeile). */
+export function heartbeatRows(hb, withTarget = false) {
+  if (!hb || !hb.enabled) return [];
+  const failed = typeof hb.error === "string" && hb.error;
+  const sentText = hb.last_attempt == null ? t("pages.heartbeat.never")
+    : failed ? badge(t("pages.heartbeat.state.error"), "crit")
+      : hb.last_sent === "fail" ? badge(t("pages.heartbeat.state.fail"), "warn")
+        : hb.last_sent === "up" && hb.held ? badge(t("pages.heartbeat.state.held"), "warn")
+          : hb.last_sent === "up" ? badge(t("pages.heartbeat.state.up"), "good")
+            : badge(t("pages.heartbeat.state.none"), "warn");
+  const flavorKey = HEARTBEAT_FLAVOR[hb.flavor];
+  return [
+    withTarget && hb.url ? [t("pages.heartbeat.row.target"), el("span", { class: "mono", text: hb.url }), "heartbeat"] : null,
+    [t("pages.heartbeat.row.mode"), `${flavorKey ? t(flavorKey) : "–"} · ${t("pages.heartbeat.interval", { seconds: hb.interval ?? "–" })}`, "heartbeat_mode"],
+    [t("pages.heartbeat.row.last"), el("span", {}, sentText, hb.last_attempt != null ? ` ${fmtWhen(hb.last_attempt)}` : ""), "heartbeat_status"],
+    [t("pages.heartbeat.row.last_ok"), hb.last_ok != null ? fmtWhen(hb.last_ok) : t("pages.heartbeat.never"), "heartbeat_status"],
+    [t("pages.heartbeat.row.next"), hb.next != null ? fmtWhen(hb.next) : "–", "heartbeat_status"],
+  ];
+}
+
+/** Fehlerzeile unter den Zeilen (letzter Fehler, Zahl der Fehlschläge in Folge). */
+export function heartbeatError(hb) {
+  if (!hb || !hb.enabled || !hb.error) return null;
+  return el("p", { class: "field-error", role: "alert",
+    text: t("pages.heartbeat.error", { error: hb.error, count: hb.failures ?? 1 }) });
+}
+
+export function heartbeatCard(ctx, hb, disabled) {
+  const ui = ctx.uiState;
+  const send = async () => {
+    ui.heartbeatBusy = true;
+    try {
+      const result = await apiPost("/api/notify/heartbeat/test", {});
+      if (result.ok) toast(t("pages.heartbeat.sent_ok"));
+      else if (!result.error && result.note) toast(t("pages.heartbeat.sent_none"), "warn");
+      else toast(t("pages.heartbeat.sent_failed", { error: result.error || "?" }), "crit");
+    } catch (error) { toast(error.message, "crit"); }
+    ui.heartbeatBusy = false;
+    ctx.invalidate("notify");
+    ctx.rerender();
+  };
+  const on = Boolean(hb && hb.enabled);
+  return card(t("pages.heartbeat.title"), { help: "heartbeat", id: "heartbeat", sub: t("pages.heartbeat.sub"),
+    actions: on ? el("button", { type: "button", class: "button", text: t("pages.heartbeat.send_now"),
+      disabled: disabled || ui.heartbeatBusy ? true : null, onclick: send }) : null },
+  on ? kv(heartbeatRows(hb, true)) : emptyState(t("pages.heartbeat.off")),
+  heartbeatError(hb),
+  el("p", { class: "field-help" }, el("span", { text: `${t("pages.heartbeat.privacy")} ` })),
+  el("p", { class: "field-help" }, el("span", { text: `${t("pages.heartbeat.where")} ` }),
+    el("a", { href: "#/system/einstellungen?s=web", text: t("pages.heartbeat.settings_link") })));
+}
+
 // Zustand alle 15 s nachladen – aber nicht, solange jemand im Editor tippt oder eine Erklärung offen ist.
 function watch(ctx, box) {
   clearInterval(refreshTimer);
   refreshTimer = setInterval(() => {
     if (!box.isConnected) { clearInterval(refreshTimer); refreshTimer = null; return; }
-    if (document.hidden || isPopoverOpen() || ctx.uiState.notifyDraft || ctx.uiState.notifyBusy) return;
+    if (document.hidden || isPopoverOpen() || ctx.uiState.notifyDraft || ctx.uiState.notifyBusy || ctx.uiState.heartbeatBusy) return;
     ctx.invalidate("notify");
     ctx.data("notify", "/api/notify", 0);
   }, REFRESH_SECONDS * 1000);
@@ -281,6 +341,7 @@ export function render(ctx) {
       onclick: () => { ui.notifyDraft = blankDraft(cfg); ui.notifyErrors = null; ctx.rerender(); } }) }, list));
   ctx.afterRender(() => watch(ctx, list));
   if (ui.notifyDraft) out.push(editorCard(ctx, cfg, disabled));
+  out.push(heartbeatCard(ctx, cfg.heartbeat, disabled));
   out.push(card("Link zum Dashboard", { help: "notify_link" },
     kv([["Adresse", cfg.dashboard_url ? el("span", { class: "mono", text: cfg.dashboard_url }) : "nicht gesetzt – Nachrichten ohne Link", "notify_link"]]),
     el("p", { class: "field-help" }, rich("Einstellen unter **System → Einstellungen → Dashboard & Zugang → Erweitert** (`NOTIFY_DASHBOARD_URL`). "),

@@ -34,7 +34,7 @@ import store
 import textsafe
 
 KINDS = ("service", "reload", "settings", "source", "gps", "pps", "calibration", "cert",
-         "leap", "startup", "clients", "api", "notify", "dns", "update", "pi", "access", "other")
+         "leap", "startup", "clients", "api", "notify", "dns", "update", "pi", "access", "heartbeat", "other")
 LEVELS = ("info", "warn", "crit")
 
 RETENTION_DAYS = 90
@@ -74,6 +74,10 @@ _PENDING: deque = deque(maxlen=500)
 _LISTENERS: list = []  # werden nach jedem erfolgreichen Schreiben aufgerufen (z. B. notify.wake)
 _QUOTAS: dict = {}     # (kind, Titelanfang) -> Zeilen; siehe set_quota()
 _FILTERS: list = []    # (kind, level, title, data) -> (level, title, data), z. B. holdover.event_filter
+# Geschriebene Ereignisse je (Art, Stufe) seit dem Start – für ntpgui_events_total. Ein Zähler im Speicher,
+# kein COUNT über die Tabelle: Das Aufräumen (90 Tage, Obergrenze) ließe die Zahl sonst schrumpfen.
+_COUNTS: dict[tuple[str, str], int] = {}
+_COUNT_LOCK = threading.Lock()
 
 
 def set_quota(kind: str, title_prefix: str, rows: int) -> None:
@@ -159,8 +163,23 @@ def _write(rows: list[tuple]) -> None:
         conn.executemany("INSERT INTO events(t, kind, level, title, data, source) "
                          "VALUES (?, ?, ?, ?, ?, ?)", rows)
     _STATE["since_prune"] += len(rows)
+    _count(rows)
     if _STATE["since_prune"] >= PRUNE_EVERY:
         prune()
+
+
+def _count(rows: list[tuple]) -> None:
+    with _COUNT_LOCK:
+        for row in rows:
+            kind = row[1] if row[1] in KINDS else "other"   # feste Liste: keine freien Texte als Label
+            level = row[2] if row[2] in LEVELS else "info"
+            _COUNTS[(kind, level)] = _COUNTS.get((kind, level), 0) + 1
+
+
+def counts() -> dict[tuple[str, str], int]:
+    """{(Art, Stufe): Anzahl} der seit dem Start geschriebenen Ereignisse (Prometheus-Zähler)."""
+    with _COUNT_LOCK:
+        return dict(_COUNTS)
 
 
 def emit(kind: str, level: str, title: str, data: dict | None = None,
@@ -499,6 +518,7 @@ def ingest_supervisor(path: str) -> int:
         except Exception:
             return 0
         _STATE["since_prune"] += len(rows)
+        _count(rows)
         if _STATE["since_prune"] >= PRUNE_EVERY:
             prune()
         if rows:

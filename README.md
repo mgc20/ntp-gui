@@ -7,7 +7,7 @@
 
 <p align="center">
   <a href="https://github.com/mgc20/ntp-gui/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/mgc20/ntp-gui/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="https://github.com/mgc20/ntp-gui/releases/latest"><img alt="Release" src="https://img.shields.io/badge/release-v1.10.0-0969da"></a>
+  <a href="https://github.com/mgc20/ntp-gui/releases/latest"><img alt="Release" src="https://img.shields.io/badge/release-v1.11.0-0969da"></a>
   <img alt="Plattformen" src="https://img.shields.io/badge/platform-amd64%20%7C%20arm64-1a7f37">
   <img alt="Image" src="https://img.shields.io/badge/image-ghcr.io-8250df">
   <a href="LICENSE"><img alt="Lizenz: MIT" src="https://img.shields.io/badge/license-MIT-59636e"></a>
@@ -46,6 +46,7 @@ Raspberry Pi starten, die Adresse per **DHCP Option 42** verteilen – fertig.
 - **NTS** – kryptografisch abgesicherte Zeit von PTB, Cloudflare, Netnod & Co., optional auch als NTS-Server – auch hinter einem Reverse Proxy, mit dessen Let's-Encrypt-Zertifikat
 - **Hardware-Check** – erkennt GPS-Empfänger, PPS, PTP-Netzwerkkarten, VM und Container-Rechte und sagt, was geht und welche Zeile in der Compose-Datei fehlt
 - **Zeitserver erzwingen** – fertige Anleitungen für AdGuard, Pi-hole, dnsmasq, Unbound, OPNsense, MikroTik, OpenWrt, nftables und UniFi, damit auch Geräte mit fest eingebautem Zeitserver bei dir landen – samt Prüfung per Klick
+- **„Mein Gerät bekommt keine Zeit“** – geführte Fehlersuche für eine IP-Adresse: feste Prüfliste, genau ein Befund mit nächstem Schritt und passender Anleitung
 - **Wie genau gehen meine Clients?** – misst passiv aus den NTP-Anfragen, wie weit die Uhr jedes Geräts im LAN danebenliegt – mit 7-Tage-Verlauf und Detailseite je Gerät, Netzüberblick und Alarm bei falsch gehender Uhr
 - **Benachrichtigungen** – per ntfy, Gotify, Webhook oder Apprise (E-Mail, Telegram, Matrix …), entprellt, mit „behoben“-Meldung und durch den Datenschutzfilter
 - **Uhrqualität** – Temperatur gegen Frequenz, Ablauf der Schaltsekunden-Liste und eine Vollbild-Uhr unter `/clock` für Wandmonitor und Tablet
@@ -53,7 +54,7 @@ Raspberry Pi starten, die Adresse per **DHCP Option 42** verteilen – fertig.
 - **Diagnose ohne Datenleck** – Log-Seite, Ereignisprotokoll und ein Diagnosepaket mit Vorschau; ein zentraler Datenschutzfilter sorgt dafür, dass sich aus dem Paket kein Standort ablesen lässt. Hochgeladen wird nichts
 - **Fällt nicht um** – stirbt gpsd oder ptp4l (Kabel gezogen, Karte weg), startet der Supervisor nur diesen Dienst neu; NTP läuft weiter
 - **Dashboard ohne Ballast** – reines Python aus der Distribution, kein npm, kein pip; Diagramme in eigenem SVG
-- **Monitoring eingebaut** – versionierte JSON-API `/api/v1` mit API-Schlüsseln (nur lesen / verwalten), Prometheus-`/metrics` und `/healthz`; Verlauf über 30 Tage (SQLite), übersteht Neustarts; fertiges Grafana-Dashboard, Alarmregeln und Anleitungen für Home Assistant, Homepage, Glance und Uptime Kuma
+- **Monitoring eingebaut** – versionierte JSON-API `/api/v1` mit API-Schlüsseln (nur lesen / verwalten), Prometheus-`/metrics` und `/healthz`; Verlauf über 30 Tage (SQLite), übersteht Neustarts; fertiges Grafana-Dashboard, Alarmregeln und Anleitungen für Home Assistant, Homepage, Glance und Uptime Kuma; optional ein Zeitwächter-Ping an deinen eigenen Wächter
 - **Sichern und wiederherstellen** – eine Datei mit Einstellungen, Verlauf, Ereignissen, Geräten und Kalibrierung, ohne Position und Geheimnisse; auf Wunsch jede Nacht, Wiederherstellen mit Vorschau ([mehr](#sichern-und-wiederherstellen))
 - **Nachprüfbare Lieferkette** – SBOM, Schwachstellen-Bericht und Herkunftsnachweis zu jedem Release
 - **Getestet** – knapp 2000 Unittests und ein 173-Punkte-Integrationstest gegen das gebaute Image in der CI
@@ -339,9 +340,16 @@ Scope-ID (`%eth0`) an.
   - Der Zeitserver läuft im Notbetrieb: Die gespeicherten schützenden Einstellungen sind unbekannt,
     deshalb antwortet er nur Netzen aus `ALLOW_NETWORKS` (ohne die Variable keinem Client) und mit
     Ratelimit „streng“. Sonst gelten Umgebung und Standardwerte.
-  - Repariere die Datei oder ersetze sie durch eine funktionierende Kopie (z. B. aus einer Sicherung
-    entpackt); danach entsperrt sich das Dashboard von selbst, für den Zeitserver starte den
-    Container neu. Löschst du sie stattdessen, beginnt alles mit Standardwerten – dann ist auch ein
+  - Jedes erfolgreiche Speichern legt dieselbe Fassung zusätzlich als `settings.json.bak` ab (Rechte
+    `0600`). Ist `settings.json` beschädigt, hebt das Dashboard sie als `settings.json.defekt-<Zeit>`
+    auf (höchstens drei Fassungen), bevor du sie ersetzt. Das Container-Log und der Hinweis im
+    angemeldeten Dashboard nennen beide Dateien samt Stand der Kopie; die Sperrseite ohne Anmeldung sagt
+    nur, dass `settings.json.bak` daneben liegt.
+    Zurück zum letzten funktionierenden Stand:
+    `docker compose exec -u ntpgui ntp-gui cp /var/lib/chrony/ntp-gui/settings.json.bak /var/lib/chrony/ntp-gui/settings.json`
+  - Repariere die Datei oder ersetze sie durch eine funktionierende Kopie (`settings.json.bak` oder
+    aus einer Sicherung entpackt); danach entsperrt sich das Dashboard von selbst, für den Zeitserver
+    starte den Container neu. Löschst du sie stattdessen, beginnt alles mit Standardwerten – dann ist auch ein
     im Dashboard gesetztes Passwort weg. Setze vorher `WEB_USER`/`WEB_PASSWORD` oder
     `WEB_REQUIRE_AUTH=true`.
 - Ein **Passwort** fürs Dashboard lässt sich direkt dort setzen (gespeichert als PBKDF2-Hash).
@@ -594,6 +602,31 @@ mit der größten Abweichung, verstummte Geräte und Geräte, die öfter als all
 meldet ntp-gui das Ereignis „Uhr von … weicht um … ab“, sobald ein Gerät zweimal in Folge mehr
 als eine Sekunde danebenliegt. Mit einem [Benachrichtigungskanal](#benachrichtigungen) für die
 Art „Clients“ landet die Meldung z. B. auf dem Handy.
+
+### „Mein Gerät bekommt keine Zeit“: geführte Fehlersuche (ab 1.11)
+
+Die Karte **Clients → Mein Gerät bekommt keine Zeit** fängt beim Symptom an. Du gibst die
+IP-Adresse des Geräts ein (IPv4 oder IPv6; Namen werden bewusst nicht aufgelöst), ntp-gui geht
+eine feste Prüfliste durch und nennt **genau einen Befund** mit dem nächsten Schritt:
+
+1. **Erlaubte Netze** – liegt die Adresse in `ALLOW_NETWORKS` und nicht in `DENY_NETWORKS`
+   (die genaueste Zeile gilt, wie bei chronyd; `all` in `DENY_NETWORKS` sperrt alle Geräte)?
+2. **Dienst lauscht** – hat chronyd einen UDP-Socket auf dem NTP-Port, passt `BIND_ADDRESS` zur
+   Adressfamilie des Geräts, ist der Port 123 (oder fragt das Gerät schon den eingestellten Port)?
+3. **Server synchron** – oder im Inselbetrieb; ist `SERVE_UNSYNCED` aus (Standard, sobald
+   „Erlaubte Netze“ öffentliche Adressen enthält), bekommen Geräte ohne Quelle keine gültige Zeit.
+4. **Netzmodus** – erscheinen im Bridge-Netz alle Anfragen als Gateway des Docker-Netzes?
+5. **Anfragen angekommen** – kennen chronyd oder die eigene Messung das Gerät, ist es verstummt?
+6. **Begrenzung** – hat das Ratelimit Anfragen dieses Geräts verworfen? Bei öffentlich erreichbarem
+   Server rät die Prüfung nicht zum Lockern, sondern zu einem längeren Abfrageintervall des Geräts.
+7. **Uhr des Geräts** – messbar, und wie weit liegt sie daneben?
+
+Befund ist das erste Problem, sonst der erste Hinweis. Wo es passt, stehen die Anleitungen für
+Windows (`w32tm`), systemd-timesyncd, chrony und macOS darunter. Die Prüfung braucht eine
+Anmeldung, liest nur, was der Server schon weiß, und schickt nichts ins Netz. Nachmessen geht
+weiter nur über **Aktiv nachmessen** auf der Seite des Geräts (private Adressen, gedrosselt).
+API: `/api/clients/troubleshoot?ip=` (Leserecht). Direkt zur Karte springt `#/clients?s=fehlersuche`
+(so verlinkt auch die Diagnose-Seite).
 
 ### Clients 3: Uhrgüte, Gruppen, Regeln, Gerätepass (ab 1.5)
 
@@ -1445,6 +1478,22 @@ iptables -I DOCKER-USER -d 169.254.0.0/16 -j DROP
 Zustand für Monitoring (Lese-Schlüssel genügt): `GET /api/v1/notify/status` – je Kanal nur
 Kennung, Art und Zustellstand.
 
+### Zeitwächter-Ping (opt-in)
+
+Fällt der ganze Rechner aus, kann ntp-gui keine Nachricht mehr schicken. Dafür meldet es sich auf
+Wunsch regelmäßig bei **deinem eigenen Wächter** (Uptime Kuma Push, Healthchecks): Adresse unter
+**System → Einstellungen → Dashboard & Zugang → Zeitwächter-Ping** eintragen (Standard: leer = aus, keine
+Verbindung). Bei gutem Zustand geht `GET <adresse>` hinaus, bei kritischem Zustand `<adresse>/fail`
+(Healthchecks) bzw. `?status=down` (Uptime Kuma, automatisch am Pfad `/api/push/…` erkannt) –
+„kritisch“ erst, wenn der Zustand mindestens 2 Minuten anhält (ein Neuladen der Zeitdienste löst
+also keinen Alarm aus); bleibt der Ping aus, schlägt der Wächter Alarm. Nur eine GET-Anfrage ohne Inhalt (Zweck
+`heartbeat` im Datenschutzfilter, leere Feldliste), keine Weiterleitungen, höchstens 5 s, Ziel
+geprüft wie bei den Benachrichtigungen. Zustand, letztes Ergebnis und **Jetzt senden** stehen auf
+der Seite **Benachrichtigungen**. Ein Wächter im Internet sieht deine öffentliche IP-Adresse – am
+besten läuft er im eigenen Netz. Die Adresse enthält den Schlüssel des Wächters und wird wie ein
+Geheimnis behandelt (nicht in Sicherungen und im Diagnosepaket, für Lese-Schlüssel gekürzt).
+Anleitung: [docs/integrationen/zeitwaechter.md](docs/integrationen/zeitwaechter.md).
+
 ## Diagnose & Fehlersuche
 
 Die Seite **Diagnose** bündelt alles, was du für die Fehlersuche brauchst – ohne
@@ -1724,7 +1773,7 @@ docker compose -f docker-compose.ptp.yml up -d
 | `PTP_ENABLE` | `false` | ptp4l starten |
 | `PTP_INTERFACE` | – | Interface, z. B. `eth0` (Pflicht, wenn aktiviert) |
 | `PTP_MODE` | `auto` | `auto` (BMCA entscheidet), `master` (Grandmaster), `slave` |
-| `PTP_PROFILE` | `default` | `default` (IEEE 1588), `aes67` (Audio über IP) oder `gptp` (IEEE 802.1AS) – siehe unten |
+| `PTP_PROFILE` | `default` | `default` (IEEE 1588), `aes67` (Audio über IP), `st2059` (SMPTE ST 2059-2, Broadcast) oder `gptp` (IEEE 802.1AS) – siehe unten |
 | `PTP_DOMAIN` | `0` | PTP-Domain |
 | `PTP_TRANSPORT` | `UDPv4` | `UDPv4`, `UDPv6` oder `L2` |
 | `PTP_TIME_STAMPING` | `hardware` | `hardware` oder `software` |
@@ -1783,12 +1832,25 @@ eingeschaltetes phc2sys läuft die PHC frei – das Dashboard warnt dann.
 |---|---|---|
 | `default` | IEEE 1588 Standard, Labor, Linux-Clients | nichts |
 | `aes67` | Audio über IP: AES67, Ravenna, **Dante nur im AES67-Modus** | UDPv4, E2E, Sync 2^−3 s, Announce 2^1 s, Timeout 3, DSCP 46 |
+| `st2059` | Broadcast: SMPTE ST 2059-2 (Grundlage von ST 2110) | Domain 127, UDPv4, E2E, Sync 2^−3 s, Delay-Request 2^−3 s, Announce 2^−2 s, Timeout 3, Priority 128/128 |
 | `gptp` | IEEE 802.1AS (AVB/TSN, Automotive) | Layer 2, P2P, Priorität 248, Announce 2^0 s und weitere Werte aus linuxptp `gPTP.cfg` |
 
 Ein Profil setzt nur Felder, die noch auf ihrem Standard stehen – was du ausdrücklich
 änderst, gewinnt. Der wirksame Wert gilt überall: Mit `gptp` nutzt ptp4l Layer 2, auch wenn
 `PTP_TRANSPORT` auf dem Standard `UDPv4` steht – die PTP-Seite zeigt dann `L2`, und die
 Hardware-Prüfung verlangt `NET_RAW`.
+
+`st2059` ist eine **Voreinstellung nach den Standardwerten des Profils SMPTE ST 2059-2, keine
+SMPTE-Zertifizierung**: linuxptp sendet die Metadaten-Nachrichten des Profils (SM-TLV) nicht, und
+DSCP schreibt das Profil nicht vor (wer EF/46 möchte: `EXTRA_PTP4L_CONF="dscp_event 46\ndscp_general 46"`).
+Die Felder bleiben einzeln überschreibbar (z. B. `PTP_DOMAIN=10`, `PTP_LOG_SYNC_INTERVAL=-4`). Liegt
+ein Wert außerhalb der Bereiche des Profils (Domain 0–127, Announce −3…1, Sync −7…−1,
+Delay-Request Sync…Sync+5, Timeout 2–10, Transport UDP, Laufzeitmessung E2E), läuft ptp4l trotzdem; die
+PTP-Seite meldet die Abweichung, und in `ptp4l.conf` steht ein `# HINWEIS`. Weil ein Profil nur
+Felder auf ihrem Standard ersetzt, wird Domain `0` mit `st2059` zu `127` und Announce-Intervall `1`
+(der allgemeine Standard, in ST 2059-2 zulässig) zu `−2` – wer Domain 0 oder Announce 1 braucht,
+nimmt das Profil `default` mit eigenen Werten. pmc, phc2sys und die PTP-Seite nutzen die wirksame
+Domain.
 
 **PTP → NTP-Brücke:** Läuft der Container als PTP-Slave, kann chrony die PTP-Hardwareuhr
 direkt als Referenz benutzen und die Zeit als ganz normaler NTP-Server ins LAN geben:
@@ -1815,7 +1877,7 @@ PHC-Refclock dient ihm als Referenz für Stratum und Statistik.
 | `WEB_TITLE` | `NTP / PTP Time Server` | Überschrift |
 | `WEB_USER` / `WEB_PASSWORD` | – | HTTP Basic Auth (alternativ Passwort im Dashboard setzen). Nur `WEB_PASSWORD` ⇒ Benutzer `admin`; nur `WEB_USER` ⇒ Dashboard gesperrt, bis auch das Passwort gesetzt ist. Siehe [Anmeldung und Zugang](#anmeldung-und-zugang) |
 | `WEB_PASSWORD_FILE` | – | Passwort aus einer Datei statt aus der Umgebung (z. B. Docker Secret `/run/secrets/…`); hat Vorrang vor `WEB_PASSWORD`. Unlesbar oder leer ⇒ Dashboard gesperrt. Im Container gilt ein geänderter Inhalt nach spätestens etwa 30 s (ohne Neustart, im Log „Passwortdatei geändert“) – aber nur, wenn die Datei überschrieben wird (`… > datei`). Wird sie ersetzt (`mv`, `sed -i`, viele Editoren), sieht ein als Datei eingehängtes Secret weiter den alten Inhalt; dann den Container neu erstellen (`docker compose up -d --force-recreate`) |
-| `WEB_REQUIRE_AUTH` | `false` | `true` = ohne Zugang (Passwort) bleibt das Dashboard gesperrt: Nur `/healthz` und eine Einrichtungs-Meldung antworten. Für Server, die aus dem Internet erreichbar sind (VPS) |
+| `WEB_REQUIRE_AUTH` | `false` | `true` = ohne Zugang (Passwort) bleibt das Dashboard gesperrt: Nur `/healthz`, `/readyz` und eine Einrichtungs-Meldung antworten. Für Server, die aus dem Internet erreichbar sind (VPS) |
 | `WEB_ALLOWED_HOSTS` | – | Weitere Namen, unter denen das Dashboard **ohne Passwort** antworten darf, kommagetrennt; `*.example.org` für alle Unternamen, `*` schaltet die Prüfung ab. Gilt zusätzlich zu „Erlaubte Namen“ im Dashboard (Einstellungen → Dashboard & Zugang). Siehe [Schutz vor DNS-Rebinding](#schutz-vor-dns-rebinding) |
 | `WEB_READONLY` | `false` | Einstellungen im Dashboard sperren |
 | `WEB_MAX_CONNECTIONS` | `200` | Höchstzahl gleichzeitig offener Verbindungen zum Dashboard (mindestens 8). Weitere Verbindungen schließt der Server sofort, statt für jede einen Thread zu starten. Eine einzelne Adresse (IPv6: ein /64-Netz) darf höchstens ein Achtel davon belegen (mindestens 8); Verbindungen von der eigenen Maschine (Healthcheck) und von eingetragenen vertrauenswürdigen Proxys sind davon ausgenommen und haben einige Plätze für sich. Ist mehr als ¾ belegt, schließt der Server Verbindungen ohne Anfrage schon nach 10 s. Jede Verbindung braucht einen Thread: Setzt du für den Container ein `pids-limit`, muss es deutlich über `WEB_MAX_CONNECTIONS` + 64 liegen – sonst senkt der Server die Grenze beim Start selbst (Hinweis im Log). Auf einem VPS zusätzlich im Reverse Proxy die Verbindungen je Adresse begrenzen |
@@ -1824,6 +1886,8 @@ PHC-Refclock dient ihm als Referenz für Stratum und Statistik.
 | `HISTORY_DAYS` | `30` | So viele Tage hält der Verlauf (SQLite, `ntp-gui.db`; 1–3650). Neue Punkte werden gesammelt und alle 5 Minuten sowie beim Stoppen geschrieben – das schont SD-Karten |
 | `HISTORY_SIZE` | – | Nur wenn gesetzt: harte Obergrenze an Messpunkten (wie bis 1.2, z. B. `8640` = 24 h bei 10 s) |
 | `WEB_ACCESS_LOG` | `false` | Zugriffe protokollieren |
+| `METRICS_GROUP_NAMES` | `false` | `true` = Namen der Client-Gruppen zusätzlich als Label `group` in `/metrics`; Standard nur die Kennung (`group_id`, z. B. `g3`), weil Gruppennamen oft Räume oder Orte beschreiben. Auch im Dashboard (Einstellungen → Dashboard & Zugang, erweitert) |
+| `READY_MAX_ERROR_MS` | `100` | Fehlergrenze für [`/readyz`](#bereitschaft-readyz) in Millisekunden (0,001–10000); auch im Dashboard (Einstellungen → Dashboard & Zugang, erweitert) |
 | `NOTIFY_DASHBOARD_URL` | – | Adresse des Dashboards für Links in [Benachrichtigungen](#benachrichtigungen) (nur `http`/`https`, ohne Benutzer/Passwort) |
 | `NOTIFY_LAN_ADDRESSES` | `false` | Private LAN-Adresse eines Geräts zusätzlich zu seinem Namen in Benachrichtigungen |
 | `TRUSTED_PROXIES` | – (niemandem trauen) | Adressen deiner Reverse Proxys, siehe [HTTPS fürs Dashboard](#https-fürs-dashboard) |
@@ -1955,6 +2019,14 @@ Hardware, PTP) · System (Reiter Diagnose, Benachrichtigungen, Einstellungen, Ei
 sitzen Übersicht, Quellen, GPS und Clients in einer Leiste unten, der Rest unter „Mehr“. Alte
 Lesezeichen aus 1.5 und früher leiten automatisch auf die neue Adresse weiter.
 
+Die **Hilfe** beginnt mit einem Inhaltsverzeichnis; jedes Thema hat eine eigene Unterseite (`#/hilfe/gps`,
+`#/hilfe/betrieb`) mit Verweisen auf das vorige und nächste Thema, jeder Eintrag eine feste Adresse zum Teilen
+(`#/hilfe/gps/pps`). Dorthin führen „Mehr in der Hilfe →“ in jedem ⓘ und der Verweis unter den Seiten (außer den
+Einstellungen – dort über das ⓘ jedes Felds). Die Suche durchsucht alle Themen, „Zurück“ im Browser geht den Weg
+zurück, und alte Links wie `#/hilfe?t=pps` zeigen weiter den Eintrag – auch wenn er inzwischen unter einem anderen
+Thema steht. Das Thema **Betrieb und Überwachung** fasst Zeitwächter-Ping, Bereitschaft (`/readyz`) und die
+Betriebsmetriken in `/metrics` zusammen und verweist auf die Fehlersuche unter Clients.
+
 Mit der Tastatur: `g o` Übersicht, `g s` Zeitquellen, `g g` GPS, `g c` Clients, `g u` Uhr & Hardware,
 `g y` System, `/` Suche der Seite, `?` Übersicht der Kürzel. In Eingabefeldern sind die Kürzel aus.
 
@@ -2058,7 +2130,8 @@ für `/var/lib/chrony` – siehe [`docker-compose.vps.yml`](docker-compose.vps.y
 Dashboards können `/etc/resolv.conf` dann nicht umstellen; dafür `dns: [127.0.0.1]` setzen.
 
 `/healthz` ist **bewusst ohne Login** erreichbar, damit der Docker-Healthcheck funktioniert.
-Der Endpunkt verrät nur, ob chronyd antwortet.
+Der Endpunkt verrät nur, ob chronyd antwortet. Dasselbe gilt für `/readyz` (nur Wahrheitswerte, keine
+Messwerte), siehe [Bereitschaft](#bereitschaft-readyz).
 
 ### Dienste und Neustarts
 
@@ -2107,8 +2180,9 @@ Einstellungen laufen) und `ntpgui_service_restarts_total`. Der mitgelieferte Ala
 | `/api/recording` | Aufzeichnung der Datenquellen; `POST {"seconds": 300}` startet, `{"action": "stop"}` stoppt |
 | `/api/enforce/snippets`, `/api/enforce/check` | Zeitserver erzwingen: Anleitungen (DNS/Firewall) und Prüfung |
 | `/api/clients/offsets` | Passiv gemessene Abweichung der Client-Uhren (mit eigenen Namen) |
+| `/api/clients/troubleshoot?ip=` | Fehlersuche „Mein Gerät bekommt keine Zeit“: Prüfliste und genau ein Befund für eine IP-Adresse (rein lesend, keine Namensauflösung); Leserecht |
 | `/api/clients/overview`, `/api/clients/detail?ip=&range=` | Netzüberblick bzw. Verlauf und Gerätedaten eines Clients; `POST /api/clients/meta` (Name, Notiz) und `/api/clients/probe` (Aktiv nachmessen) mit Verwaltungsrecht |
-| `/api/notify/status` | Zustellstand je Benachrichtigungskanal (ohne Namen, Adressen, Tokens); `/api/notify`, `POST /api/notify/channels`, `/channels/delete`, `/test` mit Verwaltungsrecht |
+| `/api/notify/status` | Zustellstand je Benachrichtigungskanal (ohne Namen, Adressen, Tokens); `/api/notify` (mit Zustand des Zeitwächter-Pings, Adresse gekürzt), `POST /api/notify/channels`, `/channels/delete`, `/test` und `POST /api/notify/heartbeat/test` (Zeitwächter-Ping sofort senden, höchstens alle 10 s) mit Verwaltungsrecht; `/api/status` enthält `heartbeat` ohne Adresse |
 | `/api/dns` | DNS für ntp-gui: Modus, Zustand des Weiterleiters, Server, resolv.conf, letzte erfolgreiche Auflösung |
 | `/api/loops` | Erkannte Schleifen (Zeitquelle zeigt auf ntp-gui selbst) mit Ursache und Abhilfe |
 | `/api/gps/quality`, `/api/gps/antenna` | Empfangsbewertung (24 h), Rolle und Fehlerschranke des GPS bzw. Antennen-Test; `POST /api/gps/antenna` und `POST /api/gps/bound` mit Verwaltungsrecht |
@@ -2125,9 +2199,27 @@ Einstellungen laufen) und `ntpgui_service_restarts_total`. Der mitgelieferte Ala
 | `/api/v1/instance` | Zufällige Instanz-Kennung; `POST /api/instance/rotate` erzeugt eine neue (nur mit Benutzer/Passwort) |
 | `/api/web/proxies/trust` | `POST` mit Verwaltungsrecht: beobachteten Reverse Proxy als vertrauenswürdig eintragen (siehe [HTTPS fürs Dashboard](#https-fürs-dashboard)) |
 | `/api/v1/…` | Versionierte, stabile API (Alias der Pfade oben); `GET /api/v1` beschreibt alle Endpunkte samt nötigem Recht, siehe [API & Automatisierung](#api--automatisierung) |
-| `/metrics` | Prometheus (u. a. Offset, max. Fehler, Quellen, GPS, PTP, `ntpgui_service_*`, `ntpgui_hardware_capability`, `ntpgui_pps_live`, `ntpgui_nts_server_cert_days_left`, Temperatur, Schaltsekunden-Liste, GPS-Fehlerschranke und Empfang, `ntpgui_gnss_stage`, `ntpgui_gps_locked`, `ntpgui_source_loops`, `ntpgui_holdover_test_running`, `ntpgui_pi_undervoltage`, `ntpgui_pi_throttled`, `ntpgui_info`) |
+| `/metrics` | Prometheus (u. a. Offset, max. Fehler, Quellen, GPS, PTP, `ntpgui_service_*`, `ntpgui_hardware_capability`, `ntpgui_pps_live`, `ntpgui_nts_server_cert_days_left`, Temperatur, Schaltsekunden-Liste, GPS-Fehlerschranke und Empfang, `ntpgui_gnss_stage`, `ntpgui_gps_locked`, `ntpgui_source_loops`, `ntpgui_holdover_test_running`, `ntpgui_pi_undervoltage`, `ntpgui_pi_throttled`, Client-Güte und -Gruppen (`ntpgui_clients_quality`, `ntpgui_client_group_*`), Benachrichtigungen je Kanal-Art (`ntpgui_notify_*`), `ntpgui_backup_nightly_age_seconds`, `ntpgui_events_total`, `ntpgui_holdover_last_result`, `ntpgui_gps_autocal_*`, `ntpgui_heartbeat_*`, `ntpgui_info`) |
 | `/clock` | Vollbild-Uhr (mit `CLOCK_PUBLIC=true` ohne Login) |
 | `/healthz` | `200`, solange chronyd antwortet (ohne Login) |
+| `/readyz` | Strenge Bereitschaft: `200` nur synchronisiert, mit ausgewählter Quelle und mit Fehlerschranke unter `READY_MAX_ERROR_MS`, sonst `503` (ohne Login, nur Wahrheitswerte) – siehe [Bereitschaft](#bereitschaft-readyz) |
+
+### Bereitschaft (`/readyz`)
+
+`/healthz` sagt nur „chronyd antwortet“ – auch ein Server ohne Zeitquelle ist damit gesund. Für
+**keepalived**, Load-Balancer und Uptime-Monitore gibt es die strenge Variante `/readyz`:
+
+| Antwort | Wann |
+|---|---|
+| `200 {"status": "ready", "chrony": true, "synchronised": true, "source_selected": true, "within_limit": true}` | chrony ist synchronisiert (kein Inselbetrieb), hat gerade eine Quelle ausgewählt (kein Holdover, kein Holdover-Test) und die Fehlerschranke (\|Offset\| + Root-Dispersion + halber Root-Delay) liegt unter der Grenze |
+| `503 {"status": "not_ready", …}` | chronyd antwortet nicht, ist nicht synchronisiert, läuft im Inselbetrieb oder im Holdover, oder liegt über der Grenze |
+
+Die Grenze steht in **Einstellungen → Dashboard & Zugang → Bereitschaft (/readyz): Fehlergrenze**
+bzw. in `READY_MAX_ERROR_MS` (Standard 100 ms; mit GPS und PPS z. B. `1`). `/readyz` ist wie
+`/healthz` ohne Anmeldung, für jeden Host-Namen und auch bei `WEB_REQUIRE_AUTH=true` erreichbar,
+fragt chronyd höchstens alle 2 s und enthält nur Wahrheitswerte – keine Zahlen, Quellen oder Grenze.
+Beispiele für keepalived (`track_script`), Docker-Healthcheck und Uptime Kuma:
+[docs/integrationen/bereitschaft.md](docs/integrationen/bereitschaft.md).
 
 ## API & Automatisierung
 
@@ -2206,16 +2298,22 @@ Fertig zum Importieren bzw. Abschreiben:
 
 - **Grafana:** [`docs/grafana/ntp-gui.json`](docs/grafana/ntp-gui.json) – Variablen für
   Datenquelle und Instanz; Offset, max. Fehler, Frequenz, Stratum, Quellen, Clients, Anfragen,
-  GPS, Temperatur, Schaltsekunden-Liste, NTS-Zertifikat. Anleitung und Metrik-Tabelle:
+  GPS, Temperatur, Schaltsekunden-Liste, NTS-Zertifikat, dazu Client-Güte und -Gruppen,
+  Benachrichtigungen, nächtliche Sicherung, Ereignisse, Holdover-Test, GPS-Automatik und
+  Zeitwächter-Ping. Anleitung und Metrik-Tabelle:
   [`docs/integrationen/grafana-prometheus.md`](docs/integrationen/grafana-prometheus.md).
 - **Prometheus-Alarme:** [`docs/prometheus/alerts.yml`](docs/prometheus/alerts.yml) – nicht
   synchron, Abweichung zu groß, keine nutzbare Quelle, GPS ohne Fix, PPS weg, Dienst gestört,
   NTS-Zertifikat und Schaltsekunden-Liste laufen ab, neue Version, Zeitquelle zeigt auf ntp-gui
-  selbst (Schleife), GNSS-Störung.
+  selbst (Schleife), GNSS-Störung, Client-Uhren außer Toleranz, Client-Gruppe fragt nicht mehr,
+  Benachrichtigungskanal stellt nicht zu, nächtliche Sicherung fehlt, kritisches Ereignis,
+  Holdover-Test gescheitert, GPS-Automatik wartet, Zeitwächter-Ping scheitert.
 - **Home Assistant:** [`docs/integrationen/home-assistant.md`](docs/integrationen/home-assistant.md)
   – REST- und Template-Sensoren, Binärsensoren, Automations-Beispiel.
 - **Homepage und Glance:** [`docs/integrationen/homepage-glance.md`](docs/integrationen/homepage-glance.md).
 - **Uptime Kuma:** [`docs/integrationen/uptime-kuma.md`](docs/integrationen/uptime-kuma.md).
+- **keepalived, Docker-Healthcheck, Load-Balancer (`/readyz`):** [`docs/integrationen/bereitschaft.md`](docs/integrationen/bereitschaft.md).
+- **Zeitwächter-Ping an Uptime Kuma oder Healthchecks:** [`docs/integrationen/zeitwaechter.md`](docs/integrationen/zeitwaechter.md).
 - **Studiouhr als Browserquelle (OBS, vMix, CasparCG) und Pi-Kiosk:** [`docs/integrationen/studiouhr.md`](docs/integrationen/studiouhr.md).
 
 Der API-Schlüssel reist über HTTP im Klartext. Nutze `https://` über einen Reverse Proxy oder
@@ -2253,6 +2351,24 @@ Meist musst du beim Update nichts von Hand umbauen. Was sich zwischen zwei Versi
 - **Verlauf:** Ein vorhandenes `history.json.gz` (bis 1.2) wird beim ersten Start in
   `ntp-gui.db` übernommen und als `history.json.gz.migrated` aufbewahrt. Kann die Datenbank
   nicht geöffnet werden, arbeitet der Verlauf wie in 1.2 weiter.
+
+### Von 1.10 auf 1.11
+
+Nichts musst du umbauen; das Einstellungsschema ändert sich nicht, und alles Neue (Zeitwächter-Ping,
+Gruppennamen in `/metrics`) ist standardmäßig aus. Wer Prometheus und Grafana nutzt, merkt Folgendes:
+
+- **`/metrics` ohne Satellitenzahlen:** `ntpgui_gps_satellites_used`, `ntpgui_gps_satellites_seen` und
+  `ntpgui_gps_snr_avg_db` entfallen. `ntpgui_gps_hdop` steht nur noch als Stufe (1, 2, 5, 10, 20). Panels
+  und Alarmregeln, die diese Metriken abfragen, bleiben leer; lade das Grafana-Dashboard
+  (`docs/grafana/ntp-gui.json`) und die Alarmregeln (`docs/prometheus/alerts.yml`) neu. Das Panel
+  „GPS-Satelliten“ heißt dort jetzt „GPS-Empfang“. Die Satellitenzahl bleibt im Dashboard und in
+  `/api/v1/status` (siehe [Grafana und Prometheus](docs/integrationen/grafana-prometheus.md)).
+- **Neue Datei im Datenverzeichnis:** Nach jedem Speichern liegt `settings.json.bak` neben
+  `settings.json` (Rechte `0600`); eine beschädigte Datei bleibt als `settings.json.defekt-<Zeit>`
+  erhalten. Sicherst du das Datenverzeichnis auf dem Host, kommen diese Dateien mit.
+- **Neuer offener Endpunkt `/readyz`:** Wie `/healthz` ohne Anmeldung erreichbar, verrät aber nur
+  Wahrheitswerte (siehe [Bereitschaft](#bereitschaft-readyz)). Ein Reverse-Proxy, der nur ausgewählte
+  Pfade durchlässt, braucht ihn nur, wenn ein Load-Balancer davor ihn fragen soll.
 
 ### Von 1.9 auf 1.10
 
@@ -2313,7 +2429,7 @@ docker build -t ntp-gui:test .
 tests/container-test.sh ntp-gui:test         # Integrationstest gegen das gebaute Image
 ```
 
-Der Integrationstest (173 Prüfungen) startet echte Container und prüft das, was Unittests
+Der Integrationstest (348 Prüfungen) startet echte Container und prüft das, was Unittests
 nicht abdecken: Erkennung von fehlendem `CAP_SYS_TIME`, Healthcheck, alle Endpunkte,
 Basic-Auth, gemountete Konfiguration, Verhalten ohne GPS-/PTP-Hardware, Neustart eines
 abgestürzten gpsd, eine echte NTP-Abfrage über das Netz, Einstellungen speichern samt
@@ -2408,7 +2524,7 @@ Updates vor. Ein Release-Build läuft ohne Cache, zieht also immer aktuelle Debi
 **Herkunft prüfen** (GitHub-CLI, sobald das Repository öffentlich ist):
 
 ```bash
-gh attestation verify oci://ghcr.io/mgc20/ntp-gui:1.10.0 -R mgc20/ntp-gui
+gh attestation verify oci://ghcr.io/mgc20/ntp-gui:1.11.0 -R mgc20/ntp-gui
 ```
 
 Scheitert ein Schritt, entsteht kein halber Release. Bei einem privaten Repository

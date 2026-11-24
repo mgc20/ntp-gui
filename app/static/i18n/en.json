@@ -220,11 +220,31 @@
     "german_only": "The explanations on this page are only available in German for now. Translations are welcome – see CONTRIBUTING.md.",
     "api": {
       "title": "API & automation",
-      "intro": "For monitoring, scripts and Home Assistant. Once a password is set you need an API key (System → Settings → Dashboard & access → API keys); only /healthz is always open.",
+      "intro": "For monitoring, scripts and Home Assistant. Once a password is set you need an API key (System → Settings → Dashboard & access → API keys); only /healthz and /readyz are always open.",
       "metrics": "Measurements in Prometheus format",
       "status": "Overall state as JSON (the same data as the dashboard)",
-      "healthz": "Short liveness check for containers and load balancers"
-    }
+      "healthz": "Liveness for the container healthcheck (is chronyd running?)",
+      "readyz": "Strict readiness: 200 only when synchronised, with a selected source and below the error limit (keepalived, load balancers, uptime monitors)"
+    },
+    "toc_title": "Contents",
+    "toc_label": "Help topics",
+    "all_topics": "All topics",
+    "crumb_label": "Path in the help",
+    "pager_label": "More topics",
+    "prev": "← {topic}",
+    "next": "{topic} →",
+    "see_also": "See also:",
+    "entry_link": "Link to “{title}”",
+    "not_found": "This help topic does not exist. Here is the table of contents.",
+    "entry_not_found": "This entry does not exist. Here is the whole topic.",
+    "more": "More in the help →",
+    "page_more": "More in the help: {topic} →",
+    "search_placeholder": "Search a term, e.g. stratum, falseticker, PPS …",
+    "search_label": "Search the help",
+    "nothing_found": "Nothing found.",
+    "entries_one": "{count} entry",
+    "entries_other": "{count} entries",
+    "result_topic": "Open topic"
   },
   "pages": {
     "clients": {
@@ -238,7 +258,33 @@
       "cards_label": "Devices",
       "ignore_42": "Devices that ignore option 42 (Windows, Linux, macOS)",
       "notes": "Notes on {system} ({count})",
-      "check_line": "“Check” tests the redirection from here."
+      "check_line": "“Check” tests the redirection from here.",
+      "ts": {
+        "title": "My device gets no time",
+        "sub": "Enter the device's IP address: ntp-gui walks through a fixed checklist and names exactly one finding with the next step. The check only reads what the server already knows – it sends nothing to the network and resolves no names.",
+        "placeholder": "e.g. 192.168.1.42",
+        "input_label": "IP address of the device",
+        "run": "Check",
+        "busy": "Checking …",
+        "invalid": "Please enter an IPv4 or IPv6 address (not a name).",
+        "verdict": "Finding",
+        "next": "Next step",
+        "checks": "Checklist for {address}",
+        "detail": "Open device",
+        "detail_probe": "Open device (measure actively there)",
+        "action": {
+          "settings": "Open settings",
+          "diagnose": "Open diagnostics (log)",
+          "sources": "Open time sources"
+        },
+        "status": {
+          "ok": "fine",
+          "warn": "note",
+          "fail": "problem",
+          "info": "info",
+          "skip": "skipped"
+        }
+      }
     },
     "sources": {
       "steps": "The four steps in detail",
@@ -246,7 +292,9 @@
     },
     "diagnose": {
       "intro": "Log, events and diagnostic bundle for troubleshooting – nothing is uploaded automatically.",
-      "privacy": "With privacy filter."
+      "privacy": "With privacy filter.",
+      "troubleshoot_hint": "A single device gets no time?",
+      "troubleshoot_link": "Clients → My device gets no time"
     },
     "more": "More",
     "timeline": {
@@ -396,6 +444,41 @@
         "tile": "Tile",
         "stele": "Totem"
       }
+    },
+    "heartbeat": {
+      "title": "Watchdog ping",
+      "sub": "A sign of life sent to your own watchdog (Uptime Kuma push, Healthchecks): if this server fails completely, the watchdog notices. That holds even when the machine, container or power is gone and nothing here can send a message any more. In a critical state the ping reports “down”.",
+      "off": "Off – without a watchdog address nothing leaves the server.",
+      "never": "none yet",
+      "interval": "every {seconds} s",
+      "row": {
+        "target": "Target",
+        "mode": "Type",
+        "last": "Last ping",
+        "last_ok": "Last delivered",
+        "next": "Next ping"
+      },
+      "flavor": {
+        "kuma": "Uptime Kuma push (critical = status=down)",
+        "healthchecks": "Healthchecks (critical = …/fail)",
+        "silent": "sign of life only (nothing when critical)"
+      },
+      "state": {
+        "up": "reported good",
+        "fail": "reported critical",
+        "held": "reported good – critical only after 2 min",
+        "none": "critical – nothing sent",
+        "error": "not delivered"
+      },
+      "error": "Last ping failed ({count}× in a row): {error}",
+      "send_now": "Send now",
+      "sent_ok": "Ping delivered",
+      "sent_none": "State critical – nothing sent (type: sign of life only)",
+      "sent_failed": "Ping failed: {error}",
+      "privacy": "Privacy: only a GET request without content is sent. A watchdog on the internet sees your public IP address (roughly locatable) and how often the ping arrives – ideally run it in your own network.",
+      "where": "Configure under System → Settings → Dashboard & access (“Watchdog ping”).",
+      "settings_link": "To the settings →",
+      "notify_link": "Status and “Send now” under Notifications →"
     }
   },
   "setup": {

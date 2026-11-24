@@ -15,7 +15,7 @@ const ACCURACY = { "0x20": "25 ns", "0x21": "100 ns", "0x22": "250 ns", "0x23": 
 const CHECK_HELP = {
   host_network: "hw_network", interface: "ptp_interface", hardware_timestamps: "nic_hw_timestamps",
   phc_device: "phc", candidates: "hw_nic_class", capability: "hw_net_admin", network: "ptp_chk_network",
-  clients: "ptp_chk_clients",
+  clients: "ptp_chk_clients", profile: "ptp_profile",
 };
 
 function checklist(checks, report) {

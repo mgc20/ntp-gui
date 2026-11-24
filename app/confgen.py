@@ -434,6 +434,8 @@ uds_address             {settings.ptp_uds_address(env)}
         body += f"utc_offset              {utc_offset}\n"
     for key, value in profile_extra.items():
         body += f"{key:<23} {value}\n"
+    for note in settings.ptp_profile_warnings(cfg):
+        body += f"# HINWEIS: {note}\n"
     # Die Werte oben kommen aus geprüften Einstellungen; trotzdem darf keiner eine Zeile umbrechen.
     _guard_lines([str(v) for k, v in cfg.items() if k.startswith("ptp_")]
                  + [f"{k} {v}" for k, v in profile_extra.items()] + [settings.ptp_uds_address(env)], "ptp4l.conf")
@@ -534,8 +536,9 @@ def phc2sys_plan(cfg: dict, env: dict | None = None) -> dict:
     if "-a" in tokens:
         # -a holt die Uhren per Management-Nachricht von ptp4l: Domain,
         # UDS-Pfad und transportSpecific müssen zu ptp4l passen.
-        if "-n" not in tokens and int(cfg["ptp_domain"]) != 0:
-            tokens += ["-n", str(cfg["ptp_domain"])]
+        domain = settings.ptp_effective_domain(cfg)
+        if "-n" not in tokens and domain != 0:
+            tokens += ["-n", str(domain)]
         uds = settings.ptp_uds_address(env)
         if "-z" not in tokens and uds != settings.PTP_UDS_DEFAULT:
             tokens += ["-z", uds]
@@ -1200,7 +1203,7 @@ def apply(env: dict | None = None, fallback: bool = False) -> dict:
         "NTPGUI_PTP_START": "1" if ptp_on else "0",
         "NTPGUI_PTP_INTERFACE": cfg["ptp_interface"],
         "NTPGUI_PTP_MODE": cfg["ptp_mode"],
-        "NTPGUI_PTP_DOMAIN": str(cfg["ptp_domain"]),
+        "NTPGUI_PTP_DOMAIN": str(settings.ptp_effective_domain(cfg)),
         "NTPGUI_PTP_UDS": settings.ptp_uds_address(env),
         "NTPGUI_PHC2SYS_START": "1" if phc["start"] else "0",
         "NTPGUI_PHC2SYS_OPTIONS": phc["options"],

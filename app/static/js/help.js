@@ -10,6 +10,7 @@ import { HELP_UPDATE, HELP_GROUP_UPDATE } from "./help-update.js";
 import { HELP_GNSS, HELP_GROUP_GNSS } from "./help-gnss.js";
 import { HELP_WEB, HELP_GROUP_WEB } from "./help-web.js";
 import { HELP_BACKUP, HELP_GROUP_BACKUP } from "./help-backup.js";
+import { HELP_BETRIEB, HELP_GROUP_BETRIEB } from "./help-betrieb.js";
 
 // Alle Erklärungen an einer Stelle. Die ⓘ-Knöpfe im Dashboard und die
 // Hilfeseite nutzen dieselben Texte. **fett** und `code` werden formatiert.
@@ -356,7 +357,7 @@ export const HELP = {
   select_reason: {
     title: "Grund (Auswertung von chrony)",
     text: "Warum chrony eine Quelle gerade nutzt oder nicht – direkt aus `chronyc selectdata`. "
-      + "**ausgewählt (*)** und **kombiniert (+)** fließen in die Zeit ein. Alles andere sagt, was "
+      + "**ausgewählt** (`*`) und **kombiniert** (`+`) fließen in die Zeit ein. Alles andere sagt, was "
       + "fehlt: zu unsicher oder zu unruhig im Vergleich zu den besten Quellen, Widerspruch zur "
       + "Mehrheit (**Falseticker**), zu wenige oder zu alte Messwerte, oder eine Option wie „nur "
       + "beobachten“ bzw. „bevorzugen“ bei einer anderen Quelle. Das ⓘ in jeder Zeile erklärt den "
@@ -784,7 +785,8 @@ export const HELP = {
   ptp_domain: {
     title: "Domain",
     text: "Trennt mehrere PTP-Netze im selben LAN. Alle Teilnehmer einer Gruppe brauchen dieselbe "
-      + "Nummer; 0 ist Standard.",
+      + "Nummer; 0 ist Standard. Mit dem Profil SMPTE ST 2059-2 wird 0 zu 127 – wer Domain 0 "
+      + "braucht, nimmt das Profil Standard mit eigenen Werten.",
   },
   ptp_transport: {
     title: "Transport",
@@ -799,9 +801,26 @@ export const HELP = {
       + "Messaufbauten. "
       + "**AES67** (Audio über IP, auch Ravenna und Dante im AES67-Modus): UDPv4, End-to-End, 8 Sync "
       + "pro Sekunde, Announce alle 2 s und DSCP 46 (EF), damit Switches die Pakete bevorzugen. "
+      + "**SMPTE ST 2059-2** (Broadcast, Grundlage von ST 2110): Domain 127, UDPv4, End-to-End, 8 Sync "
+      + "und 4 Announce pro Sekunde, Delay-Request 8 pro Sekunde, Announce-Timeout 3. Das ist eine "
+      + "Voreinstellung nach den Profilwerten, keine SMPTE-Zertifizierung; die Metadaten-Nachrichten des "
+      + "Profils (SM-TLV) sendet linuxptp nicht. Domain 0 und Announce-Intervall 1 gelten bei diesem Profil als „nicht geändert“ und werden zu 127 "
+      + "bzw. −2; wer sie braucht, nimmt das Profil Standard mit eigenen Werten. "
       + "**gPTP** (IEEE 802.1AS für AVB/TSN, Automotive): Ethernet direkt (L2), Peer-to-Peer-"
       + "Laufzeitmessung und die Werte aus linuxptp `gPTP.cfg` – jeder Switch im Weg muss 802.1AS "
       + "beherrschen. Alle Teilnehmer im Netz müssen dasselbe Profil nutzen.",
+  },
+  ptp_st2059: {
+    title: "SMPTE ST 2059-2 im Studio",
+    text: "Das Profil passt, wenn Geräte nach SMPTE ST 2110 oder ST 2059 (Kameras, Mischer, Audio-Wandler im "
+      + "Broadcast) diesen Server als Grandmaster nutzen sollen. Vorher prüfen: Alle Geräte stehen auf **Domain 127** "
+      + "(oder alle auf derselben eigenen Domain), die Switches leiten PTP sauber weiter – am besten als Boundary- oder "
+      + "Transparent-Clock, sonst mit Vorrang für die PTP-Pakete –, und die Netzwerkkarte stempelt in Hardware. Mit "
+      + "8 Sync und 4 Announce pro Sekunde und 8 Delay-Requests je Gerät ist die Last höher als beim Standard-Profil. "
+      + "linuxptp sendet die Metadaten des Profils (SM-TLV) nicht: Geräte, die daraus die Bildrate oder den Bezug für "
+      + "den Timecode lesen, brauchen diese Angaben dann aus ihrer eigenen Einstellung. AES67-Geräte im selben Netz "
+      + "laufen oft auf Domain 0 – sollen sie diesem Server folgen, stellst du sie auf dieselbe Domain um. Ob alles zusammenspielt, zeigen Port-Zustand und "
+      + "„Offset vom Master“ der Geräte – ntp-gui selbst kann das nicht von außen prüfen.",
   },
   utc_offset: {
     title: "UTC-Offset",
@@ -985,38 +1004,39 @@ export const SELECT_STATE_SHORT = {
 };
 
 export const HELP_GROUPS = [
-  { title: "Übersicht und Diagramme", keys: ["overview_verdict", "overview_hints", "overview_best_source",
+  { id: "uebersicht", title: "Übersicht und Diagramme", keys: ["overview_verdict", "overview_hints", "overview_best_source",
     "overview_restarts", "overview_events", "timeline", "daily_report", "chart_stats", "chart_markers", "number_format"] },
-  { title: "Grundlagen", keys: ["ntp", "chronyd", "services", "stratum", "island", "minsources", "dhcp42", "setup", "clock_control", "local_orphan",
+  { id: "grundlagen", title: "Grundlagen", keys: ["ntp", "chronyd", "services", "stratum", "island", "minsources", "dhcp42", "setup", "clock_control", "local_orphan",
     "setup_accuracy"] },
-  { title: "Werte der Systemuhr", keys: ["reference", "system_offset", "uncertainty", "rms_offset", "frequency",
+  { id: "systemuhr", title: "Werte der Systemuhr", keys: ["reference", "system_offset", "uncertainty", "rms_offset", "frequency",
     "skew", "root_delay", "root_dispersion", "leap", "leap_source", "update_interval", "ref_time"] },
-  { title: "Zeitquellen", keys: ["source_type", "hostname_vs_ip", "poll", "reach", "last_rx", "source_offset",
+  { id: "zeitquellen", title: "Zeitquellen", keys: ["source_type", "hostname_vs_ip", "poll", "reach", "last_rx", "source_offset",
     "jitter", "interval", "samples", "score", "select_options", "server_reference"] },
-  { title: "Warum eine Quelle (nicht) genutzt wird", keys: ["select_reason", "state_best", "state_combined",
+  { id: "quellenauswahl", title: "Warum eine Quelle (nicht) genutzt wird", keys: ["select_reason", "state_best", "state_combined",
     "state_not_combined", "state_falseticker", "state_jittery", "state_unreachable", "sel_best", "sel_combined",
     "sel_not_combined", "sel_falseticker", "sel_jittery", "sel_large_distance",
     "sel_distance", "sel_not_preferred", "sel_noselect", "sel_missing_samples", "sel_waits_others",
     "sel_unsynchronised", "sel_stale", "sel_waits_update", "sel_not_trusted", "sel_orphan"] },
-  { title: "NTP-Details je Server", keys: ["peer_delay", "peer_dispersion", "response_time", "precision",
+  { id: "ntp-details", title: "NTP-Details je Server", keys: ["peer_delay", "peer_dispersion", "response_time", "precision",
     "jitter_asymmetry", "ntp_tests", "interleaved", "timestamping", "packets"] },
-  { title: "NTS", keys: ["nts", "nts_authenticated", "nts_ke", "nts_cookies", "nocerttimecheck", "nts_server",
+  { id: "nts", title: "NTS", keys: ["nts", "nts_authenticated", "nts_ke", "nts_cookies", "nocerttimecheck", "nts_server",
     "nts_server_files", "nts_server_name", "nts_cert_expiry", "nts_cert_subject", "nts_cert_issuer",
     "nts_ke_server", "nts_auth_packets"] },
-  { title: "GPS", keys: ["gps", "gps_value", "gps_offset", "gps_delay", "gps_role", "gps_recalibrate", "pps",
+  { id: "gps", title: "GPS", keys: ["gps", "gps_value", "gps_offset", "gps_delay", "gps_role", "gps_recalibrate", "pps",
     "fix", "satellites", "dop", "snr", "skyplot", "gnss", "time_error", "cold_start"] },
   HELP_GROUP_GNSS,
   HELP_GROUP_AUTOCAL,
-  { title: "PTP", keys: ["ptp", "ptp_vs_ntp", "ptp_requirements", "grandmaster", "port_state",
+  { id: "ptp", title: "PTP", keys: ["ptp", "ptp_vs_ntp", "ptp_requirements", "grandmaster", "port_state",
     "offset_from_master", "mean_path_delay", "steps_removed", "clock_class", "clock_accuracy", "ptp_domain",
-    "ptp_transport", "ptp_profile", "utc_offset", "phc", "phc2sys", "ptp_servo", "ptp_rms", "ptp_freq"] },
-  { title: "Clients", keys: ["client_address", "client_packets", "client_dropped", "client_interval", "client_last", "served_rate"] },
+    "ptp_transport", "ptp_profile", "ptp_st2059", "utc_offset", "phc", "phc2sys", "ptp_servo", "ptp_rms", "ptp_freq"] },
+  { id: "clients", title: "Clients", keys: ["client_address", "client_packets", "client_dropped", "client_interval", "client_last", "served_rate"] },
   HELP_GROUP_CLIENTS,
-  { title: "Einstellungen", keys: ["settings_source", "settings_export", "web_title", "web_refresh", "history_interval",
+  { id: "einstellungen", title: "Einstellungen", keys: ["settings_source", "settings_export", "web_title", "web_refresh", "history_interval",
     "allow_networks", "ratelimit", "gps_show_position"] },
   HELP_GROUP_BACKUP,
   HELP_GROUP_API,
   HELP_GROUP_NOTIFY,
+  HELP_GROUP_BETRIEB,
   HELP_GROUP_DNS,
   HELP_GROUP_UHR,
   HELP_GROUP_UPDATE,
@@ -1037,3 +1057,4 @@ Object.assign(HELP, HELP_UPDATE);
 Object.assign(HELP, HELP_GNSS);
 Object.assign(HELP, HELP_WEB);
 Object.assign(HELP, HELP_BACKUP);
+Object.assign(HELP, HELP_BETRIEB);

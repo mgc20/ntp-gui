@@ -537,12 +537,19 @@ def build(status: dict[str, Any], cfg: dict[str, Any]) -> list[dict[str, Any]]:
     out.extend(ptp_role_insights(cfg))
 
     ui = status.get("ui") or {}
-    if (ui.get("storage") or {}).get("error"):
+    storage = ui.get("storage") or {}
+    if storage.get("error"):
+        copy = ""
+        if storage.get("defect_copy"):
+            copy += f" Die beschädigte Fassung ist als {storage['defect_copy']} aufgehoben."
+        if storage.get("good_copy"):
+            stamp = f" (Stand {storage['good_copy_stamp']})" if storage.get("good_copy_stamp") else ""
+            copy += f" Die zuletzt fehlerfrei gespeicherte Fassung liegt als settings.json.bak{stamp} daneben."
         add("crit", "Einstellungen nicht lesbar – Speichern gesperrt",
             "settings.json im Datenverzeichnis ist vorhanden, aber nicht lesbar. Es gelten Umgebung und "
             "Standardwerte; der Zeitserver läuft im Notbetrieb (antwortet nur Netzen aus ALLOW_NETWORKS, "
-            "Ratelimit „streng“). Speichern ist gesperrt, damit die Datei nicht überschrieben wird. Datei "
-            "reparieren oder ersetzen und den Container neu starten.", key="settings_unreadable")
+            "Ratelimit „streng“). Speichern ist gesperrt, damit die Datei nicht überschrieben wird." + copy
+            + " Datei reparieren oder ersetzen und den Container neu starten.", key="settings_unreadable")
     if not (ui.get("storage") or {}).get("persistent", True):
         add("warn", "Einstellungen gehen beim Neuerstellen verloren",
             "/var/lib/chrony liegt nicht auf einem Volume. Im Dashboard gespeicherte "

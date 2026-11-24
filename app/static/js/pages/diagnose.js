@@ -3,6 +3,7 @@
 import { t as tr } from "../i18n.js";
 import { el, apiPost, isNum, fmtNumber, fmtZoned, serverZone } from "../util.js";
 import { card, infoButton, badge, kv, emptyState, toast, rangePicker } from "../ui.js";
+import { helpHref } from "../helpnav.js";
 
 // Nicht bei jedem Status-Refresh neu aufbauen – Filter, Vorschau und Scrollposition bleiben stehen.
 export const live = false;
@@ -14,7 +15,7 @@ const LOG_LINES = 500;
 const EVENT_KINDS = {
   service: "Dienst", reload: "Neuladen", settings: "Einstellungen", source: "Quelle", gps: "GPS",
   pps: "PPS", calibration: "Kalibrierung", cert: "Zertifikat", leap: "Schaltsekunde", startup: "Start",
-  clients: "Clients", api: "API", notify: "Benachrichtigung", dns: "DNS", update: "Update-Hinweis", pi: "Pi-Zustand", access: "Zugang", other: "Sonstiges",
+  clients: "Clients", api: "API", notify: "Benachrichtigung", dns: "DNS", update: "Update-Hinweis", pi: "Pi-Zustand", access: "Zugang", heartbeat: "Zeitwächter-Ping", other: "Sonstiges",
 };
 // Filter „Stufe“: die API liefert ab der gewählten Stufe aufwärts (warn → warn + crit).
 const LEVEL_FILTERS = [["", "alle Stufen"], ["warn", "ab Warnung"], ["crit", "nur Kritisch"]];
@@ -499,7 +500,11 @@ export function render(ctx) {
     el("p", { class: "diag-privacy" },
       el("span", { text: `${tr("pages.diagnose.intro")} ` }),
       infoButton("diag_no_upload", "Nichts wird hochgeladen", { title: "Nichts wird hochgeladen", withHelp: true,
-        text: "Was das Gerät verlässt, lädst du selbst herunter – vorher siehst du in der Vorschau genau, was drinsteht." }))),
+        text: "Was das Gerät verlässt, lädst du selbst herunter – vorher siehst du in der Vorschau genau, was drinsteht." })),
+    el("p", { class: "card-sub" }, `${tr("pages.diagnose.troubleshoot_hint")} `,
+      el("a", { href: "#/clients?s=fehlersuche", text: tr("pages.diagnose.troubleshoot_link") }), " · ",
+      // Statt eines ⓘ direkt am Link (dessen Tippfläche überdeckte den Link): Verweis auf den Hilfe-Eintrag.
+      el("a", { href: helpHref("troubleshoot"), text: tr("help.more") }))),
     logCard(state),
     eventsCard(state, system),
     bundleCard(state),

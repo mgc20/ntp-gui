@@ -5,7 +5,7 @@
    (help.js + help-*.js). Ein fehlender Schlüssel fällt im Browser nicht
    auf – info() liefert dann einfach keinen Knopf.
 2. Jeder HELP-Schlüssel erscheint auf der Hilfe-Seite (HELP_GROUPS bzw.
-   HELP_GROUP_HARDWARE), sonst führt „In der Hilfe ansehen“ ins Leere.
+   HELP_GROUP_HARDWARE), sonst führt „Mehr in der Hilfe“ ins Leere.
 3. Jede kv-Zeile (kv/kvRow) und jede Kachel (statCard/tile) auf den Seiten hat eine Erklärung.
 
 Kein Node nötig: Der JS-Text wird mit einem kleinen Scanner gelesen, der

@@ -147,3 +147,105 @@ groups:
         annotations:
           summary: "GNSS-Störung erkannt ({{ $labels.instance }})"
           description: "GPS-Zeit oder -Position weicht stark ab (Spoofing/Jamming möglich). Befunde auf der GPS-Seite; mit GNSS_GUARD=lock wird das GPS automatisch abgewählt."
+
+      # --- Betrieb (ab 1.11): Clients, Alarmweg, Sicherung, Holdover, GPS-Automatik, Zeitwächter ---
+
+      - alert: NtpGuiClientsOffAlarm
+        # Offene Alarme der Client-Schwelle (Einstellungen → Clients) bzw. eigener Regeln je Gerät.
+        expr: ntpgui_clients_offset_alarm > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value | printf \"%.0f\" }} Client-Uhr(en) außer Toleranz ({{ $labels.instance }})"
+          description: "Geräte im Netz gehen falsch, obwohl sie diesen Zeitserver fragen. Welche, zeigt die Seite „Clients“ – /metrics nennt bewusst keine Adressen."
+
+      - alert: NtpGuiClientGroupSilent
+        # Gruppe mit Geräten, von denen seit 24 h keines mehr gefragt hat (Umleitung/DHCP-Option 42 weg?).
+        # Wie auf der Clients-Seite erst, wenn ntp-gui selbst seit 24 h ohne Pause mithört (nach einem
+        # Neustart sind alle gespeicherten „zuletzt gesehen“ alt), und nie für „ohne Gruppe“.
+        expr: (ntpgui_client_group_devices{group_id!="none"} > 0 and ntpgui_client_group_active{group_id!="none"} == 0) and on(instance, job) ntpgui_clients_listening_seconds > 86400
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "Client-Gruppe {{ $labels.group_id }} {{ $labels.group }} fragt nicht mehr ({{ $labels.instance }})"
+          description: "Kein Gerät dieser Gruppe hat in den letzten 24 h nach der Zeit gefragt. Häufig fehlt die Umleitung oder die DHCP-Option 42 – siehe „Zeitserver erzwingen“."
+
+      - alert: NtpGuiNotifyFailing
+        # Alarmweg kaputt: ein eingeschalteter Kanal stellt nicht mehr zu.
+        expr: ntpgui_notify_channels_failing > 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Benachrichtigungskanal ({{ $labels.type }}) stellt nicht zu ({{ $labels.instance }})"
+          description: "Der letzte Zustellversuch mindestens eines eingeschalteten Kanals dieser Art schlug fehl. Fehlertext und „Test senden“ auf der Seite „Benachrichtigungen“."
+
+      - alert: NtpGuiNotifyQueueStuck
+        expr: ntpgui_notify_queue > 0
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "Benachrichtigungen warten seit 1 h ({{ $labels.type }}, {{ $labels.instance }})"
+          description: "Meldungen hängen in der Warteschlange (Wiederholungen nach Fehlern). Ziel erreichbar?"
+
+      - alert: NtpGuiNightlyBackupOld
+        # Nur mit eingeschalteter nächtlicher Sicherung; 36 h = eine Nacht ausgefallen.
+        expr: ntpgui_backup_nightly_age_seconds > 36 * 3600 or ntpgui_backup_nightly_failed == 1
+        for: 2h
+        labels:
+          severity: warning
+        annotations:
+          summary: "Nächtliche Sicherung alt oder fehlgeschlagen ({{ $labels.instance }})"
+          description: "Die jüngste nächtliche Sicherung ist älter als 36 h, oder der letzte Versuch schlug fehl. Container-Log ([backup]) und freien Platz im Datenverzeichnis prüfen."
+
+      - alert: NtpGuiNightlyBackupMissing
+        # Eingeschaltet, aber noch keine Sicherung: Die erste entsteht erst gegen 3 Uhr Ortszeit des
+        # Servers – deshalb erst nach 26 h ohne Sicherung melden (eingeschaltet um 3:01 → erste nach ~24 h).
+        expr: ntpgui_backup_nightly_enabled == 1 unless on(instance, job) ntpgui_backup_nightly_age_seconds
+        for: 26h
+        labels:
+          severity: warning
+        annotations:
+          summary: "Nächtliche Sicherung fehlt ({{ $labels.instance }})"
+          description: "Die nächtliche Sicherung ist seit über 26 h eingeschaltet, es gibt aber noch keine. Container-Log ([backup]) und freien Platz im Datenverzeichnis prüfen."
+
+      - alert: NtpGuiCritEvents
+        expr: increase(ntpgui_events_total{level="crit"}[15m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Kritisches Ereignis ({{ $labels.kind }}) im Protokoll ({{ $labels.instance }})"
+          description: "Im Ereignisprotokoll steht ein neuer Eintrag der Stufe „kritisch“. Details auf der Seite „Ereignisse“."
+
+      - alert: NtpGuiHoldoverTestFailed
+        # Der letzte Holdover-Test endete an der Grenze oder war ungültig – nur 24 h lang nach dem Testende,
+        # damit ein altes Ergebnis nicht dauerhaft als Alarm stehen bleibt.
+        expr: ntpgui_holdover_last_result{outcome=~"limit|invalid"} == 1 and on(instance, job) (time() - ntpgui_holdover_last_end_timestamp_seconds) < 86400
+        for: 5m
+        labels:
+          severity: info
+        annotations:
+          summary: "Letzter Holdover-Test: {{ $labels.outcome }} ({{ $labels.instance }})"
+          description: "Die Uhr hielt die Grenze ohne Quellen nicht bzw. der Test war ungültig. Ergebnis und Verlauf auf der Seite „Uhrqualität“."
+
+      - alert: NtpGuiGpsAutocalNeedsLook
+        expr: ntpgui_gps_autocal_phase{phase=~"check|hold"} == 1
+        for: 2h
+        labels:
+          severity: info
+        annotations:
+          summary: "GPS-Automatik: {{ $labels.phase }} ({{ $labels.instance }})"
+          description: "Die automatische GPS-Kalibrierung ändert nichts, weil die Messung ungewöhnlich ist (check) oder eine GNSS-Störung sie sperrt (hold). GPS-Seite, Karte „Kalibrierung“."
+
+      - alert: NtpGuiHeartbeatFailing
+        expr: ntpgui_heartbeat_consecutive_failures >= 3
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Zeitwächter-Ping erreicht den Wächter nicht ({{ $labels.instance }})"
+          description: "Drei oder mehr Pings in Folge schlugen fehl – der eigene Wächter meldet den Server bald als ausgefallen. Adresse und Erreichbarkeit unter „Benachrichtigungen“ prüfen."

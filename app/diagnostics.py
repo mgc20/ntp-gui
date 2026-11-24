@@ -431,6 +431,9 @@ def _collect_settings(cfg: dict, options: dict) -> dict:
         # Der Pfad einer DoH-Adresse kann eine Konto-Kennung sein (z. B. NextDNS) – nur der Server.
         import dnsfwd
         values["dns_doh"] = [dnsfwd.doh_label(str(url)) for url in values["dns_doh"]]
+    if "heartbeat_url" in values:
+        # Die Adresse des Zeitwächters enthält dessen Schlüssel – im Paket steht nur, ob sie gesetzt ist.
+        values["heartbeat_url"] = "gesetzt" if values["heartbeat_url"] else ""
     return {"values": values, "herkunft": sources}
 
 

@@ -4,12 +4,18 @@ ntp-gui liefert unter `/metrics` Prometheus-Metriken (`ntpgui_*`). Dazu gibt es 
 Dateien:
 
 - [`docs/grafana/ntp-gui.json`](../grafana/ntp-gui.json) – Dashboard mit Offset, max. Fehler,
-  Frequenz, Stratum, Quellen, Clients, Anfragen, GPS-Satelliten, Temperatur, Schaltsekunden-
-  Liste, NTS-Zertifikat und Update-Hinweis;
+  Frequenz, Stratum, Quellen, Clients, Anfragen, GPS-Empfang, Temperatur, Schaltsekunden-
+  Liste, NTS-Zertifikat und Update-Hinweis, dazu (ab 1.11) Zeilen „Clients und Betrieb“:
+  Client-Uhrgüte, Abweichung je Client-Gruppe, Benachrichtigungen, nächtliche Sicherung,
+  Ereignisse, Holdover-Test, GPS-Automatik und Zeitwächter-Ping;
 - [`docs/prometheus/alerts.yml`](../prometheus/alerts.yml) – Alarmregeln: chronyd antwortet
   nicht, nicht synchron, keine nutzbare Quelle, Abweichung bzw. Fehlerschranke zu groß, GPS
   ohne Fix > 10 min, PPS weg, Dienst ausgefallen, NTS-Zertifikat läuft ab, Schaltsekunden-Liste
-  läuft ab, neue Version verfügbar.
+  läuft ab, neue Version verfügbar; ab 1.11 außerdem Client-Uhren außer Toleranz, Client-Gruppe
+  fragt nicht mehr (erst nach 24 h ununterbrochenem Mithören), Benachrichtigungskanal stellt
+  nicht zu bzw. Warteschlange hängt, nächtliche Sicherung alt oder fehlgeschlagen bzw. seit über
+  26 h eingeschaltet, aber noch keine da, kritisches Ereignis, Holdover-Test gescheitert (24 h lang nach dem Testende), GPS-Automatik
+  wartet auf dich, Zeitwächter-Ping scheitert.
 
 Ein Test (`tests/test_integrations.py`) prüft, dass jede Metrik aus beiden Dateien wirklich im
 `/metrics`-Output steht – Dashboard und Regeln veralten also nicht still.
@@ -72,7 +78,7 @@ bleiben leer – die Metriken gibt es nur, wenn die Funktion an ist.
 | `ntpgui_sources`, `ntpgui_sources_usable` | bekannte bzw. genutzte Quellen |
 | `ntpgui_source_*{source=…}` | Offset, Erreichbarkeit, Jitter, Auswahl je Quelle |
 | `ntpgui_clients`, `ntpgui_ntp_packets_received_total` | Clients und beantwortete Anfragen |
-| `ntpgui_gps_*` | Fix-Art, Satelliten, HDOP, Signalstärke (nur mit GPS) |
+| `ntpgui_gps_running`, `ntpgui_gps_fix_mode`, `ntpgui_gps_hdop`, `ntpgui_gps_snr_max_db` | gpsd erreichbar, Fix-Art, HDOP als Stufe (1, 2, 5, 10, 20), stärkste Signalstärke der genutzten Satelliten (nur mit GPS) |
 | `ntpgui_gps_error_bound_seconds` | Fehlerschranke, mit der chrony das GPS rechnet (ohne PPS gemessen, ab 1.5) |
 | `ntpgui_gps_reception_level`, `ntpgui_gps_unstable` | Empfang über 24 h (0 gut, 1 mäßig, 2 schwach) bzw. 1 = Fix flattert („unstet“) |
 | `ntpgui_gnss_stage`, `ntpgui_gps_locked` | GNSS-Störungserkennung (0 unauffällig … 3 Störung) bzw. 1 = GPS gesperrt |
@@ -86,3 +92,43 @@ bleiben leer – die Metriken gibt es nur, wenn die Funktion an ist.
 | `ntpgui_nts_server_cert_days_left` | Tage bis zum Ablauf des NTS-Zertifikats |
 | `ntpgui_update_available` | 1 = neuere Version auf GitHub (nur mit Update-Hinweis) |
 | `ntpgui_info{version=…}` | installierte Version |
+| `ntpgui_clients_monitored` | Geräte in der passiven Client-Messung |
+| `ntpgui_clients_listening_seconds` | Sekunden, die die passive Client-Messung schon ohne Pause mithört (fehlt ohne laufende Messung) |
+| `ntpgui_clients_quality{grade=…}` | Geräte je Uhrgüte: `very_good` (ab 85), `good` (ab 70), `moderate` (ab 50), `poor`, `unrated` |
+| `ntpgui_clients_silent` | Geräte, die nicht mehr fragen (deutlich länger als üblich oder über 24 h) |
+| `ntpgui_clients_offset_alarm`, `ntpgui_clients_silent_alarm` | Geräte mit offenem Abweichungs- bzw. Stille-Alarm |
+| `ntpgui_client_group_*{group_id=…}` | je Client-Gruppe: Geräte (`_devices`), aktiv in 24 h (`_active`), still (`_silent`), messbar (`_measured`), Median der Abweichung (`_median_offset_seconds`), Anteil „gut“ (`_good_ratio`), Median der Uhrgüte (`_quality_median`); `group_id="none"` = ohne Gruppe; mit eingeschalteten Gruppennamen zusätzlich `group=…` |
+| `ntpgui_notify_channels{type=…}`, `_channels_enabled`, `_channels_failing`, `_queue` | Benachrichtigungskanäle je Art (webhook, ntfy, gotify, apprise): angelegt, eingeschaltet, letzter Versuch fehlgeschlagen, wartende Meldungen |
+| `ntpgui_notify_deliveries_total{type=…,result=ok\|failed}`, `ntpgui_notify_dropped_total{type=…}` | Zustellversuche bzw. verworfene Meldungen seit dem Start |
+| `ntpgui_notify_running` | 1 = Versand läuft |
+| `ntpgui_backup_nightly_enabled`, `_stored`, `_age_seconds`, `_failed` | nächtliche Sicherung: an, Anzahl, Alter der jüngsten (fehlt ohne Sicherung), 1 = letzter Versuch seit dem Start fehlgeschlagen |
+| `ntpgui_events_total{kind=…,level=…}` | ins Ereignisprotokoll geschriebene Ereignisse je Art und Stufe (`info`, `warn`, `crit`) seit dem Start |
+| `ntpgui_holdover_last_result{outcome=…}` | Ergebnis des letzten Holdover-Tests (`done`, `limit`, `invalid`, `restart`, `aborted`); dazu `_last_deviation_seconds`, `_last_duration_seconds`, `_last_drift_ppm`, `_last_end_timestamp_seconds`, `_last_free_running` |
+| `ntpgui_gps_autocal_mode{mode=…}`, `ntpgui_gps_autocal_phase{phase=…}` | GPS-Automatik: Modus (`off`, `suggest`, `auto`) und Phase der letzten stündlichen Prüfung; dazu `_active_changes`, `_last_change_timestamp_seconds` und `ntpgui_gps_offset_seconds` (nur mit GPS) |
+| `ntpgui_heartbeat_enabled`, `_consecutive_failures`, `_last_success_timestamp_seconds`, `_reported_down` | Zeitwächter-Ping: eingerichtet, Fehlschläge in Folge, letzter Erfolg, 1 = zuletzt „kritisch“ gemeldet |
+
+## Datenschutz in den Metriken
+
+Zu Clients, Benachrichtigungen, Sicherung, Ereignissen und Automatiken enthält `/metrics` nur
+Summen und feste Werte: keine Client-Adressen, keine Gerätenamen, keine Namen oder Adressen von
+Benachrichtigungskanälen, keine Adresse des Zeitwächters und keine Dateinamen. Frei vergebene Texte
+stehen nur an zwei Stellen:
+
+- **Zeitquellen** (Label `source` der Reihen `ntpgui_source_*`): die Namen bzw. Adressen der Server,
+  die du eingetragen hast – auch Geräte im eigenen Netz, etwa ein Router mit privater Adresse. Dazu
+  kommt das PPS-Gerät (Label `device`, z. B. `/dev/pps0`).
+- **Client-Gruppen** (Label `group`): nur, wenn du sie unter **Einstellungen → Dashboard & Zugang →
+  Gruppennamen in /metrics** (erweitert) bzw. mit `METRICS_GROUP_NAMES=true` einschaltest. Standard
+  ist aus, dann steht nur die Kennung (`group_id`, z. B. `g3`) drin – Gruppennamen beschreiben oft
+  Räume oder Orte.
+
+Satellitenzahlen stehen ab 1.11 nicht mehr in `/metrics` (`ntpgui_gps_satellites_used` und
+`ntpgui_gps_satellites_seen` entfallen), HDOP nur noch als Stufe (1, 2, 5, 10, 20), und statt der
+mittleren Signalstärke (`ntpgui_gps_snr_avg_db`) gibt es nur die stärkste
+(`ntpgui_gps_snr_max_db`): Als Zeitreihe markiert jeder Sprung den Auf- oder Untergang eines
+Satelliten und grenzt so die Region ein – auch der Mittelwert springt, wenn ein schwacher Satellit
+tief am Horizont dazukommt. Für den Empfang taugt `ntpgui_gps_reception_level`; die genauen Zahlen zeigt das
+Dashboard weiterhin auf der GPS-Seite.
+
+Die Zähler (`*_total`) gelten seit dem Start des Containers und beginnen nach einem Neustart
+bei 0 – Prometheus erkennt das in `rate()` und `increase()` von selbst.

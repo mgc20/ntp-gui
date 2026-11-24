@@ -363,6 +363,14 @@ def ptp_readiness(cfg: dict) -> list[dict[str, Any]]:
         "title": "Rechte: NET_ADMIN",
         "detail": cap_detail,
     })
+    if cfg.get("ptp_profile") == "st2059":
+        notes = settings.ptp_profile_warnings(cfg)
+        checks.append({
+            "key": "profile", "ok": not notes, "warn": bool(notes),
+            "title": "Profil SMPTE ST 2059-2",
+            "detail": ("Die wirksamen Werte liegen im Rahmen des Profils (Voreinstellung, keine Zertifizierung)."
+                       if not notes else "; ".join(notes) + "."),
+        })
     checks.append({
         "key": "network", "ok": None,
         "title": "Netzwerk zwischen den Teilnehmern",

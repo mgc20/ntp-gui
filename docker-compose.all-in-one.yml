@@ -42,8 +42,8 @@
 
 services:
   ntp-gui:
-    # Version festhalten statt „:latest“: „:1.10“ bleibt auf 1.10.x (nur
-    # Fehlerbehebungen), „:1.10.0“ bleibt fest auf genau dieser Version.
+    # Version festhalten statt „:latest“: „:1.11“ bleibt auf 1.11.x (nur
+    # Fehlerbehebungen), „:1.11.0“ bleibt fest auf genau dieser Version.
     # Umgezogen: Früher hieß das Image ghcr.io/congp20/ntp-gui – dort kommen
     # keine neuen Versionen mehr, bitte auf ghcr.io/mgc20/ntp-gui umstellen.
     image: ghcr.io/mgc20/ntp-gui:latest   # amd64 und arm64 (Raspberry Pi)
@@ -199,7 +199,7 @@ services:
       #  PTP_ENABLE: "true"
       #  PTP_INTERFACE: "eth0"             # Name aus „ip link“, die Hardware-Seite zeigt passende Karten
       #  PTP_MODE: "master"                # master = Grandmaster, slave = Zeit von anderem Grandmaster, auto
-      #  PTP_PROFILE: "default"            # default | aes67 (Audio über IP) | gptp (802.1AS)
+      #  PTP_PROFILE: "default"            # default | aes67 (Audio über IP) | st2059 (Broadcast) | gptp (802.1AS)
       # Systemuhr und PTP-Uhr der Karte koppeln (phc2sys). Die Richtung wählt
       # ntp-gui nach Rolle: Grandmaster kopiert die Systemuhr auf die Karte,
       # Slave stellt die Systemuhr nach der Karte.

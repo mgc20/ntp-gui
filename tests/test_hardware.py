@@ -949,6 +949,18 @@ class TestReviewFixes(HardwareTestCase):
                      if c["key"] == "capability")
         self.assertIs(check["ok"], True)
 
+    def test_st2059_profile_check(self):
+        self.host.caps(CAP_TIME_ADMIN)
+        checks = {c["key"]: c for c in devices.ptp_readiness(base_cfg(ptp_profile="st2059"))}
+        self.assertIs(checks["profile"]["ok"], True)
+        self.assertIn("keine Zertifizierung", checks["profile"]["detail"])
+        checks = {c["key"]: c for c in devices.ptp_readiness(base_cfg(ptp_profile="st2059", ptp_domain=200))}
+        self.assertIs(checks["profile"]["ok"], False)
+        self.assertIs(checks["profile"]["warn"], True)
+        self.assertIn("Domain 200", checks["profile"]["detail"])
+        keys = [c["key"] for c in devices.ptp_readiness(base_cfg(ptp_profile="aes67"))]
+        self.assertNotIn("profile", keys)
+
 
 class TestGpsModule(unittest.TestCase):
     def test_devices_in_reports(self):

@@ -796,6 +796,32 @@ def nightly_due(enabled: bool, now: float | None = None) -> bool:
     return not os.path.exists(os.path.join(backup_dir(), name))
 
 
+# Ausgang des letzten nächtlichen Versuchs seit dem Start (für /metrics): Wanduhr und ob er gelang.
+NIGHTLY_RESULT: dict[str, Any] = {"t": None, "ok": None}
+
+
+def nightly_attempt(version: str = "", now: float | None = None) -> bool:
+    """Eine nächtliche Sicherung anlegen und den Ausgang merken. True bei Erfolg; wirft nie."""
+    try:
+        save_local(NIGHTLY_PREFIX, KEEP_NIGHTLY, version, now=now)
+    except Exception as exc:  # nie sterben
+        NIGHTLY_RESULT.update(t=time.time(), ok=False)
+        print(f"[backup] Nächtliche Sicherung fehlgeschlagen: {type(exc).__name__}: {exc}", flush=True)
+        return False
+    NIGHTLY_RESULT.update(t=time.time(), ok=True)
+    return True
+
+
+def nightly_metrics(enabled: bool, now: float | None = None) -> dict:
+    """Für /metrics: Schalter, Zahl der gespeicherten nächtlichen Sicherungen, Alter der jüngsten (s, None ohne
+    Sicherung) und ob der letzte Versuch seit dem Start fehlschlug. Kein Dateiname, kein Pfad."""
+    now = time.time() if now is None else now
+    nightly = [item for item in stored() if item.get("kind") == "nightly"]
+    age = max(0.0, now - nightly[0]["t"]) if nightly else None
+    return {"enabled": bool(enabled), "stored": len(nightly), "age": age,
+            "failed": NIGHTLY_RESULT.get("ok") is False}
+
+
 def nightly_runner(cfg: Callable[[], dict], version: str = "", stop: threading.Event | None = None,
                    interval: float = 600.0) -> None:
     """Thread: einmal je Nacht (gegen NIGHTLY_HOUR) sichern, wenn backup_nightly an ist."""
@@ -805,7 +831,7 @@ def nightly_runner(cfg: Callable[[], dict], version: str = "", stop: threading.E
             cleanup_staging()
             cleanup_downloads()
             if nightly_due(bool(cfg().get("backup_nightly"))):
-                save_local(NIGHTLY_PREFIX, KEEP_NIGHTLY, version)
+                nightly_attempt(version)
         except Exception as exc:  # nie sterben
             print(f"[backup] Nächtliche Sicherung fehlgeschlagen: {type(exc).__name__}: {exc}", flush=True)
 

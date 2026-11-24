@@ -34,6 +34,7 @@ cleanup() {
   docker rm -f "${PREFIX}-k" "${PREFIX}-l" "${PREFIX}-m" "${PREFIX}-n" "${PREFIX}-o" >/dev/null 2>&1
   docker rm -f "${PREFIX}-p" "${PREFIX}-q" "${PREFIX}-r" "${PREFIX}-s" "${PREFIX}-t" >/dev/null 2>&1
   docker rm -f "${PREFIX}-u" "${PREFIX}-w" "${PREFIX}-x" "${PREFIX}-pw" "${PREFIX}-cm" "${PREFIX}-ntp" >/dev/null 2>&1
+  docker rm -f "${PREFIX}-st" >/dev/null 2>&1
   docker network rm "${PREFIX}-net" "${PREFIX}-net2" >/dev/null 2>&1
   docker volume rm "${PREFIX}-data" "${PREFIX}-hist" >/dev/null 2>&1
   if [[ -n "${VPS_DIR:-}" ]]; then
@@ -265,6 +266,11 @@ check "Clients: Nachmessen öffentlicher Adressen abgelehnt" 422 "$(http "${CJ[@
 check "Clients: Nachmessen über 6to4 (öffentliche IPv4 darin) abgelehnt" 422 "$(http "${CJ[@]}" -d '{"ip":"2002:808:808::1"}' http://127.0.0.1:18080/api/clients/probe)"
 check "Clients: Nachmessen link-lokaler IPv6 abgelehnt" 422 "$(http "${CJ[@]}" -d '{"ip":"fe80::1"}' http://127.0.0.1:18080/api/clients/probe)"
 check "Clients: Detail einer unbekannten Adresse -> 404" 404 "$(http 'http://127.0.0.1:18080/api/clients/detail?ip=192.0.2.77')"
+# Fehlersuche „Mein Gerät bekommt keine Zeit“ (1.11): echter chronyd lauscht, Namen werden abgelehnt.
+TS=$(curl -s --max-time 10 'http://127.0.0.1:18080/api/clients/troubleshoot?ip=192.168.1.77')
+check "Fehlersuche: chronyd lauscht laut Socket-Liste" "ok" "$(python3 -c "import json,sys; d=json.loads(sys.argv[1]); print(next(c['status'] for c in d['checks'] if c['key']=='listen'))" "$TS" 2>/dev/null)"
+check "Fehlersuche: genau ein Befund" "True" "$(python3 -c "import json,sys; d=json.loads(sys.argv[1]); print(isinstance(d['verdict'], dict) and bool(d['verdict']['title']))" "$TS" 2>/dev/null)"
+check "Fehlersuche: Name statt Adresse -> 400" 400 "$(http 'http://127.0.0.1:18080/api/clients/troubleshoot?ip=pool.ntp.org')"
 docker exec "${PREFIX}-a" python3 -c '
 import socket, struct, time
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(0.5)
@@ -344,6 +350,8 @@ check "Fremder Host-Name: Dashboard 403"   403 "$(http -H 'Host: attacker.exampl
 check "Fremder Host-Name: API 403"         403 "$(http -H 'Host: attacker.example:18080' "$A/api/status")"
 check ".fritz.box ist nicht automatisch lokal" 403 "$(http -H 'Host: pi.fritz.box' "$A/api/status")"
 check "healthz mit fremdem Host bleibt offen" 200 "$(http -H 'Host: attacker.example' "$A/healthz")"
+RZ=$(http -H 'Host: attacker.example' "$A/readyz")
+if [[ "$RZ" == 200 || "$RZ" == 503 ]]; then ok "readyz mit fremdem Host bleibt offen ($RZ)"; else bad "readyz mit fremdem Host: $RZ"; fi
 check "Container-IP als Host erlaubt"     200 "$(http -H "Host: $CIP:8080" "$A/api/status")"
 check "localhost als Host erlaubt"        200 "$(http -H 'Host: localhost:18080' "$A/api/status")"
 check "*.local als Host erlaubt"          200 "$(http -H 'Host: zeitserver.local' "$A/api/status")"
@@ -476,10 +484,14 @@ contains "Fehlversuch steht im Log" "$(docker logs "${PREFIX}-b" 2>&1)" "Anmeldu
 check "Geprüfter Zugang bleibt gültig" 200 "$(http -u 'admin:S3hr geheim' "$B/api/status")"
 
 echo
-echo "3c) WEB_REQUIRE_AUTH ohne Zugang: gesperrt bis auf /healthz"
+echo "3c) WEB_REQUIRE_AUTH ohne Zugang: gesperrt bis auf /healthz und /readyz"
 docker run -d --name "${PREFIX}-u" -p 18097:8080 -e WEB_REQUIRE_AUTH=true -e NTP_POOLS="" "$IMAGE" >/dev/null
 wait_for_health http://127.0.0.1:18097/healthz 90 || true
 check "healthz offen"                        200 "$(http http://127.0.0.1:18097/healthz)"
+# Ohne Zeitquelle (NTP_POOLS leer) ist der Server nicht bereit: 503, Antwort nur aus Wahrheitswerten.
+check "readyz offen, ohne Quelle nicht bereit" 503 "$(http http://127.0.0.1:18097/readyz)"
+check "readyz enthält nur Wahrheitswerte" "not_ready chrony synchronised source_selected within_limit" \
+  "$(curl -s --max-time 10 http://127.0.0.1:18097/readyz | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.pop('status'), *[k for k, v in d.items() if isinstance(v, bool)])" 2>/dev/null)"
 check "Status gesperrt (Einrichtung nötig)"  503 "$(http http://127.0.0.1:18097/api/status)"
 check "Passwort setzen gesperrt"             503 "$(http -X POST -H 'Content-Type: application/json' -H 'X-NTP-GUI: 1' -d '{"user":"x","password":"lang-genug-12345"}' http://127.0.0.1:18097/api/auth)"
 contains "Start-Log warnt" "$(docker logs "${PREFIX}-u" 2>&1)" "WEB_REQUIRE_AUTH=true, aber kein Zugang"
@@ -659,6 +671,19 @@ check "ptp4l läuft unverändert weiter (gleiche PID)" "running ${XPTP}" \
   "$(svc "${PREFIX}-x" ptp4l state) $(svc "${PREFIX}-x" ptp4l pid)"
 check "ptp4l-Prozess besteht" 0 "$(docker exec "${PREFIX}-x" sh -c "kill -0 ${XPTP:-0} 2>/dev/null; echo \$?")"
 docker rm -f "${PREFIX}-x" >/dev/null 2>&1
+
+echo
+echo "6b2) PTP-Profil SMPTE ST 2059-2: ptp4l nimmt die Profilwerte an"
+docker run -d --name "${PREFIX}-st" -p 18095:8080 --cap-add NET_ADMIN --cap-add NET_RAW \
+  -e PTP_ENABLE=true -e PTP_INTERFACE=eth0 -e PTP_MODE=master -e PTP_TIME_STAMPING=software \
+  -e PTP_PROFILE=st2059 -e NTP_PORT=10144 -e NTP_POOLS="" "$IMAGE" >/dev/null
+wait_for_health http://127.0.0.1:18095/healthz 90 || true
+if wait_svc "${PREFIX}-st" ptp4l state running 30; then ok "ptp4l läuft mit ST 2059-2"; else bad "ptp4l läuft nicht mit ST 2059-2 (state: $(svc "${PREFIX}-st" ptp4l state))"; fi
+STCONF=$(docker exec "${PREFIX}-st" sh -c 'cat "${PTP4L_CONF:-/etc/linuxptp/ptp4l.conf}" 2>/dev/null || cat /run/ntp-gui-conf/ptp4l.conf' 2>/dev/null)
+check "ptp4l.conf: Domain 127, Announce -2, Sync -3" "127 -2 -3" \
+  "$(awk '$1=="domainNumber"{d=$2} $1=="logAnnounceInterval"{a=$2} $1=="logSyncInterval"{y=$2} END{print d, a, y}' <<<"$STCONF")"
+contains "Start-Log nennt Domain 127" "$(docker logs "${PREFIX}-st" 2>&1)" "Domain 127"
+docker rm -f "${PREFIX}-st" >/dev/null 2>&1
 
 echo
 echo "6c) Ohne DAC_OVERRIDE: klare Meldung statt unverständlichem Abbruch (1.9)"

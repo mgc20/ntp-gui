@@ -6,7 +6,7 @@ Versionierte API: /api/v1/<pfad> ist ein Alias der bisherigen Pfade (apiv1.py).
 
 Schutz der schreibenden Routen:
   * ist ein Zugang gesetzt (Env oder Dashboard), gilt Basic-Auth für alles
-    außer /healthz – oder ein API-Schlüssel („Authorization: Bearer ntpg_…“)
+    außer /healthz und /readyz – oder ein API-Schlüssel („Authorization: Bearer ntpg_…“)
     mit dem Recht, das apiv1.required_scope() für den Pfad verlangt;
   * ein mitgeschickter API-Schlüssel gilt immer mit seinem Recht, auch wenn
     kein Passwort gesetzt ist – ein „read“-Schlüssel kann nie schreiben;
@@ -21,7 +21,7 @@ Schutz der schreibenden Routen:
     lokale Namen (*.local, *.lan, *.home.arpa, *.internal …), den
     NTS-Namen, WEB_ALLOWED_HOSTS und die „Erlaubten Namen“ aus dem Dashboard
     beantwortet (host_allowed). Mit Passwort schützt die Anmeldung, dann gilt
-    jeder Name. /healthz ist immer offen;
+    jeder Name. /healthz und /readyz sind immer offen (nur Wahrheitswerte);
   * clock_public: /clock, /api/v1/time und ihre vier statischen Dateien
     antworten ohne Anmeldung und für jeden Host-Namen – der Inhalt ist bewusst
     öffentlich (Uhrzeit, Ampel, Genauigkeit, Art der Quelle). Den Quellennamen
@@ -70,15 +70,18 @@ import clients3
 import devices
 import diagnostics
 import dnsfwd
+import egress
 import enforce
 import events
 import gps
 import hardware
+import heartbeat
 import history as historymod
 import insights
 import instance
 import leap
 import notify
+import opsmetrics
 import onboarding  # vor dem eigenen Code: merkt sich, ob das Datenverzeichnis schon Daten hatte
 import providers
 import ptp
@@ -88,6 +91,7 @@ import statewatch
 import pistate
 import thermal
 import timeline
+import troubleshoot
 import updatecheck
 import webtransport
 
@@ -97,7 +101,7 @@ PTP4L_CONF = os.environ.get("PTP4L_CONF", "/etc/linuxptp/ptp4l.conf")
 RUN_DIR = os.environ.get("NTPGUI_RUN_DIR", "/run/ntp-gui")
 START_MONO = time.monotonic()  # Laufzeit nach monotoner Uhr – ein Uhrsprung verfälscht sie nicht
 MAX_BODY = 64 * 1024
-VERSION = os.environ.get("NTPGUI_VERSION", "1.10.0")
+VERSION = os.environ.get("NTPGUI_VERSION", "1.11.0")
 EVENTS_INTERVAL = 5.0          # so oft liest der Server die Supervisor-Ereignisse ein
 CALIBRATION_DEFAULT_WINDOW = 86400.0  # /api/gps/calibration ohne window: letzte 24 h
 CALIBRATION_MAX_WINDOW = 7 * 86400.0  # … und höchstens 7 Tage (0 = „so viel wie möglich“ = 7 Tage)
@@ -240,6 +244,12 @@ apiv1.endpoint("POST", "/clients/probe", "/api/clients/probe", "admin",
                "Aktiv nachmessen: eine NTP-Anfrage an einen bekannten Client im LAN (2 s Zeitlimit; je Gerät "
                "alle 30 s, insgesamt 10 pro Minute). Body: {\"ip\": …}.",
                ["ip", "answered", "offset", "rtt", "stratum", "text"])
+apiv1.endpoint("GET", "/clients/troubleshoot", "/api/clients/troubleshoot", "read",
+               "Fehlersuche „Mein Gerät bekommt keine Zeit“: feste Prüfliste für eine IP-Adresse (erlaubte Netze, "
+               "lauscht der Dienst, Server synchron, Netzmodus, Anfragen gesehen, Begrenzung, Uhr des Geräts) und "
+               "genau ein Befund mit nächstem Schritt. Rein lesend, keine Namensauflösung, keine Messung.",
+               ["address", "lan", "known", "probe_allowed", "checks", "verdict"],
+               {"ip": "IPv4- oder IPv6-Adresse des Geräts (Pflicht, kein Name)"})
 apiv1.endpoint("GET", "/clients/groups", "/api/clients/groups", "read",
                "Clients 3: Geräte nach Gruppe (eigene Netze, spezifischstes Netz gewinnt), VLAN oder Software – je "
                "Gruppe Anzahl, aktive, messbare, Median-Abweichung, Anteil „gut“ (< 10 ms), Hinweis bei leerer Gruppe; "
@@ -267,8 +277,10 @@ apiv1.endpoint("GET", "/clients/pass", "/api/clients/pass", "read",
                 "recommendations"], {"ip": "Adresse des Clients (Pflicht)", "share": "1 = gefilterte Textkopie"})
 apiv1.endpoint("GET", "/notify", "/api/notify", "admin",
                "Benachrichtigungen: Kanäle mit Filtern und Zustellstand. Tokens nur als „gesetzt“ "
-               "(secret_set), nie im Klartext; Adressen mit Pfad/Abfrage nur gekürzt (url_hidden).", ["channels", "types", "levels", "kinds", "defaults", "limits",
-                                                 "dashboard_url", "running"])
+               "(secret_set), nie im Klartext; Adressen mit Pfad/Abfrage nur gekürzt (url_hidden). heartbeat: "
+               "Zustand des Zeitwächter-Pings (Adresse nur gekürzt).", ["channels", "types", "levels", "kinds",
+                                                                       "defaults", "limits", "dashboard_url",
+                                                                       "running", "heartbeat"])
 apiv1.endpoint("GET", "/notify/status", "/api/notify/status", "read",
                "Zustellstand je Benachrichtigungskanal (Kennung, Art, zuletzt gesendet, letzter Fehler) – "
                "ohne Namen, Adressen und Tokens.", ["channels", "running"])
@@ -282,6 +294,11 @@ apiv1.endpoint("POST", "/notify/channels/delete", "/api/notify/channels/delete",
 apiv1.endpoint("POST", "/notify/test", "/api/notify/test", "admin",
                "Testnachricht sofort über einen Kanal senden (ohne Wiederholung). Body: {\"id\": …}.",
                ["ok", "error", "status"])
+apiv1.endpoint("POST", "/notify/heartbeat/test", "/api/notify/heartbeat/test", "admin",
+               "Zeitwächter-Ping sofort senden – mit dem echten Zustand (gut/kritisch, „kritisch“ erst nach "
+               "2 min Haltezeit), höchstens alle 10 s. ok nur, wenn etwas angekommen ist; note, wenn bei "
+               "„nur Lebenszeichen“ nichts gesendet wurde; 409, solange gerade ein Ping läuft. Body: {}.",
+               ["ok", "error", "note", "heartbeat"])
 apiv1.endpoint("GET", "/gps/autocal", "/api/gps/autocal", "read",
                "Automatische GPS-Kalibrierung: Modus, aktuelle Entscheidung, letzte Änderungen.",
                ["mode", "decision", "changes", "rollback"], {"fresh": "0 = letzte gespeicherte Entscheidung"})
@@ -717,6 +734,20 @@ def chrony_client_row(addr: str | None) -> dict | None:
     return next((c for c in chrony.clients() if clientinfo.clean_ip(c.get("address")) == addr), None)
 
 
+def troubleshoot_view(ip) -> dict:
+    """Fehlersuche für eine Adresse: sammelt nur Lokales (chronyc, eigene Messung, /proc) – nichts geht ins Netz."""
+    addr = troubleshoot.clean_target(ip)
+    cfg = settings.values()
+    rows = chrony.clients()
+    row = next((c for c in rows if clientinfo.clean_ip(c.get("address")) == addr), None)
+    mon = clientmon.status()
+    others = [c.get("address") for c in rows if (c.get("ntp_packets") or 0) > 0] + list(mon.get("clients") or {})
+    return troubleshoot.run(addr, cfg, tracking=chrony.tracking(), chrony_row=row, entry=clientmon.client(addr),
+                            listeners=troubleshoot.udp_listeners(int(cfg["ntp_port"])),
+                            net_mode=devices.network_mode(), gateway=clientmon.default_gateway(),
+                            others=[a for a in others if a])
+
+
 def system_info(cfg: dict) -> dict:
     info = {
         "hostname": socket.gethostname(),
@@ -1044,6 +1075,7 @@ def build_status() -> dict:
     except Exception:
         status["holdover_active"] = False
     status["notify"] = _notify_summary()
+    status["heartbeat"] = _heartbeat_status()
     status["insights"] = combine_insights(insights.build(status, cfg),
                                           insights.exposure_insights(cfg, clients, clientmon.default_gateway(),
                                                                      devices.network_mode()),
@@ -1086,6 +1118,20 @@ def _leap_summary(info: dict) -> dict:
     """Kurzfassung der Schaltsekunden-Liste für die Übersicht (volle Angaben: /api/leap)."""
     return {key: info.get(key) for key in ("available", "source", "level", "reason", "days_left", "expired",
                                             "expires_date", "tai_utc")}
+
+
+def _heartbeat_status(full: bool = False) -> dict:
+    """Zeitwächter-Ping für Übersicht und Benachrichtigungsseite (wirft nie). Ohne full keine Adresse."""
+    try:
+        return heartbeat.status(full)
+    except Exception:
+        return {"enabled": False}
+
+
+def heartbeat_state() -> str:
+    """„down“, sobald die Übersicht einen kritischen Hinweis zeigt (wie die rote Ampel), sonst „up“."""
+    items = current_insights()
+    return "down" if any(isinstance(i, dict) and i.get("level") == "crit" for i in items or []) else "up"
 
 
 def _notify_summary() -> dict:
@@ -1314,6 +1360,65 @@ def _healthz_tracking() -> dict:
         tracking = chrony.tracking()
         _HEALTHZ_CACHE.update(t=time.monotonic(), tracking=tracking)
         return tracking
+
+
+READY_MAX_ERROR_DEFAULT_MS = 100.0
+
+
+def ready_limit_ms() -> float:
+    """Grenze der Fehlerschranke für /readyz in Millisekunden (Einstellung ready_max_error_ms bzw.
+    READY_MAX_ERROR_MS). Sind die Einstellungen nicht lesbar, gilt die Umgebungsvariable oder der Standard –
+    /readyz darf daran nie scheitern."""
+    try:
+        value = settings.values().get("ready_max_error_ms")
+    except Exception:
+        value = settings.env_number("READY_MAX_ERROR_MS", READY_MAX_ERROR_DEFAULT_MS, 0.001, 10000.0)
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 < value <= 10000:
+        return READY_MAX_ERROR_DEFAULT_MS
+    return float(value)
+
+
+def readiness(tracking: dict, limit_ms: float, holdover: bool | None = None) -> dict:
+    """Strenge Bereitschaft für /readyz: bereit nur, wenn chronyd antwortet, synchronisiert ist (kein
+    Inselbetrieb, Stratum unter 16), gerade eine Quelle ausgewählt hat (kein Holdover, kein Holdover-Test) und
+    die Fehlerschranke (|Offset| + Root-Dispersion + Root-Delay/2, wie chrony sie rechnet) unter der Grenze
+    liegt. Fehlt einer der drei Werte oder ist er nicht lesbar, ist der Server nicht bereit.
+    holdover: aus ready_holdover() – True: keine Quelle ausgewählt; None: keine Aussage, zählt nicht dagegen.
+    Die Antwort enthält nur Wahrheitswerte – keine Zahlen, keine Quellen, keine Grenze."""
+    running = bool(tracking)
+    synced = bool(running and tracking.get("synchronised"))
+    selected = synced and holdover is not True
+    within = False
+    if synced:
+        try:
+            parts = [float(tracking[key]) for key in ("system_time_offset", "root_dispersion", "root_delay")]
+            error = abs(parts[0]) + abs(parts[1]) + abs(parts[2]) / 2
+            within = math.isfinite(error) and error * 1000.0 < limit_ms
+        except (KeyError, TypeError, ValueError):
+            within = False
+    ready = running and synced and selected and within
+    return {"status": "ready" if ready else "not_ready", "chrony": running,
+            "synchronised": synced, "source_selected": selected, "within_limit": within}
+
+
+def ready_holdover() -> bool | None:
+    """Holdover für /readyz: True, solange ein Holdover-Test läuft oder der Messthread zuletzt gesehen hat, dass
+    chrony keine Quelle mehr ausgewählt hat (clock_extra); None ohne frische Aussage. Startet keinen Prozess und
+    wirft nie."""
+    try:
+        if holdover.TEST.running():
+            return True
+    except Exception:
+        pass
+    try:
+        try:
+            interval = settings.values().get("history_interval")
+        except Exception:
+            interval = None
+        value = clock_extra(interval=interval).get("holdover")
+    except Exception:
+        return None
+    return value if isinstance(value, bool) else None
 
 
 def _clock_leap(cfg: dict) -> dict:
@@ -1551,7 +1656,7 @@ def _metric(lines: list[str], name: str, value, help_text: str, kind: str = "gau
 
 def _escape_label(value) -> str:
     """Prometheus label values escape backslash, quote and newline."""
-    return str(value).replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+    return opsmetrics.escape_label(value)
 
 
 def build_metrics() -> str:
@@ -1577,16 +1682,22 @@ def build_metrics() -> str:
     _metric(lines, "ntpgui_sources", len(sources), "Configured time sources known to chronyd")
     _metric(lines, "ntpgui_sources_usable", sum(1 for s in sources if s.get("state") in {"*", "+"}),
             "Sources currently used by chronyd (selected or combined)")
-    for source in sources:
-        labels = '{source="%s",mode="%s"}' % (
-            _escape_label(source.get("name", "")), _escape_label(source.get("mode_label", "")))
-        _metric(lines, "ntpgui_source_offset_seconds", source.get("offset"), "Offset per source", labels=labels)
-        _metric(lines, "ntpgui_source_stratum", source.get("stratum"), "Stratum per source", labels=labels)
-        _metric(lines, "ntpgui_source_reach_percent", source.get("reach_percent"), "Reachability per source", labels=labels)
-        _metric(lines, "ntpgui_source_jitter_seconds", source.get("std_dev"), "Standard deviation per source", labels=labels)
-        _metric(lines, "ntpgui_source_selected", 1 if source.get("state") == "*" else 0, "1 for the selected source", labels=labels)
-        _metric(lines, "ntpgui_source_combined", 1 if source.get("state") in {"*", "+"} else 0, "1 when the source is used", labels=labels)
-        _metric(lines, "ntpgui_source_authenticated", 1 if source.get("authenticated") else 0, "1 when NTS-authenticated", labels=labels)
+    labelled = [('{source="%s",mode="%s"}' % (_escape_label(source.get("name", "")),
+                                               _escape_label(source.get("mode_label", ""))), source)
+                for source in sources]
+    # Je Metrik ein zusammenhängender Block über alle Quellen (Textformat: eine Familie am Stück).
+    per_source = (
+        ("ntpgui_source_offset_seconds", lambda s: s.get("offset"), "Offset per source"),
+        ("ntpgui_source_stratum", lambda s: s.get("stratum"), "Stratum per source"),
+        ("ntpgui_source_reach_percent", lambda s: s.get("reach_percent"), "Reachability per source"),
+        ("ntpgui_source_jitter_seconds", lambda s: s.get("std_dev"), "Standard deviation per source"),
+        ("ntpgui_source_selected", lambda s: 1 if s.get("state") == "*" else 0, "1 for the selected source"),
+        ("ntpgui_source_combined", lambda s: 1 if s.get("state") in {"*", "+"} else 0, "1 when the source is used"),
+        ("ntpgui_source_authenticated", lambda s: 1 if s.get("authenticated") else 0, "1 when NTS-authenticated"),
+    )
+    for name, value_of, help_text in per_source:
+        for labels, source in labelled:
+            _metric(lines, name, value_of(source), help_text, labels=labels)
 
     stats = chrony.serverstats()
     _metric(lines, "ntpgui_ntp_packets_received_total", stats.get("ntp_packets_received"), "NTP packets served", kind="counter")
@@ -1598,10 +1709,13 @@ def build_metrics() -> str:
     if gps_state.get("enabled"):
         _metric(lines, "ntpgui_gps_running", 1 if gps_state.get("running") else 0, "1 when gpsd answers")
         _metric(lines, "ntpgui_gps_fix_mode", gps_state.get("mode"), "gpsd fix mode (0-3)")
-        _metric(lines, "ntpgui_gps_satellites_used", gps_state.get("satellites_used"), "Satellites used for the fix")
-        _metric(lines, "ntpgui_gps_satellites_seen", gps_state.get("satellites_seen"), "Satellites in view")
-        _metric(lines, "ntpgui_gps_hdop", gps_state.get("hdop"), "Horizontal dilution of precision")
-        _metric(lines, "ntpgui_gps_snr_avg_db", gps_state.get("snr_avg"), "Average SNR of used satellites")
+        # Keine Satellitenzahlen und HDOP nur als Stufe: Als Zeitreihe markiert jeder Sprung den Auf- oder
+        # Untergang eines Satelliten und grenzt so die Region ein (wie in der Aufzeichnung des Diagnosepakets).
+        _metric(lines, "ntpgui_gps_hdop", egress.hdop_step(gps_state.get("hdop")),
+                "Horizontal dilution of precision as step (upper bound 1, 2, 5, 10 or 20)")
+        # Signalstärke nur als stärkster Wert: Der Mittelwert springt, wenn ein schwacher Satellit tief am
+        # Horizont dazukommt oder untergeht – dieselbe Spur wie die Satellitenzahl.
+        _metric(lines, "ntpgui_gps_snr_max_db", gps_state.get("snr_max"), "Strongest SNR of used satellites")
         _gps15_metrics(lines)
 
     ptp_state = ptp.status()
@@ -1668,6 +1782,8 @@ def build_metrics() -> str:
     _metric(lines, "ntpgui_holdover_test_running", running,
             "1 while a holdover test runs (sources deselected on purpose, clients get less accurate time)")
     _hardware_metrics(lines)
+    for name, value, help_text, kind, labels in opsmetrics.collect(settings.values(), STATE_WATCH):
+        _metric(lines, name, value, help_text, kind=kind, labels=labels)
     return "\n".join(lines) + "\n"
 
 
@@ -2362,12 +2478,12 @@ class Handler(BaseHTTPRequestHandler):
         if info.get("code") == "settings_unreadable":
             code, heading = "settings_unreadable", "Einstellungen nicht lesbar"
             text = (f"{reason}. Mit WEB_USER und WEB_PASSWORD in der Compose-Datei ist das Dashboard trotzdem "
-                    "mit Anmeldung erreichbar (Speichern bleibt gesperrt). /healthz bleibt erreichbar.")
+                    "mit Anmeldung erreichbar (Speichern bleibt gesperrt). /healthz und /readyz bleiben erreichbar.")
         else:
             code, heading = "auth_setup_required", "Einrichtung nötig"
             text = (f"{reason}. Das Dashboard bleibt gesperrt, bis ein Zugang gesetzt ist: in der Compose-Datei "
                     "WEB_USER und WEB_PASSWORD (oder WEB_PASSWORD_FILE für ein Docker Secret) eintragen und den "
-                    "Container neu erstellen. /healthz bleibt erreichbar.")
+                    "Container neu erstellen. /healthz und /readyz bleiben erreichbar.")
         path = urlparse(self.path).path
         if path.startswith("/api") or path == "/metrics" or "json" in self.headers.get("Accept", ""):
             self._error(HTTPStatus.SERVICE_UNAVAILABLE, text, reason=code)
@@ -2675,6 +2791,12 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"status": "ok" if healthy else "degraded", "chrony": healthy},
                             HTTPStatus.OK if healthy else HTTPStatus.SERVICE_UNAVAILABLE)
             return
+        if path == "/readyz":
+            # Strenge Variante für keepalived, Load-Balancer und Uptime-Monitore: wie /healthz ohne Anmeldung
+            # und für jeden Host-Namen, die Antwort enthält nur Wahrheitswerte.
+            state = readiness(_healthz_tracking(), ready_limit_ms(), ready_holdover())
+            self._send_json(state, HTTPStatus.OK if state["status"] == "ready" else HTTPStatus.SERVICE_UNAVAILABLE)
+            return
         if path == LOGOUT_PATH:
             self._logout_probe()
             return
@@ -2918,6 +3040,13 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as exc:  # noqa: BLE001 – Clients 3 ist ein Zusatz zur Detailseite
                 print(f"[web] Uhrgüte/Regeln für die Detailseite fehlgeschlagen: {exc}", flush=True)
             self._send_json(result)
+        elif path == "/api/clients/troubleshoot":
+            try:
+                result = troubleshoot_view(query.get("ip"))
+            except troubleshoot.InputError as exc:
+                self._error(HTTPStatus.BAD_REQUEST, str(exc))
+                return
+            self._send_json(result)
         elif path == "/api/clients/groups":
             status = clientmon.status()
             # Wie Detailseite und Uhrgüte: private Einträge (MAC, Kopffelder) – sonst fiele die
@@ -2949,7 +3078,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._send_json(data)
         elif path == "/api/notify":
-            self._send_json(notify.api_config())
+            payload = notify.api_config()
+            payload["heartbeat"] = _heartbeat_status(full=True)
+            self._send_json(payload)
         elif path == "/api/notify/status":
             self._send_json(notify.api_status())
         elif path == "/api/apikeys":
@@ -3382,6 +3513,24 @@ class Handler(BaseHTTPRequestHandler):
                 self._error(HTTPStatus.TOO_MANY_REQUESTS, str(exc))
             except notify.NotifyError as exc:
                 self._error(HTTPStatus.NOT_FOUND, str(exc))
+        elif path == "/api/notify/heartbeat/test":
+            try:
+                result = heartbeat.pinger(heartbeat_state).test()
+            except heartbeat.TestRateLimited as exc:
+                self._error(HTTPStatus.TOO_MANY_REQUESTS, str(exc))
+                return
+            except heartbeat.TestBusy as exc:
+                self._error(HTTPStatus.CONFLICT, str(exc))
+                return
+            except heartbeat.PingError as exc:
+                self._error(HTTPStatus.CONFLICT, str(exc))
+                return
+            result = dict(result, url=heartbeat.mask_url(settings.values().get("heartbeat_url") or ""))
+            # ok nur, wenn wirklich etwas angekommen ist – „nur Lebenszeichen“ bei kritisch sendet nichts.
+            delivered = result.get("error") is None and result.get("last_sent") is not None
+            note = "Zustand kritisch – nichts gesendet (Art: nur Lebenszeichen)" \
+                if result.get("error") is None and result.get("last_sent") is None else None
+            self._send_json({"ok": delivered, "error": result.get("error"), "note": note, "heartbeat": result})
         elif path == "/api/v1/clock/signal":
             self._clock_signal(data, ident)
         elif path == "/api/apikeys":
@@ -3605,17 +3754,17 @@ def startup_auth_warnings(bind: str) -> list[str]:
     if env["defaulted_user"]:
         out.append("[web] Hinweis: Nur ein Passwort aus der Umgebung, kein WEB_USER – Benutzername ist „admin“.")
     if info.get("code") == "settings_unreadable":
-        out.append(f"[web] WARNUNG: {info['reason']}. Das Dashboard bleibt GESPERRT (nur /healthz antwortet); "
+        out.append(f"[web] WARNUNG: {info['reason']}. Das Dashboard bleibt GESPERRT (nur /healthz und /readyz antworten); "
                    "mit WEB_USER und WEB_PASSWORD ist es mit Anmeldung erreichbar, Speichern bleibt gesperrt.")
     elif env["error"]:
         if info["enabled"]:
             out.append(f"[web] WARNUNG: {env['error']} – es gilt das im Dashboard gesetzte Passwort.")
         else:
-            out.append(f"[web] WARNUNG: {env['error']}. Das Dashboard bleibt GESPERRT (nur /healthz antwortet), "
+            out.append(f"[web] WARNUNG: {env['error']}. Das Dashboard bleibt GESPERRT (nur /healthz und /readyz antworten), "
                        "bis WEB_USER und WEB_PASSWORD (oder WEB_PASSWORD_FILE) vollständig gesetzt sind.")
     elif info.get("locked"):
         out.append("[web] WARNUNG: WEB_REQUIRE_AUTH=true, aber kein Zugang gesetzt. Das Dashboard bleibt GESPERRT "
-                   "(nur /healthz antwortet). WEB_USER und WEB_PASSWORD (oder WEB_PASSWORD_FILE) setzen und den "
+                   "(nur /healthz und /readyz antworten). WEB_USER und WEB_PASSWORD (oder WEB_PASSWORD_FILE) setzen und den "
                    "Container neu erstellen.")
     elif not info["enabled"] and _binds_everywhere(bind):
         out.append("[web] WARNUNG: Dashboard OHNE PASSWORT auf allen Adressen (WEB_BIND=" + (bind or "0.0.0.0") + "). "
@@ -3674,6 +3823,7 @@ def main() -> None:
                      name="backup").start()
     notify.start(VERSION)  # eigener Thread je Kanal; ohne angelegte Kanäle geht nichts hinaus
     updatecheck.start(VERSION)  # opt-in; ausgeschaltet keine Anfrage nach außen
+    heartbeat.start(heartbeat_state)  # opt-in (heartbeat_url); ohne Adresse keine Verbindung
     diagnostics.own_hostnames()  # eigenen FQDN schon jetzt im Hintergrund auflösen (Host-Prüfung)
     # Folgt clientmon_enable/ntp_port ohne Neustart.
     threading.Thread(target=clientmon.watch, args=(settings.values,), daemon=True, name="clientmon-watch").start()

@@ -324,6 +324,32 @@ console.log(JSON.stringify({{ text: text(node), info: withAttr(node, "class", "i
         self.assertLess(len(out["text"]), 160)
         self.assertEqual(out["info"], 1)
 
+    def test_kartenuntertitel_enden_mit_ganzem_satz(self):
+        # Sichtbar bleibt bei jedem Karten-Untertitel ein ganzer Satz, kein am Gedankenstrich
+        # abgeschnittener Halbsatz („… Fällt dieser Server ganz aus …“).
+        subs = {}
+
+        def walk(node, path):
+            for key, value in node.items():
+                here = f"{path}.{key}" if path else key
+                if isinstance(value, dict):
+                    walk(value, here)
+                elif key == "sub" and isinstance(value, str):
+                    subs[f"{lang}:{here}"] = value
+
+        for lang in ("de", "en"):
+            walk(json.loads((STATIC / "i18n" / f"{lang}.json").read_text(encoding="utf-8")), "")
+        self.assertIn("de:pages.heartbeat.sub", subs)
+        out = self.run_js(f"""
+const ui = await import({mod("ui.js")});
+const subs = {json.dumps(subs, ensure_ascii=False)};
+console.log(JSON.stringify(Object.fromEntries(Object.entries(subs).map(([k, t]) => [k, ui.splitExplain(t).first]))));
+""")
+        cut = {k: v for k, v in out.items() if v.endswith(" …")}
+        self.assertEqual(cut, {})
+        self.assertTrue(out["de:pages.heartbeat.sub"].endswith("merkt es der Wächter."))
+        self.assertTrue(out["en:pages.heartbeat.sub"].endswith("the watchdog notices."))
+
 
 class KalibrierungF16Test(NodeTest):
     def test_phasentext_nur_einmal(self):

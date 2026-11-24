@@ -144,6 +144,7 @@ export const HELP_DIAGNOSE = {
 };
 
 export const HELP_GROUP_DIAGNOSE = {
+  id: "diagnose",
   title: "Diagnose",
   keys: [
     "diag_page", "diag_log", "diag_log_filter", "diag_log_problems", "diag_log_auto", "diag_log_level",

@@ -536,6 +536,7 @@ export const HELP_HARDWARE = {
 };
 
 export const HELP_GROUP_HARDWARE = {
+  id: "hardware",
   title: "Hardware-Check",
   keys: [
     "hw_check", "hw_refresh", "hw_platform", "hw_board", "hw_arch", "hw_hypervisor", "hw_container",

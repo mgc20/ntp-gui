@@ -5,6 +5,7 @@ import { lineChart, stepDecimals } from "../charts.js";
 import { requestRate, recentRateInfo, rateWindowText } from "./overview.js";
 import { renderDetail, fmtOffset, offsetTone, fmtInterval, clientHref, STATE_TONE, STATE_SHORT, qualityBadge, fmtDrift } from "./clientdetail.js";
 import { renderPass } from "./clientpass.js";
+import { troubleshootCard } from "./troubleshoot.js";
 
 // Platzhalter, wenn die LAN-Adresse nicht bekannt ist – in den Beispielen gut sichtbar.
 export const IP_PLACEHOLDER = "<IP-des-Servers>";
@@ -690,6 +691,7 @@ export function render(ctx) {
     card("Geräte, die diesen Server fragen", { help: "client_packets", actions: input,
       sub: rows.length ? null : "Noch keine Anfragen. Sobald die Adresse verteilt ist, erscheinen die Geräte hier." },
       rows.length ? table : null, clientmonNote(mon)),
+    troubleshootCard(ctx, clientSnippets(ip)),
     overviewCard(ctx),
     groupsCard(ctx, names),
     card("Anfragen pro Minute", { help: "served_rate", actions: rangeButtons(ctx.range, ctx.setRange) }, chartHost),

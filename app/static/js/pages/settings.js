@@ -3,6 +3,7 @@ import { card, infoButton, badge, kv, emptyState, errorState, loadingOr, toast, 
 import { t, has, language, setLanguage, LANGUAGES } from "../i18n.js";
 import { HELP } from "../help.js";
 import { route } from "../routes.js";
+import { heartbeatRows, heartbeatError } from "./notify.js";
 
 export const live = false; // nicht bei jedem Refresh neu aufbauen – Eingaben bleiben stehen
 
@@ -44,6 +45,8 @@ export const FIELD_HELP = {
   web_title: "web_title", web_refresh_seconds: "web_refresh", history_interval: "history_interval",
   notify_dashboard_url: "notify_link",
   temp_sensor: "temp_sensor", clock_public: "clock_public", update_check: "update_check", backup_nightly: "backup_nightly",
+  metrics_group_names: "metrics_privacy", ready_max_error_ms: "readyz",
+  heartbeat_url: "heartbeat", heartbeat_interval: "heartbeat_mode", heartbeat_mode: "heartbeat_mode",
   trusted_proxies: "trusted_proxies", web_allowed_hosts: "allowed_hosts",
   dns_mode: "dns_modes", dns_servers: "dns_upstreams", dns_dot: "dns_modes", dns_doh: "dns_modes",
   dns_pin: "dns_pin", dns_fallback: "dns_fallback",
@@ -248,6 +251,16 @@ function updateStatus(upd) {
     el("h3", { class: "mini-head" }, "Update-Hinweis ", infoButton("update_check", "Update-Hinweis")),
     kv(rows),
     upd.error ? el("p", { class: "field-error", role: "alert", text: `Letzte Prüfung gescheitert: ${upd.error}` }) : null);
+}
+
+// Zeitwächter-Ping: Zustand aus /api/status (ohne Adresse); steht direkt unter dem Feld heartbeat_url.
+function heartbeatStatus(hb) {
+  if (!hb || !hb.enabled) return null;
+  return el("div", { class: "heartbeat-status" },
+    el("h3", { class: "mini-head" }, `${t("pages.heartbeat.title")} `, infoButton("heartbeat", t("pages.heartbeat.title"))),
+    kv(heartbeatRows(hb)),
+    heartbeatError(hb),
+    el("p", { class: "field-help" }, el("a", { href: "#/system/benachrichtigungen", text: t("pages.heartbeat.notify_link") })));
 }
 
 function dnsStatus(ctx, dns) {
@@ -964,7 +977,8 @@ export function render(ctx) {
       control(field),
       envExtra(field),
       hint ? el("p", { class: "field-help" }, rich(hint)) : null,
-      error ? el("p", { class: "field-error", role: "alert", text: error }) : null);
+      error ? el("p", { class: "field-error", role: "alert", text: error }) : null,
+      field.key === "heartbeat_url" && !st.onlyChanged ? heartbeatStatus(ctx.status?.heartbeat) : null);
   }
 
   function sectionCard(section) {
@@ -1179,7 +1193,7 @@ function accessCards(ctx, schema, readonly) {
       el("label", {}, el("span", { text: "Wiederholen" }), pass2),
       el("button", { type: "button", class: "button primary", text: auth.enabled ? "Passwort ändern" : "Passwort setzen", disabled: readonly ? true : null, onclick: setPw }),
       auth.enabled ? el("button", { type: "button", class: "button", text: "Schutz entfernen", disabled: readonly ? true : null, onclick: clearPw }) : null));
-    authBody.push(emptyState("Gilt für das Dashboard und die API. `/healthz` bleibt für den Docker-Healthcheck offen. Kein TLS – für Zugriff von außen einen Reverse Proxy davorsetzen."));
+    authBody.push(emptyState("Gilt für das Dashboard und die API. `/healthz` und `/readyz` bleiben für Healthchecks offen. Kein TLS – für Zugriff von außen einen Reverse Proxy davorsetzen."));
   }
   if (auth.login) {
     authBody.push(el("div", { class: "button-row" },

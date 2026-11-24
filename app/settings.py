@@ -19,6 +19,7 @@ wird abgelehnt statt "repariert".
 from __future__ import annotations
 
 import base64
+import contextlib
 import errno
 import hashlib
 import hmac
@@ -361,6 +362,16 @@ def http_url_ok(text: str, max_len: int = 300) -> bool:
     if port is None or (port and not (_URL_PORT_RE.match(port) and 0 < int(port) < 65536)):
         return False
     return all(_URL_PATH_RE.match(part) for part in (path, query, fragment))
+
+
+def _as_heartbeat_url(value: Any) -> str:
+    """Leer (aus) oder Adresse eines eigenen Wächters (heartbeat.validate_url: Ziel erlaubt, Schlüssel in der
+    Adresse über http:// nur ins eigene Netz)."""
+    import heartbeat  # spät: heartbeat → notify → settings
+    try:
+        return heartbeat.validate_url(value)
+    except ValueError as exc:
+        raise ValidationError(str(exc)) from None
 
 
 def _as_link_url(value: Any) -> str:
@@ -1286,19 +1297,25 @@ SCHEMA: list[dict] = [
                 "beim Uhrenstellen wie „Slave“; wer GPS-Zeit per PTP verteilen will, wählt "
                 "deshalb ausdrücklich „Grandmaster“."),
     _field("ptp_profile", "ptp", "Profil", "select", "default",
-           _as_choice("default", "aes67", "gptp"), env="PTP_PROFILE",
+           _as_choice("default", "aes67", "st2059", "gptp"), env="PTP_PROFILE",
            options=[("default", "Standard (IEEE 1588 Default-Profil)"),
                     ("aes67", "AES67 / Ravenna (Audio über IP)"),
+                    ("st2059", "SMPTE ST 2059-2 (Broadcast)"),
                     ("gptp", "gPTP / IEEE 802.1AS (AVB/TSN)")],
            help="Ein Profil legt passende Grundwerte fest, damit dieser Server mit bestimmten "
                 "Geräten zusammenspielt. Felder, die du selbst änderst, haben Vorrang. AES67 (Media-Profil): "
                 "UDPv4, End-to-End, 8 Sync/s, Announce alle 2 s und DSCP 46 (EF) für die "
-                "Pakete. gPTP (AVB/TSN, Automotive): Ethernet direkt (L2), Peer-to-Peer, transportSpecific 1, "
+                "Pakete. SMPTE ST 2059-2 (Broadcast, ST 2110): Domain 127, UDPv4, End-to-End, 8 Sync/s, "
+                "4 Announce/s, Timeout 3 – eine Voreinstellung nach den Profilwerten, keine SMPTE-Zertifizierung; "
+                "Domain 0 und Announce-Intervall 1 gelten dort als „nicht geändert“ und werden zu 127 bzw. −2 – "
+                "wer sie braucht, nimmt das Profil Standard mit eigenen Werten. "
+                "gPTP (AVB/TSN, Automotive): Ethernet direkt (L2), Peer-to-Peer, transportSpecific 1, "
                 "Priority 248 und die übrigen Werte aus linuxptp configs/gPTP.cfg – alle "
                 "Switches im Weg müssen 802.1AS beherrschen."),
     _field("ptp_domain", "ptp", "Domain", "int", 0, _as_number(int, 0, 255), env="PTP_DOMAIN",
            help="Getrennte PTP-Netze im selben LAN. Alle Teilnehmer brauchen dieselbe Domain; "
-                "0 ist der Standard."),
+                "0 ist der Standard. Mit dem Profil SMPTE ST 2059-2 gilt 127, solange hier 0 steht – "
+                "wer Domain 0 braucht, nimmt das Profil Standard mit eigenen Werten."),
     _field("ptp_transport", "ptp", "Transport", "select", "UDPv4",
            _as_choice("UDPv4", "UDPv6", "L2"), env="PTP_TRANSPORT",
            options=[("UDPv4", "UDP über IPv4 (Standard)"), ("UDPv6", "UDP über IPv6"),
@@ -1338,7 +1355,8 @@ SCHEMA: list[dict] = [
            _as_number(int, -3, 4), env="PTP_LOG_ANNOUNCE_INTERVAL", advanced=True,
            help="Wie oft der Grandmaster sich ankündigt: 1 bedeutet alle 2 Sekunden. Alle "
                 "Teilnehmer sollten denselben Wert nutzen, sonst halten Slaves den Master "
-                "fälschlich für weg."),
+                "fälschlich für weg. Mit dem Profil SMPTE ST 2059-2 gilt −2, solange hier der "
+                "Standard 1 steht – wer 1 braucht, nimmt das Profil Standard mit eigenen Werten."),
     _field("ptp_announce_receipt_timeout", "ptp", "Announce-Timeout (Anzahl)", "int", 3,
            _as_number(int, 2, 10), env="PTP_ANNOUNCE_RECEIPT_TIMEOUT", advanced=True,
            help="Nach so vielen verpassten Announce-Nachrichten gilt der Master als ausgefallen "
@@ -1458,6 +1476,52 @@ SCHEMA: list[dict] = [
                 "dabei einmal am Tag deine öffentliche IP-Adresse (grob ortbar) und dass hier "
                 "vermutlich ntp-gui läuft. Darum ist der Hinweis aus, bis du ihn einschaltest. Kein "
                 "Download, kein automatisches Update. Wirkt ohne Neustart."),
+    _field("heartbeat_url", "web", "Zeitwächter-Ping (Adresse)", "text", "", _as_heartbeat_url,
+           restart=RESTART_NONE, placeholder="leer = aus, z. B. http://kuma.lan:3001/api/push/…",
+           hint="Schickt regelmäßig ein Lebenszeichen an deinen eigenen Wächter (Uptime Kuma Push, Healthchecks). Leer = aus.",
+           help="Schickt regelmäßig ein Lebenszeichen an deinen eigenen Wächter (Uptime Kuma mit Monitor-Typ "
+                "„Push“, Healthchecks oder kompatibel). Bleibt es aus – Rechner aus, Container weg, Strom weg –, "
+                "schlägt der Wächter Alarm; das können die Benachrichtigungen von ntp-gui selbst nicht. Bei "
+                "kritischem Zustand meldet der Ping „ausgefallen“ (Healthchecks: …/fail, Uptime Kuma: "
+                "status=down). Gesendet wird nur eine GET-Anfrage ohne Inhalt mit dem User-Agent „ntp-gui“. "
+                "Ein Wächter im Internet sieht dabei deine öffentliche IP-Adresse (grob ortbar) und wie oft "
+                "der Ping kommt – am besten läuft er im eigenen Netz. Die Adresse enthält den Schlüssel des "
+                "Wächters: Sicherungen lassen sie weg, Lese-Schlüssel sehen sie nur gekürzt. Leer = aus, "
+                "dann verlässt nichts den Server. Wirkt ohne Neustart."),
+    _field("heartbeat_interval", "web", "Zeitwächter-Ping: Intervall", "int", 60, _as_number(int, 30, 3600),
+           unit="s", restart=RESTART_NONE, advanced=True,
+           help="Alle wie viele Sekunden der Ping hinausgeht (30 bis 3600). Stell im Wächter eine Frist ein, "
+                "die etwas länger ist – z. B. Intervall 60 s, Uptime Kuma „Heartbeat Interval“ 90 s bzw. "
+                "Healthchecks „Period“ 1 Minute mit „Grace“ 2 Minuten."),
+    _field("heartbeat_mode", "web", "Zeitwächter-Ping: Art", "select", "auto",
+           _as_choice("auto", "healthchecks", "kuma", "silent"), restart=RESTART_NONE, advanced=True,
+           options=[("auto", "Automatisch erkennen (Standard)"),
+                    ("healthchecks", "Healthchecks: …/fail"),
+                    ("kuma", "Uptime Kuma Push: status=down"),
+                    ("silent", "Nur Lebenszeichen (bei kritisch nichts)")],
+           help="Wie der Ping einen kritischen Zustand meldet. „Automatisch“ erkennt Uptime-Kuma-Push-Adressen "
+                "(…/api/push/<token>) und setzt dann status=up bzw. status=down; jede andere Adresse bekommt bei "
+                "kritischem Zustand „/fail“ angehängt (Healthchecks). „Nur Lebenszeichen“ passt für jeden "
+                "Wächter, der nur das Ausbleiben bemerkt: Bei kritischem Zustand geht dann nichts hinaus. "
+                "„Kritisch“ zählt erst, wenn der Zustand mindestens 2 Minuten anhält – ein kurzes Neuladen "
+                "der Zeitdienste löst keinen Alarm aus."),
+    _field("ready_max_error_ms", "web", "Bereitschaft (/readyz): Fehlergrenze", "float", 100.0,
+           _as_number(float, 0.001, 10000.0), env="READY_MAX_ERROR_MS", unit="ms", restart=RESTART_NONE,
+           advanced=True,
+           hint="/readyz meldet 200 nur, wenn chrony synchronisiert ist, eine Quelle ausgewählt hat und die "
+                "Fehlerschranke darunter liegt.",
+           help="Grenze für die strenge Bereitschaftsprüfung /readyz (für keepalived, Load-Balancer und "
+                "Uptime-Monitore): 200 nur, wenn chrony synchronisiert ist, gerade eine Quelle ausgewählt hat "
+                "(im Holdover nie) und die Fehlerschranke (|Offset| + Root-Dispersion + halber Root-Delay, wie chrony sie rechnet) "
+                "unter diesem Wert liegt, sonst 503. Der Standard 100 ms passt zu Internet-NTP; mit GPS und PPS "
+                "taugen z. B. 1 ms. /healthz bleibt unverändert (nur „chronyd antwortet“). Wirkt ohne Neustart."),
+    _field("metrics_group_names", "web", "Gruppennamen in /metrics", "bool", False, _as_bool,
+           env="METRICS_GROUP_NAMES", restart=RESTART_NONE, advanced=True,
+           hint="Zeigt in den Prometheus-Metriken je Client-Gruppe deren Namen. Aus (Standard): nur die Kennung (g1, g2 …).",
+           help="Zeigt in den Prometheus-Metriken je Client-Gruppe deren Namen (Label group). Standard aus: "
+                "Prometheus sieht nur die Kennung der Gruppe (Label group_id, z. B. g3). Gruppennamen beschreiben "
+                "oft Räume oder Orte – einschalten nur, wenn dein Monitoring sie sehen soll. Client-Adressen und "
+                "Gerätenamen stehen nie in /metrics, nur Summen. Wirkt ohne Neustart."),
     _field("backup_nightly", "web", "Nächtliche Sicherung", "bool", False, _as_bool,
            env=None, restart=RESTART_NONE,
            help="Legt jede Nacht gegen 3 Uhr (Ortszeit des Servers) eine Sicherung im Datenverzeichnis ab "
@@ -1494,6 +1558,12 @@ FIELDS = {field["key"]: field for field in SCHEMA}
 # aes67: AES67-2018 Anhang A (Media-Profil): Domain 0, Delay-Request-Response
 #   (E2E) über UDP/IPv4-Multicast, logSyncInterval -3 (Standard), logAnnounceInterval
 #   1, announceReceiptTimeout 3; QoS-Klasse "Clock" = DSCP 46 (EF).
+# st2059: SMPTE ST 2059-2 (Broadcast-Profil, Grundlage von ST 2110): Standardwerte des Profils –
+#   domainNumber 127 (zulässig 0–127), logAnnounceInterval -2 (zulässig -3 … 1), logSyncInterval -3
+#   (zulässig -7 … -1), logMinDelayReqInterval -3 (zulässig logSyncInterval … logSyncInterval+5),
+#   announceReceiptTimeout 3 (zulässig 2–10), priority1/priority2 128, Delay-Request-Response (E2E),
+#   UDP/IPv4. Die Synchronisations-Metadaten (SM-TLV) des Profils erzeugt linuxptp nicht; DSCP schreibt
+#   das Profil nicht vor (wer EF will: EXTRA_PTP4L_CONF). Eine Voreinstellung, keine Zertifizierung.
 PTP_PROFILES: dict[str, dict] = {
     "default": {"fields": {}, "extra": {}},
     "aes67": {
@@ -1501,6 +1571,13 @@ PTP_PROFILES: dict[str, dict] = {
                    "ptp_log_sync_interval": -3, "ptp_log_announce_interval": 1,
                    "ptp_announce_receipt_timeout": 3},
         "extra": {"dscp_event": "46", "dscp_general": "46"},
+    },
+    "st2059": {
+        "fields": {"ptp_domain": 127, "ptp_transport": "UDPv4", "ptp_delay_mechanism": "E2E",
+                   "ptp_priority1": 128, "ptp_priority2": 128,
+                   "ptp_log_sync_interval": -3, "ptp_log_announce_interval": -2,
+                   "ptp_log_min_delay_req_interval": -3, "ptp_announce_receipt_timeout": 3},
+        "extra": {},
     },
     "gptp": {
         "fields": {"ptp_transport": "L2", "ptp_delay_mechanism": "P2P",
@@ -1512,6 +1589,42 @@ PTP_PROFILES: dict[str, dict] = {
                   "transportSpecific": "0x1", "ptp_dst_mac": "01:80:C2:00:00:0E"},
     },
 }
+
+
+# Zulässige Bereiche des Profils ST 2059-2 – ein von Hand gesetzter Wert außerhalb wird nicht verworfen
+# (ptp4l läuft damit), aber als Abweichung vom Profil gemeldet.
+_ST2059_RANGES = {
+    "ptp_domain": (0, 127, "Domain"),
+    "ptp_log_announce_interval": (-3, 1, "Announce-Intervall"),
+    "ptp_log_sync_interval": (-7, -1, "Sync-Intervall"),
+    "ptp_announce_receipt_timeout": (2, 10, "Announce-Timeout"),
+}
+
+
+def ptp_profile_warnings(cfg: dict) -> list[str]:
+    """Abweichungen der wirksamen Werte vom gewählten Profil (bisher nur ST 2059-2) als Klartext."""
+    if (cfg.get("ptp_profile") or "default") != "st2059":
+        return []
+    eff = ptp_profile_values(cfg)[0]
+    out = []
+    for key, (low, high, label) in _ST2059_RANGES.items():
+        value = eff.get(key)
+        if isinstance(value, int) and not low <= value <= high:
+            out.append(f"{label} {value} liegt außerhalb von ST 2059-2 ({low} … {high})")
+    sync, delay_req = eff.get("ptp_log_sync_interval"), eff.get("ptp_log_min_delay_req_interval")
+    if isinstance(sync, int) and isinstance(delay_req, int) and not sync <= delay_req <= sync + 5:
+        out.append(f"Delay-Request-Intervall {delay_req} liegt außerhalb von ST 2059-2 ({sync} … {sync + 5})")
+    if eff.get("ptp_transport") == "L2":
+        out.append("Transport L2: ST 2059-2 verlangt UDP (IPv4)")
+    if eff.get("ptp_delay_mechanism") != "E2E":
+        out.append(f"Laufzeitmessung {eff.get('ptp_delay_mechanism')}: ST 2059-2 verlangt End-to-End (E2E), "
+                   "P2P ist nur zusätzlich erlaubt")
+    return out
+
+
+def ptp_effective_domain(cfg: dict) -> int:
+    """Domain, mit der ptp4l wirklich läuft (ST 2059-2 setzt 127) – pmc und phc2sys brauchen dieselbe."""
+    return int(ptp_profile_values(cfg)[0].get("ptp_domain") or 0)
 
 
 def ptp_profile_values(cfg: dict) -> tuple[dict, dict]:
@@ -1578,6 +1691,9 @@ ENV_ONLY = [
 _LOCK = threading.RLock()  # reentrant: save() ruft values() unter der Sperre
 _CACHE: dict[str, Any] = {"mtime": None, "data": None, "error": None}
 _UNREADABLE_NOTED: dict[str, Any] = {"error": None}
+# Zum Schutzmodus: Stand der Kopie settings.json.bak und Name der aufgehobenen beschädigten Fassung. Nur in
+# _broken ermittelt (bei geänderter mtime), damit storage_info() die Kopie nicht bei jeder Abfrage liest.
+_BROKEN_DETAIL: dict[str, Any] = {"copy": None, "kept": None}
 
 
 class SettingsUnreadable(ValidationError):
@@ -1593,13 +1709,117 @@ def load_error() -> str | None:
         return _CACHE["error"]
 
 
-def _unreadable(reason: str) -> str:
+def _unreadable(reason: str, kept: str | None = None, copy: str | None = None, detail: bool = False) -> str:
+    """Meldung zum Schutzmodus. Die kurze Fassung (detail=False) geht als Sperrgrund auch ohne Anmeldung hinaus
+    (503-Seite, API) und nennt deshalb weder Zeitpunkte noch Dateinamen mit Zeitstempel; die ausführliche
+    (Stand der Kopie, Name der aufgehobenen Fassung) steht nur im Container-Log."""
+    extra = ""
+    if detail:
+        if kept:
+            extra += f" Die beschädigte Fassung ist zusätzlich als {kept} aufgehoben."
+        if copy:
+            extra += (f" Die zuletzt fehlerfrei gespeicherte Fassung liegt als settings.json.bak daneben (Stand "
+                      f"{copy}); kopierst du sie über settings.json, gilt wieder dieser Stand.")
+    elif copy:
+        extra = (" Die zuletzt fehlerfrei gespeicherte Fassung liegt als settings.json.bak daneben; Einzelheiten "
+                 "stehen im Container-Log.")
     return (f"settings.json im Datenverzeichnis ist nicht lesbar ({reason}). Das Dashboard läuft im Schutzmodus: "
             "Ein dort gesetztes Passwort könnte sonst still wegfallen, und Speichern würde die Datei "
-            "überschreiben. Repariere die Datei oder ersetze sie durch eine funktionierende Kopie; danach entsperrt "
-            "sich das Dashboard von selbst. Entfernst du sie, beginnt alles mit Standardwerten – dann ist auch ein "
-            "im Dashboard gesetztes Passwort weg und das Dashboard ohne Anmeldung erreichbar; setze vorher "
+            f"überschreiben.{extra} Repariere die Datei oder ersetze sie durch eine funktionierende Kopie; danach "
+            "entsperrt sich das Dashboard von selbst. Entfernst du sie, beginnt alles mit Standardwerten – dann ist "
+            "auch ein im Dashboard gesetztes Passwort weg und das Dashboard ohne Anmeldung erreichbar; setze vorher "
             "WEB_USER/WEB_PASSWORD oder WEB_REQUIRE_AUTH=true in der Compose-Datei")
+
+
+# Letzte fehlerfrei gespeicherte Fassung (bei jedem erfolgreichen Schreiben aktualisiert) und aufgehobene
+# beschädigte Fassungen. Nur Kopien im selben Verzeichnis, Rechte 0600 wie settings.json.
+GOOD_COPY_SUFFIX = ".bak"
+DEFECT_INFIX = ".defekt-"
+DEFECT_KEEP = 3
+
+
+def good_copy_file() -> str:
+    return SETTINGS_FILE + GOOD_COPY_SUFFIX
+
+
+def _good_copy_stamp() -> str | None:
+    """Stand (UTC) der Kopie settings.json.bak, wenn sie eine lesbare JSON-Objekt-Datei ist; sonst None.
+    Wie settings.json: keinem Link folgen, nicht blockieren, höchstens SETTINGS_MAX_BYTES."""
+    path = good_copy_file()
+    try:
+        raw = _read_regular(path, SETTINGS_MAX_BYTES)
+        if not isinstance(json.loads(raw.decode("utf-8")), dict):
+            return None
+        mtime = os.lstat(path).st_mtime
+    except (OSError, ValueError, RecursionError, _NotRegular):
+        return None
+    return time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(mtime))
+
+
+def _write_private(path: str, raw: bytes, prefix: str) -> None:
+    """raw atomar nach path (0600): temporäre Datei im Datenverzeichnis, dann os.replace – ein Link an der
+    Stelle wird ersetzt, nicht verfolgt."""
+    fd, tmp = tempfile.mkstemp(dir=DATA_DIR, prefix=prefix, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            os.fchmod(handle.fileno(), 0o600)
+            handle.write(raw)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+
+
+def _keep_good_copy() -> None:
+    """Nach erfolgreichem Schreiben: dieselbe Fassung als settings.json.bak. Wird settings.json später
+    beschädigt (Speicherkarte, abgeschnittene Datei), bleibt so der letzte funktionierende Stand. Ein Fehler
+    hier verhindert das Speichern nicht."""
+    try:
+        raw = _read_regular(SETTINGS_FILE, SETTINGS_MAX_BYTES)
+        if not isinstance(json.loads(raw.decode("utf-8")), dict):
+            return
+        _write_private(good_copy_file(), raw, ".settings-bak-")
+    except (OSError, ValueError, RecursionError, _NotRegular) as exc:
+        _log(f"Kopie settings.json.bak nicht geschrieben: {getattr(exc, 'strerror', None) or exc}")
+
+
+def _keep_defect(raw: bytes) -> str | None:
+    """Beschädigte settings.json als settings.json.defekt-<Zeit> aufheben, bevor sie jemand ersetzt.
+    Gleicher Inhalt nur einmal, höchstens DEFECT_KEEP Fassungen (die ältesten gehen). Nur der Eigentümer des
+    Datenverzeichnisses schreibt dort (root/confgen nicht). Gibt den Dateinamen oder None."""
+    if not _dir_owned_by_us(DATA_DIR):
+        return None
+    base = os.path.basename(SETTINGS_FILE) + DEFECT_INFIX
+    try:
+        names = sorted(n for n in os.listdir(DATA_DIR) if n.startswith(base))
+        for name in names:
+            try:
+                if _read_regular(os.path.join(DATA_DIR, name), SETTINGS_MAX_BYTES) == raw:
+                    return name
+            except (OSError, _NotRegular):
+                continue
+        stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+        name, number = base + stamp, 1
+        while os.path.lexists(os.path.join(DATA_DIR, name)):
+            number += 1
+            name = f"{base}{stamp}-{number}"
+        _write_private(os.path.join(DATA_DIR, name), raw, ".settings-defekt-")
+        # Älteste zuerst nach Änderungszeit (der Name kann bei einer falsch gehenden Uhr täuschen).
+        def age(entry: str) -> float:
+            try:
+                return os.lstat(os.path.join(DATA_DIR, entry)).st_mtime
+            except OSError:
+                return 0.0
+        others = sorted((n for n in names if n != name), key=age)
+        for old in others[:max(0, len(others) + 1 - DEFECT_KEEP)]:
+            with contextlib.suppress(OSError):
+                os.unlink(os.path.join(DATA_DIR, old))
+        return name
+    except OSError as exc:
+        _log(f"Beschädigte settings.json nicht aufgehoben: {exc.strerror or type(exc).__name__}")
+        return None
 
 
 # Größer wird settings.json nie (Einstellungen, Passwort-Hash, Hinweise); mehr liest auch root nicht ein.
@@ -1666,9 +1886,9 @@ def _load_file() -> dict:
     try:
         data = json.loads(raw.decode("utf-8"))
     except (ValueError, RecursionError):
-        return _broken(stat.st_mtime_ns, "kein gültiges JSON – beschädigt oder abgeschnitten")
+        return _broken(stat.st_mtime_ns, "kein gültiges JSON – beschädigt oder abgeschnitten", raw)
     if not isinstance(data, dict):
-        return _broken(stat.st_mtime_ns, "kein JSON-Objekt")
+        return _broken(stat.st_mtime_ns, "kein JSON-Objekt", raw)
     if data and _schema_of(data) < SCHEMA_VERSION:
         with _LOCK:
             # Die Datei ist (wieder) lesbar: Ein Fehlerzustand von vorher darf das Speichern der Migration
@@ -1704,14 +1924,19 @@ def _dir_owned_by_us(path: str) -> bool:
             and not info.st_mode & 0o022)
 
 
-def _broken(mtime: int | None, reason: str) -> dict:
+def _broken(mtime: int | None, reason: str, raw: bytes | None = None) -> dict:
     """Vorhandene, aber nicht lesbare settings.json: leer weiterarbeiten, Grund merken (fail-closed über
-    load_error: Dashboard gesperrt, Schreiben gesperrt). Einmal je Grund ins Log."""
-    error = _unreadable(reason)
+    load_error: Dashboard gesperrt, Schreiben gesperrt). Einmal je Grund ins Log. Gelesene, aber beschädigte
+    Inhalte (raw) werden zusätzlich aufgehoben (_keep_defect)."""
+    kept = _keep_defect(raw) if raw is not None else None
+    copy = _good_copy_stamp()
+    error = _unreadable(reason, kept, copy)
+    detail = _unreadable(reason, kept, copy, detail=True)
+    _BROKEN_DETAIL.update(copy=copy, kept=kept)
     _CACHE.update(mtime=mtime, data=None, error=error)
-    if _UNREADABLE_NOTED["error"] != error:
-        _UNREADABLE_NOTED["error"] = error
-        _log(f"FEHLER: {error}.")
+    if _UNREADABLE_NOTED["error"] != detail:
+        _UNREADABLE_NOTED["error"] = detail
+        _log(f"FEHLER: {detail}.")
     return {}
 
 
@@ -1758,6 +1983,7 @@ def _write_file(data: dict) -> None:
         if os.path.exists(tmp):
             os.unlink(tmp)
     _CACHE.update(mtime=None, data=None, error=None)
+    _keep_good_copy()
 
 
 def _env_value(field: dict, env: dict[str, str]):
@@ -1985,6 +2211,7 @@ def commit_replace(staged: dict[str, Any]) -> dict[str, Any]:
         before = values()
         os.replace(staged["tmp"], SETTINGS_FILE)
         _CACHE.update(mtime=None, data=None, error=None)
+        _keep_good_copy()
     after = values()
     changed = [key for key in FIELDS if before.get(key) != after.get(key)]
     restart = any(FIELDS[key]["restart"] == RESTART_SERVICES for key in changed)
@@ -1998,9 +2225,10 @@ def discard_staged(staged: dict[str, Any]) -> None:
         pass
 
 
-# Werte, die keine Geheimnisse sind, aber Konto-Kennungen enthalten können (NextDNS-ID im
-# DoH-Pfad oder als erster Teil des DoT-Namens): API-Schlüssel mit Leserecht sehen sie nur gekürzt.
-MASKED_FOR_READ = ("dns_doh", "dns_dot", "dns_pin")
+# Werte, die Konto-Kennungen oder Schlüssel enthalten können (NextDNS-ID im DoH-Pfad oder als erster Teil
+# des DoT-Namens, Schlüssel des Zeitwächters im Pfad der Ping-Adresse): API-Schlüssel mit Leserecht sehen
+# sie nur gekürzt.
+MASKED_FOR_READ = ("dns_doh", "dns_dot", "dns_pin", "heartbeat_url")
 
 
 def _mask_host(host: str) -> str:
@@ -2010,6 +2238,9 @@ def _mask_host(host: str) -> str:
 
 
 def mask_value(key: str, value: Any) -> Any:
+    if key == "heartbeat_url" and isinstance(value, str):
+        import heartbeat
+        return heartbeat.mask_url(value)
     if not isinstance(value, list):
         return value
     if key == "dns_doh":
@@ -2068,8 +2299,14 @@ def public_schema(masked: bool = False) -> dict:
 def storage_info() -> dict:
     """Wo gespeichert wird und ob es einen Neustart des Containers übersteht."""
     persistent = _is_mounted(os.path.dirname(DATA_DIR.rstrip("/")) or DATA_DIR)
+    error = load_error()
+    # Kopie und aufgehobene Fassung nur im Schutzmodus (aus _broken, ohne erneutes Lesen). Nur angemeldet
+    # sichtbar: Im Schutzmodus ist das Dashboard ohne Anmeldung gesperrt.
     return {"path": SETTINGS_FILE, "persistent": persistent,
-            "exists": os.path.exists(SETTINGS_FILE), "error": load_error()}
+            "exists": os.path.exists(SETTINGS_FILE), "error": error,
+            "good_copy": bool(error and _BROKEN_DETAIL["copy"]),
+            "good_copy_stamp": _BROKEN_DETAIL["copy"] if error else None,
+            "defect_copy": _BROKEN_DETAIL["kept"] if error else None}
 
 
 def _is_mounted(path: str) -> bool:

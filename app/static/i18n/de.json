@@ -220,11 +220,31 @@
     "german_only": "Die Erklärungen auf dieser Seite gibt es vorerst nur auf Deutsch. Übersetzungen sind willkommen – siehe CONTRIBUTING.md.",
     "api": {
       "title": "API & Automatisierung",
-      "intro": "Für Monitoring, Skripte und Home Assistant. Ist ein Passwort gesetzt, brauchst du einen API-Schlüssel (System → Einstellungen → Dashboard & Zugang → API-Schlüssel); nur /healthz ist immer offen.",
+      "intro": "Für Monitoring, Skripte und Home Assistant. Ist ein Passwort gesetzt, brauchst du einen API-Schlüssel (System → Einstellungen → Dashboard & Zugang → API-Schlüssel); nur /healthz und /readyz sind immer offen.",
       "metrics": "Messwerte im Prometheus-Format",
       "status": "Gesamtzustand als JSON (dieselben Daten wie das Dashboard)",
-      "healthz": "Kurze Lebenszeichen-Prüfung für Container und Load-Balancer"
-    }
+      "healthz": "Lebenszeichen für den Container-Healthcheck (läuft chronyd?)",
+      "readyz": "Strenge Bereitschaft: 200 nur synchronisiert, mit ausgewählter Quelle und unter der Fehlergrenze (keepalived, Load-Balancer, Uptime-Monitore)"
+    },
+    "toc_title": "Inhalt",
+    "toc_label": "Themen der Hilfe",
+    "all_topics": "Alle Themen",
+    "crumb_label": "Pfad in der Hilfe",
+    "pager_label": "Weitere Themen",
+    "prev": "← {topic}",
+    "next": "{topic} →",
+    "see_also": "Siehe auch:",
+    "entry_link": "Link auf „{title}“",
+    "not_found": "Dieses Hilfethema gibt es nicht. Hier ist das Inhaltsverzeichnis.",
+    "entry_not_found": "Diesen Eintrag gibt es nicht. Hier ist das ganze Thema.",
+    "more": "Mehr in der Hilfe →",
+    "page_more": "Mehr in der Hilfe: {topic} →",
+    "search_placeholder": "Begriff suchen, z. B. Stratum, Falseticker, PPS …",
+    "search_label": "Hilfe durchsuchen",
+    "nothing_found": "Nichts gefunden.",
+    "entries_one": "{count} Eintrag",
+    "entries_other": "{count} Einträge",
+    "result_topic": "Thema öffnen"
   },
   "pages": {
     "clients": {
@@ -238,7 +258,33 @@
       "cards_label": "Geräte",
       "ignore_42": "Geräte, die Option 42 ignorieren (Windows, Linux, macOS)",
       "notes": "Hinweise zu {system} ({count})",
-      "check_line": "„Prüfen“ testet die Umleitung von hier aus."
+      "check_line": "„Prüfen“ testet die Umleitung von hier aus.",
+      "ts": {
+        "title": "Mein Gerät bekommt keine Zeit",
+        "sub": "Gib die IP-Adresse des Geräts ein: ntp-gui geht eine feste Prüfliste durch und nennt genau einen Befund mit dem nächsten Schritt. Die Prüfung liest nur, was der Server schon weiß – sie schickt nichts ins Netz und löst keine Namen auf.",
+        "placeholder": "z. B. 192.168.1.42",
+        "input_label": "IP-Adresse des Geräts",
+        "run": "Prüfen",
+        "busy": "Prüfe …",
+        "invalid": "Bitte eine IPv4- oder IPv6-Adresse eingeben (keinen Namen).",
+        "verdict": "Befund",
+        "next": "Nächster Schritt",
+        "checks": "Prüfliste für {address}",
+        "detail": "Zum Gerät",
+        "detail_probe": "Zum Gerät (dort aktiv nachmessen)",
+        "action": {
+          "settings": "Zu den Einstellungen",
+          "diagnose": "Zur Diagnose (Log)",
+          "sources": "Zu den Zeitquellen"
+        },
+        "status": {
+          "ok": "in Ordnung",
+          "warn": "Hinweis",
+          "fail": "Problem",
+          "info": "Info",
+          "skip": "entfällt"
+        }
+      }
     },
     "sources": {
       "steps": "Die vier Schritte im Einzelnen",
@@ -246,7 +292,9 @@
     },
     "diagnose": {
       "intro": "Log, Ereignisse und Diagnosepaket für die Fehlersuche – nichts davon wird automatisch hochgeladen.",
-      "privacy": "Mit Datenschutzfilter."
+      "privacy": "Mit Datenschutzfilter.",
+      "troubleshoot_hint": "Ein einzelnes Gerät bekommt keine Zeit?",
+      "troubleshoot_link": "Clients → Mein Gerät bekommt keine Zeit"
     },
     "more": "Mehr dazu",
     "timeline": {
@@ -396,6 +444,41 @@
         "tile": "Kachel",
         "stele": "Stele"
       }
+    },
+    "heartbeat": {
+      "title": "Zeitwächter-Ping",
+      "sub": "Ein Lebenszeichen an deinen eigenen Wächter (Uptime Kuma Push, Healthchecks): Fällt dieser Server ganz aus, merkt es der Wächter. Das gilt auch, wenn Rechner, Container oder Strom weg sind und hier niemand mehr eine Nachricht schicken kann. Bei kritischem Zustand meldet der Ping „ausgefallen“.",
+      "off": "Aus – ohne Wächter-Adresse verlässt nichts den Server.",
+      "never": "noch keiner",
+      "interval": "alle {seconds} s",
+      "row": {
+        "target": "Ziel",
+        "mode": "Art",
+        "last": "Letzter Ping",
+        "last_ok": "Zuletzt angekommen",
+        "next": "Nächster Ping"
+      },
+      "flavor": {
+        "kuma": "Uptime Kuma Push (kritisch = status=down)",
+        "healthchecks": "Healthchecks (kritisch = …/fail)",
+        "silent": "nur Lebenszeichen (bei kritisch nichts)"
+      },
+      "state": {
+        "up": "gut gemeldet",
+        "fail": "kritisch gemeldet",
+        "held": "gut gemeldet – kritisch erst nach 2 min",
+        "none": "kritisch – nichts gesendet",
+        "error": "nicht angekommen"
+      },
+      "error": "Letzter Ping gescheitert ({count}× in Folge): {error}",
+      "send_now": "Jetzt senden",
+      "sent_ok": "Ping angekommen",
+      "sent_none": "Zustand kritisch – nichts gesendet (Art: nur Lebenszeichen)",
+      "sent_failed": "Ping gescheitert: {error}",
+      "privacy": "Datenschutz: Gesendet wird nur eine GET-Anfrage ohne Inhalt. Ein Wächter im Internet sieht dabei deine öffentliche IP-Adresse (grob ortbar) und wie oft der Ping kommt – am besten läuft er im eigenen Netz.",
+      "where": "Einstellen unter System → Einstellungen → Dashboard & Zugang („Zeitwächter-Ping“).",
+      "settings_link": "Zu den Einstellungen →",
+      "notify_link": "Zustand und „Jetzt senden“ unter Benachrichtigungen →"
     }
   },
   "setup": {

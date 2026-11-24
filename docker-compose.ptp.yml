@@ -14,8 +14,8 @@
 services:
   ntp-gui:
     build: .
-    # Version festhalten statt „:latest“: „:1.10“ bleibt auf 1.10.x (nur
-    # Fehlerbehebungen), „:1.10.0“ bleibt fest auf genau dieser Version.
+    # Version festhalten statt „:latest“: „:1.11“ bleibt auf 1.11.x (nur
+    # Fehlerbehebungen), „:1.11.0“ bleibt fest auf genau dieser Version.
     # Gilt für das geladene Image – mit „build: .“ (docker compose build bzw.
     # up --build) baust du stattdessen den lokalen Stand unter diesem Namen.
     # Umgezogen: Früher hieß das Image ghcr.io/congp20/ntp-gui – dort kommen
@@ -69,7 +69,7 @@ services:
       #          läuft dann mit -x und verteilt die Zeit nur per NTP weiter.
       # auto   = BMCA entscheidet; phc2sys arbeitet dann wie bei slave.
       PTP_MODE: "auto"          # auto | master | slave
-      PTP_PROFILE: "default"    # default | aes67 (Audio über IP) | gptp (802.1AS)
+      PTP_PROFILE: "default"    # default | aes67 (Audio über IP) | st2059 (Broadcast) | gptp (802.1AS)
       PTP_DOMAIN: "0"
       PTP_TRANSPORT: "UDPv4"    # UDPv4 | UDPv6 | L2
       PTP_TIME_STAMPING: "hardware"
