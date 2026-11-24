@@ -1843,11 +1843,12 @@ Hardware-Prüfung verlangt `NET_RAW`.
 `st2059` ist eine **Voreinstellung nach den Standardwerten des Profils SMPTE ST 2059-2, keine
 SMPTE-Zertifizierung**: linuxptp sendet die Metadaten-Nachrichten des Profils (SM-TLV) nicht, und
 DSCP schreibt das Profil nicht vor (wer EF/46 möchte: `EXTRA_PTP4L_CONF="dscp_event 46\ndscp_general 46"`).
-Jedes Feld bleibt einzeln überschreibbar (z. B. `PTP_DOMAIN`, `PTP_LOG_ANNOUNCE_INTERVAL`). Liegt
+Die Felder bleiben einzeln überschreibbar (z. B. `PTP_DOMAIN=10`, `PTP_LOG_SYNC_INTERVAL=-4`). Liegt
 ein Wert außerhalb der Bereiche des Profils (Domain 0–127, Announce −3…1, Sync −7…−1,
 Delay-Request Sync…Sync+5, Timeout 2–10, Transport UDP, Laufzeitmessung E2E), läuft ptp4l trotzdem; die
 PTP-Seite meldet die Abweichung, und in `ptp4l.conf` steht ein `# HINWEIS`. Weil ein Profil nur
-Felder auf ihrem Standard ersetzt, wird Domain `0` mit `st2059` zu `127` – wer Domain 0 braucht,
+Felder auf ihrem Standard ersetzt, wird Domain `0` mit `st2059` zu `127` und Announce-Intervall `1`
+(der allgemeine Standard, in ST 2059-2 zulässig) zu `−2` – wer Domain 0 oder Announce 1 braucht,
 nimmt das Profil `default` mit eigenen Werten. pmc, phc2sys und die PTP-Seite nutzen die wirksame
 Domain.
 
@@ -2192,7 +2193,7 @@ Einstellungen laufen) und `ntpgui_service_restarts_total`. Der mitgelieferte Ala
 | `/metrics` | Prometheus (u. a. Offset, max. Fehler, Quellen, GPS, PTP, `ntpgui_service_*`, `ntpgui_hardware_capability`, `ntpgui_pps_live`, `ntpgui_nts_server_cert_days_left`, Temperatur, Schaltsekunden-Liste, GPS-Fehlerschranke und Empfang, `ntpgui_gnss_stage`, `ntpgui_gps_locked`, `ntpgui_source_loops`, `ntpgui_holdover_test_running`, `ntpgui_pi_undervoltage`, `ntpgui_pi_throttled`, `ntpgui_info`) |
 | `/clock` | Vollbild-Uhr (mit `CLOCK_PUBLIC=true` ohne Login) |
 | `/healthz` | `200`, solange chronyd antwortet (ohne Login) |
-| `/readyz` | Strenge Bereitschaft: `200` nur synchronisiert und mit Fehlerschranke unter `READY_MAX_ERROR_MS`, sonst `503` (ohne Login, nur Wahrheitswerte) – siehe [Bereitschaft](#bereitschaft-readyz) |
+| `/readyz` | Strenge Bereitschaft: `200` nur synchronisiert, mit ausgewählter Quelle und mit Fehlerschranke unter `READY_MAX_ERROR_MS`, sonst `503` (ohne Login, nur Wahrheitswerte) – siehe [Bereitschaft](#bereitschaft-readyz) |
 
 ### Bereitschaft (`/readyz`)
 
@@ -2201,8 +2202,8 @@ Einstellungen laufen) und `ntpgui_service_restarts_total`. Der mitgelieferte Ala
 
 | Antwort | Wann |
 |---|---|
-| `200 {"status": "ready", "chrony": true, "synchronised": true, "within_limit": true}` | chrony ist an eine echte Quelle synchronisiert (kein Inselbetrieb) und die Fehlerschranke (\|Offset\| + Root-Dispersion + halber Root-Delay) liegt unter der Grenze |
-| `503 {"status": "not_ready", …}` | chronyd antwortet nicht, ist nicht synchronisiert, läuft im Inselbetrieb oder liegt über der Grenze |
+| `200 {"status": "ready", "chrony": true, "synchronised": true, "source_selected": true, "within_limit": true}` | chrony ist synchronisiert (kein Inselbetrieb), hat gerade eine Quelle ausgewählt (kein Holdover, kein Holdover-Test) und die Fehlerschranke (\|Offset\| + Root-Dispersion + halber Root-Delay) liegt unter der Grenze |
+| `503 {"status": "not_ready", …}` | chronyd antwortet nicht, ist nicht synchronisiert, läuft im Inselbetrieb oder im Holdover, oder liegt über der Grenze |
 
 Die Grenze steht in **Einstellungen → Dashboard & Zugang → Bereitschaft (/readyz): Fehlergrenze**
 bzw. in `READY_MAX_ERROR_MS` (Standard 100 ms; mit GPS und PPS z. B. `1`). `/readyz` ist wie

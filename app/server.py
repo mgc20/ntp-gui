@@ -1376,24 +1376,47 @@ def ready_limit_ms() -> float:
     return float(value)
 
 
-def readiness(tracking: dict, limit_ms: float) -> dict:
-    """Strenge Bereitschaft für /readyz: bereit nur, wenn chronyd antwortet, an eine echte Quelle
-    synchronisiert ist (kein Inselbetrieb, Stratum unter 16) und die Fehlerschranke (|Offset| +
-    Root-Dispersion + Root-Delay/2, wie chrony sie rechnet) unter der Grenze liegt. Die Antwort enthält
-    nur Wahrheitswerte – keine Zahlen, keine Quellen, keine Grenze."""
+def readiness(tracking: dict, limit_ms: float, holdover: bool | None = None) -> dict:
+    """Strenge Bereitschaft für /readyz: bereit nur, wenn chronyd antwortet, synchronisiert ist (kein
+    Inselbetrieb, Stratum unter 16), gerade eine Quelle ausgewählt hat (kein Holdover, kein Holdover-Test) und
+    die Fehlerschranke (|Offset| + Root-Dispersion + Root-Delay/2, wie chrony sie rechnet) unter der Grenze
+    liegt. Fehlt einer der drei Werte oder ist er nicht lesbar, ist der Server nicht bereit.
+    holdover: aus ready_holdover() – True: keine Quelle ausgewählt; None: keine Aussage, zählt nicht dagegen.
+    Die Antwort enthält nur Wahrheitswerte – keine Zahlen, keine Quellen, keine Grenze."""
     running = bool(tracking)
     synced = bool(running and tracking.get("synchronised"))
+    selected = synced and holdover is not True
     within = False
     if synced:
         try:
-            error = (abs(float(tracking.get("system_time_offset") or 0.0))
-                     + abs(float(tracking["root_dispersion"])) + abs(float(tracking["root_delay"])) / 2)
+            parts = [float(tracking[key]) for key in ("system_time_offset", "root_dispersion", "root_delay")]
+            error = abs(parts[0]) + abs(parts[1]) + abs(parts[2]) / 2
             within = math.isfinite(error) and error * 1000.0 < limit_ms
         except (KeyError, TypeError, ValueError):
             within = False
-    ready = running and synced and within
+    ready = running and synced and selected and within
     return {"status": "ready" if ready else "not_ready", "chrony": running,
-            "synchronised": synced, "within_limit": within}
+            "synchronised": synced, "source_selected": selected, "within_limit": within}
+
+
+def ready_holdover() -> bool | None:
+    """Holdover für /readyz: True, solange ein Holdover-Test läuft oder der Messthread zuletzt gesehen hat, dass
+    chrony keine Quelle mehr ausgewählt hat (clock_extra); None ohne frische Aussage. Startet keinen Prozess und
+    wirft nie."""
+    try:
+        if holdover.TEST.running():
+            return True
+    except Exception:
+        pass
+    try:
+        try:
+            interval = settings.values().get("history_interval")
+        except Exception:
+            interval = None
+        value = clock_extra(interval=interval).get("holdover")
+    except Exception:
+        return None
+    return value if isinstance(value, bool) else None
 
 
 def _clock_leap(cfg: dict) -> dict:
@@ -2758,7 +2781,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/readyz":
             # Strenge Variante für keepalived, Load-Balancer und Uptime-Monitore: wie /healthz ohne Anmeldung
             # und für jeden Host-Namen, die Antwort enthält nur Wahrheitswerte.
-            state = readiness(_healthz_tracking(), ready_limit_ms())
+            state = readiness(_healthz_tracking(), ready_limit_ms(), ready_holdover())
             self._send_json(state, HTTPStatus.OK if state["status"] == "ready" else HTTPStatus.SERVICE_UNAVAILABLE)
             return
         if path == LOGOUT_PATH:

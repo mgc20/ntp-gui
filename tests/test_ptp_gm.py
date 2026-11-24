@@ -502,6 +502,19 @@ class HomelabOptionTests(Phc2sysPlanTests):
         self.assertRegex(text, r"logAnnounceInterval\s+-3\n")
         self.assertEqual(settings.validate({"ptp_profile": "st2059"})["ptp_profile"], "st2059")
 
+    def test_st2059_domain_0_and_announce_1_count_as_unchanged(self):
+        # Ein Profil ersetzt nur Felder auf ihrem allgemeinen Standard: Domain 0 und Announce 1 sind
+        # dieser Standard und werden mit st2059 zu 127 bzw. -2 (so dokumentiert). Andere Werte bleiben.
+        eff = settings.ptp_profile_values(_cfg(ptp_profile="st2059", ptp_domain=0,
+                                               ptp_log_announce_interval=1))[0]
+        self.assertEqual((eff["ptp_domain"], eff["ptp_log_announce_interval"]), (127, -2))
+        eff = settings.ptp_profile_values(_cfg(ptp_profile="default", ptp_domain=0,
+                                               ptp_log_announce_interval=1))[0]
+        self.assertEqual((eff["ptp_domain"], eff["ptp_log_announce_interval"]), (0, 1))
+        for key in ("ptp_domain", "ptp_log_announce_interval"):
+            self.assertIn("Standard mit eigenen Werten", settings.FIELDS[key]["help"])
+        self.assertIn("Announce-Intervall 1", settings.FIELDS["ptp_profile"]["help"])
+
     def test_st2059_deviations_are_noted(self):
         cfg = _cfg(ptp_profile="st2059", ptp_domain=200, ptp_log_sync_interval=0, ptp_transport="L2",
                    ptp_delay_mechanism="P2P", ptp_announce_receipt_timeout=2)

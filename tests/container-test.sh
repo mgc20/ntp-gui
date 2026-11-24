@@ -490,7 +490,7 @@ wait_for_health http://127.0.0.1:18097/healthz 90 || true
 check "healthz offen"                        200 "$(http http://127.0.0.1:18097/healthz)"
 # Ohne Zeitquelle (NTP_POOLS leer) ist der Server nicht bereit: 503, Antwort nur aus Wahrheitswerten.
 check "readyz offen, ohne Quelle nicht bereit" 503 "$(http http://127.0.0.1:18097/readyz)"
-check "readyz enthält nur Wahrheitswerte" "not_ready chrony synchronised within_limit" \
+check "readyz enthält nur Wahrheitswerte" "not_ready chrony synchronised source_selected within_limit" \
   "$(curl -s --max-time 10 http://127.0.0.1:18097/readyz | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.pop('status'), *[k for k, v in d.items() if isinstance(v, bool)])" 2>/dev/null)"
 check "Status gesperrt (Einrichtung nötig)"  503 "$(http http://127.0.0.1:18097/api/status)"
 check "Passwort setzen gesperrt"             503 "$(http -X POST -H 'Content-Type: application/json' -H 'X-NTP-GUI: 1' -d '{"user":"x","password":"lang-genug-12345"}' http://127.0.0.1:18097/api/auth)"

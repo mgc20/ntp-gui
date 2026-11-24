@@ -784,7 +784,8 @@ export const HELP = {
   ptp_domain: {
     title: "Domain",
     text: "Trennt mehrere PTP-Netze im selben LAN. Alle Teilnehmer einer Gruppe brauchen dieselbe "
-      + "Nummer; 0 ist Standard.",
+      + "Nummer; 0 ist Standard. Mit dem Profil SMPTE ST 2059-2 wird 0 zu 127 – wer Domain 0 "
+      + "braucht, nimmt das Profil Standard mit eigenen Werten.",
   },
   ptp_transport: {
     title: "Transport",
@@ -802,7 +803,8 @@ export const HELP = {
       + "**SMPTE ST 2059-2** (Broadcast, Grundlage von ST 2110): Domain 127, UDPv4, End-to-End, 8 Sync "
       + "und 4 Announce pro Sekunde, Delay-Request 8 pro Sekunde, Announce-Timeout 3. Das ist eine "
       + "Voreinstellung nach den Profilwerten, keine SMPTE-Zertifizierung; die Metadaten-Nachrichten des "
-      + "Profils (SM-TLV) sendet linuxptp nicht. Domain 0 gilt bei diesem Profil als „nicht geändert“ und wird zu 127. "
+      + "Profils (SM-TLV) sendet linuxptp nicht. Domain 0 und Announce-Intervall 1 gelten bei diesem Profil als „nicht geändert“ und werden zu 127 "
+      + "bzw. −2; wer sie braucht, nimmt das Profil Standard mit eigenen Werten. "
       + "**gPTP** (IEEE 802.1AS für AVB/TSN, Automotive): Ethernet direkt (L2), Peer-to-Peer-"
       + "Laufzeitmessung und die Werte aus linuxptp `gPTP.cfg` – jeder Switch im Weg muss 802.1AS "
       + "beherrschen. Alle Teilnehmer im Netz müssen dasselbe Profil nutzen.",

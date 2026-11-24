@@ -9,11 +9,17 @@ Alarm im Monitoring), nimmt die strenge Variante `/readyz`.
 
 | Status | Körper | Bedeutung |
 |---|---|---|
-| `200` | `{"status": "ready", "chrony": true, "synchronised": true, "within_limit": true}` | chrony ist an eine echte Quelle synchronisiert und die Fehlerschranke liegt unter der Grenze |
-| `503` | `{"status": "not_ready", "chrony": …, "synchronised": …, "within_limit": …}` | eine der Bedingungen fehlt |
+| `200` | `{"status": "ready", "chrony": true, "synchronised": true, "source_selected": true, "within_limit": true}` | chrony ist synchronisiert, hat gerade eine Quelle ausgewählt (kein Holdover) und die Fehlerschranke liegt unter der Grenze |
+| `503` | `{"status": "not_ready", "chrony": …, "synchronised": …, "source_selected": …, "within_limit": …}` | eine der Bedingungen fehlt |
 
 - **chrony**: chronyd antwortet.
 - **synchronised**: Stratum unter 16, Schaltsekunden-Status gültig und **kein** Inselbetrieb (`local`).
+- **source_selected**: chrony hat gerade eine Quelle ausgewählt. Fallen alle Quellen aus, nennt chrony
+  noch eine Weile dieselbe Referenz und dasselbe Stratum (Holdover) – `synchronised` bleibt dann
+  wahr, die Fehlerschranke wächst nur um wenige Mikrosekunden je Sekunde. Deshalb meldet `/readyz`
+  im Holdover sofort `503`, auch während eines Holdover-Tests. Die Erkennung stammt aus der
+  regelmäßigen Messung („Messintervall für Diagramme“, Standard 10 s); bis sie den Ausfall sieht,
+  kann es also ein Intervall dauern.
 - **within_limit**: Fehlerschranke `|Offset| + Root-Dispersion + Root-Delay/2` (so rechnet chrony den
   höchsten möglichen Fehler der Systemuhr) liegt **unter** der Grenze.
 

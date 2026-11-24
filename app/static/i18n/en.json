@@ -223,8 +223,8 @@
       "intro": "For monitoring, scripts and Home Assistant. Once a password is set you need an API key (System → Settings → Dashboard & access → API keys); only /healthz and /readyz are always open.",
       "metrics": "Measurements in Prometheus format",
       "status": "Overall state as JSON (the same data as the dashboard)",
-      "healthz": "Short liveness check for containers and load balancers",
-      "readyz": "Strict readiness: 200 only when synchronised and below the error limit (keepalived, uptime monitors)"
+      "healthz": "Liveness for the container healthcheck (is chronyd running?)",
+      "readyz": "Strict readiness: 200 only when synchronised, with a selected source and below the error limit (keepalived, load balancers, uptime monitors)"
     }
   },
   "pages": {

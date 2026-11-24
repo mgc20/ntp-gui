@@ -171,9 +171,9 @@ endpoint("POST", "/instance/rotate", "/api/instance/rotate", "session",
 endpoint("GET", "/healthz", "/healthz", "public",
          "Lebenszeichen für Docker/Monitoring: läuft chronyd?", ["status", "chrony"])
 endpoint("GET", "/readyz", "/readyz", "public",
-         "Strenge Bereitschaft (keepalived, Load-Balancer): 200 nur, wenn chrony synchronisiert ist und die "
-         "Fehlerschranke unter ready_max_error_ms liegt, sonst 503. Nur Wahrheitswerte.",
-         ["status", "chrony", "synchronised", "within_limit"])
+         "Strenge Bereitschaft (keepalived, Load-Balancer): 200 nur, wenn chrony synchronisiert ist, eine Quelle "
+         "ausgewählt hat (kein Holdover) und die Fehlerschranke unter ready_max_error_ms liegt, sonst 503. Nur Wahrheitswerte.",
+         ["status", "chrony", "synchronised", "source_selected", "within_limit"])
 
 
 def _normalise(path: str) -> str:

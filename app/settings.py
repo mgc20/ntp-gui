@@ -1307,13 +1307,15 @@ SCHEMA: list[dict] = [
                 "UDPv4, End-to-End, 8 Sync/s, Announce alle 2 s und DSCP 46 (EF) für die "
                 "Pakete. SMPTE ST 2059-2 (Broadcast, ST 2110): Domain 127, UDPv4, End-to-End, 8 Sync/s, "
                 "4 Announce/s, Timeout 3 – eine Voreinstellung nach den Profilwerten, keine SMPTE-Zertifizierung; "
-                "Domain 0 gilt dort als „nicht geändert“ und wird zu 127. "
+                "Domain 0 und Announce-Intervall 1 gelten dort als „nicht geändert“ und werden zu 127 bzw. −2 – "
+                "wer sie braucht, nimmt das Profil Standard mit eigenen Werten. "
                 "gPTP (AVB/TSN, Automotive): Ethernet direkt (L2), Peer-to-Peer, transportSpecific 1, "
                 "Priority 248 und die übrigen Werte aus linuxptp configs/gPTP.cfg – alle "
                 "Switches im Weg müssen 802.1AS beherrschen."),
     _field("ptp_domain", "ptp", "Domain", "int", 0, _as_number(int, 0, 255), env="PTP_DOMAIN",
            help="Getrennte PTP-Netze im selben LAN. Alle Teilnehmer brauchen dieselbe Domain; "
-                "0 ist der Standard. Mit dem Profil SMPTE ST 2059-2 gilt 127, solange hier 0 steht."),
+                "0 ist der Standard. Mit dem Profil SMPTE ST 2059-2 gilt 127, solange hier 0 steht – "
+                "wer Domain 0 braucht, nimmt das Profil Standard mit eigenen Werten."),
     _field("ptp_transport", "ptp", "Transport", "select", "UDPv4",
            _as_choice("UDPv4", "UDPv6", "L2"), env="PTP_TRANSPORT",
            options=[("UDPv4", "UDP über IPv4 (Standard)"), ("UDPv6", "UDP über IPv6"),
@@ -1353,7 +1355,8 @@ SCHEMA: list[dict] = [
            _as_number(int, -3, 4), env="PTP_LOG_ANNOUNCE_INTERVAL", advanced=True,
            help="Wie oft der Grandmaster sich ankündigt: 1 bedeutet alle 2 Sekunden. Alle "
                 "Teilnehmer sollten denselben Wert nutzen, sonst halten Slaves den Master "
-                "fälschlich für weg."),
+                "fälschlich für weg. Mit dem Profil SMPTE ST 2059-2 gilt −2, solange hier der "
+                "Standard 1 steht – wer 1 braucht, nimmt das Profil Standard mit eigenen Werten."),
     _field("ptp_announce_receipt_timeout", "ptp", "Announce-Timeout (Anzahl)", "int", 3,
            _as_number(int, 2, 10), env="PTP_ANNOUNCE_RECEIPT_TIMEOUT", advanced=True,
            help="Nach so vielen verpassten Announce-Nachrichten gilt der Master als ausgefallen "
@@ -1505,10 +1508,11 @@ SCHEMA: list[dict] = [
     _field("ready_max_error_ms", "web", "Bereitschaft (/readyz): Fehlergrenze", "float", 100.0,
            _as_number(float, 0.001, 10000.0), env="READY_MAX_ERROR_MS", unit="ms", restart=RESTART_NONE,
            advanced=True,
-           hint="/readyz meldet 200 nur, wenn chrony synchronisiert ist und die Fehlerschranke darunter liegt.",
+           hint="/readyz meldet 200 nur, wenn chrony synchronisiert ist, eine Quelle ausgewählt hat und die "
+                "Fehlerschranke darunter liegt.",
            help="Grenze für die strenge Bereitschaftsprüfung /readyz (für keepalived, Load-Balancer und "
-                "Uptime-Monitore): 200 nur, wenn chrony an eine echte Quelle synchronisiert ist und die "
-                "Fehlerschranke (|Offset| + Root-Dispersion + halber Root-Delay, wie chrony sie rechnet) "
+                "Uptime-Monitore): 200 nur, wenn chrony synchronisiert ist, gerade eine Quelle ausgewählt hat "
+                "(im Holdover nie) und die Fehlerschranke (|Offset| + Root-Dispersion + halber Root-Delay, wie chrony sie rechnet) "
                 "unter diesem Wert liegt, sonst 503. Der Standard 100 ms passt zu Internet-NTP; mit GPS und PPS "
                 "taugen z. B. 1 ms. /healthz bleibt unverändert (nur „chronyd antwortet“). Wirkt ohne Neustart."),
     _field("backup_nightly", "web", "Nächtliche Sicherung", "bool", False, _as_bool,

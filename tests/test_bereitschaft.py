@@ -1,7 +1,8 @@
 """Strenge Bereitschaftsprüfung /readyz (1.11).
 
-- 200 nur, wenn chronyd antwortet, an eine echte Quelle synchronisiert ist und die Fehlerschranke
-  (|Offset| + Root-Dispersion + Root-Delay/2) unter der Grenze liegt; sonst 503.
+- 200 nur, wenn chronyd antwortet, synchronisiert ist, gerade eine Quelle ausgewählt hat (kein Holdover,
+  kein Holdover-Test) und die Fehlerschranke (|Offset| + Root-Dispersion + Root-Delay/2) unter der Grenze
+  liegt; fehlt einer der drei Werte, ist er nicht bereit (503).
 - Die Antwort enthält nur status und Wahrheitswerte – keine Zahlen, keine Quellen, keine Grenze.
 - Grenze aus der Einstellung ready_max_error_ms bzw. READY_MAX_ERROR_MS, Standard 100 ms.
 - Ohne Anmeldung und für jeden Host-Namen erreichbar wie /healthz, auch mit WEB_REQUIRE_AUTH ohne Zugang.
@@ -41,14 +42,24 @@ PPS = dict(SYNCED, stratum=1, system_time_offset=2e-7, root_delay=0.0, root_disp
 UNSYNCED = {"ref_id": "00000000", "stratum": 0, "leap_status": "Not synchronised", "synchronised": False,
             "local_reference": False, "system_time_offset": 0.0, "root_delay": 0.0, "root_dispersion": 0.0}
 LOCAL = dict(SYNCED, ref_id="7F7F0101", stratum=10, synchronised=False, local_reference=True)
-KEYS = {"status", "chrony", "synchronised", "within_limit"}
+KEYS = {"status", "chrony", "synchronised", "source_selected", "within_limit"}
 
 
 class ReadinessDecisionTests(unittest.TestCase):
     def test_synced_below_limit_is_ready(self):
         self.assertEqual(server.readiness(SYNCED, 100.0),
-                         {"status": "ready", "chrony": True, "synchronised": True, "within_limit": True})
+                         {"status": "ready", "chrony": True, "synchronised": True, "source_selected": True,
+                          "within_limit": True})
         self.assertEqual(server.readiness(PPS, 0.01)["status"], "ready")
+        self.assertEqual(server.readiness(SYNCED, 100.0, holdover=False)["status"], "ready")
+        # Keine Aussage zum Holdover (Messthread noch nicht gelaufen) zählt nicht dagegen.
+        self.assertEqual(server.readiness(SYNCED, 100.0, holdover=None)["status"], "ready")
+
+    def test_holdover_is_not_ready(self):
+        # chrony nennt im Holdover weiter Referenz und Stratum, die Fehlerschranke wächst nur langsam.
+        state = server.readiness(SYNCED, 100.0, holdover=True)
+        self.assertEqual(state, {"status": "not_ready", "chrony": True, "synchronised": True,
+                                 "source_selected": False, "within_limit": True})
 
     def test_error_bound_at_or_above_limit_is_not_ready(self):
         state = server.readiness(SYNCED, 7.0)
@@ -60,10 +71,12 @@ class ReadinessDecisionTests(unittest.TestCase):
 
     def test_unsynced_local_and_silent_are_not_ready(self):
         self.assertEqual(server.readiness(UNSYNCED, 100.0),
-                         {"status": "not_ready", "chrony": True, "synchronised": False, "within_limit": False})
+                         {"status": "not_ready", "chrony": True, "synchronised": False, "source_selected": False,
+                          "within_limit": False})
         self.assertEqual(server.readiness(LOCAL, 100.0)["status"], "not_ready")
         self.assertEqual(server.readiness({}, 100.0),
-                         {"status": "not_ready", "chrony": False, "synchronised": False, "within_limit": False})
+                         {"status": "not_ready", "chrony": False, "synchronised": False, "source_selected": False,
+                          "within_limit": False})
 
     def test_missing_or_broken_numbers_are_not_ready(self):
         broken = dict(SYNCED)
@@ -72,6 +85,35 @@ class ReadinessDecisionTests(unittest.TestCase):
         self.assertEqual(server.readiness(dict(SYNCED, root_dispersion="x"), 100.0)["status"], "not_ready")
         self.assertEqual(server.readiness(dict(SYNCED, root_dispersion=float("nan")), 100.0)["status"],
                          "not_ready")
+        # Der Offset gilt genauso streng: fehlend, None (unlesbare Spalte) oder NaN ergibt 503.
+        no_offset = dict(SYNCED)
+        del no_offset["system_time_offset"]
+        for tracking in (no_offset, dict(SYNCED, system_time_offset=None),
+                         dict(SYNCED, system_time_offset=float("nan")), dict(SYNCED, system_time_offset="x")):
+            with self.subTest(offset=tracking.get("system_time_offset", "fehlt")):
+                state = server.readiness(tracking, 100.0)
+                self.assertEqual(state["status"], "not_ready")
+                self.assertIs(state["within_limit"], False)
+
+    def test_holdover_source(self):
+        server._CLOCK_EXTRA.update(t=None, ptp_state="unknown", lost=None, since=None, lost_t=None)
+        try:
+            with mock.patch.object(server.holdover.TEST, "running", return_value=True):
+                self.assertIs(server.ready_holdover(), True)
+            with mock.patch.object(server.holdover.TEST, "running", return_value=False):
+                self.assertIsNone(server.ready_holdover())      # nie beobachtet: keine Aussage
+                server._CLOCK_EXTRA.update(lost=True, since=server.time.monotonic(),
+                                           lost_t=server.time.monotonic())
+                self.assertIs(server.ready_holdover(), True)
+                server._CLOCK_EXTRA.update(lost=False, since=None, lost_t=server.time.monotonic())
+                self.assertIs(server.ready_holdover(), False)
+                server._CLOCK_EXTRA.update(lost=True, lost_t=server.time.monotonic() - 10_000)
+                self.assertIsNone(server.ready_holdover())      # zu alt: keine Aussage
+            with mock.patch.object(server.holdover.TEST, "running", side_effect=RuntimeError("kaputt")), \
+                    mock.patch.object(server, "clock_extra", side_effect=RuntimeError("kaputt")):
+                self.assertIsNone(server.ready_holdover())      # wirft nie
+        finally:
+            server._CLOCK_EXTRA.update(t=None, ptp_state="unknown", lost=None, since=None, lost_t=None)
 
     def test_answer_carries_only_booleans(self):
         for tracking in (SYNCED, UNSYNCED, LOCAL, {}):
@@ -137,6 +179,7 @@ class _ServerBase(unittest.TestCase):
             patch.start()
         settings._CACHE.update(mtime=None, data=None)
         server._HEALTHZ_CACHE.update(t=None, tracking=None)
+        server._CLOCK_EXTRA.update(t=None, ptp_state="unknown", lost=None, since=None, lost_t=None)
         apikeys._READY["db"] = None
         apikeys.clear_cache()
         server.AUTH_CACHE.clear()
@@ -178,7 +221,8 @@ class ReadyzEndpointTests(_ServerBase):
     def test_ready_and_not_ready(self):
         status, body, resp = self.get("/readyz")
         self.assertEqual(status, 200)
-        self.assertEqual(body, {"status": "ready", "chrony": True, "synchronised": True, "within_limit": True})
+        self.assertEqual(body, {"status": "ready", "chrony": True, "synchronised": True, "source_selected": True,
+                                "within_limit": True})
         self.assertEqual(resp.getheader("Cache-Control"), "no-store")
         self.tracking = dict(UNSYNCED)
         status, body, _ = self.get("/readyz")
@@ -191,8 +235,19 @@ class ReadyzEndpointTests(_ServerBase):
         settings.save({"ready_max_error_ms": 5})
         status, body, _ = self.get("/readyz")
         self.assertEqual(status, 503)
-        self.assertEqual(body, {"status": "not_ready", "chrony": True, "synchronised": True, "within_limit": False})
+        self.assertEqual(body, {"status": "not_ready", "chrony": True, "synchronised": True, "source_selected": True,
+                                "within_limit": False})
         settings.save({"ready_max_error_ms": 10})
+        self.assertEqual(self.get("/readyz")[0], 200)
+
+    def test_holdover_test_and_lost_sources_give_503(self):
+        with mock.patch.object(server, "ready_holdover", return_value=True):
+            status, body, _ = self.get("/readyz")
+        self.assertEqual(status, 503)
+        self.assertEqual(body, {"status": "not_ready", "chrony": True, "synchronised": True,
+                                "source_selected": False, "within_limit": True})
+        with mock.patch.object(server.holdover.TEST, "running", return_value=True):
+            self.assertEqual(self.get("/readyz")[0], 503)
         self.assertEqual(self.get("/readyz")[0], 200)
 
     def test_answer_has_no_numbers(self):
