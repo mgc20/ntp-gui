@@ -539,8 +539,12 @@ def build(status: dict[str, Any], cfg: dict[str, Any]) -> list[dict[str, Any]]:
     ui = status.get("ui") or {}
     storage = ui.get("storage") or {}
     if storage.get("error"):
-        copy = (" Die zuletzt fehlerfrei gespeicherte Fassung liegt als settings.json.bak daneben."
-                if storage.get("good_copy") else "")
+        copy = ""
+        if storage.get("defect_copy"):
+            copy += f" Die beschädigte Fassung ist als {storage['defect_copy']} aufgehoben."
+        if storage.get("good_copy"):
+            stamp = f" (Stand {storage['good_copy_stamp']})" if storage.get("good_copy_stamp") else ""
+            copy += f" Die zuletzt fehlerfrei gespeicherte Fassung liegt als settings.json.bak{stamp} daneben."
         add("crit", "Einstellungen nicht lesbar – Speichern gesperrt",
             "settings.json im Datenverzeichnis ist vorhanden, aber nicht lesbar. Es gelten Umgebung und "
             "Standardwerte; der Zeitserver läuft im Notbetrieb (antwortet nur Netzen aus ALLOW_NETWORKS, "

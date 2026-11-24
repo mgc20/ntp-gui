@@ -1579,6 +1579,9 @@ ENV_ONLY = [
 _LOCK = threading.RLock()  # reentrant: save() ruft values() unter der Sperre
 _CACHE: dict[str, Any] = {"mtime": None, "data": None, "error": None}
 _UNREADABLE_NOTED: dict[str, Any] = {"error": None}
+# Zum Schutzmodus: Stand der Kopie settings.json.bak und Name der aufgehobenen beschädigten Fassung. Nur in
+# _broken ermittelt (bei geänderter mtime), damit storage_info() die Kopie nicht bei jeder Abfrage liest.
+_BROKEN_DETAIL: dict[str, Any] = {"copy": None, "kept": None}
 
 
 class SettingsUnreadable(ValidationError):
@@ -1594,14 +1597,20 @@ def load_error() -> str | None:
         return _CACHE["error"]
 
 
-def _unreadable(reason: str, kept: str | None = None) -> str:
-    copy = _good_copy_stamp()
+def _unreadable(reason: str, kept: str | None = None, copy: str | None = None, detail: bool = False) -> str:
+    """Meldung zum Schutzmodus. Die kurze Fassung (detail=False) geht als Sperrgrund auch ohne Anmeldung hinaus
+    (503-Seite, API) und nennt deshalb weder Zeitpunkte noch Dateinamen mit Zeitstempel; die ausführliche
+    (Stand der Kopie, Name der aufgehobenen Fassung) steht nur im Container-Log."""
     extra = ""
-    if kept:
-        extra += f" Die beschädigte Fassung ist zusätzlich als {kept} aufgehoben."
-    if copy:
-        extra += (f" Die zuletzt fehlerfrei gespeicherte Fassung liegt als settings.json.bak daneben (Stand {copy}); "
-                  "kopierst du sie über settings.json, gilt wieder dieser Stand.")
+    if detail:
+        if kept:
+            extra += f" Die beschädigte Fassung ist zusätzlich als {kept} aufgehoben."
+        if copy:
+            extra += (f" Die zuletzt fehlerfrei gespeicherte Fassung liegt als settings.json.bak daneben (Stand "
+                      f"{copy}); kopierst du sie über settings.json, gilt wieder dieser Stand.")
+    elif copy:
+        extra = (" Die zuletzt fehlerfrei gespeicherte Fassung liegt als settings.json.bak daneben; Einzelheiten "
+                 "stehen im Container-Log.")
     return (f"settings.json im Datenverzeichnis ist nicht lesbar ({reason}). Das Dashboard läuft im Schutzmodus: "
             "Ein dort gesetztes Passwort könnte sonst still wegfallen, und Speichern würde die Datei "
             f"überschreiben.{extra} Repariere die Datei oder ersetze sie durch eine funktionierende Kopie; danach "
@@ -1807,11 +1816,15 @@ def _broken(mtime: int | None, reason: str, raw: bytes | None = None) -> dict:
     """Vorhandene, aber nicht lesbare settings.json: leer weiterarbeiten, Grund merken (fail-closed über
     load_error: Dashboard gesperrt, Schreiben gesperrt). Einmal je Grund ins Log. Gelesene, aber beschädigte
     Inhalte (raw) werden zusätzlich aufgehoben (_keep_defect)."""
-    error = _unreadable(reason, _keep_defect(raw) if raw is not None else None)
+    kept = _keep_defect(raw) if raw is not None else None
+    copy = _good_copy_stamp()
+    error = _unreadable(reason, kept, copy)
+    detail = _unreadable(reason, kept, copy, detail=True)
+    _BROKEN_DETAIL.update(copy=copy, kept=kept)
     _CACHE.update(mtime=mtime, data=None, error=error)
-    if _UNREADABLE_NOTED["error"] != error:
-        _UNREADABLE_NOTED["error"] = error
-        _log(f"FEHLER: {error}.")
+    if _UNREADABLE_NOTED["error"] != detail:
+        _UNREADABLE_NOTED["error"] = detail
+        _log(f"FEHLER: {detail}.")
     return {}
 
 
@@ -2170,9 +2183,14 @@ def public_schema(masked: bool = False) -> dict:
 def storage_info() -> dict:
     """Wo gespeichert wird und ob es einen Neustart des Containers übersteht."""
     persistent = _is_mounted(os.path.dirname(DATA_DIR.rstrip("/")) or DATA_DIR)
+    error = load_error()
+    # Kopie und aufgehobene Fassung nur im Schutzmodus (aus _broken, ohne erneutes Lesen). Nur angemeldet
+    # sichtbar: Im Schutzmodus ist das Dashboard ohne Anmeldung gesperrt.
     return {"path": SETTINGS_FILE, "persistent": persistent,
-            "exists": os.path.exists(SETTINGS_FILE), "error": load_error(),
-            "good_copy": _good_copy_stamp() is not None}
+            "exists": os.path.exists(SETTINGS_FILE), "error": error,
+            "good_copy": bool(error and _BROKEN_DETAIL["copy"]),
+            "good_copy_stamp": _BROKEN_DETAIL["copy"] if error else None,
+            "defect_copy": _BROKEN_DETAIL["kept"] if error else None}
 
 
 def _is_mounted(path: str) -> bool:

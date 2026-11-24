@@ -341,7 +341,9 @@ Scope-ID (`%eth0`) an.
     Ratelimit „streng“. Sonst gelten Umgebung und Standardwerte.
   - Jedes erfolgreiche Speichern legt dieselbe Fassung zusätzlich als `settings.json.bak` ab (Rechte
     `0600`). Ist `settings.json` beschädigt, hebt das Dashboard sie als `settings.json.defekt-<Zeit>`
-    auf (höchstens drei Fassungen), bevor du sie ersetzt; Start-Log und Hinweis nennen beide Dateien.
+    auf (höchstens drei Fassungen), bevor du sie ersetzt. Das Container-Log und der Hinweis im
+    angemeldeten Dashboard nennen beide Dateien samt Stand der Kopie; die Sperrseite ohne Anmeldung sagt
+    nur, dass `settings.json.bak` daneben liegt.
     Zurück zum letzten funktionierenden Stand:
     `docker compose exec -u ntpgui ntp-gui cp /var/lib/chrony/ntp-gui/settings.json.bak /var/lib/chrony/ntp-gui/settings.json`
   - Repariere die Datei oder ersetze sie durch eine funktionierende Kopie (`settings.json.bak` oder
