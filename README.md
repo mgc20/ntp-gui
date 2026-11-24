@@ -339,9 +339,14 @@ Scope-ID (`%eth0`) an.
   - Der Zeitserver läuft im Notbetrieb: Die gespeicherten schützenden Einstellungen sind unbekannt,
     deshalb antwortet er nur Netzen aus `ALLOW_NETWORKS` (ohne die Variable keinem Client) und mit
     Ratelimit „streng“. Sonst gelten Umgebung und Standardwerte.
-  - Repariere die Datei oder ersetze sie durch eine funktionierende Kopie (z. B. aus einer Sicherung
-    entpackt); danach entsperrt sich das Dashboard von selbst, für den Zeitserver starte den
-    Container neu. Löschst du sie stattdessen, beginnt alles mit Standardwerten – dann ist auch ein
+  - Jedes erfolgreiche Speichern legt dieselbe Fassung zusätzlich als `settings.json.bak` ab (Rechte
+    `0600`). Ist `settings.json` beschädigt, hebt das Dashboard sie als `settings.json.defekt-<Zeit>`
+    auf (höchstens drei Fassungen), bevor du sie ersetzt; Start-Log und Hinweis nennen beide Dateien.
+    Zurück zum letzten funktionierenden Stand:
+    `docker compose exec -u ntpgui ntp-gui cp /var/lib/chrony/ntp-gui/settings.json.bak /var/lib/chrony/ntp-gui/settings.json`
+  - Repariere die Datei oder ersetze sie durch eine funktionierende Kopie (`settings.json.bak` oder
+    aus einer Sicherung entpackt); danach entsperrt sich das Dashboard von selbst, für den Zeitserver
+    starte den Container neu. Löschst du sie stattdessen, beginnt alles mit Standardwerten – dann ist auch ein
     im Dashboard gesetztes Passwort weg. Setze vorher `WEB_USER`/`WEB_PASSWORD` oder
     `WEB_REQUIRE_AUTH=true`.
 - Ein **Passwort** fürs Dashboard lässt sich direkt dort setzen (gespeichert als PBKDF2-Hash).

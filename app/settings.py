@@ -19,6 +19,7 @@ wird abgelehnt statt "repariert".
 from __future__ import annotations
 
 import base64
+import contextlib
 import errno
 import hashlib
 import hmac
@@ -1593,13 +1594,111 @@ def load_error() -> str | None:
         return _CACHE["error"]
 
 
-def _unreadable(reason: str) -> str:
+def _unreadable(reason: str, kept: str | None = None) -> str:
+    copy = _good_copy_stamp()
+    extra = ""
+    if kept:
+        extra += f" Die beschädigte Fassung ist zusätzlich als {kept} aufgehoben."
+    if copy:
+        extra += (f" Die zuletzt fehlerfrei gespeicherte Fassung liegt als settings.json.bak daneben (Stand {copy}); "
+                  "kopierst du sie über settings.json, gilt wieder dieser Stand.")
     return (f"settings.json im Datenverzeichnis ist nicht lesbar ({reason}). Das Dashboard läuft im Schutzmodus: "
             "Ein dort gesetztes Passwort könnte sonst still wegfallen, und Speichern würde die Datei "
-            "überschreiben. Repariere die Datei oder ersetze sie durch eine funktionierende Kopie; danach entsperrt "
-            "sich das Dashboard von selbst. Entfernst du sie, beginnt alles mit Standardwerten – dann ist auch ein "
-            "im Dashboard gesetztes Passwort weg und das Dashboard ohne Anmeldung erreichbar; setze vorher "
+            f"überschreiben.{extra} Repariere die Datei oder ersetze sie durch eine funktionierende Kopie; danach "
+            "entsperrt sich das Dashboard von selbst. Entfernst du sie, beginnt alles mit Standardwerten – dann ist "
+            "auch ein im Dashboard gesetztes Passwort weg und das Dashboard ohne Anmeldung erreichbar; setze vorher "
             "WEB_USER/WEB_PASSWORD oder WEB_REQUIRE_AUTH=true in der Compose-Datei")
+
+
+# Letzte fehlerfrei gespeicherte Fassung (bei jedem erfolgreichen Schreiben aktualisiert) und aufgehobene
+# beschädigte Fassungen. Nur Kopien im selben Verzeichnis, Rechte 0600 wie settings.json.
+GOOD_COPY_SUFFIX = ".bak"
+DEFECT_INFIX = ".defekt-"
+DEFECT_KEEP = 3
+
+
+def good_copy_file() -> str:
+    return SETTINGS_FILE + GOOD_COPY_SUFFIX
+
+
+def _good_copy_stamp() -> str | None:
+    """Stand (UTC) der Kopie settings.json.bak, wenn sie eine lesbare JSON-Objekt-Datei ist; sonst None.
+    Wie settings.json: keinem Link folgen, nicht blockieren, höchstens SETTINGS_MAX_BYTES."""
+    path = good_copy_file()
+    try:
+        raw = _read_regular(path, SETTINGS_MAX_BYTES)
+        if not isinstance(json.loads(raw.decode("utf-8")), dict):
+            return None
+        mtime = os.lstat(path).st_mtime
+    except (OSError, ValueError, RecursionError, _NotRegular):
+        return None
+    return time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(mtime))
+
+
+def _write_private(path: str, raw: bytes, prefix: str) -> None:
+    """raw atomar nach path (0600): temporäre Datei im Datenverzeichnis, dann os.replace – ein Link an der
+    Stelle wird ersetzt, nicht verfolgt."""
+    fd, tmp = tempfile.mkstemp(dir=DATA_DIR, prefix=prefix, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            os.fchmod(handle.fileno(), 0o600)
+            handle.write(raw)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+
+
+def _keep_good_copy() -> None:
+    """Nach erfolgreichem Schreiben: dieselbe Fassung als settings.json.bak. Wird settings.json später
+    beschädigt (Speicherkarte, abgeschnittene Datei), bleibt so der letzte funktionierende Stand. Ein Fehler
+    hier verhindert das Speichern nicht."""
+    try:
+        raw = _read_regular(SETTINGS_FILE, SETTINGS_MAX_BYTES)
+        if not isinstance(json.loads(raw.decode("utf-8")), dict):
+            return
+        _write_private(good_copy_file(), raw, ".settings-bak-")
+    except (OSError, ValueError, RecursionError, _NotRegular) as exc:
+        _log(f"Kopie settings.json.bak nicht geschrieben: {getattr(exc, 'strerror', None) or exc}")
+
+
+def _keep_defect(raw: bytes) -> str | None:
+    """Beschädigte settings.json als settings.json.defekt-<Zeit> aufheben, bevor sie jemand ersetzt.
+    Gleicher Inhalt nur einmal, höchstens DEFECT_KEEP Fassungen (die ältesten gehen). Nur der Eigentümer des
+    Datenverzeichnisses schreibt dort (root/confgen nicht). Gibt den Dateinamen oder None."""
+    if not _dir_owned_by_us(DATA_DIR):
+        return None
+    base = os.path.basename(SETTINGS_FILE) + DEFECT_INFIX
+    try:
+        names = sorted(n for n in os.listdir(DATA_DIR) if n.startswith(base))
+        for name in names:
+            try:
+                if _read_regular(os.path.join(DATA_DIR, name), SETTINGS_MAX_BYTES) == raw:
+                    return name
+            except (OSError, _NotRegular):
+                continue
+        stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+        name, number = base + stamp, 1
+        while os.path.lexists(os.path.join(DATA_DIR, name)):
+            number += 1
+            name = f"{base}{stamp}-{number}"
+        _write_private(os.path.join(DATA_DIR, name), raw, ".settings-defekt-")
+        # Älteste zuerst nach Änderungszeit (der Name kann bei einer falsch gehenden Uhr täuschen).
+        def age(entry: str) -> float:
+            try:
+                return os.lstat(os.path.join(DATA_DIR, entry)).st_mtime
+            except OSError:
+                return 0.0
+        others = sorted((n for n in names if n != name), key=age)
+        for old in others[:max(0, len(others) + 1 - DEFECT_KEEP)]:
+            with contextlib.suppress(OSError):
+                os.unlink(os.path.join(DATA_DIR, old))
+        return name
+    except OSError as exc:
+        _log(f"Beschädigte settings.json nicht aufgehoben: {exc.strerror or type(exc).__name__}")
+        return None
 
 
 # Größer wird settings.json nie (Einstellungen, Passwort-Hash, Hinweise); mehr liest auch root nicht ein.
@@ -1666,9 +1765,9 @@ def _load_file() -> dict:
     try:
         data = json.loads(raw.decode("utf-8"))
     except (ValueError, RecursionError):
-        return _broken(stat.st_mtime_ns, "kein gültiges JSON – beschädigt oder abgeschnitten")
+        return _broken(stat.st_mtime_ns, "kein gültiges JSON – beschädigt oder abgeschnitten", raw)
     if not isinstance(data, dict):
-        return _broken(stat.st_mtime_ns, "kein JSON-Objekt")
+        return _broken(stat.st_mtime_ns, "kein JSON-Objekt", raw)
     if data and _schema_of(data) < SCHEMA_VERSION:
         with _LOCK:
             # Die Datei ist (wieder) lesbar: Ein Fehlerzustand von vorher darf das Speichern der Migration
@@ -1704,10 +1803,11 @@ def _dir_owned_by_us(path: str) -> bool:
             and not info.st_mode & 0o022)
 
 
-def _broken(mtime: int | None, reason: str) -> dict:
+def _broken(mtime: int | None, reason: str, raw: bytes | None = None) -> dict:
     """Vorhandene, aber nicht lesbare settings.json: leer weiterarbeiten, Grund merken (fail-closed über
-    load_error: Dashboard gesperrt, Schreiben gesperrt). Einmal je Grund ins Log."""
-    error = _unreadable(reason)
+    load_error: Dashboard gesperrt, Schreiben gesperrt). Einmal je Grund ins Log. Gelesene, aber beschädigte
+    Inhalte (raw) werden zusätzlich aufgehoben (_keep_defect)."""
+    error = _unreadable(reason, _keep_defect(raw) if raw is not None else None)
     _CACHE.update(mtime=mtime, data=None, error=error)
     if _UNREADABLE_NOTED["error"] != error:
         _UNREADABLE_NOTED["error"] = error
@@ -1758,6 +1858,7 @@ def _write_file(data: dict) -> None:
         if os.path.exists(tmp):
             os.unlink(tmp)
     _CACHE.update(mtime=None, data=None, error=None)
+    _keep_good_copy()
 
 
 def _env_value(field: dict, env: dict[str, str]):
@@ -1985,6 +2086,7 @@ def commit_replace(staged: dict[str, Any]) -> dict[str, Any]:
         before = values()
         os.replace(staged["tmp"], SETTINGS_FILE)
         _CACHE.update(mtime=None, data=None, error=None)
+        _keep_good_copy()
     after = values()
     changed = [key for key in FIELDS if before.get(key) != after.get(key)]
     restart = any(FIELDS[key]["restart"] == RESTART_SERVICES for key in changed)
@@ -2069,7 +2171,8 @@ def storage_info() -> dict:
     """Wo gespeichert wird und ob es einen Neustart des Containers übersteht."""
     persistent = _is_mounted(os.path.dirname(DATA_DIR.rstrip("/")) or DATA_DIR)
     return {"path": SETTINGS_FILE, "persistent": persistent,
-            "exists": os.path.exists(SETTINGS_FILE), "error": load_error()}
+            "exists": os.path.exists(SETTINGS_FILE), "error": load_error(),
+            "good_copy": _good_copy_stamp() is not None}
 
 
 def _is_mounted(path: str) -> bool:
