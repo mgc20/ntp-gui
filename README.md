@@ -7,7 +7,7 @@
 
 <p align="center">
   <a href="https://github.com/mgc20/ntp-gui/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/mgc20/ntp-gui/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="https://github.com/mgc20/ntp-gui/releases/latest"><img alt="Release" src="https://img.shields.io/badge/release-v1.10.0-0969da"></a>
+  <a href="https://github.com/mgc20/ntp-gui/releases/latest"><img alt="Release" src="https://img.shields.io/badge/release-v1.11.0-0969da"></a>
   <img alt="Plattformen" src="https://img.shields.io/badge/platform-amd64%20%7C%20arm64-1a7f37">
   <img alt="Image" src="https://img.shields.io/badge/image-ghcr.io-8250df">
   <a href="LICENSE"><img alt="Lizenz: MIT" src="https://img.shields.io/badge/license-MIT-59636e"></a>
@@ -2352,6 +2352,24 @@ Meist musst du beim Update nichts von Hand umbauen. Was sich zwischen zwei Versi
   `ntp-gui.db` übernommen und als `history.json.gz.migrated` aufbewahrt. Kann die Datenbank
   nicht geöffnet werden, arbeitet der Verlauf wie in 1.2 weiter.
 
+### Von 1.10 auf 1.11
+
+Nichts musst du umbauen; das Einstellungsschema ändert sich nicht, und alles Neue (Zeitwächter-Ping,
+Gruppennamen in `/metrics`) ist standardmäßig aus. Wer Prometheus und Grafana nutzt, merkt Folgendes:
+
+- **`/metrics` ohne Satellitenzahlen:** `ntpgui_gps_satellites_used`, `ntpgui_gps_satellites_seen` und
+  `ntpgui_gps_snr_avg_db` entfallen. `ntpgui_gps_hdop` steht nur noch als Stufe (1, 2, 5, 10, 20). Panels
+  und Alarmregeln, die diese Metriken abfragen, bleiben leer; lade das Grafana-Dashboard
+  (`docs/grafana/ntp-gui.json`) und die Alarmregeln (`docs/prometheus/alerts.yml`) neu. Das Panel
+  „GPS-Satelliten“ heißt dort jetzt „GPS-Empfang“. Die Satellitenzahl bleibt im Dashboard und in
+  `/api/v1/status` (siehe [Grafana und Prometheus](docs/integrationen/grafana-prometheus.md)).
+- **Neue Datei im Datenverzeichnis:** Nach jedem Speichern liegt `settings.json.bak` neben
+  `settings.json` (Rechte `0600`); eine beschädigte Datei bleibt als `settings.json.defekt-<Zeit>`
+  erhalten. Sicherst du das Datenverzeichnis auf dem Host, kommen diese Dateien mit.
+- **Neuer offener Endpunkt `/readyz`:** Wie `/healthz` ohne Anmeldung erreichbar, verrät aber nur
+  Wahrheitswerte (siehe [Bereitschaft](#bereitschaft-readyz)). Ein Reverse-Proxy, der nur ausgewählte
+  Pfade durchlässt, braucht ihn nur, wenn ein Load-Balancer davor ihn fragen soll.
+
 ### Von 1.9 auf 1.10
 
 Nichts musst du umbauen; das Einstellungsschema ändert sich nicht. Auf der Studiouhr (`/clock`) fällt
@@ -2411,7 +2429,7 @@ docker build -t ntp-gui:test .
 tests/container-test.sh ntp-gui:test         # Integrationstest gegen das gebaute Image
 ```
 
-Der Integrationstest (173 Prüfungen) startet echte Container und prüft das, was Unittests
+Der Integrationstest (348 Prüfungen) startet echte Container und prüft das, was Unittests
 nicht abdecken: Erkennung von fehlendem `CAP_SYS_TIME`, Healthcheck, alle Endpunkte,
 Basic-Auth, gemountete Konfiguration, Verhalten ohne GPS-/PTP-Hardware, Neustart eines
 abgestürzten gpsd, eine echte NTP-Abfrage über das Netz, Einstellungen speichern samt
@@ -2506,7 +2524,7 @@ Updates vor. Ein Release-Build läuft ohne Cache, zieht also immer aktuelle Debi
 **Herkunft prüfen** (GitHub-CLI, sobald das Repository öffentlich ist):
 
 ```bash
-gh attestation verify oci://ghcr.io/mgc20/ntp-gui:1.10.0 -R mgc20/ntp-gui
+gh attestation verify oci://ghcr.io/mgc20/ntp-gui:1.11.0 -R mgc20/ntp-gui
 ```
 
 Scheitert ein Schritt, entsteht kein halber Release. Bei einem privaten Repository

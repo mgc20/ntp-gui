@@ -6,6 +6,146 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 
 ## [Unveröffentlicht]
 
+## [1.11.0] – 2026-11-24
+
+Schwerpunkt: Betrieb und Fehlersuche. ntp-gui meldet sich auf Wunsch regelmäßig bei deinem eigenen
+Wächter, hat eine strenge Bereitschaftsprüfung `/readyz` für keepalived und Load-Balancer, eine
+Fehlersuche „Mein Gerät bekommt keine Zeit“, Betriebsmetriken für Prometheus und eine Hilfe mit
+Inhaltsverzeichnis und tiefen Links. Die Einstellungen liegen nach jedem Speichern zusätzlich als
+Kopie bereit. Alles Ausgehende bleibt opt-in und standardmäßig aus. `/metrics` enthält keine
+Satellitenzahlen und keinen genauen HDOP mehr; lies vor dem Update die Update-Hinweise
+„Von 1.10 auf 1.11“ in der [README](README.md#von-110-auf-111).
+
+### Hinzugefügt
+- **Kopie der Einstellungen:** Jedes erfolgreiche Speichern legt dieselbe Fassung zusätzlich als
+  `settings.json.bak` im Datenverzeichnis ab (Rechte `0600`). Ist `settings.json` beschädigt, hebt das
+  Dashboard sie als `settings.json.defekt-<Zeit>` auf (höchstens drei Fassungen), bevor du sie ersetzt.
+  Das Container-Log und der Hinweis im angemeldeten Dashboard nennen beide Dateien und den Stand der
+  Kopie; die Sperrseite ohne Anmeldung sagt nur, dass eine Kopie daneben liegt. Die README zeigt, wie du
+  zum letzten funktionierenden Stand zurückkehrst.
+- **Zeitwächter-Ping** (opt-in, Standard aus): ntp-gui meldet sich regelmäßig bei deinem eigenen Wächter
+  (Uptime Kuma mit Monitor-Typ „Push“, Healthchecks oder kompatibel). Bleibt der Ping aus (Rechner,
+  Container oder Strom weg), schlägt der Wächter Alarm, auch wenn ntp-gui selbst nichts mehr senden kann.
+  - Einstellungen unter **System → Einstellungen → Dashboard & Zugang**: Adresse (leer = aus, keine
+    Verbindung), Intervall (30–3600 s, Standard 60 s) und Art (automatisch, Healthchecks `…/fail`,
+    Uptime Kuma `status=down`, nur Lebenszeichen). Der Zustand steht direkt unter dem Adressfeld.
+  - Bei kritischem Zustand (roter Hinweis in der Übersicht) meldet der Ping „ausgefallen“, aber erst nach
+    einer Haltezeit von 2 Minuten. Ein Neuladen der Zeitdienste nach einer Einstellung, ein kurzer
+    Dienst-Neustart oder der Start des Containers lösen so keinen Alarm aus; nach Ablauf der Haltezeit
+    wird sofort nachgeprüft. Mit der Art „nur Lebenszeichen“ geht im kritischen Zustand nichts hinaus.
+  - Gesendet wird nur eine GET-Anfrage ohne Inhalt mit dem User-Agent `ntp-gui`. Im Datenschutzfilter ist
+    das der neue Zweck `heartbeat` mit leerer Feldliste. Keine Weiterleitungen, höchstens 5 s, das Ziel
+    wird wie bei den Benachrichtigungen nach der Namensauflösung geprüft. Ein Wächter im Internet sieht
+    die öffentliche IP-Adresse; Empfehlung: Wächter im eigenen Netz.
+  - Seite **Benachrichtigungen**: Karte „Zeitwächter-Ping“ mit Ziel (gekürzt), letztem Ergebnis, nächstem
+    Ping und **Jetzt senden** (`POST /api/v1/notify/heartbeat/test`, nur Verwaltungsrecht, höchstens alle
+    10 s). Läuft gerade ein Ping, kommt „Ein Ping läuft gerade“ (HTTP 409); im kritischen Zustand mit „nur
+    Lebenszeichen“ „Zustand kritisch – nichts gesendet“.
+  - Ereignisart „Zeitwächter-Ping“: Warnung nach drei Fehlschlägen in Folge, „wieder erreichbar“ bei
+    Erfolg. Beides kann an die Benachrichtigungskanäle gehen.
+  - Anleitung [docs/integrationen/zeitwaechter.md](docs/integrationen/zeitwaechter.md) (mit den
+    Prometheus-Metriken des Pings); `uptime-kuma.md` um den Push von ntp-gui ergänzt.
+- **Fehlersuche „Mein Gerät bekommt keine Zeit“** unter Clients, mit einem Verweis darauf auf der
+  Diagnose-Seite, der direkt zur Karte springt (`#/clients?s=fehlersuche`) und den Cursor ins Eingabefeld
+  setzt. Du gibst die IP-Adresse eines Geräts ein (auch in Langform, in Großbuchstaben oder als
+  `::ffff:`-Adresse; das Feld zeigt danach die geprüfte Kurzform), ntp-gui geht eine feste Prüfliste
+  durch und nennt genau einen Befund mit dem nächsten Schritt. Geprüft wird:
+  - liegt die Adresse in den erlaubten bzw. ausgenommenen Netzen („all“ in „Ausgenommene Netze“ gilt wie
+    bei chronyd als Sperre für alle Geräte),
+  - lauscht chronyd auf dem NTP-Port und der Bind-Adresse (ein anderer Port als 123 ist kein Problem, wenn
+    das Gerät ihn schon erfolgreich fragt; im Bridge-Netz wird die passende Portfreigabe genannt),
+  - ist der Server synchron bzw. im Inselbetrieb (samt der Regel für öffentliche Netze),
+  - erscheinen die Geräte im Bridge-Netz nur als Docker-Gateway,
+  - sind Anfragen angekommen oder ist das Gerät verstummt,
+  - hat die Begrenzung Anfragen verworfen (bei öffentlich erreichbarem Server mit dem Rat zu einem
+    längeren Abfrageintervall des Geräts statt einer lockeren Begrenzung),
+  - ist die Uhr des Geräts messbar und wie weit liegt sie daneben.
+
+  Wo es passt, stehen die Anleitungen für Windows (w32tm), systemd-timesyncd, chrony und macOS darunter.
+  Die Prüfung braucht eine Anmeldung und liest nur, was der Server schon weiß: Sie löst keine Namen auf,
+  schickt nichts ins Netz und misst nicht. Nachmessen geht weiter nur über das gedrosselte „Aktiv
+  nachmessen“ auf der Geräteseite. API: `GET /api/clients/troubleshoot?ip=` (Leserecht).
+- **Strenge Bereitschaftsprüfung `/readyz`** für keepalived, Load-Balancer und Uptime-Monitore: `200` nur,
+  wenn chrony an eine echte Quelle synchronisiert ist, eine Quelle ausgewählt hat und die Fehlerschranke
+  (|Offset| + Root-Dispersion + halber Root-Delay) unter der Grenze liegt, sonst `503`. Im Holdover und
+  während eines Holdover-Tests kommt sofort `503`, keepalived gibt die virtuelle IP also spätestens nach
+  einem Messintervall ab. Fehlt ein Wert oder ist er unlesbar, gilt das ebenfalls als `503`.
+  - Wie `/healthz` ohne Anmeldung, für jeden Host-Namen und auch bei `WEB_REQUIRE_AUTH=true` erreichbar.
+    Die Antwort enthält nur Wahrheitswerte (`status`, `chrony`, `synchronised`, `source_selected`,
+    `within_limit`), keine Zahlen, Quellen oder Grenze.
+  - Die Grenze steht in der neuen Einstellung „Bereitschaft (/readyz): Fehlergrenze“ bzw. in
+    `READY_MAX_ERROR_MS` (Standard 100 ms).
+  - Anleitung für keepalived (`track_script`), Docker-Healthcheck und Uptime Kuma in
+    [docs/integrationen/bereitschaft.md](docs/integrationen/bereitschaft.md), samt der genauen Angabe, was
+    `/readyz` ohne Anmeldung verrät.
+- **PTP-Profil „SMPTE ST 2059-2 (Broadcast)“** (`PTP_PROFILE=st2059`) als Voreinstellung nach den
+  Profilwerten, ohne SMPTE-Zertifizierung: Domain 127, UDPv4, End-to-End, Sync und Delay-Request 2^−3 s,
+  Announce 2^−2 s, Announce-Timeout 3, Priority 128/128. Jedes Feld bleibt einzeln überschreibbar; Domain 0
+  und Announce-Intervall 1 gelten als „nicht geändert“ (wer sie braucht, nimmt das Profil `default` mit
+  eigenen Werten). Werte außerhalb der Profilbereiche meldet die PTP-Seite als Prüfpunkt, und sie stehen
+  als Hinweis in `ptp4l.conf`.
+- **Betriebsmetriken in `/metrics`**, nur als Summen und feste Werte, ohne Adressen, Gerätenamen,
+  Kanal-URLs oder Dateinamen:
+  - Client-Uhrgüte je Stufe (`ntpgui_clients_quality{grade}`), verstummte Geräte, offene Client-Alarme und
+    wie lange die passive Client-Messung schon ohne Pause mithört (`ntpgui_clients_listening_seconds`).
+  - Je Client-Gruppe: Geräte, aktive, stille, messbare, Median der Abweichung, Anteil „gut“ und Median
+    der Uhrgüte (`ntpgui_client_group_*`).
+  - Benachrichtigungen je Kanal-Art: angelegte, eingeschaltete und fehlschlagende Kanäle,
+    Warteschlange, Zustellungen und verworfene Meldungen (`ntpgui_notify_*`).
+  - Alter, Anzahl und Fehlschlag der nächtlichen Sicherung (`ntpgui_backup_nightly_*`), Ereignisse je
+    Art und Stufe (`ntpgui_events_total`), Ergebnis des letzten Holdover-Tests (`ntpgui_holdover_last_*`),
+    Modus und Phase der GPS-Automatik (`ntpgui_gps_autocal_*`) und der Zustand des Zeitwächter-Pings
+    (`ntpgui_heartbeat_*`).
+- Neue Einstellung „Gruppennamen in /metrics“ (`METRICS_GROUP_NAMES`, Standard aus). Prometheus sieht
+  sonst nur die Kennung der Gruppe (`group_id`, z. B. `g3`), weil Gruppennamen oft Räume oder Orte
+  beschreiben.
+- Grafana-Dashboard: neue Zeile „Clients und Betrieb“. Neue Alarmregeln für Client-Uhren außer Toleranz,
+  verstummte Client-Gruppen (erst nach 24 h ununterbrochenem Mithören, nie für „ohne Gruppe“), gestörte
+  Benachrichtigungskanäle, hängende Warteschlange, fehlende (`NtpGuiNightlyBackupMissing`: seit über 26 h
+  eingeschaltet, aber noch keine), zu alte oder fehlgeschlagene nächtliche Sicherung, kritische
+  Ereignisse, gescheiterte Holdover-Tests (24 h nach dem Testende), eine wartende GPS-Automatik und einen
+  scheiternden Zeitwächter-Ping.
+- **Hilfe mit Inhaltsverzeichnis und Unterseiten:** `#/hilfe` zeigt die Themen nach Abschnitten, jedes
+  Thema hat eine eigene Adresse (`#/hilfe/gps`) mit Links zum vorigen und nächsten Thema, jeder Eintrag
+  einen festen Link zum Teilen (`#/hilfe/gps/pps`). Die Suche durchsucht weiter alle Themen, „Zurück“ und
+  „Vor“ im Browser folgen dem Weg durch die Hilfe und rollen zum Eintrag. Ein Link auf einen Eintrag, der
+  inzwischen unter einem anderen Thema steht, führt auf dessen Thema; ein unbekannter Eintrag oder eine
+  kaputte Adresse zeigt einen Hinweis.
+  - „Mehr in der Hilfe →“ in jedem ⓘ und unter jeder Seite führt direkt zum passenden Eintrag bzw. Thema.
+  - Neues Hilfethema „Betrieb und Überwachung“: was wofür (Benachrichtigungen, Zeitwächter-Ping,
+    `/healthz`, `/readyz`, `/metrics`, Fehlersuche), Bereitschaft `/readyz` und die Betriebsmetriken.
+    Neuer Eintrag „SMPTE ST 2059-2 im Studio“ unter PTP.
+
+### Geändert
+- **`/metrics` ohne Satellitenzahlen:** `ntpgui_gps_satellites_used`/`_seen` und
+  `ntpgui_gps_snr_avg_db` entfallen; als Signalstärke steht nur noch der stärkste Wert der genutzten
+  Satelliten (`ntpgui_gps_snr_max_db`). `ntpgui_gps_hdop` steht nur noch als Stufe (1, 2, 5, 10, 20), wie
+  in der Aufzeichnung des Diagnosepakets. Als Zeitreihe grenzen genaue Werte die Region ein. Das
+  Grafana-Panel „GPS-Satelliten“ heißt jetzt „GPS-Empfang“ und zeigt HDOP-Stufe, Empfang und Fix-Art.
+- Doku und Hilfe zu „Datenschutz in den Metriken“ nennen auch die Namen bzw. Adressen der Zeitquellen
+  (Label `source`) und das PPS-Gerät (Label `device`) als frei vergebene Texte.
+- Die Adresse des Zeitwächters wird wie ein Geheimnis behandelt: nicht in Sicherungen (die Vorschau meldet
+  „neu eingeben“), im Diagnosepaket nur „gesetzt“, für API-Schlüssel mit Leserecht und im Lese-Export nur
+  gekürzt (`https://host/…`), in `/api/status` gar nicht. `/api/status` und `GET /api/notify` enthalten
+  den Zustand des Pings (`heartbeat`).
+- Die Statusabfrage liest die Sicherheitskopie der Einstellungen nur noch, wenn `settings.json` nicht
+  lesbar ist.
+- `/healthz` bleibt unverändert und ist in der Hilfe (API & Automatisierung) als Lebenszeichen für den
+  Container-Healthcheck beschrieben; Load-Balancer stehen bei `/readyz`. Die Sperr-Meldungen nennen beide
+  offenen Endpunkte. Die README nennt `POST /api/notify/heartbeat/test` in der API-Übersicht.
+- Alte Hilfe-Links `#/hilfe?t=…` öffnen den Eintrag jetzt auf der Unterseite seines Themas. Der
+  Zeitwächter-Ping steht in der Hilfe unter „Betrieb und Überwachung“ (bei Benachrichtigungen unter
+  „Siehe auch“).
+
+### Behoben
+- pmc, phc2sys und die PTP-Statusanzeige verwenden die wirksame Domain des gewählten Profils statt des
+  gespeicherten Felds. Ein Profil, das die Domain vorgibt, ließ die Abfragen an ptp4l sonst ins Leere
+  laufen.
+- `/metrics`: Die Metriken je Zeitquelle stehen jetzt je Familie am Stück, wie es das
+  Prometheus-Textformat verlangt. Vorher wechselten sie sich bei mehreren Quellen ab.
+- Hilfe „Grund (Auswertung von chrony)“: Die Hervorhebung von „ausgewählt (*)“ und „kombiniert (+)“
+  erschien als rohe Sternchen.
+
 ## [1.10.0] – 2026-11-24
 
 Schwerpunkt: Die Studiouhr bekommt Spielereien – Eieruhr und Pomodoro, eigene Countdowns, Nachtmodus,
@@ -1931,6 +2071,7 @@ Erste Veröffentlichung.
 - CI mit Unittests und Integrationstest gegen das gebaute Image; Release-Workflow,
   der das Image für amd64 und arm64 nach ghcr.io veröffentlicht.
 
+[1.11.0]: https://github.com/mgc20/ntp-gui/compare/v1.10.0...v1.11.0
 [1.10.0]: https://github.com/mgc20/ntp-gui/compare/v1.9.0...v1.10.0
 [1.9.0]: https://github.com/mgc20/ntp-gui/compare/v1.8.0...v1.9.0
 [1.8.0]: https://github.com/mgc20/ntp-gui/compare/v1.7.0...v1.8.0
