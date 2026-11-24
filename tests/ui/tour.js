@@ -1520,7 +1520,8 @@ function timerState() {
     mode: root.dataset.mode || "", night: root.dataset.night || "",
     opacity: getComputedStyle(document.getElementById("clock-stage")).opacity,
     timerBtn: visible("mode-timer"), nightBtn: visible("mode-night"), actions: visible("cd-actions"), plus: visible("cd-plus"),
-    bar: visible("clock-back"), nightPressed: document.getElementById("mode-night").getAttribute("aria-pressed"),
+    bar: visible("clock-back"), barH: document.querySelector(".clock-bar").getBoundingClientRect().height,
+    timeFont: parseFloat(getComputedStyle(document.getElementById("local-time")).fontSize), nightPressed: document.getElementById("mode-night").getAttribute("aria-pressed"),
     stateShown: visible("cd-state"), keysN: !document.getElementById("keys-n").hidden && !document.getElementById("keys-n-key").hidden,
     csp: window.__csp || [],
   };
@@ -1654,7 +1655,10 @@ async function clockTimerChecks(browser) {
   }
   // 2c) Handy im Querformat (Touch, ohne Tastatur): Timer und Nacht bleiben in der Leiste; nur sehr kleine flache Fenster
   // verzichten darauf.
-  for (const [width, height, want] of [[740, 300, true], [667, 320, true], [568, 300, false]]) {
+  // Die Leiste bleibt dabei einzeilig wie in 1.9 (Knopfgruppe rollt seitlich, höchstens 48 px hoch). Die Ziffern
+  // mindestens 20 % der Fensterhöhe: Mit der umbrochenen Leiste (zwei bis drei Zeilen) lagen sie darunter.
+  for (const [width, height, want, minFont] of [[740, 300, true, 0], [667, 320, true, 0], [568, 300, false, 0],
+    [640, 360, true, 72], [740, 360, true, 72], [844, 390, true, 78]]) {
     const { ctx, page, msgs, clock } = await openPausedClock(browser, { width, height, touch: true });
     await clock.run(250);
     const got = await page.evaluate(timerState);
@@ -1662,6 +1666,8 @@ async function clockTimerChecks(browser) {
     await ctx.close();
     note(`/clock Querformat ${width}×${height} Touch`, [got.timerBtn === want && got.nightBtn === want ? ""
       : `Timer/Nacht ${got.timerBtn}/${got.nightBtn}, erwartet ${want}`, got.hscroll > 0 ? `Überbreite ${got.hscroll} px` : "",
+      got.barH <= 48 ? "" : `Leiste ${Math.round(got.barH)} px hoch (umbrochen)`,
+      got.timeFont >= minFont ? "" : `Ziffern nur ${got.timeFont.toFixed(1)} px statt ≥ ${minFont} px`,
       ...errors(got, msgs)].filter(Boolean));
   }
   // 3) Pomodoro wechselt nach der Arbeitsphase in die Pause und zählt.
@@ -1904,6 +1910,28 @@ async function clockExtrasChecks(browser) {
         got.timeInside ? "" : "Zeit außerhalb der Bühne", cols === 2 ? "" : `${cols} Rasterspalten`, ...errors(got, msgs)].filter(Boolean));
     }
   }
+  // 4f) Banner 32:9 (3840×1080) mit allen Zusätzen: Zeit und Zusätze behalten ihren Abstand zum Rand wie ohne Zusätze
+  // (die lange Nerd-Zeile bricht in ihrer Spalte um, statt das Raster über den Rand zu schieben).
+  for (const design of ["wort", "digital", "nixie", "binary"]) {
+    const { ctx, page, msgs, clock } = await openPausedClock(browser, { width: 3840, height: 1080, reply: withTai(37),
+      query: `?design=${design}&show=moon,nerd,progress&timer=5m` });
+    await clock.run(1500);
+    const got = await page.evaluate(() => {
+      const stage = document.getElementById("clock-stage").getBoundingClientRect();
+      const box = (el) => (el && !el.hidden && el.offsetWidth ? el.getBoundingClientRect() : null);
+      const time = box(document.getElementById("face")) || box(document.getElementById("local-time"));
+      const parts = [...document.querySelectorAll("#extras *")].filter((el) => el.offsetWidth > 0).map((el) => el.getBoundingClientRect());
+      return { layout: document.getElementById("clock-stage").dataset.layout, extras: parts.length > 0,
+        left: time ? time.left - stage.left : -1, right: parts.length ? stage.right - Math.max(...parts.map((r) => r.right)) : -1,
+        hscroll: document.documentElement.scrollWidth - document.documentElement.clientWidth, csp: window.__csp || [] };
+    });
+    if (design === "wort") await shot(page, `banner-zusaetze-${design}-3840x1080`);
+    await ctx.close();
+    note(`/clock Banner 3840×1080 ${design} mit Zusätzen: Rand`, [got.layout === "banner" ? "" : `Layout ${got.layout}`,
+      got.extras ? "" : "Zusätze fehlen", got.left >= 24 ? "" : `Zeit ${Math.round(got.left)} px vom linken Rand`,
+      got.right >= 24 ? "" : `Zusätze ${Math.round(got.right)} px vom rechten Rand`, got.hscroll > 0 ? `Überbreite ${got.hscroll} px` : "",
+      ...errors(got, msgs)].filter(Boolean));
+  }
   // 4e) Design tc mit Zone des Servers (UTC) auf einem Gerät in Kiritimati (UTC+14): Am 23.11. um 12:30 UTC ist dort schon
   // der 24.11. – Tag im Jahr, ISO-Datum und Tagesbalken folgen dem angezeigten Datum (Montag, 23.11.).
   {
@@ -2093,6 +2121,30 @@ async function clockFunChecks(browser) {
         got.game && name !== "eggs0" ? "Knopf Spiel" : "", got.pips && name !== "eggs0" ? "Zeitzeichen-Knöpfe" : "",
         name === "eggs0" && !(got.game && got.pips) ? "eggs=0 nimmt Spiel oder Zeitzeichen weg" : "", ...errors(got, msgs)].filter(Boolean));
     }
+  }
+  // 4g) Profil-Abruf fällt aus (503): ?p=studio zeigt vorsichtshalber weder Ei noch Konfetti noch Timer, Spiel und Nacht.
+  for (const name of ["studio", "tile", "banner", "eigenes"]) {
+    for (const at of [LEET, NEWYEAR]) {
+      const { ctx, page, msgs } = await openPausedClock(browser, { width: 1920, height: 1080, query: `?p=${name}`, at,
+        profile: () => "fail" });
+      await page.waitForTimeout(400);
+      const got = await page.evaluate(funState);
+      const btns = await page.evaluate(() => ["mode-timer", "mode-night", "mode-game"].filter((id) => !document.getElementById(id).hidden));
+      await ctx.close();
+      const rest = msgs.filter((m) => !/status of 503/.test(m));
+      note(`/clock Profil ${name} nicht geladen ${at === LEET ? "13:37" : "Neujahr"}`, [got.egg ? `Ei „${got.eggText}“` : "",
+        got.confetti || got.pieces ? "Konfetti" : "", btns.length ? `Knöpfe ${btns}` : "", ...errors(got, rest)].filter(Boolean));
+    }
+  }
+  // 4h) Prüfbild ?test=sync zu Neujahr und um 13:37: kein Ei und kein Konfetti über der Blitzfläche.
+  for (const at of [LEET, NEWYEAR]) {
+    const { ctx, page, msgs, clock } = await openPausedClock(browser, { width: 1920, height: 1080, query: "?test=sync", at });
+    await clock.run(1500);
+    const got = await page.evaluate(funState);
+    const test = await page.evaluate(() => !document.getElementById("sync-test").hidden);
+    await ctx.close();
+    note(`/clock Prüfbild ${at === LEET ? "13:37" : "Neujahr"}`, [test ? "" : "Prüfbild fehlt", got.egg ? `Ei „${got.eggText}“` : "",
+      got.confetti || got.pieces ? "Konfetti" : "", ...errors(got, msgs)].filter(Boolean));
   }
   // 5) Panel „Spiel“: Tipp mit Maus und Taste, Bestwert im localStorage; Zeitzeichen-Knöpfe im Panel Ton.
   for (const [width, height] of [[390, 844], [1920, 1080], [768, 1024]]) {
@@ -2974,6 +3026,21 @@ async function clockSignalChecks(browser) {
     await ctx.close();
     note("/clock Signal Rotlicht", [...look(got, "on_air"), errors(got, msgs)]);
   }
+  // Nachtmodus (Zeitplan dim um 10:15, auch im Profil studio mit fun=0; dimred=1 rot): On Air und REC bleiben rot und
+  // voll deckend – gesendet wird gerade nachts.
+  for (const [query, state] of [["?signal=1&dim=10-11", "on_air"], ["?signal=1&dim=10-11", "rec"], ["?p=studio&signal=1&dim=10-11", "on_air"],
+    ["?signal=1&dim=10-11&dimred=1", "on_air"]]) {
+    const { ctx, page, msgs } = await openPausedClock(browser, { width: 1920, height: 1080, query, reply: answer({ signal: state }) });
+    const got = await page.evaluate(signalShown);
+    const look2 = await page.evaluate(() => { const bar = getComputedStyle(document.getElementById("signal"));
+      return { bg: bar.backgroundColor, opacity: bar.opacity, night: document.documentElement.dataset.night || "",
+        border: getComputedStyle(document.body).borderTopColor }; });
+    await ctx.close();
+    const red = (c) => { const m = c.match(/\d+/g) || []; return Number(m[0]) >= 180 && Number(m[1]) < 80 && Number(m[2]) < 80; };
+    note(`/clock Signal ${state} im Nachtmodus ${query}`, [look2.night === "1" ? "" : "Nachtmodus nicht an",
+      red(look2.bg) ? "" : `Band ${look2.bg}`, red(look2.border) ? "" : `Rahmen ${look2.border}`,
+      look2.opacity === "1" ? "" : `Deckkraft ${look2.opacity}`, got.shown ? "" : "Band fehlt", errors(got, msgs)]);
+  }
 
   // Höhen um die Grenze zum automatischen Streifen (Kopfzeile und Band fallen weg): Das Layout ist mit und ohne Signal
   // dasselbe und pendelt nicht zwischen Streifen und Banner.
@@ -3324,6 +3391,7 @@ function statusState() {
     title: vis(title) ? { text: title.textContent, box: rect(title), inStage: inStage(title), size: parseFloat(getComputedStyle(title).fontSize),
       clipped: title.scrollWidth > title.clientWidth + 1 } : null,
     titleText: title.textContent, barTitle: vis($("clock-title")) ? $("clock-title").textContent : "",
+    barTitleClipped: vis($("clock-title")) && $("clock-title").scrollWidth > $("clock-title").clientWidth + 1,
     syncIcon: vis(sync) ? { text: sync.textContent.trim(), inStage: inStage(sync), box: rect(sync) } : null,
     holdIcon: vis(hold) ? { text: hold.querySelector(".clock-hold-icon").textContent, label: $("clock-hold-text").textContent,
       inStage: inStage(hold), box: rect(hold) } : null,
@@ -3479,7 +3547,9 @@ async function clockStatusChecks(browser) {
     const plain = await openPausedClock(browser, { width: 480, height: 270, query: "?layout=tile", reply: answer() });
     const gotPlain = await plain.page.evaluate(statusState);
     await plain.ctx.close();
-    const auto = await openPausedClock(browser, { width: 470, height: 400, query: "?p=regie", profile: profileOf(), reply: answer({ holdover: true }) });
+    // 470×340: Seit 1.10 bleibt die Leiste bei wenig Höhe einzeilig – bei 470×400 bliebe der Bühne genug Höhe für das
+    // normale Layout (wie in 1.9 ohne Titel), die Kachel greift erst darunter.
+    const auto = await openPausedClock(browser, { width: 470, height: 340, query: "?p=regie", profile: profileOf(), reply: answer({ holdover: true }) });
     const gotAuto = await auto.page.evaluate(statusState);
     await auto.ctx.close();
     note("/clock Kachel langer Titel", [gotLong.title && gotLong.title.clipped && gotLong.title.box.h < 2.2 * gotLong.title.size ? "" : `Titel ${JSON.stringify(gotLong.title)}`,
@@ -3489,6 +3559,7 @@ async function clockStatusChecks(browser) {
       scroll(gotPlain), errors(gotPlain, plain.msgs)]);
     // Automatische Kachel (kleines Fenster ohne ?layout=tile): Kopfzeile und Band bleiben, der Titel steht in der Kopfzeile.
     note(`/clock Kachel automatisch [${gotAuto.layout}]`, [gotAuto.layout === "tile" ? "" : "kein Layout tile", gotAuto.title ? "Titel doppelt (Bühne und Kopfzeile)" : "", gotAuto.barTitle === "Regie 1" ? "" : `Kopfzeile „${gotAuto.barTitle}“`,
+      gotAuto.barTitleClipped ? "Titel in der einzeiligen Kopfzeile abgeschnitten" : "",
       gotAuto.hold && !gotAuto.holdIcon ? "" : "Holdover nicht im Band", errors(gotAuto, auto.msgs)]);
   }
   {

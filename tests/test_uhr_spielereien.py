@@ -479,12 +479,30 @@ class SeitenregelnTest(unittest.TestCase):
         self.assertNotIn("@media (max-height: 320px) { #mode-timer", self.css, "Handys im Querformat behalten Timer und Nacht")
         self.assertIn(".clock-timer-field #own-until { width: 19em; }", self.css)
 
+    def test_leiste_bei_wenig_hoehe_einzeilig(self):
+        # Befund 1.10: Timer, Spiel und Nacht dürfen die Leiste bei wenig Höhe nicht umbrechen (Streifen 640 × 100,
+        # Handy quer) – sie bleibt einzeilig wie in 1.9, die Knopfgruppe rollt seitlich statt die Zeit zu verkleinern.
+        block = re.search(r"@media \(max-height: 480px\) \{\n  \.clock-bar \{ flex-wrap: nowrap; \}(.*?)\n\}", self.css, re.S)
+        self.assertIsNotNone(block)
+        rules = block.group(1)
+        self.assertIn(".clock-tools { flex: 1 1 0; flex-wrap: nowrap; min-width: 0; overflow-x: auto;", rules)
+        self.assertIn(".clock-title { flex: 0 1 auto; max-width: 40%; }", rules, "der Titel eines Profils wird nicht zerdrückt")
+        self.assertIn(".clock-tools > * { flex: none; }", rules)
+        self.assertIn(".clock-tools > :first-child { margin-left: auto; }", rules, "beim Überlauf bleibt der Anfang erreichbar")
+        self.assertNotIn("justify-content", rules)
+
+    def test_nachtmodus_laesst_on_air_rot_und_deckend(self):
+        block = re.search(r':root\[data-mode="night"\] \{([^}]*)\}', self.css).group(1)
+        self.assertNotIn("--signal", block, "On Air bleibt im Nachtmodus rot")
+        for rule in re.findall(r":root\[data-night\][^{]*\{", self.css):
+            self.assertNotIn("clock-signal", rule, "On Air wird im Nachtmodus nicht gedimmt")
+
     def test_ende_deutlich_ohne_blinken(self):
         block = self.css[self.css.index("/* --- Studiouhr C1"):]
         self.assertNotRegex(block, r"animation|transition|@keyframes|blink|filter:|url\(")
         self.assertIn(":root[data-cd-end] .clock-cd { outline:", block)
         self.assertIn('if (ended) status = t("clock.cd_end");', self.body("function renderCountdown("))
-        self.assertIn(":root[data-night] :is(.clock-stage, .clock-band, .clock-signal, .clock-egg) { opacity: var(--night, 0.4); }",
+        self.assertIn(":root[data-night] :is(.clock-stage, .clock-band, .clock-egg) { opacity: var(--night, 0.4); }",
                       block)
         self.assertNotRegex(block, r":root\[data-night\][^{]*\.clock-bar", "die Leiste blendet sich im Leerlauf über opacity aus")
 
@@ -501,7 +519,7 @@ class SeitenregelnTest(unittest.TestCase):
             self.assertGreaterEqual(ink, 4.5)
             self.assertGreaterEqual(ink2, 4.5)
             self.assertGreaterEqual(unsure, 3.0)
-        self.assertIn("@media (prefers-contrast: more) {\n  :root[data-night] :is(.clock-stage, .clock-band, .clock-signal, "
+        self.assertIn("@media (prefers-contrast: more) {\n  :root[data-night] :is(.clock-stage, .clock-band, "
                       ".clock-egg) { opacity: max(var(--night, 0.4), 0.6); }", self.css)
         if shutil.which("node"):
             # Tatsächlicher Kontrast gedimmt (Deckkraft über Schwarz): bewusst dokumentiert, nicht verschleiert.

@@ -467,7 +467,7 @@ class SeitenregelnTest(unittest.TestCase):
         self.assertIn("params.show = split.base;", start)
         self.assertIn("state.profileShow = kit.parseParams(link.effectiveQuery({ profile: profile.params, zones: ZONES }), ZONES).show;",
                       self.body("async function loadProfile("))
-        self.assertIn("fx.extrasShown({ extras: state.extraWish, fun: params.fun, kiosk: params.kiosk,\n"
+        self.assertIn("fx.extrasShown({ extras: state.extraWish, fun: FUN_ON, kiosk: params.kiosk,\n"
                       "    layout: state.layout, eink: params.eink, height: state.stage.height, crowded })", self.body("function renderExtras("))
 
     def test_suedhalbkugel_nur_lokal(self):
@@ -510,6 +510,12 @@ class SeitenregelnTest(unittest.TestCase):
         c2 = self.css[self.css.index("Studiouhr C2"):]
         self.assertIn(':root[data-cd="below"] .clock-stage[data-layout="banner"][data-world="bar"] .clock-main', c2,
                       "spätere Regel mit mindestens gleicher Spezifität")
+
+    def test_banner_mit_zusaetzen_haelt_abstand_zum_rand(self):
+        # Befund 1.10: Mit Zusätzen füllt das Banner-Raster die ganze Breite – ein eigener Innenabstand hält Zeit und
+        # Nerd-Zeile vom Bildrand fern (3840 × 1080: 48 px), ohne ihn stießen beide an den Rand.
+        c2 = self.css[self.css.index("Studiouhr C2"):]
+        self.assertIn('.clock-stage[data-layout="banner"] .clock-main:has(> .clock-extras:not([hidden])) { padding-inline: 1.25cqw; }', c2)
 
     def test_mondtitel_ohne_doppelpunkt(self):
         for lang in ("de", "en"):

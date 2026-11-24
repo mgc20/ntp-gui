@@ -102,8 +102,9 @@
 // und Ostereier aus der Tabelle fx.EGGS (13:37, 12:34:56, Neujahr mit Konfetti, Schaltsekunde, Zeitumstellung) samt
 // Konami-Code (Konfetti, Binäruhr bis zum Neuladen). Konfetti fällt nur per CSS, bei „weniger Bewegung“ bleibt der Text.
 // Ostereier nur mit fx.eggsAllowed: nie mit eggs=0 oder fun=0 (studio, tile, banner), lock=1, im Kiosk, in der Kachel,
-// in OBS und auf E-Ink, dazu nie im Layout Kachel oder Streifen, auch zur Laufzeit (fx.eggShown). Spiel und Zeitzeichen
-// gibt es nur, wo auch Timer und Nacht erscheinen (CONTROLS.fun).
+// in OBS und auf E-Ink, dazu nie im Layout Kachel oder Streifen, auch zur Laufzeit, und nie über dem Prüfbild
+// (fx.eggShown). Spiel und Zeitzeichen gibt es nur, wo auch Timer und Nacht erscheinen (CONTROLS.fun). Ist ein Profil
+// (?p=) angefordert, aber nicht geladen, bleiben Spielereien und Ostereier aus (fx.funWanted).
 //
 // Bewusst ohne app.js/ui.js: Die Seite muss auch ohne Anmeldung (clock_public) laufen und
 // lädt deshalb nur Dateien, die keine Inhalte aus Konfiguration oder Status enthalten
@@ -235,6 +236,8 @@ const state = {
 };
 /** Bedienung: Start/Anhalten am Countdown (actions) und die Spielereien (fun) – nach dem Profil neu bestimmt. */
 let CONTROLS = { actions: true, fun: true };
+/** fun nach dem Profil – aus, solange ein angefordertes Profil nicht geladen ist (fx.funWanted). */
+let FUN_ON = true;
 /** Ostereier und Konfetti erlaubt (fx.eggsAllowed) – nach dem Profil bestimmt. */
 let EGGS_ON = false;
 let COUNT_MODE = "watch";
@@ -1486,7 +1489,7 @@ function dstToday(ms, zone = null) {
 function renderEgg(nowMs, time, zone = null) {
   const node = $("leap-egg");
   let egg = null;
-  if (fx.eggShown({ allowed: EGGS_ON, layout: state.layout })) {
+  if (fx.eggShown({ allowed: EGGS_ON, layout: state.layout, test: Boolean(state.test) })) {
     if (state.konamiUntil > performance.now()) egg = { kind: "konami", text: "konami", confetti: true };
     else {
       const status = state.status || {};
@@ -1509,7 +1512,8 @@ function renderEgg(nowMs, time, zone = null) {
 /** Konfetti: fallende Schnipsel nur per CSS-Animation (transform, opacity), nach CONFETTI_MS wieder weg. */
 function startConfetti() {
   if (fx.confettiMode({ allowed: EGGS_ON, wanted: true, reduced: reducedMotion.matches }) !== "css") return;
-  if (!fx.eggShown({ allowed: true, layout: state.layout })) return;   // Kachel und Streifen: dort steht nur die Zeit
+  // Kachel und Streifen: dort steht nur die Zeit; über dem Prüfbild auch kein Konfetti.
+  if (!fx.eggShown({ allowed: true, layout: state.layout, test: Boolean(state.test) })) return;
   const box = $("confetti");
   if (!box.childElementCount) box.append(...Array.from({ length: CONFETTI_PIECES }, () => document.createElement("i")));
   box.classList.remove("is-on");
@@ -2412,7 +2416,7 @@ function renderExtras(nowMs, at = state.extrasAt) {
   state.extrasAt = at;
   // Im Banner mit Countdown unter der Uhr oder Leiste der Weltzeit nur auf höheren Bühnen (fx.extrasShown, crowded).
   const crowded = (countdownActive() && params.cd === "below") || Boolean(state.world && state.world.mode === "bar");
-  const shown = state.extrasNoRoom ? [] : fx.extrasShown({ extras: state.extraWish, fun: params.fun, kiosk: params.kiosk,
+  const shown = state.extrasNoRoom ? [] : fx.extrasShown({ extras: state.extraWish, fun: FUN_ON, kiosk: params.kiosk,
     layout: state.layout, eink: params.eink, height: state.stage.height, crowded });
   const bars = shown.includes("progress") ? fx.barsFor(params.bars, timerBarAvailable()) : [];
   const key = `${shown.join(",")}|${bars.join(",")}`;
@@ -2615,6 +2619,10 @@ function startTest() {
   setHidden($("sync-test-less"), !run || params.lock);
   setHidden($("sync-test-more"), !run || params.lock);
   $("sync-test").hidden = false;
+  // Kein Osterei und kein Konfetti über dem Prüfbild (fx.eggShown mit test): sofort weg, nicht erst im Takt.
+  setHidden($("leap-egg"), true);
+  state.eggKey = "";
+  stopConfetti();
   coverStage(true);
   renderTest();
   flashTick();
@@ -3406,7 +3414,9 @@ async function start() {
   state.south = store(SOUTH_KEY) === "1";
   initCountMode();
   // Bedienung erst nach dem Profil festlegen: fun=0, lock=1, Kiosk und Kachel können von dort kommen.
-  CONTROLS = fx.funControls({ fun: params.fun, kiosk: params.kiosk, lock: params.lock, layout: params.layout, obs: OBS,
+  // Profil angefordert, aber nicht geladen (Abruf fehlgeschlagen): Spielereien und Ostereier vorsichtshalber aus.
+  FUN_ON = fx.funWanted({ fun: params.fun, profile: PROFILE, loaded: Boolean(state.profile) });
+  CONTROLS = fx.funControls({ fun: FUN_ON, kiosk: params.kiosk, lock: params.lock, layout: params.layout, obs: OBS,
     eink: params.eink });
   if (OBS) document.body.classList.add("is-obs");
   $("mode-timer").hidden = !CONTROLS.fun;
@@ -3414,7 +3424,7 @@ async function start() {
   // C3: Spiel und Zeitzeichen wie Timer und Nacht; Ostereier zusätzlich nicht mit eggs=0.
   $("mode-game").hidden = !CONTROLS.fun;
   for (const id of ["tone-pips-hour", "tone-pips-minute", "tone-pips-line"]) $(id).hidden = !CONTROLS.fun;
-  EGGS_ON = fx.eggsAllowed({ eggs: params.eggs, fun: params.fun, kiosk: params.kiosk, lock: params.lock, layout: params.layout,
+  EGGS_ON = fx.eggsAllowed({ eggs: params.eggs, fun: FUN_ON, kiosk: params.kiosk, lock: params.lock, layout: params.layout,
     obs: OBS, eink: params.eink });
   state.game.best = fx.tapBestRead(store(fx.TAP_BEST_KEY) || "");
   $("game-info").append(infoButton("clock.game_info_title", "clock.game_info"));

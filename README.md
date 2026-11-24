@@ -1222,9 +1222,13 @@ Die Seite **Uhrqualität** zeigt, was die Uhr deines Servers langfristig beeinfl
   Zone des Servers steht), `?dimlevel=20..80` setzt die Helligkeit in % (Standard 40), `?dimred=1` macht ihn rot.
   Gedimmt sinkt der Kontrast bewusst (bei 40 % etwa 2,6:1); wünscht das System mehr Kontrast (`prefers-contrast:
   more`), bleibt die Uhr mindestens zu 60 % hell. Von Hand umgeschaltet gilt bis zum nächsten Wechsel des Zeitplans.
+  Das On-Air/REC-Signal (`?signal=1`) dimmt der Nachtmodus nicht: Band und Rahmen bleiben rot und voll deckend.
   Timer, Pomodoro und eigene Countdowns laufen nur im Browser, nichts geht an den Server. Mit `?fun=0` (in den
   Voreinstellungen `studio`, `tile` und `banner`), im Kiosk, mit `?lock=1`, in der Kachel und in einer
-  OBS-Browserquelle gibt es diese Knöpfe nicht; in OBS fehlen auch Leiste und Knöpfe am Countdown.
+  OBS-Browserquelle gibt es diese Knöpfe nicht; in OBS fehlen auch Leiste und Knöpfe am Countdown. Lädt ein Profil
+  (`?p=`) nicht, etwa weil der Server kurz nicht antwortet, bleiben Spielereien und Ostereier vorsichtshalber aus, bis
+  das Profil da ist (die Seite lädt dann neu). In Fenstern bis 480 px Höhe (Handy quer, Streifen) bleibt die Leiste
+  einzeilig: Passen nicht alle Knöpfe hinein, wischst bzw. rollst du die Knopfgruppe seitlich.
 - **Binäruhr, Mondphase, Nerd-Zeile und Fortschrittsbalken (ab 1.10, Studiouhr):** `?design=binary` zeigt die Zeit
   als Lämpchen – je Ziffer eine Spalte mit 8-4-2-1 (BCD, Standard) oder mit `?bin=plain` Stunde, Minute und Sekunde je
   als Dualzahl (32 … 1); die Dezimalwerte stehen zum Ablesen daneben. Unter der Uhr gibt es drei Zusätze, alle
@@ -1263,7 +1267,7 @@ Die Seite **Uhrqualität** zeigt, was die Uhr deines Servers langfristig beeinfl
   im Band bleibt). Spiel und Zeitzeichen gibt es nur, wo auch Timer und Nacht erscheinen: nie mit `?fun=0`
   (Voreinstellungen `studio`, `tile`, `banner`), im Kiosk, mit `?lock=1`, in der Kachel und in OBS – dort gibt es auch
   keine Ostereier (also auch keine Schaltsekunden-Zeile) und kein Konfetti. Im Layout Streifen (auch per Taste L) steht
-  nur die Zeit: kein Osterei, kein Konfetti.
+  nur die Zeit: kein Osterei, kein Konfetti. Während des Prüfbilds (`?test=sync`) ebenso.
 - **Timecode-Anzeige (Studiouhr, Design `tc`):** `/clock?design=tc` zeigt die Tageszeit des Servers als Timecode
   `HH:MM:SS` mit einer Feinstelle, gerechnet in der Zeitzone des Servers; weicht sie von der deines Geräts ab, gehören
   auch Datum und Woche darunter zur Zone des Servers, und nach Taste U steht dessen Zeit mit Zonenname in der

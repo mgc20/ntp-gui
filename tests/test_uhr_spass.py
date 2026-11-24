@@ -353,6 +353,38 @@ class OstereierTest(unittest.TestCase):
         """)
         self.assertEqual(out, [[True, True, True, True, False, False], [False] * 6, False, False])
 
+    def test_nie_ueber_dem_pruefbild(self):
+        """Befund 1.10: Während ?test=sync läuft, weder Ei-Zeile noch Konfetti über der Blitzfläche."""
+        out = run_fx("""
+          console.log(JSON.stringify([["normal", "banner", "strip"].map((layout) => x.eggShown({ allowed: true, layout, test: true })),
+            x.eggShown({ allowed: true, layout: "normal", test: false }), x.eggShown({ allowed: true, layout: "normal" })]));
+        """)
+        self.assertEqual(out, [[False, False, False], True, True])
+
+    def test_ohne_geladenes_profil_keine_spielereien(self):
+        """Befund 1.10: Fällt der Profil-Abruf aus, zeigt ?p=studio weder Ei noch Konfetti noch Knöpfe."""
+        presets = {name: entry["params"] for name, entry in clockprofiles.PRESETS.items()}
+        out = run_fx(f"""
+          const presets = {json.dumps(presets)};
+          const p = k.parseParams("");   // Profil nicht geladen: nur die (leere) Adresse zählt
+          const fun = (profile, loaded) => x.funWanted({{ fun: p.fun, profile, loaded }});
+          const allowed = (profile, loaded) => x.eggsAllowed({{ eggs: p.eggs, fun: fun(profile, loaded), kiosk: p.kiosk,
+            lock: p.lock, layout: p.layout, eink: p.eink }});
+          console.log(JSON.stringify({{
+            failed: Object.fromEntries([...Object.keys(presets), "eigenes"].map((n) => [n, [fun(n, false), allowed(n, false),
+              x.funControls({{ fun: fun(n, false) }}).fun]])),
+            loaded: [fun("nerd", true), allowed("nerd", true)], none: [fun("", false), allowed("", false)],
+            fun0: x.funWanted({{ fun: false, profile: "", loaded: false }}), defaults: x.funWanted(),
+          }}));
+        """)
+        for name, got in out["failed"].items():
+            with self.subTest(profile=name):
+                self.assertEqual(got, [False, False, False])
+        self.assertEqual(out["loaded"], [True, True])
+        self.assertEqual(out["none"], [True, True])
+        self.assertFalse(out["fun0"])
+        self.assertTrue(out["defaults"])
+
 
 class SchemaUndServerTest(unittest.TestCase):
     @unittest.skipUnless(shutil.which("node"), "node fehlt")
@@ -412,15 +444,22 @@ class SeitenregelnTest(unittest.TestCase):
     def test_ostereier_nur_mit_erlaubnis(self):
         start = self.body("async function start()")
         self.assertLess(start.index("await loadProfile()"), start.index("EGGS_ON = fx.eggsAllowed("))
-        self.assertIn("eggs: params.eggs, fun: params.fun, kiosk: params.kiosk, lock: params.lock", start)
+        self.assertIn("eggs: params.eggs, fun: FUN_ON, kiosk: params.kiosk, lock: params.lock", start)
+        self.assertLess(start.index("FUN_ON = fx.funWanted({ fun: params.fun, profile: PROFILE, loaded: Boolean(state.profile) });"),
+                        start.index("EGGS_ON = fx.eggsAllowed("), "ohne geladenes Profil vorsichtshalber keine Ostereier")
         self.assertIn("obs: OBS, eink: params.eink", start)
         egg = self.body("function renderEgg(")
         self.assertLess(egg.index("if (fx.eggShown({ allowed: EGGS_ON,"), egg.index("kit.leapEgg("),
                         "auch die Schaltsekunde nur mit Erlaubnis")
         self.assertIn("setText(node, t(", egg)
         self.assertNotIn("innerHTML", egg)
-        self.assertIn("fx.eggShown({ allowed: EGGS_ON, layout: state.layout })", egg, "nie in Kachel und Streifen")
-        self.assertIn("fx.eggShown({ allowed: true, layout: state.layout })", self.body("function startConfetti()"))
+        self.assertIn("fx.eggShown({ allowed: EGGS_ON, layout: state.layout, test: Boolean(state.test) })", egg,
+                      "nie in Kachel und Streifen und nie über dem Prüfbild")
+        self.assertIn("fx.eggShown({ allowed: true, layout: state.layout, test: Boolean(state.test) })",
+                      self.body("function startConfetti()"))
+        test = self.body("function startTest()")
+        self.assertLess(test.index('setHidden($("leap-egg"), true);'), test.index("coverStage(true);"))
+        self.assertIn("stopConfetti();", test)
         # Die Eier richten sich nach der großen Zeit: tc mit Zone des Servers deren Zeit, Tag und Zeitumstellung.
         render = self.body("function render(now)")
         self.assertIn("mo: shown.getUTCMonth() + 1, d: shown.getUTCDate() }, tcZone());", render)

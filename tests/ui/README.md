@@ -44,7 +44,8 @@ Der Rundgang öffnet jede Route bei 1440 und 390 px, hell und dunkel, und meldet
   U, +, ?, A, `lock=1` und die Ansage beim Unterschreiten von 1 min,
 - die Spielereien der Studiouhr C1 (`clockTimerChecks`, einzeln mit `TOUR_TIMER_ONLY=1`): eine Eieruhr läuft auf den
   neun Flächen und fest als Streifen bzw. Kachel ab („Zeit ist um!“ als Text mit Rahmen, Überzeit, im Bild, ohne Umbruch
-  und Scrollbalken), Merken bei gesperrtem Speicher (ehrliche Meldung), Timer und Nacht auf Handys im Querformat (Touch), das Panel „Timer“ bei
+  und Scrollbalken), Merken bei gesperrtem Speicher (ehrliche Meldung), Timer und Nacht auf Handys im Querformat (Touch; bei 640×360, 740×360 und 844×390 bleibt die Leiste einzeilig
+  wie in 1.9 und die Ziffern mindestens 20 % der Fensterhöhe), das Panel „Timer“ bei
   390 und 1440 px (Schnellwahl, „+1 min“, eigene Dauer, Pomodoro, eigener Countdown merken und entfernen, Tippflächen
   ≥ 24 px), der Phasenwechsel des Pomodoro, der Nachtmodus nach Uhrzeit und per Taste N, keine Knöpfe in den
   Voreinstellungen `studio`, `tile`, `banner`, mit `kiosk=1`, `lock=1`, `fun=0` und in OBS (`window.obsstudio`), dort
@@ -54,7 +55,8 @@ Der Rundgang öffnet jede Route bei 1440 und 390 px, hell und dunkel, und meldet
   und `bin=plain`) zeigt auf den neun Flächen die gemockte Serverzeit als Lämpchen; `?show=moon,nerd,progress` auf den
   neun Flächen im Bild (in Kachel, Streifen und auf Bühnen unter 360 px Höhe außer im Banner nie), Nerd-Zeile mit TAI und
   GPS aus `tai_utc` des Mocks bzw. „–“ ohne den Wert, Balken für Tag, Jahr und Eieruhr, Klick auf den Mond (Südhalbkugel,
-  nur localStorage); keine Zusätze in `studio`, `tile`, `banner`, mit `fun=0` und ohne `show`; im Ruhebetrieb keine
+  nur localStorage); im Banner 3840×1080 mit allen Zusätzen mindestens 24 px Abstand von Zeit und Zusätzen zum Rand;
+  keine Zusätze in `studio`, `tile`, `banner`, mit `fun=0` und ohne `show`; im Ruhebetrieb keine
   Long Tasks und keine Bildschleife,
 - Spiel, Zeitzeichen und Ostereier der Studiouhr C3 (`clockFunChecks`, einzeln mit `TOUR_FUN_ONLY=1`): Osterei 13:37 auf
   den neun Flächen (im Bild; in Kachel, Streifen und Fenstern bis 320 px Höhe nie, Streifen auch fest per
@@ -62,7 +64,8 @@ Der Rundgang öffnet jede Route bei 1440 und 390 px, hell und dunkel, und meldet
   UTC), Neujahr mit CSS-Konfetti (bei
   „weniger Bewegung“ nur Text), Konami-Code (Konfetti, Binäruhr nicht gemerkt, das abschließende A sagt nichts an); nie
   ein Ei oder Konfetti mit `eggs=0`, `fun=0`, in `studio`, `tile`, `banner`, mit `kiosk=1` (auch `p=nerd&kiosk=1`),
-  `lock=1` und in OBS; Panel „Spiel“ bei 390, 768 und 1920 px (Tipp mit Maus und Enter, Ergebnis, Messgenauigkeit,
+  `lock=1` und in OBS, auch nicht, wenn der Profil-Abruf ausfällt (`studio`, `tile`, `banner` und ein eigenes Profil
+  mit 503: auch keine Knöpfe Timer, Spiel, Nacht), und nicht über dem Prüfbild `?test=sync` (13:37 und Neujahr); Panel „Spiel“ bei 390, 768 und 1920 px (Tipp mit Maus und Enter, Ergebnis, Messgenauigkeit,
   Bestwert im localStorage, Tippflächen ≥ 24 px, gesperrter Speicher ehrlich; langer Druck von 700 ms mit Maus und
   Finger ergibt genau eine Wertung, ein Klick ohne Zeiger wie vom Screenreader genau eine), Zeitzeichen-Knöpfe im Panel
   Ton; dazu ein

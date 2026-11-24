@@ -24,6 +24,16 @@ export function funControls({ fun = true, kiosk = false, lock = false, layout = 
   return { actions, fun: actions && fun === true && !kiosk && !eink };
 }
 
+/**
+ * fun für funControls/eggsAllowed, solange ein Profil (?p=) angefordert, aber (noch) nicht geladen ist: vorsichtshalber
+ * aus. fun=0 und kiosk=1 der Voreinstellungen studio, tile und banner stehen nur in der Antwort des Servers – fällt der
+ * Abruf aus (503, 401, Netz), zeigte ein Studio-Bildschirm sonst Ostereier, Konfetti und die Knöpfe Timer, Spiel und
+ * Nacht. Lädt das Profil später, lädt die Seite neu (retryProfile) und rechnet mit dessen Werten.
+ */
+export function funWanted({ fun = true, profile = "", loaded = false } = {}) {
+  return fun === true && (!profile || loaded === true);
+}
+
 // --- Eieruhr ---------------------------------------------------------------------------------------------------------
 /** Schnellwahl der Eieruhr in Minuten. */
 export const EGG_PRESETS = Object.freeze([1, 3, 5, 10, 15, 30]);
@@ -587,10 +597,11 @@ export function eggsAllowed({ eggs = true, fun = true, kiosk = false, lock = fal
 
 /**
  * Osterei (und Konfetti) in diesem Layout zeigen? Nur mit Erlaubnis (eggsAllowed) und nie in Kachel und Streifen – dort
- * steht nur die Zeit, auch wenn das Layout erst zur Laufzeit (Taste L, flaches Fenster) dazu wird.
+ * steht nur die Zeit, auch wenn das Layout erst zur Laufzeit (Taste L, flaches Fenster) dazu wird. Auch nie über dem
+ * Prüfbild (test: ?test=sync läuft), sonst lägen Zeile und Schnipsel über der Blitzfläche.
  */
-export function eggShown({ allowed = false, layout = "normal" } = {}) {
-  return allowed === true && layout !== "tile" && layout !== "strip";
+export function eggShown({ allowed = false, layout = "normal", test = false } = {}) {
+  return allowed === true && !test && layout !== "tile" && layout !== "strip";
 }
 
 /** Ziel des Spiels: die volle Sekunde oder die volle Minute (Schrittweite in ms). */

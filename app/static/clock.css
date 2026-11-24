@@ -862,20 +862,33 @@ body.is-obs, body.is-obs * { cursor: none; }
   --good: #c8c8c8; --warn: #a8a8a8; --crit: #c8c8c8; --on-status: #000000;
   --surface-3: #1a1a1a; --good-ink: #c8c8c8; --warn-ink: #c8c8c8; --crit-ink: #c8c8c8; --info-ink: #c8c8c8;
   --good-soft: #1a1a1a; --warn-soft: #1a1a1a; --crit-soft: #1a1a1a; --info-soft: #1a1a1a;
-  --ink-unsure: #7a7a7a; --studio-ink: #c8c8c8; --signal: #c8c8c8; --signal-ink: #000000;
+  --ink-unsure: #7a7a7a; --studio-ink: #c8c8c8;
   color-scheme: dark;
 }
-/* Die Leiste nicht: Sie blendet sich im Leerlauf über ihre Deckkraft aus (is-idle), dunkel ist sie über die Farben. */
+/* Die Leiste nicht: Sie blendet sich im Leerlauf über ihre Deckkraft aus (is-idle), dunkel ist sie über die Farben.
+   On-Air/REC auch nicht: Gesendet wird gerade nachts, das Band und der Rahmen bleiben rot und voll deckend (--signal
+   bleibt unverändert; mit ?dimred=1 gilt das Rot des Rotlichts). */
 /* Kontrast: Die Farbtabelle oben hat auf Schwarz mindestens 4,5:1. Gedimmt sinkt er bewusst – bei 40 % liegen die
    Ziffern bei etwa 2,6:1, bei 20 % bei etwa 1,4:1. Wünscht das System mehr Kontrast, bleibt mindestens 60 % (Ziffern ≈ 4,7:1). */
-:root[data-night] :is(.clock-stage, .clock-band, .clock-signal, .clock-egg) { opacity: var(--night, 0.4); }
+:root[data-night] :is(.clock-stage, .clock-band, .clock-egg) { opacity: var(--night, 0.4); }
 @media (prefers-contrast: more) {
-  :root[data-night] :is(.clock-stage, .clock-band, .clock-signal, .clock-egg) { opacity: max(var(--night, 0.4), 0.6); }
+  :root[data-night] :is(.clock-stage, .clock-band, .clock-egg) { opacity: max(var(--night, 0.4), 0.6); }
 }
-/* Nur in sehr kleinen, flachen Fenstern (kleine Kachel mit Leiste, bis 600 × 320 px) fehlen Timer und Nacht: Dort
-   bräche die Leiste in zwei weitere Zeilen um und nähme der Zeit ein Drittel der Höhe. Handys im Querformat (ab etwa
-   640 px Breite) behalten beide Knöpfe – die Leiste bricht dort höchstens einmal um, und für den Timer gibt es auf
-   Touch-Geräten keinen anderen Weg. */
+/* Wenig Höhe (Handy quer, Streifen, Banner): Die Leiste bleibt einzeilig wie in 1.9 und nimmt der Zeit keine Höhe.
+   Passen nicht alle Knöpfe in die Zeile, lässt sich die Knopfgruppe seitlich wischen bzw. rollen (Tab führt den Fokus
+   mit, der Browser rollt nach); so bleiben Timer und Nacht auch auf Touch-Geräten erreichbar. Rechts bündig über
+   margin-left: auto statt justify-content, damit beim Überlauf der Anfang der Gruppe erreichbar bleibt. In sehr
+   kleinen, flachen Fenstern (kleine Kachel mit Leiste, bis 600 × 320 px) fehlen Timer und Nacht ganz. */
+@media (max-height: 480px) {
+  .clock-bar { flex-wrap: nowrap; }
+  .clock-back { flex: none; white-space: nowrap; }
+  /* Der Titel eines Profils behält seine Breite (bis 40 %), die Knopfgruppe nimmt den Rest und rollt. */
+  .clock-title { flex: 0 1 auto; max-width: 40%; }
+  .clock-tools { flex: 1 1 0; flex-wrap: nowrap; min-width: 0; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none; }
+  .clock-tools::-webkit-scrollbar { display: none; }
+  .clock-tools > * { flex: none; }
+  .clock-tools > :first-child { margin-left: auto; }
+}
 @media (max-height: 320px) and (max-width: 600px) { #mode-timer, #mode-night { display: none; } }
 
 /* --- Studiouhr C2: Design binary, Mondphase, Nerd-Zeile, Fortschrittsbalken ---------------------------------------
@@ -944,6 +957,9 @@ body.is-obs, body.is-obs * { cursor: none; }
     grid-template-areas: "time date" "time sub" "time world" "time extras"; }
   :root[data-cd="below"] .clock-stage[data-layout="banner"][data-world="bar"] .clock-main {
     grid-template-areas: "time cd" "time date" "time sub" "time world" "time extras"; }
+  /* Mit Zusätzen füllt das Raster die Breite ganz (die Nerd-Zeile ist lang, clock.js passt die Zeit in den Rest ein):
+     Ein eigener Innenabstand hält Zeit und Zusätze vom Bildrand fern wie ohne Zusätze. */
+  .clock-stage[data-layout="banner"] .clock-main:has(> .clock-extras:not([hidden])) { padding-inline: 1.25cqw; }
   .clock-stage[data-layout="banner"] .clock-extras { grid-area: extras; justify-content: flex-start; margin: 0;
     font-size: max(12px, min(1.4cqw, 11cqh)); max-width: 60cqw; }
   .clock-stage[data-layout="banner"] :is(.clock-nerd, .clock-prog) { justify-content: flex-start; }
