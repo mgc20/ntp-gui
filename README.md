@@ -7,7 +7,7 @@
 
 <p align="center">
   <a href="https://github.com/mgc20/ntp-gui/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/mgc20/ntp-gui/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="https://github.com/mgc20/ntp-gui/releases/latest"><img alt="Release" src="https://img.shields.io/badge/release-v1.11.0-0969da"></a>
+  <a href="https://github.com/mgc20/ntp-gui/releases/latest"><img alt="Release" src="https://img.shields.io/badge/release-v1.12.0-0969da"></a>
   <img alt="Plattformen" src="https://img.shields.io/badge/platform-amd64%20%7C%20arm64-1a7f37">
   <img alt="Image" src="https://img.shields.io/badge/image-ghcr.io-8250df">
   <a href="LICENSE"><img alt="Lizenz: MIT" src="https://img.shields.io/badge/license-MIT-59636e"></a>
@@ -2378,6 +2378,26 @@ Meist musst du beim Update nichts von Hand umbauen. Was sich zwischen zwei Versi
   `ntp-gui.db` übernommen und als `history.json.gz.migrated` aufbewahrt. Kann die Datenbank
   nicht geöffnet werden, arbeitet der Verlauf wie in 1.2 weiter.
 
+### Von 1.11 auf 1.12
+
+Nichts musst du umbauen; das Einstellungsschema ändert sich nicht. Am Verhalten ändert sich Folgendes:
+
+- **Automatische Neustarts von chronyd haben eine Tagesgrenze:** GPS-Kalibrierung und gemessene
+  Fehlerschranke starten chronyd nicht mehr sofort neu, sondern sammeln ihre Änderungen zwei Minuten lang
+  und nutzen höchstens 4 automatische Neustarts in 24 Stunden (eine größere Fehlerschranke bis zu 4
+  weitere). Eine Änderung kann daher eine Weile warten; die GPS-Seite zeigt dann „wartet auf Neustart“ mit
+  Uhrzeit. Was du selbst auslöst, wirkt wie bisher sofort (siehe [Dienste und
+  Neustarts](#dienste-und-neustarts)).
+- **Gespeicherter Zustand der Benachrichtigungen verfällt:** Der Zustand der Kanäle gilt 21 Stunden, der
+  von Zeitwächter-Ping und Client-Alarmen 24 Stunden. Zustand aus 1.11 (ohne Zeitstempel) wird übernommen,
+  aber verworfen, wenn die letzte Meldung darin mehr als 24 Stunden zurückliegt. Ein Problem, das schon
+  vor dem Update bestand, kann deshalb nach dem Update einmal neu gemeldet werden. Dasselbe gilt für einen
+  Kanal, dessen Art, Adresse oder Thema du änderst.
+- **Prometheus und Grafana:** Neu sind `ntpgui_auto_restarts_24h`, `ntpgui_auto_restart_limit`,
+  `ntpgui_auto_restart_pending` und `ntpgui_auto_restart_limited`, der Alarm `NtpGuiAutoRestartLimit`
+  und das Panel „Automatische Neustarts“. Lade das Grafana-Dashboard (`docs/grafana/ntp-gui.json`) und
+  die Alarmregeln (`docs/prometheus/alerts.yml`) neu, wenn du sie nutzen willst.
+
 ### Von 1.10 auf 1.11
 
 Nichts musst du umbauen; das Einstellungsschema ändert sich nicht, und alles Neue (Zeitwächter-Ping,
@@ -2557,7 +2577,7 @@ Updates vor. Ein Release-Build läuft ohne Cache, zieht also immer aktuelle Debi
 **Herkunft prüfen** (GitHub-CLI, sobald das Repository öffentlich ist):
 
 ```bash
-gh attestation verify oci://ghcr.io/mgc20/ntp-gui:1.11.0 -R mgc20/ntp-gui
+gh attestation verify oci://ghcr.io/mgc20/ntp-gui:1.12.0 -R mgc20/ntp-gui
 ```
 
 Scheitert ein Schritt, entsteht kein halber Release. Bei einem privaten Repository

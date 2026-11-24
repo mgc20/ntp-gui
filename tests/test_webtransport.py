@@ -789,8 +789,8 @@ class ComposeTemplateTest(unittest.TestCase):
                 hint = "\n".join(lines[max(0, index - 8):index])
                 if any(line.strip() == "build: ." for line in lines):
                     self.assertIn("lokalen Stand", hint)  # Version im Tag gilt nur fürs geladene Image
-                self.assertIn("„:1.11“", hint)
-                self.assertIn("„:1.11.0“", hint)
+                self.assertIn("„:1.12“", hint)
+                self.assertIn("„:1.12.0“", hint)
                 self.assertIn("ghcr.io/congp20/ntp-gui", hint)
                 # Erklärung, nie eine einkommentierbare Zeile („#  “ nach der Einrückung)
                 self.assertNotRegex(hint, r"(?m)^ +#  ")

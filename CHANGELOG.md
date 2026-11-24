@@ -6,6 +6,106 @@ Alle nennenswerten Änderungen an ntp-gui. Das Format folgt
 
 ## [Unveröffentlicht]
 
+## [1.12.0] – 2026-11-24
+
+Schwerpunkt: Zuverlässigkeit. Automatische Neustarts von chronyd gehen jetzt über einen gemeinsamen
+Koordinator mit Tagesgrenze, damit chronyd seinen Regelzustand nicht mehrmals am Tag verliert. Der
+gespeicherte Zustand der Benachrichtigungen verfällt nach einer langen Pause, sodass ein Gerät nach dem
+Wiedereinschalten keinen Ausfall mehr als „schon gemeldet“ verschluckt. Der Browser-Rundgang läuft in der
+CI mit. Lies vor dem Update die Update-Hinweise „Von 1.11 auf 1.12“ in der
+[README](README.md#von-111-auf-112).
+
+### Hinzugefügt
+- **Neustart-Koordinator für automatische Neustarts von chronyd:** Die GPS-Kalibrierung und die gemessene
+  Fehlerschranke sammeln ihre Änderungen zwei Minuten lang und übernehmen sie in einem gemeinsamen
+  Neustart. Höchstens 4 automatische Neustarts sind in 24 Stunden erlaubt (gleitend); ist die Grenze
+  erreicht, wartet die Änderung, und bis dahin gilt die bisherige Einstellung. Jede Entscheidung steht im
+  Ereignisprotokoll.
+  - Eine **größere** GPS-Fehlerschranke (die vorsichtigere Richtung bei schlechter werdendem Empfang) darf
+    über die Tagesgrenze hinaus bis zu 4 weitere automatische Neustarts in 24 h nutzen. Sonst hielte
+    chronyd das GPS bis zu einem Tag für genauer, als es ist.
+  - Startet chronyd vorher aus einem anderen Grund neu, ist die Änderung damit schon aktiv. Dabei zählt die
+    letzte Anforderung, und die laufende `chrony.conf` wird geprüft; fehlt der Wert dort, folgt ein eigener
+    Neustart.
+  - Läuft ein Holdover-Test, wartet der Neustart bis zu dessen Ende, ohne gemeldet oder zur Tagesgrenze
+    gezählt zu werden.
+- **Übersicht, Karte Dienste:** Zeile „Automatische Neustarts“ (Zahl in 24 h, Grenze, was gerade wartet und
+  bis wann, in der gewählten Sprache; während eines Holdover-Tests „wartet auf Holdover-Test“), mit
+  Hilfetext.
+- **GPS-Seite:** Wartet eine automatische Änderung auf ihren Neustart von chronyd (sammeln, Tagesgrenze,
+  Holdover-Test), zeigt die Kalibrierung „wartet auf Neustart von chronyd“ mit Uhrzeit. Die Zeile „Delay in
+  chrony“ zeigt den laufenden Wert, ein kurzes Badge „wartet auf Neustart“ und darunter die gespeicherte
+  Schranke mit dem Hinweis „wird mit dem nächsten Neustart aktiv“ und Uhrzeit.
+- **Prometheus:** `ntpgui_auto_restarts_24h`, `ntpgui_auto_restart_limit`, `ntpgui_auto_restart_pending`,
+  `ntpgui_auto_restart_limited`. Alarm `NtpGuiAutoRestartLimit` (Info): Eine automatische Änderung wartet
+  seit über einer Stunde an der Tagesgrenze. Im Grafana-Dashboard gibt es dazu das Panel „Automatische
+  Neustarts“.
+- **CI-Job „Oberfläche (Rundgang)“:** Er führt den Browser-Rundgang aus `tests/ui/` in einer schnellen
+  Auswahl aus: Assistent, Navigation, Einstellungen, alle Routen hell und dunkel bei 390 und 1440 px,
+  Seiten, Zeitleiste, Statusband, Hilfe, Korrekturen und die Designs der Uhr-Werkstatt. Dazu laufen die
+  Unittests mit Playwright und ptp4l, die dort nicht mehr übersprungen werden dürfen. Playwright wird aus
+  einem Lockfile mit Prüfsummen installiert (`npm ci`), der Job hat nur Leserechte und Zeitgrenzen (die
+  Job-Grenze liegt über der Summe der Schritt-Grenzen). Bildschirmfotos und Berichte lädt der Job auch bei
+  einem Fehlschlag oder Abbruch als Artefakt hoch, die Hilfe-Prüfung legt ihre Bildschirmfotos dort ab.
+- `tests/ui/ci.sh` führt dieselbe Auswahl lokal aus, dazu kommen die Varianten `TOUR_ROUTES_ONLY` und
+  `TOUR_CLOCK_BASIC_ONLY` des Rundgangs.
+- **Messblatt für Abnahmen auf dem Raspberry Pi 4** ([docs/messblatt-pi.md](docs/messblatt-pi.md)): CPU der
+  Studiouhr im Chromium-Kiosk (erkennt ungültige Läufe), Ton auf der Sekunde (ohne `kiosk=1` oder über das
+  Prüfbild mit Ton-Klick), Dauer einer Sicherung mit 30 Tagen Verlauf und Serverzeit der Übersicht (beide
+  mit Prüfung des HTTP-Status), jeweils mit Befehlen zum Messen und Feldern zum Eintragen. Der API-Schlüssel
+  steht dabei nicht in der Befehlszeile.
+
+### Geändert
+- **Gespeicherter Zustand der Benachrichtigungen verfällt:** Offene Probleme, Sperrzeiten und offene
+  Client-Alarme stehen jetzt mit Speicherzeit in der Datenbank. Der Zustand der Kanäle verfällt nach
+  21 Stunden, der von Zeitwächter-Ping und Client-Alarmen nach 24 Stunden. War der Container länger aus,
+  beginnt alles neu – ein weiter bestehendes Problem wird dann neu gemeldet, statt als „schon gemeldet“ zu
+  gelten. Steht die Uhr nach dem Start noch zurück (Pi ohne RTC), gilt der Zustand weiter.
+- **Zustand aus älteren Versionen** (ohne Zeitstempel) wird beim Update übernommen, aber verworfen, wenn die
+  letzte Meldung darin mehr als 24 Stunden zurückliegt.
+- **Zustand der Benachrichtigungskanäle gilt nur für dasselbe Ziel:** Ändert sich Art, Adresse oder Thema
+  eines Kanals, auch durch eine zurückgespielte Sicherung, beginnt er neu. Die Kennungen der Ziele (Kanäle,
+  Zeitwächter-Ping) im gespeicherten Zustand werden mit einem lokalen Zufallsschlüssel gebildet, nicht mehr
+  als einfacher Hash der Adresse.
+- **Zeitwächter-Ping übersteht einen Neustart:** Fehlerzähler und Meldung „nicht erreichbar“ bleiben
+  erhalten (ohne die Adresse). Nach dem Neustart kommt kein zweites „nicht erreichbar“, und „wieder
+  erreichbar“ fehlt nicht.
+- Was du selbst auslöst (Speichern, Sicherung zurückspielen, „Rückgängig“ der Kalibrierung, „Auf Standard
+  zurücksetzen“ der Fehlerschranke), startet chronyd weiterhin sofort neu und zählt nicht zur Tagesgrenze.
+- `/api/status` enthält `restarts` (Zustand des Neustart-Koordinators).
+- Die Metrik `ntpgui_gps_error_bound_seconds` zeigt die Schranke, die chronyd gerade nutzt, auch solange
+  eine neue auf ihren Neustart wartet.
+- Hilfe zu Fehlerschranke und GPS-Kalibrierung: Automatische Änderungen werden über den
+  Neustart-Koordinator aktiv (gesammelt, Obergrenze je Tag, Holdover-Test). Bis dahin gilt der bisherige
+  Wert.
+- `tests/ui/rundgang.sh`: Mit `TOUR_REQUIRE_PLAYWRIGHT=1` ist fehlendes Playwright ein Fehler (Rückgabecode
+  3) statt eines stillen Überspringens. `TOUR_SERVER_LOG` hebt das Serverprotokoll auf.
+- Tests, die Node, Playwright oder ptp4l brauchen, scheitern mit `NTPGUI_WERKZEUGE_PFLICHT=1`, statt
+  übersprungen zu werden.
+
+### Behoben
+- Automatiken konnten chronyd an einem Tag mehrfach neu starten, etwa wenn die Fehlerschranke bei schlechter
+  werdendem Empfang stündlich wuchs und dazwischen kalibriert wurde. Jeder Neustart kostete chronyd den
+  Regelzustand.
+- Nimmst du eine wartende automatische Änderung zurück („Rückgängig“, „Auf Standard zurücksetzen“,
+  Sicherung zurückspielen), wird sie verworfen (Ereignis „verworfen“) und nicht mehr fälschlich als „mit
+  dem letzten Neustart übernommen“ gemeldet.
+- GPS-Seite: Eine wegen der Tagesgrenze gewollt wartende Kalibrierung erschien als Warnung „Neuladen
+  fehlgeschlagen?“. Der Wartehinweis der Fehlerschranke ragte bei schmalem Bildschirm aus der Karte und
+  erzeugte waagerechtes Scrollen.
+- Schaltest du den Zeitwächter-Ping aus oder trägst eine andere Adresse ein, während er als „nicht
+  erreichbar“ gemeldet ist, wird die Meldung still geschlossen. Bisher blieb sie offen, und ein späterer
+  Ausfall wurde nicht mehr gemeldet. Das stille Schließen nach dem Start löst sein Ereignis nicht mehr unter
+  einer internen Sperre aus.
+- Gespeicherter Zustand gelöschter Benachrichtigungskanäle wird aufgeräumt, auch nach einer
+  Wiederherstellung. Fehlt die Zustandstabelle in der Datenbank, wird sie neu angelegt. Kaputte Einträge
+  werden verworfen.
+- Nachgeholte Meldungen nennen keine negative Dauer mehr („besteht seit …“), wenn die Uhr nach einem
+  Neustart zurücksteht.
+- Der Server hängt nicht mehr, wenn er beim Beenden ein zweites SIGTERM bekommt.
+- Rundgang in der CI: Die Höchstdauer je Variante greift jetzt zuverlässig. Danach wird der Testserver
+  beendet und die nächste Variante startet.
+
 ## [1.11.0] – 2026-11-24
 
 Schwerpunkt: Betrieb und Fehlersuche. ntp-gui meldet sich auf Wunsch regelmäßig bei deinem eigenen
@@ -2071,6 +2171,7 @@ Erste Veröffentlichung.
 - CI mit Unittests und Integrationstest gegen das gebaute Image; Release-Workflow,
   der das Image für amd64 und arm64 nach ghcr.io veröffentlicht.
 
+[1.12.0]: https://github.com/mgc20/ntp-gui/compare/v1.11.0...v1.12.0
 [1.11.0]: https://github.com/mgc20/ntp-gui/compare/v1.10.0...v1.11.0
 [1.10.0]: https://github.com/mgc20/ntp-gui/compare/v1.9.0...v1.10.0
 [1.9.0]: https://github.com/mgc20/ntp-gui/compare/v1.8.0...v1.9.0
